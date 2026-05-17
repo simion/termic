@@ -30,6 +30,9 @@ export function NewWorkspaceDialog() {
   const [branch, setBranch] = useState("");
   const [branchEdited, setBranchEdited] = useState(false);
   const [base, setBase] = useState("");
+  // Sandbox pin captured at creation. Defaults from project, can be
+  // overridden for this one workspace, then is permanent post-create.
+  const [sandbox, setSandbox] = useState(false);
   const [busy, setBusy] = useState(false);
   // Ref guard against double-submit. React batches setBusy(true) so the
   // button's `disabled` only updates on the next render — but during a
@@ -61,6 +64,10 @@ export function NewWorkspaceDialog() {
     setBase(p?.base_branch || "");
     setCli(p?.default_cli || "claude");
     setPrefix("feature");
+    // Sandbox toggle defaults to whatever the project prefers. The
+    // user can still flip it for THIS workspace - but once Create
+    // fires, the pin is permanent on the Workspace record.
+    setSandbox(!!p?.default_sandbox);
     setPhase("form"); setSetupLog([]); setCreatedWsId(null);
     // CRITICAL: also reset `busy`. On a successful prior creation we
     // intentionally leave busy=true (so the form can't be re-submitted
@@ -136,6 +143,7 @@ export function NewWorkspaceDialog() {
         cli,
         base_branch: base.trim() || null,
         branch: branch.trim(),
+        sandbox_enabled: sandbox,
       });
       await loadAll();
       setPhase("setup");
@@ -224,6 +232,23 @@ export function NewWorkspaceDialog() {
 
         <Field label="Branch from" hint="Blank = repo default.">
           <Input value={base} onChange={e => setBase(e.target.value)} placeholder="origin/master" />
+        </Field>
+
+        {/* Sandbox toggle. macOS-only feature; on other OSes it's a
+            no-op (Rust will spawn unsandboxed). The choice IS PERMANENT
+            once Create is clicked — to change, archive + recreate. */}
+        <Field label="Sandbox" hint="Restrict filesystem writes + HTTPS to an allowlist. Pinned at creation - archive + recreate to change.">
+          <label className="inline-flex cursor-pointer items-center gap-2 select-none">
+            <input
+              type="checkbox"
+              checked={sandbox}
+              onChange={e => setSandbox(e.target.checked)}
+              className="h-4 w-4 accent-[var(--color-accent)]"
+            />
+            <span className="text-[13px] text-[var(--color-fg-dim)]">
+              {sandbox ? "Sandboxed (seatbelt + per-project allowed hosts)" : "Unsandboxed (default)"}
+            </span>
+          </label>
         </Field>
 
         {err && <p className="text-[13.5px] text-[var(--color-err)]">{err}</p>}

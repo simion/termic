@@ -16,6 +16,20 @@ export interface Project {
   archive_script: string;
   default_cli: string;
   created: string;
+  /** When true, the "New workspace" dialog pre-checks its sandbox toggle.
+   *  Existing workspaces aren't re-evaluated - their sandbox pin is
+   *  captured at creation and immutable thereafter. */
+  default_sandbox?: boolean;
+  /** Extra writable subpaths added to the seatbelt profile, on top of
+   *  the workspace path + agent config dirs + TMPDIR baked into the
+   *  default. `$HOME` and `$WORKSPACE` are substituted at render time. */
+  sandbox_rw_paths?: string[];
+  /** Extra deny carve-outs on top of the secret-default list
+   *  (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.kube, Keychains, …). */
+  sandbox_deny_paths?: string[];
+  /** Extra POSIX-regex hostname allowlist entries appended to the
+   *  per-CLI defaults the proxy enforces. Format mirrors tinyproxy. */
+  sandbox_allowed_hosts?: string[];
 }
 
 export interface Workspace {
@@ -41,6 +55,11 @@ export interface Workspace {
    *  worktrees with no real conversation don't waste spawns on a
    *  doomed resume attempt. Flipped false on a confirmed failure. */
   has_resumable_history?: boolean;
+  /** PINNED at creation. Driven by NewWorkspaceDialog (defaulting to
+   *  the project's `default_sandbox`). There is no setter - to flip
+   *  it, archive the workspace and recreate. The UI shows a lock
+   *  badge on sandboxed rows. */
+  sandbox_enabled?: boolean;
 }
 
 export interface CreateWorkspaceArgs {
@@ -54,6 +73,10 @@ export interface CreateWorkspaceArgs {
    *  alternative (using server-generated ID returned from the call) has a
    *  guaranteed race for empty setup scripts. */
   id?: string;
+  /** Sandbox pin captured at creation. When undefined the Rust side
+   *  falls back to the project's `default_sandbox`. The pin is
+   *  permanent - flip via archive + recreate, never via mutation. */
+  sandbox_enabled?: boolean;
 }
 
 export interface Agent {

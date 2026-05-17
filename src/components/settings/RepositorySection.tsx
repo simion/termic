@@ -200,6 +200,73 @@ export function RepositorySection({ projectId }: { projectId: string }) {
         />
       </div>
 
+      {/* ── Sandbox ────────────────────────────────────────────────
+          Configured here (per-project), pinned per-workspace at
+          creation. Defaults (RW paths, deny carve-outs, allowed
+          hosts per CLI) are baked into Rust; these are the
+          per-project extras. Disabling the project default doesn't
+          affect existing workspaces - their pin is permanent. */}
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <h2 className="text-[16px] font-medium">Sandbox</h2>
+        <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
+          When a workspace is sandboxed, the agent runs under macOS seatbelt: writes are restricted to the worktree + caches, HTTPS goes through a per-workspace tinyproxy filtered against the allowlist below. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, Keychains, …) are always denied.
+        </p>
+
+        <div className="mt-4 flex flex-col gap-5">
+          <label className="inline-flex cursor-pointer items-center gap-2 select-none">
+            <input
+              type="checkbox"
+              checked={!!draft.default_sandbox}
+              onChange={(e) => patch("default_sandbox", e.target.checked as any)}
+              className="h-4 w-4 accent-[var(--color-accent)]"
+            />
+            <span className="text-[13.5px] font-medium">Sandbox new workspaces by default</span>
+          </label>
+
+          <Field
+            label="Extra writable paths"
+            hint={"One per line. $HOME and $WORKSPACE substituted at spawn. Workspace path + ~/.claude / ~/.gemini / ~/.codex / ~/.npm / ~/.cache / TMPDIR are always allowed."}
+            control={
+              <textarea
+                value={(draft.sandbox_rw_paths ?? []).join("\n")}
+                onChange={(e) => patch("sandbox_rw_paths", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
+                rows={3}
+                placeholder={"$HOME/.config/myproject\n/opt/homebrew/var/myproject"}
+                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+              />
+            }
+          />
+
+          <Field
+            label="Extra denied paths"
+            hint="One per line. On top of the built-in secret deny list."
+            control={
+              <textarea
+                value={(draft.sandbox_deny_paths ?? []).join("\n")}
+                onChange={(e) => patch("sandbox_deny_paths", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
+                rows={2}
+                placeholder="$HOME/private-notes"
+                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+              />
+            }
+          />
+
+          <Field
+            label="Extra allowed hosts"
+            hint={"POSIX regex, one per line. Matches hostname. Defaults already cover the workspace's CLI vendor, GitHub, npm, pypi, crates.io."}
+            control={
+              <textarea
+                value={(draft.sandbox_allowed_hosts ?? []).join("\n")}
+                onChange={(e) => patch("sandbox_allowed_hosts", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
+                rows={4}
+                placeholder={"^.+\\.mycompany\\.com$\n^bitbucket\\.org$"}
+                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+              />
+            }
+          />
+        </div>
+      </div>
+
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <h2 className="text-[16px] font-medium">Scripts</h2>
         <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">

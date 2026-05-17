@@ -6,7 +6,7 @@ import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Check, Bug, Mail } from "lucide-react";
+import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Check, Bug, Mail, Shield } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
@@ -344,6 +344,17 @@ export function Sidebar() {
                                 )}>
                                   repo
                                 </span>
+                              )}
+                              {/* Sandboxed badge - visible state that this
+                                  workspace's agent runs under seatbelt +
+                                  the project's allowed-hosts proxy. The pin
+                                  is permanent; the badge is informational. */}
+                              {w.sandbox_enabled && (
+                                <Tip content="Sandboxed - filesystem + network restricted by project config">
+                                  <span className="shrink-0 text-[var(--color-ok)] opacity-80">
+                                    <Shield className="h-3.5 w-3.5" />
+                                  </span>
+                                </Tip>
                               )}
                               {/* Work-done check — small accent ✓ when the
                                   agent has settled (output stopped). Gated

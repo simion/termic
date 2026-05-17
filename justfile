@@ -31,6 +31,12 @@ setup:
     else \
         echo "  ✓ node present ($(node --version))"; \
     fi; \
+    echo "→ Checking tinyproxy (per-workspace HTTPS allowlist for sandboxed agents)"; \
+    if ! command -v tinyproxy >/dev/null 2>&1; then \
+        echo "  installing tinyproxy"; brew install tinyproxy; \
+    else \
+        echo "  ✓ tinyproxy present"; \
+    fi; \
     echo "→ Installing npm packages"; \
     npm install; \
     echo "→ Pre-fetching Rust crate index (cargo check)"; \
@@ -56,6 +62,7 @@ doctor:
     check brew brew --version; \
     check rust cargo --version; \
     check node node --version; \
+    if command -v tinyproxy >/dev/null 2>&1; then echo "  ✓ tinyproxy present"; else echo "  ✗ tinyproxy missing (sandboxed workspaces will spawn with full network deny — run: just setup)"; fi; \
     if [ -d node_modules ]; then echo "  ✓ node_modules present"; else echo "  ✗ node_modules missing (run: npm install)"; fail=1; fi; \
     if [ $fail -eq 0 ]; then echo ""; echo "✓ Dev env looks good."; else echo ""; echo "✗ Run 'just setup' to fix."; exit 1; fi
 

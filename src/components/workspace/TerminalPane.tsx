@@ -177,6 +177,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
             // explicit theme env; we set both for belt-and-braces.
             COLORFGBG: currentColorFgBg(),
           },
+          // Rust consults ws.sandbox_enabled. Passing the id is harmless
+          // when sandbox is off; Rust just spawns the cmd directly.
+          workspace_id: ws.id,
           rows, cols,
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }

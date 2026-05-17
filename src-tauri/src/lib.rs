@@ -30,6 +30,9 @@ use std::thread;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+mod sandbox;
+use sandbox::SandboxBundle;
+
 // ───────────────────────────── data model ─────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -48,6 +51,29 @@ pub struct Project {
     pub archive_script: String,
     pub default_cli: String,
     pub created: String,
+
+    // ── Sandbox config (configured per project, enabled per workspace) ──
+    /// Whether new workspaces in this project default to sandboxed. The
+    /// "New workspace" dialog pre-checks its sandbox toggle when true.
+    /// The per-workspace pin is captured at create time; flipping this
+    /// later only affects FUTURE workspaces.
+    #[serde(default)]
+    pub default_sandbox: bool,
+    /// Extra writable subpaths beyond the bake-in defaults (workspace
+    /// path, agent config dirs, /private/tmp). Absolute paths; `$HOME`
+    /// and `$WORKSPACE` are substituted at render time. List, not a
+    /// single string — keeps the SBPL output one rule per line.
+    #[serde(default)]
+    pub sandbox_rw_paths: Vec<String>,
+    /// Extra deny carve-outs beyond the secret-default list. Same
+    /// substitution rules as `sandbox_rw_paths`.
+    #[serde(default)]
+    pub sandbox_deny_paths: Vec<String>,
+    /// Extra allowed-host regexes for the per-workspace tinyproxy filter,
+    /// beyond the per-CLI defaults. Format mirrors tinyproxy's filter
+    /// file (one POSIX regex per line, matched against hostname).
+    #[serde(default)]
+    pub sandbox_allowed_hosts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -87,6 +113,12 @@ pub struct Workspace {
     /// the next spawn doesn't waste a roundtrip retrying.
     #[serde(default)]
     pub has_resumable_history: bool,
+    /// PINNED at workspace creation. The sandbox decision can't change
+    /// afterwards — otherwise an agent could talk the user into
+    /// loosening its own cage. To run the same project unsandboxed,
+    /// archive and recreate with the toggle off (or vice versa).
+    #[serde(default)]
+    pub sandbox_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,6 +136,12 @@ pub struct CreateWorkspaceArgs {
     /// Defaults to a server-side UUID for backwards-compat.
     #[serde(default)]
     pub id: Option<String>,
+    /// Sandbox the agent for this workspace. PINNED at creation —
+    /// `sandbox_enabled` is copied straight onto the saved Workspace
+    /// and never gets a setter. If unset, the per-project default
+    /// (`Project.default_sandbox`) wins.
+    #[serde(default)]
+    pub sandbox_enabled: Option<bool>,
 }
 
 // ───────────────────────────── paths ─────────────────────────────
@@ -212,6 +250,11 @@ struct PtySlot {
     // (which holds the Child for the duration of wait()). Holding a shared
     // Mutex<Child> here would deadlock pty_kill against the waiter.
     child_pid: Option<u32>,
+    /// Sandbox bundle for this PTY, if the workspace was sandbox-enabled.
+    /// Dropping the bundle SIGKILLs the tinyproxy child and (we let TMPDIR
+    /// expire for the profile / filter / log files - they're tiny and
+    /// useful for post-mortem). `None` for unsandboxed PTYs.
+    sandbox: Option<SandboxBundle>,
 }
 
 #[derive(Default)]
@@ -236,6 +279,14 @@ pub struct SpawnArgs {
     pub rows: u16,
     #[serde(default = "default_cols")]
     pub cols: u16,
+    /// When present, the frontend is asking us to wrap the spawn in
+    /// the workspace's sandbox (seatbelt + per-workspace tinyproxy).
+    /// We look up the workspace, refuse to sandbox if its
+    /// `sandbox_enabled` is false, and proceed unsandboxed if the
+    /// workspace can't be found (e.g. transient race). The PTY id
+    /// returned is the same shape either way.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 fn default_rows() -> u16 { 40 }
 fn default_cols() -> u16 { 120 }
@@ -256,8 +307,41 @@ fn pty_spawn(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new(&args.cmd);
-    for a in &args.args {
+    // ── Sandbox wrap, if applicable ────────────────────────────────
+    // If the workspace is flagged sandbox_enabled, provision a fresh
+    // seatbelt profile + tinyproxy and rewrite (cmd, args) to go through
+    // `sandbox-exec`. The bundle gets parked on the PtySlot so its
+    // Drop impl SIGKILLs the proxy when the PTY closes.
+    let (effective_cmd, effective_args, sandbox_bundle) = match args
+        .workspace_id
+        .as_deref()
+        .and_then(|wid| load_workspaces().into_iter().find(|w| w.id == wid))
+        .filter(|w| w.sandbox_enabled)
+    {
+        Some(ws) => {
+            // Resolve the workspace's project so we can pick up extra
+            // RW/deny paths + allowed hosts. If the project's gone the
+            // safest fall-back is "sandbox with built-in defaults only."
+            let proj = load_projects()
+                .into_iter()
+                .find(|p| p.id == ws.project_id)
+                .unwrap_or_default();
+            match sandbox::provision(&ws, &proj) {
+                Ok(bundle) => {
+                    let (c, a) = sandbox::wrap_command(&bundle, &args.cmd, &args.args);
+                    (c, a, Some(bundle))
+                }
+                Err(e) => {
+                    eprintln!("[pty_spawn] sandbox provision failed, spawning unsandboxed: {e}");
+                    (args.cmd.clone(), args.args.clone(), None)
+                }
+            }
+        }
+        None => (args.cmd.clone(), args.args.clone(), None),
+    };
+
+    let mut cmd = CommandBuilder::new(&effective_cmd);
+    for a in &effective_args {
         cmd.arg(a);
     }
     cmd.cwd(&args.cwd);
@@ -315,7 +399,7 @@ fn pty_spawn(
 
     state.inner.lock().insert(
         id.clone(),
-        PtySlot { writer, master, child_pid },
+        PtySlot { writer, master, child_pid, sandbox: sandbox_bundle },
     );
 
     Ok(id)
@@ -427,6 +511,14 @@ fn project_add(root_path: String) -> Result<Project, String> {
         archive_script: String::new(),
         default_cli: "claude".into(),
         created: chrono::Utc::now().to_rfc3339(),
+        // Sandbox defaults: OFF for new projects. Users opt in via
+        // Settings → Repositories. When ON, the built-in RW/deny/host
+        // sets in sandbox.rs already cover the common cases; the per-
+        // project Vec fields are for project-specific extras.
+        default_sandbox: false,
+        sandbox_rw_paths: Vec::new(),
+        sandbox_deny_paths: Vec::new(),
+        sandbox_allowed_hosts: Vec::new(),
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -527,6 +619,11 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
         is_repo_root: true,
         spawn_count: 0,
         has_resumable_history: false,
+        // Opening the repo itself never gets sandboxed - the user is
+        // explicitly opting into one-off work in their main checkout,
+        // and sandbox-fenced edits there would be more surprising than
+        // helpful. Sandboxing always rides on a fresh worktree.
+        sandbox_enabled: false,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -622,6 +719,10 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     // Use the client-supplied ID if present so the frontend can listen on
     // `setup-{output,done}://<id>` BEFORE invoking — eliminates the
     // empty-script race that made the "Running setup script…" spinner hang.
+    // Resolve sandbox pin: explicit arg wins; otherwise project default.
+    // This is the ONLY place sandbox_enabled gets written. No setter
+    // anywhere - by design.
+    let sandbox_enabled = args.sandbox_enabled.unwrap_or(proj.default_sandbox);
     let ws = Workspace {
         id: args.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         project_id: proj.id.clone(),
@@ -636,6 +737,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         is_repo_root: false,
         spawn_count: 0,
         has_resumable_history: false,
+        sandbox_enabled,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 

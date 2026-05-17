@@ -57,6 +57,11 @@ export interface SpawnArgs {
   env?: Record<string, string>;
   rows: number;
   cols: number;
+  /** When set, Rust looks up the workspace and wraps the spawn in its
+   *  sandbox (seatbelt + per-workspace tinyproxy) iff the workspace
+   *  was created with sandbox_enabled. Omit for agent-less PTYs
+   *  (e.g. AuxTerminal scratch shell) - those never get sandboxed. */
+  workspace_id?: string;
 }
 
 export const ptySpawn  = (a: SpawnArgs) => invoke<string>("pty_spawn", { args: a });
