@@ -1,125 +1,168 @@
+<div align="center">
+
 # termic
 
-Tauri GUI orchestrator for parallel coding-agent sessions, each in its own
-**Ghostty** terminal window. Reproduces the core termic.dev UX:
+**Run `claude`, `gemini`, and `codex` side by side — each in its own git worktree.**
 
-- 1 task = 1 git worktree + 1 branch + 1 agent (claude / gemini / codex)
-- Each task gets its own Ghostty window, titled `dpf:<task-name>`
-- The Tauri GUI shows the task list and lets you create / focus / diff / land / drop
-- Task state is detected by querying Ghostty via AppleScript
+[![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
+[![macOS 12+](https://img.shields.io/badge/macOS-12%2B-d97757)](https://github.com/simion/termic/releases/latest)
+[![termic.dev](https://img.shields.io/badge/website-termic.dev-d97757)](https://termic.dev)
 
-Sibling project to `~/Work/Opt/dpf_agents` — when present, agents launch
-through `dpf_agents/lib/bin/sandbox-cli` (sandboxed). Otherwise unsandboxed.
+Free, open-source desktop app for running AI coding-agent CLIs in parallel,
+each in an isolated git worktree, with an optional macOS sandbox cage per
+workspace.
 
-## Run / build
+[Install](#install) · [What it does](#what-it-does) · [Sandbox](#sandbox) · [Contributing](./CONTRIBUTING.md)
 
-```sh
-cd ~/Work/Opt/termic
+</div>
 
-# dev mode (live reload of frontend; Rust rebuilds on save)
-npm run tauri dev          # or: just dev
+---
 
-# release build → src-tauri/target/release/bundle/macos/termic.app
-# `prebuild` runs scripts/fetch-deps.sh to copy /Applications/Ghostty.app
-# into src-tauri/vendor/ so it's embedded inside the .app bundle.
-npm run tauri build        # or: just build
-```
+## Install
 
-## Embedded dependencies
-
-The release bundle is **self-contained**. `npm run tauri build` invokes
-`scripts/fetch-deps.sh` first, which populates `src-tauri/vendor/` with:
-
-| Item | Source | Bundled at | Size |
-|---|---|---|---|
-| `Ghostty.app` | `/Applications/Ghostty.app` (or upstream dmg) | `Contents/Resources/_up_/vendor/Ghostty.app` inside `termic.app` | ~62 MB |
-
-`vendor/` is **gitignored**; the script repopulates it before each build.
-
-At runtime, `ghostty_app_path()` resolves in this order:
-1. `/Applications/Ghostty.app` if present (use the user's install — respects their config / fonts / themes)
-2. `<termic.app>/Contents/Resources/vendor/Ghostty.app` (the bundled fallback — works on a fresh machine)
-3. Error toast if neither exists
-
-This means: users with Ghostty already installed get their own configured terminal; users without Ghostty still have a working app because Ghostty was bundled.
-
-To also embed `gh`:
+The recommended path is Homebrew + the official tap:
 
 ```sh
-./scripts/fetch-deps.sh all      # ghostty + gh
+brew install --cask simion/termic/termic
 ```
 
-(Plus a corresponding entry in `tauri.conf.json` `bundle.resources` — currently only Ghostty is wired.)
+That single command auto-taps `simion/homebrew-termic`, downloads the
+latest `.dmg`, installs `termic.app` into `/Applications`, and pulls
+`tinyproxy` as a dependency (used by the per-workspace network sandbox).
+No Gatekeeper warning — the tap is configured to bypass it.
 
-## How it works
+Updates: Termic ships with a self-updater. When a new release lands you'll
+see an **Update X.Y.Z** pill in the top-right of the toolbar; click it
+to download + verify + relaunch. To check manually:
 
-| Concern | Mechanism |
-|---|---|
-| Spawn a window | `open -na Ghostty.app --args --working-directory=… --title=dpf:<name> -e bash -lc 'env; exec <cli>'` |
-| Focus a window | `osascript`: `tell application "Ghostty" … set index of w to 1 …` |
-| Detect alive | AppleScript loops windows, returns `true`/`false` for name match |
-| Close on drop | AppleScript `close w` on the matching window |
-| State storage | `~/Library/Application Support/termic/tasks/<name>.json` |
-| Worktree location | `~/Library/Application Support/termic/worktrees/<repo>__<task>/` |
-| Sandboxed launch | `dpf_agents/lib/bin/sandbox-cli <cli>` if path exists, else `<cli>` directly |
-| Per-task env | `TERMIC_PORT`, `TERMIC_TASK`, `TERMIC_WORKSPACE_NAME` |
-
-## Why Ghostty (not xterm.js in the webview)
-
-Three options were considered:
-- **libghostty embedded** — months-away alpha (only the VT parser is in libghostty-vt today; not a paneable widget). Out for now.
-- **Ghostty as child process per task** ← chosen — native terminal, full Ghostty config, zero embedding work. Each task = a real OS window.
-- xterm.js in the webview — works but loses Ghostty (font rendering, GPU, themes).
-
-Trade-off: tasks live in OS windows, not embedded in the GUI. You see the
-control plane in the termic window and switch to the agent's Ghostty
-window via the Focus button (or just ⌘+Tab).
-
-## Layout
-
-```
-termic/
-├── src/                     # frontend (vanilla HTML/JS/CSS)
-│   ├── index.html
-│   ├── main.js
-│   └── styles.css
-├── src-tauri/
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   ├── capabilities/default.json
-│   └── src/lib.rs           # all Tauri commands + Ghostty integration
-├── justfile
-├── package.json
-└── README.md
+```sh
+brew upgrade --cask termic
 ```
 
-## Tauri commands exposed
+### Direct download
 
-| command | args | purpose |
+`.dmg`, `.app.tar.gz`, and the ed25519 signature for each version live at
+the [Releases](https://github.com/simion/termic/releases) page. First
+launch may show the "unidentified developer" Gatekeeper prompt — right-click
+the app → Open, or strip the quarantine attribute:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/termic.app
+```
+
+### Build from source
+
+```sh
+git clone https://github.com/simion/termic
+cd termic
+make setup          # brew/rust/node/tinyproxy + npm install + cargo check
+make dev            # vite HMR + Rust auto-rebuild
+make run            # build, install to /Applications, launch
+```
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full dev guide.
+
+---
+
+## What it does
+
+Termic is a control plane for **interactive CLI coding agents** — the ones
+you type into in a terminal: `claude`, `gemini`, `codex`. It does NOT use
+their respective SDKs (which bill against a separate credit pool as of
+[June 2026](https://thenewstack.io/anthropic-agent-sdk-credits/)); it
+spawns the same binaries you'd run in iTerm and rides on your existing
+Pro / Max subscription.
+
+The product surface:
+
+- **One window, many workspaces.** Each workspace is a git worktree under
+  `~/termic/workspaces/<project>/<name>/`, branched off your default. Tabs
+  per workspace let you run multiple agents against the same branch.
+- **Real PTYs.** Agents render in xterm.js + WebGL exactly as they would
+  in your shell: animations, slash-commands, `/resume` pickers, bell, bold.
+- **Diff + edit in-app.** Built-in CodeMirror 6 editor + git-diff-vs-HEAD
+  viewer per workspace. "Send to main" pushes the worktree's diff into the
+  parent checkout for you to commit / PR there.
+- **Per-CLI configuration.** Settings → Agents is a small editable registry:
+  override the binary path, args, YOLO flags, runtime YOLO command. Claude,
+  Gemini, Codex are the defaults; add your own.
+- **Seven themes** (System / Light / Dark / Solarized Dark / Cobalt 2 /
+  Matrix), each one re-themes both the app chrome AND the xterm pane.
+
+---
+
+## Sandbox
+
+Optional per-workspace macOS Seatbelt (`sandbox-exec`) + per-workspace
+`tinyproxy` cage. Configured per project, pinned per workspace at creation
+(editable later from the workspace's Shield icon), enforced from the
+moment the agent spawns.
+
+The cage:
+
+- **Writes restricted** to the worktree, agent config dirs (`~/.claude`,
+  `~/.gemini`, `~/.codex`), package caches (`~/.npm`, `~/.cache`,
+  `~/.cargo/registry`), and TMPDIR. Always-denied: `~/.ssh`, `~/.aws`,
+  `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, Keychains.
+- **Network restricted** via `tinyproxy` with a regex allowlist. Per-CLI
+  vendor APIs (anthropic / google / openai) + GitHub + npmjs + PyPI +
+  crates.io baked in. Add custom hosts per project.
+- **YOLO auto-on inside the cage.** The seatbelt profile IS the security
+  boundary, so the agent's own permission prompts are skipped. The toolbar
+  lightning icon turns red when YOLO is on *without* a sandbox (intentional
+  danger signal — agents can `rm -rf $HOME` at that point).
+
+For the full sandbox design — including the recent-denies debug panel,
+the auto-restart-on-edit flow, and the tinyproxy bundling story — see
+[CLAUDE.md](./CLAUDE.md) §"Sandbox".
+
+---
+
+## Status
+
+- **Platform:** macOS 12+ (Monterey or later).
+- **Architecture:** Apple Silicon (arm64) only at v0.1.x. Intel + Linux +
+  Windows in the roadmap — the underlying stack (Tauri 2, portable-pty,
+  xterm.js) supports them, just need CI matrix entries.
+- **Sandbox:** macOS-only (`sandbox-exec` is Apple's thing). Disabled
+  silently on other platforms when they ship.
+
+---
+
+## Why use Termic over Conductor / Cursor / Cline?
+
+The honest pitch:
+
+| | Termic | Conductor / Mux / etc. |
 |---|---|---|
-| `cmd_repos` | – | enumerate repos under `~/Work/Opt/dpf_agents/repos/` and `~/Work/Repos/` |
-| `cmd_list` | – | list all tasks |
-| `cmd_new` | `repo, name, cli?, base?` | create worktree + branch + spawn Ghostty |
-| `cmd_focus` | `name` | bring task's Ghostty window to front |
-| `cmd_diff` | `name` | `git log` + `git diff --stat` + full diff vs base |
-| `cmd_land` | `name, mode` | `pr` (gh pr create --fill --draft) or `merge` (local --no-ff) |
-| `cmd_drop` | `name` | close window, remove worktree, delete merged branch |
-| `cmd_alive` | `name` | true if task's Ghostty window is still open |
+| **Bills against** | your existing Pro/Max | the new $200 credit pool (varies by plan) |
+| **Underlying engine** | spawns the real CLI in a PTY | wraps the Claude Agent SDK |
+| **License** | AGPL-3.0, open source | mostly proprietary |
+| **New CLI features** | available the day the CLI ships them | wait for the SDK + wrapper to catch up |
+| **Sandbox** | optional, per-workspace, kernel-enforced | varies |
 
-## Requirements
+If you already pay for a Claude Pro / Max plan, Termic spawns the same
+`claude` binary that plan covers — no separate metered usage, no
+per-token markup. The agent and Anthropic still see the same auth they'd
+see in iTerm.
 
-**To build:**
-- macOS (uses AppleScript and `open -na Ghostty.app`)
-- Rust (rustup) — `cargo check` succeeds with `rustc 1.95+`
-- Node.js 20+ (for the Tauri CLI)
-- Ghostty in `/Applications/` at build time so `fetch-deps.sh` can copy it (or use the upstream-dmg fallback in the script)
-- `gh` CLI if you want PR-mode landing
+---
 
-**To run the bundled .app:**
-- macOS 12+
-- Nothing else — Ghostty is embedded.
+## License
 
-**Status:**
-- ✅ Backend compiles cleanly (release profile, 0 warnings — `cargo check --release` passes)
-- ✅ Ghostty spawn verified via `open -na Ghostty.app --args -e …`
-- ⏳ Not yet visually tested — `npm run tauri dev` to confirm the UI
+[AGPL-3.0-or-later](./LICENSE). Fork it, modify it, build a derivative —
+the only string is that derivatives stay AGPL too. The "open core that
+quietly went proprietary" pattern can't happen with this license, which
+is most of the point.
+
+---
+
+## Links
+
+- **Website:** [termic.dev](https://termic.dev)
+- **Issues:** [github.com/simion/termic/issues](https://github.com/simion/termic/issues)
+- **Releases:** [github.com/simion/termic/releases](https://github.com/simion/termic/releases)
+- **Homebrew tap:** [github.com/simion/homebrew-termic](https://github.com/simion/homebrew-termic)
+- **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md)
+- **Architecture notes (for hackers + AI agents working in this repo):** [CLAUDE.md](./CLAUDE.md)
