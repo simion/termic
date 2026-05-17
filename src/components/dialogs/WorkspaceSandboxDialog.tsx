@@ -124,8 +124,14 @@ export function WorkspaceSandboxDialog() {
       onOpenChange={(v) => { if (!v && !busy) close(); }}
       title={ws ? `Sandbox · ${ws.name}` : "Sandbox"}
       description="Restrict what the agent in this workspace can read, write, and reach."
+      // Wider than the default max-w-md so the textareas don't get
+      // squeezed into a column. Cap height to the viewport so the
+      // body scrolls when content overflows (sandbox dialog has more
+      // sections than other dialogs - editors, denies panel, test
+      // panel, restart warning all stack up).
+      className="max-w-2xl max-h-[85vh] overflow-hidden"
     >
-      <div className="flex flex-col gap-5">
+      <div className="flex max-h-[calc(85vh-7rem)] flex-col gap-5 overflow-y-auto pr-1">
         {/* Live-on switch. Toggling this off doesn't loosen anything
             you can't already do unsandboxed - it just rips the cage. */}
         <label className="inline-flex cursor-pointer items-center gap-2 select-none">
