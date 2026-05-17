@@ -141,19 +141,44 @@ export function WorkspaceSandboxDialog() {
       className="max-w-2xl max-h-[85vh] overflow-hidden"
     >
       <div className="flex max-h-[calc(85vh-7rem)] flex-col gap-5 overflow-y-auto pr-1">
-        {/* Live-on switch. Toggling this off doesn't loosen anything
-            you can't already do unsandboxed - it just rips the cage. */}
-        <label className="inline-flex cursor-pointer items-center gap-2 select-none">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={e => setEnabled(e.target.checked)}
-            className="h-4 w-4 accent-[var(--color-accent)]"
-          />
-          <span className="text-[13.5px] font-medium">
-            {enabled ? "Sandboxed (seatbelt + allowed-hosts proxy)" : "Unsandboxed"}
-          </span>
-        </label>
+        {/* On/off panel. Big, color-coded, unambiguous - the prior
+            "Unsandboxed" checkbox was a double-negative trap: users
+            saw the box checked and assumed the cage was ON. State now
+            reads from the color band (green = caged, red = open) and
+            the verb on the action button ("Disable" vs "Enable"). */}
+        <div
+          className={
+            "flex items-center justify-between gap-4 rounded-md border px-4 py-3 " +
+            (enabled
+              ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10"
+              : "border-[var(--color-err)]/40 bg-[var(--color-err)]/10")
+          }
+        >
+          <div className="flex items-center gap-3">
+            <Shield
+              className={
+                "h-5 w-5 " +
+                (enabled ? "text-[var(--color-ok)]" : "text-[var(--color-err)]")
+              }
+            />
+            <div className="flex flex-col">
+              <span className="text-[14px] font-semibold text-[var(--color-fg)]">
+                Sandbox is {enabled ? "ON" : "OFF"}
+              </span>
+              <span className="text-[12px] text-[var(--color-fg-dim)]">
+                {enabled
+                  ? "Agent runs under seatbelt + allowed-hosts proxy."
+                  : "Agent has full filesystem + network access."}
+              </span>
+            </div>
+          </div>
+          <Button
+            variant={enabled ? "ghost" : "primary"}
+            onClick={() => setEnabled(!enabled)}
+          >
+            {enabled ? "Disable" : "Enable sandbox"}
+          </Button>
+        </div>
 
         {/* YOLO trade-off note. Sandboxed agents auto-skip their own
             permission prompts because the seatbelt is the real boundary -
@@ -236,9 +261,9 @@ export function WorkspaceSandboxDialog() {
           <textarea
             value={rwText}
             onChange={e => setRwText(e.target.value)}
-            rows={3}
+            rows={2}
             placeholder={"$HOME/.config/myproject\n/opt/homebrew/var/myproject"}
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+            className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
             disabled={!enabled}
           />
         </Field>
@@ -248,7 +273,7 @@ export function WorkspaceSandboxDialog() {
             onChange={e => setDenyText(e.target.value)}
             rows={2}
             placeholder="$HOME/private-notes"
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+            className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
             disabled={!enabled}
           />
         </Field>
@@ -256,9 +281,9 @@ export function WorkspaceSandboxDialog() {
           <textarea
             value={hostsText}
             onChange={e => setHostsText(e.target.value)}
-            rows={4}
+            rows={2}
             placeholder={"^.+\\.mycompany\\.com$\n^bitbucket\\.org$"}
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+            className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
             disabled={!enabled}
           />
         </Field>
