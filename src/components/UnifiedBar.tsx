@@ -16,6 +16,7 @@ import {
   Sun, Moon, Monitor, Zap, ArrowUpToLine, Sunrise, Droplet, Binary,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { openPath, workspaceRunScript, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -100,6 +101,10 @@ export function UnifiedBar() {
         {/* Theme picker — Radix dropdown opens on hover (and click).
             Three explicit options, never silently cycles. */}
         <ThemePicker themeMode={themeMode} setThemeMode={setThemeMode} Icon={ThemeIcon} />
+        {/* Self-update pill — only renders when an update is actually
+            available. Sits next to the theme picker so it's findable
+            but not intrusive. */}
+        <UpdaterBanner />
         {/* YOLO visualizes its safety state based on the active workspace's
             sandbox pin:
               - OFF                 → dim gray, neutral tooltip
