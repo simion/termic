@@ -704,10 +704,12 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
         is_repo_root: true,
         spawn_count: 0,
         has_resumable_history: false,
-        // Opening the repo itself never gets sandboxed - the user is
-        // explicitly opting into one-off work in their main checkout,
-        // and sandbox-fenced edits there would be more surprising than
-        // helpful. Sandboxing always rides on a fresh worktree.
+        // Repo-root workspaces start unsandboxed - the user is
+        // opting into one-off work in their main checkout, and a
+        // surprise cage at first launch would obscure that. They
+        // CAN turn the sandbox on later from the dialog (shield
+        // button) - the seatbelt + proxy work identically against
+        // the main checkout as against a worktree.
         sandbox_enabled: false,
         sandbox_rw_paths: Vec::new(),
         sandbox_deny_paths: Vec::new(),
@@ -904,36 +906,26 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
     Ok(w.clone())
 }
 
-/// Update a workspace's sandbox config and SIGKILL any live PTYs of
-/// that workspace so the next mount picks up the new profile. Returns
-/// the count of PTYs that were terminated so the frontend can word the
-/// confirmation accurately ("This will restart 2 agents").
-///
-/// The kill is the security-critical bit: changing the sandbox while
-/// the agent kept running would mean we have a process holding the
-/// OLD profile's permissions, which is the exact thing the sandbox is
-/// supposed to enforce against. SIGKILL is cleaner than SIGTERM here -
-/// we don't want the agent to handle the signal and do anything fancy
-/// before exiting; we want it gone.
-/// Legacy IPC kept so the frontend's "tinyproxy missing" banner code
-/// path no-ops cleanly until the next frontend deploy removes the call.
-/// The native in-process proxy has no external binary dependency, so
-/// availability is always true now.
-#[tauri::command]
-fn sandbox_tinyproxy_available() -> bool {
-    true
-}
-
 /// Newest-first list of macOS Sandbox denials touching the workspace
 /// in the last `minutes` minutes. Used by the WorkspaceSandboxDialog
 /// to surface why `npm install` or whatever silently failed. Returns
 /// an empty list on any error - debugging itself shouldn't fail.
+///
+/// MUST be async + spawn_blocking: `log show` reads the unified log
+/// store which on a busy Mac can take 5-30 SECONDS to scan. Running
+/// this on the IPC handler thread froze the whole window (the WKWebView
+/// event loop runs on the same thread in dev) - this is exactly the
+/// "make heavy IO async" rule from CLAUDE.md.
 #[tauri::command]
-fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
-    let Some(ws) = load_workspaces().into_iter().find(|w| w.id == id) else {
-        return Vec::new();
-    };
-    sandbox::recent_denials(&ws.path, minutes.unwrap_or(10))
+async fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(move || -> Vec<String> {
+        let Some(ws) = load_workspaces().into_iter().find(|w| w.id == id) else {
+            return Vec::new();
+        };
+        sandbox::recent_denials(&ws.path, minutes.unwrap_or(10))
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Self-test the workspace's sandbox: provisions a fresh ephemeral
@@ -976,6 +968,17 @@ async fn workspace_test_sandbox(
     .map_err(|e| e.to_string())?
 }
 
+/// Update a workspace's sandbox config and SIGKILL any live PTYs of
+/// that workspace so the next mount picks up the new profile. Returns
+/// the count of PTYs that were terminated so the frontend can word the
+/// confirmation accurately ("This will restart 2 agents").
+///
+/// The kill is the security-critical bit: changing the sandbox while
+/// the agent kept running would mean we have a process holding the
+/// OLD profile's permissions, which is the exact thing the sandbox is
+/// supposed to enforce against. SIGKILL is cleaner than SIGTERM here -
+/// we don't want the agent to handle the signal and do anything fancy
+/// before exiting; we want it gone.
 #[tauri::command]
 fn workspace_set_sandbox(
     state: State<'_, PtyManager>,
@@ -2147,7 +2150,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_update, project_remove,
             workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
-            sandbox_tinyproxy_available, workspace_recent_denials, workspace_test_sandbox,
+            workspace_recent_denials, workspace_test_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,
