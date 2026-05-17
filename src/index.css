@@ -140,6 +140,28 @@
     color-scheme: dark;
   }
 
+  /* Matrix — phosphor-green-on-black CRT hacker aesthetic. Background
+     is *near* black with a faint green tint (#000800) so the chrome
+     reads as a CRT surface rather than a pure void. All chrome text +
+     borders shift to varying intensities of the same phosphor green;
+     accent is full-intensity #00ff41 (canonical "Matrix green"). */
+  html.matrix {
+    --color-bg:          #000800;
+    --color-bg-1:        #001a08;
+    --color-bg-2:        #002a10;
+    --color-bg-3:        #003a18;
+    --color-fg:          #00ff41;
+    --color-fg-dim:      #00b830;
+    --color-fg-faint:    #006020;
+    --color-border:      #004a20;
+    --color-border-soft: #002a10;
+    --color-hover:       rgba(0, 255, 65, 0.07);
+    --color-sel:         rgba(0, 255, 65, 0.22);
+    --color-accent:      #00ff41;
+    --color-accent-soft: rgba(0, 255, 65, 0.25);
+    color-scheme: dark;
+  }
+
   /* Solarized Dark — Ethan Schoonover's palette (base03/02/01/00 + base0/1).
      We shift the brand accent to solarized orange (#cb4b16) because the
      terracotta clashes with the cool teal of base03; Solarized has its

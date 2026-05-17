@@ -16,10 +16,10 @@ const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
 
-export type ThemeMode = "auto" | "light" | "dark" | "espresso" | "solarized" | "cobalt";
+export type ThemeMode = "auto" | "light" | "dark" | "espresso" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
  *  never returned; it gets mapped to light/dark based on OS preference. */
-export type ResolvedTheme = "light" | "dark" | "espresso" | "solarized" | "cobalt";
+export type ResolvedTheme = "light" | "dark" | "espresso" | "solarized" | "cobalt" | "matrix";
 
 /** xterm theme objects keyed by resolved palette. Each must define enough
  *  of xterm's ITheme that the terminal looks at home in the surrounding
@@ -83,6 +83,22 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     blue:  "#9effff", magenta: "#fb94ff", cyan:    "#80ffbb", white:   "#e1efff",
     brightBlack: "#5a91b1", brightRed:     "#ff7da3", brightGreen:   "#5eea2e", brightYellow:  "#ffd54a",
     brightBlue:  "#b3ffff", brightMagenta: "#ffaaff", brightCyan:    "#a4ffd4", brightWhite:   "#ffffff",
+  },
+  matrix: {
+    // Phosphor-green CRT terminal. ANSI 16 is mostly tinted toward
+    // green so anything `ls --color`-style reads as "in palette," but
+    // red/yellow/blue/magenta stay distinct enough that git log etc.
+    // remain readable - lose all contrast and the theme becomes
+    // novelty-only.
+    background: "#000800",
+    foreground: "#00ff41",
+    cursor: "#00ff41",
+    cursorAccent: "#000800",
+    selectionBackground: "rgba(0,255,65,0.25)",
+    black:   "#001a08", red:     "#ff4d4d", green:   "#00ff41", yellow:  "#d4ff00",
+    blue:    "#00b3ff", magenta: "#ff44dd", cyan:    "#00ffaa", white:   "#c0ffc0",
+    brightBlack:   "#2d4d2d", brightRed:     "#ff6666", brightGreen:   "#6cff6c", brightYellow:  "#e0ff66",
+    brightBlue:    "#66c4ff", brightMagenta: "#ff66ff", brightCyan:    "#66ffcc", brightWhite:   "#ffffff",
   },
 };
 
@@ -413,6 +429,7 @@ export function applyTheme(mode: ThemeMode) {
   html.classList.toggle("espresso",  resolved === "espresso");
   html.classList.toggle("solarized", resolved === "solarized");
   html.classList.toggle("cobalt",    resolved === "cobalt");
+  html.classList.toggle("matrix",    resolved === "matrix");
   // Color-scheme tells the browser to use light/dark form controls +
   // scrollbars. Espresso + Solarized both want dark widgets.
   html.style.colorScheme = resolved === "light" ? "light" : "dark";
