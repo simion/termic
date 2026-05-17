@@ -276,6 +276,11 @@ struct PtySlot {
     /// expire for the profile / filter / log files - they're tiny and
     /// useful for post-mortem). `None` for unsandboxed PTYs.
     sandbox: Option<SandboxBundle>,
+    /// Workspace this PTY belongs to, copied from `SpawnArgs.workspace_id`.
+    /// Lets `workspace_set_sandbox` SIGKILL all PTYs of a workspace whose
+    /// sandbox config was just edited so the next mount picks up the new
+    /// profile. `None` for non-workspace PTYs (none today; future-proof).
+    workspace_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -411,7 +416,13 @@ fn pty_spawn(
 
     state.inner.lock().insert(
         id.clone(),
-        PtySlot { writer, master, child_pid, sandbox: sandbox_bundle },
+        PtySlot {
+            writer,
+            master,
+            child_pid,
+            sandbox: sandbox_bundle,
+            workspace_id: args.workspace_id.clone(),
+        },
     );
 
     Ok(id)
@@ -829,6 +840,58 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
     w.cli = cli;
     save_workspace(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
+}
+
+/// Update a workspace's sandbox config and SIGKILL any live PTYs of
+/// that workspace so the next mount picks up the new profile. Returns
+/// the count of PTYs that were terminated so the frontend can word the
+/// confirmation accurately ("This will restart 2 agents").
+///
+/// The kill is the security-critical bit: changing the sandbox while
+/// the agent kept running would mean we have a process holding the
+/// OLD profile's permissions, which is the exact thing the sandbox is
+/// supposed to enforce against. SIGKILL is cleaner than SIGTERM here -
+/// we don't want the agent to handle the signal and do anything fancy
+/// before exiting; we want it gone.
+#[tauri::command]
+fn workspace_set_sandbox(
+    state: State<'_, PtyManager>,
+    id: String,
+    enabled: bool,
+    rw_paths: Vec<String>,
+    deny_paths: Vec<String>,
+    allowed_hosts: Vec<String>,
+) -> Result<usize, String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    w.sandbox_enabled = enabled;
+    w.sandbox_rw_paths = rw_paths;
+    w.sandbox_deny_paths = deny_paths;
+    w.sandbox_allowed_hosts = allowed_hosts;
+    save_workspace(w).map_err(|e| e.to_string())?;
+
+    // Find + SIGKILL every live PTY belonging to this workspace. We
+    // hold the manager lock only long enough to collect (id, pid)
+    // pairs - kill(2) outside the lock so a slow signal can't stall
+    // unrelated PTY ops.
+    let victims: Vec<(String, Option<u32>)> = {
+        let map = state.inner.lock();
+        map.iter()
+            .filter(|(_, slot)| slot.workspace_id.as_deref() == Some(&id))
+            .map(|(pty_id, slot)| (pty_id.clone(), slot.child_pid))
+            .collect()
+    };
+    let count = victims.len();
+    for (pty_id, pid) in victims {
+        if let Some(p) = pid {
+            unsafe { libc::kill(p as i32, libc::SIGKILL); }
+        }
+        // The waiter thread cleans up the slot after wait() returns;
+        // we don't preemptively remove the entry here to avoid a
+        // race with the per-PTY emit thread.
+        let _ = pty_id;
+    }
+    Ok(count)
 }
 
 /// Increment + persist the workspace's `spawn_count`. Historical metric
@@ -1942,7 +2005,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_update, project_remove,
-            workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli,
+            workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,

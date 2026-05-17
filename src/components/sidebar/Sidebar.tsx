@@ -385,6 +385,22 @@ export function Sidebar() {
                         {!compact && !isRenaming && (
                           // Trailing actions only — moon moved next to the name.
                           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                            {/* Edit sandbox: only on regular worktrees (the
+                                repo-root pseudo-workspace doesn't sandbox).
+                                Saves SIGKILL any running agent for this ws -
+                                dialog warns + the existing Restart overlay
+                                lets the user relaunch under the new profile. */}
+                            {!w.is_repo_root && (
+                              <Tip content="Edit sandbox">
+                                <button
+                                  className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100 transition-opacity"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    useUI.getState().openSandbox(w.id);
+                                  }}
+                                ><Shield className="h-4 w-4" /></button>
+                              </Tip>
+                            )}
                             <Tip content="Archive workspace">
                               <button
                                 className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)] group-hover:opacity-100 transition-opacity"

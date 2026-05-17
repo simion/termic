@@ -8,6 +8,7 @@ import { NewProjectDialog } from "./NewProjectDialog";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
 import { ReviewDialog } from "./ReviewDialog";
+import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
 import { Loader2 } from "lucide-react";
 
 export function Dialogs() {
@@ -25,6 +26,7 @@ export function Dialogs() {
       <NewWorkspaceDialog />
       <WelcomeDialog />
       <ReviewDialog />
+      <WorkspaceSandboxDialog />
       {/* Blocking work overlay: shown while a slow IPC call is in flight
           (archive workspace, etc.). Click-blocks the whole window so users
           don't fire the action twice mid-wait. */}

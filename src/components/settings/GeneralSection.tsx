@@ -23,6 +23,8 @@ export function GeneralSection() {
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
+  const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
+  const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -82,6 +84,19 @@ export function GeneralSection() {
           hint="Color a workspace's agent icon when its output goes idle (i.e., the agent is waiting on you). Turn off to keep the sidebar fully calm regardless of agent activity."
           value={settledHighlight}
           onChange={setSettledHighlight}
+        />
+      </div>
+
+      {/* Global sandbox default. The New workspace dialog defaults its
+          Sandbox toggle to this OR the project's own `default_sandbox`
+          (whichever is true). One switch to start sandboxing across
+          every project without per-project bookkeeping. */}
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Sandbox new workspaces by default"
+          hint="When on, the New workspace dialog pre-checks its Sandbox toggle for every project. Individual projects can still opt out (Settings → Repositories). Already-created workspaces aren't affected - their sandbox pin is captured at creation."
+          value={globalDefaultSandbox}
+          onChange={setGlobalDefaultSandbox}
         />
       </div>
     </div>

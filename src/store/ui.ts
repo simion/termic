@@ -9,6 +9,10 @@ interface UIState {
   newWorkspaceProjectId: string | null;  // null = closed
   welcomeOpen: boolean;
   reviewForWsId: string | null;          // null = closed
+  /** Open the Edit Sandbox dialog for a specific workspace. null = closed.
+   *  Lives in UI store (not app) so flipping it doesn't churn the
+   *  workspace tree on every re-render. */
+  sandboxForWsId: string | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
    *  the whole window so the user knows the freeze is intentional. Set for
    *  unavoidably-synchronous IPC calls like `workspace_archive` that take
@@ -24,6 +28,8 @@ interface UIState {
   closeWelcome: () => void;
   openReview: (wsId: string) => void;
   closeReview: () => void;
+  openSandbox: (wsId: string) => void;
+  closeSandbox: () => void;
   setBusy: (msg: string | null) => void;
 }
 
@@ -32,6 +38,7 @@ export const useUI = create<UIState>(set => ({
   newWorkspaceProjectId: null,
   welcomeOpen: false,
   reviewForWsId: null,
+  sandboxForWsId: null,
   busyMessage: null,
 
   openNewProject:    () => set({ newProjectOpen: true }),
@@ -42,5 +49,7 @@ export const useUI = create<UIState>(set => ({
   closeWelcome:      () => set({ welcomeOpen: false }),
   openReview:        (wsId) => set({ reviewForWsId: wsId }),
   closeReview:       () => set({ reviewForWsId: null }),
+  openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
+  closeSandbox:      () => set({ sandboxForWsId: null }),
   setBusy:           (msg) => set({ busyMessage: msg }),
 }));

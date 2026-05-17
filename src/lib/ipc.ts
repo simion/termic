@@ -26,6 +26,22 @@ export const workspaceOpenRepo = (projectId: string, cli?: string) =>
 export const workspaceArchive  = (id: string) => invoke<void>("workspace_archive", { id });
 export const workspaceDelete   = (id: string) => invoke<void>("workspace_delete", { id });
 export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("workspace_set_cli", { id, cli });
+/** Update the workspace's sandbox config. The Rust side SIGKILLs every
+ *  live PTY for this workspace so the next mount picks up the new
+ *  profile; the returned number is the count that was terminated -
+ *  use it to word the user-facing warning ("This will restart N agents").
+ *  The frontend's PTY exit listener fires on each kill; existing
+ *  TerminalPane already surfaces the Restart overlay on exit. */
+export const workspaceSetSandbox = (
+  id: string,
+  enabled: boolean,
+  rwPaths: string[],
+  denyPaths: string[],
+  allowedHosts: string[],
+) => invoke<number>("workspace_set_sandbox", {
+  id, enabled,
+  rwPaths, denyPaths, allowedHosts,
+});
 export const workspaceRename   = (id: string, name: string) => invoke<void>("workspace_rename", { id, name });
 export const workspaceRecordSpawn = (id: string) => invoke<number>("workspace_record_spawn", { id });
 export const workspaceSetHasHistory = (id: string, value: boolean) =>

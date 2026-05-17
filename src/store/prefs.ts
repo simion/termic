@@ -14,6 +14,7 @@ const LS_THEME         = "themeMode";
 const LS_YOLO          = "yoloMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
+const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
 
 export type ThemeMode = "auto" | "light" | "dark" | "espresso" | "solarized" | "cobalt" | "matrix";
@@ -279,6 +280,11 @@ interface PrefsState {
    *  in-app "done" signal. Some users find it distracting and want
    *  the sidebar to stay calm regardless. */
   settledHighlight: boolean;
+  /** Default for the NewWorkspaceDialog's Sandbox toggle when neither
+   *  the project's `default_sandbox` nor an explicit user pick is in
+   *  effect. Lets a single-keystroke toggle apply across all projects
+   *  without per-project bookkeeping. */
+  globalDefaultSandbox: boolean;
   /** Color scheme: explicit dark/light, or auto = follow system. */
   themeMode: ThemeMode;
   /** Font for the CodeMirror editor + diff viewer. */
@@ -309,6 +315,7 @@ interface PrefsState {
   setYoloMode:        (v: boolean) => void;
   setDesktopNotifications: (v: boolean) => void;
   setSettledHighlight: (v: boolean) => void;
+  setGlobalDefaultSandbox: (v: boolean) => void;
 }
 
 const lsGet = (k: string, fallback: string) => {
@@ -330,12 +337,14 @@ const initialTheme        = (lsGet(LS_THEME, "dark") as ThemeMode);
 const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
+const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
   yoloMode: initialYolo,
   desktopNotifications: initialDesktopNotif,
   settledHighlight: initialSettledHighlight,
+  globalDefaultSandbox: initialDefaultSandbox,
   editorFontId: initialEditorFont,
   terminalFontId: initialTerminalFont,
   terminalFontSize: initialTerminalSize,
@@ -386,6 +395,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setSettledHighlight: (v) => {
     try { localStorage.setItem(LS_SETTLED_HIGHLIGHT, v ? "1" : "0"); } catch {}
     set({ settledHighlight: v });
+  },
+  setGlobalDefaultSandbox: (v) => {
+    try { localStorage.setItem(LS_DEFAULT_SANDBOX, v ? "1" : "0"); } catch {}
+    set({ globalDefaultSandbox: v });
   },
   cycleThemeMode: () => {
     // Cycle only the original three for the keyboard shortcut - explicit

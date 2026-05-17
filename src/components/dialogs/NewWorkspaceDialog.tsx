@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
+import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -72,13 +73,15 @@ export function NewWorkspaceDialog() {
     setBase(p?.base_branch || "");
     setCli(p?.default_cli || "claude");
     setPrefix("feature");
-    // Sandbox toggle defaults to whatever the project prefers. The
-    // user can still flip it for THIS workspace - but once Create
+    // Sandbox toggle defaults to project's preference OR the global
+    // default (Settings → General). Either being true checks the box.
+    // The user can still flip for THIS workspace - but once Create
     // fires, the pin is permanent on the Workspace record. The
     // three lists are seeded from the project's defaults; user
     // edits in this dialog land on the workspace ONLY, never on
     // the project.
-    setSandbox(!!p?.default_sandbox);
+    const globalDefault = usePrefs.getState().globalDefaultSandbox;
+    setSandbox(!!p?.default_sandbox || globalDefault);
     setSbRw((p?.sandbox_rw_paths ?? []).join("\n"));
     setSbDeny((p?.sandbox_deny_paths ?? []).join("\n"));
     setSbHosts((p?.sandbox_allowed_hosts ?? []).join("\n"));
