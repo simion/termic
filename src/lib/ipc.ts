@@ -53,6 +53,33 @@ export const sandboxTinyproxyAvailable = () =>
  *  sandboxed workspace. */
 export const workspaceRecentDenials = (id: string, minutes?: number) =>
   invoke<string[]>("workspace_recent_denials", { id, minutes });
+
+/** One probe result from `workspace_test_sandbox`. */
+export interface ProbeResult {
+  host: string;
+  expected: "allow" | "deny";
+  ok: boolean;
+  http_code: number | null;
+  note: string;
+}
+/** End-to-end sandbox self-test: runs curls inside an ephemeral
+ *  sandbox bundle of this workspace; one to an allowed host, one to a
+ *  denied host. Returns both outcomes so the user can verify the cage
+ *  is actually closed. */
+export const workspaceTestSandbox = (id: string) =>
+  invoke<ProbeResult[]>("workspace_test_sandbox", { id });
+
+/** One-shot status event from Rust after every pty_spawn. Frontend
+ *  subscribes per spawn and renders the warning chip in the status
+ *  footer when proxy_active is false on an active sandbox. */
+export interface SandboxStatus {
+  active: boolean;
+  proxy_active: boolean;
+  warning: string;
+}
+export function onSandboxStatus(ptyId: string, cb: (s: SandboxStatus) => void): Promise<UnlistenFn> {
+  return listen<SandboxStatus>(`sandbox-status://${ptyId}`, ev => cb(ev.payload));
+}
 export const workspaceRename   = (id: string, name: string) => invoke<void>("workspace_rename", { id, name });
 export const workspaceRecordSpawn = (id: string) => invoke<number>("workspace_record_spawn", { id });
 export const workspaceSetHasHistory = (id: string, value: boolean) =>

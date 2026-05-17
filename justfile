@@ -84,6 +84,30 @@ check-web:
 # Run everything: rust + frontend type checks. CI-style.
 check-all: check check-web
 
+# ─── sandbox bundling ─────────────────────────────────────────────────
+
+# Copy the local tinyproxy binary into src-tauri/resources/ so the next
+# `npm run tauri:build` bundles it into Termic.app/Contents/Resources/.
+# Without this, sandboxed workspaces require the user to install
+# tinyproxy themselves (the TinyproxyBanner surfaces the install hint).
+#
+# Note: the bundled binary is architecture-specific. Running this on
+# an arm64 Mac copies an arm64 binary; users on x86_64 Macs will fall
+# back to PATH (or the banner) until we wire a release-time fetch for
+# both arches. Treat as a release-prep step.
+bundle-tinyproxy:
+    @set -e; \
+    SRC="$(command -v tinyproxy || true)"; \
+    if [ -z "$SRC" ]; then \
+        echo "✗ tinyproxy not on PATH. Install: brew install tinyproxy"; \
+        exit 1; \
+    fi; \
+    DEST="src-tauri/resources/tinyproxy"; \
+    mkdir -p "$(dirname "$DEST")"; \
+    cp "$SRC" "$DEST"; \
+    echo "✓ bundled $(file "$DEST" | sed 's/.*: //') → $DEST"; \
+    echo "  Next: npm run tauri:build (the .app will ship with tinyproxy)."
+
 # ─── icons ────────────────────────────────────────────────────────────
 
 # Regenerate every icon size + format from src-tauri/icons/icon.svg.

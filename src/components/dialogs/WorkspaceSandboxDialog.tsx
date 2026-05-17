@@ -9,14 +9,19 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { workspaceSetSandbox, workspaceRecentDenials } from "@/lib/ipc";
-import { AlertTriangle, Shield, Zap, RefreshCw } from "lucide-react";
+import { workspaceSetSandbox, workspaceRecentDenials, workspaceTestSandbox, type ProbeResult } from "@/lib/ipc";
+import { AlertTriangle, Shield, Zap, RefreshCw, FlaskConical, Check, X } from "lucide-react";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
 export function WorkspaceSandboxDialog() {
   const wsId = useUI(s => s.sandboxForWsId);
   const close = useUI(s => s.closeSandbox);
   const ws = useApp(s => s.workspaces.find(w => w.id === wsId) ?? null);
+  // The project owns the "current defaults" - drives the "Reset to
+  // project defaults" button. Workspace's frozen lists were seeded
+  // from these at creation; if the user since updated the project,
+  // this button re-syncs (one click, no auto-overwrite).
+  const project = useApp(s => ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null);
   const loadAll = useApp(s => s.loadAll);
 
   // Local edit state, snapshotted from the workspace whenever the
@@ -33,6 +38,11 @@ export function WorkspaceSandboxDialog() {
   // the <details>) to avoid invoking `log show` on every dialog open.
   const [denies, setDenies] = useState<string[] | null>(null);
   const [denyBusy, setDenyBusy] = useState(false);
+  // Self-test results: null = never run; array = last run's probes.
+  // We don't auto-run; the user clicks the Test button. ~3s round-trip
+  // (provision + 2 curls); the button shows a spinner while in flight.
+  const [probes, setProbes] = useState<ProbeResult[] | null>(null);
+  const [testBusy, setTestBusy] = useState(false);
 
   useEffect(() => {
     if (!ws) return;
@@ -55,6 +65,19 @@ export function WorkspaceSandboxDialog() {
       setDenies([]);
     } finally {
       setDenyBusy(false);
+    }
+  };
+
+  const runTest = async () => {
+    if (!ws) return;
+    setTestBusy(true); setProbes(null);
+    try {
+      const out = await workspaceTestSandbox(ws.id);
+      setProbes(out);
+    } catch (e) {
+      setProbes([{ host: "—", expected: "allow", ok: false, http_code: null, note: String(e) }]);
+    } finally {
+      setTestBusy(false);
     }
   };
 
@@ -156,7 +179,10 @@ export function WorkspaceSandboxDialog() {
         </details>
 
         {/* Presets - clobber the three textareas with a known-good
-            starting point. User can still edit afterwards. */}
+            starting point. User can still edit afterwards. The
+            'Reset to project defaults' button is a separate action
+            because the project's current defaults are user-owned
+            (vs the bundled Presets which are app-owned). */}
         {enabled && (
           <div className="flex flex-wrap items-center gap-2 text-[12px]">
             <span className="text-[var(--color-fg-faint)]">Preset:</span>
@@ -174,6 +200,20 @@ export function WorkspaceSandboxDialog() {
                 {p.label}
               </button>
             ))}
+            {project && (
+              <button
+                type="button"
+                title={`Re-sync from ${project.name}'s current sandbox defaults (Settings → Repositories).`}
+                onClick={() => {
+                  setRwText((project.sandbox_rw_paths ?? []).join("\n"));
+                  setDenyText((project.sandbox_deny_paths ?? []).join("\n"));
+                  setHostsText((project.sandbox_allowed_hosts ?? []).join("\n"));
+                }}
+                className="rounded-md border border-[var(--color-accent-soft)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-fg)]"
+              >
+                Reset to project defaults
+              </button>
+            )}
           </div>
         )}
 
@@ -247,6 +287,47 @@ export function WorkspaceSandboxDialog() {
             </pre>
           )}
         </details>
+
+        {/* Sandbox self-test. Provisions a one-shot bundle of the
+            CURRENT config (not saved yet - so the user can verify
+            their pending edits before committing them) and runs two
+            curls inside it: one allowed host, one denied. Useful for
+            reassuring yourself the cage actually closes, and for
+            debugging "did I configure the proxy right?" */}
+        {enabled && (
+          <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-3 py-2 text-[12.5px]">
+            <div className="flex items-center gap-2">
+              <FlaskConical className="h-3.5 w-3.5 text-[var(--color-fg-dim)]" />
+              <span className="font-medium text-[var(--color-fg)]">Test sandbox</span>
+              <span className="text-[var(--color-fg-faint)]">— runs <code className="mono">curl</code> against an allowed host and a denied host inside the cage.</span>
+              <button
+                type="button"
+                onClick={runTest}
+                disabled={testBusy}
+                className="ml-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)] disabled:opacity-50"
+              >
+                {testBusy ? "Running…" : "Run"}
+              </button>
+            </div>
+            {probes !== null && (
+              <ul className="mt-2 flex flex-col gap-1">
+                {probes.map((p, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    {p.ok
+                      ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
+                      : <X className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-err)]" />}
+                    <span className="flex-1">
+                      <span className="font-mono text-[11.5px] text-[var(--color-fg-dim)]">{p.host}</span>
+                      {" "}
+                      <span className="text-[var(--color-fg-faint)]">→ {p.expected}</span>
+                      <span className="ml-2 text-[12px] text-[var(--color-fg-dim)]">{p.note}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Restart warning. Always visible (not error-state) so the
             user has it in view BEFORE they hit save. */}

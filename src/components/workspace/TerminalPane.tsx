@@ -3,8 +3,9 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield } from "lucide-react";
+import { RotateCcw, Shield, AlertTriangle } from "lucide-react";
 import { useUI } from "@/store/ui";
+import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -69,6 +70,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // pane was dead until the user closed + reopened the tab.
   const [gen, setGen] = useState(0);
   const [exited, setExited] = useState(false);
+  // Sandbox status from Rust's per-spawn `sandbox-status://<ptyId>`
+  // event. Drives the warning chip in the status footer when the
+  // tinyproxy failed to start (= full network deny instead of
+  // allowlist). Resets to null on each respawn so a stale warning
+  // from the prior PTY doesn't carry over.
+  const [sandboxWarning, setSandboxWarning] = useState<string | null>(null);
   // Per-component "has the worktree's history flag been flipped during
   // THIS spawn yet" — separate from the persisted ws.has_resumable_history
   // so we don't double-set across reloads. Resets each gen bump.
@@ -217,6 +224,16 @@ export function TerminalPane({ ws, tab, active }: Props) {
           }
         }, RESUME_FAILURE_MS);
 
+        // Subscribe to the one-shot sandbox status event. Rust emits
+        // it right after deciding sandboxed-vs-not + (maybe) starting
+        // tinyproxy, so it surfaces silent failures (proxy didn't
+        // bind = full network deny even though the user asked for
+        // allowlisting). Cleaned up alongside onPtyData below.
+        setSandboxWarning(null);
+        const unlistenSandbox = await ipc.onSandboxStatus(ptyId, (s) => {
+          setSandboxWarning(s.warning || null);
+        });
+
         // Output stream → terminal write + attention bookkeeping.
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
           term.write(u8);
@@ -229,7 +246,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
             markAttention(ws.id, tab.id, "bell");
           }
         });
-        unlistenDataRef.current = unlistenData;
+        // Compose data + sandbox unlisteners into the existing ref so
+        // cleanup tears down both. Avoids adding another ref.
+        unlistenDataRef.current = () => { unlistenData(); unlistenSandbox(); };
 
         const unlistenExit = await ipc.onPtyExit(ptyId, () => {
           ptyRef.current = null;
@@ -395,20 +414,36 @@ export function TerminalPane({ ws, tab, active }: Props) {
         <button
           type="button"
           onClick={() => useUI.getState().openSandbox(ws.id)}
-          className="flex shrink-0 items-center gap-1.5 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/60 px-3 py-1 text-left text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
-          title="Edit sandbox for this workspace"
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 border-t px-3 py-1 text-left text-[11.5px] hover:text-[var(--color-fg)]",
+            sandboxWarning
+              ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 text-[var(--color-fg)] hover:bg-[var(--color-warn)]/20"
+              : "border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/60 text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)]",
+          )}
+          title={sandboxWarning ?? "Edit sandbox for this workspace"}
         >
-          <Shield className="h-3 w-3 text-[var(--color-ok)]" />
-          <span>Sandboxed</span>
-          <span className="text-[var(--color-fg-faint)]">·</span>
-          <span>
-            {(ws.sandbox_allowed_hosts?.length ?? 0)} extra host{(ws.sandbox_allowed_hosts?.length ?? 0) === 1 ? "" : "s"}
-          </span>
-          <span className="text-[var(--color-fg-faint)]">·</span>
-          <span>
-            {(ws.sandbox_rw_paths?.length ?? 0)} extra path{(ws.sandbox_rw_paths?.length ?? 0) === 1 ? "" : "s"}
-          </span>
-          <span className="ml-auto text-[var(--color-fg-faint)] underline-offset-2 group-hover:underline">edit</span>
+          {sandboxWarning ? (
+            <>
+              <AlertTriangle className="h-3 w-3 text-[var(--color-warn)]" />
+              <span className="font-medium">Sandbox degraded</span>
+              <span className="text-[var(--color-fg-faint)]">·</span>
+              <span className="truncate">{sandboxWarning}</span>
+            </>
+          ) : (
+            <>
+              <Shield className="h-3 w-3 text-[var(--color-ok)]" />
+              <span>Sandboxed</span>
+              <span className="text-[var(--color-fg-faint)]">·</span>
+              <span>
+                {(ws.sandbox_allowed_hosts?.length ?? 0)} extra host{(ws.sandbox_allowed_hosts?.length ?? 0) === 1 ? "" : "s"}
+              </span>
+              <span className="text-[var(--color-fg-faint)]">·</span>
+              <span>
+                {(ws.sandbox_rw_paths?.length ?? 0)} extra path{(ws.sandbox_rw_paths?.length ?? 0) === 1 ? "" : "s"}
+              </span>
+            </>
+          )}
+          <span className="ml-auto text-[var(--color-fg-faint)] underline-offset-2">edit</span>
         </button>
       )}
       {exited && (

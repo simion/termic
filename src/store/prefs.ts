@@ -86,20 +86,20 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     brightBlue:  "#b3ffff", brightMagenta: "#ffaaff", brightCyan:    "#a4ffd4", brightWhite:   "#ffffff",
   },
   matrix: {
-    // Phosphor-green CRT terminal. ANSI 16 is mostly tinted toward
-    // green so anything `ls --color`-style reads as "in palette," but
-    // red/yellow/blue/magenta stay distinct enough that git log etc.
-    // remain readable - lose all contrast and the theme becomes
-    // novelty-only.
-    background: "#000800",
-    foreground: "#00ff41",
-    cursor: "#00ff41",
-    cursorAccent: "#000800",
-    selectionBackground: "rgba(0,255,65,0.25)",
-    black:   "#001a08", red:     "#ff4d4d", green:   "#00ff41", yellow:  "#d4ff00",
-    blue:    "#00b3ff", magenta: "#ff44dd", cyan:    "#00ffaa", white:   "#c0ffc0",
-    brightBlack:   "#2d4d2d", brightRed:     "#ff6666", brightGreen:   "#6cff6c", brightYellow:  "#e0ff66",
-    brightBlue:    "#66c4ff", brightMagenta: "#ff66ff", brightCyan:    "#66ffcc", brightWhite:   "#ffffff",
+    // Calmer Matrix - green where it matters (the agent's text + cursor)
+    // but ANSI 16 keeps full contrast so git log / diffs stay readable.
+    // The chrome (CSS vars) uses warm off-white gray; this terminal
+    // palette is what the agent actually paints, kept slightly greener
+    // for the CRT vibe without going full neon.
+    background: "#050905",
+    foreground: "#c8e1c0",
+    cursor: "#3fb950",
+    cursorAccent: "#050905",
+    selectionBackground: "rgba(63,185,80,0.22)",
+    black:   "#0d130d", red:     "#e07070", green:   "#3fb950", yellow:  "#d4c750",
+    blue:    "#5a9fd6", magenta: "#c075c0", cyan:    "#50b0a8", white:   "#c8e1c0",
+    brightBlack:   "#5a6058", brightRed:     "#e88a8a", brightGreen:   "#5fd06e", brightYellow:  "#e0d670",
+    brightBlue:    "#7eb5e6", brightMagenta: "#d090d0", brightCyan:    "#70c8c0", brightWhite:   "#e8f0e0",
   },
 };
 

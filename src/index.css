@@ -140,25 +140,26 @@
     color-scheme: dark;
   }
 
-  /* Matrix — phosphor-green-on-black CRT hacker aesthetic. Background
-     is *near* black with a faint green tint (#000800) so the chrome
-     reads as a CRT surface rather than a pure void. All chrome text +
-     borders shift to varying intensities of the same phosphor green;
-     accent is full-intensity #00ff41 (canonical "Matrix green"). */
+  /* Matrix — CRT vibe via the accent + terminal, not the whole UI.
+     Chrome text is warm off-white gray (readable for long sessions);
+     the phosphor green (#00ff41) is reserved for the accent + the
+     agent terminal output, where "Matrix" actually makes sense. The
+     bg keeps a hairline green tint (#050905) so surfaces feel like
+     CRT phosphor without bleeding into every label. */
   html.matrix {
-    --color-bg:          #000800;
-    --color-bg-1:        #001a08;
-    --color-bg-2:        #002a10;
-    --color-bg-3:        #003a18;
-    --color-fg:          #00ff41;
-    --color-fg-dim:      #00b830;
-    --color-fg-faint:    #006020;
-    --color-border:      #004a20;
-    --color-border-soft: #002a10;
-    --color-hover:       rgba(0, 255, 65, 0.07);
-    --color-sel:         rgba(0, 255, 65, 0.22);
-    --color-accent:      #00ff41;
-    --color-accent-soft: rgba(0, 255, 65, 0.25);
+    --color-bg:          #050905;
+    --color-bg-1:        #0d130d;
+    --color-bg-2:        #161e16;
+    --color-bg-3:        #20281f;
+    --color-fg:          #c8cdc4;       /* off-white, warm gray */
+    --color-fg-dim:      #8b918a;
+    --color-fg-faint:    #5a6058;
+    --color-border:      #2a322a;
+    --color-border-soft: #181f18;
+    --color-hover:       rgba(63, 185, 80, 0.06);
+    --color-sel:         rgba(63, 185, 80, 0.20);
+    --color-accent:      #3fb950;       /* calmer green - reads matrix without burning the retina */
+    --color-accent-soft: rgba(63, 185, 80, 0.20);
     color-scheme: dark;
   }
 

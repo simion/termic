@@ -1,5 +1,21 @@
 // macOS sandbox-exec (Seatbelt) wrapper for per-workspace agent isolation.
 //
+// ⚠ sandbox-exec is Apple-deprecated. The binary still works on macOS 15
+//   and there's no replacement on the horizon, but Apple reserves the
+//   right to remove it. If/when that lands, the alternative is the
+//   Endpoint Security framework (kext-replacement) which requires
+//   notarized + entitled binaries and a much heavier integration. Don't
+//   pre-port - we'd be guessing at the future API. Flag if it breaks on
+//   a macOS release; current macOS minimum is 12.0 (tauri.conf.json).
+//
+// Built-in defaults (builtin_rw_paths / builtin_deny_paths / per-CLI
+// host blocks in render_filter) are evaluated fresh at every spawn, so
+// updates to these in NEW versions of Termic reach EVERY existing
+// workspace automatically - they're not seeded onto the saved Workspace
+// record. The Project's `sandbox_*` arrays are user-owned EXTRAS only.
+// This is the explicit contract: never seed defaults onto a Project at
+// create time; always grow built-ins in code.
+//
 // Layered model:
 //   1. Outer kernel sandbox via `sandbox-exec -f <profile.sb>` - blocks
 //      writes outside the allowlist, blocks all network except a single
@@ -273,7 +289,8 @@ pub fn start_proxy(
         eprintln!("[sandbox/{workspace_id}] failed to write tinyproxy conf: {e}");
         return None;
     }
-    let child = match Command::new("tinyproxy")
+    let bin = tinyproxy_path();
+    let child = match Command::new(&bin)
         .arg("-d")             // don't daemonize - we want the PID
         .arg("-c")
         .arg(&conf_path)
@@ -362,19 +379,143 @@ pub fn wrap_command(
     ("sandbox-exec".into(), new_args)
 }
 
-/// Is `tinyproxy` reachable on PATH? Used by the startup banner: when
-/// missing AND any project/workspace has sandboxing in play, surface
-/// a one-time warning so the user understands sandboxed workspaces
-/// will silently lose network filtering (they fall back to full
-/// `(deny network*)` from the SBPL profile).
+/// Resolve which tinyproxy binary to spawn. Prefer the bundled copy
+/// (shipped under the .app's Resources/) so users without homebrew
+/// still get network allowlisting; fall back to whatever's on PATH
+/// (homebrew dev / arm64-on-Intel cases / "I installed my own").
+///
+/// The Resources/ lookup uses the executable's own directory: the
+/// real bundle layout is `Termic.app/Contents/MacOS/termic` and
+/// `Termic.app/Contents/Resources/tinyproxy`, so `<exe-dir>/../Resources/tinyproxy`
+/// hits the right place inside the bundle. For `cargo run` from
+/// the dev tree, this resolves to a non-existent path and we fall
+/// through to PATH lookup automatically.
+pub fn tinyproxy_path() -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let bundled = parent.join("../Resources/tinyproxy");
+            if bundled.is_file() {
+                return bundled.to_string_lossy().into_owned();
+            }
+        }
+    }
+    // Fall back to PATH; child spawn will report the failure
+    // cleanly if it's missing.
+    "tinyproxy".into()
+}
+
+/// Is tinyproxy reachable? Checks bundled first, then PATH. Used by
+/// the startup banner: when missing AND any project/workspace has
+/// sandboxing in play, surface a one-time warning so the user
+/// understands sandboxed workspaces will silently lose network
+/// filtering (they fall back to full `(deny network*)` from the
+/// SBPL profile).
 pub fn tinyproxy_available() -> bool {
+    let bin = tinyproxy_path();
+    // If we got an absolute path from the bundle, it exists by
+    // construction (we just `is_file()`'d it). Otherwise probe PATH.
+    if bin.starts_with('/') { return true; }
     Command::new("which")
-        .arg("tinyproxy")
+        .arg(&bin)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Result of one curl probe inside the workspace's sandbox.
+#[derive(serde::Serialize, Clone)]
+pub struct ProbeResult {
+    pub host: String,
+    pub expected: &'static str,   // "allow" | "deny"
+    pub ok: bool,                 // did the actual outcome match `expected`?
+    pub http_code: Option<u16>,
+    pub note: String,             // human-readable summary
+}
+
+/// End-to-end self-test for a workspace's sandbox: runs `curl` inside
+/// the cage against one host we expect to succeed (vendor API) and one
+/// we expect to fail (a non-listed host). Confirms both the seatbelt
+/// profile AND tinyproxy filter are doing their jobs. Use from the
+/// WorkspaceSandboxDialog "Test" button so users don't have to take
+/// the cage on faith.
+pub fn run_self_test(workspace: &Workspace) -> Vec<ProbeResult> {
+    // Provision a fresh ephemeral bundle just for the test. We can't
+    // reuse the live agent's bundle (race), and this way the user
+    // can run the test even with no agent running. Bundle's Drop
+    // SIGKILLs the tinyproxy when this function returns.
+    let bundle = match provision(workspace) {
+        Ok(b) => b,
+        Err(e) => return vec![
+            ProbeResult {
+                host: "—".into(), expected: "allow", ok: false,
+                http_code: None, note: format!("could not provision sandbox: {e}"),
+            },
+        ],
+    };
+
+    // Pick an allowed host that's in the per-CLI baseline so the test
+    // matches what the actual agent would experience. github.com is
+    // in the baseline for every CLI.
+    let allowed = "https://api.github.com";
+    // A host that nothing in our baseline allows. example.com is a
+    // standards-blessed reserved domain - safe to ping, won't match
+    // any of our regexes.
+    let denied  = "https://example.com";
+
+    vec![
+        probe(&bundle, allowed, "allow"),
+        probe(&bundle, denied,  "deny"),
+    ]
+}
+
+fn probe(bundle: &SandboxBundle, url: &str, expected: &'static str) -> ProbeResult {
+    let proxy_url = bundle.proxy.as_ref().map(|p| format!("http://127.0.0.1:{}", p.port));
+    // Run via sandbox-exec so the seatbelt + proxy combo is what we're
+    // actually testing. 5s timeout - curl with a denied host should
+    // hang on the proxy's 403 (instant) or get killed quickly anyway.
+    let mut cmd = Command::new("sandbox-exec");
+    cmd.arg("-f").arg(&bundle.profile_path).arg("env");
+    if let Some(ref pu) = proxy_url {
+        cmd.arg(format!("http_proxy={pu}"));
+        cmd.arg(format!("https_proxy={pu}"));
+        cmd.arg(format!("HTTP_PROXY={pu}"));
+        cmd.arg(format!("HTTPS_PROXY={pu}"));
+    }
+    cmd.arg("curl")
+        .arg("-sS")                       // silent except errors
+        .arg("--max-time").arg("5")
+        .arg("-o").arg("/dev/null")
+        .arg("-w").arg("%{http_code}\n")
+        .arg(url);
+
+    let out = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => return ProbeResult {
+            host: url.into(), expected, ok: false, http_code: None,
+            note: format!("spawn failed: {e}"),
+        },
+    };
+    let code: Option<u16> = String::from_utf8_lossy(&out.stdout)
+        .trim().parse().ok();
+    let denied_by_proxy = code == Some(403);
+    let succeeded = matches!(code, Some(200..=399));
+
+    let (ok, note) = match expected {
+        "allow" => {
+            if succeeded { (true, format!("HTTP {} (OK)", code.unwrap_or(0))) }
+            else { (false, format!("HTTP {} — expected 2xx/3xx; check proxy is up", code.map(|c| c.to_string()).unwrap_or_else(|| "no response".into()))) }
+        }
+        _ /* deny */ => {
+            if denied_by_proxy { (true, "HTTP 403 (proxy blocked, as expected)".into()) }
+            else if code.is_none() && !out.status.success() {
+                (true, "blocked (curl couldn't connect — denied at the proxy or kernel layer)".into())
+            }
+            else { (false, format!("HTTP {} — denied host got through! check allowlist", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()))) }
+        }
+    };
+    ProbeResult { host: url.into(), expected, ok, http_code: code, note }
 }
 
 /// Query macOS `log` for recent sandbox denials touching a workspace.

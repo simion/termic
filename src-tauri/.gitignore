@@ -15,3 +15,9 @@
 # macOS code-sign artifacts (entitlements scratch, notarization receipts).
 *.entitlements.local
 notarytool-history.plist
+
+# Bundled tinyproxy - architecture-specific binary, copied at build time
+# by `just bundle-tinyproxy`. Not committed (would be wrong arch on
+# someone else's machine + breaks reproducible builds). Build script
+# regenerates on each tauri:build via the recipe.
+resources/tinyproxy

@@ -294,6 +294,27 @@ struct PtyChunk { data: Vec<u8> }
 #[derive(Clone, Serialize)]
 struct PtyExit { code: Option<i32> }
 
+/// Emitted once per `pty_spawn` (on event `sandbox-status://<ptyId>`)
+/// so the frontend can render the truth about how the agent actually
+/// got spawned - not just whether the workspace WANTED to be sandboxed
+/// but whether the cage actually closed. Used by TerminalPane's status
+/// footer to surface a yellow warning chip when the proxy didn't bind.
+#[derive(Clone, Serialize)]
+struct SandboxStatus {
+    /// True iff the spawn went through sandbox-exec. False for an
+    /// unsandboxed workspace AND for the degraded case where
+    /// provisioning failed (we proceed unsandboxed rather than crash).
+    active: bool,
+    /// True iff tinyproxy started. Implies network allowlisting works.
+    /// False with `active: true` means filesystem sandbox + full
+    /// network deny - the agent has no internet at all. That's the
+    /// silent-failure case worth surfacing.
+    proxy_active: bool,
+    /// Human-readable note when something degraded. Empty in the
+    /// happy path.
+    warning: String,
+}
+
 #[derive(Deserialize)]
 pub struct SpawnArgs {
     pub cwd: String,
@@ -413,6 +434,38 @@ fn pty_spawn(
         let mut map = state_w.lock();
         map.remove(&id_w);
     });
+
+    // Emit the truth about how this PTY actually got sandboxed BEFORE
+    // returning the id - the frontend's listener is registered after
+    // ptySpawn resolves, so we can't race; the event will still be
+    // delivered via Tauri's per-event queue. (Tauri events buffer
+    // until the first listener attaches.)
+    let status = match &sandbox_bundle {
+        None if args.workspace_id.is_some() => {
+            // The spawn target IS a workspace but we ended up
+            // unsandboxed - either workspace.sandbox_enabled was
+            // false (expected, no warning) or provisioning failed
+            // (already logged). We can't distinguish here cheaply
+            // and the false case is the common one; skip emitting
+            // a "warning" so we don't cry-wolf.
+            SandboxStatus { active: false, proxy_active: false, warning: String::new() }
+        }
+        None => SandboxStatus { active: false, proxy_active: false, warning: String::new() },
+        Some(b) => SandboxStatus {
+            active: true,
+            proxy_active: b.proxy.is_some(),
+            warning: if b.proxy.is_none() {
+                // The headline silent-failure case. tinyproxy missing
+                // OR misconfigured OR port collision - all degrade
+                // sandboxed-with-network to sandboxed-no-network.
+                "tinyproxy didn't start - this workspace has NO network. \
+                 Install tinyproxy and respawn the agent.".into()
+            } else {
+                String::new()
+            },
+        },
+    };
+    let _ = app.emit(&format!("sandbox-status://{}", id), status);
 
     state.inner.lock().insert(
         id.clone(),
@@ -871,6 +924,21 @@ fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
         return Vec::new();
     };
     sandbox::recent_denials(&ws.path, minutes.unwrap_or(10))
+}
+
+/// Self-test the workspace's sandbox: provisions a fresh ephemeral
+/// bundle, runs two curls (one allowed, one denied), reports whether
+/// each behaved as expected. Async (provisioning starts tinyproxy +
+/// curl shells out) so we don't block the IPC handler thread.
+#[tauri::command]
+async fn workspace_test_sandbox(id: String) -> Result<Vec<sandbox::ProbeResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<sandbox::ProbeResult>, String> {
+        let ws = load_workspaces().into_iter().find(|w| w.id == id)
+            .ok_or("no such workspace")?;
+        Ok(sandbox::run_self_test(&ws))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2033,7 +2101,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_update, project_remove,
             workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
-            sandbox_tinyproxy_available, workspace_recent_denials,
+            sandbox_tinyproxy_available, workspace_recent_denials, workspace_test_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,
