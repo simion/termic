@@ -12,15 +12,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { RotateCcw } from "lucide-react";
 import * as ipc from "@/lib/ipc";
-import { usePrefs, currentTerminalStack } from "@/store/prefs";
+import { usePrefs, currentTerminalStack, currentTerminalTheme } from "@/store/prefs";
 
-const THEME = {
-  background: "#0b0b0d",
-  foreground: "#eceef1",
-  cursor: "#d97757",
-  cursorAccent: "#0b0b0d",
-  selectionBackground: "rgba(217,119,87,0.30)",
-} as const;
+// Theme is no longer a module-level constant - see TerminalPane for why.
+// `currentTerminalTheme()` picks the matching palette at mount; the
+// themeMode effect below pushes updates into live instances.
 
 export function AuxTerminal({ wsPath, active }: { wsPath: string; active: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -48,7 +44,7 @@ export function AuxTerminal({ wsPath, active }: { wsPath: string; active: boolea
       fontWeight: usePrefs.getState().terminalFontWeight as any,
       fontWeightBold: Math.min(900, usePrefs.getState().terminalFontWeight + 300) as any,
       lineHeight: 1.0,
-      theme: THEME as any,
+      theme: currentTerminalTheme() as any,
       scrollback: 2000,
     });
     const fit = new FitAddon();
@@ -129,6 +125,16 @@ export function AuxTerminal({ wsPath, active }: { wsPath: string; active: boolea
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
   }, [terminalFontId, terminalFontSize, terminalFontWeight]);
+
+  // Live theme swap mirrors TerminalPane's effect; see the comment there.
+  const themeMode = usePrefs(s => s.themeMode);
+  const firstThemeRun = useRef(true);
+  useEffect(() => {
+    if (firstThemeRun.current) { firstThemeRun.current = false; return; }
+    const t = termRef.current;
+    if (!t) return;
+    t.options.theme = currentTerminalTheme() as any;
+  }, [themeMode]);
 
   return (
     <div className="relative h-full w-full">

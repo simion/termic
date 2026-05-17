@@ -97,6 +97,47 @@
     --color-accent-soft: rgba(194, 94, 61, 0.20);
     color-scheme: light;
   }
+
+  /* Espresso — warm dark variant. Deep coffee browns + cream text, same
+     terracotta accent so brand carries across themes. Picked for users
+     who find the default near-black surfaces too cold. */
+  html.espresso {
+    --color-bg:          #2a1d12;
+    --color-bg-1:        #33241a;
+    --color-bg-2:        #3d2c21;
+    --color-bg-3:        #4a3628;
+    --color-fg:          #f5e6d3;
+    --color-fg-dim:      #c2b09a;
+    --color-fg-faint:    #8a7866;
+    --color-border:      #4f3a2a;
+    --color-border-soft: #3a2920;
+    --color-hover:       rgba(245, 230, 211, 0.05);
+    --color-sel:         rgba(217, 119, 87, 0.20);
+    --color-accent:      #d97757;
+    --color-accent-soft: rgba(217, 119, 87, 0.22);
+    color-scheme: dark;
+  }
+
+  /* Solarized Dark — Ethan Schoonover's palette (base03/02/01/00 + base0/1).
+     We shift the brand accent to solarized orange (#cb4b16) because the
+     terracotta clashes with the cool teal of base03; Solarized has its
+     own visual identity that fights with the default. */
+  html.solarized {
+    --color-bg:          #002b36;       /* base03 */
+    --color-bg-1:        #073642;       /* base02 */
+    --color-bg-2:        #0a4756;
+    --color-bg-3:        #105566;
+    --color-fg:          #93a1a1;       /* base1 */
+    --color-fg-dim:      #839496;       /* base0 */
+    --color-fg-faint:    #586e75;       /* base01 */
+    --color-border:      #1c5566;
+    --color-border-soft: #0d4555;
+    --color-hover:       rgba(238, 232, 213, 0.04);
+    --color-sel:         rgba(38, 139, 210, 0.22);
+    --color-accent:      #cb4b16;       /* solarized orange */
+    --color-accent-soft: rgba(203, 75, 22, 0.22);
+    color-scheme: dark;
+  }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 6px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--color-border-soft); }

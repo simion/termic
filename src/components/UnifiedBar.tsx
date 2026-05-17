@@ -13,7 +13,7 @@ import * as HoverCard from "@radix-ui/react-hover-card";
 import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, FolderOpen, Play, Archive, ShieldCheck,
-  Sun, Moon, Monitor, Zap, ArrowUpToLine,
+  Sun, Moon, Monitor, Zap, ArrowUpToLine, Coffee, Sunrise,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { openPath, workspaceRunScript, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
@@ -213,21 +213,26 @@ export function UnifiedBar() {
 function ThemePicker({
   themeMode, setThemeMode, Icon,
 }: {
-  /** The user's selection ("auto" / "light" / "dark"). The `auto` value
-   *  drives the small "A" badge overlay so the user can tell their
-   *  pick is "follow OS" rather than an explicit light/dark. */
-  themeMode: "auto" | "light" | "dark";
-  setThemeMode: (m: "auto" | "light" | "dark") => void;
+  /** The user's selection. The `auto` value drives the small "A"
+   *  badge overlay so the user can tell their pick is "follow OS"
+   *  rather than an explicit light/dark. Espresso + Solarized are
+   *  dark-family palettes that the OS can't infer; they only ever
+   *  come from an explicit dropdown pick. */
+  themeMode: import("@/store/prefs").ThemeMode;
+  setThemeMode: (m: import("@/store/prefs").ThemeMode) => void;
   /** Already resolved to Sun/Moon by the caller — when in auto mode
    *  this reflects the OS theme (not a generic Monitor icon). */
   Icon: typeof Sun;
 }) {
-  const items: { id: "auto" | "light" | "dark"; label: string; icon: typeof Sun }[] = [
+  type Item = { id: import("@/store/prefs").ThemeMode; label: string; icon: typeof Sun };
+  const items: Item[] = [
     // "System" = follow OS prefers-color-scheme. Stored as `auto` for backward
     // compatibility with existing localStorage values.
-    { id: "auto",  label: "System", icon: Monitor },
-    { id: "light", label: "Light",  icon: Sun },
-    { id: "dark",  label: "Dark",   icon: Moon },
+    { id: "auto",      label: "System",         icon: Monitor },
+    { id: "light",     label: "Light",          icon: Sun },
+    { id: "dark",      label: "Dark",           icon: Moon },
+    { id: "espresso",  label: "Espresso",       icon: Coffee },
+    { id: "solarized", label: "Solarized Dark", icon: Sunrise },
   ];
   // Plain DOM dropdown — Radix HoverCard's pointer-tracking kept
   // closing on item click (the theme-change re-render storm triggers
@@ -280,7 +285,7 @@ function ThemePicker({
       {open && (
         <div
           className={cn(
-            "absolute left-0 top-full z-50 mt-1 min-w-[140px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
+            "absolute left-0 top-full z-50 mt-1 min-w-[170px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
           )}
         >
           {items.map(it => {

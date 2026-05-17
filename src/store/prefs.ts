@@ -16,7 +16,70 @@ const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
 
-export type ThemeMode = "auto" | "light" | "dark";
+export type ThemeMode = "auto" | "light" | "dark" | "espresso" | "solarized";
+/** What `applyTheme` resolves to: a concrete palette name. `auto` is
+ *  never returned; it gets mapped to light/dark based on OS preference. */
+export type ResolvedTheme = "light" | "dark" | "espresso" | "solarized";
+
+/** xterm theme objects keyed by resolved palette. Each must define enough
+ *  of xterm's ITheme that the terminal looks at home in the surrounding
+ *  chrome. ANSI 16 colors stay close to the parent palette's family so a
+ *  `ls --color` looks consistent with the app's surface colors. */
+export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
+  dark: {
+    background: "#0b0b0d",
+    foreground: "#eceef1",
+    cursor: "#d97757",
+    cursorAccent: "#0b0b0d",
+    selectionBackground: "rgba(217,119,87,0.30)",
+    black: "#1a1a1d", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
+    blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#eceef1",
+    brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
+    brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
+  },
+  light: {
+    background: "#faf9f6",
+    foreground: "#1c1b1a",
+    cursor: "#c25e3d",
+    cursorAccent: "#faf9f6",
+    selectionBackground: "rgba(194,94,61,0.22)",
+    black: "#2b2926", red: "#b3322a", green: "#3f8a3f", yellow: "#a17415",
+    blue: "#2c5fb3", magenta: "#7a3aa5", cyan: "#1c7c8e", white: "#3f3d3a",
+    brightBlack: "#55534f", brightRed: "#d9453d", brightGreen: "#52a352", brightYellow: "#b88a26",
+    brightBlue: "#3a7bd9", brightMagenta: "#9358c2", brightCyan: "#1f97ad", brightWhite: "#1c1b1a",
+  },
+  espresso: {
+    background: "#2a1d12",
+    foreground: "#f5e6d3",
+    cursor: "#d97757",
+    cursorAccent: "#2a1d12",
+    selectionBackground: "rgba(217,119,87,0.25)",
+    black: "#3d2c21", red: "#e07b67", green: "#a8c97a", yellow: "#e9b46b",
+    blue: "#7fa9c9", magenta: "#c69cb7", cyan: "#8acdc6", white: "#e6d5c2",
+    brightBlack: "#7a6757", brightRed: "#f0917b", brightGreen: "#c2dd92", brightYellow: "#fbcb83",
+    brightBlue: "#9bc1dd", brightMagenta: "#dcb4cc", brightCyan: "#a8dfd9", brightWhite: "#fbf0e0",
+  },
+  solarized: {
+    // Solarized Dark canonical ANSI mapping (Ethan Schoonover).
+    background: "#002b36",       // base03
+    foreground: "#93a1a1",       // base1
+    cursor: "#cb4b16",           // orange (canonical solarized cursor)
+    cursorAccent: "#002b36",
+    selectionBackground: "rgba(7,54,66,0.85)",  // base02
+    black:   "#073642", red:     "#dc322f", green:   "#859900", yellow:  "#b58900",
+    blue:    "#268bd2", magenta: "#d33682", cyan:    "#2aa198", white:   "#eee8d5",
+    brightBlack:   "#586e75", brightRed:     "#cb4b16", brightGreen:   "#586e75", brightYellow:  "#657b83",
+    brightBlue:    "#839496", brightMagenta: "#6c71c4", brightCyan:    "#93a1a1", brightWhite:   "#fdf6e3",
+  },
+};
+
+/** Resolve the user's chosen theme to a concrete palette name. Used by
+ *  both `applyTheme` (to pick which html class to toggle) and the
+ *  terminal panes (to pick the matching xterm theme). */
+export function currentTerminalTheme(): Record<string, string> {
+  const resolved = resolveThemeFull(usePrefs.getState().themeMode);
+  return TERMINAL_THEMES[resolved];
+}
 
 // Curated list of monospace fonts we probe for. JetBrains Mono Variable ships
 // locally via @fontsource so it's always present; the rest are detected at
@@ -284,6 +347,9 @@ export const usePrefs = create<PrefsState>(set => ({
     set({ settledHighlight: v });
   },
   cycleThemeMode: () => {
+    // Cycle only the original three for the keyboard shortcut - explicit
+    // espresso/solarized picks live in the dropdown. Cycling through 5
+    // states blindly with a single button feels random.
     const order: ThemeMode[] = ["auto", "light", "dark"];
     const cur = usePrefs.getState().themeMode;
     const next = order[(order.indexOf(cur) + 1) % order.length];
@@ -293,22 +359,37 @@ export const usePrefs = create<PrefsState>(set => ({
   },
 }));
 
-/** Resolve a ThemeMode to the actual class applied to <html>. */
+/** Legacy resolver kept for callers that only care about light-vs-dark
+ *  (toolbar icon swap, system colorScheme hint). Espresso + Solarized
+ *  both collapse to "dark" for those binary purposes. */
 export function resolveTheme(mode: ThemeMode): "light" | "dark" {
+  const full = resolveThemeFull(mode);
+  return full === "light" ? "light" : "dark";
+}
+
+/** Resolve to the concrete palette name (light / dark / espresso /
+ *  solarized). `auto` only ever maps to light or dark - the OS doesn't
+ *  speak espresso/solarized; those require an explicit user pick. */
+export function resolveThemeFull(mode: ThemeMode): ResolvedTheme {
   if (mode === "auto") {
     return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   }
   return mode;
 }
 
-/** Set the html element's class so the CSS palette swap kicks in. */
+/** Set the html element's class so the CSS palette swap kicks in.
+ *  We toggle ALL palette classes so a stale class from a previous
+ *  theme can't bleed through after a switch. */
 export function applyTheme(mode: ThemeMode) {
-  const resolved = resolveTheme(mode);
+  const resolved = resolveThemeFull(mode);
   const html = document.documentElement;
-  html.classList.toggle("light", resolved === "light");
-  html.classList.toggle("dark",  resolved === "dark");
-  // Color-scheme tells the browser to use light/dark form controls + scrollbars.
-  html.style.colorScheme = resolved;
+  html.classList.toggle("light",     resolved === "light");
+  html.classList.toggle("dark",      resolved === "dark");
+  html.classList.toggle("espresso",  resolved === "espresso");
+  html.classList.toggle("solarized", resolved === "solarized");
+  // Color-scheme tells the browser to use light/dark form controls +
+  // scrollbars. Espresso + Solarized both want dark widgets.
+  html.style.colorScheme = resolved === "light" ? "light" : "dark";
 }
 
 // Apply at module load so the first paint matches the user's preference.

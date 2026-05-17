@@ -11,7 +11,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { useApp } from "@/store/app";
-import { usePrefs, currentTerminalStack } from "@/store/prefs";
+import { usePrefs, currentTerminalStack, currentTerminalTheme } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive } from "@/lib/agents";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
@@ -45,17 +45,10 @@ function hashVisibleBuffer(t: Terminal): number {
   }
   return h >>> 0;
 }
-const THEME = {
-  background: "#0b0b0d",
-  foreground: "#eceef1",
-  cursor: "#d97757",
-  cursorAccent: "#0b0b0d",
-  selectionBackground: "rgba(217,119,87,0.30)",
-  black: "#1a1a1d", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
-  blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#eceef1",
-  brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
-  brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
-} as const;
+// Theme is no longer a module-level constant - it depends on the user's
+// current themeMode pref (dark / light / espresso / solarized). Each
+// terminal instance picks the matching palette at mount AND re-reads it
+// whenever the pref changes (see the themeMode effect below).
 
 export function TerminalPane({ ws, tab, active }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -111,7 +104,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
       // paints with a bg color reads as a visible "ribbon" instead of a tight
       // band against neighbouring rows.
       lineHeight: 1.0,
-      theme: THEME as any,
+      theme: currentTerminalTheme() as any,
       allowProposedApi: true,
       scrollback: 5000,
     });
@@ -313,6 +306,19 @@ export function TerminalPane({ ws, tab, active }: Props) {
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
   }, [terminalFontId, terminalFontSize, terminalFontWeight]);
+
+  // Live theme swap: when the user picks a different theme in the
+  // dropdown, push the new xterm palette into every mounted terminal.
+  // xterm's `options.theme` setter triggers an internal repaint so we
+  // don't need to touch the WebGL atlas explicitly.
+  const themeMode = usePrefs(s => s.themeMode);
+  const firstThemeRun = useRef(true);
+  useEffect(() => {
+    if (firstThemeRun.current) { firstThemeRun.current = false; return; }
+    const t = termRef.current;
+    if (!t) return;
+    t.options.theme = currentTerminalTheme() as any;
+  }, [themeMode]);
 
   // YOLO live toggle — for agents that support runtime mode switching (only
   // gemini today), send the appropriate slash command. For claude/codex this
