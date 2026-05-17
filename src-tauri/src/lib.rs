@@ -294,13 +294,13 @@ struct PtyChunk { data: Vec<u8> }
 #[derive(Clone, Serialize)]
 struct PtyExit { code: Option<i32> }
 
-/// Emitted once per `pty_spawn` (on event `sandbox-status://<ptyId>`)
-/// so the frontend can render the truth about how the agent actually
-/// got spawned - not just whether the workspace WANTED to be sandboxed
-/// but whether the cage actually closed. Used by TerminalPane's status
-/// footer to surface a yellow warning chip when the proxy didn't bind.
+/// Truth about how the agent actually got spawned - not just whether
+/// the workspace WANTED to be sandboxed but whether the cage actually
+/// closed. Returned synchronously as part of `pty_spawn`'s value so
+/// the frontend can't miss it (the earlier event-based variant had a
+/// race window between the emit and the frontend's listener attach).
 #[derive(Clone, Serialize)]
-struct SandboxStatus {
+pub struct SandboxStatus {
     /// True iff the spawn went through sandbox-exec. False for an
     /// unsandboxed workspace AND for the degraded case where
     /// provisioning failed (we proceed unsandboxed rather than crash).
@@ -313,6 +313,14 @@ struct SandboxStatus {
     /// Human-readable note when something degraded. Empty in the
     /// happy path.
     warning: String,
+}
+
+/// Return shape of `pty_spawn`. Pairs the PTY id with the realized
+/// sandbox state so the frontend gets both atomically.
+#[derive(Clone, Serialize)]
+pub struct SpawnResult {
+    id: String,
+    sandbox: SandboxStatus,
 }
 
 #[derive(Deserialize)]
@@ -343,7 +351,7 @@ fn pty_spawn(
     app: AppHandle,
     state: State<'_, PtyManager>,
     args: SpawnArgs,
-) -> Result<String, String> {
+) -> Result<SpawnResult, String> {
     let pty = NativePtySystem::default();
     let pair = pty
         .openpty(PtySize {
@@ -435,21 +443,14 @@ fn pty_spawn(
         map.remove(&id_w);
     });
 
-    // Emit the truth about how this PTY actually got sandboxed BEFORE
-    // returning the id - the frontend's listener is registered after
-    // ptySpawn resolves, so we can't race; the event will still be
-    // delivered via Tauri's per-event queue. (Tauri events buffer
-    // until the first listener attaches.)
+    // Build the truth about how this PTY actually got sandboxed and
+    // RETURN it alongside the id - no event, no race. The previous
+    // event-based path had a window between `app.emit(...)` and the
+    // frontend's listener attach (the listener only registers after
+    // `ptySpawn` resolves with the id), so under load the warning
+    // chip could silently never appear. Returning the value
+    // synchronously makes that window impossible to hit.
     let status = match &sandbox_bundle {
-        None if args.workspace_id.is_some() => {
-            // The spawn target IS a workspace but we ended up
-            // unsandboxed - either workspace.sandbox_enabled was
-            // false (expected, no warning) or provisioning failed
-            // (already logged). We can't distinguish here cheaply
-            // and the false case is the common one; skip emitting
-            // a "warning" so we don't cry-wolf.
-            SandboxStatus { active: false, proxy_active: false, warning: String::new() }
-        }
         None => SandboxStatus { active: false, proxy_active: false, warning: String::new() },
         Some(b) => SandboxStatus {
             active: true,
@@ -465,7 +466,6 @@ fn pty_spawn(
             },
         },
     };
-    let _ = app.emit(&format!("sandbox-status://{}", id), status);
 
     state.inner.lock().insert(
         id.clone(),
@@ -478,7 +478,11 @@ fn pty_spawn(
         },
     );
 
-    Ok(id)
+    // `app` was only ever used to emit the now-removed sandbox-status
+    // event; keep the parameter binding alive for tauri's handler
+    // signature but mark it unused.
+    let _ = app;
+    Ok(SpawnResult { id, sandbox: status })
 }
 
 #[tauri::command]
@@ -927,14 +931,39 @@ fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
 }
 
 /// Self-test the workspace's sandbox: provisions a fresh ephemeral
-/// bundle, runs two curls (one allowed, one denied), reports whether
-/// each behaved as expected. Async (provisioning starts tinyproxy +
-/// curl shells out) so we don't block the IPC handler thread.
+/// bundle from the CANDIDATE config the caller passes in (so the
+/// dialog can test pending edits BEFORE the user commits to save),
+/// runs two curls (one allowed, one denied), reports the outcome.
+/// Async (provisioning starts tinyproxy + curl shells out) so we
+/// don't block the IPC handler thread.
+///
+/// Optional list args default to the saved workspace's lists - the
+/// caller can omit them when they want to test the on-disk config
+/// (e.g. before opening the dialog at all). When provided, they
+/// override the saved arrays, matching what the user is staring at
+/// in the textareas right now.
 #[tauri::command]
-async fn workspace_test_sandbox(id: String) -> Result<Vec<sandbox::ProbeResult>, String> {
+async fn workspace_test_sandbox(
+    id: String,
+    rw_paths: Option<Vec<String>>,
+    deny_paths: Option<Vec<String>>,
+    allowed_hosts: Option<Vec<String>>,
+) -> Result<Vec<sandbox::ProbeResult>, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<sandbox::ProbeResult>, String> {
-        let ws = load_workspaces().into_iter().find(|w| w.id == id)
+        let mut ws = load_workspaces().into_iter().find(|w| w.id == id)
             .ok_or("no such workspace")?;
+        // Overlay the candidate lists onto the in-memory copy ONLY.
+        // We never save - the user's "Save & restart" button is the
+        // only place workspace_set_sandbox gets called.
+        if let Some(rw) = rw_paths { ws.sandbox_rw_paths = rw; }
+        if let Some(deny) = deny_paths { ws.sandbox_deny_paths = deny; }
+        if let Some(hosts) = allowed_hosts { ws.sandbox_allowed_hosts = hosts; }
+        // Force sandbox_enabled=true for the test even if the
+        // candidate has it off - testing an off-sandbox is
+        // meaningless and `run_self_test`'s provision call would
+        // fail anyway. The actual ws.sandbox_enabled state on disk
+        // is untouched.
+        ws.sandbox_enabled = true;
         Ok(sandbox::run_self_test(&ws))
     })
     .await

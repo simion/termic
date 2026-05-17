@@ -277,7 +277,7 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
       </header>
 
       <div className="grid grid-cols-1 gap-3">
-        <Field label="Command" hint="Binary or shell command to spawn. e.g. claude, /usr/local/bin/claude, sh -lc 'claude'">
+        <Field label="Command" hint="Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work. For env setup or shell features, point this at a wrapper script and pass its args via 'Default args' below.">
           <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder="claude" />
         </Field>
         <Field

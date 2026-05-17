@@ -68,7 +68,7 @@ export function AuxTerminal({ wsPath, active }: { wsPath: string; active: boolea
       if (cancelled) return;
       try { fit.fit(); } catch {}
       try {
-        const ptyId = await ipc.ptySpawn({
+        const { id: ptyId } = await ipc.ptySpawn({
           cwd: wsPath, cmd: "zsh", args: ["-l"],
           // Signal terminal theme so prompts / status bars that honor
           // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right

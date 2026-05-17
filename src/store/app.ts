@@ -303,7 +303,12 @@ export const useApp = create<AppState>((set, get) => ({
   ensureDefaultTab: (wsId, cli) => set(s => {
     const list = s.tabs[wsId] || [];
     if (list.length) return s;
-    const tab: TerminalTab = { id: crypto.randomUUID(), type: "terminal", title: cli, cli };
+    // `is_default: true` is the only tab in a workspace that's
+    // allowed to auto-resume the agent's prior session. User-added
+    // tabs (via the "+" button → `addTab`) leave it unset so they
+    // start fresh - otherwise every new tab tries to resume the
+    // same conversation and we get N copies fighting.
+    const tab: TerminalTab = { id: crypto.randomUUID(), type: "terminal", title: cli, cli, is_default: true };
     return {
       tabs: { ...s.tabs, [wsId]: [tab] },
       activeTab: { ...s.activeTab, [wsId]: tab.id },

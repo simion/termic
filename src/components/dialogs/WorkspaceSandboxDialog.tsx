@@ -72,7 +72,16 @@ export function WorkspaceSandboxDialog() {
     if (!ws) return;
     setTestBusy(true); setProbes(null);
     try {
-      const out = await workspaceTestSandbox(ws.id);
+      // Pass the CURRENT textarea contents - not the saved workspace -
+      // so the test reflects what the user is staring at. Without
+      // this the dialog tested last-saved state, making the "test
+      // before commit" use case useless.
+      const split = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
+      const out = await workspaceTestSandbox(ws.id, {
+        rwPaths:       split(rwText),
+        denyPaths:     split(denyText),
+        allowedHosts:  split(hostsText),
+      });
       setProbes(out);
     } catch (e) {
       setProbes([{ host: "—", expected: "allow", ok: false, http_code: null, note: String(e) }]);

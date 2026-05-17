@@ -158,13 +158,21 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // outside termic). Forcing fresh on is_repo_root prevents that
         // surprise; user can still use the agent's resume command
         // manually if they actually want to continue an external session.
+        // Only the AUTO-CREATED default tab (one per workspace) may
+        // resume the agent's prior conversation. User-added tabs
+        // always start fresh - otherwise opening a second claude tab
+        // inside the same workspace tries to resume the same session,
+        // and N tabs end up fighting over one conversation. `is_default`
+        // is set by `ensureDefaultTab` in the app store and never
+        // again by the "+" tab-add path.
         const shouldResume = !!ws.has_resumable_history
           && !failedResumeRef.current
-          && !ws.is_repo_root;
+          && !ws.is_repo_root
+          && !!tab.is_default;
         spawnStartedAtRef.current = Date.now();
         lastSpawnWasResumeRef.current = shouldResume;
         hasHistoryLocalRef.current = false;
-        const ptyId = await ipc.ptySpawn({
+        const spawn = await ipc.ptySpawn({
           cwd: ws.path,
           // Resolve the executable through the agent registry — users can
           // edit Settings → Agents to point `claude` (or any custom agent
@@ -196,9 +204,14 @@ export function TerminalPane({ ws, tab, active }: Props) {
           workspace_id: ws.id,
           rows, cols,
         });
+        const ptyId = spawn.id;
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
         ptyRef.current = ptyId;
         patchTab(ws.id, tab.id, { ptyId, lastOutputAt: Date.now() });
+        // Sandbox truth lands synchronously with the spawn (no event
+        // race possible). Render the warning chip immediately when the
+        // cage degraded.
+        setSandboxWarning(spawn.sandbox.warning || null);
         // Fire-and-forget analytics. Real resume gating lives on the
         // has_resumable_history flag below, not here.
         ipc.workspaceRecordSpawn(ws.id).catch(() => {});
@@ -224,16 +237,6 @@ export function TerminalPane({ ws, tab, active }: Props) {
           }
         }, RESUME_FAILURE_MS);
 
-        // Subscribe to the one-shot sandbox status event. Rust emits
-        // it right after deciding sandboxed-vs-not + (maybe) starting
-        // tinyproxy, so it surfaces silent failures (proxy didn't
-        // bind = full network deny even though the user asked for
-        // allowlisting). Cleaned up alongside onPtyData below.
-        setSandboxWarning(null);
-        const unlistenSandbox = await ipc.onSandboxStatus(ptyId, (s) => {
-          setSandboxWarning(s.warning || null);
-        });
-
         // Output stream → terminal write + attention bookkeeping.
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
           term.write(u8);
@@ -248,7 +251,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
         });
         // Compose data + sandbox unlisteners into the existing ref so
         // cleanup tears down both. Avoids adding another ref.
-        unlistenDataRef.current = () => { unlistenData(); unlistenSandbox(); };
+        unlistenDataRef.current = unlistenData;
 
         const unlistenExit = await ipc.onPtyExit(ptyId, () => {
           ptyRef.current = null;

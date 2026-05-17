@@ -66,20 +66,25 @@ export interface ProbeResult {
  *  sandbox bundle of this workspace; one to an allowed host, one to a
  *  denied host. Returns both outcomes so the user can verify the cage
  *  is actually closed. */
-export const workspaceTestSandbox = (id: string) =>
-  invoke<ProbeResult[]>("workspace_test_sandbox", { id });
+/** Self-test the workspace's sandbox. Optional list args override
+ *  the saved workspace config so the dialog can test PENDING edits
+ *  (textarea contents) instead of last-saved state. Omit them to
+ *  test what's on disk. */
+export const workspaceTestSandbox = (
+  id: string,
+  candidate?: { rwPaths: string[]; denyPaths: string[]; allowedHosts: string[] },
+) =>
+  invoke<ProbeResult[]>("workspace_test_sandbox", {
+    id,
+    rwPaths: candidate?.rwPaths,
+    denyPaths: candidate?.denyPaths,
+    allowedHosts: candidate?.allowedHosts,
+  });
 
-/** One-shot status event from Rust after every pty_spawn. Frontend
- *  subscribes per spawn and renders the warning chip in the status
- *  footer when proxy_active is false on an active sandbox. */
-export interface SandboxStatus {
-  active: boolean;
-  proxy_active: boolean;
-  warning: string;
-}
-export function onSandboxStatus(ptyId: string, cb: (s: SandboxStatus) => void): Promise<UnlistenFn> {
-  return listen<SandboxStatus>(`sandbox-status://${ptyId}`, ev => cb(ev.payload));
-}
+// Sandbox status is now returned synchronously by `ptySpawn` (see
+// SpawnResult above). The old `sandbox-status://<id>` event was dropped
+// because the listener-attach race could make the warning chip silently
+// miss the only emission.
 export const workspaceRename   = (id: string, name: string) => invoke<void>("workspace_rename", { id, name });
 export const workspaceRecordSpawn = (id: string) => invoke<number>("workspace_record_spawn", { id });
 export const workspaceSetHasHistory = (id: string, value: boolean) =>
@@ -118,7 +123,21 @@ export interface SpawnArgs {
   workspace_id?: string;
 }
 
-export const ptySpawn  = (a: SpawnArgs) => invoke<string>("pty_spawn", { args: a });
+/** Sandbox status returned alongside the PTY id - tells the caller
+ *  whether the cage actually closed (vs. degraded to "filesystem-only,
+ *  no network" because tinyproxy didn't start). Previously surfaced
+ *  via a separate event that had a race window between Rust's emit
+ *  and the frontend's listener attach. */
+export interface SandboxStatus {
+  active: boolean;
+  proxy_active: boolean;
+  warning: string;
+}
+export interface SpawnResult {
+  id: string;
+  sandbox: SandboxStatus;
+}
+export const ptySpawn  = (a: SpawnArgs) => invoke<SpawnResult>("pty_spawn", { args: a });
 export const ptyWrite  = (ptyId: string, data: number[]) => invoke<void>("pty_write", { ptyId, data });
 export const ptyResize = (ptyId: string, rows: number, cols: number) => invoke<void>("pty_resize", { ptyId, rows, cols });
 export const ptyKill   = (ptyId: string) => invoke<void>("pty_kill", { ptyId });
