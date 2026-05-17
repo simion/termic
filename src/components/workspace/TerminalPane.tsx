@@ -4,14 +4,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
+import type { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { usePrefs, currentTerminalStack } from "@/store/prefs";
+import { loadTerminalEngine } from "@/lib/terminalEngine";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive } from "@/lib/agents";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
@@ -93,59 +92,88 @@ export function TerminalPane({ ws, tab, active }: Props) {
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
 
+  // The active terminal engine is locked at mount time. Changing the pref
+  // afterwards only takes effect on newly mounted terminals (or after a
+  // reload) - hot-swapping a live xterm to ghostty mid-PTY would force a
+  // respawn and lose scrollback. The Settings copy says this.
+  const engineAtMount = useRef(usePrefs.getState().terminalEngine);
+
   useEffect(() => {
     let cancelled = false;
     const host = hostRef.current;
     if (!host) return;
 
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: currentTerminalStack(),
-      fontSize: usePrefs.getState().terminalFontSize,
-      fontWeight: usePrefs.getState().terminalFontWeight as any,
-      // Bold face moves in proportion to regular: keep ~300 above regular but
-      // capped at 900 so users on 500 still get a meaningfully bolder bold.
-      fontWeightBold: Math.min(900, usePrefs.getState().terminalFontWeight + 300) as any,
-      // 1.0 is xterm's default and what TUIs (gemini, claude, etc.) assume.
-      // A larger lineHeight inflates every cell vertically, so any row the TUI
-      // paints with a bg color reads as a visible "ribbon" instead of a tight
-      // band against neighbouring rows.
-      lineHeight: 1.0,
-      theme: THEME as any,
-      allowProposedApi: true,
-      scrollback: 5000,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(host);
-    termRef.current = term;
-    fitRef.current = fit;
-
-    // WebGL renderer tiles cell backgrounds pixel-perfectly — fixes the
-    // "ribbon" artifacts in TUIs (gemini, claude) where adjacent bg-colored
-    // rows show 1px gaps with the default DOM renderer. Load AFTER term.open
-    // so the GL context can attach to an already-laid-out canvas. Graceful
-    // fallback: ignore failures, the DOM renderer keeps working.
-    //
-    // We hold a ref to the addon so cleanup can dispose it BEFORE term.dispose().
-    // Without that, a pending render frame fires after term._core._store is
-    // nulled and throws "undefined is not an object (... _isDisposed)".
-    let webglAddon: WebglAddon | null = null;
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => webglAddon?.dispose());
-      term.loadAddon(webglAddon);
-    } catch (e) { /* WebGL unsupported — DOM renderer remains */ }
+    // Holders captured by both the async setup and the cleanup. Declared
+    // up here so the cleanup function (which can't await) can still
+    // safely dispose anything that landed before unmount.
+    let term: Terminal | null = null;
+    let fit: FitAddon | null = null;
+    let webglAddon: any = null;
 
     (async () => {
+      const engine = await loadTerminalEngine(engineAtMount.current);
+      if (cancelled) return;
+
+      // xterm and ghostty share the option-name subset we care about (cursorBlink,
+      // fontFamily, fontSize, theme, scrollback). The xterm-only knobs
+      // (fontWeight / fontWeightBold / lineHeight / allowProposedApi) are
+      // additive - ghostty's constructor ignores unknown keys.
+      // Local non-null bindings make TS narrowing work across the nested
+      // async callbacks below (onPtyData, term.onData, etc.) - without them
+      // every reference would need a `term!` non-null assertion.
+      const t: Terminal = new engine.Terminal({
+        cursorBlink: true,
+        fontFamily: currentTerminalStack(),
+        fontSize: usePrefs.getState().terminalFontSize,
+        fontWeight: usePrefs.getState().terminalFontWeight as any,
+        // Bold face moves in proportion to regular: keep ~300 above regular but
+        // capped at 900 so users on 500 still get a meaningfully bolder bold.
+        fontWeightBold: Math.min(900, usePrefs.getState().terminalFontWeight + 300) as any,
+        // 1.0 is xterm's default and what TUIs (gemini, claude, etc.) assume.
+        // A larger lineHeight inflates every cell vertically, so any row the TUI
+        // paints with a bg color reads as a visible "ribbon" instead of a tight
+        // band against neighbouring rows. (Ghostty ignores; it has its own
+        // canonical metrics from the WASM parser.)
+        lineHeight: 1.0,
+        theme: THEME as any,
+        allowProposedApi: true,
+        scrollback: 5000,
+      });
+      const f: FitAddon = new engine.FitAddon();
+      t.loadAddon(f);
+      t.loadAddon(new engine.WebLinksAddon());
+      t.open(host);
+      term = t;
+      fit = f;
+      termRef.current = t;
+      fitRef.current = f;
+
+      // WebGL renderer (xterm only) - tiles cell backgrounds pixel-perfectly,
+      // fixes the "ribbon" artifacts in TUIs (gemini, claude) where adjacent
+      // bg-colored rows show 1px gaps with the default DOM renderer. Load
+      // AFTER term.open so the GL context can attach to an already-laid-out
+      // canvas. Graceful fallback: ignore failures, the DOM renderer keeps
+      // working.
+      //
+      // Ghostty ships its own canvas renderer and has no WebGL addon, so
+      // we skip this entirely on that engine - the disposal-ordering quirk
+      // (dispose webgl BEFORE term to avoid the half-disposed render
+      // frame crash) is xterm-specific too.
+      if (engine.WebglAddon) {
+        try {
+          webglAddon = new engine.WebglAddon();
+          webglAddon.onContextLoss(() => webglAddon?.dispose());
+          t.loadAddon(webglAddon);
+        } catch (e) { /* WebGL unsupported - DOM renderer remains */ }
+      }
+
       // PTY spawn flow needs the webview to have laid the container out first,
       // otherwise fit.fit() returns 0x0 and we spawn a PTY with garbage dims.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
       if (cancelled) return;
-      try { fit.fit(); } catch {}
-      const cols = Math.max(40, term.cols || 100);
-      const rows = Math.max(10, term.rows || 30);
+      try { f.fit(); } catch {}
+      const cols = Math.max(40, t.cols || 100);
+      const rows = Math.max(10, t.rows || 30);
 
       try {
         // Resume iff the worktree has a persisted history flag AND we
@@ -206,22 +234,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
           }
         }, RESUME_FAILURE_MS);
 
-        // Snapshot rehydrate: ask Rust for the libghostty-serialized
-        // screen state of this PTY (if any) and replay it into xterm
-        // BEFORE we start streaming new bytes. For a brand-new spawn
-        // this is empty (only a couple of bytes of cursor positioning).
-        // For a respawn / Restart-from-overlay it would contain the
-        // previous screen — useful once we persist snapshots across
-        // restarts. Skipping a failure here is safe: live data starts
-        // flowing right after.
-        try {
-          const snap = await ipc.ptySnapshot(ptyId);
-          if (snap) term.write(snap);
-        } catch {}
-
         // Output stream → terminal write + attention bookkeeping.
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
-          term.write(u8);
+          t.write(u8);
           const now = Date.now();
           patchTab(ws.id, tab.id, { lastOutputAt: now });
           // BEL gating: only treat as attention when the user has typed since
@@ -255,37 +270,44 @@ export function TerminalPane({ ws, tab, active }: Props) {
 
         // Input: pipe xterm keystrokes back to PTY. Also reset settled state
         // — the user has invalidated whatever "done" we may have decided.
-        term.onData(data => {
+        t.onData(data => {
           patchTab(ws.id, tab.id, { lastInputAt: Date.now() });
           settledRef.current = { lastHash: 0, unchangedCount: 0, marked: false };
           const bytes = new TextEncoder().encode(data);
           ipc.ptyWrite(ptyId, Array.from(bytes)).catch(() => {});
         });
-        term.onResize(({ cols, rows }) => { ipc.ptyResize(ptyId, rows, cols).catch(() => {}); });
+        t.onResize(({ cols, rows }) => { ipc.ptyResize(ptyId, rows, cols).catch(() => {}); });
 
         // Post-mount refit pulses (covers WKWebView layout settle quirks).
-        const refit = () => { try { fit.fit(); } catch {} };
+        const refit = () => { try { f.fit(); } catch {} };
         setTimeout(refit, 200);
         setTimeout(refit, 600);
       } catch (e) {
-        term.write(`\x1b[1;31mspawn failed: ${String(e)}\x1b[0m\r\n`);
+        t.write(`\x1b[1;31mspawn failed: ${String(e)}\x1b[0m\r\n`);
       }
+
+      // ResizeObserver lives inside the async block so it can close over
+      // the now-initialized fit addon. Captured into the outer `ro` so
+      // cleanup can disconnect it.
+      ro = new ResizeObserver(() => { try { f.fit(); } catch {} });
+      ro.observe(host);
     })();
 
-    // ResizeObserver keeps the terminal honest when the panel/window grows.
-    const ro = new ResizeObserver(() => { try { fit.fit(); } catch {} });
-    ro.observe(host);
+    // Outer-scope holder for the ResizeObserver so cleanup can disconnect
+    // it whether or not the async init finished before unmount.
+    let ro: ResizeObserver | null = null;
 
     return () => {
       cancelled = true;
-      ro.disconnect();
+      ro?.disconnect();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose WebGL FIRST so its render loop can't fire on a
-      // half-disposed terminal.
+      // half-disposed terminal. ghostty engine has no WebGL addon so
+      // webglAddon stays null and this is a no-op there.
       try { webglAddon?.dispose(); } catch {}
-      term.dispose();
+      try { term?.dispose(); } catch {}
       termRef.current = null;
       fitRef.current = null;
     };

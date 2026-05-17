@@ -30,11 +30,3 @@ libc = "0.2"
 # font-kit enumerates installed system fonts and exposes is_monospace().
 # Lazy-evaluated: only the `list_monospace_fonts` command pulls families.
 font-kit = "0.14"
-# Ghostty's VT100 parser + state machine compiled to a native dylib (via
-# build.rs running `zig build`). We feed PTY output through it, then ask
-# for an xterm.js-compatible serialization to rehydrate the screen
-# whenever a frontend (re)attaches. Same forks the kanna app uses; their
-# pinned commits are battle-tested and the serializer is a thin shim on
-# top of libghostty's render API. Requires `zig` in PATH at build time.
-libghostty-vt = { git = "https://github.com/jemdiggity/libghostty-rs.git", rev = "61ae57d7b42821e1b19ad325abc7ff49c80fc880", package = "libghostty-vt" }
-ghostty-xterm-compat-serialize = { git = "https://github.com/jemdiggity/ghostty-xterm-compat-serialize.git", rev = "135f988f408de703d5c4f6ae45de6902f3403f7c" }

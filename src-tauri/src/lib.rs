@@ -30,9 +30,6 @@ use std::thread;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-mod headless_terminal;
-use headless_terminal::HeadlessTerminal;
-
 // ───────────────────────────── data model ─────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -215,12 +212,6 @@ struct PtySlot {
     // (which holds the Child for the duration of wait()). Holding a shared
     // Mutex<Child> here would deadlock pty_kill against the waiter.
     child_pid: Option<u32>,
-    // Rust-side libghostty parser fed in parallel with the frontend
-    // xterm.js path. Owned by the reader thread for writes and by the
-    // pty_snapshot IPC command for reads — Mutex serializes the two.
-    // Arc so the reader thread can hold its own reference without
-    // contending with the PtyManager's HashMap lock.
-    headless: Arc<Mutex<HeadlessTerminal>>,
 }
 
 #[derive(Default)]
@@ -291,29 +282,15 @@ fn pty_spawn(
     let mut reader = master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = master.take_writer().map_err(|e| e.to_string())?;
 
-    // Build the rust-side libghostty terminal parallel to the frontend
-    // xterm.js render. 5000 rows of scrollback matches what the frontend
-    // configures so snapshots cover the same window the user can scroll
-    // through.
-    let headless = Arc::new(Mutex::new(
-        HeadlessTerminal::new(args.cols, args.rows, 5000).map_err(|e| e.to_string())?,
-    ));
-
-    // Reader thread → emits chunks as "pty://<id>" AND feeds the headless
-    // libghostty terminal so we can serve `pty_snapshot` requests later.
-    // The two writes happen back-to-back from a single owning thread;
-    // the snapshot IPC takes the same mutex, so it sees a consistent
-    // state even if it fires mid-stream.
+    // Reader thread → emits chunks as "pty://<id>"
     let app_r = app.clone();
     let id_r = id.clone();
-    let headless_r = Arc::clone(&headless);
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    headless_r.lock().write(&buf[..n]);
                     let chunk = PtyChunk { data: buf[..n].to_vec() };
                     let _ = app_r.emit(&format!("pty://{}", id_r), chunk);
                 }
@@ -338,7 +315,7 @@ fn pty_spawn(
 
     state.inner.lock().insert(
         id.clone(),
-        PtySlot { writer, master, child_pid, headless },
+        PtySlot { writer, master, child_pid },
     );
 
     Ok(id)
@@ -366,37 +343,8 @@ fn pty_resize(
         slot.master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| e.to_string())?;
-        // Keep the shadow grid in sync. Worst case the resize fails
-        // (libghostty barfs on a degenerate size); we log-and-continue
-        // rather than failing the IPC, since the PTY itself resized
-        // fine and the user-visible terminal will be correct.
-        if let Err(e) = slot.headless.lock().resize(cols, rows) {
-            eprintln!("headless resize failed: {e}");
-        }
     }
     Ok(())
-}
-
-#[tauri::command]
-fn pty_snapshot(state: State<'_, PtyManager>, pty_id: String) -> Result<String, String> {
-    // Clone the Arc out from under the manager lock so we don't hold
-    // both locks at once. The snapshot itself can take a few hundred
-    // microseconds on a large grid; pinning the PtyManager mutex that
-    // long would block pty_write on user keystrokes.
-    let headless = {
-        let map = state.inner.lock();
-        let Some(slot) = map.get(&pty_id) else {
-            // PTY died between the frontend's `term.open` and the
-            // snapshot call. Empty string keeps the frontend happy —
-            // it'll just skip the rehydrate write and start streaming
-            // live data (which will hit a dead PTY and surface the
-            // exit overlay).
-            return Ok(String::new());
-        };
-        Arc::clone(&slot.headless)
-    };
-    let mut guard = headless.lock();
-    guard.snapshot()
 }
 
 #[tauri::command]
@@ -1871,7 +1819,7 @@ pub fn run() {
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,
             workspace_rename, project_rename,
-            pty_spawn, pty_write, pty_resize, pty_kill, pty_snapshot,
+            pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, home_dir, path_exists, log_line,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             list_monospace_fonts,
