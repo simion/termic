@@ -98,32 +98,30 @@
     color-scheme: light;
   }
 
-  /* Monokai — the canonical Sublime palette (Wimer Hazenberg, 2006).
-     Warm-dark surfaces (#272822), off-white text (#f8f8f2), iconic
-     pink-red accent (#f92672) - the color every Monokai-era dev
-     associates with "keyword." We shift the brand accent to that
-     pink-red because Monokai's identity IS the pink-red-on-warm-dark
-     combo; terracotta would just look out of place. */
+  /* Monokai Pro — the modern variant of Wimer Hazenberg's classic.
+     Pro shifted the harsh fluorescents of the original (#272822 /
+     #f92672 / #fd971f) to softer, pastel-ish values: #2D2A2E bg,
+     #FCFCFA fg, salmon pink #FF6188 + warm orange #FC9867 + gold
+     #FFD866 + lime #A9DC76 + sky #78DCE8 + lavender #AB9DF2.
+     That's what most Monokai screenshots show today, and it's
+     friendlier for UI chrome than the original's neon. Chrome
+     accent uses the orange (#FC9867); terminal keeps salmon pink
+     for the cursor + ANSI red so syntax-highlighted code feels
+     unmistakably Monokai. */
   html.monokai {
-    --color-bg:          #272822;
-    --color-bg-1:        #2d2e27;
-    --color-bg-2:        #34352d;
-    --color-bg-3:        #3d3e36;
-    --color-fg:          #f8f8f2;
-    --color-fg-dim:      #b8b8a8;
-    --color-fg-faint:    #75715e;   /* canonical Monokai comment color */
-    --color-border:      #49483e;
-    --color-border-soft: #383830;
-    --color-hover:       rgba(248, 248, 242, 0.05);
-    --color-sel:         rgba(253, 151, 31, 0.22);
-    /* Chrome accent uses Monokai ORANGE (#fd971f) - the function-name
-       color. The iconic pink-red (#f92672) is fluorescent on warm-dark
-       surfaces and turned every active-row background into a stoplight;
-       orange is the friendlier Monokai accent for UI chrome while
-       still reading unmistakably as Monokai. Terminal cursor keeps the
-       pink-red for fidelity (see TERMINAL_THEMES.monokai). */
-    --color-accent:      #fd971f;
-    --color-accent-soft: rgba(253, 151, 31, 0.22);
+    --color-bg:          #2d2a2e;
+    --color-bg-1:        #353035;
+    --color-bg-2:        #3d383d;
+    --color-bg-3:        #463f46;
+    --color-fg:          #fcfcfa;
+    --color-fg-dim:      #b4adb4;
+    --color-fg-faint:    #727072;   /* canonical Monokai Pro comment color */
+    --color-border:      #5b575b;
+    --color-border-soft: #403b40;
+    --color-hover:       rgba(252, 252, 250, 0.05);
+    --color-sel:         rgba(252, 152, 103, 0.22);
+    --color-accent:      #fc9867;
+    --color-accent-soft: rgba(252, 152, 103, 0.22);
     color-scheme: dark;
   }
 

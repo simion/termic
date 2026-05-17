@@ -195,7 +195,7 @@ const THEME_ITEMS: { id: ThemeMode; label: string; icon: typeof Sun; swatch: [st
   { id: "auto",      label: "System",         icon: Monitor, swatch: ["#0a0a0a", "#fdf6e3", "#d97757"] },
   { id: "light",     label: "Light",          icon: Sun,     swatch: ["#faf9f6", "#1c1b1a", "#c25e3d"] },
   { id: "dark",      label: "Dark",           icon: Moon,    swatch: ["#0a0a0a", "#f0efed", "#d97757"] },
-  { id: "monokai",   label: "Monokai",        icon: Palette, swatch: ["#272822", "#f8f8f2", "#fd971f"] },
+  { id: "monokai",   label: "Monokai Pro",    icon: Palette, swatch: ["#2d2a2e", "#fcfcfa", "#fc9867"] },
   { id: "solarized", label: "Solarized Dark", icon: Sunrise, swatch: ["#002b36", "#93a1a1", "#cb4b16"] },
   { id: "cobalt",    label: "Cobalt",         icon: Droplet, swatch: ["#193549", "#e1efff", "#ffc600"] },
   { id: "matrix",    label: "Matrix",         icon: Binary,  swatch: ["#000800", "#00ff41", "#00ff41"] },
@@ -241,7 +241,7 @@ function StepTheme() {
                   {t.id === "auto" && "follows macOS"}
                   {t.id === "light" && "cream + terracotta"}
                   {t.id === "dark" && "warm near-black"}
-                  {t.id === "monokai" && "Sublime classic"}
+                  {t.id === "monokai" && "Pro pastel palette"}
                   {t.id === "solarized" && "Schoonover palette"}
                   {t.id === "cobalt" && "navy + yellow"}
                   {t.id === "matrix" && "phosphor green CRT"}

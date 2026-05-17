@@ -50,19 +50,21 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     brightBlue: "#3a7bd9", brightMagenta: "#9358c2", brightCyan: "#1f97ad", brightWhite: "#1c1b1a",
   },
   monokai: {
-    // Canonical Sublime Monokai (Wimer Hazenberg, 2006). ANSI 16
-    // maps to Monokai's syntax palette - same colors you'd see
-    // highlighting code in Sublime, so `ls --color` / `git log`
-    // feel like home.
-    background: "#272822",
-    foreground: "#f8f8f2",
-    cursor: "#f92672",          // iconic pink-red - "keyword" color
-    cursorAccent: "#272822",
-    selectionBackground: "rgba(73,72,62,0.85)", // #49483e
-    black:   "#272822", red:     "#f92672", green:   "#a6e22e", yellow:  "#e6db74",
-    blue:    "#66d9ef", magenta: "#ae81ff", cyan:    "#a1efe4", white:   "#f8f8f2",
-    brightBlack:   "#75715e", brightRed:     "#ff6188", brightGreen:   "#b4eb56", brightYellow:  "#f0e58f",
-    brightBlue:    "#79e6f5", brightMagenta: "#c39bff", brightCyan:    "#b6f4ed", brightWhite:   "#ffffff",
+    // Monokai Pro (the modern, pastel-ish refresh of the classic).
+    // ANSI maps to Pro's syntax palette - salmon pink for keywords,
+    // warm orange for functions, gold yellow for strings, lime for
+    // regex/special, sky cyan for types, lavender for constants.
+    // Same colors users see in current Sublime/VS Code Monokai Pro
+    // themes; familiar territory for syntax-highlighted shell output.
+    background: "#2d2a2e",
+    foreground: "#fcfcfa",
+    cursor: "#ff6188",                          // pink - canonical Monokai cursor
+    cursorAccent: "#2d2a2e",
+    selectionBackground: "rgba(91,87,91,0.85)", // #5b575b @ 85%
+    black:   "#403e41", red:     "#ff6188", green:   "#a9dc76", yellow:  "#ffd866",
+    blue:    "#78dce8", magenta: "#ab9df2", cyan:    "#78dce8", white:   "#fcfcfa",
+    brightBlack:   "#727072", brightRed:     "#ff7a9c", brightGreen:   "#bce088", brightYellow:  "#ffe093",
+    brightBlue:    "#92e3ec", brightMagenta: "#bcb1f5", brightCyan:    "#92e3ec", brightWhite:   "#ffffff",
   },
   solarized: {
     // Solarized Dark canonical ANSI mapping (Ethan Schoonover).

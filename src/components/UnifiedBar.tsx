@@ -261,7 +261,7 @@ function ThemePicker({
     { id: "auto",      label: "System",         icon: Monitor },
     { id: "light",     label: "Light",          icon: Sun },
     { id: "dark",      label: "Dark",           icon: Moon },
-    { id: "monokai",   label: "Monokai",        icon: Palette },
+    { id: "monokai",   label: "Monokai Pro",    icon: Palette },
     { id: "solarized", label: "Solarized Dark", icon: Sunrise },
     { id: "cobalt",    label: "Cobalt",         icon: Droplet },
     { id: "matrix",    label: "Matrix",         icon: Binary },
