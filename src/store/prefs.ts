@@ -15,9 +15,6 @@ const LS_YOLO          = "yoloMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
-const LS_TERMINAL_ENGINE = "terminalEngine";
-
-export type TerminalEngine = "xterm" | "ghostty";
 
 export type ThemeMode = "auto" | "light" | "dark";
 
@@ -192,15 +189,6 @@ interface PrefsState {
    *  most of the visual gap with native Terminal.app, which renders heavier
    *  thanks to Core Text + subpixel AA. */
   terminalFontWeight: number;
-  /** Which terminal emulation library to use:
-   *   - "xterm" (default): xterm.js + WebGL addon. JS reimplementation of
-   *     VT100. Battle-tested but every escape sequence is hand-coded.
-   *   - "ghostty" (beta): ghostty-web - Ghostty's WASM-compiled VT100
-   *     parser exposed via xterm.js-compatible API. Same parser that runs
-   *     the native Ghostty app; fixes grapheme handling (Arabic /
-   *     Devanagari) and XTPUSHSGR/XTPOPSGR. Canvas renderer only (no
-   *     WebGL today), so very-heavy redraws may regress slightly. */
-  terminalEngine: TerminalEngine;
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
@@ -217,7 +205,6 @@ interface PrefsState {
   setYoloMode:        (v: boolean) => void;
   setDesktopNotifications: (v: boolean) => void;
   setSettledHighlight: (v: boolean) => void;
-  setTerminalEngine: (e: TerminalEngine) => void;
 }
 
 const lsGet = (k: string, fallback: string) => {
@@ -239,16 +226,12 @@ const initialTheme        = (lsGet(LS_THEME, "dark") as ThemeMode);
 const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
-// Default to xterm.js until the ghostty path has more flight time on real
-// agent sessions. The toggle lets early adopters opt in immediately.
-const initialTerminalEngine: TerminalEngine = (lsGet(LS_TERMINAL_ENGINE, "xterm") === "ghostty") ? "ghostty" : "xterm";
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
   yoloMode: initialYolo,
   desktopNotifications: initialDesktopNotif,
   settledHighlight: initialSettledHighlight,
-  terminalEngine: initialTerminalEngine,
   editorFontId: initialEditorFont,
   terminalFontId: initialTerminalFont,
   terminalFontSize: initialTerminalSize,
@@ -299,14 +282,6 @@ export const usePrefs = create<PrefsState>(set => ({
   setSettledHighlight: (v) => {
     try { localStorage.setItem(LS_SETTLED_HIGHLIGHT, v ? "1" : "0"); } catch {}
     set({ settledHighlight: v });
-  },
-  setTerminalEngine: (e) => {
-    try { localStorage.setItem(LS_TERMINAL_ENGINE, e); } catch {}
-    set({ terminalEngine: e });
-    // Live takeover would require tearing down every mounted xterm/ghostty
-    // instance and rebuilding it - costly and forces a PTY churn. Cheaper
-    // to ask the user to reload (or to wait for the next workspace switch
-    // for newly opened terminals to pick up the new engine).
   },
   cycleThemeMode: () => {
     const order: ThemeMode[] = ["auto", "light", "dark"];

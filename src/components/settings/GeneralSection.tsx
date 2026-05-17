@@ -23,8 +23,6 @@ export function GeneralSection() {
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
-  const terminalEngine = usePrefs(s => s.terminalEngine);
-  const setTerminalEngine = usePrefs(s => s.setTerminalEngine);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -87,20 +85,6 @@ export function GeneralSection() {
         />
       </div>
 
-      {/* Terminal engine - swaps the underlying VT100 emulator. Same toggle
-          mechanics as the other prefs (the Toggle component encodes the
-          boolean), but the engine value is a string enum, so the on-state
-          maps "ghostty" / off-state maps "xterm". Takeover happens on
-          newly-mounted terminals only; existing PTYs keep their engine
-          until the workspace switches or the app reloads. */}
-      <div className="border-t border-[var(--color-border-soft)] pt-6">
-        <Toggle
-          label="Use Ghostty terminal engine (beta)"
-          hint="Run a real VT100 emulator (Ghostty, compiled to WebAssembly) instead of xterm.js. Fixes grapheme handling (Arabic / Devanagari) and obscure escape sequences. Canvas-only renderer for now - very heavy redraw torrents may regress slightly versus the xterm + WebGL default. New terminals pick up the change; existing ones keep their current engine until you switch workspaces or reload."
-          value={terminalEngine === "ghostty"}
-          onChange={(v) => setTerminalEngine(v ? "ghostty" : "xterm")}
-        />
-      </div>
     </div>
   );
 }

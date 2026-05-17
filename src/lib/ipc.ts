@@ -34,6 +34,10 @@ export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agent
 export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
 export const workspaceSendDiffToMain = (id: string) =>
   invoke<{ tracked_files: number; untracked_files: number }>("workspace_send_diff_to_main", { id });
+/** Returns the libghostty-serialized screen state of a PTY (or empty
+ *  string if the PTY's gone). Replay via `term.write(snapshot)` to
+ *  rehydrate xterm's grid. Cheap to call repeatedly. */
+export const ptySnapshot = (ptyId: string) => invoke<string>("pty_snapshot", { ptyId });
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
 export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });
 export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
