@@ -22,7 +22,7 @@ import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { TermicMark } from "@/icons/TermicLogo";
 import { cn } from "@/lib/utils";
 import { usePrefs, applyTheme, type ThemeMode } from "@/store/prefs";
-import { Sun, Moon, Monitor, Coffee, Sunrise, Droplet, Binary, Shield, Network, FolderLock, Zap } from "lucide-react";
+import { Sun, Moon, Monitor, Palette, Sunrise, Droplet, Binary, Shield, Network, FolderLock, Zap } from "lucide-react";
 
 type Step = 0 | 1 | 2;
 
@@ -195,7 +195,7 @@ const THEME_ITEMS: { id: ThemeMode; label: string; icon: typeof Sun; swatch: [st
   { id: "auto",      label: "System",         icon: Monitor, swatch: ["#0a0a0a", "#fdf6e3", "#d97757"] },
   { id: "light",     label: "Light",          icon: Sun,     swatch: ["#faf9f6", "#1c1b1a", "#c25e3d"] },
   { id: "dark",      label: "Dark",           icon: Moon,    swatch: ["#0a0a0a", "#f0efed", "#d97757"] },
-  { id: "espresso",  label: "Espresso",       icon: Coffee,  swatch: ["#2a1d12", "#f5e6d3", "#d97757"] },
+  { id: "monokai",   label: "Monokai",        icon: Palette, swatch: ["#272822", "#f8f8f2", "#f92672"] },
   { id: "solarized", label: "Solarized Dark", icon: Sunrise, swatch: ["#002b36", "#93a1a1", "#cb4b16"] },
   { id: "cobalt",    label: "Cobalt",         icon: Droplet, swatch: ["#193549", "#e1efff", "#ffc600"] },
   { id: "matrix",    label: "Matrix",         icon: Binary,  swatch: ["#000800", "#00ff41", "#00ff41"] },
@@ -241,7 +241,7 @@ function StepTheme() {
                   {t.id === "auto" && "follows macOS"}
                   {t.id === "light" && "cream + terracotta"}
                   {t.id === "dark" && "warm near-black"}
-                  {t.id === "espresso" && "coffee browns"}
+                  {t.id === "monokai" && "Sublime classic"}
                   {t.id === "solarized" && "Schoonover palette"}
                   {t.id === "cobalt" && "navy + yellow"}
                   {t.id === "matrix" && "phosphor green CRT"}

@@ -119,3 +119,5 @@ coverage/
 .pnpm-store/
 .yarn/
 .npmrc.local
+# CocoIndex Code (ccc)
+/.cocoindex_code/

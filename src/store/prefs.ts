@@ -17,10 +17,10 @@ const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
 
-export type ThemeMode = "auto" | "light" | "dark" | "espresso" | "solarized" | "cobalt" | "matrix";
+export type ThemeMode = "auto" | "light" | "dark" | "monokai" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
  *  never returned; it gets mapped to light/dark based on OS preference. */
-export type ResolvedTheme = "light" | "dark" | "espresso" | "solarized" | "cobalt" | "matrix";
+export type ResolvedTheme = "light" | "dark" | "monokai" | "solarized" | "cobalt" | "matrix";
 
 /** xterm theme objects keyed by resolved palette. Each must define enough
  *  of xterm's ITheme that the terminal looks at home in the surrounding
@@ -49,16 +49,20 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     brightBlack: "#55534f", brightRed: "#d9453d", brightGreen: "#52a352", brightYellow: "#b88a26",
     brightBlue: "#3a7bd9", brightMagenta: "#9358c2", brightCyan: "#1f97ad", brightWhite: "#1c1b1a",
   },
-  espresso: {
-    background: "#2a1d12",
-    foreground: "#f5e6d3",
-    cursor: "#d97757",
-    cursorAccent: "#2a1d12",
-    selectionBackground: "rgba(217,119,87,0.25)",
-    black: "#3d2c21", red: "#e07b67", green: "#a8c97a", yellow: "#e9b46b",
-    blue: "#7fa9c9", magenta: "#c69cb7", cyan: "#8acdc6", white: "#e6d5c2",
-    brightBlack: "#7a6757", brightRed: "#f0917b", brightGreen: "#c2dd92", brightYellow: "#fbcb83",
-    brightBlue: "#9bc1dd", brightMagenta: "#dcb4cc", brightCyan: "#a8dfd9", brightWhite: "#fbf0e0",
+  monokai: {
+    // Canonical Sublime Monokai (Wimer Hazenberg, 2006). ANSI 16
+    // maps to Monokai's syntax palette - same colors you'd see
+    // highlighting code in Sublime, so `ls --color` / `git log`
+    // feel like home.
+    background: "#272822",
+    foreground: "#f8f8f2",
+    cursor: "#f92672",          // iconic pink-red - "keyword" color
+    cursorAccent: "#272822",
+    selectionBackground: "rgba(73,72,62,0.85)", // #49483e
+    black:   "#272822", red:     "#f92672", green:   "#a6e22e", yellow:  "#e6db74",
+    blue:    "#66d9ef", magenta: "#ae81ff", cyan:    "#a1efe4", white:   "#f8f8f2",
+    brightBlack:   "#75715e", brightRed:     "#ff6188", brightGreen:   "#b4eb56", brightYellow:  "#f0e58f",
+    brightBlue:    "#79e6f5", brightMagenta: "#c39bff", brightCyan:    "#b6f4ed", brightWhite:   "#ffffff",
   },
   solarized: {
     // Solarized Dark canonical ANSI mapping (Ethan Schoonover).
@@ -439,7 +443,7 @@ export function applyTheme(mode: ThemeMode) {
   const html = document.documentElement;
   html.classList.toggle("light",     resolved === "light");
   html.classList.toggle("dark",      resolved === "dark");
-  html.classList.toggle("espresso",  resolved === "espresso");
+  html.classList.toggle("monokai",   resolved === "monokai");
   html.classList.toggle("solarized", resolved === "solarized");
   html.classList.toggle("cobalt",    resolved === "cobalt");
   html.classList.toggle("matrix",    resolved === "matrix");
