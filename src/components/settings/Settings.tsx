@@ -4,7 +4,7 @@
 
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
-import { ArrowLeft, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Bot } from "lucide-react";
+import { ArrowLeft, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -43,7 +43,7 @@ export function Settings() {
           active={tab === "general"} onClick={() => openSettings("general")} />
         <RailItem icon={<Palette className="h-4 w-4" />} label="Appearance"
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
-        <RailItem icon={<Bot className="h-4 w-4" />} label="Agents"
+        <RailItem icon={<Terminal className="h-4 w-4" />} label="Agents"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
         <RailItem icon={<Keyboard className="h-4 w-4" />} label="Shortcuts"
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />
@@ -57,7 +57,6 @@ export function Settings() {
         {projects.map(p => (
           <RailItem
             key={p.id}
-            icon={<span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-dim)]">P</span>}
             label={p.name}
             active={tab === "repositories" && repoId === p.id}
             onClick={() => openSettings("repositories", p.id)}
@@ -84,7 +83,7 @@ export function Settings() {
 }
 
 function RailItem({ icon, label, active, onClick }: {
-  icon: React.ReactNode; label: string; active: boolean; onClick: () => void;
+  icon?: React.ReactNode; label: string; active: boolean; onClick: () => void;
 }) {
   return (
     <button

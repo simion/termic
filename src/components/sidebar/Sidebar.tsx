@@ -5,7 +5,8 @@ import { useState } from "react";
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Moon, FolderOpen, Cog, GitBranchPlus } from "lucide-react";
+import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown } from "lucide-react";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,8 @@ export function Sidebar() {
   const loadAll = useApp(s => s.loadAll);
   const openNewProject = useUI(s => s.openNewProject);
   const openNewWorkspace = useUI(s => s.openNewWorkspace);
+  const collapsedProjects = useApp(s => s.collapsedProjects);
+  const toggleProjectCollapsed = useApp(s => s.toggleProjectCollapsed);
 
   const isUnread = (wsId: string) =>
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread);
@@ -81,22 +84,35 @@ export function Sidebar() {
         <div className="flex flex-col gap-0.5">
           {projects.map(p => {
             const wsList = workspaces.filter(w => w.project_id === p.id && !w.archived);
+            const collapsed = !!collapsedProjects[p.id];
             return (
               <div key={p.id}>
-                <Tip content={compact ? p.name : ""} delay={400}>
+                <Tip content={compact ? p.name : ""}>
                   <div
-                    onDoubleClick={() => !compact && setRenaming({ kind: "proj", id: p.id, value: p.name })}
+                    // Single-click toggles collapse. Double-click rename was
+                    // removed — too easy to fire by accident while clicking
+                    // fast to collapse/expand. Rename lives in
+                    // Settings → Repositories instead.
+                    onClick={() => toggleProjectCollapsed(p.id)}
                     className={cn(
                       "group flex items-center justify-between rounded-md text-[13.5px] font-semibold hover:bg-[var(--color-hover)] cursor-pointer",
                       compact ? "px-0 py-1 justify-center" : "px-2 py-1.5",
                     )}
                   >
                     {compact ? (
-                      <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-dim)]">P</span>
+                      // Compact mode: chevron alone, rotates 90° when expanded
+                      // so the user can still tell the project's state at
+                      // a glance even without the workspaces row underneath.
+                      collapsed
+                        ? <ChevronRight className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                        : <ChevronDown  className="h-4 w-4 text-[var(--color-fg-dim)]" />
                     ) : (
                       <>
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-dim)]">P</span>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          {collapsed
+                            ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                            : <ChevronDown  className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                          }
                           {renaming && renaming.kind === "proj" && renaming.id === p.id ? (
                             <input
                               autoFocus
@@ -119,28 +135,47 @@ export function Sidebar() {
                             so the row stays clean; New-workspace stays
                             visible because it's the headline action. */}
                         <div className="flex items-center gap-0.5">
-                          <Tip content="Repo settings" delay={300}>
+                          <Tip content="Repo settings">
                             <button
                               className="rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100 transition-opacity"
                               onClick={(e) => { e.stopPropagation(); useApp.getState().openSettings("repositories", p.id); }}
-                            ><Cog className="h-3.5 w-3.5" /></button>
+                            ><Cog className="h-4 w-4" /></button>
                           </Tip>
-                          <Tip content="Open repo (live checkout, no worktree)" delay={300}>
-                            <button
-                              className="rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100 transition-opacity"
-                              onClick={async (e) => {
-                                e.stopPropagation();
+                          {/* Single `+` trigger → instant dropdown with the
+                              two project-level actions. Replaces the two
+                              separate icons (FolderGit2 + GitBranchPlus) we
+                              used to show side by side — less visual noise
+                              on the row, clearer affordance (the universal
+                              "+" = "create / open something here"). */}
+                          <DropdownRoot>
+                            <Tip content="New…">
+                              <DropdownTrigger asChild>
+                                <button
+                                  onClick={e => e.stopPropagation()}
+                                  className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] data-[state=open]:bg-[var(--color-bg-3)] data-[state=open]:text-[var(--color-fg)]"
+                                ><Plus className="h-4 w-4" /></button>
+                              </DropdownTrigger>
+                            </Tip>
+                            <DropdownMenu align="end" sideOffset={4}>
+                              <DropdownItem onSelect={async () => {
                                 try { const w = await workspaceOpenRepo(p.id); await loadAll(); setActive(w.id); }
                                 catch (err) { console.error(err); }
-                              }}
-                            ><FolderOpen className="h-3.5 w-3.5" /></button>
-                          </Tip>
-                          <Tip content="New workspace (branch from this repo)" delay={300}>
-                            <button
-                              className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-                              onClick={(e) => { e.stopPropagation(); openNewWorkspace(p.id); }}
-                            ><GitBranchPlus className="h-3.5 w-3.5" /></button>
-                          </Tip>
+                              }}>
+                                <FolderGit2 className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                                <div className="flex flex-col">
+                                  <span>Open repo</span>
+                                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">work in the actual repo folder</span>
+                                </div>
+                              </DropdownItem>
+                              <DropdownItem onSelect={() => openNewWorkspace(p.id)}>
+                                <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                                <div className="flex flex-col">
+                                  <span>New worktree</span>
+                                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">separate copy + own port — run in parallel</span>
+                                </div>
+                              </DropdownItem>
+                            </DropdownMenu>
+                          </DropdownRoot>
                         </div>
                       </>
                     )}
@@ -149,15 +184,16 @@ export function Sidebar() {
 
                 {/* Repo workspaces (the project's live checkout, no worktree)
                     rendered first as a pinned row so they're visually separate
-                    from per-branch worktree workspaces. */}
-                {[...wsList].sort((a, b) => Number(!!b.is_repo_root) - Number(!!a.is_repo_root)).map(w => {
+                    from per-branch worktree workspaces. Hidden entirely when
+                    the project header is collapsed. */}
+                {!collapsed && [...wsList].sort((a, b) => Number(!!b.is_repo_root) - Number(!!a.is_repo_root)).map(w => {
                   const isRenaming = renaming?.kind === "ws" && renaming.id === w.id;
                   const unread = isUnread(w.id);
                   const loaded = isLoaded(w.id);
                   const asleep = !loaded && !unread && activeWs !== w.id;
                   const isRepo = !!w.is_repo_root;
                   return (
-                    <Tip key={w.id} content={compact ? `${w.name} · ${w.cli}${isRepo ? " (repo)" : ""}${asleep ? " · asleep" : ""}` : ""} delay={400}>
+                    <Tip key={w.id} content={compact ? `${w.name} · ${w.cli}${isRepo ? " (repo)" : ""}${asleep ? " · asleep" : ""}` : ""}>
                       <div
                         onDoubleClick={() => !compact && setRenaming({ kind: "ws", id: w.id, value: w.name })}
                         onClick={() => { if (!isRenaming) setActive(w.id); }}
@@ -180,25 +216,18 @@ export function Sidebar() {
                             compact ? "right-1.5 top-1 h-1.5 w-1.5" : "left-1.5 h-1.5 w-1.5",
                           )} />
                         )}
-                        {/* Repo workspaces use a folder icon (with a small CLI
-                            brand dot tucked inside) — instantly distinguishable
-                            from per-branch worktrees, which keep the full CLI mark. */}
-                        {isRepo ? (
-                          <span className={cn(
-                            "shrink-0 text-[var(--color-fg-dim)]",
-                            asleep && "opacity-60",
-                          )} title="Repo checkout (no worktree)">
-                            <FolderOpen className={iconSize(compact)} />
-                          </span>
-                        ) : (
-                          <span className={cn(
-                            "shrink-0",
-                            unread ? "text-[var(--color-err)]" : (CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg-faint)]"),
-                            asleep && "opacity-50",
-                          )}>
-                            <CliIcon cli={w.cli} className={iconSize(compact)} />
-                          </span>
-                        )}
+                        {/* Both repo-checkout and worktree workspaces use the
+                            CLI brand icon — the row's REPO chip is the only
+                            visual cue you need to tell them apart. Keeping
+                            the agent icon consistent makes scanning the
+                            sidebar for "which agent is running where" easy. */}
+                        <span className={cn(
+                          "shrink-0",
+                          unread ? "text-[var(--color-err)]" : (CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg-faint)]"),
+                          asleep && "opacity-50",
+                        )}>
+                          <CliIcon cli={w.cli} className={iconSize(compact)} />
+                        </span>
                         {!compact && (
                           isRenaming ? (
                             // Sized to fit the row (h-5, no extra py) so the row's
@@ -219,15 +248,20 @@ export function Sidebar() {
                             />
                           ) : (
                             <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                              <span className="truncate">{w.name}</span>
+                              {/* Repo-checkout workspace name is just a
+                                  duplicate of the project name shown right
+                                  above — render the REPO chip alone as the
+                                  row's label instead. Worktrees still show
+                                  their (distinct) branch-derived name. */}
+                              {!isRepo && <span className="truncate">{w.name}</span>}
                               {/* Moon sits right after the name — reads as a
                                   state badge ("asleep") rather than a trailing
                                   control on the far right, which was visually
                                   ambiguous (toolbar? indicator?). */}
                               {asleep && (
-                                <Tip content="Asleep — click the workspace to wake it" delay={300}>
+                                <Tip content="Asleep — click the workspace to wake it">
                                   <span className="shrink-0 text-[var(--color-fg-faint)] opacity-60">
-                                    <Moon className="h-3 w-3" />
+                                    <Moon className="h-3.5 w-3.5" />
                                   </span>
                                 </Tip>
                               )}
@@ -242,7 +276,7 @@ export function Sidebar() {
                         {!compact && !isRenaming && (
                           // Trailing actions only — moon moved next to the name.
                           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                            <Tip content="Archive workspace" delay={300}>
+                            <Tip content="Archive workspace">
                               <button
                                 className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)] group-hover:opacity-100 transition-opacity"
                                 onClick={async (e) => {
@@ -261,7 +295,7 @@ export function Sidebar() {
                                   } catch (err) { console.error(err); }
                                   finally { setBusy(null); }
                                 }}
-                              ><Archive className="h-3.5 w-3.5" /></button>
+                              ><Archive className="h-4 w-4" /></button>
                             </Tip>
                           </div>
                         )}
@@ -312,7 +346,11 @@ export function Sidebar() {
  *  56px column has the budget for it (and the icons need to be readable
  *  without text labels). */
 function iconSize(compact: boolean) {
-  return compact ? "h-5 w-5" : "h-4 w-4";
+  // Bumped one step in both modes. h-4 (16px) felt undersized next to
+  // 14px body text; h-[18px] reads as deliberate without taking over.
+  // Compact mode jumps to h-6 (24px) — icon-only mode benefits more from
+  // the size since there's no label crutch.
+  return compact ? "h-6 w-6" : "h-[18px] w-[18px]";
 }
 
 function NavItem({ icon, label, active, compact, onClick }: {

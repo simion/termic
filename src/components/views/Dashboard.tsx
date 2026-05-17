@@ -9,8 +9,9 @@ import { TermicBlockmark } from "@/icons/TermicLogo";
 import { workspaceOpenRepo } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import {
-  FolderPlus, Settings as SettingsIcon, Compass, GitBranchPlus, FolderOpen, Cog, Boxes,
+  FolderPlus, Settings as SettingsIcon, Compass, GitBranchPlus, FolderGit2, Cog, Boxes, Plus,
 } from "lucide-react";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
 
 export function Dashboard() {
   const projects     = useApp(s => s.projects);
@@ -91,14 +92,18 @@ export function Dashboard() {
                             onClick={() => setActive(w.id)}
                             className="group flex items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-[var(--color-hover)]"
                           >
-                            <span className={cn("shrink-0",
-                              w.is_repo_root ? "text-[var(--color-fg-dim)]" : (CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg-faint)]"),
+                            {/* Use the CLI brand icon for repo-checkout rows
+                                too — matches the sidebar's unified rendering.
+                                The REPO chip alone signals "live checkout". */}
+                            <span className={cn(
+                              "shrink-0",
+                              CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg-faint)]",
                             )}>
-                              {w.is_repo_root
-                                ? <FolderOpen className="h-4 w-4" />
-                                : <CliIcon cli={w.cli} className="h-4 w-4" />}
+                              <CliIcon cli={w.cli} className="h-4 w-4" />
                             </span>
-                            <span className="font-medium text-[13px]">{w.name}</span>
+                            {/* Hide the workspace name on repo rows — it's
+                                always just the project name shown above. */}
+                            {!w.is_repo_root && <span className="font-medium text-[13px]">{w.name}</span>}
                             {w.is_repo_root && (
                               <span className="rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">
                                 repo
@@ -154,7 +159,6 @@ function ProjectCard({ name, onSettings, onOpenRepo, onNewWorkspace, children }:
     <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
       <header className="flex items-center justify-between border-b border-[var(--color-border-soft)] px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-dim)]">P</span>
           <span className="text-[13.5px] font-semibold">{name}</span>
         </div>
         <div className="flex items-center gap-1">
@@ -163,15 +167,34 @@ function ProjectCard({ name, onSettings, onOpenRepo, onNewWorkspace, children }:
             onClick={onSettings}
             className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
           ><Cog className="h-4 w-4" /></button>
-          <button
-            title="Open repo (live checkout — no worktree)"
-            onClick={onOpenRepo}
-            className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-          ><FolderOpen className="h-4 w-4" /></button>
-          <button
-            onClick={onNewWorkspace}
-            className="ml-1 flex items-center gap-1 rounded-md bg-[var(--color-bg-2)] px-2.5 py-1 text-[12.5px] text-[var(--color-fg)] hover:bg-[var(--color-bg-3)]"
-          ><GitBranchPlus className="h-3.5 w-3.5" /> Workspace</button>
+          {/* Single `+` → dropdown with Repo / Worktree, same pattern as
+              the sidebar project row. Repo is idempotent on the Rust side
+              (`workspace_open_repo` returns the existing repo-root workspace
+              if one is already open) so clicking it twice just focuses it. */}
+          <DropdownRoot>
+            <DropdownTrigger asChild>
+              <button
+                title="New…"
+                className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] data-[state=open]:bg-[var(--color-bg-3)] data-[state=open]:text-[var(--color-fg)]"
+              ><Plus className="h-4 w-4" /></button>
+            </DropdownTrigger>
+            <DropdownMenu align="end" sideOffset={4}>
+              <DropdownItem onSelect={onOpenRepo}>
+                <FolderGit2 className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                <div className="flex flex-col">
+                  <span>Open repo</span>
+                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">work in the actual repo folder</span>
+                </div>
+              </DropdownItem>
+              <DropdownItem onSelect={onNewWorkspace}>
+                <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                <div className="flex flex-col">
+                  <span>New worktree</span>
+                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">separate copy + own port — run in parallel</span>
+                </div>
+              </DropdownItem>
+            </DropdownMenu>
+          </DropdownRoot>
         </div>
       </header>
       {children}

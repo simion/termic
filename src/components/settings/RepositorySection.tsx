@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { projectUpdate, projectRemove } from "@/lib/ipc";
 import type { Project } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
@@ -31,6 +32,21 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (project) { setDraft({ ...project }); setErr(null); firstSync.current = true; }
   }, [project]);
+
+  // CRITICAL: every hook in this component must run on every render — React
+  // tracks hook calls by ordinal position. Moving these selectors AFTER the
+  // early-return below skips them on renders where `project` is null, which
+  // triggers "Rendered more hooks than during the previous render" the moment
+  // the project shows up. Keep all hook calls above any conditional return.
+  // The filter creates a new array each render — Zustand 5 warns about this.
+  // We compute the count directly via a primitive-returning selector so the
+  // snapshot stays stable across renders unless workspaces actually change.
+  const wsCount = useApp(s => s.workspaces.reduce(
+    (n, w) => n + (project && w.project_id === project.id ? 1 : 0), 0,
+  ));
+  const wtCount = useApp(s => s.workspaces.reduce(
+    (n, w) => n + (project && w.project_id === project.id && !w.is_repo_root ? 1 : 0), 0,
+  ));
 
   if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">Repository not found.</div>;
 
@@ -71,12 +87,33 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   const proj = project;
   async function remove() {
     if (!proj) return;
-    if (!confirm(`Remove "${proj.name}" from Termic?\n\nThis only removes the project from the list. The repo and its worktrees stay on disk.`)) return;
+    // Build a confirmation that's specific about the side effects.
+    // Worktrees: get `git worktree remove` + `rm -rf` on disk.
+    // Repo-root workspaces: just unregistered (the real repo stays put).
+    // The user's actual git repo at root_path is NEVER touched.
+    const lines = [
+      `Remove project "${proj.name}"?`,
+      "",
+      wsCount === 0
+        ? "No workspaces to remove."
+        : `This will archive ${wsCount} workspace${wsCount === 1 ? "" : "s"}:`,
+    ];
+    if (wtCount > 0) {
+      lines.push(`  • ${wtCount} git worktree${wtCount === 1 ? "" : "s"} will be removed from disk (rm -rf).`);
+    }
+    if (wsCount - wtCount > 0) {
+      lines.push(`  • ${wsCount - wtCount} repo-root workspace${wsCount - wtCount === 1 ? "" : "s"} will be unregistered.`);
+    }
+    lines.push("", `Your repo at ${proj.root_path} is NOT touched.`, "", "Cannot be undone.");
+    if (!confirm(lines.join("\n"))) return;
+    const { setBusy } = useUI.getState();
+    setBusy(`Removing "${proj.name}" and ${wsCount} workspace${wsCount === 1 ? "" : "s"}…`);
     try {
       await projectRemove(proj.id);
       await loadAll();
       setView("dashboard");
     } catch (e) { setErr(String(e)); }
+    finally { setBusy(null); }
   }
 
   // files_to_copy → textarea text + back.
@@ -87,7 +124,6 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   return (
     <div className="flex flex-col gap-7">
       <div className="flex items-center gap-3">
-        <span className="rounded bg-[var(--color-bg-3)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)]">P</span>
         <input
           value={draft.name}
           onChange={(e) => patch("name", e.target.value)}

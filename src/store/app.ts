@@ -50,6 +50,9 @@ interface AppState {
    *  right-panel footer? Default false — we don't auto-spawn the scratch
    *  shell. Flips true when the user clicks the "+terminal" icon. */
   footerTerm: Record<string, boolean>;
+  /** Per-project collapse state in the sidebar. true = workspaces hidden.
+   *  Persisted to localStorage so the user's tree shape survives launches. */
+  collapsedProjects: Record<string, boolean>;
 
   // ── actions ──
   loadAll: () => Promise<void>;
@@ -64,6 +67,7 @@ interface AppState {
   toggleTerminalSplit: (wsId: string) => void;
   enableFooterTerm: (wsId: string) => void;
   disableFooterTerm: (wsId: string) => void;
+  toggleProjectCollapsed: (projectId: string) => void;
   setTerminalSplitHeight: (wsId: string, px: number) => void;
   /** Returns the id of the new bottom tab. */
   addBottomTab: (wsId: string) => string;
@@ -87,6 +91,8 @@ const LS_SPLITH  = "terminalSplitHeight"; // Record<wsId, number>
 const LS_SBW     = "sidebarWidth";
 const LS_RPW     = "rightPanelWidth";
 const LS_RFH     = "rightFooterHeight";
+const LS_COLLAPSED_PROJ = "collapsedProjects"; // Record<projId, true>
+const initialCollapsed = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_PROJ) || "{}"); } catch { return {}; } })();
 
 const initialCompact = (() => { try { return localStorage.getItem(LS_COMPACT) === "1"; } catch { return false; } })();
 const initialHidden  = (() => { try { return localStorage.getItem(LS_RPANEL)  === "1"; } catch { return false; } })();
@@ -120,6 +126,7 @@ export const useApp = create<AppState>((set, get) => ({
   activeBottomTab: {},
   mountedWorkspaces: new Set<string>(),
   footerTerm: {},
+  collapsedProjects: initialCollapsed as Record<string, boolean>,
 
   loadAll: async () => {
     const [projects, workspaces] = await Promise.all([ipc.projectsList(), ipc.workspacesList()]);
@@ -203,6 +210,12 @@ export const useApp = create<AppState>((set, get) => ({
   disableFooterTerm: (wsId) => set(s => {
     const { [wsId]: _, ...rest } = s.footerTerm; void _;
     return { footerTerm: rest };
+  }),
+  toggleProjectCollapsed: (projectId) => set(s => {
+    const next = { ...s.collapsedProjects };
+    if (next[projectId]) delete next[projectId]; else next[projectId] = true;
+    try { localStorage.setItem(LS_COLLAPSED_PROJ, JSON.stringify(next)); } catch {}
+    return { collapsedProjects: next };
   }),
 
   addBottomTab: (wsId) => {

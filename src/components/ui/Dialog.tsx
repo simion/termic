@@ -24,17 +24,22 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
             an anti-aliasing bug. Plain dim is cleaner and matches Conductor's
             backdrop style. */}
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/65 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
-        {/* Centering via flexbox on a full-viewport wrapper — NO transforms
-            on the Content itself. The previous `left-1/2 -translate-x-1/2`
-            scheme positions the dialog at sub-pixel offsets when the viewport
-            or dialog width is odd, which makes every glyph inside render
-            blurry. flex centering keeps everything on integer pixels. */}
+        {/* Vertical centering is safe ONLY because Dialog.Content below sets
+            an explicit `translate3d(0,0,0)` — that promotes it to its own
+            compositing layer, which WebKit pixel-snaps. Without the layer
+            hint, `items-center` produces a fractional Y offset whenever
+            `(viewport_height − dialog_height) / 2` is .5px, and every glyph
+            inside the dialog renders blurry. DO NOT remove the translate3d. */}
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
           <Dialog.Content
             className={cn(
               "relative grid w-full max-w-md gap-2 pointer-events-auto",
               "rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-1)] p-5 shadow-2xl",
-              "data-[state=open]:animate-in data-[state=open]:fade-in-0",
+              // Promote to its own compositing layer with an explicit
+              // integer-offset transform — WebKit snaps a layer with
+              // `translate3d(0,0,0)` to whole pixels, which keeps text
+              // crisp even if the parent's flex math ever drifts.
+              "[transform:translate3d(0,0,0)]",
               className,
             )}
           >

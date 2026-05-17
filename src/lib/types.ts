@@ -41,6 +41,11 @@ export interface CreateWorkspaceArgs {
   cli?: string;
   base_branch?: string | null;
   branch?: string | null;
+  /** Pre-generated workspace UUID. Pass this if you want to subscribe to
+   *  `setup-output://<id>` / `setup-done://<id>` events BEFORE invoking — the
+   *  alternative (using server-generated ID returned from the call) has a
+   *  guaranteed race for empty setup scripts. */
+  id?: string;
 }
 
 export interface Agent {

@@ -78,6 +78,13 @@ pub struct CreateWorkspaceArgs {
     pub base_branch: Option<String>,
     /// Explicit branch name. If omitted, defaults to `slugify(name)`.
     pub branch: Option<String>,
+    /// Optional client-supplied workspace ID. Lets the frontend subscribe
+    /// to `setup-output://<id>` + `setup-done://<id>` BEFORE invoking
+    /// create — without this, the empty-script branch race-emits done
+    /// before the listener attaches and the dialog hangs forever.
+    /// Defaults to a server-side UUID for backwards-compat.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 // ───────────────────────────── paths ─────────────────────────────
@@ -344,9 +351,23 @@ fn projects_list() -> Vec<Project> { load_projects() }
 
 #[tauri::command]
 fn project_add(root_path: String) -> Result<Project, String> {
-    let pb = PathBuf::from(&root_path);
-    if !pb.join(".git").exists() {
-        return Err(format!("{} is not a git repo (no .git)", root_path));
+    // Trim whitespace + expand a leading `~` — users paste paths with
+    // both routinely. The naive `pb.join(".git").exists()` check we used
+    // to do here missed: worktrees (`.git` is a FILE not a dir),
+    // bare repos (no `.git` at all), and paths with a stray newline.
+    // `git -C <path> rev-parse --git-dir` is the canonical "am I in a
+    // git repo?" question and handles all three cases.
+    let trimmed = root_path.trim();
+    let expanded: String = if let Some(rest) = trimmed.strip_prefix("~/") {
+        dirs::home_dir().map(|h| h.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|| trimmed.to_string())
+    } else { trimmed.to_string() };
+    let pb = PathBuf::from(&expanded);
+    if !pb.exists() {
+        return Err(format!("{} does not exist", expanded));
+    }
+    if git(&["rev-parse", "--git-dir"], &pb).is_err() {
+        return Err(format!("{} is not a git repo", expanded));
     }
     let mut list = load_projects();
     let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
@@ -366,7 +387,22 @@ fn project_add(root_path: String) -> Result<Project, String> {
         base_branch: format!("{remote}/{base}"),
         remote,
         preview_url: String::new(),
-        files_to_copy: vec![".env*".into()],
+        // Seeded with the patterns 99% of repos benefit from. The user can
+        // tune these in Settings → Repositories → Files to copy.
+        //   .env*         — local secrets git ignores. Without these the
+        //                   worktree won't run anything that hits an API.
+        //   .venv         — Python venv. Copying saves ~30-60s of pip install
+        //                   on each new worktree. Caveat: venvs bake the
+        //                   absolute path into `bin/activate`; users with
+        //                   broken activate scripts can drop this.
+        //   node_modules  — npm deps. Saves multi-minute npm install. Caveat:
+        //                   can be 500MB+; users with mono-repos may want to
+        //                   strip this and run `npm ci` in the setup script.
+        files_to_copy: vec![
+            ".env*".into(),
+            ".venv".into(),
+            "node_modules".into(),
+        ],
         setup_script: String::new(),
         run_script: String::new(),
         archive_script: String::new(),
@@ -390,11 +426,32 @@ fn project_update(p: Project) -> Result<(), String> {
     }
 }
 
+/// Remove a project AND archive every workspace under it (kills running
+/// scripts, removes git worktrees, wipes the worktree dirs). Off-thread —
+/// can take seconds on big repos. Workspaces' JSON files are also deleted
+/// so the entry disappears from disk entirely; the user's actual git repo
+/// at `root_path` is NOT touched (we never own that directory).
 #[tauri::command]
-fn project_remove(id: String) -> Result<(), String> {
-    let mut list = load_projects();
-    list.retain(|p| p.id != id);
-    save_projects(&list).map_err(|e| e.to_string())
+async fn project_remove(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspaces: Vec<Workspace> = load_workspaces()
+            .into_iter().filter(|w| w.project_id == id).collect();
+        for w in workspaces {
+            // workspace_archive_sync handles SIGTERMing scripts, running the
+            // archive script, removing the worktree, and saving archived=true.
+            // Errors per-workspace are logged but don't abort — we want a
+            // best-effort full cleanup even if one worktree is borked.
+            if let Err(e) = workspace_archive_sync(w.id.clone()) {
+                eprintln!("project_remove: archive {} failed: {}", w.id, e);
+            }
+            // Hard-delete the JSON so it doesn't linger as a ghost archived
+            // entry pointing at a non-existent project.
+            let _ = delete_workspace_file(&w.id);
+        }
+        let mut list = load_projects();
+        list.retain(|p| p.id != id);
+        save_projects(&list).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
 }
 
 // ───────────────────────────── workspace commands ─────────────────────────────
@@ -527,8 +584,11 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     let port = 18100 + (load_workspaces().len() as u16);
 
     let cli = args.cli.unwrap_or_else(|| proj.default_cli.clone());
+    // Use the client-supplied ID if present so the frontend can listen on
+    // `setup-{output,done}://<id>` BEFORE invoking — eliminates the
+    // empty-script race that made the "Running setup script…" spinner hang.
     let ws = Workspace {
-        id: Uuid::new_v4().to_string(),
+        id: args.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         project_id: proj.id.clone(),
         name: args.name,
         branch,

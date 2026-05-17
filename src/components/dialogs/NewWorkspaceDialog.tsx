@@ -30,6 +30,14 @@ export function NewWorkspaceDialog() {
   const [branchEdited, setBranchEdited] = useState(false);
   const [base, setBase] = useState("");
   const [busy, setBusy] = useState(false);
+  // Ref guard against double-submit. React batches setBusy(true) so the
+  // button's `disabled` only updates on the next render — but during a
+  // burst of Enter/click events, multiple submit() calls can already be
+  // queued before that render lands. Without this guard, mashing Create
+  // produces multiple worktrees on disk (the user's "hanged a lot of new
+  // workspace" bug). The ref is checked + flipped synchronously inside
+  // submit() so concurrent calls see the truth immediately.
+  const submittingRef = useRef(false);
   const [err, setErr] = useState<string | null>(null);
   // Progress phase: form (default) → creating (worktree+copy in flight) →
   // setup (running setup script with live output) → done (success, 2s flash) → error.
@@ -38,14 +46,29 @@ export function NewWorkspaceDialog() {
   const [createdWsId, setCreatedWsId] = useState<string | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
 
+  // Reset the form ONLY when the dialog opens for a different project —
+  // never on re-fetches of the same project's data. Window-focus events fire
+  // `loadAll()` (App.tsx) which replaces the projects array → `project`
+  // object identity changes → an effect depending on `project` would wipe
+  // every field the user just typed. Depending on `projectId` (a stable
+  // string) avoids that. We seed CLI/base from the project but read them
+  // imperatively at effect-time via getState so we don't need them in deps.
   useEffect(() => {
-    if (!projectId || !project) return;
+    if (!projectId) return;
+    const p = useApp.getState().projects.find(x => x.id === projectId);
     setName(""); setBranch(""); setBranchEdited(false); setErr(null);
-    setBase(project.base_branch || "");
-    setCli(project.default_cli || "claude");
+    setBase(p?.base_branch || "");
+    setCli(p?.default_cli || "claude");
     setPrefix("feature");
     setPhase("form"); setSetupLog([]); setCreatedWsId(null);
-  }, [projectId, project]);
+    // CRITICAL: also reset `busy`. On a successful prior creation we
+    // intentionally leave busy=true (so the form can't be re-submitted
+    // during the streaming-setup phase). Without this reset, the NEXT
+    // time the dialog opens, busy is still true → Create button stays
+    // disabled even with all fields filled.
+    setBusy(false);
+    submittingRef.current = false;
+  }, [projectId]);
 
   // Subscribe to streaming setup events for the workspace we just created.
   // Per-line output + a final "done" event with exit code. We hide the
@@ -97,9 +120,21 @@ export function NewWorkspaceDialog() {
 
   async function submit() {
     if (!projectId || !name.trim() || !branch.trim()) return;
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setBusy(true); setErr(null); setPhase("creating"); setSetupLog([]);
+    // Pre-generate the workspace ID + set `createdWsId` BEFORE invoking
+    // workspaceCreate. That triggers the listener-attaching useEffect on
+    // this same React render pass, so by the time Rust emits
+    // `setup-done://<id>` (which is IMMEDIATE for empty setup scripts),
+    // the listener is already there. Without this, the dialog hung
+    // forever on "Waiting for output…" because the done event fired into
+    // the void.
+    const wsId = crypto.randomUUID();
+    setCreatedWsId(wsId);
     try {
-      const ws = await workspaceCreate({
+      await workspaceCreate({
+        id: wsId,
         project_id: projectId,
         name: name.trim(),
         cli,
@@ -107,12 +142,13 @@ export function NewWorkspaceDialog() {
         branch: branch.trim(),
       });
       await loadAll();
-      // workspace_create has returned (worktree + file-copy done). The setup
-      // script now runs in the background; we move into the "setup" phase
-      // and stream its output via the event listener effect.
-      setCreatedWsId(ws.id);
       setPhase("setup");
-    } catch (e) { setErr(String(e)); setBusy(false); setPhase("error"); }
+    } catch (e) {
+      setErr(String(e)); setBusy(false); setPhase("error");
+      submittingRef.current = false;
+    }
+    // On success, submittingRef stays true until the dialog closes — guards
+    // against any re-submit during the streaming-setup phase.
   }
 
   return (
@@ -122,7 +158,7 @@ export function NewWorkspaceDialog() {
       // for several seconds on big repos.
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title="New workspace"
+      title="New worktree"
       description={project ? `in ${project.name}` : undefined}
     >
       {/* Phase-aware body: form on start, then progress view while creating

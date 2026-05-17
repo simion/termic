@@ -86,7 +86,7 @@ export function NewProjectDialog() {
         Repository root
         <div className="mt-1.5 flex gap-2">
           <Input value={path} onChange={e => setPath(e.target.value)} placeholder="/path/to/repo" />
-          <Button variant="secondary" onClick={browse}>Browse…</Button>
+          <Button variant="secondary" size="lg" onClick={browse}>Browse…</Button>
         </div>
       </label>
 

@@ -198,14 +198,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
     };
   }, [ws.id, ws.path, ws.port, ws.name, tab.id, tab.cli, patchTab, markAttention]);
 
-  // Refit + focus when the tab becomes active.
+  // Refit + focus when the tab becomes active OR when its workspace
+  // becomes the active workspace (e.g., clicking a workspace in the
+  // sidebar). Mounted workspaces stay rendered with visibility-hidden, so
+  // the tab's `active` prop alone doesn't change on workspace switch —
+  // we have to also watch the global activeWorkspaceId to know when this
+  // pane just became the one the user is looking at.
+  const isActiveWorkspace = useApp(s => s.activeWorkspaceId === ws.id);
   useEffect(() => {
-    if (!active) return;
+    if (!active || !isActiveWorkspace) return;
     requestAnimationFrame(() => {
       try { fitRef.current?.fit(); } catch {}
       try { termRef.current?.focus(); } catch {}
     });
-  }, [active]);
+  }, [active, isActiveWorkspace]);
 
   // Live-react to font / size preference changes: rewrite the options and
   // refit so the cell grid recomputes against the new metrics. Skips the

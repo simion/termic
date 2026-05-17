@@ -41,8 +41,15 @@ export function DropdownItem({ children, className, onSelect, disabled }: {
       onSelect={onSelect}
       disabled={disabled}
       className={cn(
-        "flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-[14px] text-[var(--color-fg)]",
+        // items-start (not items-center): when an item has a two-line layout
+        // (title + subtitle), centering the icon vertically against the
+        // whole block makes it float between the two lines. Top-align lets
+        // it sit next to the title where the eye expects it.
+        "flex cursor-pointer items-start gap-2 rounded-sm px-2 py-1.5 text-[14px] text-[var(--color-fg)]",
         "outline-none data-[highlighted]:bg-[var(--color-hover)] data-[disabled]:opacity-40 data-[disabled]:cursor-not-allowed",
+        // Nudge leading icons down to sit at the title's optical center
+        // (lucide icons are top-heavy at small sizes).
+        "[&>svg]:mt-[2px]",
         className,
       )}
     >{children}</DM.Item>
