@@ -102,11 +102,16 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, canClose, renaming, 
     <div
       onClick={() => { if (!isRenaming) onSelect(); }}
       onDoubleClick={(e) => { e.stopPropagation(); onStartRename(); }}
+      // Active state needs to win at-a-glance. Three signals stacked:
+      //   1. Brighter bg (color-bg-3 vs the bar's color-bg-1).
+      //   2. Accent-colored border (vs near-invisible border-soft).
+      //   3. Semibold weight on the label.
+      // Inactive: muted bg-1 hover, fg-dim text, no border — sinks back.
       className={cn(
-        "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13.5px] transition-colors max-w-[220px]",
+        "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13.5px] transition-colors max-w-[220px] border",
         active
-          ? "bg-[var(--color-bg-2)] text-[var(--color-fg)] border border-[var(--color-border-soft)]"
-          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
+          ? "bg-[var(--color-bg-3)] text-[var(--color-fg)] border-[var(--color-accent-soft)] font-semibold"
+          : "border-transparent text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       {isUnread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />}

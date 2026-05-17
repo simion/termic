@@ -90,9 +90,14 @@ export function RightPanel() {
         direction="x"
         className="left-0"
         onDrag={(dx) => {
-          const cur = useApp.getState().rightPanelWidth;
+          // Measure CURRENT rendered width (the App.tsx clamp may have
+          // capped it below stored preferred on a narrow window).
+          // Drag from there so the resize feels responsive. The new
+          // value becomes the user's preferred ceiling.
+          const cur = asideRef.current?.getBoundingClientRect().width
+            ?? useApp.getState().rightPanelWidth;
           // Drag-left grows the panel (dx negative), drag-right shrinks.
-          const next = Math.round(Math.max(220, Math.min(720, cur - dx)));
+          const next = Math.round(Math.max(220, Math.min(900, cur - dx)));
           useApp.getState().setRightPanelWidth(next);
         }}
       />
@@ -398,6 +403,7 @@ function ScriptStream({ wsId, kind, run, onStart }: {
     <div className="flex h-full flex-col">
       <div
         ref={boxRef} onScroll={onScroll}
+        data-selectable
         className="min-h-0 flex-1 overflow-auto px-3 py-2 font-mono text-[12px] leading-snug text-[var(--color-fg-dim)]"
       >
         {run.lines.map((line, i) => (

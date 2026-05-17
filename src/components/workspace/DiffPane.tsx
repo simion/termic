@@ -34,7 +34,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
           </Button>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto font-mono text-[12.5px] leading-[1.5]">
+      <div data-selectable className="min-h-0 flex-1 overflow-auto font-mono text-[12.5px] leading-[1.5]">
         {err && <div className="p-4 text-[var(--color-err)]">Error: {err}</div>}
         {!err && text.split("\n").map((line, i) => {
           const cls = line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")

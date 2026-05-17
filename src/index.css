@@ -60,6 +60,13 @@
     overscroll-behavior: none;
     background: var(--color-bg);
     color: var(--color-fg);
+    /* App-chrome surfaces are NOT documents — double-clicking a sidebar
+       row or breadcrumb should never select text. Opt-back-in below for
+       the few places where copy/select IS expected. Inputs and textareas
+       get native selection regardless, no need to override. Same trick
+       Linear / Tana / Notion use for their chrome. */
+    -webkit-user-select: none;
+    user-select: none;
     /* Inter Variable. SF Pro looks great on Retina but goes thin/fuzzy on
        1× external monitors. Inter is purpose-built for UI at small sizes and
        holds up across DPIs — same reason Linear/Vercel/Termic pick it. */
@@ -98,6 +105,19 @@
 
   /* Buttons inherit font but have no chrome by default. */
   button { background: transparent; border: 0; color: inherit; font: inherit; cursor: pointer; }
+
+  /* Re-enable text selection for actual content surfaces. The chrome-wide
+     `user-select: none` above blocks accidental text selection on sidebar
+     rows / breadcrumbs / tab labels, but the user genuinely wants to copy
+     from terminals, editor, diff viewer, script output, etc. */
+  .xterm, .xterm *,
+  .cm-editor, .cm-editor *,
+  [data-selectable], [data-selectable] *,
+  pre, code,
+  input, textarea, [contenteditable] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
 }
 
 /* xterm tweaks so it fills its container cleanly */

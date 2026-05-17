@@ -1,12 +1,13 @@
 // Left sidebar: traffic-light spacer, toggle, primary nav, projects tree, footer.
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown } from "lucide-react";
-import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
+import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
+import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -29,7 +30,9 @@ export function Sidebar() {
   const openNewProject = useUI(s => s.openNewProject);
   const openNewWorkspace = useUI(s => s.openNewWorkspace);
   const collapsedProjects = useApp(s => s.collapsedProjects);
-  const toggleProjectCollapsed = useApp(s => s.toggleProjectCollapsed);
+  const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
+  // (agents subscription lives inside ProjectActionsMenuItems now —
+  // Sidebar itself doesn't need the registry.)
 
   const isUnread = (wsId: string) =>
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread);
@@ -52,8 +55,10 @@ export function Sidebar() {
     } catch (e) { console.error("rename failed", e); }
   }
 
+  const asideRef = useRef<HTMLElement>(null);
+
   return (
-    <aside className="relative flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
+    <aside ref={asideRef} className="relative flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
       {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
       <nav className={cn("flex flex-col gap-0.5", compact ? "p-1.5 pt-2" : "p-2 pt-3")}>
         <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label="Dashboard"
@@ -84,7 +89,11 @@ export function Sidebar() {
         <div className="flex flex-col gap-0.5">
           {projects.map(p => {
             const wsList = workspaces.filter(w => w.project_id === p.id && !w.archived);
-            const collapsed = !!collapsedProjects[p.id];
+            // Empty projects default to collapsed (no point pinning a blank
+            // expanded row). User overrides stick: explicit true / false
+            // wins; undefined falls back to emptiness-based default.
+            const explicit = collapsedProjects[p.id];
+            const collapsed = explicit !== undefined ? explicit : wsList.length === 0;
             return (
               <div key={p.id}>
                 <Tip content={compact ? p.name : ""}>
@@ -93,7 +102,7 @@ export function Sidebar() {
                     // removed — too easy to fire by accident while clicking
                     // fast to collapse/expand. Rename lives in
                     // Settings → Repositories instead.
-                    onClick={() => toggleProjectCollapsed(p.id)}
+                    onClick={() => setProjectCollapsed(p.id, !collapsed)}
                     className={cn(
                       "group flex items-center justify-between rounded-md text-[13.5px] font-semibold hover:bg-[var(--color-hover)] cursor-pointer",
                       compact ? "px-0 py-1 justify-center" : "px-2 py-1.5",
@@ -156,24 +165,8 @@ export function Sidebar() {
                                 ><Plus className="h-4 w-4" /></button>
                               </DropdownTrigger>
                             </Tip>
-                            <DropdownMenu align="end" sideOffset={4}>
-                              <DropdownItem onSelect={async () => {
-                                try { const w = await workspaceOpenRepo(p.id); await loadAll(); setActive(w.id); }
-                                catch (err) { console.error(err); }
-                              }}>
-                                <FolderGit2 className="h-4 w-4 text-[var(--color-fg-dim)]" />
-                                <div className="flex flex-col">
-                                  <span>Open repo</span>
-                                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">work in the actual repo folder</span>
-                                </div>
-                              </DropdownItem>
-                              <DropdownItem onSelect={() => openNewWorkspace(p.id)}>
-                                <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
-                                <div className="flex flex-col">
-                                  <span>New worktree</span>
-                                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">separate copy + own port — run in parallel</span>
-                                </div>
-                              </DropdownItem>
+                            <DropdownMenu align="end" sideOffset={4} className="max-w-[220px]">
+                              <ProjectActionsMenuItems projectId={p.id} />
                             </DropdownMenu>
                           </DropdownRoot>
                         </div>
@@ -181,6 +174,33 @@ export function Sidebar() {
                     )}
                   </div>
                 </Tip>
+
+                {/* Empty expanded project — single placeholder CTA that
+                    opens the SAME dropdown as the row's `+` icon (one
+                    "Open repo with <agent>" per registered agent plus a
+                    New worktree action). One affordance instead of two
+                    cramped side-by-side buttons that had to ellipsis at
+                    narrow widths. */}
+                {!collapsed && wsList.length === 0 && !compact && (
+                  <div
+                    className="ml-5 mr-1 mb-1 mt-0.5"
+                    onClick={e => e.stopPropagation()}
+                  >
+                    <DropdownRoot>
+                      <DropdownTrigger asChild>
+                        <button
+                          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] bg-transparent px-2 py-2 text-[12.5px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] data-[state=open]:border-[var(--color-accent-soft)] data-[state=open]:text-[var(--color-fg)]"
+                        >
+                          <Plus className="h-3.5 w-3.5 shrink-0" />
+                          <span>Get started</span>
+                        </button>
+                      </DropdownTrigger>
+                      <DropdownMenu align="start" sideOffset={4} className="max-w-[220px]">
+                        <ProjectActionsMenuItems projectId={p.id} />
+                      </DropdownMenu>
+                    </DropdownRoot>
+                  </div>
+                )}
 
                 {/* Repo workspaces (the project's live checkout, no worktree)
                     rendered first as a pinned row so they're visually separate
@@ -210,20 +230,44 @@ export function Sidebar() {
                                 : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
                         )}
                       >
-                        {unread && (
-                          <span className={cn(
-                            "absolute rounded-full bg-[var(--color-err)] shadow-[0_0_0_3px_rgba(239,83,80,0.25)]",
-                            compact ? "right-1.5 top-1 h-1.5 w-1.5" : "left-1.5 h-1.5 w-1.5",
-                          )} />
+                        {/* The icon's color transition (faded → full brand)
+                            is the unread signal now — the old red dot was
+                            redundant and made the sidebar look alarming.
+                            Keep ONLY for compact mode where there's no
+                            label/icon swap visible at a glance — small
+                            accent dot remains as the only state cue. */}
+                        {unread && compact && (
+                          <span className="absolute right-1.5 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
                         )}
-                        {/* Both repo-checkout and worktree workspaces use the
-                            CLI brand icon — the row's REPO chip is the only
-                            visual cue you need to tell them apart. Keeping
-                            the agent icon consistent makes scanning the
-                            sidebar for "which agent is running where" easy. */}
+                        {/* Workspace agent icon — color carries state.
+                            DEFAULT: muted/faded (text-fg-faint) so the
+                                     sidebar reads as calm during normal use.
+                            ACTIVE:  full CLI brand color (you're looking at
+                                     it, color reinforces "this is the one").
+                            UNREAD:  full CLI brand color (agent has output
+                                     waiting — the color transition itself
+                                     is the attention signal, no separate
+                                     red dot needed).
+                            ASLEEP:  extra opacity drop on top of muted.
+                            Replaces the previous always-colored icon + red
+                            dot combo, which painted the sidebar like a
+                            Christmas tree and trained you to ignore it. */}
+                        {/* Three-state icon coloring:
+                              UNREAD   → full CLI brand color (eye-grab)
+                              ACTIVE   → bright fg (no brand color, just
+                                         not faded) — so the active row
+                                         doesn't look dead, especially
+                                         REPO rows which have no name
+                                         label to carry the active feel.
+                              ELSE     → faded fg-faint (calm)
+                            ASLEEP layers extra opacity drop. */}
                         <span className={cn(
-                          "shrink-0",
-                          unread ? "text-[var(--color-err)]" : (CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg-faint)]"),
+                          "shrink-0 transition-colors",
+                          unread
+                            ? (CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg)]")
+                            : activeWs === w.id
+                              ? "text-[var(--color-fg)]"
+                              : "text-[var(--color-fg-faint)]",
                           asleep && "opacity-50",
                         )}>
                           <CliIcon cli={w.cli} className={iconSize(compact)} />
@@ -254,21 +298,30 @@ export function Sidebar() {
                                   row's label instead. Worktrees still show
                                   their (distinct) branch-derived name. */}
                               {!isRepo && <span className="truncate">{w.name}</span>}
-                              {/* Moon sits right after the name — reads as a
-                                  state badge ("asleep") rather than a trailing
-                                  control on the far right, which was visually
-                                  ambiguous (toolbar? indicator?). */}
+                              {isRepo && (
+                                <span className={cn(
+                                  "rounded px-1 py-px text-[10px] font-semibold uppercase tracking-wider shrink-0",
+                                  // Active REPO row has no name label to
+                                  // carry the active feel — bump the chip
+                                  // to fg color so the row doesn't look
+                                  // muted. Inactive stays faded.
+                                  activeWs === w.id
+                                    ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                                    : "bg-[var(--color-bg-3)] text-[var(--color-fg-faint)]",
+                                )}>
+                                  repo
+                                </span>
+                              )}
+                              {/* Moon comes AFTER the label/chip so the
+                                  asleep indicator trails everything else —
+                                  reads as a state suffix, not a leading
+                                  control between the icon and the name. */}
                               {asleep && (
                                 <Tip content="Asleep — click the workspace to wake it">
                                   <span className="shrink-0 text-[var(--color-fg-faint)] opacity-60">
                                     <Moon className="h-3.5 w-3.5" />
                                   </span>
                                 </Tip>
-                              )}
-                              {isRepo && (
-                                <span className="rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)] shrink-0">
-                                  repo
-                                </span>
                               )}
                             </span>
                           )
@@ -317,7 +370,7 @@ export function Sidebar() {
         <Tip content="Add project"><Button size="icon" variant="icon" onClick={openNewProject}>
           <FolderPlus className={iconSize(compact)} />
         </Button></Tip>
-        <Tip content="Settings ⌘,"><Button size="icon" variant="icon" onClick={() => openSettings()}>
+        <Tip content="Settings (⌘,)"><Button size="icon" variant="icon" onClick={() => openSettings()}>
           <Settings className={iconSize(compact)} />
         </Button></Tip>
       </div>
@@ -329,11 +382,16 @@ export function Sidebar() {
           direction="x"
           className="right-0"
           onDrag={(dx) => {
-            // Read CURRENT width from the store every frame. Using closure-
-            // captured `sidebarWidth` froze it at drag-start and made the
-            // bar snap back to "initial + 1px" after each move.
-            const cur = useApp.getState().sidebarWidth;
-            const next = Math.round(Math.max(160, Math.min(480, cur + dx)));
+            // Read the CURRENTLY RENDERED width via DOM measurement, not
+            // the stored preferred — when the window is narrow the clamp
+            // in App.tsx caps the visual width below preferred, and
+            // dragging from the preferred would feel disconnected.
+            // Measuring from the actual element keeps the drag responsive.
+            // The user's new value becomes the preferred (their ceiling
+            // until the next manual drag).
+            const cur = asideRef.current?.getBoundingClientRect().width
+              ?? useApp.getState().sidebarWidth;
+            const next = Math.round(Math.max(160, Math.min(800, cur + dx)));
             useApp.getState().setSidebarWidth(next);
           }}
         />

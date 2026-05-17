@@ -40,19 +40,15 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
   capabilities: NonNullable<Agent["capabilities"]>;
 }> = {
   claude: {
-    command: "claude",
-    // `--session-id <uuid>` (claude pre-2.2) / `--name <name>` (claude 2.2+):
-    // give every spawn a stable name tied to the worktree so `--resume`
-    // below can target THIS conversation deterministically instead of
-    // grabbing the most-recent session in CWD (which can collide with
-    // other claude invocations the user made outside termic).
-    args: ["--name", "{workspace_slug}"],
+    command: "claude", args: [],
     capabilities: {
       yolo_args: ["--dangerously-skip-permissions"],
       runtime_yolo_command: "",
-      // Resume the named session deterministically. Beats `--continue`
-      // because it's predictable across multiple parallel sessions.
-      resume_args: ["--resume", "{workspace_slug}"],
+      // Reverted from `--resume {workspace_slug}` (named-session scheme):
+      // claude was dropping into its interactive picker when the named
+      // session didn't exist yet, leaving the user stuck. `--continue`
+      // takes the most-recent session in CWD with no picker.
+      resume_args: ["--continue"],
     },
   },
   gemini: {

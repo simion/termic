@@ -4,7 +4,7 @@
 // The whole strip is a drag region so the user can move the window from any
 // empty space, with `no-drag` opted-in on every interactive child.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveWorkspace } from "@/store/app";
 import { Button } from "@/components/ui/Button";
@@ -18,7 +18,7 @@ import {
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { openPath, workspaceRunScript, workspaceArchive } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
-import { usePrefs } from "@/store/prefs";
+import { usePrefs, resolveTheme } from "@/store/prefs";
 import { cn } from "@/lib/utils";
 
 // Reserve enough room for the 3 traffic lights + breathing room before the
@@ -38,7 +38,15 @@ export function UnifiedBar() {
   const setThemeMode = usePrefs(s => s.setThemeMode);
   const yoloMode = usePrefs(s => s.yoloMode);
   const setYoloMode = usePrefs(s => s.setYoloMode);
-  const ThemeIcon = themeMode === "light" ? Sun : themeMode === "dark" ? Moon : Monitor;
+  // When the user picked an explicit theme, show that theme's icon.
+  // When "auto" is selected, show the icon for whatever the OS resolved
+  // to (Sun / Moon) — that's the theme they're actually looking at — and
+  // overlay a small "A" badge so the auto distinction is visible.
+  // The old Monitor/computer icon felt too generic ("display settings")
+  // and didn't communicate the resolved theme at a glance.
+  const isAuto = themeMode === "auto";
+  const resolved = resolveTheme(themeMode);
+  const ThemeIcon = (themeMode === "light" || (isAuto && resolved === "light")) ? Sun : Moon;
 
   return (
     <header
@@ -162,8 +170,13 @@ export function UnifiedBar() {
 function ThemePicker({
   themeMode, setThemeMode, Icon,
 }: {
+  /** The user's selection ("auto" / "light" / "dark"). The `auto` value
+   *  drives the small "A" badge overlay so the user can tell their
+   *  pick is "follow OS" rather than an explicit light/dark. */
   themeMode: "auto" | "light" | "dark";
   setThemeMode: (m: "auto" | "light" | "dark") => void;
+  /** Already resolved to Sun/Moon by the caller — when in auto mode
+   *  this reflects the OS theme (not a generic Monitor icon). */
   Icon: typeof Sun;
 }) {
   const items: { id: "auto" | "light" | "dark"; label: string; icon: typeof Sun }[] = [
@@ -173,26 +186,58 @@ function ThemePicker({
     { id: "light", label: "Light",  icon: Sun },
     { id: "dark",  label: "Dark",   icon: Moon },
   ];
-  // Controlled open so clicking an item doesn't close the dropdown — the
-  // theme switch re-renders the whole tree (html.light/.dark class flips
-  // + every component subscribed to themeMode updates), and Radix's
-  // uncontrolled HoverCard sometimes loses its open state through that
-  // churn. Keeping `open` in our own state survives the re-render and
-  // lets the user click through multiple themes without re-hovering.
+  // Plain DOM dropdown — Radix HoverCard's pointer-tracking kept
+  // closing on item click (the theme-change re-render storm triggers
+  // pointer-out detection somewhere internally). Manual implementation
+  // gives us absolute control: opens on trigger hover, stays open until
+  // outside click or cursor leaves the WHOLE region (trigger + content)
+  // for closeDelayMs. Item clicks never close it — user can cycle
+  // through System / Light / Dark to compare freely.
   const [open, setOpen] = useState(false);
+  const closeTimerRef = useRef<number | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const cancelClose = () => {
+    if (closeTimerRef.current) { window.clearTimeout(closeTimerRef.current); closeTimerRef.current = null; }
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimerRef.current = window.setTimeout(() => setOpen(false), 200);
+  };
+  // Outside click closes immediately.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapperRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
   return (
-    <HoverCard.Root open={open} onOpenChange={setOpen} openDelay={120} closeDelay={150}>
-      <HoverCard.Trigger asChild>
-        <Button size="icon" variant="icon" onClick={() => { /* hover handles open */ }}>
+    <div
+      ref={wrapperRef}
+      className="relative"
+      onMouseEnter={() => { cancelClose(); setOpen(true); }}
+      onMouseLeave={scheduleClose}
+    >
+      <Button size="icon" variant="icon" onClick={() => setOpen(v => !v)}>
+        <span className="relative inline-flex h-[18px] w-[18px] items-center justify-center">
           <Icon className="h-[18px] w-[18px]" />
-        </Button>
-      </HoverCard.Trigger>
-      <HoverCard.Portal>
-        <HoverCard.Content
-          align="start" sideOffset={4}
+          {themeMode === "auto" && (
+            // Tiny "A" badge in the bottom-right corner to signal that
+            // the visible Sun/Moon is the OS-resolved theme, not an
+            // explicit user choice. Outline matches button bg so it
+            // reads as a sticker on top of the icon, not part of it.
+            <span
+              className="absolute -bottom-1 -right-1 flex h-[10px] w-[10px] items-center justify-center rounded-full bg-[var(--color-accent)] text-[7px] font-bold leading-none text-white ring-1 ring-[var(--color-bg)]"
+              aria-label="auto"
+            >A</span>
+          )}
+        </span>
+      </Button>
+      {open && (
+        <div
           className={cn(
-            "z-50 min-w-[140px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
-            "data-[state=open]:animate-in data-[state=open]:fade-in-0",
+            "absolute left-0 top-full z-50 mt-1 min-w-[140px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
           )}
         >
           {items.map(it => {
@@ -213,8 +258,8 @@ function ThemePicker({
               </button>
             );
           })}
-        </HoverCard.Content>
-      </HoverCard.Portal>
-    </HoverCard.Root>
+        </div>
+      )}
+    </div>
   );
 }

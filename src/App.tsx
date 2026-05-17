@@ -41,10 +41,24 @@ export function App() {
   const sidebarWidth = useApp(s => s.sidebarWidth);
   const rightPanelWidth = useApp(s => s.rightPanelWidth);
   const showRP = !!activeWs && !hideRP;
-  const sbW = compact ? 56 : sidebarWidth;
+  // Sidebar / right panel widths use CSS `clamp(MIN, PREFERRED, vw-CAP)`:
+  //   - PREFERRED is whatever the user manually dragged to (their ceiling).
+  //   - vw-CAP kicks in when the viewport shrinks below `preferred / cap%`,
+  //     so a small window doesn't get sidebars proportionally stealing
+  //     half the screen — they shrink down to their MIN until the window
+  //     grows again, at which point they return to PREFERRED but never
+  //     exceed it.
+  //   - Compact sidebar is a fixed 56px (icon-only mode — no clamping).
+  // Net: drag-to-resize sets the "max ever" ceiling. Window shrinking
+  // squeezes the panels down. Window growing back restores them — but
+  // not beyond what the user actually wanted.
+  const sbCol = compact
+    ? "56px"
+    : `clamp(160px, ${sidebarWidth}px, 33vw)`;
+  const rpCol = `clamp(220px, ${rightPanelWidth}px, 35vw)`;
   const cols = showRP
-    ? `${sbW}px 1fr ${rightPanelWidth}px`
-    : `${sbW}px 1fr`;
+    ? `${sbCol} 1fr ${rpCol}`
+    : `${sbCol} 1fr`;
 
   // Settings is rendered as a full-window OVERLAY (z-50) on top of the
   // normal app layout. The grid below it stays mounted so every workspace

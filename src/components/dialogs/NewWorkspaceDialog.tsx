@@ -177,7 +177,7 @@ export function NewWorkspaceDialog() {
             line as the label — both caused the spacing weirdness + wrapped
             hint text. */}
         <Field label="Name">
-          <Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Montreal" autoFocus required />
+          <Input value={name} onChange={e => setName(e.target.value)} placeholder="fix login bug" autoFocus required />
         </Field>
 
         <Field label="CLI">
@@ -219,7 +219,7 @@ export function NewWorkspaceDialog() {
         </Field>
 
         <Field label="Branch name" hint="Auto-generated from name; edit to override.">
-          <Input value={branch} onChange={e => { setBranch(e.target.value); setBranchEdited(true); }} placeholder="feature/montreal" required />
+          <Input value={branch} onChange={e => { setBranch(e.target.value); setBranchEdited(true); }} placeholder="feature/fix-login-bug" required />
         </Field>
 
         <Field label="Branch from" hint="Blank = repo default.">
@@ -275,6 +275,7 @@ function ProgressBody({ phase, err, setupLog, outputRef, onClose }: {
       {(phase === "setup" || phase === "done" || (phase === "error" && setupLog.length > 0)) && (
         <div
           ref={outputRef}
+          data-selectable
           // max-w-full + overflow-x-hidden belt-and-braces against any single
           // unbreakable token (urls, base64, long hashes) that `break-words`
           // can't split — those would otherwise stretch the box past the

@@ -6,12 +6,20 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { TermicBlockmark } from "@/icons/TermicLogo";
-import { workspaceOpenRepo } from "@/lib/ipc";
+
+// Module-level flag: animate the hero logo ONCE per app launch, not every
+// time the user navigates back to the dashboard from a workspace tab. The
+// typewriter draw-in is charming on startup but turns into visual noise
+// on the 20th dashboard visit. Set true on first import-evaluated mount;
+// flipped false after the first render so subsequent Dashboard mounts in
+// the same session render the logo statically.
+let logoHasAnimated = false;
 import { cn } from "@/lib/utils";
 import {
-  FolderPlus, Settings as SettingsIcon, Compass, GitBranchPlus, FolderGit2, Cog, Boxes, Plus,
+  FolderPlus, Settings as SettingsIcon, Compass, Cog, Boxes, Plus,
 } from "lucide-react";
-import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
+import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
+import { ProjectActionsMenuItems } from "@/components/sidebar/ProjectActionsMenuItems";
 
 export function Dashboard() {
   const projects     = useApp(s => s.projects);
@@ -27,7 +35,12 @@ export function Dashboard() {
       <div className="mx-auto max-w-3xl">
         {/* Hero */}
         <header className="mb-10 mt-6 flex flex-col items-center gap-4 text-center">
-          <TermicBlockmark cellSize={10} gap={2} />
+          {(() => {
+            // Capture before render so this mount animates if it's first.
+            const shouldAnimate = !logoHasAnimated;
+            logoHasAnimated = true;
+            return <TermicBlockmark cellSize={10} gap={2} animate={shouldAnimate} />;
+          })()}
           <div className="text-[11.5px] uppercase tracking-[0.3em] text-[var(--color-fg-faint)]">
             many agents · one window
           </div>
@@ -71,13 +84,9 @@ export function Dashboard() {
                 return (
                   <ProjectCard
                     key={p.id}
+                    projectId={p.id}
                     name={p.name}
                     onSettings={() => openSettings("repositories", p.id)}
-                    onOpenRepo={async () => {
-                      try { const w = await workspaceOpenRepo(p.id); await loadAll(); setActive(w.id); }
-                      catch (e) { console.error(e); }
-                    }}
-                    onNewWorkspace={() => openNewWorkspace(p.id)}
                   >
                     {wsList.length === 0 ? (
                       <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
@@ -148,11 +157,10 @@ function ActionCard({ icon, label, hint, onClick, primary }: {
   );
 }
 
-function ProjectCard({ name, onSettings, onOpenRepo, onNewWorkspace, children }: {
+function ProjectCard({ projectId, name, onSettings, children }: {
+  projectId: string;
   name: string;
   onSettings: () => void;
-  onOpenRepo: () => void;
-  onNewWorkspace: () => void;
   children: React.ReactNode;
 }) {
   return (
@@ -167,10 +175,9 @@ function ProjectCard({ name, onSettings, onOpenRepo, onNewWorkspace, children }:
             onClick={onSettings}
             className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
           ><Cog className="h-4 w-4" /></button>
-          {/* Single `+` → dropdown with Repo / Worktree, same pattern as
-              the sidebar project row. Repo is idempotent on the Rust side
-              (`workspace_open_repo` returns the existing repo-root workspace
-              if one is already open) so clicking it twice just focuses it. */}
+          {/* Shared per-agent "Open repo with X" + New worktree menu —
+              same component the sidebar uses, so the option list stays
+              identical everywhere. */}
           <DropdownRoot>
             <DropdownTrigger asChild>
               <button
@@ -178,21 +185,8 @@ function ProjectCard({ name, onSettings, onOpenRepo, onNewWorkspace, children }:
                 className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] data-[state=open]:bg-[var(--color-bg-3)] data-[state=open]:text-[var(--color-fg)]"
               ><Plus className="h-4 w-4" /></button>
             </DropdownTrigger>
-            <DropdownMenu align="end" sideOffset={4}>
-              <DropdownItem onSelect={onOpenRepo}>
-                <FolderGit2 className="h-4 w-4 text-[var(--color-fg-dim)]" />
-                <div className="flex flex-col">
-                  <span>Open repo</span>
-                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">work in the actual repo folder</span>
-                </div>
-              </DropdownItem>
-              <DropdownItem onSelect={onNewWorkspace}>
-                <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
-                <div className="flex flex-col">
-                  <span>New worktree</span>
-                  <span className="text-[11.5px] text-[var(--color-fg-faint)]">separate copy + own port — run in parallel</span>
-                </div>
-              </DropdownItem>
+            <DropdownMenu align="end" sideOffset={4} className="max-w-[220px]">
+              <ProjectActionsMenuItems projectId={projectId} />
             </DropdownMenu>
           </DropdownRoot>
         </div>

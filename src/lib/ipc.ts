@@ -21,12 +21,15 @@ export const projectRename  = (id: string, name: string) => invoke<void>("projec
 
 export const workspacesList    = () => invoke<Workspace[]>("workspaces_list");
 export const workspaceCreate   = (args: CreateWorkspaceArgs) => invoke<Workspace>("workspace_create", { args });
-export const workspaceOpenRepo = (projectId: string) => invoke<Workspace>("workspace_open_repo", { projectId });
+export const workspaceOpenRepo = (projectId: string, cli?: string) =>
+  invoke<Workspace>("workspace_open_repo", { projectId, cli });
 export const workspaceArchive  = (id: string) => invoke<void>("workspace_archive", { id });
 export const workspaceDelete   = (id: string) => invoke<void>("workspace_delete", { id });
 export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("workspace_set_cli", { id, cli });
 export const workspaceRename   = (id: string, name: string) => invoke<void>("workspace_rename", { id, name });
 export const workspaceRecordSpawn = (id: string) => invoke<number>("workspace_record_spawn", { id });
+export const workspaceSetHasHistory = (id: string, value: boolean) =>
+  invoke<void>("workspace_set_has_history", { id, value });
 export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agents_defaults");
 export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });

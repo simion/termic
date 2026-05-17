@@ -78,7 +78,7 @@ interface AppState {
   toggleTerminalSplit: (wsId: string) => void;
   enableFooterTerm: (wsId: string) => void;
   disableFooterTerm: (wsId: string) => void;
-  toggleProjectCollapsed: (projectId: string) => void;
+  setProjectCollapsed: (projectId: string, collapsed: boolean) => void;
   setTerminalSplitHeight: (wsId: string, px: number) => void;
   /** Returns the id of the new bottom tab. */
   addBottomTab: (wsId: string) => string;
@@ -169,16 +169,38 @@ export const useApp = create<AppState>((set, get) => ({
     const nextMounted = id && !get().mountedWorkspaces.has(id)
       ? new Set([...get().mountedWorkspaces, id])
       : get().mountedWorkspaces;
+    // Auto-expand the parent project in the sidebar so the activated
+    // workspace is actually visible. Covers brand-new worktrees (the
+    // create dialog calls setActive on success — if the project was
+    // collapsed, the new row would be hidden) AND ⌘1..9 / ⇧⌘[/] nav
+    // to a workspace under a collapsed project.
+    let nextCollapsed = get().collapsedProjects;
+    if (id) {
+      const ws = get().workspaces.find(w => w.id === id);
+      // Force the parent project expanded (explicit false) — covers the
+      // case where it was either explicitly collapsed by the user OR
+      // default-collapsed-because-empty after a worktree just got added.
+      if (ws && nextCollapsed[ws.project_id] !== false) {
+        nextCollapsed = { ...nextCollapsed, [ws.project_id]: false };
+        try { localStorage.setItem(LS_COLLAPSED_PROJ, JSON.stringify(nextCollapsed)); } catch {}
+      }
+    }
     set({
       activeWorkspaceId: id,
       view: { page: id ? "dashboard" : get().view.page },
       mountedWorkspaces: nextMounted,
+      collapsedProjects: nextCollapsed,
     });
     if (id) {
+      // Mark the WHOLE workspace as read on activation. Previously we
+      // only cleared the active tab's unread, but `isUnread(wsId)` in the
+      // sidebar checks ANY tab — so the workspace icon stayed in its
+      // unread color until the user manually visited each other tab.
+      // Clicking the workspace = "I've seen this" → clear all.
       const tabs = get().tabs[id] || [];
-      const activeId = get().activeTab[id];
-      const active = tabs.find(x => x.id === activeId);
-      if (active?.unread) get().clearAttention(id, active.id);
+      for (const t of tabs) {
+        if (t.type === "terminal" && t.unread) get().clearAttention(id, t.id);
+      }
     }
   },
 
@@ -238,9 +260,14 @@ export const useApp = create<AppState>((set, get) => ({
     const { [wsId]: _, ...rest } = s.footerTerm; void _;
     return { footerTerm: rest };
   }),
-  toggleProjectCollapsed: (projectId) => set(s => {
-    const next = { ...s.collapsedProjects };
-    if (next[projectId]) delete next[projectId]; else next[projectId] = true;
+  // Explicit set so the sidebar can default empty projects to collapsed
+  // without losing the user's manual override. Three states are encoded:
+  //   undefined → "no preference" — sidebar's render decides based on
+  //               whether the project has any workspaces (empty=collapsed).
+  //   true      → user explicitly collapsed it (sticks even when populated).
+  //   false     → user explicitly expanded it (sticks even when empty).
+  setProjectCollapsed: (projectId, collapsed) => set(s => {
+    const next = { ...s.collapsedProjects, [projectId]: collapsed };
     try { localStorage.setItem(LS_COLLAPSED_PROJ, JSON.stringify(next)); } catch {}
     return { collapsedProjects: next };
   }),

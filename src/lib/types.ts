@@ -33,10 +33,14 @@ export interface Workspace {
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
   is_repo_root?: boolean;
-  /** Total agent spawns ever recorded for this worktree (across sessions).
-   *  Frontend uses `count > 0` to gate the `--continue` / `--resume` flag
-   *  on spawn — first ever spawn has no history for the CLI to resume. */
+  /** Total agent spawns ever recorded for this worktree. Historical
+   *  metric only — resume gating uses `has_resumable_history` now. */
   spawn_count?: number;
+  /** Persisted: true iff a spawn has survived past the rapid-exit
+   *  failure window (~2s). Drives the `--continue`/`--resume` gate so
+   *  worktrees with no real conversation don't waste spawns on a
+   *  doomed resume attempt. Flipped false on a confirmed failure. */
+  has_resumable_history?: boolean;
 }
 
 export interface CreateWorkspaceArgs {
@@ -134,6 +138,12 @@ export interface TerminalTab extends BaseTab {
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
+  /** True for the auto-created default tab when entering a workspace.
+   *  Drives the resume-on-spawn decision: default tab resumes the agent's
+   *  prior conversation (if any), user-added tabs always start fresh
+   *  (otherwise multi-tab parallelism collapses into "every new tab tries
+   *  to resume the same session"). */
+  is_default?: boolean;
 }
 
 export interface DiffTab extends BaseTab {

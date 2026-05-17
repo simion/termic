@@ -75,12 +75,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // pane was dead until the user closed + reopened the tab.
   const [gen, setGen] = useState(0);
   const [exited, setExited] = useState(false);
-  // Local "has been spawned this session" marker. `ws.spawn_count` from
-  // props only updates after the next `loadAll()` (window focus event /
-  // app launch), so without this ref a same-session Restart would spawn
-  // without `--continue` and start a brand new agent conversation. Set
-  // true after the first successful spawn this component sees.
-  const everSpawnedRef = useRef(false);
+  // Per-component "has the worktree's history flag been flipped during
+  // THIS spawn yet" — separate from the persisted ws.has_resumable_history
+  // so we don't double-set across reloads. Resets each gen bump.
+  const hasHistoryLocalRef = useRef(false);
+  // Auto-fallback machinery: a resume-attempt spawn that dies within
+  // RESUME_FAILURE_MS is almost certainly "no conversation found" —
+  // flip the persistent ws.has_resumable_history → false and respawn
+  // fresh. failedResumeRef gates the in-component immediate retry
+  // (next render of the effect skips resume even before loadAll
+  // refreshes the prop). It clears once a fresh spawn succeeds.
+  const spawnStartedAtRef = useRef(0);
+  const lastSpawnWasResumeRef = useRef(false);
+  const failedResumeRef = useRef(false);
+  const RESUME_FAILURE_MS = 2000;
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
@@ -140,13 +148,21 @@ export function TerminalPane({ ws, tab, active }: Props) {
       const rows = Math.max(10, term.rows || 30);
 
       try {
-        // Resume the agent's prior session in this worktree iff EITHER:
-        //  - persisted spawn_count > 0 (we've recorded a prior spawn that
-        //    survived a termic restart), or
-        //  - everSpawnedRef.current (we've already spawned at least once
-        //    this component lifetime — covers the in-session Restart case
-        //    where the persisted count hasn't been reloaded into props yet).
-        const shouldResume = (ws.spawn_count ?? 0) > 0 || everSpawnedRef.current;
+        // Resume iff the worktree has a persisted history flag AND we
+        // haven't already proven this session that the flag is stale —
+        // AND it isn't a repo-root workspace. The repo-root shares the
+        // project's actual checkout directory, so `claude --continue` /
+        // `codex resume --last` would pick up sessions the user had in
+        // that dir BEFORE installing termic (or via plain `claude`
+        // outside termic). Forcing fresh on is_repo_root prevents that
+        // surprise; user can still use the agent's resume command
+        // manually if they actually want to continue an external session.
+        const shouldResume = !!ws.has_resumable_history
+          && !failedResumeRef.current
+          && !ws.is_repo_root;
+        spawnStartedAtRef.current = Date.now();
+        lastSpawnWasResumeRef.current = shouldResume;
+        hasHistoryLocalRef.current = false;
         const ptyId = await ipc.ptySpawn({
           cwd: ws.path,
           // Resolve the executable through the agent registry — users can
@@ -164,14 +180,31 @@ export function TerminalPane({ ws, tab, active }: Props) {
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
         ptyRef.current = ptyId;
-        everSpawnedRef.current = true;
         patchTab(ws.id, tab.id, { ptyId, lastOutputAt: Date.now() });
-        // Persist the spawn so subsequent spawns for this workspace
-        // (this tab respawning, or another tab opening the same agent)
-        // append resume args. Fire-and-forget — failure here is harmless,
-        // just means the next spawn won't auto-resume.
-        ipc.workspaceRecordSpawn(ws.id).catch(err =>
-          console.error("workspace_record_spawn failed:", err));
+        // Fire-and-forget analytics. Real resume gating lives on the
+        // has_resumable_history flag below, not here.
+        ipc.workspaceRecordSpawn(ws.id).catch(() => {});
+        // If the spawn survives RESUME_FAILURE_MS without exiting, we
+        // take that as proof there's a real session — persist true so
+        // future spawns (even after termic restart) will pass resume
+        // args. Cleared in the exit handler if we never reach the
+        // timeout (the rapid-exit branch fires first).
+        window.setTimeout(() => {
+          if (cancelled || ptyRef.current !== ptyId) return;
+          if (hasHistoryLocalRef.current) return;
+          hasHistoryLocalRef.current = true;
+          // Auto-failure flag should now be cleared too — a survived
+          // spawn means we have a usable session regardless of whether
+          // this one was a resume or a fallback fresh.
+          failedResumeRef.current = false;
+          // Skip persisting `has_resumable_history` for repo-root
+          // workspaces — they share the project's actual checkout dir
+          // with whatever the user does outside termic, and we never
+          // want to auto-resume in that shared space.
+          if (!ws.has_resumable_history && !ws.is_repo_root) {
+            ipc.workspaceSetHasHistory(ws.id, true).catch(() => {});
+          }
+        }, RESUME_FAILURE_MS);
 
         // Output stream → terminal write + attention bookkeeping.
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
@@ -188,8 +221,21 @@ export function TerminalPane({ ws, tab, active }: Props) {
         unlistenDataRef.current = unlistenData;
 
         const unlistenExit = await ipc.onPtyExit(ptyId, () => {
-          markAttention(ws.id, tab.id, "exit");
           ptyRef.current = null;
+          const fastExit = Date.now() - spawnStartedAtRef.current < RESUME_FAILURE_MS;
+          if (fastExit && lastSpawnWasResumeRef.current) {
+            // Rapid exit during a resume attempt = "no conversation
+            // found to continue" or similar. Flip the in-component
+            // failure flag AND persist false on the workspace so
+            // future spawns (this session AND across restarts) skip
+            // resume until proven otherwise. Then bump gen → respawn
+            // fresh. No overlay flicker because we never set exited=true.
+            failedResumeRef.current = true;
+            ipc.workspaceSetHasHistory(ws.id, false).catch(() => {});
+            setGen(g => g + 1);
+            return;
+          }
+          markAttention(ws.id, tab.id, "exit");
           setExited(true);
         });
         unlistenExitRef.current = unlistenExit;

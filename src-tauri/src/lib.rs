@@ -69,11 +69,24 @@ pub struct Workspace {
     #[serde(default)]
     pub is_repo_root: bool,
     /// Total number of times an agent has been spawned for this workspace
-    /// across all sessions (persisted via `workspace_record_spawn`). Used by
-    /// the frontend to decide when to append `--continue` / `--resume` —
-    /// on the very first spawn there's no prior CLI history to resume yet.
+    /// across all sessions (persisted via `workspace_record_spawn`).
+    /// Historical signal — kept for analytics / debug. Resume gating
+    /// uses `has_resumable_history` below, not this.
     #[serde(default)]
     pub spawn_count: u32,
+    /// True iff at least one agent spawn for this worktree has survived
+    /// past the "settle" threshold (~2s) — i.e. there's plausibly a
+    /// resumable session on disk. Persisted, drives the resume-flag
+    /// gating on subsequent spawns.
+    ///
+    /// Flipped TRUE by `workspace_set_has_history(id, true)` once a spawn
+    /// has been running long enough that it's almost certainly past
+    /// any "no conversation found to continue" rapid-exit failure.
+    /// Flipped FALSE when a resume-attempt spawn exits within the
+    /// failure threshold (we now KNOW there's no usable history) so
+    /// the next spawn doesn't waste a roundtrip retrying.
+    #[serde(default)]
+    pub has_resumable_history: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -471,18 +484,32 @@ fn workspaces_list() -> Vec<Workspace> { load_workspaces() }
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn workspace_open_repo(project_id: String) -> Result<Workspace, String> {
-    if let Some(existing) = load_workspaces().into_iter()
-        .find(|w| w.project_id == project_id && w.is_repo_root && !w.archived) {
-        return Ok(existing);
-    }
+fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Workspace, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
+    // CLI is now explicit — frontend's "+ Open repo with <agent>" passes the
+    // chosen agent id. Falls back to project default for older call sites.
+    let cli = cli.unwrap_or_else(|| proj.default_cli.clone());
     let repo = PathBuf::from(&proj.root_path);
-    // Current branch (or "HEAD" if detached). Stripped of trailing newline.
+    // ALWAYS re-read current HEAD so a stale cached `branch` doesn't lie
+    // (user may have `git checkout`'d a different branch outside termic
+    // since the workspace was first opened).
     let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"], &repo)
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "HEAD".to_string());
+    // Idempotence per (project, cli) — let users have one open-repo
+    // workspace per agent for the same project (claude + codex + gemini
+    // can all run against the same checkout in parallel). Existing entry
+    // gets its branch refreshed in place.
+    if let Some(mut existing) = load_workspaces().into_iter()
+        .find(|w| w.project_id == project_id && w.is_repo_root && w.cli == cli && !w.archived) {
+        if existing.branch != branch || existing.base_branch != branch {
+            existing.branch = branch.clone();
+            existing.base_branch = branch;
+            save_workspace(&existing).map_err(|e| e.to_string())?;
+        }
+        return Ok(existing);
+    }
     let port = 18100 + (load_workspaces().len() as u16);
     let ws = Workspace {
         id: Uuid::new_v4().to_string(),
@@ -493,12 +520,13 @@ fn workspace_open_repo(project_id: String) -> Result<Workspace, String> {
         branch: branch.clone(),
         base_branch: branch,
         path: proj.root_path.clone(),
-        cli: proj.default_cli.clone(),
+        cli,
         port,
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
         is_repo_root: true,
         spawn_count: 0,
+        has_resumable_history: false,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -607,6 +635,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         archived: false,
         is_repo_root: false,
         spawn_count: 0,
+        has_resumable_history: false,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -674,10 +703,8 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
     Ok(w.clone())
 }
 
-/// Increment + persist the workspace's `spawn_count`. Called by the
-/// frontend immediately after `pty_spawn` returns successfully so the
-/// counter reflects "this worktree has been opened at least once" —
-/// which `resumeArgsForCli` uses to gate `--continue` / `--resume`.
+/// Increment + persist the workspace's `spawn_count`. Historical metric
+/// only — resume gating now uses `has_resumable_history` instead.
 #[tauri::command]
 fn workspace_record_spawn(id: String) -> Result<u32, String> {
     let mut list = load_workspaces();
@@ -685,6 +712,24 @@ fn workspace_record_spawn(id: String) -> Result<u32, String> {
     w.spawn_count = w.spawn_count.saturating_add(1);
     save_workspace(w).map_err(|e| e.to_string())?;
     Ok(w.spawn_count)
+}
+
+/// Set the persisted `has_resumable_history` flag for a workspace.
+/// Frontend calls this:
+///   - TRUE when a spawn has been alive past the rapid-failure window
+///     (~2s) — meaning the agent didn't immediately bail with "no
+///     conversation to continue", so a real session likely exists.
+///   - FALSE when a resume-attempt spawn exits within the failure
+///     window — we now know the resume path is broken for this worktree
+///     and shouldn't re-try.
+#[tauri::command]
+fn workspace_set_has_history(id: String, value: bool) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    if w.has_resumable_history == value { return Ok(()); }
+    w.has_resumable_history = value;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Archive a workspace: stop scripts, run the archive script, remove the
@@ -1365,21 +1410,25 @@ fn default_agents() -> Vec<Agent> {
             id: "claude".into(),
             display_name: "claude".into(),
             command: "claude".into(),
-            // Name every claude session after the worktree's slugified
-            // workspace name so resume below can target this specific
-            // conversation deterministically. Templated via {workspace_slug}
-            // which the frontend expands at spawn time.
-            args: vec!["--name".into(), "{workspace_slug}".into()],
+            // No base args. The `--name {workspace_slug}` + `--resume {slug}`
+            // scheme was reverted: claude either doesn't support `--name`
+            // (silently ignored) or the named-session lookup drops users
+            // into the interactive picker when no matching session exists
+            // yet — both end up stuck on claude's "Resume session" prompt
+            // instead of in a usable conversation.
+            args: vec![],
             icon_id: "claude".into(),
             color: "#d97757".into(),
             builtin: true,
             capabilities: AgentCapabilities {
                 yolo_args: vec!["--dangerously-skip-permissions".into()],
-                runtime_yolo_command: String::new(), // claude has no runtime toggle
-                // Deterministic resume — names the exact session created
-                // above. Beats `--continue` which grabs whichever session
-                // is "most-recent" in CWD.
-                resume_args: vec!["--resume".into(), "{workspace_slug}".into()],
+                runtime_yolo_command: String::new(),
+                // `--continue` picks up the most-recent session in CWD
+                // without an interactive picker. Trade-off: if you've
+                // run claude in this dir outside termic, it'll resume
+                // *that* session — less deterministic than a named
+                // scheme but doesn't dead-end.
+                resume_args: vec!["--continue".into()],
             },
         },
         Agent {
@@ -1639,7 +1688,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_update, project_remove,
             workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli,
-            workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn,
+            workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,
             workspace_rename, project_rename,
