@@ -13,6 +13,7 @@ const LS_LIGATURES     = "codeLigatures";
 const LS_THEME         = "themeMode";
 const LS_YOLO          = "yoloMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
+const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
 
 export type ThemeMode = "auto" | "light" | "dark";
@@ -169,6 +170,11 @@ interface PrefsState {
   /** Send OS notifications when an inactive tab's agent settles (output
    *  stopped changing). OFF by default — too noisy for many users. */
   desktopNotifications: boolean;
+  /** Highlight workspaces / tabs whose agent has just settled (idle).
+   *  ON by default — the brand-color icon swap on settle is the
+   *  in-app "done" signal. Some users find it distracting and want
+   *  the sidebar to stay calm regardless. */
+  settledHighlight: boolean;
   /** Color scheme: explicit dark/light, or auto = follow system. */
   themeMode: ThemeMode;
   /** Font for the CodeMirror editor + diff viewer. */
@@ -198,6 +204,7 @@ interface PrefsState {
   cycleThemeMode:     () => void;
   setYoloMode:        (v: boolean) => void;
   setDesktopNotifications: (v: boolean) => void;
+  setSettledHighlight: (v: boolean) => void;
 }
 
 const lsGet = (k: string, fallback: string) => {
@@ -218,11 +225,13 @@ const initialLigatures    = lsGetBool(LS_LIGATURES, true);
 const initialTheme        = (lsGet(LS_THEME, "dark") as ThemeMode);
 const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
+const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
   yoloMode: initialYolo,
   desktopNotifications: initialDesktopNotif,
+  settledHighlight: initialSettledHighlight,
   editorFontId: initialEditorFont,
   terminalFontId: initialTerminalFont,
   terminalFontSize: initialTerminalSize,
@@ -269,6 +278,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}
     set({ desktopNotifications: v });
+  },
+  setSettledHighlight: (v) => {
+    try { localStorage.setItem(LS_SETTLED_HIGHLIGHT, v ? "1" : "0"); } catch {}
+    set({ settledHighlight: v });
   },
   cycleThemeMode: () => {
     const order: ThemeMode[] = ["auto", "light", "dark"];

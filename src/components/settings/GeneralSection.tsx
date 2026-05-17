@@ -21,6 +21,8 @@ export function GeneralSection() {
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
+  const settledHighlight = usePrefs(s => s.settledHighlight);
+  const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -71,6 +73,15 @@ export function GeneralSection() {
           hint="OS notification when an inactive agent settles or rings the bell. Off by default — multi-agent workflows can get noisy."
           value={desktopNotifications}
           onChange={setDesktopNotifications}
+        />
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Work-done highlight"
+          hint="Color a workspace's agent icon when its output goes idle (i.e., the agent is waiting on you). Turn off to keep the sidebar fully calm regardless of agent activity."
+          value={settledHighlight}
+          onChange={setSettledHighlight}
         />
       </div>
     </div>

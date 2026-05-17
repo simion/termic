@@ -3,15 +3,16 @@
 
 import { useRef, useState } from "react";
 import { useApp } from "@/store/app";
+import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown } from "lucide-react";
+import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Check, Bug, Mail } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
-import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo } from "@/lib/ipc";
+import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, openPath } from "@/lib/ipc";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 
 export function Sidebar() {
@@ -34,8 +35,29 @@ export function Sidebar() {
   // (agents subscription lives inside ProjectActionsMenuItems now —
   // Sidebar itself doesn't need the registry.)
 
+  // If the user disabled the settled highlight (Settings → General),
+  // every isUnread() call returns false — the icon stays in its calm
+  // state regardless of agent activity.
+  const settledHighlight = usePrefs(s => s.settledHighlight);
   const isUnread = (wsId: string) =>
+    settledHighlight &&
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread);
+
+  /** Build a mailto: URL with prefilled subject + body and hand it to
+   *  the OS's default mail handler via `open_path` (the same Rust
+   *  command the Open button uses for preview URLs — it shells out to
+   *  macOS `open`, which DTRT for mailto: too). */
+  const openMailto = (to: string, subject: string, body: string) => {
+    const url = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    openPath(url).catch(() => {});
+  };
+  /** True if ANY tab in the workspace just transitioned to settled/idle
+   *  (work-done signal — agent stopped producing output, waiting on
+   *  user). Gated on the same `settledHighlight` pref so the check
+   *  disappears entirely when the user disables the work-done UI. */
+  const isWorkDone = (wsId: string) =>
+    settledHighlight &&
+    (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread?.reason === "idle");
   const isLoaded = (wsId: string) =>
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.ptyId);
 
@@ -209,6 +231,7 @@ export function Sidebar() {
                 {!collapsed && [...wsList].sort((a, b) => Number(!!b.is_repo_root) - Number(!!a.is_repo_root)).map(w => {
                   const isRenaming = renaming?.kind === "ws" && renaming.id === w.id;
                   const unread = isUnread(w.id);
+                  const workDone = isWorkDone(w.id);
                   const loaded = isLoaded(w.id);
                   const asleep = !loaded && !unread && activeWs !== w.id;
                   const isRepo = !!w.is_repo_root;
@@ -312,6 +335,18 @@ export function Sidebar() {
                                   repo
                                 </span>
                               )}
+                              {/* Work-done check — small accent ✓ when the
+                                  agent has settled (output stopped). Gated
+                                  on `settledHighlight` pref (Settings →
+                                  General). Sits after the label so it
+                                  reads as a status suffix, not a control. */}
+                              {workDone && (
+                                <Tip content="Agent settled — waiting on you">
+                                  <span className="shrink-0 text-[var(--color-accent)]">
+                                    <Check className="h-3.5 w-3.5" />
+                                  </span>
+                                </Tip>
+                              )}
                               {/* Moon comes AFTER the label/chip so the
                                   asleep indicator trails everything else —
                                   reads as a state suffix, not a leading
@@ -365,9 +400,33 @@ export function Sidebar() {
       {/* Footer */}
       <div className={cn(
         "mt-auto flex border-t border-[var(--color-border-soft)] p-2 gap-1",
-        compact ? "flex-col items-center" : "justify-end",
+        compact ? "flex-col items-center" : "items-center",
       )}>
-        <Tip content="Add project"><Button size="icon" variant="icon" onClick={openNewProject}>
+        {/* Left cluster (full mode): support — bug + contact. mailto:
+            opens the user's default mail client; only the recipient +
+            subject differ so triage can sort incoming mail by intent.
+            Compact mode is flex-col, so left/right ordering collapses
+            into a simple top/bottom stack. */}
+        <Tip content="Report a bug">
+          <Button size="icon" variant="icon" onClick={() =>
+            openMailto("bugs@termic.dev", "Termic bug report", "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ")
+          }>
+            <Bug className={iconSize(compact)} />
+          </Button>
+        </Tip>
+        <Tip content="Contact">
+          <Button size="icon" variant="icon" onClick={() =>
+            openMailto("contact@termic.dev", "Hello from Termic", "")
+          }>
+            <Mail className={iconSize(compact)} />
+          </Button>
+        </Tip>
+        {/* Right cluster: Add project, then Settings rightmost.
+            Settings sits at the absolute edge so the gear is exactly
+            where users reflexively reach for it (same position as
+            macOS preferences in most apps). +project sits just inside
+            it. ml-auto on the first right-cluster item pushes both. */}
+        <Tip content="Add project"><Button size="icon" variant="icon" className={compact ? undefined : "ml-auto"} onClick={openNewProject}>
           <FolderPlus className={iconSize(compact)} />
         </Button></Tip>
         <Tip content="Settings (⌘,)"><Button size="icon" variant="icon" onClick={() => openSettings()}>
