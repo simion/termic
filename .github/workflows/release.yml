@@ -128,11 +128,51 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build-mac.outputs.version }}
         run: |
-          gh release create "v${{ needs.build-mac.outputs.version }}" \
+          # Notes body is the first thing direct-download users see -
+          # they need the install path + the Gatekeeper bypass right
+          # there, otherwise they download a .dmg, drag it, click it,
+          # hit 'termic is damaged' on macOS 15, and give up. The
+          # recommended brew path goes first because it sidesteps
+          # quarantine entirely; the manual xattr command is the
+          # escape hatch for non-brew users.
+          NOTES=$(cat <<EOF
+          ## Install
+
+          **Recommended — Homebrew** (handles tinyproxy dependency + Gatekeeper bypass for you):
+
+          \`\`\`sh
+          brew install --cask simion/termic/termic
+          \`\`\`
+
+          **Direct .dmg** — download \`termic_${VERSION}_aarch64.dmg\` below, drag to /Applications, then:
+
+          \`\`\`sh
+          # macOS Gatekeeper blocks unsigned apps. Strip the quarantine attribute
+          # to allow first launch (you'd otherwise see 'termic can't be opened
+          # because Apple cannot check it for malicious software').
+          xattr -dr com.apple.quarantine /Applications/termic.app
+
+          # Network sandbox needs tinyproxy. Skip if you don't enable sandboxing.
+          brew install tinyproxy
+          \`\`\`
+
+          ## Updates
+
+          The app self-updates: future releases land via the in-app **Update** pill
+          (top-right of the toolbar). For Homebrew installs, \`brew upgrade --cask\` also works.
+
+          ## Changelog
+
+          See the [v${VERSION} tag](https://github.com/${{ github.repository }}/tree/v${VERSION})
+          for the commits in this release.
+          EOF
+          )
+          gh release create "v${VERSION}" \
             --repo "${{ github.repository }}" \
-            --title "v${{ needs.build-mac.outputs.version }}" \
-            --notes "Auto-built by .github/workflows/release.yml. See the tag for changes." \
+            --title "v${VERSION}" \
+            --notes "$NOTES" \
             artifacts/dmg/*.dmg \
             artifacts/macos/*.app.tar.gz \
             artifacts/macos/*.app.tar.gz.sig
