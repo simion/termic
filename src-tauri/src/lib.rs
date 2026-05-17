@@ -853,6 +853,26 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
 /// supposed to enforce against. SIGKILL is cleaner than SIGTERM here -
 /// we don't want the agent to handle the signal and do anything fancy
 /// before exiting; we want it gone.
+/// Frontend probes this at startup to decide whether to surface the
+/// "tinyproxy missing" banner. Cheap (one `which` shell-out), so
+/// re-querying after install works.
+#[tauri::command]
+fn sandbox_tinyproxy_available() -> bool {
+    sandbox::tinyproxy_available()
+}
+
+/// Newest-first list of macOS Sandbox denials touching the workspace
+/// in the last `minutes` minutes. Used by the WorkspaceSandboxDialog
+/// to surface why `npm install` or whatever silently failed. Returns
+/// an empty list on any error - debugging itself shouldn't fail.
+#[tauri::command]
+fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
+    let Some(ws) = load_workspaces().into_iter().find(|w| w.id == id) else {
+        return Vec::new();
+    };
+    sandbox::recent_denials(&ws.path, minutes.unwrap_or(10))
+}
+
 #[tauri::command]
 fn workspace_set_sandbox(
     state: State<'_, PtyManager>,
@@ -1410,6 +1430,13 @@ fn simple_glob_match(pat: &str, s: &str) -> bool {
     }
 }
 
+/// Setup / run / archive scripts run UNSANDBOXED, even for workspaces
+/// where `sandbox_enabled` is true. The agent itself is the threat
+/// model - the user-authored scripts in `project.{setup,run,archive}_script`
+/// are explicit user intent, and sandboxing them would break common
+/// dev-loop moves (npm install, docker build, kubectl apply, etc.). The
+/// aux/scratch terminal is in the same bucket; sandbox specifically
+/// targets the agent PTY.
 fn run_script(script: &str, cwd: &Path, port: u16, name: &str) -> Result<String> {
     let out = Command::new("bash")
         .arg("-lc")
@@ -2006,6 +2033,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_update, project_remove,
             workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
+            sandbox_tinyproxy_available, workspace_recent_denials,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,

@@ -3,7 +3,8 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useEffect, useRef, useState } from "react";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, Shield } from "lucide-react";
+import { useUI } from "@/store/ui";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -384,8 +385,32 @@ export function TerminalPane({ ws, tab, active }: Props) {
   }, [ws.id, tab.id, markAttention]);
 
   return (
-    <div className="relative h-full w-full">
-      <div ref={hostRef} className="h-full w-full bg-[var(--color-bg)]" />
+    <div className="relative flex h-full w-full flex-col">
+      <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
+      {/* Sandbox status footer - always-visible reminder that this
+          workspace's agent runs caged + a one-click jump to the
+          editor. Only shown when actually sandboxed; otherwise the
+          terminal owns the full pane height. */}
+      {ws.sandbox_enabled && (
+        <button
+          type="button"
+          onClick={() => useUI.getState().openSandbox(ws.id)}
+          className="flex shrink-0 items-center gap-1.5 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/60 px-3 py-1 text-left text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
+          title="Edit sandbox for this workspace"
+        >
+          <Shield className="h-3 w-3 text-[var(--color-ok)]" />
+          <span>Sandboxed</span>
+          <span className="text-[var(--color-fg-faint)]">·</span>
+          <span>
+            {(ws.sandbox_allowed_hosts?.length ?? 0)} extra host{(ws.sandbox_allowed_hosts?.length ?? 0) === 1 ? "" : "s"}
+          </span>
+          <span className="text-[var(--color-fg-faint)]">·</span>
+          <span>
+            {(ws.sandbox_rw_paths?.length ?? 0)} extra path{(ws.sandbox_rw_paths?.length ?? 0) === 1 ? "" : "s"}
+          </span>
+          <span className="ml-auto text-[var(--color-fg-faint)] underline-offset-2 group-hover:underline">edit</span>
+        </button>
+      )}
       {exited && (
         // Overlay on the dead xterm. The terminal underneath stays mounted
         // so the user can still scroll through whatever the agent printed

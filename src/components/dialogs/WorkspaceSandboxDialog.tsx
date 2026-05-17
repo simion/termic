@@ -9,8 +9,8 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { workspaceSetSandbox } from "@/lib/ipc";
-import { AlertTriangle, Shield, Zap } from "lucide-react";
+import { workspaceSetSandbox, workspaceRecentDenials } from "@/lib/ipc";
+import { AlertTriangle, Shield, Zap, RefreshCw } from "lucide-react";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
 export function WorkspaceSandboxDialog() {
@@ -29,6 +29,10 @@ export function WorkspaceSandboxDialog() {
   const [hostsText, setHostsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr]   = useState<string | null>(null);
+  // Recent denials panel. Loaded lazily (only when the user expands
+  // the <details>) to avoid invoking `log show` on every dialog open.
+  const [denies, setDenies] = useState<string[] | null>(null);
+  const [denyBusy, setDenyBusy] = useState(false);
 
   useEffect(() => {
     if (!ws) return;
@@ -38,7 +42,21 @@ export function WorkspaceSandboxDialog() {
     setHostsText((ws.sandbox_allowed_hosts ?? []).join("\n"));
     setErr(null);
     setBusy(false);
+    setDenies(null);  // re-fetch on next expand
   }, [ws?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadDenies = async () => {
+    if (!ws) return;
+    setDenyBusy(true);
+    try {
+      const out = await workspaceRecentDenials(ws.id, 15);
+      setDenies(out);
+    } catch {
+      setDenies([]);
+    } finally {
+      setDenyBusy(false);
+    }
+  };
 
   if (!wsId) return null;
 
@@ -189,6 +207,46 @@ export function WorkspaceSandboxDialog() {
             disabled={!enabled}
           />
         </Field>
+
+        {/* Recent denies — debugging panel. macOS log show, scoped
+            by workspace path. Lazy-loaded on expand so we don't run
+            `log show` (~200ms shell-out) on every dialog open. */}
+        <details
+          className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-3 py-2 text-[12.5px] text-[var(--color-fg-dim)]"
+          onToggle={(e) => {
+            if ((e.target as HTMLDetailsElement).open && denies === null) loadDenies();
+          }}
+        >
+          <summary className="flex cursor-pointer select-none items-center gap-2 font-medium text-[var(--color-fg)]">
+            Recent denies (last 15 min)
+            {denies !== null && (
+              <span className="rounded-full bg-[var(--color-bg-3)] px-1.5 text-[11px] font-normal text-[var(--color-fg-dim)]">{denies.length}</span>
+            )}
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); loadDenies(); }}
+              className="ml-auto rounded p-0.5 hover:bg-[var(--color-hover)]"
+              title="Refresh"
+            >
+              <RefreshCw className={denyBusy ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
+            </button>
+          </summary>
+          {denies === null && (
+            <div className="mt-2 text-[12px] text-[var(--color-fg-faint)]">
+              Expand to fetch. Surfaces what the kernel sandbox blocked for this workspace; useful when npm/curl/etc silently fail.
+            </div>
+          )}
+          {denies !== null && denies.length === 0 && (
+            <div className="mt-2 text-[12px] text-[var(--color-fg-faint)]">
+              No denies in the last 15 minutes. Either the sandbox isn't blocking anything, or the agent hasn't tried anything blocked.
+            </div>
+          )}
+          {denies !== null && denies.length > 0 && (
+            <pre data-selectable className="mt-2 max-h-[200px] overflow-auto rounded bg-[var(--color-bg)] p-2 font-mono text-[11px] leading-snug text-[var(--color-fg-dim)]">
+              {denies.join("\n")}
+            </pre>
+          )}
+        </details>
 
         {/* Restart warning. Always visible (not error-state) so the
             user has it in view BEFORE they hit save. */}

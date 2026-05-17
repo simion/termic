@@ -362,6 +362,58 @@ pub fn wrap_command(
     ("sandbox-exec".into(), new_args)
 }
 
+/// Is `tinyproxy` reachable on PATH? Used by the startup banner: when
+/// missing AND any project/workspace has sandboxing in play, surface
+/// a one-time warning so the user understands sandboxed workspaces
+/// will silently lose network filtering (they fall back to full
+/// `(deny network*)` from the SBPL profile).
+pub fn tinyproxy_available() -> bool {
+    Command::new("which")
+        .arg("tinyproxy")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Query macOS `log` for recent sandbox denials touching a workspace.
+/// Filters by:
+///   - subsystem/sender: sandboxd / kernel (where Seatbelt logs land)
+///   - last N minutes
+///   - eventMessage containing the workspace path (so users only see
+///     denials caused by their own agent, not noise from other apps)
+/// Returns lines in newest-first order. Empty Vec on any failure -
+/// debugging shouldn't itself fail.
+pub fn recent_denials(workspace_path: &str, minutes: u32) -> Vec<String> {
+    let predicate = format!(
+        "(sender == \"kernel\" OR sender == \"sandboxd\") AND eventMessage CONTAINS \"deny\" AND eventMessage CONTAINS \"{}\"",
+        // The path goes inside a quoted literal in the predicate; we
+        // escape both backslashes and embedded double-quotes
+        // defensively. macOS paths don't contain quotes in practice
+        // but it costs nothing to be safe.
+        workspace_path.replace('\\', "\\\\").replace('"', "\\\""),
+    );
+    let last_arg = format!("{}m", minutes);
+    let out = Command::new("log")
+        .args(["show", "--predicate", &predicate, "--last", &last_arg, "--style", "compact"])
+        .output();
+    let Ok(out) = out else { return Vec::new(); };
+    if !out.status.success() { return Vec::new(); }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // `log show` prints a banner header and a "Filtering the log data
+    // using ..." preamble that we don't want. Keep only lines that
+    // mention "deny" - that filter is the actual data row.
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| l.contains("deny"))
+        .map(|l| l.to_string())
+        .collect();
+    lines.reverse();        // newest first
+    lines.truncate(50);     // cap to keep the IPC payload tiny
+    lines
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────
 
 const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.

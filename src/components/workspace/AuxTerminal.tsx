@@ -74,6 +74,12 @@ export function AuxTerminal({ wsPath, active }: { wsPath: string; active: boolea
           // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right
           // colors for the current chrome.
           env: { COLORFGBG: currentColorFgBg() },
+          // NEVER pass workspace_id here. The aux shell is a scratch
+          // zsh for the user's own git/grep/etc work - sandboxing it
+          // would block exactly the moves the user opened it for
+          // (`gh pr create`, `kubectl get pods`, etc.). The agent CLI
+          // is the only thing we sandbox; everything else inside the
+          // workspace runs with the user's normal permissions.
           rows: Math.max(8, term.rows), cols: Math.max(40, term.cols),
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
