@@ -7,14 +7,9 @@ default:
 # ─── setup ────────────────────────────────────────────────────────────
 
 # One-shot dev environment bootstrap. Installs every system prereq
-# Termic needs (homebrew, Rust toolchain, Zig 0.15.x, Node), runs
-# `npm install`, and pre-fetches the Rust deps so the first `just dev`
-# isn't a surprise 5-minute compile. Idempotent — re-runnable any time.
-#
-# Zig is the load-bearing one: libghostty-vt-sys's build.rs invokes
-# `zig build` to compile the shadow VT100 parser, and it currently
-# requires Zig 0.15.x exactly (0.16 broke their build API). We pin
-# `zig@0.15` from homebrew and force-link it so `which zig` matches.
+# Termic needs (homebrew, Rust toolchain, Node) and runs `npm install`
+# + `cargo check` so the first `just dev` doesn't surprise-compile.
+# Idempotent - re-runnable any time.
 setup:
     @echo "→ Termic dev environment bootstrap"
     @set -e; \
@@ -36,22 +31,9 @@ setup:
     else \
         echo "  ✓ node present ($(node --version))"; \
     fi; \
-    echo "→ Checking Zig 0.15.x (libghostty-vt-sys build.rs requirement)"; \
-    if ! command -v zig >/dev/null 2>&1 || ! zig version | grep -q '^0\.15\.'; then \
-        echo "  installing zig@0.15"; \
-        brew unlink zig 2>/dev/null || true; \
-        brew install zig@0.15; \
-        brew link --force --overwrite zig@0.15; \
-        if ! zig version | grep -q '^0\.15\.'; then \
-            echo "✗ Zig still not 0.15.x after install. PATH issue?"; exit 1; \
-        fi; \
-    else \
-        echo "  ✓ zig $(zig version)"; \
-    fi; \
     echo "→ Installing npm packages"; \
     npm install; \
-    echo "→ Pre-fetching Rust crate index + libghostty source (cargo check)"; \
-    echo "  first run clones ghostty into target/ and runs 'zig build' (~1min)"; \
+    echo "→ Pre-fetching Rust crate index (cargo check)"; \
     (cd src-tauri && cargo check) >/dev/null; \
     echo ""; \
     echo "✓ Setup complete. Try: just dev"
@@ -74,16 +56,6 @@ doctor:
     check brew brew --version; \
     check rust cargo --version; \
     check node node --version; \
-    if command -v zig >/dev/null 2>&1; then \
-        v="$(zig version)"; \
-        if echo "$v" | grep -q '^0\.15\.'; then \
-            echo "  ✓ zig: $v"; \
-        else \
-            echo "  ✗ zig: $v (need 0.15.x — libghostty-vt-sys requires it)"; fail=1; \
-        fi; \
-    else \
-        echo "  ✗ zig: missing"; fail=1; \
-    fi; \
     if [ -d node_modules ]; then echo "  ✓ node_modules present"; else echo "  ✗ node_modules missing (run: npm install)"; fail=1; fi; \
     if [ $fail -eq 0 ]; then echo ""; echo "✓ Dev env looks good."; else echo ""; echo "✗ Run 'just setup' to fix."; exit 1; fi
 
