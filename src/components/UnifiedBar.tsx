@@ -4,6 +4,7 @@
 // The whole strip is a drag region so the user can move the window from any
 // empty space, with `no-drag` opted-in on every interactive child.
 
+import { useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveWorkspace } from "@/store/app";
 import { Button } from "@/components/ui/Button";
@@ -172,8 +173,15 @@ function ThemePicker({
     { id: "light", label: "Light",  icon: Sun },
     { id: "dark",  label: "Dark",   icon: Moon },
   ];
+  // Controlled open so clicking an item doesn't close the dropdown — the
+  // theme switch re-renders the whole tree (html.light/.dark class flips
+  // + every component subscribed to themeMode updates), and Radix's
+  // uncontrolled HoverCard sometimes loses its open state through that
+  // churn. Keeping `open` in our own state survives the re-render and
+  // lets the user click through multiple themes without re-hovering.
+  const [open, setOpen] = useState(false);
   return (
-    <HoverCard.Root openDelay={120} closeDelay={150}>
+    <HoverCard.Root open={open} onOpenChange={setOpen} openDelay={120} closeDelay={150}>
       <HoverCard.Trigger asChild>
         <Button size="icon" variant="icon" onClick={() => { /* hover handles open */ }}>
           <Icon className="h-[18px] w-[18px]" />

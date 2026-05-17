@@ -26,6 +26,8 @@ export const workspaceArchive  = (id: string) => invoke<void>("workspace_archive
 export const workspaceDelete   = (id: string) => invoke<void>("workspace_delete", { id });
 export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("workspace_set_cli", { id, cli });
 export const workspaceRename   = (id: string, name: string) => invoke<void>("workspace_rename", { id, name });
+export const workspaceRecordSpawn = (id: string) => invoke<number>("workspace_record_spawn", { id });
+export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agents_defaults");
 export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
 export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });

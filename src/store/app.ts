@@ -6,9 +6,15 @@ import type { Project, Workspace, Tab, TerminalTab } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 
 interface View {
-  /** Top-level view when no workspace is active. */
-  page: "dashboard" | "history" | "empty" | "settings";
-  /** When `page === "settings"`, which section is selected. */
+  /** Underlying page — dashboard / history / empty. NOT "settings": Settings
+   *  is a separate overlay flag (`settingsOpen`), so closing it returns to
+   *  whatever this page was. */
+  page: "dashboard" | "history" | "empty";
+  /** True when the Settings overlay is up. The overlay renders on top of
+   *  the main app layout (see App.tsx) so the active workspace, terminals,
+   *  and panel state all stay intact while it's open. */
+  settingsOpen?: boolean;
+  /** When the Settings overlay is open, which section is selected. */
   settingsTab?: "general" | "appearance" | "agents" | "repositories" | "shortcuts";
   /** When viewing a repository's settings, which project id is active. */
   settingsRepoId?: string;
@@ -53,12 +59,17 @@ interface AppState {
   /** Per-project collapse state in the sidebar. true = workspaces hidden.
    *  Persisted to localStorage so the user's tree shape survives launches. */
   collapsedProjects: Record<string, boolean>;
+  /** Editable agent registry from settings.json. Loaded by `loadAll` so
+   *  `spawnArgsForCli` can consult `agent.command + args + capabilities`
+   *  instead of hard-coding by CLI string. Empty until first loadAll. */
+  agents: import("@/lib/types").Agent[];
 
   // ── actions ──
   loadAll: () => Promise<void>;
   setActiveWorkspace: (id: string | null) => void;
   setView: (page: View["page"]) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string) => void;
+  closeSettings: () => void;
   toggleCompactSidebar: () => void;
   toggleRightPanel: () => void;
   setSidebarWidth: (px: number) => void;
@@ -127,10 +138,19 @@ export const useApp = create<AppState>((set, get) => ({
   mountedWorkspaces: new Set<string>(),
   footerTerm: {},
   collapsedProjects: initialCollapsed as Record<string, boolean>,
+  agents: [],
 
   loadAll: async () => {
-    const [projects, workspaces] = await Promise.all([ipc.projectsList(), ipc.workspacesList()]);
-    set({ projects, workspaces });
+    // Pull projects + workspaces + settings (for the agent registry).
+    // Agents drive spawn args via spawnArgsForCli, so this list must be
+    // fresh whenever the user edits Settings → Agents and immediately
+    // opens a new terminal.
+    const [projects, workspaces, settings] = await Promise.all([
+      ipc.projectsList(),
+      ipc.workspacesList(),
+      ipc.settingsLoad().catch(() => ({ agents: [] } as Partial<import("@/lib/types").Settings>)),
+    ]);
+    set({ projects, workspaces, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [] });
   },
 
   setActiveWorkspace: (id) => {
@@ -163,8 +183,15 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setView: (page) => set({ view: { page }, activeWorkspaceId: null }),
+  // Opening Settings does NOT clear `activeWorkspaceId` or change `view.page`
+  // away from whatever the user was on — Settings renders as a fixed
+  // z-40 overlay (App.tsx). Preserving the underlying state means closing
+  // Settings drops the user back into the exact workspace + tab they were
+  // in, terminals still running, no context lost.
   openSettings: (tab = "appearance", repoId) =>
-    set({ view: { page: "settings", settingsTab: tab, settingsRepoId: repoId }, activeWorkspaceId: null }),
+    set(s => ({ view: { ...s.view, settingsTab: tab, settingsRepoId: repoId, settingsOpen: true } as View })),
+  closeSettings: () =>
+    set(s => ({ view: { ...s.view, settingsOpen: false } as View })),
 
   toggleCompactSidebar: () => set(s => {
     const next = !s.compactSidebar;

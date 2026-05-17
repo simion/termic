@@ -6,12 +6,12 @@
 // Saves are debounced (500ms) so typing doesn't hammer the JSON file.
 
 import { useEffect, useRef, useState } from "react";
-import { settingsLoad, agentsSave } from "@/lib/ipc";
+import { settingsLoad, agentsSave, agentsDefaults } from "@/lib/ipc";
 import type { Agent } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { AppDialog } from "@/components/ui/Dialog";
-import { Trash2, Plus, Check, AlertTriangle } from "lucide-react";
+import { Trash2, Plus, Check, AlertTriangle, RotateCcw } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cn } from "@/lib/utils";
 
@@ -26,10 +26,44 @@ export function AgentsSection() {
   const [autoFocusId, setAutoFocusId] = useState<string | null>(null);
   // Pending-delete confirmation. null = closed.
   const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
+  // Ship-time defaults, fetched from Rust. Used to compute "modified"
+  // indicators + drive the reset-to-defaults action so users can pick up
+  // updated default flags (e.g. claude's new `--resume {workspace_slug}`)
+  // without losing their other customizations.
+  const [defaults, setDefaults] = useState<Agent[]>([]);
 
   useEffect(() => {
     settingsLoad().then(s => setAgents(s.agents || [])).catch(e => setErr(String(e)));
+    agentsDefaults().then(setDefaults).catch(() => {});
   }, []);
+
+  /** True if any field on the agent differs from its ship-time default.
+   *  Used to gate the "Reset to defaults" button per agent so it's only
+   *  shown when there's actually something to reset. */
+  function isModified(a: Agent): boolean {
+    const d = defaults.find(d => d.id === a.id);
+    if (!d) return false; // custom agents have no "defaults" to revert to
+    return JSON.stringify(d) !== JSON.stringify({ ...a, display_name: a.display_name });
+  }
+
+  /** Reset one agent to its ship-time defaults (preserves display_name +
+   *  ordering). Custom agents (no matching default id) are no-op. */
+  function resetAgent(id: string) {
+    const d = defaults.find(d => d.id === id);
+    if (!d) return;
+    mutate(agents.map(a => a.id === id ? { ...d } : a));
+  }
+
+  /** Reset every built-in to ship defaults; preserves custom agents the
+   *  user added. */
+  function resetAllBuiltins() {
+    if (!confirm("Reset all built-in agents (claude, gemini, codex) to ship defaults?\n\nCustom agents you added are kept.")) return;
+    const next = agents.map(a => {
+      const d = defaults.find(d => d.id === a.id);
+      return d ? { ...d } : a;
+    });
+    mutate(next);
+  }
 
   function performSave(next: Agent[]) {
     setStatus("saving"); setErr(null);
@@ -97,6 +131,9 @@ export function AgentsSection() {
             {status === "saved"  && <span className="flex items-center gap-1 text-[var(--color-ok)]"><Check className="h-3.5 w-3.5" /> Saved</span>}
             {status === "error"  && <span className="text-[var(--color-err)]">Save failed</span>}
           </div>
+          <Button variant="ghost" size="sm" onClick={resetAllBuiltins} title="Reset claude, gemini, codex to ship defaults (custom agents kept)">
+            <RotateCcw className="h-3.5 w-3.5" /> Reset built-ins
+          </Button>
           <Button variant="secondary" size="sm" onClick={addAgent}>
             <Plus className="h-3.5 w-3.5" /> Add agent
           </Button>
@@ -121,6 +158,8 @@ export function AgentsSection() {
             onRemove={() => requestRemoveAgent(a.id)}
             autoFocus={autoFocusId === a.id}
             onAutoFocusConsumed={() => setAutoFocusId(null)}
+            modified={isModified(a)}
+            onReset={defaults.find(d => d.id === a.id) ? () => resetAgent(a.id) : undefined}
           />
         ))}
       </div>
@@ -155,7 +194,7 @@ export function AgentsSection() {
   );
 }
 
-function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFocusConsumed }: {
+function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFocusConsumed, modified, onReset }: {
   agent: Agent;
   onPatch: (p: Partial<Agent>) => void;
   onPatchCaps: (p: Partial<NonNullable<Agent["capabilities"]>>) => void;
@@ -164,11 +203,18 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
    *  input on mount. */
   autoFocus?: boolean;
   onAutoFocusConsumed?: () => void;
+  /** True if any field on this agent differs from its ship default.
+   *  Drives the "Modified" badge in the header. */
+  modified?: boolean;
+  /** Reset this agent to ship defaults. Only provided for built-ins
+   *  (custom agents have no defaults to revert to). */
+  onReset?: () => void;
 }) {
   // The args + yolo_args fields are arrays — edited as space-separated text
   // for ergonomics. We split on whitespace and drop empties on commit.
-  const argsText      = (agent.args || []).join(" ");
-  const yoloArgsText  = (agent.capabilities?.yolo_args || []).join(" ");
+  const argsText       = (agent.args || []).join(" ");
+  const yoloArgsText   = (agent.capabilities?.yolo_args   || []).join(" ");
+  const resumeArgsText = (agent.capabilities?.resume_args || []).join(" ");
   const cardRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -201,24 +247,46 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
           {agent.builtin && (
             <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] uppercase tracking-wider">built-in</span>
           )}
+          {modified && (
+            <span
+              className="rounded bg-[var(--color-accent)]/15 px-1.5 py-0.5 text-[11px] text-[var(--color-accent)] uppercase tracking-wider"
+              title="Some fields differ from this agent's ship defaults. Use Reset to revert."
+            >modified</span>
+          )}
         </div>
-        {!agent.builtin && (
-          <button
-            onClick={onRemove}
-            className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)]"
-            title="Remove agent"
-          ><Trash2 className="h-4 w-4" /></button>
-        )}
+        <div className="flex items-center gap-1">
+          {modified && onReset && (
+            <button
+              onClick={() => {
+                if (confirm(`Reset ${agent.display_name} to ship defaults?\n\nThis overwrites Command, Default args, YOLO args, Runtime YOLO command, and Resume args.`)) {
+                  onReset();
+                }
+              }}
+              className="flex items-center gap-1 rounded p-1.5 text-[12px] text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+              title="Reset this agent to ship defaults"
+            ><RotateCcw className="h-3.5 w-3.5" /> Reset</button>
+          )}
+          {!agent.builtin && (
+            <button
+              onClick={onRemove}
+              className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)]"
+              title="Remove agent"
+            ><Trash2 className="h-4 w-4" /></button>
+          )}
+        </div>
       </header>
 
       <div className="grid grid-cols-1 gap-3">
         <Field label="Command" hint="Binary or shell command to spawn. e.g. claude, /usr/local/bin/claude, sh -lc 'claude'">
           <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder="claude" />
         </Field>
-        <Field label="Default args" hint="Always passed. Space-separated.">
+        <Field
+          label="Default args"
+          hint="Always passed. Space-separated. Placeholders: {workspace_slug}, {workspace_name}, {workspace_id}, {branch}, {port}."
+        >
           <Input value={argsText}
             onChange={e => onPatch({ args: e.target.value.split(/\s+/).filter(Boolean) })}
-            className="font-mono" placeholder="--no-update"
+            className="font-mono" placeholder="--name {workspace_slug}"
           />
         </Field>
         <Field label="YOLO args" hint="Appended when YOLO mode (⚡) is on. Empty = no flag added.">
@@ -231,6 +299,12 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
           <Input value={agent.capabilities?.runtime_yolo_command || ""}
             onChange={e => onPatchCaps({ runtime_yolo_command: e.target.value })}
             className="font-mono" placeholder="/approval-mode {mode}"
+          />
+        </Field>
+        <Field label="Resume args" hint="Appended after the worktree's first spawn so the CLI resumes its own session for that directory. Empty = no auto-resume.">
+          <Input value={resumeArgsText}
+            onChange={e => onPatchCaps({ resume_args: e.target.value.split(/\s+/).filter(Boolean) })}
+            className="font-mono" placeholder="--continue"
           />
         </Field>
       </div>
