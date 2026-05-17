@@ -276,6 +276,9 @@ struct PtySlot {
     /// Dropping the bundle shuts down the in-process proxy thread; we
     /// let TMPDIR expire for the profile / filter files (they're tiny
     /// and useful for post-mortem). `None` for unsandboxed PTYs.
+    /// Held purely so its Drop fires when the slot is dropped - never
+    /// read directly, hence the allow.
+    #[allow(dead_code)]
     sandbox: Option<SandboxBundle>,
     /// Workspace this PTY belongs to, copied from `SpawnArgs.workspace_id`.
     /// Lets `workspace_set_sandbox` SIGKILL all PTYs of a workspace whose

@@ -52,7 +52,8 @@ pub struct SandboxBundle {
     /// users can `cat` it when debugging "why was X blocked?". The
     /// proxy doesn't read this file - it gets the same patterns in
     /// memory at start() - but writing it keeps the user-visible
-    /// debugging surface intact.
+    /// debugging surface intact. Never read from Rust, hence allow.
+    #[allow(dead_code)]
     pub filter_path: PathBuf,
     /// Native proxy handle. None only when start() failed (bad regex,
     /// EMFILE, etc.) - the caller downgrades to "filesystem sandbox +
