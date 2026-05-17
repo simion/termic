@@ -31,6 +31,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 mod sandbox;
+mod proxy;
 use sandbox::SandboxBundle;
 
 // ───────────────────────────── data model ─────────────────────────────
@@ -69,9 +70,9 @@ pub struct Project {
     /// substitution rules as `sandbox_rw_paths`.
     #[serde(default)]
     pub sandbox_deny_paths: Vec<String>,
-    /// Extra allowed-host regexes for the per-workspace tinyproxy filter,
-    /// beyond the per-CLI defaults. Format mirrors tinyproxy's filter
-    /// file (one POSIX regex per line, matched against hostname).
+    /// Extra allowed-host regexes for the per-workspace network proxy,
+    /// beyond the per-CLI defaults. One POSIX/Rust regex per line,
+    /// matched against the request hostname.
     #[serde(default)]
     pub sandbox_allowed_hosts: Vec<String>,
 }
@@ -272,9 +273,9 @@ struct PtySlot {
     // Mutex<Child> here would deadlock pty_kill against the waiter.
     child_pid: Option<u32>,
     /// Sandbox bundle for this PTY, if the workspace was sandbox-enabled.
-    /// Dropping the bundle SIGKILLs the tinyproxy child and (we let TMPDIR
-    /// expire for the profile / filter / log files - they're tiny and
-    /// useful for post-mortem). `None` for unsandboxed PTYs.
+    /// Dropping the bundle shuts down the in-process proxy thread; we
+    /// let TMPDIR expire for the profile / filter files (they're tiny
+    /// and useful for post-mortem). `None` for unsandboxed PTYs.
     sandbox: Option<SandboxBundle>,
     /// Workspace this PTY belongs to, copied from `SpawnArgs.workspace_id`.
     /// Lets `workspace_set_sandbox` SIGKILL all PTYs of a workspace whose
@@ -305,7 +306,7 @@ pub struct SandboxStatus {
     /// unsandboxed workspace AND for the degraded case where
     /// provisioning failed (we proceed unsandboxed rather than crash).
     active: bool,
-    /// True iff tinyproxy started. Implies network allowlisting works.
+    /// True iff the network proxy started. Implies network allowlisting works.
     /// False with `active: true` means filesystem sandbox + full
     /// network deny - the agent has no internet at all. That's the
     /// silent-failure case worth surfacing.
@@ -335,7 +336,7 @@ pub struct SpawnArgs {
     #[serde(default = "default_cols")]
     pub cols: u16,
     /// When present, the frontend is asking us to wrap the spawn in
-    /// the workspace's sandbox (seatbelt + per-workspace tinyproxy).
+    /// the workspace's sandbox (seatbelt + per-workspace network proxy).
     /// We look up the workspace, refuse to sandbox if its
     /// `sandbox_enabled` is false, and proceed unsandboxed if the
     /// workspace can't be found (e.g. transient race). The PTY id
@@ -364,7 +365,7 @@ fn pty_spawn(
 
     // ── Sandbox wrap, if applicable ────────────────────────────────
     // If the workspace is flagged sandbox_enabled, provision a fresh
-    // seatbelt profile + tinyproxy and rewrite (cmd, args) to go through
+    // seatbelt profile + network proxy and rewrite (cmd, args) to go through
     // `sandbox-exec`. The bundle gets parked on the PtySlot so its
     // Drop impl SIGKILLs the proxy when the PTY closes.
     let (effective_cmd, effective_args, sandbox_bundle) = match args
@@ -456,11 +457,12 @@ fn pty_spawn(
             active: true,
             proxy_active: b.proxy.is_some(),
             warning: if b.proxy.is_none() {
-                // The headline silent-failure case. tinyproxy missing
-                // OR misconfigured OR port collision - all degrade
-                // sandboxed-with-network to sandboxed-no-network.
-                "tinyproxy didn't start - this workspace has NO network. \
-                 Install tinyproxy and respawn the agent.".into()
+                // Headline silent-failure case: bad regex in the
+                // workspace's allowlist, EMFILE, or some other proxy
+                // startup error - all degrade sandboxed-with-network
+                // to sandboxed-no-network.
+                "Network proxy didn't start - this workspace has NO network. \
+                 Check the Sandbox dialog for a malformed allowlist regex.".into()
             } else {
                 String::new()
             },
@@ -910,12 +912,13 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
 /// supposed to enforce against. SIGKILL is cleaner than SIGTERM here -
 /// we don't want the agent to handle the signal and do anything fancy
 /// before exiting; we want it gone.
-/// Frontend probes this at startup to decide whether to surface the
-/// "tinyproxy missing" banner. Cheap (one `which` shell-out), so
-/// re-querying after install works.
+/// Legacy IPC kept so the frontend's "tinyproxy missing" banner code
+/// path no-ops cleanly until the next frontend deploy removes the call.
+/// The native in-process proxy has no external binary dependency, so
+/// availability is always true now.
 #[tauri::command]
 fn sandbox_tinyproxy_available() -> bool {
-    sandbox::tinyproxy_available()
+    true
 }
 
 /// Newest-first list of macOS Sandbox denials touching the workspace
@@ -934,8 +937,8 @@ fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
 /// bundle from the CANDIDATE config the caller passes in (so the
 /// dialog can test pending edits BEFORE the user commits to save),
 /// runs two curls (one allowed, one denied), reports the outcome.
-/// Async (provisioning starts tinyproxy + curl shells out) so we
-/// don't block the IPC handler thread.
+/// Async (provisioning starts the proxy thread + curl shells out) so
+/// we don't block the IPC handler thread.
 ///
 /// Optional list args default to the saved workspace's lists - the
 /// caller can omit them when they want to test the on-disk config

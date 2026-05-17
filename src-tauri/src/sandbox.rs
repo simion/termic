@@ -19,52 +19,45 @@
 // Layered model:
 //   1. Outer kernel sandbox via `sandbox-exec -f <profile.sb>` - blocks
 //      writes outside the allowlist, blocks all network except a single
-//      loopback hop to our local tinyproxy.
-//   2. tinyproxy filters that loopback hop against a per-workspace
-//      hostname allowlist (regex per line). Anything not allowed → 403.
+//      loopback hop to our in-process CONNECT proxy.
+//   2. The native Rust proxy (see `crate::proxy`) filters that loopback
+//      hop against a per-workspace hostname allowlist (regex per line).
+//      Anything not allowed → 403.
 //
 // Both pieces live for the lifetime of the agent PTY: the profile is a
-// fresh file under tempdir() with the workspace id, the proxy child is
-// owned by the PTY slot and SIGKILL'd alongside it.
+// fresh file under tempdir() with the workspace id; the proxy is an
+// in-process thread that gets torn down when the SandboxBundle drops.
 //
-// Heavily inspired by github.com/simion/dpf_agents - same SBPL skeleton,
-// same default deny set for secrets, same proxy-on-loopback approach.
+// We used to shell out to tinyproxy here, which meant every user had
+// to `brew install tinyproxy` (or have a bundled binary that wouldn't
+// satisfy Gatekeeper without re-signing). The native proxy is ~300 LoC
+// of std-only Rust, removes the dep, and makes the eventual Linux port
+// trivial because there's no platform-specific binary to bundle.
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashSet;
 use std::fs;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::PathBuf;
+use std::process::Command;
 
 use crate::Workspace;
+use crate::proxy;
 
-/// One sandbox instance, scoped to a single PTY spawn. The proxy child
-/// is owned here so dropping the bundle SIGKILLs it.
+/// One sandbox instance, scoped to a single PTY spawn. The proxy thread
+/// is owned here so dropping the bundle shuts it down.
 pub struct SandboxBundle {
     /// Absolute path to the rendered .sb profile under TMPDIR.
     pub profile_path: PathBuf,
-    /// Filter file fed to tinyproxy via `--config`-generated text.
+    /// Filter file (one regex per line) written next to the profile so
+    /// users can `cat` it when debugging "why was X blocked?". The
+    /// proxy doesn't read this file - it gets the same patterns in
+    /// memory at start() - but writing it keeps the user-visible
+    /// debugging surface intact.
     pub filter_path: PathBuf,
-    /// tinyproxy child. None when we couldn't start it - the caller
-    /// downgrades to "filesystem sandbox + no network" rather than
-    /// failing the spawn outright.
-    pub proxy: Option<ProxyHandle>,
-}
-
-pub struct ProxyHandle {
-    pub port: u16,
-    pub child: Child,
-    pub log_path: PathBuf,
-}
-
-impl Drop for ProxyHandle {
-    fn drop(&mut self) {
-        // tinyproxy doesn't have a clean shutdown handshake we need;
-        // SIGKILL is fine and matches our PTY lifecycle.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    /// Native proxy handle. None only when start() failed (bad regex,
+    /// EMFILE, etc.) - the caller downgrades to "filesystem sandbox +
+    /// no network" rather than failing the spawn outright.
+    pub proxy: Option<proxy::ProxyHandle>,
 }
 
 /// Build a fully-rendered SBPL profile for one workspace. Substitutes
@@ -113,7 +106,7 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
         out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
 
-    out.push_str("\n;; --- Network: only loopback to our tinyproxy ---\n");
+    out.push_str("\n;; --- Network: only loopback to our in-process proxy ---\n");
     out.push_str("(deny network*)\n");
     out.push_str("(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))\n");
     out.push_str("(allow network-outbound (remote unix-socket))\n");
@@ -171,10 +164,13 @@ fn builtin_deny_paths(home: &str) -> Vec<String> {
     ]
 }
 
-/// Default tinyproxy host allowlist for a workspace, keyed off the
-/// agent it runs. We add the API endpoints for that agent's vendor
+/// Default host allowlist (regex per line) for a workspace, keyed off
+/// the agent it runs. We add the API endpoints for that agent's vendor
 /// plus a baseline of stuff every dev needs (github + popular package
 /// registries). Workspace's own `sandbox_allowed_hosts` are appended.
+/// The output is the file contents (with leading comment); use
+/// `host_patterns` if you just want the regexes for feeding to the
+/// proxy.
 pub fn render_filter(workspace: &Workspace) -> String {
     let mut hosts: Vec<String> = Vec::new();
 
@@ -246,101 +242,43 @@ pub fn render_filter(workspace: &Workspace) -> String {
     out
 }
 
-/// Spin up tinyproxy bound to a free loopback port, fed the workspace's
-/// filter file. Returns the handle on success; on failure logs and
-/// returns None so the caller can spawn anyway (with full network deny).
-///
-/// We invoke tinyproxy with a config-string built inline (passed via
-/// `tinyproxy -d -c -`-style isn't supported, so we write a tiny
-/// .conf file alongside the filter file in the same tempdir).
-pub fn start_proxy(
-    workspace_id: &str,
-    filter_path: &Path,
-    log_path: &Path,
-) -> Option<ProxyHandle> {
-    let port = match pick_free_port() {
-        Some(p) => p,
-        None => {
-            eprintln!("[sandbox/{workspace_id}] no free port for tinyproxy");
-            return None;
-        }
-    };
-    let conf_path = std::env::temp_dir().join(format!("termic-proxy-{workspace_id}.conf"));
-    let conf = format!(
-        "User nobody\n\
-         Group nobody\n\
-         Port {port}\n\
-         Listen 127.0.0.1\n\
-         Timeout 600\n\
-         DefaultErrorFile \"/dev/null\"\n\
-         LogFile \"{}\"\n\
-         LogLevel Warning\n\
-         MaxClients 100\n\
-         Filter \"{}\"\n\
-         FilterURLs Off\n\
-         FilterExtended On\n\
-         FilterDefaultDeny Yes\n\
-         FilterCaseSensitive No\n\
-         ViaProxyName \"termic-sandbox\"\n",
-        log_path.display(),
-        filter_path.display(),
-    );
-    if let Err(e) = fs::write(&conf_path, conf) {
-        eprintln!("[sandbox/{workspace_id}] failed to write tinyproxy conf: {e}");
-        return None;
-    }
-    let bin = tinyproxy_path();
-    let child = match Command::new(&bin)
-        .arg("-d")             // don't daemonize - we want the PID
-        .arg("-c")
-        .arg(&conf_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[sandbox/{workspace_id}] failed to spawn tinyproxy: {e} (install: brew install tinyproxy)");
-            return None;
-        }
-    };
-    // Wait briefly for the port to come up. tinyproxy in -d mode is
-    // ready in ~50ms in practice; we give it up to 2s.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return Some(ProxyHandle { port, child, log_path: log_path.to_path_buf() });
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    eprintln!("[sandbox/{workspace_id}] tinyproxy didn't bind in time; killing");
-    let mut child = child;
-    let _ = child.kill();
-    None
+/// Extract just the host regex patterns from a workspace's allowlist.
+/// Same default set as `render_filter` (which keeps the on-disk debug
+/// file), minus the comment header - this is what we feed to the
+/// in-process proxy at start time.
+pub fn host_patterns(workspace: &Workspace) -> Vec<String> {
+    render_filter(workspace)
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect()
 }
 
 /// Provision the full sandbox bundle for one PTY spawn:
 ///   - Render + write the seatbelt profile.
-///   - Render + write the tinyproxy filter file.
-///   - Spawn tinyproxy on a free loopback port.
+///   - Render + write the host allowlist (for user debugging only).
+///   - Start the in-process CONNECT proxy on a free loopback port.
 ///
-/// Profile/filter/log files live in tempdir under predictable names so
-/// the user can `tail -f` them when something denies surprisingly.
+/// Profile/filter files live in tempdir under predictable names so the
+/// user can inspect them when something denies surprisingly.
 pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
     let tmp = std::env::temp_dir();
     let profile_path = tmp.join(format!("termic-sandbox-{}.sb", workspace.id));
     let filter_path  = tmp.join(format!("termic-proxy-{}.filter", workspace.id));
-    let log_path     = tmp.join(format!("termic-proxy-{}.log", workspace.id));
 
-    // Filter file MUST exist before tinyproxy starts - the daemon
-    // mmaps the filter once at startup and exits if the path is
-    // missing. Earlier ordering (proxy first) would race with that.
-    fs::write(&filter_path, render_filter(workspace))
-        .with_context(|| format!("write {}", filter_path.display()))?;
+    // Filter file is purely for the user's `cat` benefit now; the proxy
+    // gets its patterns from memory below. Best-effort write.
+    let _ = fs::write(&filter_path, render_filter(workspace));
 
-    let proxy = start_proxy(&workspace.id, &filter_path, &log_path);
-    let port  = proxy.as_ref().map(|p| p.port).unwrap_or(0);
+    let proxy = match proxy::start(host_patterns(workspace)) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("[sandbox/{}] proxy failed to start: {e}", workspace.id);
+            None
+        }
+    };
+    let port = proxy.as_ref().map(|p| p.port).unwrap_or(0);
 
     let profile = render_profile(workspace, port)?;
     fs::write(&profile_path, &profile)
@@ -352,7 +290,7 @@ pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
 /// Wrap an agent command with `sandbox-exec -f <profile> env <vars>
 /// <cmd> <args...>`. Returns the new (cmd, args) the PTY should spawn.
 /// HTTP[S]_PROXY env is injected so HTTPS traffic actually goes through
-/// our tinyproxy rather than being blocked by the kernel sandbox.
+/// our in-process proxy rather than being blocked by the kernel sandbox.
 pub fn wrap_command(
     bundle: &SandboxBundle,
     original_cmd: &str,
@@ -379,51 +317,6 @@ pub fn wrap_command(
     ("sandbox-exec".into(), new_args)
 }
 
-/// Resolve which tinyproxy binary to spawn. Prefer the bundled copy
-/// (shipped under the .app's Resources/) so users without homebrew
-/// still get network allowlisting; fall back to whatever's on PATH
-/// (homebrew dev / arm64-on-Intel cases / "I installed my own").
-///
-/// The Resources/ lookup uses the executable's own directory: the
-/// real bundle layout is `Termic.app/Contents/MacOS/termic` and
-/// `Termic.app/Contents/Resources/tinyproxy`, so `<exe-dir>/../Resources/tinyproxy`
-/// hits the right place inside the bundle. For `cargo run` from
-/// the dev tree, this resolves to a non-existent path and we fall
-/// through to PATH lookup automatically.
-pub fn tinyproxy_path() -> String {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let bundled = parent.join("../Resources/tinyproxy");
-            if bundled.is_file() {
-                return bundled.to_string_lossy().into_owned();
-            }
-        }
-    }
-    // Fall back to PATH; child spawn will report the failure
-    // cleanly if it's missing.
-    "tinyproxy".into()
-}
-
-/// Is tinyproxy reachable? Checks bundled first, then PATH. Used by
-/// the startup banner: when missing AND any project/workspace has
-/// sandboxing in play, surface a one-time warning so the user
-/// understands sandboxed workspaces will silently lose network
-/// filtering (they fall back to full `(deny network*)` from the
-/// SBPL profile).
-pub fn tinyproxy_available() -> bool {
-    let bin = tinyproxy_path();
-    // If we got an absolute path from the bundle, it exists by
-    // construction (we just `is_file()`'d it). Otherwise probe PATH.
-    if bin.starts_with('/') { return true; }
-    Command::new("which")
-        .arg(&bin)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 /// Result of one curl probe inside the workspace's sandbox.
 #[derive(serde::Serialize, Clone)]
 pub struct ProbeResult {
@@ -437,14 +330,14 @@ pub struct ProbeResult {
 /// End-to-end self-test for a workspace's sandbox: runs `curl` inside
 /// the cage against one host we expect to succeed (vendor API) and one
 /// we expect to fail (a non-listed host). Confirms both the seatbelt
-/// profile AND tinyproxy filter are doing their jobs. Use from the
+/// profile AND host allowlist are doing their jobs. Use from the
 /// WorkspaceSandboxDialog "Test" button so users don't have to take
 /// the cage on faith.
 pub fn run_self_test(workspace: &Workspace) -> Vec<ProbeResult> {
     // Provision a fresh ephemeral bundle just for the test. We can't
     // reuse the live agent's bundle (race), and this way the user
     // can run the test even with no agent running. Bundle's Drop
-    // SIGKILLs the tinyproxy when this function returns.
+    // tears down the proxy thread when this function returns.
     let bundle = match provision(workspace) {
         Ok(b) => b,
         Err(e) => return vec![
@@ -582,13 +475,6 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
   (require-all (path "/dev/dtracehelper") (vnode-type CHARACTER-DEVICE)))
 (allow file-ioctl (literal "/dev/dtracehelper"))
 "#;
-
-fn pick_free_port() -> Option<u16> {
-    // Bind on 0 → OS hands us an ephemeral port; drop the socket
-    // immediately so tinyproxy can grab it. Tiny race window between
-    // our drop and tinyproxy's bind, accepted.
-    TcpListener::bind("127.0.0.1:0").ok().and_then(|l| l.local_addr().ok().map(|a| a.port()))
-}
 
 /// Resolve symlinks so the SBPL rules match what the kernel sees.
 /// Seatbelt evaluates the *canonical* path; a worktree symlinked

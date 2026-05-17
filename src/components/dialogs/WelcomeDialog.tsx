@@ -320,10 +320,9 @@ function StepSandbox() {
       </label>
 
       <p className="text-[11.5px] text-[var(--color-fg-faint)]">
-        Tip: needs <code className="mono">tinyproxy</code> on PATH for the host
-        allowlist. Run <code className="mono">just setup</code> from the repo or{" "}
-        <code className="mono">brew install tinyproxy</code>. Without it the
-        sandbox runs filesystem-only (full network deny).
+        The host allowlist runs through an in-process proxy — no external
+        dependency, no install step. Hit the Sandbox button on a workspace
+        to tweak the per-workspace allowlist.
       </p>
     </div>
   );
