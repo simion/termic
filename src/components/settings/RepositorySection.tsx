@@ -209,7 +209,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <h2 className="text-[16px] font-medium">Sandbox</h2>
         <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
-          When a workspace is sandboxed, the agent runs under macOS seatbelt: writes are restricted to the worktree + caches, HTTPS goes through a per-workspace tinyproxy filtered against the allowlist below. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, Keychains, …) are always denied.
+          When a workspace is sandboxed, the agent runs under macOS seatbelt: writes are restricted to the worktree + caches, HTTPS goes through an in-process per-workspace proxy filtered against the allowlist below. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, Keychains, …) are always denied.
         </p>
 
         <div className="mt-4 flex flex-col gap-5">
