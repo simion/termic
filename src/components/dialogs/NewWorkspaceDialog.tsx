@@ -22,6 +22,7 @@ export function NewWorkspaceDialog() {
   const project = useApp(s => projectId ? s.projects.find(p => p.id === projectId) : null);
   const setActive = useApp(s => s.setActiveWorkspace);
   const loadAll = useApp(s => s.loadAll);
+  const agents = useApp(s => s.agents);
 
   const [name, setName] = useState("");
   const [cli, setCli] = useState<string>("claude");
@@ -70,39 +71,15 @@ export function NewWorkspaceDialog() {
     submittingRef.current = false;
   }, [projectId]);
 
-  // Subscribe to streaming setup events for the workspace we just created.
-  // Per-line output + a final "done" event with exit code. We hide the
-  // listeners during form phase to avoid noise.
-  useEffect(() => {
-    if (!createdWsId) return;
-    let unlistenOut: (() => void) | null = null;
-    let unlistenDone: (() => void) | null = null;
-    let cancelled = false;
-    (async () => {
-      unlistenOut = await listen<{ line: string }>(`setup-output://${createdWsId}`, ev => {
-        if (cancelled) return;
-        setSetupLog(log => [...log, ev.payload.line]);
-      });
-      unlistenDone = await listen<{ code: number | null; success: boolean }>(`setup-done://${createdWsId}`, ev => {
-        if (cancelled) return;
-        if (ev.payload.success) {
-          setPhase("done");
-          // Auto-close + activate the workspace 2s after success.
-          window.setTimeout(() => {
-            setActive(createdWsId);
-            close();
-          }, 2000);
-        } else {
-          setPhase("error");
-          setErr(`Setup script exited with code ${ev.payload.code ?? "?"}.`);
-        }
-      });
-    })();
-    return () => {
-      cancelled = true;
-      unlistenOut?.(); unlistenDone?.();
-    };
-  }, [createdWsId, setActive, close]);
+  // Tauri event unlisten handles. Owned by submit() (which registers them
+  // imperatively BEFORE invoking workspaceCreate — guaranteed ordering vs
+  // the old useEffect-based subscription that races against fast/empty
+  // setup scripts). Cleaned up on unmount + before each new submission.
+  const unlistenRef = useRef<Array<() => void>>([]);
+  useEffect(() => () => {
+    for (const u of unlistenRef.current) u();
+    unlistenRef.current = [];
+  }, []);
 
   // Auto-scroll setup output as new lines arrive.
   useEffect(() => {
@@ -123,15 +100,34 @@ export function NewWorkspaceDialog() {
     if (submittingRef.current) return;
     submittingRef.current = true;
     setBusy(true); setErr(null); setPhase("creating"); setSetupLog([]);
-    // Pre-generate the workspace ID + set `createdWsId` BEFORE invoking
-    // workspaceCreate. That triggers the listener-attaching useEffect on
-    // this same React render pass, so by the time Rust emits
-    // `setup-done://<id>` (which is IMMEDIATE for empty setup scripts),
-    // the listener is already there. Without this, the dialog hung
-    // forever on "Waiting for output…" because the done event fired into
-    // the void.
+    // Pre-generate the workspace ID then `await listen(...)` for BOTH
+    // setup-output and setup-done BEFORE invoking workspaceCreate. The
+    // earlier useEffect-based subscription wasn't guaranteed to attach in
+    // time — for empty setup scripts Rust emits setup-done synchronously
+    // inside workspace_create_sync, so the done event could fire while
+    // React was still scheduling the effect → dialog hung forever on
+    // "Waiting for output…". `await listen()` returns once the
+    // subscription is confirmed by the Tauri backend, eliminating the
+    // race entirely.
     const wsId = crypto.randomUUID();
     setCreatedWsId(wsId);
+    // Clean up any prior unlisteners from a previous (errored) submission
+    // before registering new ones.
+    for (const u of unlistenRef.current) u();
+    unlistenRef.current = [];
+    const uOut = await listen<{ line: string }>(`setup-output://${wsId}`, ev => {
+      setSetupLog(log => [...log, ev.payload.line]);
+    });
+    const uDone = await listen<{ code: number | null; success: boolean }>(`setup-done://${wsId}`, ev => {
+      if (ev.payload.success) {
+        setPhase("done");
+        window.setTimeout(() => { setActive(wsId); close(); }, 2000);
+      } else {
+        setPhase("error");
+        setErr(`Setup script exited with code ${ev.payload.code ?? "?"}.`);
+      }
+    });
+    unlistenRef.current = [uOut, uDone];
     try {
       await workspaceCreate({
         id: wsId,
@@ -185,18 +181,23 @@ export function NewWorkspaceDialog() {
         </Field>
 
         <Field label="CLI">
-          <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
-            {CLIS.map(c => (
+          {/* Pulled from the editable agent registry (Settings → Agents),
+              not hard-coded — custom agents the user added show up here
+              alongside the three built-ins. Falls back to the built-in
+              list if the registry hasn't loaded yet. */}
+          <div className="inline-flex flex-wrap items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+            {(agents.length ? agents : CLIS.map(id => ({ id, display_name: id, color: "" } as any))).map(a => (
               <button
-                key={c} type="button" onClick={() => setCli(c)}
+                key={a.id} type="button" onClick={() => setCli(a.id)}
                 className={cn(
                   "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
-                  cli === c
+                  cli === a.id
                     ? "bg-[var(--color-accent)] text-white"
-                    : cn("text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]", CLI_BRAND_COLOR[c]),
+                    : cn("text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]", CLI_BRAND_COLOR[a.id]),
                 )}
+                style={cli === a.id ? undefined : (a.color ? { color: a.color } : undefined)}
               >
-                <CliIcon cli={c} className="h-3.5 w-3.5" />{c}
+                <CliIcon cli={a.id} className="h-3.5 w-3.5" />{a.display_name}
               </button>
             ))}
           </div>

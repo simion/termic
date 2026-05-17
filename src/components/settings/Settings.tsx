@@ -14,7 +14,7 @@ import { AgentsSection } from "./AgentsSection";
 
 export function Settings() {
   const view = useApp(s => s.view);
-  const setView = useApp(s => s.setView);
+  const closeSettings = useApp(s => s.closeSettings);
   const openSettings = useApp(s => s.openSettings);
   const projects = useApp(s => s.projects);
 
@@ -35,7 +35,7 @@ export function Settings() {
 
       {/* Left rail */}
       <aside className="flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 pb-3 pt-12">
-        <Button variant="ghost" className="mb-3 justify-start gap-2 px-2" onClick={() => setView("dashboard")}>
+        <Button variant="ghost" className="mb-3 justify-start gap-2 px-2" onClick={closeSettings}>
           <ArrowLeft className="h-4 w-4" /> Back to app
         </Button>
 

@@ -68,6 +68,12 @@ pub struct Workspace {
     /// archive skips `git worktree remove`, and the UI shows a distinct icon.
     #[serde(default)]
     pub is_repo_root: bool,
+    /// Total number of times an agent has been spawned for this workspace
+    /// across all sessions (persisted via `workspace_record_spawn`). Used by
+    /// the frontend to decide when to append `--continue` / `--resume` —
+    /// on the very first spawn there's no prior CLI history to resume yet.
+    #[serde(default)]
+    pub spawn_count: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -492,6 +498,7 @@ fn workspace_open_repo(project_id: String) -> Result<Workspace, String> {
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
         is_repo_root: true,
+        spawn_count: 0,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -599,6 +606,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
         is_repo_root: false,
+        spawn_count: 0,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -664,6 +672,19 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
     w.cli = cli;
     save_workspace(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
+}
+
+/// Increment + persist the workspace's `spawn_count`. Called by the
+/// frontend immediately after `pty_spawn` returns successfully so the
+/// counter reflects "this worktree has been opened at least once" —
+/// which `resumeArgsForCli` uses to gate `--continue` / `--resume`.
+#[tauri::command]
+fn workspace_record_spawn(id: String) -> Result<u32, String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    w.spawn_count = w.spawn_count.saturating_add(1);
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(w.spawn_count)
 }
 
 /// Archive a workspace: stop scripts, run the archive script, remove the
@@ -806,10 +827,36 @@ fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
     Ok(WorkspaceChanges { count: files.len(), files })
 }
 
+/// Resolve a renderer-supplied path against a workspace root and verify the
+/// result is contained within it. Rejects absolute paths and `..` segments
+/// up front so attempts like `/etc/passwd` or `../../foo` fail loudly
+/// instead of being silently joined. Canonicalizes both ends so a symlink
+/// pointing outside the worktree also fails the contains check.
+///
+/// **MUST** be used for every renderer → filesystem read inside a workspace
+/// (file_read, file_diff, future watchers). Without it, untrusted paths
+/// from the webview could read arbitrary text files on disk.
+fn safe_workspace_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
+    let pb = Path::new(rel);
+    if pb.is_absolute() {
+        return Err(format!("absolute paths not allowed: {rel}"));
+    }
+    if pb.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("`..` segments not allowed: {rel}"));
+    }
+    let target = ws_path.join(pb);
+    let canon_base = fs::canonicalize(ws_path).map_err(|e| e.to_string())?;
+    let canon_target = fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    if !canon_target.starts_with(&canon_base) {
+        return Err(format!("path escapes workspace: {rel}"));
+    }
+    Ok(canon_target)
+}
+
 #[tauri::command]
 fn workspace_file_read(id: String, path: String) -> Result<String, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let abs = PathBuf::from(&w.path).join(&path);
+    let abs = safe_workspace_path(Path::new(&w.path), &path)?;
     // Refuse binary or huge files for now — viewer is text-only.
     let meta = fs::metadata(&abs).map_err(|e| e.to_string())?;
     if meta.len() > 2_000_000 {
@@ -822,16 +869,20 @@ fn workspace_file_read(id: String, path: String) -> Result<String, String> {
 fn workspace_file_diff(id: String, path: String) -> Result<String, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
     let wt = PathBuf::from(&w.path);
-    // Diff vs HEAD (working tree + index). For tracked files this catches
-    // both staged and unstaged changes; for untracked files git returns
-    // nothing and we synthesize an "all-added" view from the file content.
+    // Tracked diff is safe because the path is forwarded to `git -C wt diff`
+    // which already constrains paths to the working tree. The untracked
+    // fallback below DOES read straight from disk, so for THAT branch we
+    // safe-resolve before reading.
     let tracked_diff = git(&["--no-pager", "diff", "HEAD", "--", &path], &wt)
         .unwrap_or_default();
     if !tracked_diff.trim().is_empty() {
         return Ok(tracked_diff);
     }
     // Maybe it's untracked — synthesize a "new file" diff.
-    let abs = wt.join(&path);
+    let abs = match safe_workspace_path(&wt, &path) {
+        Ok(p) => p,
+        Err(_) => return Ok(String::new()),
+    };
     if abs.exists() {
         if let Ok(content) = fs::read_to_string(&abs) {
             let mut out = String::new();
@@ -877,19 +928,13 @@ pub struct FileEntry {
 /// doesn't have to guess by extension.
 #[tauri::command]
 fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String> {
-    if rel.split('/').any(|s| s == "..") {
-        return Err("invalid path".into());
-    }
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
     let base = PathBuf::from(&w.path);
-    let target = if rel.is_empty() { base.clone() } else { base.join(&rel) };
-    // Belt and suspenders: canonicalize and verify the target stays under the
-    // workspace root so a crafted rel-path can't escape via symlinks.
-    let canon_base = fs::canonicalize(&base).map_err(|e| e.to_string())?;
-    let canon_target = fs::canonicalize(&target).map_err(|e| e.to_string())?;
-    if !canon_target.starts_with(&canon_base) {
-        return Err("path escapes workspace".into());
-    }
+    let canon_target = if rel.is_empty() {
+        fs::canonicalize(&base).map_err(|e| e.to_string())?
+    } else {
+        safe_workspace_path(&base, &rel)?
+    };
     let mut out = Vec::new();
     let rd = fs::read_dir(&canon_target).map_err(|e| e.to_string())?;
     for e in rd.flatten() {
@@ -920,15 +965,56 @@ fn slugify(s: &str) -> String {
         .to_string()
 }
 
+/// Recursively copy a file or directory. `fs::copy` ONLY handles files, so
+/// the previous implementation silently dropped directory patterns like
+/// `.venv` and `node_modules` — the two patterns we ship as defaults.
+fn copy_file_or_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let meta = match fs::symlink_metadata(src) {
+        Ok(m) => m,
+        Err(e) => return Err(e),
+    };
+    let ft = meta.file_type();
+    if ft.is_symlink() {
+        // Preserve the symlink itself (don't follow). On non-Unix this is a
+        // no-op since `std::os::unix::fs::symlink` isn't available.
+        #[cfg(unix)]
+        {
+            if let Ok(target) = fs::read_link(src) {
+                if let Some(parent) = dst.parent() { let _ = fs::create_dir_all(parent); }
+                let _ = fs::remove_file(dst); // overwrite if present
+                return std::os::unix::fs::symlink(target, dst);
+            }
+        }
+        return Ok(());
+    }
+    if ft.is_dir() {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let child_src = entry.path();
+            let child_dst = dst.join(entry.file_name());
+            // Best-effort: log on failure but keep going so one bad file
+            // (e.g. a broken symlink inside node_modules) doesn't abort
+            // the whole copy.
+            if let Err(e) = copy_file_or_dir(&child_src, &child_dst) {
+                eprintln!("copy {} → {}: {e}", child_src.display(), child_dst.display());
+            }
+        }
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() { fs::create_dir_all(parent)?; }
+    fs::copy(src, dst).map(|_| ())
+}
+
 fn copy_matching(repo: &Path, dst: &Path, pat: &str) {
     // Very simple glob: '*' wildcard in the basename only.
     let pat_path = repo.join(pat);
     if pat_path.exists() {
         let rel_dst = dst.join(pat);
-        if let Some(parent) = rel_dst.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::copy(&pat_path, &rel_dst);
+        // Handles both files AND directories now — previously `fs::copy`
+        // here silently no-op'd on dirs, which made `.venv` / `node_modules`
+        // defaults a lie.
+        let _ = copy_file_or_dir(&pat_path, &rel_dst);
         return;
     }
     if pat.contains('*') {
@@ -943,10 +1029,7 @@ fn copy_matching(repo: &Path, dst: &Path, pat: &str) {
                 let n = name.to_string_lossy();
                 if simple_glob_match(glob, &n) {
                     let dst_path = dst.join(parent_rel).join(&*n);
-                    if let Some(p) = dst_path.parent() {
-                        let _ = fs::create_dir_all(p);
-                    }
-                    let _ = fs::copy(e.path(), &dst_path);
+                    let _ = copy_file_or_dir(&e.path(), &dst_path);
                 }
             }
         }
@@ -1269,6 +1352,11 @@ pub struct AgentCapabilities {
     /// Slash-style command sent to a live PTY to enable/disable YOLO mid-session.
     /// `{mode}` is replaced with "yolo" or "default". Empty → no runtime toggle.
     pub runtime_yolo_command: String,
+    /// Args appended on spawn AFTER the first one for a given worktree
+    /// (gated by `Workspace.spawn_count > 0`). Lets the CLI resume its own
+    /// per-directory history file. Empty → no auto-resume for this agent.
+    #[serde(default)]
+    pub resume_args: Vec<String>,
 }
 
 fn default_agents() -> Vec<Agent> {
@@ -1277,13 +1365,21 @@ fn default_agents() -> Vec<Agent> {
             id: "claude".into(),
             display_name: "claude".into(),
             command: "claude".into(),
-            args: vec![],
+            // Name every claude session after the worktree's slugified
+            // workspace name so resume below can target this specific
+            // conversation deterministically. Templated via {workspace_slug}
+            // which the frontend expands at spawn time.
+            args: vec!["--name".into(), "{workspace_slug}".into()],
             icon_id: "claude".into(),
             color: "#d97757".into(),
             builtin: true,
             capabilities: AgentCapabilities {
                 yolo_args: vec!["--dangerously-skip-permissions".into()],
                 runtime_yolo_command: String::new(), // claude has no runtime toggle
+                // Deterministic resume — names the exact session created
+                // above. Beats `--continue` which grabs whichever session
+                // is "most-recent" in CWD.
+                resume_args: vec!["--resume".into(), "{workspace_slug}".into()],
             },
         },
         Agent {
@@ -1297,6 +1393,10 @@ fn default_agents() -> Vec<Agent> {
             capabilities: AgentCapabilities {
                 yolo_args: vec!["--yolo".into()],
                 runtime_yolo_command: "/approval-mode {mode}".into(),
+                // gemini supports `--resume latest` to pick up the most
+                // recent session in CWD. Less deterministic than claude's
+                // named-session scheme but the best gemini offers today.
+                resume_args: vec!["--resume".into(), "latest".into()],
             },
         },
         Agent {
@@ -1310,6 +1410,10 @@ fn default_agents() -> Vec<Agent> {
             capabilities: AgentCapabilities {
                 yolo_args: vec!["--dangerously-bypass-approvals-and-sandbox".into()],
                 runtime_yolo_command: String::new(),
+                // codex uses a subcommand for resume: `codex resume --last`
+                // (most-recent session in CWD). Composes correctly with
+                // global flags placed before: `codex --yolo resume --last`.
+                resume_args: vec!["resume".into(), "--last".into()],
             },
         },
     ]
@@ -1346,6 +1450,15 @@ fn seeded_defaults() -> Settings {
 
 #[tauri::command]
 fn settings_load() -> Settings { load_settings_inner() }
+
+/// Expose the ship-time defaults for the agent registry. Used by the
+/// Settings → Agents UI to show "modified" indicators and offer a
+/// "Reset to defaults" affordance — without this, users who customized
+/// any agent field on a prior release would never pick up improvements
+/// to the default flags (e.g., when we updated claude's resume scheme
+/// from `--continue` to `--resume <name>`).
+#[tauri::command]
+fn agents_defaults() -> Vec<Agent> { default_agents() }
 
 #[tauri::command]
 fn settings_save(s: Settings) -> Result<(), String> {
@@ -1526,13 +1639,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_update, project_remove,
             workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli,
-            workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script,
+            workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn,
             workspace_diff, workspace_files,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, home_dir, path_exists, log_line,
-            settings_load, settings_save, agents_save, discover_repos, detect_clis,
+            settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             list_monospace_fonts,
         ])
         .run(tauri::generate_context!())

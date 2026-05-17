@@ -23,6 +23,7 @@ export function App() {
   const hideRP  = useApp(s => s.rightPanelHidden);
   const activeWs = useApp(s => s.activeWorkspaceId);
   const view = useApp(s => s.view.page);
+  const settingsOpen = useApp(s => !!s.view.settingsOpen);
 
   useShortcuts();
   useAttentionNotifier();
@@ -50,7 +51,9 @@ export function App() {
   // keeps its PTYs alive — closing settings dumps you straight back into
   // your live terminals. Previous "if (settings) return <Settings/>" branch
   // unmounted MainArea and killed every PTY.
-  const showSettings = view === "settings";
+  void view;
+  // Settings is now a transient overlay flag — see store comment.
+  const showSettings = settingsOpen;
 
   return (
     <>

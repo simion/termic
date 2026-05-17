@@ -33,6 +33,10 @@ export interface Workspace {
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
   is_repo_root?: boolean;
+  /** Total agent spawns ever recorded for this worktree (across sessions).
+   *  Frontend uses `count > 0` to gate the `--continue` / `--resume` flag
+   *  on spawn — first ever spawn has no history for the CLI to resume. */
+  spawn_count?: number;
 }
 
 export interface CreateWorkspaceArgs {
@@ -71,6 +75,9 @@ export interface Agent {
     yolo_args?: string[];
     /** Slash-style command sent to a live PTY to enable YOLO mid-session. */
     runtime_yolo_command?: string;
+    /** Args appended after the worktree's first spawn (so the CLI resumes
+     *  its own per-directory session). Empty/missing → no auto-resume. */
+    resume_args?: string[];
   };
 }
 

@@ -47,7 +47,10 @@ npm run build             # tsc -b && vite build (type-check + bundle)
 
 ## Data model
 
-- **Project** (`~/Library/Application Support/com.simion.conductor/projects.json`, single array) — git repo + scripts + `preview_url` template + `files_to_copy` globs + `default_cli`. Identifier kept as `com.simion.conductor` to preserve user data across the rename.
+- **Data dirs.** TWO directories — different owners:
+  - `<data_local_dir>/termic/` (e.g. macOS: `~/Library/Application Support/termic/`) — app-owned: `projects.json`, `workspaces/`, `settings.json`. Path via `dirs::data_local_dir().join("termic")` in `lib.rs#data_dir()`.
+  - `<data_local_dir>/com.simion.termic/` — tauri-plugin-state owned (window position/size from `tauri-plugin-window-state`). Path derives from `tauri.conf.json#identifier`.
+- **Project** entries live in `<data_local_dir>/termic/projects.json` as a single JSON array — git repo + scripts + `preview_url` template + `files_to_copy` globs + `default_cli`.
 - **Workspace** (`workspaces/<uuid>.json`, one per file) — git worktree branched from project's `base_branch`. Worktrees live at `~/termic/workspaces/<project>/<name>/`. `is_repo_root=true` workspaces point at the project's live checkout (no worktree, archive doesn't `rm -rf`).
 - **Settings** (`settings.json`) — `repos_dir`, `welcomed`, `agents[]` (user-editable registry: claude/gemini/codex defaults + customs; each has command/args/yolo_args/runtime_yolo_command). On load, defaults are seeded if `agents` is empty.
 - **Tab** (per workspace, in `useApp`): `terminal` (PTY running a CLI), `edit` (CodeMirror), `diff` (vs HEAD). PTYs die with the app.
@@ -141,7 +144,7 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 
 ## Common gotchas (encountered, fixed — don't reintroduce)
 
-- **Window opens tiny.** `tauri-plugin-window-state` restores prior size before min-size kicks in. Reset: `rm ~/Library/Application\ Support/com.simion.conductor/.window-state.json`.
+- **Window opens tiny.** `tauri-plugin-window-state` restores prior size before min-size kicks in. Reset: `rm "<data_local_dir>/com.simion.termic/.window-state.json"` (macOS: `~/Library/Application Support/com.simion.termic/.window-state.json`).
 - **Window on wrong monitor + huge.** `position_on_cursor_monitor()` in the setup hook + `visible: false` + `show()` after positioning.
 - **Terminal blank.** Payload shape — see Critical IPC shapes.
 - **Terminal "ribbons" in TUIs.** lineHeight ≠ 1.0 or WebglAddon not loaded.

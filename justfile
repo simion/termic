@@ -14,9 +14,10 @@ dev:
 check:
     @cd src-tauri && cargo check
 
-# Type-check the frontend (tsc) + vite production build.
+# Type-check the frontend only (no Vite bundle — fast). Use `just build`
+# if you actually want the production output.
 check-web:
-    @npm run build
+    @npx tsc -b --noEmit
 
 # Run everything: rust + frontend type checks. CI-style.
 check-all: check check-web
@@ -44,17 +45,19 @@ build:
     @npm run tauri build
 
 # Build the release bundle AND copy the .app to /Applications, replacing
-# any prior install. Quits a running instance first so the copy doesn't
-# race with a live binary's mmap. Refresh the dock so the new icon picks
-# up without a relaunch.
+# any prior install. Quits a running instance via bundle ID (not app name —
+# precise even if you've got a dev binary running with the same display
+# name). Touches the new bundle so LaunchServices re-reads its icon
+# without the more disruptive `killall Dock` flash.
 install: build
     @set -e; \
     APP_NAME="termic"; \
+    BUNDLE_ID="com.simion.termic"; \
     SRC="src-tauri/target/release/bundle/macos/$APP_NAME.app"; \
     DEST="/Applications/$APP_NAME.app"; \
     if [ ! -d "$SRC" ]; then echo "✗ build artifact missing: $SRC"; exit 1; fi; \
-    echo "→ Quitting any running $APP_NAME instance"; \
-    osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true; \
+    echo "→ Quitting any running $APP_NAME instance (by bundle id $BUNDLE_ID)"; \
+    osascript -e "tell application id \"$BUNDLE_ID\" to quit" 2>/dev/null || true; \
     sleep 1; \
     echo "→ Removing $DEST (if present)"; \
     rm -rf "$DEST"; \
@@ -62,7 +65,8 @@ install: build
     cp -R "$SRC" "$DEST"; \
     echo "→ Refreshing icon cache"; \
     touch "$DEST"; \
-    killall Dock || true; \
+    /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$DEST" 2>/dev/null || true; \
+    killall Finder 2>/dev/null || true; \
     echo "✓ Installed. Launch with: open $DEST"
 
 # Build, install, AND launch. One-liner for "ship it and try it".
@@ -74,14 +78,21 @@ run: install
 uninstall:
     @rm -rf /Applications/termic.app && echo "✓ Removed /Applications/termic.app"
 
-# Wipe ALL local user data: projects, workspaces, settings, window state,
-# debug log. Worktrees on disk are NOT touched — those are real git repos.
+# Wipe ALL local user data. Two separate dirs to clear:
+#   - termic/                  → app-owned: projects.json, workspaces/, settings.json
+#   - com.simion.termic/       → tauri-plugin-state: window position, size
+# Both stem from macOS conventions. Worktrees on disk are NOT touched —
+# those are real git repos under ~/termic/workspaces/.
 # DESTRUCTIVE. Confirms before running.
 nuke-data:
-    @echo "This will delete ~/Library/Application Support/com.simion.conductor/"; \
+    @APP_DATA="$HOME/Library/Application Support/termic"; \
+    BUNDLE_DATA="$HOME/Library/Application Support/com.simion.termic"; \
+    echo "This will delete:"; \
+    echo "  $APP_DATA"; \
+    echo "  $BUNDLE_DATA"; \
     read -p "Type 'yes' to confirm: " confirm; \
     if [ "$confirm" = "yes" ]; then \
-        rm -rf "$HOME/Library/Application Support/com.simion.conductor"; \
+        rm -rf "$APP_DATA" "$BUNDLE_DATA"; \
         echo "✓ Wiped. Worktrees on disk are untouched."; \
     else \
         echo "✗ Aborted."; \

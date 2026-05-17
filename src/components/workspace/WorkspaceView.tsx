@@ -23,21 +23,24 @@ const MIN_HEIGHT = 80;
 function BottomTabPill({ title, active, canClose, onSelect, onClose }: {
   title: string; active: boolean; canClose: boolean; onSelect: () => void; onClose: () => void;
 }) {
+  // Geometry mirrors TabBar.tsx's TabPill: h-7 / rounded-md / text-[13.5px]
+  // / h-4 icons. So the split-strip below the agent terminal feels like the
+  // *same* tab system as the main strip up top, not a separate mini-strip.
   return (
     <div
       onClick={onSelect}
       className={cn(
-        "group flex h-5 cursor-pointer items-center gap-1.5 rounded px-2 text-[11.5px] transition-colors max-w-[140px]",
+        "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13.5px] transition-colors max-w-[220px]",
         active
           ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
           : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
       )}
     >
-      <TerminalSquare className="h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />
-      <span className="truncate font-mono">{title}</span>
+      <TerminalSquare className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
+      <span className="truncate">{title}</span>
       {canClose && (
         <button
-          className="rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
+          className="ml-0.5 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
           onClick={(e) => { e.stopPropagation(); onClose(); }}
         ><X className="h-3 w-3" /></button>
       )}
@@ -107,8 +110,10 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   setSplitHeight(ws.id, next);
                 }}
               />
-              {/* Mini tab strip: switch between bottom shells, add more, close. */}
-              <div className="flex h-7 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] px-1.5">
+              {/* Tab strip: matches the main TabBar's geometry — h-9 / px-2
+                  / gap-0.5 — so the split-bottom feels like the same UI
+                  primitive, not a smaller cousin. */}
+              <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2">
                 {(bottomTabs || []).map(t => (
                   <BottomTabPill
                     key={t.id}
@@ -122,13 +127,13 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 <button
                   title="New shell tab"
                   onClick={() => addBottomTab(ws.id)}
-                  className="ml-0.5 flex items-center gap-0.5 rounded px-1 py-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-                ><TerminalSquare className="h-3.5 w-3.5" /><Plus className="h-2.5 w-2.5" /></button>
+                  className="ml-1 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                ><Plus className="h-4 w-4" /></button>
                 <button
                   title="Close split terminal"
                   onClick={() => toggleSplit(ws.id)}
-                  className="ml-auto rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-                ><X className="h-3.5 w-3.5" /></button>
+                  className="ml-auto rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+                ><X className="h-4 w-4" /></button>
               </div>
               {/* Terminals: render each tab as an AuxTerminal kept mounted with
                   visibility toggle, same as the main tabs — switching tabs must

@@ -2,7 +2,8 @@
 // the resize/refit dance and the attention/unread heuristics. Stays mounted
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { RotateCcw } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -11,7 +12,7 @@ import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { usePrefs, currentTerminalStack } from "@/store/prefs";
-import { spawnArgsForCli, tryToggleYoloLive } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive } from "@/lib/agents";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 
@@ -67,6 +68,19 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // consecutive identical samples + whether we've already marked this cycle
   // (so we mark once per "agent goes from working → settled" transition).
   const settledRef = useRef({ lastHash: 0, unchangedCount: 0, marked: false });
+  // Respawn machinery: when the agent process exits (user typed `exit`,
+  // claude crashed, etc.) we tear down the PTY but KEEP the terminal
+  // mounted with its scrollback. The "Restart" overlay then bumps `gen`
+  // which retriggers the spawn effect with a fresh PTY. Without this the
+  // pane was dead until the user closed + reopened the tab.
+  const [gen, setGen] = useState(0);
+  const [exited, setExited] = useState(false);
+  // Local "has been spawned this session" marker. `ws.spawn_count` from
+  // props only updates after the next `loadAll()` (window focus event /
+  // app launch), so without this ref a same-session Restart would spawn
+  // without `--continue` and start a brand new agent conversation. Set
+  // true after the first successful spawn this component sees.
+  const everSpawnedRef = useRef(false);
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
@@ -126,19 +140,38 @@ export function TerminalPane({ ws, tab, active }: Props) {
       const rows = Math.max(10, term.rows || 30);
 
       try {
+        // Resume the agent's prior session in this worktree iff EITHER:
+        //  - persisted spawn_count > 0 (we've recorded a prior spawn that
+        //    survived a termic restart), or
+        //  - everSpawnedRef.current (we've already spawned at least once
+        //    this component lifetime — covers the in-session Restart case
+        //    where the persisted count hasn't been reloaded into props yet).
+        const shouldResume = (ws.spawn_count ?? 0) > 0 || everSpawnedRef.current;
         const ptyId = await ipc.ptySpawn({
           cwd: ws.path,
-          cmd: tab.cli,
-          // Spawn with whatever auto-approve flag the agent needs *right now*.
-          // Toggling YOLO later only affects future tabs (except for gemini,
-          // which gets a live `/approval-mode` flip — see the effect below).
-          args: spawnArgsForCli(tab.cli, usePrefs.getState().yoloMode),
+          // Resolve the executable through the agent registry — users can
+          // edit Settings → Agents to point `claude` (or any custom agent
+          // id) at a different binary, wrapper script, etc. without code
+          // changes. Falls back to `tab.cli` for unknown ids.
+          cmd: spawnCommandForCli(tab.cli),
+          args: spawnArgsForCli(tab.cli, {
+            yolo: usePrefs.getState().yoloMode,
+            resume: shouldResume,
+            ws,
+          }),
           env: { TERMIC_PORT: String(ws.port), TERMIC_WORKSPACE_NAME: ws.name },
           rows, cols,
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
         ptyRef.current = ptyId;
+        everSpawnedRef.current = true;
         patchTab(ws.id, tab.id, { ptyId, lastOutputAt: Date.now() });
+        // Persist the spawn so subsequent spawns for this workspace
+        // (this tab respawning, or another tab opening the same agent)
+        // append resume args. Fire-and-forget — failure here is harmless,
+        // just means the next spawn won't auto-resume.
+        ipc.workspaceRecordSpawn(ws.id).catch(err =>
+          console.error("workspace_record_spawn failed:", err));
 
         // Output stream → terminal write + attention bookkeeping.
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
@@ -157,6 +190,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
         const unlistenExit = await ipc.onPtyExit(ptyId, () => {
           markAttention(ws.id, tab.id, "exit");
           ptyRef.current = null;
+          setExited(true);
         });
         unlistenExitRef.current = unlistenExit;
 
@@ -196,7 +230,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [ws.id, ws.path, ws.port, ws.name, tab.id, tab.cli, patchTab, markAttention]);
+  // `gen` in the deps array is what makes the Restart button work: it
+  // bumps, the effect tears down, the effect runs again, fresh PTY.
+  }, [ws.id, ws.path, ws.port, ws.name, tab.id, tab.cli, patchTab, markAttention, gen]);
 
   // Refit + focus when the tab becomes active OR when its workspace
   // becomes the active workspace (e.g., clicking a workspace in the
@@ -278,5 +314,24 @@ export function TerminalPane({ ws, tab, active }: Props) {
     return () => window.clearInterval(id);
   }, [ws.id, tab.id, markAttention]);
 
-  return <div ref={hostRef} className="h-full w-full bg-[var(--color-bg)]" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={hostRef} className="h-full w-full bg-[var(--color-bg)]" />
+      {exited && (
+        // Overlay on the dead xterm. The terminal underneath stays mounted
+        // so the user can still scroll through whatever the agent printed
+        // before it died — we just block input + offer a restart. `gen++`
+        // tears down the spawn effect and re-runs it with a fresh PTY.
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-bg)]/85 backdrop-blur-[1px]">
+          <div className="text-[13px] text-[var(--color-fg-dim)]">{tab.cli} exited.</div>
+          <button
+            onClick={() => { setExited(false); setGen(g => g + 1); }}
+            className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-1.5 text-[12.5px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)]"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Restart {tab.cli}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
