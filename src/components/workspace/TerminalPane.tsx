@@ -11,7 +11,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { useApp } from "@/store/app";
-import { usePrefs, currentTerminalStack, currentTerminalTheme } from "@/store/prefs";
+import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive } from "@/lib/agents";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
@@ -168,7 +168,15 @@ export function TerminalPane({ ws, tab, active }: Props) {
             resume: shouldResume,
             ws,
           }),
-          env: { TERMIC_PORT: String(ws.port), TERMIC_WORKSPACE_NAME: ws.name },
+          env: {
+            TERMIC_PORT: String(ws.port),
+            TERMIC_WORKSPACE_NAME: ws.name,
+            // Tell the agent which theme our xterm is rendering so its
+            // TUI auto-picks light vs dark colors without a manual flag.
+            // claude/gemini/codex all honor either COLORFGBG or an
+            // explicit theme env; we set both for belt-and-braces.
+            COLORFGBG: currentColorFgBg(),
+          },
           rows, cols,
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }

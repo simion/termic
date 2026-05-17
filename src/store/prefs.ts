@@ -81,6 +81,18 @@ export function currentTerminalTheme(): Record<string, string> {
   return TERMINAL_THEMES[resolved];
 }
 
+/** COLORFGBG is the long-standing convention agents (claude / gemini /
+ *  codex) use to pick their TUI theme without a manual flag. Format is
+ *  `fg;bg` where each is an ANSI color number; tools just check whether
+ *  the bg value is "light" (1-6, 7, 15) or "dark" (0, 8, 16+). We emit
+ *  conservative values - `0;15` (black on white) for light, `15;0`
+ *  (white on black) for any dark-family palette. Set this on every
+ *  PTY spawn alongside TERMIC_PORT etc. */
+export function currentColorFgBg(): string {
+  const resolved = resolveThemeFull(usePrefs.getState().themeMode);
+  return resolved === "light" ? "0;15" : "15;0";
+}
+
 // Curated list of monospace fonts we probe for. JetBrains Mono Variable ships
 // locally via @fontsource so it's always present; the rest are detected at
 // runtime via document.fonts.check(). We don't enumerate the system font

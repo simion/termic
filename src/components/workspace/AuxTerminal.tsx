@@ -12,7 +12,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { RotateCcw } from "lucide-react";
 import * as ipc from "@/lib/ipc";
-import { usePrefs, currentTerminalStack, currentTerminalTheme } from "@/store/prefs";
+import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
 // `currentTerminalTheme()` picks the matching palette at mount; the
@@ -70,6 +70,10 @@ export function AuxTerminal({ wsPath, active }: { wsPath: string; active: boolea
       try {
         const ptyId = await ipc.ptySpawn({
           cwd: wsPath, cmd: "zsh", args: ["-l"],
+          // Signal terminal theme so prompts / status bars that honor
+          // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right
+          // colors for the current chrome.
+          env: { COLORFGBG: currentColorFgBg() },
           rows: Math.max(8, term.rows), cols: Math.max(40, term.cols),
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
