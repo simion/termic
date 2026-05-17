@@ -91,6 +91,15 @@ pub fn start(allowed_patterns: Vec<String>) -> Result<ProxyHandle> {
             if shutdown_clone.load(Ordering::Relaxed) { break; }
             match listener.accept() {
                 Ok((stream, _addr)) => {
+                    // CRITICAL: accepted sockets inherit the listener's
+                    // nonblocking flag on macOS. Without restoring the
+                    // blocking mode here, std::io::copy returns
+                    // WouldBlock immediately and the tunnel never
+                    // forwards a single byte - which surfaces as
+                    // "curl: (35) Recv failure: Connection reset by
+                    // peer" on the client side because the upstream
+                    // never sees the TLS ClientHello and resets.
+                    let _ = stream.set_nonblocking(false);
                     let regexes = Arc::clone(&regexes);
                     // Each connection on its own thread. Slightly
                     // wasteful but keeps the code obvious and the
@@ -219,7 +228,12 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex]) -> Res
         }
     };
 
-    write_status(&mut client, 200, "Connection Established")?;
+    // CONNECT 2xx MUST NOT carry Content-Length / Transfer-Encoding
+    // (RFC 9110 §9.3.6). And `Connection: close` here makes curl
+    // tear the socket down before the TLS handshake gets a chance,
+    // which is the bug that made every sandboxed agent's curl come
+    // back with HTTP 0. Bare status line + CRLF terminator only.
+    client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
 
     // From here on it's a dumb byte pipe - the TLS handshake happens
     // end-to-end between the agent and the upstream; we never see the
