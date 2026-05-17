@@ -119,9 +119,16 @@
     --color-border:      #5b575b;
     --color-border-soft: #403b40;
     --color-hover:       rgba(252, 252, 250, 0.05);
-    --color-sel:         rgba(252, 152, 103, 0.22);
+    /* Sel + active-bg use a neutral light tint, NOT orange.
+       Sublime's Monokai Pro keeps active sidebar rows visually quiet
+       (a slight gray lift) and reserves the orange for accents that
+       actually need to pop: cursor, focus ring, brand color, etc.
+       Full-row orange-soft tinting reads as maroon over the warm-dark
+       bg - which is what the user saw. Neutral light wash + orange
+       accent-only on small surfaces gives the right balance. */
+    --color-sel:         rgba(252, 252, 250, 0.08);
     --color-accent:      #fc9867;
-    --color-accent-soft: rgba(252, 152, 103, 0.22);
+    --color-accent-soft: rgba(252, 252, 250, 0.08);
     color-scheme: dark;
   }
 
