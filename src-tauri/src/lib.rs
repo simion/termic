@@ -2083,6 +2083,17 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        // In-app self-update. Reads its endpoint + pubkey from
+        // tauri.conf.json → plugins.updater. Frontend calls
+        // `check()` / `downloadAndInstall()` via @tauri-apps/plugin-updater.
+        // Update packages are ed25519-signed by CI; the public key
+        // baked into the bundle verifies them before install.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Needed by the frontend updater banner so it can `relaunch()`
+        // after `downloadAndInstall()`. Kept separate from updater
+        // because the process plugin also exposes exit/restart APIs we
+        // may want for other purposes later (debug 'restart app' etc).
+        .plugin(tauri_plugin_process::init())
         .manage(PtyManager::default())
         .setup(|app| {
             // Window is created hidden (tauri.conf.json: visible=false). We

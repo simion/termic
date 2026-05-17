@@ -30,3 +30,5 @@ libc = "0.2"
 # font-kit enumerates installed system fonts and exposes is_monospace().
 # Lazy-evaluated: only the `list_monospace_fonts` command pulls families.
 font-kit = "0.14"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"

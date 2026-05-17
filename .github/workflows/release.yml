@@ -1,0 +1,198 @@
+name: Release
+
+# Push a tag like `v0.3.1` (driven by `just release patch|minor|major`).
+# This builds the macOS bundle, ad-hoc codesigns it, signs the updater
+# package with our ed25519 key, uploads everything to a GitHub
+# Release, then bumps two downstream repos:
+#   * simion/homebrew-termic     (Casks/termic.rb gets version + sha256)
+#   * simion/termic.dev          (public/updates/latest.json gets the
+#                                 new manifest)
+#
+# Brew users see the new version on `brew upgrade`; running Termic
+# instances see the in-app updater pill within 5 min (CF Pages cache
+# TTL on the manifest).
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write           # needed to create the GitHub Release
+
+env:
+  # Hard-coded so PRs from forks can't override.
+  TAP_REPO: simion/homebrew-termic
+  WEBSITE_REPO: simion/termic.dev
+  WEBSITE_MANIFEST_PATH: public/updates/latest.json
+
+jobs:
+  build-mac:
+    # Apple Silicon runners produce arm64 bundles. Add a separate
+    # `macos-13` (x86_64) matrix entry when we want Intel coverage.
+    runs-on: macos-14
+    outputs:
+      version:  ${{ steps.meta.outputs.version }}
+      dmg_name: ${{ steps.meta.outputs.dmg_name }}
+      dmg_sha:  ${{ steps.meta.outputs.dmg_sha }}
+      sig:      ${{ steps.meta.outputs.sig }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version from tag
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # arm64 dmg + tarball names follow Tauri's convention.
+          echo "dmg_name=Termic_${VERSION}_aarch64.dmg" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust target dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build & sign
+        env:
+          # ed25519 key for updater package signature. Generated once
+          # via `npx tauri signer generate`; private key + password
+          # live in repo Secrets.
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Ad-hoc codesign (free; doesn't satisfy Gatekeeper but
+          # silences dyld on newer macOS). The Homebrew cask strips
+          # quarantine on install so users don't see Gatekeeper
+          # prompts; in-app updates skip Gatekeeper entirely.
+          APPLE_SIGNING_IDENTITY: '-'
+        run: npm run tauri build -- --target aarch64-apple-darwin
+
+      - name: Compute SHA256 + read .sig
+        id: hashes
+        run: |
+          BUNDLE_DIR=src-tauri/target/aarch64-apple-darwin/release/bundle
+          DMG="$BUNDLE_DIR/dmg/${{ steps.meta.outputs.dmg_name }}"
+          ls -la "$DMG"
+          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
+          echo "dmg_sha=$SHA" >> "$GITHUB_OUTPUT"
+          SIG_FILE=$(find "$BUNDLE_DIR/macos" -name '*.app.tar.gz.sig' | head -1)
+          SIG=$(cat "$SIG_FILE")
+          # Multi-line outputs need the heredoc syntax.
+          {
+            echo 'sig<<EOF'
+            echo "$SIG"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: termic-${{ steps.meta.outputs.version }}-aarch64
+          path: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+
+  release:
+    needs: build-mac
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: termic-${{ needs.build-mac.outputs.version }}-aarch64
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ needs.build-mac.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --title "v${{ needs.build-mac.outputs.version }}" \
+            --notes "Auto-built by .github/workflows/release.yml. See the tag for changes." \
+            artifacts/dmg/*.dmg \
+            artifacts/macos/*.app.tar.gz \
+            artifacts/macos/*.app.tar.gz.sig
+
+  bump-tap:
+    needs: [build-mac, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Bump cask
+        run: |
+          cd tap
+          VERSION="${{ needs.build-mac.outputs.version }}"
+          SHA="${{ needs.build-mac.outputs.dmg_sha }}"
+          # Replace the version line + sha256 line in Casks/termic.rb.
+          # Using `|` as the sed delimiter so embedded URLs don't clash.
+          sed -i.bak -E "s|^  version \".*\"|  version \"$VERSION\"|" Casks/termic.rb
+          sed -i.bak -E "s|^  sha256 .*|  sha256 \"$SHA\"|" Casks/termic.rb
+          rm Casks/termic.rb.bak
+          git config user.name  "termic-bot"
+          git config user.email "termic-bot@users.noreply.github.com"
+          git add Casks/termic.rb
+          git commit -m "termic $VERSION"
+          git push
+
+  bump-website:
+    needs: [build-mac, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout website
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WEBSITE_REPO }}
+          token: ${{ secrets.WEBSITE_REPO_TOKEN }}
+          path: site
+
+      - name: Write update manifest
+        run: |
+          cd site
+          VERSION="${{ needs.build-mac.outputs.version }}"
+          SIG=$(cat <<'EOF'
+          ${{ needs.build-mac.outputs.sig }}
+          EOF
+          )
+          # Write the manifest. tauri-plugin-updater reads:
+          #   { version, notes, pub_date, platforms.darwin-aarch64.{signature,url} }
+          cat > "${{ env.WEBSITE_MANIFEST_PATH }}" <<JSON
+          {
+            "version": "$VERSION",
+            "notes": "See https://github.com/${{ github.repository }}/releases/tag/v$VERSION",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "$SIG",
+                "url": "https://github.com/${{ github.repository }}/releases/download/v$VERSION/Termic_${VERSION}_aarch64.app.tar.gz"
+              }
+            }
+          }
+          JSON
+          git config user.name  "termic-bot"
+          git config user.email "termic-bot@users.noreply.github.com"
+          git add "${{ env.WEBSITE_MANIFEST_PATH }}"
+          git commit -m "updater: bump to $VERSION"
+          git push
