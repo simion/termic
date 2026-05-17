@@ -63,7 +63,12 @@ termic-debug.log
 .DS_Store
 .AppleDouble
 .LSOverride
-Icon?
+# macOS Finder's custom-folder-icon file (literally "Icon\r"). The
+# naive `Icon?` glob matched the entire src/icons/ directory on
+# case-insensitive APFS ("Icon" + "s" = "icons"), silently dropping
+# every file under it from git. The negation below is belt-and-braces.
+Icon[\r]
+!src/icons/
 ._*
 .Spotlight-V100
 .Trashes
