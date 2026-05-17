@@ -96,33 +96,7 @@ check-all: check check-web
 #   just release major     # 0.1.0 → 1.0.0
 #   just release 0.4.2     # set explicit version
 release bump="patch":
-    @set -e; \
-    if [[ -n "$(git status --porcelain)" ]]; then \
-        echo "✗ working tree dirty - commit or stash first"; exit 1; \
-    fi; \
-    if [[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]]; then \
-        echo "✗ releases cut from main only (currently on $(git rev-parse --abbrev-ref HEAD))"; exit 1; \
-    fi; \
-    CUR="$(node -p 'require(\"./package.json\").version')"; \
-    case "{{ bump }}" in \
-        patch) NEW=$(node -e "let [a,b,c]=process.argv[1].split('.').map(Number); console.log(\`\${a}.\${b}.\${c+1}\`)" "$CUR");; \
-        minor) NEW=$(node -e "let [a,b,c]=process.argv[1].split('.').map(Number); console.log(\`\${a}.\${b+1}.0\`)" "$CUR");; \
-        major) NEW=$(node -e "let [a,b,c]=process.argv[1].split('.').map(Number); console.log(\`\${a+1}.0.0\`)" "$CUR");; \
-        *)     NEW="{{ bump }}";; \
-    esac; \
-    echo "→ Bumping $CUR → $NEW"; \
-    # Three files must agree: package.json, Cargo.toml, tauri.conf.json. \
-    npm version --no-git-tag-version "$NEW" >/dev/null; \
-    sed -i.bak -E "s/^version = \".*\"/version = \"$NEW\"/" src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak; \
-    node -e "let f='src-tauri/tauri.conf.json',c=require('fs').readFileSync(f,'utf8'),j=JSON.parse(c);j.version='$NEW';require('fs').writeFileSync(f,JSON.stringify(j,null,2)+'\n')"; \
-    # Keep Cargo.lock in sync so it doesn't drift in CI. \
-    (cd src-tauri && cargo update -p termic >/dev/null 2>&1 || true); \
-    git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json; \
-    git commit -m "release: v$NEW"; \
-    git tag "v$NEW"; \
-    echo ""; \
-    echo "✓ Tagged v$NEW. Push to trigger CI:"; \
-    echo "    git push && git push --tags"
+    @./scripts/release.sh {{ bump }}
 
 # ─── sandbox bundling ─────────────────────────────────────────────────
 
