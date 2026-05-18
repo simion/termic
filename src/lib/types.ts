@@ -254,9 +254,28 @@ export type TabType = "terminal" | "diff" | "edit";
 export interface BaseTab {
   id: string;
   type: TabType;
+  /** Default static label (cli name / file basename / "shell N").
+   *  When `customTitle` is true this is what the user typed; otherwise
+   *  it's the auto-derived fallback shown when the agent hasn't set a
+   *  live title yet. */
   title: string;
-  /** Triggered when the tab requires user attention (BEL, idle, exit). */
-  unread?: { reason: "bell" | "idle" | "exit" } | null;
+  /** True iff the user manually renamed this tab (double-click flow).
+   *  Locks `title` against overrides from PTY-driven `OSC 0/2` title
+   *  changes — otherwise the agent's next "Action Required (...)" would
+   *  steamroll the user's intent within a few seconds. */
+  customTitle?: boolean;
+  /** Last `OSC 0/2` title the running program emitted. Rendered in
+   *  place of `title` for unrenamed tabs so users see what the agent
+   *  is doing ("Action Required", "Ready", "thinking...") without
+   *  parsing stdout. */
+  liveTitle?: string;
+  /** True when the program explicitly requested attention via
+   *  `OSC 1337;RequestAttention=yes|fireworks`. Cleared when the tab
+   *  becomes active. Renders as a small dot independent of unread. */
+  needsAttention?: boolean;
+  /** Triggered when the tab requires user attention (BEL, idle, exit,
+   *  agent-emitted "done"). */
+  unread?: { reason: "bell" | "idle" | "exit" | "done" } | null;
 }
 
 export interface TerminalTab extends BaseTab {

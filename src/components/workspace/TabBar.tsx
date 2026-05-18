@@ -138,7 +138,12 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
           className="w-auto min-w-0 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1 text-[13.5px] text-[var(--color-fg)] outline-none"
         />
       ) : (
-        <span className="truncate">{tab.title}</span>
+        // Manual rename wins (customTitle locked at rename time).
+        // Otherwise show the live OSC 0/2 title the agent set, falling
+        // back to the static cli/type label when none arrived yet.
+        <span className="truncate" title={tab.liveTitle && !tab.customTitle ? tab.liveTitle : undefined}>
+          {tab.customTitle ? tab.title : (tab.liveTitle || tab.title)}
+        </span>
       )}
       {/* Close button — ALWAYS visible (was hover-only), and shown
           on every tab including the default one. Closing the very

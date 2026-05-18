@@ -101,7 +101,7 @@ export function GeneralSection() {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
           label="Desktop notifications"
-          hint="OS notification when an inactive agent settles or rings the bell. Off by default — multi-agent workflows can get noisy."
+          hint="OS notification when an inactive agent finishes work, exits, or rings the bell. Clicking back into Termic right after a notification jumps to that workspace + tab. Off by default — multi-agent workflows can get noisy."
           value={desktopNotifications}
           onChange={setDesktopNotifications}
         />

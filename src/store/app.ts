@@ -91,7 +91,10 @@ interface AppState {
   setActiveTabId: (wsId: string, tabId: string) => void;
   patchTab: (wsId: string, tabId: string, patch: Partial<TerminalTab>) => void;
   renameTab: (wsId: string, tabId: string, title: string) => void;
-  markAttention: (wsId: string, tabId: string, reason: "bell" | "idle" | "exit") => void;
+  /** Update the tab's PTY-driven `OSC 0/2` title. No-op when the user
+   *  has manually renamed the tab (`customTitle === true`). */
+  setTabLiveTitle: (wsId: string, tabId: string, liveTitle: string) => void;
+  markAttention: (wsId: string, tabId: string, reason: "bell" | "idle" | "exit" | "done") => void;
   clearAttention: (wsId: string, tabId: string) => void;
 }
 
@@ -367,7 +370,21 @@ export const useApp = create<AppState>((set, get) => ({
     const list = s.tabs[wsId] || [];
     const trimmed = title.trim();
     if (!trimmed) return s;
-    const next = list.map(t => t.id === tabId ? { ...t, title: trimmed } : t);
+    // Manual rename = locked title. Subsequent OSC 0/2 emissions
+    // from the running program won't overwrite it (`customTitle` is
+    // the gate the TabBar / setTabLiveTitle path checks).
+    const next = list.map(t => t.id === tabId ? { ...t, title: trimmed, customTitle: true } as Tab : t);
+    return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  setTabLiveTitle: (wsId, tabId, liveTitle) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const next = list.map(t => {
+      if (t.id !== tabId) return t;
+      // Locked tab: drop the agent's title entirely (user picked one).
+      if (t.customTitle) return t;
+      return { ...t, liveTitle } as Tab;
+    });
     return { tabs: { ...s.tabs, [wsId]: next } };
   }),
 

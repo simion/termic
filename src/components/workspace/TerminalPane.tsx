@@ -94,6 +94,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
+  const setTabLiveTitle = useApp(s => s.setTabLiveTitle);
+  // Per-effect busy ref: tracks whether OSC 9;4 has us in a busy state.
+  // Used to emit a "done" attention edge when the program transitions
+  // busy → idle (state = 0). Persisting on the tab model would just be
+  // noise — only the edge matters.
+  const busyRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,6 +129,40 @@ export function TerminalPane({ ws, tab, active }: Props) {
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+
+    // ── Sender-driven status signals (no heuristics) ──────────────────
+    // OSC 0/2 — title change. Surface live so the tab reads e.g.
+    // "Ready (...)" (Gemini done) or "Action Required (...)" (Codex)
+    // without parsing stdout. Manual rename locks the tab against this
+    // (handled in setTabLiveTitle).
+    term.onTitleChange(t => setTabLiveTitle(ws.id, tab.id, t));
+    // OSC 9;4 — ConEmu/iTerm progress protocol. State 1/3 = busy,
+    // state 0 = clear/done. On the busy → idle edge fire an attention
+    // mark so background workspaces light up in the sidebar exactly
+    // when the agent finished (Claude Code emits these reliably).
+    busyRef.current = false;
+    term.parser.registerOscHandler(9, (data) => {
+      const parts = data.split(";");
+      if (parts[0] !== "4") return false;
+      const state = Number(parts[1] ?? "0");
+      const nowBusy = state === 1 || state === 2 || state === 3 || state === 4;
+      if (busyRef.current && !nowBusy) {
+        markAttention(ws.id, tab.id, "done");
+      }
+      busyRef.current = nowBusy;
+      // Return false so xterm keeps processing — we're observers, not
+      // taking ownership of the sequence.
+      return false;
+    });
+    // OSC 1337 — iTerm proprietary. RequestAttention=yes/fireworks is
+    // an explicit "user, look at me." Treat as "done" too — both want
+    // the sidebar dot + a notification.
+    term.parser.registerOscHandler(1337, (data) => {
+      if (/^RequestAttention=(yes|fireworks)$/i.test(data)) {
+        markAttention(ws.id, tab.id, "done");
+      }
+      return false;
+    });
 
     // WebGL renderer tiles cell backgrounds pixel-perfectly — fixes the
     // "ribbon" artifacts in TUIs (gemini, claude) where adjacent bg-colored
