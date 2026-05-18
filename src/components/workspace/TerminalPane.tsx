@@ -140,10 +140,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // expresses progress by mutating its tab title many times per
     // second while thinking and then going silent ("Ready (...)").
     // Heuristic: if we saw >=2 title changes in the last 5s AND no
-    // further change arrives within ~1.8s, fire a "done" attention
-    // mark. Cheap, false-positive-resistant (a single late title
-    // bump doesn't trigger; programs that change title only on user
-    // action don't churn).
+    // further change arrives within ~10s, fire a "done" attention
+    // mark. Long silence threshold keeps false positives down — a
+    // brief mid-turn pause where gemini stops updating the title
+    // for a few seconds (writing a tool call, network round trip)
+    // shouldn't trip the indicator.
     let titleCount = 0;
     let titleFirstAt = 0;
     let titleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -157,7 +158,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
         titleTimer = setTimeout(() => {
           markAttention(ws.id, tab.id, "done");
           titleCount = 0;
-        }, 1800);
+        }, 10_000);
       }
     });
     // Carry the timer so the cleanup path can cancel it; otherwise a
