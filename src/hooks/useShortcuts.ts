@@ -85,10 +85,17 @@ export function useShortcuts() {
         return;
       }
 
-      if (e.key.toLowerCase() === "w" && wsId && activeTabId && tabs.length > 1) {
+      if (e.key.toLowerCase() === "w") {
         if (isTyping) return;
-        e.preventDefault();
-        state.closeTab(wsId, activeTabId);
+        // ALWAYS preventDefault when we're in a workspace, even if
+        // there's nothing to close. Otherwise Tauri/the webview
+        // interprets ⌘W as "close window" (the OS default) and the
+        // app dies — surprising when the user was just trying to
+        // close the active terminal tab.
+        if (wsId) {
+          e.preventDefault();
+          if (activeTabId) state.closeTab(wsId, activeTabId);
+        }
         return;
       }
     }
