@@ -62,14 +62,12 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # Tauri lower-cases the productName for the .dmg filename.
-          # APFS hid case mismatches locally; GitHub Releases URLs are
-          # case-SENSITIVE so the cask MUST reference exactly what
-          # Tauri produced. The .app.tar.gz on the other hand IS
-          # arch-suffixed by us in the rename step below (Tauri emits
-          # the same `termic.app.tar.gz` name on both arches, so we
-          # disambiguate before upload).
-          echo "dmg_name=termic_${VERSION}_aarch64.dmg" >> "$GITHUB_OUTPUT"
+          # Tauri uses productName verbatim (case preserved). After
+          # the v0.2.2 rename productName="Termic" → DMG is
+          # `Termic_<v>_aarch64.dmg`. APFS hides case mismatches
+          # locally; GitHub Releases URLs are case-SENSITIVE so the
+          # cask MUST reference exactly this casing.
+          echo "dmg_name=Termic_${VERSION}_aarch64.dmg" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - uses: dtolnay/rust-toolchain@stable
@@ -98,22 +96,22 @@ jobs:
           ls -la "$DMG"
           SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
           echo "dmg_sha=$SHA" >> "$GITHUB_OUTPUT"
-          # Tauri emits termic.app.tar.gz on both arches - we'd clobber
+          # Tauri emits Termic.app.tar.gz on both arches - we'd clobber
           # the intel one when we co-upload to a single Release. Rename
-          # here so both can coexist as termic_aarch64.app.tar.gz and
-          # termic_x64.app.tar.gz; the updater manifest references the
+          # here so both can coexist as Termic_aarch64.app.tar.gz and
+          # Termic_x64.app.tar.gz; the updater manifest references the
           # arch-suffixed URLs accordingly.
-          mv "$BUNDLE_DIR/macos/termic.app.tar.gz"     "$BUNDLE_DIR/macos/termic_aarch64.app.tar.gz"
-          mv "$BUNDLE_DIR/macos/termic.app.tar.gz.sig" "$BUNDLE_DIR/macos/termic_aarch64.app.tar.gz.sig"
-          SIG=$(cat "$BUNDLE_DIR/macos/termic_aarch64.app.tar.gz.sig")
+          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz"     "$BUNDLE_DIR/macos/Termic_aarch64.app.tar.gz"
+          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz.sig" "$BUNDLE_DIR/macos/Termic_aarch64.app.tar.gz.sig"
+          SIG=$(cat "$BUNDLE_DIR/macos/Termic_aarch64.app.tar.gz.sig")
           { echo 'sig<<EOF'; echo "$SIG"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: termic-${{ steps.meta.outputs.version }}-aarch64
           path: |
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/termic_aarch64.app.tar.gz
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/termic_aarch64.app.tar.gz.sig
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Termic_aarch64.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Termic_aarch64.app.tar.gz.sig
 
   # ─── Intel (x86_64) ────────────────────────────────────────────────
   # DISABLED for now: GitHub's macos-13 (Intel) runner fleet has been
@@ -140,7 +138,7 @@ jobs:
           # Tauri uses `x64` (not `x86_64`) in the dmg filename for
           # Intel macOS bundles. Verified against a local intel build;
           # don't change without re-checking what Tauri actually emits.
-          echo "dmg_name=termic_${VERSION}_x64.dmg" >> "$GITHUB_OUTPUT"
+          echo "dmg_name=Termic_${VERSION}_x64.dmg" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - uses: dtolnay/rust-toolchain@stable
@@ -169,17 +167,17 @@ jobs:
           ls -la "$DMG"
           SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
           echo "dmg_sha=$SHA" >> "$GITHUB_OUTPUT"
-          mv "$BUNDLE_DIR/macos/termic.app.tar.gz"     "$BUNDLE_DIR/macos/termic_x64.app.tar.gz"
-          mv "$BUNDLE_DIR/macos/termic.app.tar.gz.sig" "$BUNDLE_DIR/macos/termic_x64.app.tar.gz.sig"
-          SIG=$(cat "$BUNDLE_DIR/macos/termic_x64.app.tar.gz.sig")
+          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz"     "$BUNDLE_DIR/macos/Termic_x64.app.tar.gz"
+          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz.sig" "$BUNDLE_DIR/macos/Termic_x64.app.tar.gz.sig"
+          SIG=$(cat "$BUNDLE_DIR/macos/Termic_x64.app.tar.gz.sig")
           { echo 'sig<<EOF'; echo "$SIG"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: termic-${{ needs.build-arm.outputs.version }}-x64
           path: |
             src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/termic_x64.app.tar.gz
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/termic_x64.app.tar.gz.sig
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Termic_x64.app.tar.gz
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Termic_x64.app.tar.gz.sig
 
   # ─── Stitch the arm build into a Release ───────────────────────────
   release:
@@ -211,7 +209,7 @@ jobs:
           brew install --cask simion/termic/termic
           \`\`\`
 
-          **Direct .dmg** — download \`termic_${VERSION}_aarch64.dmg\` below,
+          **Direct .dmg** — download \`Termic_${VERSION}_aarch64.dmg\` below,
           drag to /Applications, then strip the quarantine flag so macOS
           Gatekeeper lets it launch (you'd otherwise see _"termic can't be
           opened because Apple cannot check it for malicious software"_):
@@ -297,7 +295,7 @@ jobs:
             "platforms": {
               "darwin-aarch64": {
                 "signature": "$ARM_SIG",
-                "url": "$BASE/termic_aarch64.app.tar.gz"
+                "url": "$BASE/Termic_aarch64.app.tar.gz"
               }
             }
           }

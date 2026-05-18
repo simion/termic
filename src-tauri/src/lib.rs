@@ -2132,27 +2132,59 @@ async fn list_monospace_fonts() -> Vec<String> {
 
 /// Probe the user's PATH for each supported agent CLI. Used by the welcome
 /// wizard so the user can see at a glance whether they need to install one.
+/// Falls back to hard-coded common install locations when `command -v`
+/// returns empty — covers two real cases:
+///   1. User aliased the CLI as a shell function (e.g. `claude () { ... }`)
+///      so `command -v` returns the function body, not a binary path.
+///   2. termic launched from a context with stripped PATH (Finder, .app
+///      launch, etc.) where /opt/homebrew/bin is missing.
 #[tauri::command]
 fn detect_clis() -> Vec<CliInfo> {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     ["claude", "gemini", "codex"].iter().map(|name| {
-        let which = Command::new("/usr/bin/env")
-            .args(["sh", "-lc", &format!("command -v {}", name)])
-            .output();
-        let (found, path) = match which {
-            Ok(o) if o.status.success() => {
+        // First try: PATH lookup via login shell. Covers the common case
+        // where the binary is on PATH and not shadowed.
+        let mut found = false;
+        let mut path = String::new();
+        if let Ok(o) = Command::new("/usr/bin/env")
+            .args(["sh", "-lc", &format!("command -v {} 2>/dev/null", name)])
+            .output()
+        {
+            if o.status.success() {
                 let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                (!p.is_empty(), p)
+                // Reject obvious non-paths (shell function body lookalikes).
+                if !p.is_empty() && (p.starts_with('/') || p.starts_with('~')) {
+                    found = true;
+                    path = p;
+                }
             }
-            _ => (false, String::new()),
-        };
-        // Best-effort version probe — short timeout would be nicer but most
-        // CLIs return quickly. If they don't, we just leave version empty.
+        }
+        // Fallback: probe common macOS install locations directly.
+        if !found {
+            let candidates = [
+                format!("{home}/.local/bin/{name}"),
+                format!("/opt/homebrew/bin/{name}"),
+                format!("/usr/local/bin/{name}"),
+                format!("{home}/.bun/bin/{name}"),
+                format!("{home}/.cargo/bin/{name}"),
+            ];
+            for c in candidates {
+                if Path::new(&c).exists() {
+                    found = true;
+                    path = c;
+                    break;
+                }
+            }
+        }
+        // Best-effort version probe. Use the resolved path when we have
+        // it (avoids PATH ambiguity); fall back to the bare name.
         let version = if found {
-            Command::new("/usr/bin/env")
-                .args(["sh", "-lc", &format!("{} --version 2>/dev/null | head -n1", name)])
+            let cmd = if path.is_empty() { name.to_string() } else { path.clone() };
+            Command::new(&cmd)
+                .arg("--version")
                 .output()
                 .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
                 .unwrap_or_default()
         } else { String::new() };
         CliInfo { name: (*name).into(), found, path, version }

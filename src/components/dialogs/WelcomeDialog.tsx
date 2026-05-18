@@ -16,7 +16,7 @@ import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { discoverRepos, detectClis, settingsSave } from "@/lib/ipc";
+import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave } from "@/lib/ipc";
 import type { CliInfo } from "@/lib/types";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { TermicMark } from "@/icons/TermicLogo";
@@ -113,7 +113,7 @@ export function WelcomeDialog() {
       {step === 0 && (
         <StepRepos
           dir={dir} setDir={setDir} summary={summary}
-          clis={clis} browse={browse}
+          clis={clis} setClis={setClis} browse={browse}
         />
       )}
       {step === 1 && <StepTheme />}
@@ -146,10 +146,47 @@ export function WelcomeDialog() {
 }
 
 // ── Step 1: repos + CLI detection ────────────────────────────────────
-function StepRepos({ dir, setDir, summary, clis, browse }: {
+function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
   dir: string; setDir: (v: string) => void; summary: string; clis: CliInfo[];
+  setClis: (v: CliInfo[]) => void;
   browse: () => void;
 }) {
+  // Manually point Termic at an agent CLI binary when PATH detection
+  // missed it. Common reasons: the user's `claude` is a shell function
+  // (only visible to interactive zsh), or termic was launched from
+  // Finder where the GUI process gets a stripped PATH that doesn't
+  // include /opt/homebrew/bin. Saves the absolute path to the agent
+  // registry so the spawn uses it regardless of PATH at launch time.
+  async function pickBinary(name: string) {
+    const picked = await openDialog({
+      title: `Pick the ${name} binary`,
+      multiple: false,
+      directory: false,
+    });
+    if (!picked || typeof picked !== "string") return;
+    // Load current settings + update the agent for this CLI in place.
+    // We do NOT touch other agents (custom ones the user added stay
+    // intact); we DO recreate the entry from defaults if missing.
+    try {
+      const settings = await settingsLoad();
+      const agents = Array.isArray(settings.agents) ? [...settings.agents] : [];
+      const idx = agents.findIndex(a => a.id === name);
+      if (idx >= 0) {
+        agents[idx] = { ...agents[idx], command: picked };
+      } else {
+        // Shouldn't happen for built-in CLIs but be defensive.
+        agents.push({
+          id: name, display_name: name, command: picked,
+          args: [], yolo_args: [], runtime_yolo_command: null,
+          icon: name,
+        });
+      }
+      await agentsSave(agents);
+      // Reflect in the local list so the UI updates immediately.
+      setClis(clis.map(c => c.name === name ? { ...c, found: true, path: picked, version: "" } : c));
+    } catch (e) { console.error("set binary path failed:", e); }
+  }
+
   return (
     <div className="flex flex-col gap-3">
       <label className="block text-[13.5px]">
@@ -172,14 +209,28 @@ function StepRepos({ dir, setDir, summary, clis, browse }: {
           <div className="text-[13.5px] text-[var(--color-fg-faint)]">Checking…</div>
         )}
         {clis.map(c => (
-          <div key={c.name} className={cn("flex items-center gap-2 py-0.5 text-[13.5px]", !c.found && "opacity-60")}>
+          <div key={c.name} className={cn("flex items-center gap-2 py-1 text-[13.5px]", !c.found && "opacity-80")}>
             <span className={c.found ? CLI_BRAND_COLOR[c.name] : "text-[var(--color-fg-faint)]"}>
               <CliIcon cli={c.name} className="h-4 w-4" />
             </span>
             <span className="min-w-[60px]">{c.name}</span>
-            <span className="truncate font-mono text-[12px] text-[var(--color-fg-dim)]">
-              {c.found ? (c.version || c.path) : <span className="text-[var(--color-err)]">not installed</span>}
-            </span>
+            {c.found ? (
+              <span className="truncate font-mono text-[12px] text-[var(--color-fg-dim)]" title={c.path}>
+                {c.version || c.path}
+              </span>
+            ) : (
+              <>
+                <span className="text-[var(--color-err)] text-[12px]">not installed</span>
+                <button
+                  type="button"
+                  onClick={() => pickBinary(c.name)}
+                  className="ml-auto rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-0.5 text-[11.5px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
+                  title={`Locate the ${c.name} binary manually`}
+                >
+                  Set path…
+                </button>
+              </>
+            )}
           </div>
         ))}
       </div>
