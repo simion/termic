@@ -59,9 +59,11 @@ xattr -dr com.apple.quarantine /Applications/Termic.app
 git clone https://github.com/simion/termic
 cd termic
 make setup          # brew/rust/node + npm install + cargo check
-make dev            # vite HMR + Rust auto-rebuild
 make install        # build, copy to /Applications, launch
 ```
+
+`make dev` (vite HMR + Rust auto-rebuild) is the iteration loop — see
+[CONTRIBUTING.md](./CONTRIBUTING.md) if you plan to hack on the code.
 
 #### Linux (self-build, no sandbox)
 
