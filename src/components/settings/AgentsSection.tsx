@@ -232,18 +232,21 @@ function AgentsTabs({
 
   return (
     <div className="flex flex-col">
-      {/* Tab strip — h-9 to match the rest of the app's tab UI. */}
-      <div className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--color-border-soft)] px-1">
+      {/* Tab strip — mirrors the Repository sub-tab style: bottom
+          border under inactive tabs, accent underline beneath the
+          active one. Keeps the visual language consistent across
+          settings pages. */}
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-[var(--color-border-soft)]">
         {agents.map(a => (
           <button
             key={a.id}
             type="button"
             onClick={() => setActiveId(a.id)}
             className={cn(
-              "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] transition-colors",
+              "relative -mb-px flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors",
               a.id === active.id
-                ? "bg-[var(--color-bg-3)] text-[var(--color-fg)] font-medium"
-                : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                ? "text-[var(--color-fg)]"
+                : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
             )}
           >
             <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
@@ -252,6 +255,9 @@ function AgentsTabs({
             <span className="truncate max-w-[140px]">{a.display_name || a.id}</span>
             {isModified(a) && (
               <span title="Modified from ship defaults" className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
+            )}
+            {a.id === active.id && (
+              <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]" />
             )}
           </button>
         ))}
