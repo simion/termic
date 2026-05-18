@@ -582,6 +582,28 @@ function MultiMembersEditor({ project, onSaved }: {
         project's own scripts). Edits apply to <b>future</b> workspaces —
         existing ones freeze at creation.
       </div>
+      {/* Cross-member port discovery: every member's scripts +
+          agent PTYs see a TERMIC_PORT_<DIR> var for each sibling,
+          so service A can `curl localhost:$TERMIC_PORT_API` without
+          hardcoding ports. Surface the actual names here as
+          click-to-copy chips so users don't have to guess the
+          sanitization rules. */}
+      {rows.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
+          <span className="text-[var(--color-fg-dim)]">Env vars:</span>
+          <Token>$TERMIC_PORT</Token>
+          {rows.map(r => {
+            const c = allProjects.find(p => p.id === r.project_id);
+            if (!c) return null;
+            const sanitized = c.name
+              .split("")
+              .map(ch => (/[A-Za-z0-9]/.test(ch) ? ch.toUpperCase() : "_"))
+              .join("");
+            return <Token key={r.project_id}>{`$TERMIC_PORT_${sanitized}`}</Token>;
+          })}
+          <Token>$TERMIC_WORKSPACE_NAME</Token>
+        </div>
+      )}
       {/* Selected-members list — shows only what's IN the project.
           Unselected candidates live behind the "Add member" picker
           below so the panel doesn't double-scroll inside the page.
