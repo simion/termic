@@ -44,10 +44,24 @@ jobs:
       - run: npx tsc -b
 
   # ─── Apple Silicon (arm64) ─────────────────────────────────────────
-  # Two arches kept as two explicit jobs (rather than a matrix) so
-  # downstream `needs.<job>.outputs.<x>` works per-arch; matrix outputs
-  # in GHA can't be addressed by row, which makes the release job ugly.
-  build-arm:
+  # ─── Universal macOS build (arm64 + x86_64 fused) ─────────────────
+  # Single job on macos-14 (arm runner): installs both rust targets,
+  # passes --target universal-apple-darwin to tauri, which builds
+  # both arches in-house and lipo's them into one fat Mach-O. Output
+  # is a single Termic_<v>_universal.dmg + Termic.app.tar.gz that
+  # runs natively on both arch families. macOS auto-selects the
+  # right slice at exec time.
+  #
+  # Why this instead of two separate jobs:
+  #   - No dependency on macos-13 (Intel) runners which were queue-
+  #     stuck routinely on the free tier.
+  #   - One artifact to publish + one sha in the cask + one updater
+  #     URL (the tauri-plugin-updater dispatches on the running
+  #     arch's platform key, but both keys point at the same .tar.gz
+  #     since macOS unpacks the slice it needs).
+  #   - ~2x build time on a single runner vs. parallel, but much less
+  #     than waiting for an Intel runner to come available.
+  build-mac:
     needs: validate
     runs-on: macos-14
     outputs:
@@ -57,22 +71,23 @@ jobs:
       sig:       ${{ steps.hashes.outputs.sig }}
     steps:
       - uses: actions/checkout@v4
-      - name: Resolve version + arch-tagged names
+      - name: Resolve version + filenames
         id: meta
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # Tauri uses productName verbatim (case preserved). After
-          # the v0.2.2 rename productName="Termic" → DMG is
-          # `Termic_<v>_aarch64.dmg`. APFS hides case mismatches
-          # locally; GitHub Releases URLs are case-SENSITIVE so the
-          # cask MUST reference exactly this casing.
-          echo "dmg_name=Termic_${VERSION}_aarch64.dmg" >> "$GITHUB_OUTPUT"
+          # Tauri's universal target produces `<productName>_<v>_universal.dmg`
+          # in src-tauri/target/universal-apple-darwin/release/bundle/dmg/
+          # APFS hides case mismatches locally; GitHub Releases URLs are
+          # case-SENSITIVE so the cask MUST reference exactly this casing.
+          echo "dmg_name=Termic_${VERSION}_universal.dmg" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          # BOTH targets needed for the universal build - tauri-cli
+          # invokes cargo twice (once per arch) then lipo's the output.
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
       - name: Cache Rust target dir
         uses: actions/cache@v4
         with:
@@ -80,118 +95,45 @@ jobs:
             src-tauri/target
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-arm-${{ hashFiles('src-tauri/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-universal-${{ hashFiles('src-tauri/Cargo.lock') }}
       - run: npm ci
-      - name: Build & sign
+      - name: Build & sign (universal)
         env:
           TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: '-'
-        run: npm run tauri build -- --target aarch64-apple-darwin
-      - name: Compute SHA256 + read .sig + arch-suffix .app.tar.gz
+        run: npm run tauri build -- --target universal-apple-darwin
+      - name: Compute SHA256 + read .sig
         id: hashes
         run: |
-          BUNDLE_DIR=src-tauri/target/aarch64-apple-darwin/release/bundle
+          BUNDLE_DIR=src-tauri/target/universal-apple-darwin/release/bundle
           DMG="$BUNDLE_DIR/dmg/${{ steps.meta.outputs.dmg_name }}"
           ls -la "$DMG"
           SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
           echo "dmg_sha=$SHA" >> "$GITHUB_OUTPUT"
-          # Tauri emits Termic.app.tar.gz on both arches - we'd clobber
-          # the intel one when we co-upload to a single Release. Rename
-          # here so both can coexist as Termic_aarch64.app.tar.gz and
-          # Termic_x64.app.tar.gz; the updater manifest references the
-          # arch-suffixed URLs accordingly.
-          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz"     "$BUNDLE_DIR/macos/Termic_aarch64.app.tar.gz"
-          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz.sig" "$BUNDLE_DIR/macos/Termic_aarch64.app.tar.gz.sig"
-          SIG=$(cat "$BUNDLE_DIR/macos/Termic_aarch64.app.tar.gz.sig")
+          SIG=$(cat "$BUNDLE_DIR/macos/Termic.app.tar.gz.sig")
           { echo 'sig<<EOF'; echo "$SIG"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: termic-${{ steps.meta.outputs.version }}-aarch64
+          name: termic-${{ steps.meta.outputs.version }}-universal
           path: |
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Termic_aarch64.app.tar.gz
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Termic_aarch64.app.tar.gz.sig
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/Termic.app.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/Termic.app.tar.gz.sig
 
-  # ─── Intel (x86_64) ────────────────────────────────────────────────
-  # DISABLED for now: GitHub's macos-13 (Intel) runner fleet has been
-  # routinely queue-stuck 15-45+ min, blocking releases on a single
-  # arch nobody has yet asked for. Re-enable when either (a) the
-  # runner queue clears up, (b) we self-host an Intel runner, or
-  # (c) we wire cross-compilation from the arm runner via
-  # `--target x86_64-apple-darwin` + lipo. The downstream `release`,
-  # `bump-tap`, and `bump-website` jobs now only need `build-arm`.
-  build-intel-disabled:
-    if: false
-    needs: validate
-    runs-on: macos-13
-    outputs:
-      dmg_name:  ${{ steps.meta.outputs.dmg_name }}
-      dmg_sha:   ${{ steps.hashes.outputs.dmg_sha }}
-      sig:       ${{ steps.hashes.outputs.sig }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Resolve arch-tagged names
-        id: meta
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          # Tauri uses `x64` (not `x86_64`) in the dmg filename for
-          # Intel macOS bundles. Verified against a local intel build;
-          # don't change without re-checking what Tauri actually emits.
-          echo "dmg_name=Termic_${VERSION}_x64.dmg" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-      - name: Cache Rust target dir
-        uses: actions/cache@v4
-        with:
-          path: |
-            src-tauri/target
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-intel-${{ hashFiles('src-tauri/Cargo.lock') }}
-      - run: npm ci
-      - name: Build & sign
-        env:
-          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: '-'
-        run: npm run tauri build -- --target x86_64-apple-darwin
-      - name: Compute SHA256 + read .sig + arch-suffix .app.tar.gz
-        id: hashes
-        run: |
-          BUNDLE_DIR=src-tauri/target/x86_64-apple-darwin/release/bundle
-          DMG="$BUNDLE_DIR/dmg/${{ steps.meta.outputs.dmg_name }}"
-          ls -la "$DMG"
-          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
-          echo "dmg_sha=$SHA" >> "$GITHUB_OUTPUT"
-          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz"     "$BUNDLE_DIR/macos/Termic_x64.app.tar.gz"
-          mv "$BUNDLE_DIR/macos/Termic.app.tar.gz.sig" "$BUNDLE_DIR/macos/Termic_x64.app.tar.gz.sig"
-          SIG=$(cat "$BUNDLE_DIR/macos/Termic_x64.app.tar.gz.sig")
-          { echo 'sig<<EOF'; echo "$SIG"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: termic-${{ needs.build-arm.outputs.version }}-x64
-          path: |
-            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Termic_x64.app.tar.gz
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Termic_x64.app.tar.gz.sig
-
-  # ─── Stitch the arm build into a Release ───────────────────────────
+  # ─── Stitch the universal build into a Release ────────────────────
   release:
-    needs: build-arm
+    needs: build-mac
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: termic-${{ needs.build-arm.outputs.version }}-aarch64
-          path: arm
+          name: termic-${{ needs.build-mac.outputs.version }}-universal
+          path: mac
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.build-arm.outputs.version }}
+          VERSION: ${{ needs.build-mac.outputs.version }}
         run: |
           # Notes body is the first thing direct-download users see.
           # The recommended brew path goes first because it sidesteps
@@ -200,8 +142,7 @@ jobs:
           NOTES=$(cat <<EOF
           ## Install
 
-          **Apple Silicon (M1/M2/M3/M4) only** for now. Intel support is paused
-          until GitHub's macos-13 runner queue clears; will return in a follow-up.
+          **Universal macOS binary** — runs natively on Apple Silicon (M1+) and Intel.
 
           **Recommended — Homebrew** (handles Gatekeeper for you):
 
@@ -209,13 +150,13 @@ jobs:
           brew install --cask simion/termic/termic
           \`\`\`
 
-          **Direct .dmg** — download \`Termic_${VERSION}_aarch64.dmg\` below,
+          **Direct .dmg** — download \`Termic_${VERSION}_universal.dmg\` below,
           drag to /Applications, then strip the quarantine flag so macOS
-          Gatekeeper lets it launch (you'd otherwise see _"termic can't be
+          Gatekeeper lets it launch (you'd otherwise see _"Termic can't be
           opened because Apple cannot check it for malicious software"_):
 
           \`\`\`sh
-          xattr -dr com.apple.quarantine /Applications/termic.app
+          xattr -dr com.apple.quarantine /Applications/Termic.app
           \`\`\`
 
           ## Updates
@@ -233,11 +174,11 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "v${VERSION}" \
             --notes "$NOTES" \
-            arm/dmg/*.dmg arm/macos/*
+            mac/dmg/*.dmg mac/macos/*
 
   # ─── Bump the Homebrew cask ────────────────────────────────────────
   bump-tap:
-    needs: [build-arm, release]
+    needs: [build-mac, release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -245,17 +186,17 @@ jobs:
           repository: ${{ env.TAP_REPO }}
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
-      - name: Bump cask (version + arm sha256)
+      - name: Bump cask (version + universal sha256)
         run: |
           cd tap
-          VERSION="${{ needs.build-arm.outputs.version }}"
-          ARM_SHA="${{ needs.build-arm.outputs.dmg_sha }}"
-          # The arm-only cask has a single top-level `sha256` with the
-          # `# @sha-arm` anchor; the @sha-intel sed is gone while Intel
-          # builds are disabled. Re-add the dual-arch sed when build-
-          # intel comes back.
+          VERSION="${{ needs.build-mac.outputs.version }}"
+          SHA="${{ needs.build-mac.outputs.dmg_sha }}"
+          # The universal cask has a single top-level `sha256` with
+          # the `# @sha-arm` anchor (kept named that way for sed
+          # backwards compat; the binary itself is now arm+intel
+          # fused). One DMG, one sha, no per-arch split needed.
           sed -i.bak -E "s|^  version \".*\"|  version \"$VERSION\"|" Casks/termic.rb
-          sed -i.bak -E "/@sha-arm/s|sha256 \"[^\"]+\"|sha256 \"$ARM_SHA\"|"     Casks/termic.rb
+          sed -i.bak -E "/@sha-arm/s|sha256 \"[^\"]+\"|sha256 \"$SHA\"|" Casks/termic.rb
           rm Casks/termic.rb.bak
           git config user.name  "termic-bot"
           git config user.email "termic-bot@users.noreply.github.com"
@@ -263,9 +204,9 @@ jobs:
           git commit -m "termic $VERSION"
           git push
 
-  # ─── Bump the updater manifest (arm only for now) ──────────────────
+  # ─── Bump the updater manifest (both arches, one universal URL) ────
   bump-website:
-    needs: [build-arm, release]
+    needs: [build-mac, release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -276,16 +217,16 @@ jobs:
       - name: Write update manifest
         run: |
           cd site
-          VERSION="${{ needs.build-arm.outputs.version }}"
-          ARM_SIG=$(cat <<'EOF'
-          ${{ needs.build-arm.outputs.sig }}
+          VERSION="${{ needs.build-mac.outputs.version }}"
+          SIG=$(cat <<'EOF'
+          ${{ needs.build-mac.outputs.sig }}
           EOF
           )
-          # tauri-plugin-updater dispatches on `darwin-aarch64`. Until
-          # Intel builds are re-enabled there's no `darwin-x86_64`
-          # block, so any Intel user running the old binary will not
-          # see an update notification (they wouldn't be able to install
-          # this version anyway).
+          # tauri-plugin-updater dispatches on the platform key matching
+          # the running app's arch. With a universal binary both arches
+          # point at the SAME .app.tar.gz — macOS extracts the matching
+          # slice at install. Need both entries so neither arch gets
+          # stranded on an older version.
           BASE="https://github.com/${{ github.repository }}/releases/download/v$VERSION"
           cat > "${{ env.WEBSITE_MANIFEST_PATH }}" <<JSON
           {
@@ -294,8 +235,12 @@ jobs:
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "platforms": {
               "darwin-aarch64": {
-                "signature": "$ARM_SIG",
-                "url": "$BASE/Termic_aarch64.app.tar.gz"
+                "signature": "$SIG",
+                "url": "$BASE/Termic.app.tar.gz"
+              },
+              "darwin-x86_64": {
+                "signature": "$SIG",
+                "url": "$BASE/Termic.app.tar.gz"
               }
             }
           }

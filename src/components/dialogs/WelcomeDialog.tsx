@@ -171,16 +171,15 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
       const settings = await settingsLoad();
       const agents = Array.isArray(settings.agents) ? [...settings.agents] : [];
       const idx = agents.findIndex(a => a.id === name);
-      if (idx >= 0) {
-        agents[idx] = { ...agents[idx], command: picked };
-      } else {
-        // Shouldn't happen for built-in CLIs but be defensive.
-        agents.push({
-          id: name, display_name: name, command: picked,
-          args: [], yolo_args: [], runtime_yolo_command: null,
-          icon: name,
-        });
+      if (idx < 0) {
+        // Built-in CLI entries are always present (defaults seed on
+        // first settings load). If somehow missing, bail rather than
+        // synthesize an incomplete Agent — the user can re-trigger
+        // the welcome wizard which will re-seed.
+        console.error(`agent ${name} not in registry; skipping path save`);
+        return;
       }
+      agents[idx] = { ...agents[idx], command: picked };
       await agentsSave(agents);
       // Reflect in the local list so the UI updates immediately.
       setClis(clis.map(c => c.name === name ? { ...c, found: true, path: picked, version: "" } : c));
