@@ -29,6 +29,8 @@ export function GeneralSection() {
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
+  const settledHighlight = usePrefs(s => s.settledHighlight);
+  const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
   const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
   const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
 
@@ -100,17 +102,21 @@ export function GeneralSection() {
 
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
+          label="Work-done indicator"
+          hint="Color a workspace's agent icon when its agent finishes a turn (i.e., the agent is waiting on you). Driven by the agent's own OSC 9;4 / RequestAttention / title signals — no idle heuristic, no false positives. On by default."
+          value={settledHighlight}
+          onChange={setSettledHighlight}
+        />
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
           label="Desktop notifications"
           hint="OS notification when an inactive agent finishes work, exits, or rings the bell. Clicking back into Termic right after a notification jumps to that workspace + tab. Off by default — multi-agent workflows can get noisy."
           value={desktopNotifications}
           onChange={setDesktopNotifications}
         />
       </div>
-
-      {/* Work-done highlight pref is hidden from the UI for now —
-          the detector still trips on too many false positives. Pref
-          stays in the store (default false) so a future revert is
-          one line. */}
 
       {/* Global sandbox default. The New workspace dialog defaults its
           Sandbox toggle to this OR the project's own `default_sandbox`

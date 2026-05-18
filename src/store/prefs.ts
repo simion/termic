@@ -352,10 +352,11 @@ const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 // WIP feature - the "agent has settled" heuristic produces false
 // positives often enough that the highlight is noise more than
-// signal. Ship default-off; flip back to true once the detector is
-// reliable. Existing users who explicitly toggled it on keep their
-// setting (lsGetBool returns their stored value when present).
-const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, false);
+// Now driven by sender-emitted OSC 9;4 / RequestAttention signals
+// (see TerminalPane.tsx), not the old idle-stdout heuristic. Reliable
+// → ship default-on. Existing users who explicitly toggled it off
+// keep their setting (lsGetBool returns the stored value when present).
+const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
 const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 
 export const usePrefs = create<PrefsState>(set => ({
