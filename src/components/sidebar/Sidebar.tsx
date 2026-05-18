@@ -57,7 +57,9 @@ export function Sidebar() {
    *  disappears entirely when the user disables the work-done UI. */
   const isWorkDone = (wsId: string) =>
     settledHighlight &&
-    (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread?.reason === "idle");
+    (tabs[wsId] || []).some(t =>
+      t.type === "terminal" && (t.unread?.reason === "idle" || t.unread?.reason === "done"),
+    );
   const isLoaded = (wsId: string) =>
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.ptyId);
 
