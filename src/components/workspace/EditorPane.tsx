@@ -36,7 +36,7 @@ import { usePrefs } from "@/store/prefs";
 // Map a file path to a CodeMirror language extension. We match by extension
 // first, then fall back to basename heuristics for files like `Dockerfile`,
 // `Makefile`, etc. that have no extension.
-function langForPath(p: string) {
+export function langForPath(p: string) {
   const base = p.split("/").pop() || p;
   const lower = base.toLowerCase();
   const ext = base.includes(".") ? base.split(".").pop()!.toLowerCase() : "";

@@ -2546,6 +2546,27 @@ fn workspace_file_read(id: String, path: String) -> Result<String, String> {
     fs::read_to_string(&abs).map_err(|e| format!("read failed: {e}"))
 }
 
+/// Return the (original, modified) sides of a tracked file so a
+/// language-aware diff viewer can render them side-by-side with
+/// syntax highlighting. Original = `git show HEAD:<path>` (empty
+/// for untracked); modified = current on-disk content (empty if
+/// deleted in the worktree).
+#[derive(Serialize)]
+struct FileDiffSides { original: String, modified: String }
+
+#[tauri::command]
+fn workspace_file_diff_sides(id: String, path: String) -> Result<FileDiffSides, String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    let wt = PathBuf::from(&w.path);
+    let original = git(&["--no-pager", "show", &format!("HEAD:{path}")], &wt)
+        .unwrap_or_default();
+    let modified = match safe_workspace_path(&wt, &path) {
+        Ok(p) if p.exists() => fs::read_to_string(&p).unwrap_or_default(),
+        _ => String::new(),
+    };
+    Ok(FileDiffSides { original, modified })
+}
+
 #[tauri::command]
 fn workspace_file_diff(id: String, path: String) -> Result<String, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
@@ -3494,7 +3515,7 @@ pub fn run() {
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
-            workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,
+            workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, home_dir, path_exists, log_line,

@@ -133,6 +133,8 @@ export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff"
 export const workspaceSendDiffToMain = (id: string) =>
   invoke<{ tracked_files: number; untracked_files: number }>("workspace_send_diff_to_main", { id });
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
+export const workspaceFileDiffSides = (id: string, path: string) =>
+  invoke<{ original: string; modified: string }>("workspace_file_diff_sides", { id, path });
 export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });
 export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
 export const workspaceDirList  = (id: string, rel: string) => invoke<FileEntry[]>("workspace_dir_list", { id, rel });
