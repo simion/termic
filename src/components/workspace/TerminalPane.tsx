@@ -100,6 +100,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // busy → idle (state = 0). Persisting on the tab model would just be
   // noise — only the edge matters.
   const busyRef = useRef(false);
+  // Bridge from the PTY data listener (registered deep inside the
+  // spawn flow) to the OSC 9;4 done timer (defined right after the
+  // terminal is opened). Set inside the effect after the timer is
+  // wired; called from the data callback to debounce-extend.
+  const pushOscDoneRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let cancelled = false;
@@ -154,8 +159,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
       if (now - titleFirstAt > 5000) { titleCount = 0; titleFirstAt = now; }
       titleCount++;
       if (titleTimer) clearTimeout(titleTimer);
+      wdlog(`title change #${titleCount}`, t);
       if (titleCount >= 2) {
         titleTimer = setTimeout(() => {
+          wdlog(`title-churn settled → markAttention("done")`);
           markAttention(ws.id, tab.id, "done");
           titleCount = 0;
         }, 10_000);
@@ -173,32 +180,69 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // Claude emits OSC 9;4;0 BETWEEN tool calls (each Bash/tool
     // completes → clear, then next phase → busy again). Firing "done"
     // on the first busy→idle edge produces false positives mid-turn.
-    // Debounce: schedule the mark a few seconds out, cancel if busy
-    // returns. Real turn-end stays idle past the threshold and fires.
+    //
+    // Combined detector: busy→idle SCHEDULES a done-mark for
+    // OSC_DONE_DELAY_MS. Each subsequent OSC 9;4 busy returns OR PTY
+    // data chunk PUSHES the timer out (debounce on output). Real turn-
+    // end stays both no-busy AND silent past the threshold and fires.
+    //
+    // Set `localStorage.debugWorkDone = "1"` (devtools console) to log
+    // every signal — useful for diagnosing future false positives.
+    const wdDebug = (() => { try { return localStorage.getItem("debugWorkDone") === "1"; } catch { return false; } })();
+    const wdlog = (msg: string, extra?: unknown) => {
+      if (!wdDebug) return;
+      const tag = `[work-done ${ws.name}/${tab.cli}]`;
+      if (extra !== undefined) console.log(tag, msg, extra);
+      else console.log(tag, msg);
+    };
+    const OSC_DONE_DELAY_MS = 15_000;
     let oscDoneTimer: ReturnType<typeof setTimeout> | null = null;
-    const cancelOscDoneTimer = () => {
-      if (oscDoneTimer) { clearTimeout(oscDoneTimer); oscDoneTimer = null; }
+    let oscDoneArmedAt = 0;
+    const cancelOscDoneTimer = (reason: string) => {
+      if (!oscDoneTimer) return;
+      clearTimeout(oscDoneTimer);
+      oscDoneTimer = null;
+      wdlog(`done-timer cancelled (${reason})`);
+    };
+    const armOscDoneTimer = (reason: string) => {
+      if (oscDoneTimer) clearTimeout(oscDoneTimer);
+      oscDoneArmedAt = Date.now();
+      oscDoneTimer = setTimeout(() => {
+        wdlog(`done-timer fired → markAttention("done")`);
+        markAttention(ws.id, tab.id, "done");
+        oscDoneTimer = null;
+      }, OSC_DONE_DELAY_MS);
+      wdlog(`done-timer armed (${reason}) for ${OSC_DONE_DELAY_MS}ms`);
     };
     term.parser.registerOscHandler(9, (data) => {
       const parts = data.split(";");
       if (parts[0] !== "4") return false;
       const state = Number(parts[1] ?? "0");
       const nowBusy = state === 1 || state === 2 || state === 3 || state === 4;
+      wdlog(`OSC 9;4;${state} (busy=${nowBusy}, was=${busyRef.current})`);
       if (busyRef.current && !nowBusy) {
-        cancelOscDoneTimer();
-        oscDoneTimer = setTimeout(() => {
-          markAttention(ws.id, tab.id, "done");
-          oscDoneTimer = null;
-        }, 4_000);
+        armOscDoneTimer(`OSC 9;4;${state}`);
       } else if (nowBusy) {
         // Busy returned before the timer fired → not actually done.
-        cancelOscDoneTimer();
+        cancelOscDoneTimer(`OSC 9;4;${state}`);
       }
       busyRef.current = nowBusy;
       // Return false so xterm keeps processing — we're observers, not
       // taking ownership of the sequence.
       return false;
     });
+    // Stash the push-on-data hook on a ref so the PTY data listener
+    // (registered later in the spawn flow) can call it without holding
+    // a reference to oscDoneTimer directly.
+    pushOscDoneRef.current = () => {
+      if (!oscDoneTimer) return;
+      const armedFor = Date.now() - oscDoneArmedAt;
+      // Don't endlessly extend — cap at 60s total. If the agent is
+      // genuinely working that long without an OSC busy=true, fall
+      // back to the OSC handler at the next signal.
+      if (armedFor > 60_000) return;
+      armOscDoneTimer(`pty-data (extending)`);
+    };
     // OSC 1337 — iTerm proprietary. RequestAttention=yes/fireworks is
     // an explicit "user, look at me." Treat as "done" too — both want
     // the sidebar dot + a notification.
@@ -328,6 +372,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
           term.write(u8);
           const now = Date.now();
           patchTab(ws.id, tab.id, { lastOutputAt: now });
+          // Output activity extends the OSC 9;4 done timer — even if
+          // the agent went OSC-idle, fresh bytes mean it's still
+          // streaming output (thought summary, tool result text, etc.)
+          // so it's not really done.
+          pushOscDoneRef.current();
           // BEL gating: only treat as attention when the user has typed since
           // boot (otherwise startup banners ring spuriously).
           const cur = (useApp.getState().tabs[ws.id] || []).find(t => t.id === tab.id);
