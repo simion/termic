@@ -516,7 +516,7 @@ export function Sidebar() {
                                   reads as a state suffix, not a leading
                                   control between the icon and the name. */}
                               {asleep && (
-                                <Tip content="Asleep — click to relaunch">
+                                <Tip content="Asleep — click to relaunch" delay={1000}>
                                   <span className="shrink-0 text-[var(--color-fg-faint)] opacity-60">
                                     <Moon className="h-3.5 w-3.5" />
                                   </span>
