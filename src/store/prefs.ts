@@ -24,11 +24,11 @@ export type ResolvedTheme = "light" | "dark" | "vscode" | "solarized" | "cobalt"
 
 const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "vscode", "solarized", "cobalt", "matrix"];
 /** Defensive parse: localStorage may hold a theme id that's been
- *  removed in a later version. Fall back to "dark" instead of letting
- *  the unknown string flow through and silently land on the @theme
- *  default. */
+ *  removed in a later version. Fall back to "vscode" (the new default
+ *  Dark) instead of letting the unknown string flow through and
+ *  silently land on the @theme default. */
 function parseThemeMode(raw: string): ThemeMode {
-  return (VALID_MODES as readonly string[]).includes(raw) ? (raw as ThemeMode) : "dark";
+  return (VALID_MODES as readonly string[]).includes(raw) ? (raw as ThemeMode) : "vscode";
 }
 
 /** xterm theme objects keyed by resolved palette. Each must define enough

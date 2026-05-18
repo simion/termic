@@ -158,9 +158,17 @@ reset: ## DESTRUCTIVE: wipe every byte of termic state on this Mac (config, cach
 	BUNDLE_DATA="$$HOME/Library/Application Support/com.simion.termic"; \
 	CACHES="$$HOME/Library/Caches/com.simion.termic"; \
 	CACHES_CAP="$$HOME/Library/Caches/Termic"; \
+	CACHES_LC="$$HOME/Library/Caches/termic"; \
 	PREFS="$$HOME/Library/Preferences/com.simion.termic.plist"; \
+	PREFS_LC="$$HOME/Library/Preferences/termic.plist"; \
+	PREFS_CAP="$$HOME/Library/Preferences/Termic.plist"; \
 	SAVED="$$HOME/Library/Saved Application State/com.simion.termic.savedState"; \
 	WEBKIT="$$HOME/Library/WebKit/com.simion.termic"; \
+	WEBKIT_LC="$$HOME/Library/WebKit/termic"; \
+	WEBKIT_CAP="$$HOME/Library/WebKit/Termic"; \
+	HTTPSTORE="$$HOME/Library/HTTPStorages/com.simion.termic"; \
+	HTTPSTORE_LC="$$HOME/Library/HTTPStorages/termic"; \
+	HTTPSTORE_CAP="$$HOME/Library/HTTPStorages/Termic"; \
 	TMPD=$$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || dirname "$$(mktemp -u)"); \
 	echo "This will delete:"; \
 	echo "  $$APP_DATA"; \
@@ -168,9 +176,17 @@ reset: ## DESTRUCTIVE: wipe every byte of termic state on this Mac (config, cach
 	echo "  $$BUNDLE_DATA"; \
 	echo "  $$CACHES"; \
 	echo "  $$CACHES_CAP"; \
+	echo "  $$CACHES_LC"; \
 	echo "  $$PREFS"; \
+	echo "  $$PREFS_LC"; \
+	echo "  $$PREFS_CAP"; \
 	echo "  $$SAVED"; \
 	echo "  $$WEBKIT"; \
+	echo "  $$WEBKIT_LC"; \
+	echo "  $$WEBKIT_CAP"; \
+	echo "  $$HTTPSTORE"; \
+	echo "  $$HTTPSTORE_LC"; \
+	echo "  $$HTTPSTORE_CAP"; \
 	echo "  $$TMPD/termic-sandbox-*.sb"; \
 	echo "  $$TMPD/termic-proxy-*.filter"; \
 	echo "  $$TMPD/termic-debug.log"; \
@@ -186,9 +202,15 @@ reset: ## DESTRUCTIVE: wipe every byte of termic state on this Mac (config, cach
 	pkill -f "/Applications/Termic.app/Contents/MacOS/termic" 2>/dev/null || true; \
 	pkill -f "/Applications/termic.app/Contents/MacOS/termic" 2>/dev/null || true; \
 	sleep 1; \
-	rm -rf "$$APP_DATA" "$$APP_DATA_CAP" "$$BUNDLE_DATA" "$$CACHES" "$$CACHES_CAP" "$$WEBKIT"; \
-	rm -f "$$PREFS"; \
+	rm -rf "$$APP_DATA" "$$APP_DATA_CAP" "$$BUNDLE_DATA" \
+	       "$$CACHES" "$$CACHES_CAP" "$$CACHES_LC" \
+	       "$$WEBKIT" "$$WEBKIT_LC" "$$WEBKIT_CAP" \
+	       "$$HTTPSTORE" "$$HTTPSTORE_LC" "$$HTTPSTORE_CAP"; \
+	rm -f "$$PREFS" "$$PREFS_LC" "$$PREFS_CAP"; \
 	rm -rf "$$SAVED"; \
+	defaults delete "$$BUNDLE_ID" 2>/dev/null || true; \
+	defaults delete termic 2>/dev/null || true; \
+	defaults delete Termic 2>/dev/null || true; \
 	rm -f "$$TMPD"/termic-sandbox-*.sb 2>/dev/null || true; \
 	rm -f "$$TMPD"/termic-proxy-*.filter 2>/dev/null || true; \
 	rm -f "$$TMPD"/termic-debug.log 2>/dev/null || true; \

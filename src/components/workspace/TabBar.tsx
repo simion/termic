@@ -35,7 +35,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
   }
 
   return (
-    <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 overflow-x-auto">
+    <div className="termic-tabstrip flex h-9 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 overflow-x-auto overflow-y-hidden">
       {tabs.map(t => (
         <TabPill
           key={t.id} ws={ws} tab={t} active={t.id === activeId}

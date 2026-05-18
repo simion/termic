@@ -13,6 +13,7 @@ import { MainArea } from "@/components/workspace/MainArea";
 import { RightPanel } from "@/components/workspace/RightPanel";
 import { Settings } from "@/components/settings/Settings";
 import { Dialogs } from "@/components/dialogs/Dialogs";
+import { Toaster } from "@/components/ui/Toaster";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { useAttentionNotifier } from "@/hooks/useAttentionNotifier";
@@ -99,6 +100,7 @@ export function App() {
         </div>
       )}
       <Dialogs />
+      <Toaster />
     </>
   );
 }

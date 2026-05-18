@@ -101,7 +101,7 @@ export function RightPanel() {
           useApp.getState().setRightPanelWidth(next);
         }}
       />
-      <header className="flex h-9 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] px-2">
+      <header className="flex h-10 shrink-0 items-center gap-1 px-2.5">
         <RTab label="All files" active={view === "files"} onClick={() => setView("files")} />
         <RTab label="Changes" active={view === "changes"} onClick={() => setView("changes")}
           badge={changes.count > 0 ? changes.count : undefined} />
@@ -438,18 +438,26 @@ function ScriptStream({ wsId, kind, run, onStart }: {
   );
 }
 
+// Conductor-style pill tab: active = filled bg + bright fg, inactive
+// = plain dim text, hover = soft hover. Count appears as plain faint
+// text alongside the label (no accent-colored badge pill) so a "0"
+// reads as informational rather than urgent.
 function RTab({ label, active, badge, onClick }: { label: string; active: boolean; badge?: number; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[13.5px]",
-        active ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
+        "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+        active
+          ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
+          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       {label}
       {badge !== undefined && (
-        <span className="rounded bg-[var(--color-accent)] px-1.5 py-0.5 text-[11.5px] font-semibold text-white">{badge}</span>
+        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-accent)] px-1.5 text-[11px] font-semibold leading-none text-white tabular-nums">
+          {badge}
+        </span>
       )}
     </button>
   );

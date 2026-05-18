@@ -94,11 +94,25 @@ export function WelcomeDialog() {
       // user can re-add via the dashboard's Add project button).
       const toAdd = repos.filter(r => selectedPaths.has(r.path) && !r.already_added);
       if (toAdd.length > 0) {
-        await Promise.all(toAdd.map(r =>
-          projectAdd(r.path).catch(err => console.error("project add failed:", r.path, err))
+        const created = await Promise.all(toAdd.map(r =>
+          projectAdd(r.path).catch(err => { console.error("project add failed:", r.path, err); return null; })
         ));
+        // Expand all newly-added projects so their "Get started" CTA
+        // is visible without a manual click (Sidebar otherwise
+        // defaults empty projects to collapsed).
+        const setCollapsed = useApp.getState().setProjectCollapsed;
+        for (const p of created) {
+          if (p) setCollapsed(p.id, false);
+        }
         // Refresh app store so the dashboard immediately shows what we added.
         try { await useApp.getState().loadAll(); } catch {}
+        const okCount = created.filter(p => p !== null).length;
+        if (okCount > 0) {
+          useUI.getState().pushToast(
+            `Added ${okCount} project${okCount === 1 ? "" : "s"}`,
+            "success",
+          );
+        }
       }
       close();
     } finally { setBusy(false); }
@@ -291,8 +305,8 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
 const THEME_ITEMS: { id: ThemeMode; label: string; icon: typeof Sun; swatch: [string, string, string] }[] = [
   { id: "auto",      label: "System",         icon: Monitor, swatch: ["#0a0a0a", "#fdf6e3", "#d97757"] },
   { id: "light",     label: "Light",          icon: Sun,     swatch: ["#faf9f6", "#1c1b1a", "#c25e3d"] },
-  { id: "dark",      label: "Dark",           icon: Moon,    swatch: ["#0a0a0a", "#f0efed", "#d97757"] },
-  { id: "vscode",    label: "VS Code Dark",   icon: Code2,   swatch: ["#1e1e1e", "#d4d4d4", "#d97757"] },
+  { id: "vscode",    label: "Dark",           icon: Moon,    swatch: ["#1e1e1e", "#d4d4d4", "#d97757"] },
+  { id: "dark",      label: "Dark+",          icon: Code2,   swatch: ["#0c0c0c", "#e8e6e2", "#d97757"] },
   { id: "solarized", label: "Solarized Dark", icon: Sunrise, swatch: ["#002b36", "#93a1a1", "#cb4b16"] },
   { id: "cobalt",    label: "Cobalt",         icon: Droplet, swatch: ["#193549", "#e1efff", "#66c4ff"] },
   { id: "matrix",    label: "Matrix",         icon: Binary,  swatch: ["#000800", "#00ff41", "#00ff41"] },
@@ -337,7 +351,8 @@ function StepTheme() {
                 <span className="text-[11.5px] text-[var(--color-fg-faint)]">
                   {t.id === "auto" && "follows macOS"}
                   {t.id === "light" && "cream + terracotta"}
-                  {t.id === "dark" && "warm near-black"}
+                  {t.id === "vscode" && "editor-grade #1e1e1e"}
+                  {t.id === "dark" && "deeper near-black"}
                   {t.id === "solarized" && "Schoonover palette"}
                   {t.id === "cobalt" && "deep navy + sky blue"}
                   {t.id === "matrix" && "phosphor green CRT"}
@@ -366,12 +381,26 @@ function StepProjects({ dir, repos, selected, setSelected }: {
   const unadded = repos.filter(r => !r.already_added);
   const added = repos.filter(r => r.already_added);
 
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const visibleUnadded = q
+    ? unadded.filter(r =>
+        r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q)
+      )
+    : unadded;
+
   const toggle = (path: string) => {
     const next = new Set(selected);
     if (next.has(path)) next.delete(path); else next.add(path);
     setSelected(next);
   };
-  const checkAll = () => setSelected(new Set(unadded.map(r => r.path)));
+  // "all" respects the active filter — selects what's visible only,
+  // merged with prior selections so a partial filter doesn't drop them.
+  const checkAll = () => {
+    const next = new Set(selected);
+    for (const r of visibleUnadded) next.add(r.path);
+    setSelected(next);
+  };
   const checkNone = () => setSelected(new Set());
 
   if (!dir.trim()) {
@@ -413,9 +442,29 @@ function StepProjects({ dir, repos, selected, setSelected }: {
         )}
       </div>
 
-      {unadded.length > 0 && (
+      {unadded.length > 5 && (
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter…"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
+        />
+      )}
+
+      {unadded.length > 0 && visibleUnadded.length === 0 && (
+        <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
+          No repos match "{filter}".
+        </div>
+      )}
+
+      {visibleUnadded.length > 0 && (
         <div className="max-h-[280px] overflow-y-auto rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)]">
-          {unadded.map(r => {
+          {visibleUnadded.map(r => {
             const isOn = selected.has(r.path);
             return (
               <div

@@ -40,6 +40,8 @@ interface UIState {
    *  exit instead of showing the "Restart agent" overlay). Cleared
    *  per-(ws,tab) when the respawn fires. */
   pendingSandboxRestarts: Set<string>;
+  /** Transient bottom-right toasts. Auto-dismiss handled in <Toaster/>. */
+  toasts: Toast[];
 
   // actions
   openNewProject: () => void;
@@ -65,6 +67,17 @@ interface UIState {
   /** Pop the marker — TerminalPane calls this after consuming a
    *  pending restart so a SUBSEQUENT real exit shows the overlay. */
   consumePendingSandboxRestart: (wsId: string) => boolean;
+  /** Push a transient toast. Returns its id (so callers can dismiss
+   *  early if needed). Auto-dismiss is handled by <Toaster/>. */
+  pushToast: (msg: string, kind?: ToastKind) => string;
+  dismissToast: (id: string) => void;
+}
+
+export type ToastKind = "success" | "info" | "error";
+export interface Toast {
+  id: string;
+  msg: string;
+  kind: ToastKind;
 }
 
 export const useUI = create<UIState>(set => ({
@@ -76,6 +89,7 @@ export const useUI = create<UIState>(set => ({
   busyMessage: null,
   confirm: null,
   pendingSandboxRestarts: new Set<string>(),
+  toasts: [],
 
   openNewProject:    () => set({ newProjectOpen: true }),
   closeNewProject:   () => set({ newProjectOpen: false }),
@@ -108,4 +122,10 @@ export const useUI = create<UIState>(set => ({
     useUI.setState({ pendingSandboxRestarts: next });
     return true;
   },
+  pushToast: (msg, kind = "success") => {
+    const id = crypto.randomUUID();
+    set(s => ({ toasts: [...s.toasts, { id, msg, kind }] }));
+    return id;
+  },
+  dismissToast: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),
 }));

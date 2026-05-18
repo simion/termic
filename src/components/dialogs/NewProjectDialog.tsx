@@ -14,7 +14,9 @@ import { Folder, FolderPlus } from "lucide-react";
 export function NewProjectDialog() {
   const open = useUI(s => s.newProjectOpen);
   const close = useUI(s => s.closeNewProject);
+  const pushToast = useUI(s => s.pushToast);
   const loadAll = useApp(s => s.loadAll);
+  const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
   const [path, setPath] = useState("");
   const [discovered, setDiscovered] = useState<DiscoveredRepo[]>([]);
   const [reposDir, setReposDir] = useState("");
@@ -43,8 +45,13 @@ export function NewProjectDialog() {
   async function add(p: string) {
     setBusy(true); setErr(null);
     try {
-      await projectAdd(p);
+      const proj = await projectAdd(p);
+      // Newly-added projects start expanded so the "+ Get started"
+      // CTA is visible without an extra click — the empty-defaults-
+      // to-collapsed fallback in Sidebar would otherwise hide it.
+      setProjectCollapsed(proj.id, false);
       await loadAll();
+      pushToast(`Added project “${proj.name}”`, "success");
       // Refresh discovery in case the same repos_dir has more candidates.
       if (reposDir) {
         const repos = await discoverRepos(reposDir).catch(() => []);
@@ -96,6 +103,10 @@ export function NewProjectDialog() {
               placeholder="Filter…"
               className="mb-1.5"
               autoFocus
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
             />
           )}
           <div className="max-h-[220px] overflow-auto rounded-md border border-[var(--color-border-soft)]">

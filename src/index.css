@@ -13,15 +13,20 @@
   /* @theme defaults are the DARK palette — that's the app's primary look.
      The light palette overrides below under `html.light` (see :where rules).
      Tokens are neutral-warm gray with the terracotta accent (#d97757). */
-  --color-bg:        #0a0a0a;
-  --color-bg-1:      #111111;
-  --color-bg-2:      #181818;
-  --color-bg-3:      #222222;
-  --color-fg:        #f0efed;
-  --color-fg-dim:    #b4b1ad;
-  --color-fg-faint:  #6f6c68;
-  --color-border:    #2a2826;
-  --color-border-soft: #1d1c1a;
+  /* "Dark+" — neutral / cooler palette modeled after Conductor's
+     surfaces. Slightly elevated bg ladder, crisper hairline borders
+     (so panel edges and the top-bar separator actually read), and
+     a neutral off-white fg without the warm cream tint our base
+     Dark uses. Same terracotta accent. */
+  --color-bg:        #0c0c0c;
+  --color-bg-1:      #141414;
+  --color-bg-2:      #1c1c1c;
+  --color-bg-3:      #282828;
+  --color-fg:        #e8e6e2;
+  --color-fg-dim:    #a8a6a2;
+  --color-fg-faint:  #6e6c68;
+  --color-border:    #333333;
+  --color-border-soft: #232323;
   --color-hover:     rgba(255, 248, 240, 0.045);
   --color-sel:       rgba(217, 119, 87, 0.20);
   --color-accent:    #d97757;
@@ -120,8 +125,11 @@
     --color-fg:          #d4d4d4;
     --color-fg-dim:      #a0a0a0;
     --color-fg-faint:    #6e6e6e;
-    --color-border:      #3e3e42;
-    --color-border-soft: #2b2b2b;
+    /* Border-soft drives the top-bar hairline + panel separators on
+       this theme. Bumped from #2b2b2b → #3a3a3a so it actually reads
+       on top of bg-1 (#252526) instead of vanishing. */
+    --color-border:      #4a4a50;
+    --color-border-soft: #3a3a3a;
     --color-hover:       rgba(255, 255, 255, 0.05);
     --color-sel:         rgba(217, 119, 87, 0.20);
     --color-accent:      #d97757;       /* same brown as Dark */
@@ -225,6 +233,12 @@
     user-select: text;
   }
 }
+
+/* Tab strip: scrolls horizontally on overflow but the scrollbar
+   gutter would steal vertical space (h-9 = 36px) and look ugly,
+   so hide the chrome. WebKit + Firefox both honored. */
+.termic-tabstrip { scrollbar-width: none; }
+.termic-tabstrip::-webkit-scrollbar { display: none; }
 
 /* xterm tweaks so it fills its container cleanly */
 .xterm { padding: 8px 6px 8px 10px; }
