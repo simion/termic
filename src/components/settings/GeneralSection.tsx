@@ -29,8 +29,6 @@ export function GeneralSection() {
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
-  const settledHighlight = usePrefs(s => s.settledHighlight);
-  const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
   const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
   const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
 
@@ -109,14 +107,10 @@ export function GeneralSection() {
         />
       </div>
 
-      <div className="border-t border-[var(--color-border-soft)] pt-6">
-        <Toggle
-          label="Work-done highlight (WIP)"
-          hint="Color a workspace's agent icon when its output goes idle (i.e., the agent is waiting on you). WIP — the detector currently has too many false positives, so this ships off by default; we're improving it. Turn on if you want to try the current heuristic."
-          value={settledHighlight}
-          onChange={setSettledHighlight}
-        />
-      </div>
+      {/* Work-done highlight pref is hidden from the UI for now —
+          the detector still trips on too many false positives. Pref
+          stays in the store (default false) so a future revert is
+          one line. */}
 
       {/* Global sandbox default. The New workspace dialog defaults its
           Sandbox toggle to this OR the project's own `default_sandbox`
