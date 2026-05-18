@@ -234,20 +234,31 @@ export function TerminalPane({ ws, tab, active }: Props) {
 
     // OSC 0/2 — title change. Always surface as the live tab label;
     // additionally feed the per-CLI classifier for done detection.
+    // Edge-detect for title-driven states. Gemini re-emits "◇ Ready"
+    // on spawn AND periodically while idle — firing markAttention()
+    // every time spams the unread dot for work that never happened.
+    // Only fire "done" on a BUSY → IDLE transition (mirrors the OSC
+    // 9;4 detector). "attention" still fires on any edge → attention
+    // because "✋ Action Required" is always actionable.
+    let lastTitleState: "busy" | "idle" | "attention" | null = null;
     term.onTitleChange(t => {
       setTabLiveTitle(ws.id, tab.id, t);
       const state = classifyTitle(tab.cli, t);
-      wdlog(`title change [classifier=${state ?? "unknown"}]`, t);
+      wdlog(`title change [classifier=${state ?? "unknown"}, last=${lastTitleState ?? "none"}]`, t);
       if (state === "idle") {
-        armDoneTimer(`title idle`, TITLE_DONE_DELAY_MS, "done");
+        // Only fire if we ACTUALLY saw busy first. Initial spawn /
+        // periodic re-emits of "Ready" without prior work are no-ops.
+        if (lastTitleState === "busy" || lastTitleState === "attention") {
+          armDoneTimer(`title busy→idle`, TITLE_DONE_DELAY_MS, "done");
+        }
       } else if (state === "attention") {
-        // "✋ Action Required" / "Waiting" — agent is blocked on the
-        // user. Fire faster than idle (no point waiting; the agent
-        // isn't going to do anything else until the user answers).
+        // Always honor explicit attention — even from a cold start
+        // the user wants to see "I'm blocked on you."
         armDoneTimer(`title attention`, 600, "attention");
       } else if (state === "busy") {
         cancelDoneTimer(`title busy`);
       }
+      if (state) lastTitleState = state;
     });
 
     // OSC 9;4 — Claude. Same arm/cancel as the title classifier so
