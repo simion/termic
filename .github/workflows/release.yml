@@ -195,9 +195,25 @@ jobs:
           # the `# @sha-arm` anchor (kept named that way for sed
           # backwards compat; the binary itself is now arm+intel
           # fused). One DMG, one sha, no per-arch split needed.
+          #
+          # We rewrite the whole `sha256 "…" # @sha-arm` line in one
+          # shot — keeps the anchor pinned to the value line even if
+          # it ever drifts (a prior breakage that landed an empty
+          # `sha256 ""` in the tap and broke integrity verification
+          # for end users; brew silently falls back to :no_check).
+          # The match deliberately accepts empty quotes too.
           sed -i.bak -E "s|^  version \".*\"|  version \"$VERSION\"|" Casks/termic.rb
-          sed -i.bak -E "/@sha-arm/s|sha256 \"[^\"]+\"|sha256 \"$SHA\"|" Casks/termic.rb
+          sed -i.bak -E "s|^  sha256 \"[^\"]*\".*$|  sha256 \"$SHA\" # @sha-arm|" Casks/termic.rb
           rm Casks/termic.rb.bak
+
+          # Fail-fast: if the sha line isn't exactly what we expect
+          # (right sha + anchor present), abort rather than push a
+          # broken tap that disables checksum verification silently.
+          if ! grep -qE "^  sha256 \"${SHA}\" # @sha-arm\$" Casks/termic.rb; then
+            echo "✗ Cask sha256 line did not update as expected. Aborting."
+            grep -n 'sha256' Casks/termic.rb || true
+            exit 1
+          fi
           git config user.name  "termic-bot"
           git config user.email "termic-bot@users.noreply.github.com"
           git add Casks/termic.rb

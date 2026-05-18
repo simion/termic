@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "termic",
+  "productName": "Termic",
   "version": "0.2.6",
   "identifier": "com.simion.termic",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "termic",
+        "title": "Termic",
         "width": 1400,
         "height": 900,
         "minWidth": 900,
