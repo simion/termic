@@ -489,7 +489,7 @@ export function Sidebar() {
                                   "inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider shrink-0 leading-none",
                                   activeWs === w.id
                                     ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
-                                    : "bg-[var(--color-bg-3)] text-[var(--color-fg-faint)]",
+                                    : "bg-[var(--color-bg-3)] text-[var(--color-fg-dim)]",
                                 )}>
                                   repo
                                 </span>
