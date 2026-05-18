@@ -935,6 +935,7 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 /// entry+"/". So if user_allowed contains `~/Work/myproject`, the
 /// `~/Work` entry is NOT excluded - we still deny it - and the
 /// caller re-allows the specific subpath after the deny rule.
+#[allow(dead_code)]
 fn compute_home_denies(home: &str, user_allowed: &[String], runtime: &[String]) -> Vec<String> {
     let home_path = std::path::Path::new(home);
     let entries = match fs::read_dir(home_path) {
