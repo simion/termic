@@ -408,8 +408,31 @@ export function TerminalPane({ ws, tab, active }: Props) {
         }, RESUME_FAILURE_MS);
 
         // Output stream → terminal write + attention bookkeeping.
+        const oscSniffer = wdDebug
+          ? (() => {
+              // Decode bytes to UTF-8 once and regex-scan for any OSC
+              // introducer (`ESC ] <digits> ;`). Logs the full
+              // payload up to the ST (ESC\) or BEL terminator so we
+              // can see what undocumented OSCs an agent emits during
+              // e.g. an approval prompt. Cheap — only runs when the
+              // debugWorkDone localStorage flag is set.
+              const dec = new TextDecoder("utf-8", { fatal: false });
+              const re = /\x1b\](\d+)(?:;([^\x07\x1b]*))?(?:\x07|\x1b\\)/g;
+              return (u8: Uint8Array) => {
+                const s = dec.decode(u8);
+                let m: RegExpExecArray | null;
+                while ((m = re.exec(s)) !== null) {
+                  const id = m[1];
+                  // Suppress the ones we already log via dedicated handlers.
+                  if (id === "9" || id === "0" || id === "1" || id === "2" || id === "1337") continue;
+                  wdlog(`OSC ${id}`, m[2] ?? "");
+                }
+              };
+            })()
+          : null;
         const unlistenData = await ipc.onPtyData(ptyId, (u8) => {
           term.write(u8);
+          oscSniffer?.(u8);
           const now = Date.now();
           patchTab(ws.id, tab.id, { lastOutputAt: now });
           // Output activity extends the OSC 9;4 done timer — even if
