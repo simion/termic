@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 mod sandbox;
 mod proxy;
+mod shell_env;
 use sandbox::SandboxBundle;
 
 // ───────────────────────────── data model ─────────────────────────────
@@ -410,6 +411,12 @@ fn pty_spawn(
     for (k, v) in std::env::vars() {
         cmd.env(k, v);
     }
+    // Override the inherited PATH with the login-shell-resolved one.
+    // GUI-launched .app bundles get a bare PATH from launchd; without
+    // this, `claude` / `codex` / `gemini` installed in ~/.local/bin,
+    // ~/.bun/bin, /opt/homebrew/bin, or under nvm aren't found. See
+    // shell_env.rs.
+    cmd.env("PATH", shell_env::resolved_path());
     for (k, v) in &args.env {
         cmd.env(k, v);
     }
@@ -2352,6 +2359,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(PtyManager::default())
         .setup(|app| {
+            // Resolve the user's login-shell PATH off the main thread
+            // so the first PTY spawn doesn't wait on shell startup.
+            shell_env::warm();
             // Window is created hidden (tauri.conf.json: visible=false). We
             // position it on the cursor's monitor BEFORE showing it, so macOS
             // never sees a window on the primary Space and never triggers a
