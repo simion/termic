@@ -7,6 +7,10 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { AuxTerminal } from "@/components/workspace/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
+import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
+import { Button } from "@/components/ui/Button";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 
 export function AppearanceSection() {
   const editorFontId    = usePrefs(s => s.editorFontId);
@@ -89,6 +93,10 @@ export function AppearanceSection() {
       <TerminalPreview />
       {/* Legacy static preview (kept off behind the `false` gate so
           a future revert is a one-flag change). */}
+      <Divider />
+
+      <ResetLayoutRow />
+
       {false && (<div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3 font-mono text-[var(--color-fg)]"
            style={{ fontFamily: stackById(terminalFontId), fontSize: `${terminalFontSize}px`, fontWeight: terminalFontWeight, lineHeight: 1.4 }}>
         <span className="text-[#7cd57e]">~/project</span> <span className="text-[#d97757]">main</span> <span className="text-[#f0b13a]">±3</span><br/>
@@ -247,5 +255,42 @@ async function getUser(id: number) {
          style={{ fontFamily: fontStack, fontSize: `${size}px`, lineHeight: 1.5 }}>
       <pre className="whitespace-pre-wrap text-[var(--color-fg)]">{sample}</pre>
     </div>
+  );
+}
+
+/** "Reset to default sizes" row. Wipes only the user-customised
+ *  layout dimensions (sidebar, right panel, footer height, bottom-
+ *  split state) and resizes the OS window to a sensible default.
+ *  Nothing else is touched — fonts, themes, projects, workspaces,
+ *  sandbox settings all stay intact. */
+function ResetLayoutRow() {
+  const resetPanelSizes = useApp(s => s.resetPanelSizes);
+  const askConfirm = useUI(s => s.askConfirm);
+  const pushToast = useUI(s => s.pushToast);
+
+  async function onReset() {
+    const ok = await askConfirm({
+      title: "Reset layout sizes?",
+      message: "Restores the default sidebar / right-panel widths and centers the window at 1280×800. Fonts, themes, projects, and sandbox settings are NOT touched.",
+      confirmLabel: "Reset sizes",
+    });
+    if (!ok) return;
+    resetPanelSizes();
+    try {
+      const win = getCurrentWindow();
+      await win.setSize(new LogicalSize(1280, 800));
+      await win.center();
+    } catch (e) {
+      console.error("window resize failed:", e);
+    }
+    pushToast("Layout sizes reset to defaults", "success");
+  }
+
+  return (
+    <Field
+      label="Reset layout sizes"
+      hint="Restore the default sidebar / right-panel widths and re-center the window. Fonts and themes are kept."
+      control={<Button size="sm" variant="ghost" onClick={onReset}>Reset</Button>}
+    />
   );
 }

@@ -75,6 +75,12 @@ interface AppState {
   setSidebarWidth: (px: number) => void;
   setRightPanelWidth: (px: number) => void;
   setRightFooterHeight: (px: number) => void;
+  /** Wipe user-customised panel sizes (sidebar, right panel,
+   *  bottom-split heights, right-footer height) and restore the
+   *  build-time defaults. Window position/size lives in the
+   *  tauri-plugin-window-state store and is reset separately by the
+   *  Appearance UI. */
+  resetPanelSizes: () => void;
   toggleTerminalSplit: (wsId: string) => void;
   enableFooterTerm: (wsId: string) => void;
   disableFooterTerm: (wsId: string) => void;
@@ -115,8 +121,8 @@ const numOrDefault = (k: string, fallback: number) => {
   try { const v = Math.round(Number(localStorage.getItem(k))); return Number.isFinite(v) && v > 0 ? v : fallback; }
   catch { return fallback; }
 };
-const initialSBW = numOrDefault(LS_SBW, 220);
-const initialRPW = numOrDefault(LS_RPW, 360);
+const initialSBW = numOrDefault(LS_SBW, 280);
+const initialRPW = numOrDefault(LS_RPW, 280);
 const initialRFH = numOrDefault(LS_RFH, 260);
 
 export const useApp = create<AppState>((set, get) => ({
@@ -243,6 +249,21 @@ export const useApp = create<AppState>((set, get) => ({
     const v = Math.round(px);
     try { localStorage.setItem(LS_RFH, String(v)); } catch {}
     set({ rightFooterHeight: v });
+  },
+  resetPanelSizes: () => {
+    // Defaults must stay in sync with the `numOrDefault` calls at the
+    // top of this module. Centralising would mean a constants block;
+    // keeping the literals here is fine — two places, one screenful.
+    for (const k of [LS_SBW, LS_RPW, LS_RFH, LS_SPLIT, LS_SPLITH]) {
+      try { localStorage.removeItem(k); } catch {}
+    }
+    set({
+      sidebarWidth: 280,
+      rightPanelWidth: 280,
+      rightFooterHeight: 260,
+      terminalSplit: {},
+      terminalSplitHeight: {},
+    });
   },
 
   toggleTerminalSplit: (wsId) => set(s => {
