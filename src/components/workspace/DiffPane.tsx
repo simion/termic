@@ -1,37 +1,58 @@
-// Side-by-side diff viewer using CodeMirror 6's MergeView. Picks the
-// same language extension EditorPane uses so the diff has full syntax
-// highlighting on both sides. Falls back to a single read-only editor
-// if the file is identical / missing.
+// Diff viewer with a Side-by-side ⇄ Unified toggle, both backed by
+// CodeMirror 6 with full syntax highlighting (langForPath, shared
+// with EditorPane). Side-by-side uses MergeView; unified uses
+// unifiedMergeView in a single read-only editor.
 
 import { useEffect, useRef, useState } from "react";
 import type { DiffTab, Workspace } from "@/lib/types";
 import { workspaceFileDiffSides, openPath } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
-import { FolderOpen, Eye } from "lucide-react";
+import { FolderOpen, Eye, Columns2, AlignJustify } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
-import { MergeView } from "@codemirror/merge";
+import { MergeView, unifiedMergeView } from "@codemirror/merge";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { githubDarkInit } from "@uiw/codemirror-theme-github";
+import { cn } from "@/lib/utils";
 import { langForPath } from "./EditorPane";
+
+type Mode = "side" | "unified";
+const LS_DIFF_MODE = "diffMode";
+
+function readMode(): Mode {
+  try { return (localStorage.getItem(LS_DIFF_MODE) as Mode) === "unified" ? "unified" : "side"; }
+  catch { return "side"; }
+}
+function writeMode(m: Mode) {
+  try { localStorage.setItem(LS_DIFF_MODE, m); } catch {}
+}
 
 export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   const [err, setErr] = useState<string | null>(null);
+  const [mode, setMode] = useState<Mode>(() => readMode());
   const hostRef = useRef<HTMLDivElement>(null);
+  // Only one of these is mounted at a time depending on `mode`.
   const mergeRef = useRef<MergeView | null>(null);
+  const editorRef = useRef<EditorView | null>(null);
   const addTab = useApp(s => s.addTab);
-  const editorFontStack = usePrefs(s => s.editorFontId);
-  const editorFontSize  = usePrefs(s => s.editorFontSize);
+  const editorFontSize = usePrefs(s => s.editorFontSize);
+
+  function setModeAndPersist(m: Mode) {
+    writeMode(m);
+    setMode(m);
+  }
 
   useEffect(() => {
     let alive = true;
     setErr(null);
     workspaceFileDiffSides(ws.id, tab.path).then(sides => {
       if (!alive || !hostRef.current) return;
-      // Tear any previous instance down (e.g. user switched diff tab
-      // backing path via rename — unlikely but cheap to handle).
+      // Tear any prior view down before mounting the new one.
       mergeRef.current?.destroy();
+      mergeRef.current = null;
+      editorRef.current?.destroy();
+      editorRef.current = null;
       hostRef.current.innerHTML = "";
 
       const lang = langForPath(tab.path);
@@ -41,8 +62,6 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
         lineNumbers(),
         highlightActiveLine(),
         EditorView.lineWrapping,
-        // Match the editor theme so both panes feel like one app.
-        // `bg-bg` on the wrapper handles the surrounding chrome.
         githubDarkInit({
           settings: {
             background: "var(--color-bg)",
@@ -61,39 +80,74 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       ];
       if (lang) baseExt.push(lang as Extension);
 
-      mergeRef.current = new MergeView({
-        parent: hostRef.current,
-        a: { doc: sides.original, extensions: baseExt },
-        b: { doc: sides.modified, extensions: baseExt },
-        // Word-level intra-line diff highlighting.
-        revertControls: undefined,
-        highlightChanges: true,
-        gutter: true,
-        collapseUnchanged: { margin: 3, minSize: 6 },
-      });
+      if (mode === "side") {
+        mergeRef.current = new MergeView({
+          parent: hostRef.current,
+          a: { doc: sides.original, extensions: baseExt },
+          b: { doc: sides.modified, extensions: baseExt },
+          highlightChanges: true,
+          gutter: true,
+          collapseUnchanged: { margin: 3, minSize: 6 },
+        });
+      } else {
+        editorRef.current = new EditorView({
+          parent: hostRef.current,
+          doc: sides.modified,
+          extensions: [
+            ...baseExt,
+            unifiedMergeView({
+              original: sides.original,
+              highlightChanges: true,
+              gutter: true,
+              syntaxHighlightDeletions: true,
+              mergeControls: false,
+              collapseUnchanged: { margin: 3, minSize: 6 },
+            }),
+          ],
+        });
+      }
     }).catch(e => alive && setErr(String(e)));
     return () => {
       alive = false;
-      mergeRef.current?.destroy();
-      mergeRef.current = null;
+      mergeRef.current?.destroy(); mergeRef.current = null;
+      editorRef.current?.destroy(); editorRef.current = null;
     };
-    // editorFontStack intentionally not a dep — CM editors honor the
-    // CSS `font-family: inherit` from the container, which gets the
-    // prefs-driven stack via the wrapper className below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws.id, tab.path, editorFontSize]);
-
-  void editorFontStack;
+  }, [ws.id, tab.path, editorFontSize, mode]);
 
   return (
     // bg MUST be opaque: tab swap keeps the codex/claude terminal
     // mounted under us via visibility-toggle, and xterm's WebGL canvas
-    // (per-line bg here is alpha rgba) bleeds through any transparent
-    // ancestor. Solid color-bg seals the layer.
+    // bleeds through any transparent ancestor.
     <div className="flex h-full flex-col bg-[var(--color-bg)]">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
         <span className="font-mono text-[12.5px] text-[var(--color-fg-dim)] truncate">{tab.path}</span>
-        <div className="flex gap-1">
+        <div className="flex items-center gap-1">
+          {/* Side-by-side ⇄ Unified toggle. Persisted in localStorage
+              so the user's preference sticks across launches. */}
+          <div className="mr-1 inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[2px]">
+            <button
+              type="button"
+              title="Unified (inline)"
+              onClick={() => setModeAndPersist("unified")}
+              className={cn(
+                "h-6 rounded-[5px] px-1.5 text-[11.5px] transition-colors",
+                mode === "unified"
+                  ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                  : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+              )}
+            ><AlignJustify className="h-3.5 w-3.5" /></button>
+            <button
+              type="button"
+              title="Side by side"
+              onClick={() => setModeAndPersist("side")}
+              className={cn(
+                "h-6 rounded-[5px] px-1.5 text-[11.5px] transition-colors",
+                mode === "side"
+                  ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                  : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+              )}
+            ><Columns2 className="h-3.5 w-3.5" /></button>
+          </div>
           <Button size="sm" variant="ghost" onClick={() =>
             addTab(ws.id, { id: crypto.randomUUID(), type: "edit", path: tab.path, title: tab.path.split("/").pop() || tab.path })
           }><Eye className="h-4 w-4" /> View</Button>
