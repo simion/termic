@@ -358,7 +358,19 @@ export const useApp = create<AppState>((set, get) => ({
     return update as any;
   }),
 
-  setActiveTabId: (wsId, tabId) => set(s => ({ activeTab: { ...s.activeTab, [wsId]: tabId } })),
+  setActiveTabId: (wsId, tabId) => set(s => {
+    // Looking at a tab = "I've seen this". Clear its unread inline so
+    // we don't carry the brown dot through tab switches inside an
+    // already-active workspace (setActiveWorkspace only clears on
+    // workspace-level activation; an intra-workspace tab click never
+    // hit that path).
+    const list = s.tabs[wsId] || [];
+    const next = list.map(t => t.id === tabId && t.unread ? { ...t, unread: null } as Tab : t);
+    return {
+      activeTab: { ...s.activeTab, [wsId]: tabId },
+      tabs: { ...s.tabs, [wsId]: next },
+    };
+  }),
 
   patchTab: (wsId, tabId, patch) => set(s => {
     const list = s.tabs[wsId] || [];
