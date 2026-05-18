@@ -2611,8 +2611,28 @@ pub struct FileEntry {
 fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
     let base = PathBuf::from(&w.path);
+    // Multi-repo: when the relative path enters a composition member
+    // (e.g. "pydpf" or "pydpf/src"), resolve under that member's real
+    // path instead of going through safe_workspace_path — which would
+    // canonicalize the symlink-to-real-checkout and reject as "escapes
+    // workspace". The member is a first-class browseable subtree.
     let canon_target = if rel.is_empty() {
         fs::canonicalize(&base).map_err(|e| e.to_string())?
+    } else if let Some((member, remainder)) = w.composition.iter().find_map(|m| {
+        if rel == m.dir_name {
+            Some((m, String::new()))
+        } else if let Some(rest) = rel.strip_prefix(&format!("{}/", m.dir_name)) {
+            Some((m, rest.to_string()))
+        } else {
+            None
+        }
+    }) {
+        let mp = PathBuf::from(&member.path);
+        if remainder.is_empty() {
+            fs::canonicalize(&mp).map_err(|e| e.to_string())?
+        } else {
+            safe_workspace_path(&mp, &remainder)?
+        }
     } else {
         safe_workspace_path(&base, &rel)?
     };
@@ -2620,9 +2640,18 @@ fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String>
     let rd = fs::read_dir(&canon_target).map_err(|e| e.to_string())?;
     for e in rd.flatten() {
         let name = match e.file_name().into_string() { Ok(s) => s, Err(_) => continue };
-        // file_type avoids the extra stat that metadata would do, and handles
-        // symlinks correctly (a symlink-to-dir is reported as symlink, not dir).
-        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        // Always hide .git — it's repo plumbing, never something the
+        // user wants to browse in the file tree.
+        if name == ".git" { continue; }
+        // file_type() reports a symlink-to-dir as Symlink, not Dir, which would
+        // make member symlinks (repo_root mode) render as files. Fall back to
+        // metadata() (which follows symlinks) when the entry is a symlink.
+        let ft = e.file_type();
+        let is_dir = match ft {
+            Ok(t) if t.is_symlink() => e.metadata().map(|m| m.is_dir()).unwrap_or(false),
+            Ok(t) => t.is_dir(),
+            Err(_) => false,
+        };
         out.push(FileEntry { name, is_dir });
     }
     // Directories first, then files; alphabetic within each group.
