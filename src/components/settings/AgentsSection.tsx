@@ -154,21 +154,17 @@ export function AgentsSection() {
 
       {err && <div className="text-[13px] text-[var(--color-err)]">{err}</div>}
 
-      <div className="flex flex-col gap-3">
-        {agents.map(a => (
-          <AgentCard
-            key={a.id}
-            agent={a}
-            onPatch={(p) => patchAgent(a.id, p)}
-            onPatchCaps={(p) => patchCaps(a.id, p)}
-            onRemove={() => requestRemoveAgent(a.id)}
-            autoFocus={autoFocusId === a.id}
-            onAutoFocusConsumed={() => setAutoFocusId(null)}
-            modified={isModified(a)}
-            onReset={defaults.find(d => d.id === a.id) ? () => resetAgent(a.id) : undefined}
-          />
-        ))}
-      </div>
+      <AgentsTabs
+        agents={agents}
+        autoFocusId={autoFocusId}
+        defaults={defaults}
+        isModified={isModified}
+        patchAgent={patchAgent}
+        patchCaps={patchCaps}
+        requestRemoveAgent={requestRemoveAgent}
+        resetAgent={resetAgent}
+        onAutoFocusConsumed={() => setAutoFocusId(null)}
+      />
 
       {/* Delete confirmation. In-app dialog (not browser confirm) so it
           matches the app chrome and traps focus properly. */}
@@ -196,6 +192,86 @@ export function AgentsSection() {
           </Button>
         </div>
       </AppDialog>
+    </div>
+  );
+}
+
+/** Tab strip + active-agent card. Drops the long scroll of every
+ *  agent stacked vertically (the Repository settings split-by-subtab
+ *  trick, scoped per-agent here). Tabs auto-pick the first agent on
+ *  mount; clicking "+ Add agent" elsewhere flips the active tab to
+ *  the freshly-created one via the autoFocusId signal. */
+function AgentsTabs({
+  agents, autoFocusId, defaults, isModified,
+  patchAgent, patchCaps, requestRemoveAgent, resetAgent, onAutoFocusConsumed,
+}: {
+  agents: Agent[];
+  autoFocusId: string | null;
+  defaults: Agent[];
+  isModified: (a: Agent) => boolean;
+  patchAgent: (id: string, p: Partial<Agent>) => void;
+  patchCaps: (id: string, p: Partial<NonNullable<Agent["capabilities"]>>) => void;
+  requestRemoveAgent: (id: string) => void;
+  resetAgent: (id: string) => void;
+  onAutoFocusConsumed: () => void;
+}) {
+  const [activeId, setActiveId] = useState<string | null>(null);
+  // Default to first agent; when the list churns (delete current,
+  // add new) drift to a sensible neighbor instead of going blank.
+  useEffect(() => {
+    if (agents.length === 0) { setActiveId(null); return; }
+    if (!activeId || !agents.some(a => a.id === activeId)) {
+      setActiveId(agents[0].id);
+    }
+  }, [agents, activeId]);
+  // Auto-jump to a freshly added agent so the user lands on its editor.
+  useEffect(() => { if (autoFocusId) setActiveId(autoFocusId); }, [autoFocusId]);
+
+  const active = agents.find(a => a.id === activeId) ?? agents[0];
+  if (!active) return null;
+
+  return (
+    <div className="flex flex-col">
+      {/* Tab strip — h-9 to match the rest of the app's tab UI. */}
+      <div className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--color-border-soft)] px-1">
+        {agents.map(a => (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => setActiveId(a.id)}
+            className={cn(
+              "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] transition-colors",
+              a.id === active.id
+                ? "bg-[var(--color-bg-3)] text-[var(--color-fg)] font-medium"
+                : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+            )}
+          >
+            <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
+              <CliIcon cli={a.icon_id} className="h-3.5 w-3.5" />
+            </span>
+            <span className="truncate max-w-[140px]">{a.display_name || a.id}</span>
+            {isModified(a) && (
+              <span title="Modified from ship defaults" className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Active agent card. Mount-keyed by id so internal state
+          (refs, drafts) resets cleanly when the user switches tabs. */}
+      <div className="mt-3">
+        <AgentCard
+          key={active.id}
+          agent={active}
+          onPatch={(p) => patchAgent(active.id, p)}
+          onPatchCaps={(p) => patchCaps(active.id, p)}
+          onRemove={() => requestRemoveAgent(active.id)}
+          autoFocus={autoFocusId === active.id}
+          onAutoFocusConsumed={onAutoFocusConsumed}
+          modified={isModified(active)}
+          onReset={defaults.find(d => d.id === active.id) ? () => resetAgent(active.id) : undefined}
+        />
+      </div>
     </div>
   );
 }
