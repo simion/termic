@@ -3398,8 +3398,49 @@ pub fn run() {
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             list_monospace_fonts,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // App-level teardown: when Tauri tears down (last window
+            // closed on macOS doesn't fire this, but Cmd-Q does) make
+            // sure we don't orphan any child we spawned. That means
+            // both the streaming script process groups
+            // (RUNNING_SCRIPTS) AND every live PTY (agent terminals,
+            // bottom-split shells, etc.). SIGKILL because we're on
+            // our way out the door — no time for graceful SIGTERMs.
+            if matches!(event, tauri::RunEvent::Exit) {
+                cleanup_children(app);
+            }
+        });
+}
+
+/// SIGKILL every child process we spawned (script process groups +
+/// PTY children) so quitting the app doesn't leave dev servers or
+/// agent processes running.
+fn cleanup_children(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    // 1. Script process groups (streaming Run/Setup invocations).
+    //    Drain RUNNING_SCRIPTS and SIGKILL each pg leader. Use
+    //    SIGKILL (not SIGTERM) because we're not waiting for the
+    //    child to acknowledge.
+    {
+        let mut g = RUNNING_SCRIPTS.lock().unwrap();
+        if let Some(map) = g.as_mut() {
+            for (_, pid) in map.drain() {
+                unsafe { libc::kill(-pid, libc::SIGKILL); }
+            }
+        }
+    }
+    // 2. PTY children (agent CLIs + scratch shells). PtyManager owns
+    //    the registry; iterate every slot and SIGKILL its child pid.
+    if let Some(mgr) = app.try_state::<PtyManager>() {
+        let mut inner = mgr.inner.lock();
+        for (_, slot) in inner.drain() {
+            if let Some(pid) = slot.child_pid {
+                unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+            }
+        }
+    }
 }
 
 /// Center the window on whichever monitor the OS cursor is currently on.
