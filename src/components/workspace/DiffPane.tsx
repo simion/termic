@@ -95,6 +95,16 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
             background: "rgba(239,83,80,0.22)",
             textDecoration: "none",
           },
+          // CodeMirror merge wraps inserted/deleted lines in <ins>/<del>
+          // tags — the browser's UA stylesheet underlines <ins> and
+          // strikes through <del>, which is what made every changed
+          // line look underlined. Drop those.
+          "ins.cm-insertedLine, ins.cm-insertedLine *": {
+            textDecoration: "none !important",
+          },
+          "del.cm-deletedLine, del.cm-deletedLine *": {
+            textDecoration: "none !important",
+          },
         }),
       ];
       if (lang) baseExt.push(lang as Extension);
