@@ -9,10 +9,11 @@ import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { workspaceCreate } from "@/lib/ipc";
 import { slugify, cn } from "@/lib/utils";
-import { Check, Loader2, AlertTriangle } from "lucide-react";
+import { Check, Loader2, AlertTriangle, Shield } from "lucide-react";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
 const CLIS = ["claude", "gemini", "codex"] as const;
@@ -191,6 +192,10 @@ export function NewWorkspaceDialog() {
       onOpenChange={(v) => { if (!v && !busy) close(); }}
       title="New worktree"
       description={project ? `in ${project.name}` : undefined}
+      // Widen when sandbox is on so the sandbox form gets a 2nd column
+      // instead of forcing the dialog to scroll. Narrow when off so the
+      // dialog doesn't look empty.
+      className={sandbox ? "max-w-4xl" : "max-w-md"}
     >
       {/* Phase-aware body: form on start, then progress view while creating
           + running setup. Form stays unmounted in non-form phases so its
@@ -205,7 +210,14 @@ export function NewWorkspaceDialog() {
         />
       )}
       {phase === "form" && (
-      <form onSubmit={(e) => { e.preventDefault(); submit(); }} className="flex flex-col gap-5">
+      <form
+        onSubmit={(e) => { e.preventDefault(); submit(); }}
+        className={cn(
+          "gap-5",
+          sandbox ? "grid grid-cols-2 gap-x-6" : "flex flex-col",
+        )}
+      >
+      <div className="flex flex-col gap-5">
         {/* Every field uses the same structure: label on its own line, optional
             hint underneath, control on a new line. Previous version inlined
             the segmented controls next to the label and put hints on the same
@@ -227,7 +239,7 @@ export function NewWorkspaceDialog() {
                 className={cn(
                   "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
                   cli === a.id
-                    ? "bg-[var(--color-accent)] text-white"
+                    ? "bg-[var(--color-accent-deep)] text-white"
                     : cn("text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]", CLI_BRAND_COLOR[a.id]),
                 )}
                 style={cli === a.id ? undefined : (a.color ? { color: a.color } : undefined)}
@@ -246,7 +258,7 @@ export function NewWorkspaceDialog() {
                 onClick={() => { setPrefix(pf); if (pf === "__custom__") setBranchEdited(true); else setBranchEdited(false); }}
                 className={cn(
                   "flex h-7 items-center rounded-[5px] px-2.5 text-[12.5px] transition-colors",
-                  prefix === pf ? "bg-[var(--color-accent)] text-white" : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  prefix === pf ? "bg-[var(--color-accent-deep)] text-white" : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                 )}
               >{pf === "__custom__" ? "custom" : `${pf}/`}</button>
             ))}
@@ -261,84 +273,104 @@ export function NewWorkspaceDialog() {
           <Input value={base} onChange={e => setBase(e.target.value)} placeholder="origin/master" />
         </Field>
 
-        {/* Sandbox toggle + per-workspace overrides. Defaults seeded
-            from the project (Settings → Repositories); the user can
-            edit here for THIS workspace before clicking Create. Lists
-            are frozen onto the workspace at create time - the project
-            stays untouched, and the workspace's copies can't be edited
-            after creation (archive + recreate to change). */}
-        <Field label="Sandbox" hint="Restrict filesystem writes + HTTPS to an allowlist. Pinned at creation - archive + recreate to change.">
-          <label className="inline-flex cursor-pointer items-center gap-2 select-none">
-            <input
-              type="checkbox"
-              checked={sandbox}
-              onChange={e => setSandbox(e.target.checked)}
-              className="h-4 w-4 accent-[var(--color-accent)]"
+        {/* Sandbox panel - same shape as the Edit Sandbox dialog so
+            users see one consistent control. Clickable whole-panel
+            toggle. Label stays "Enable sandbox" - the state reads
+            from the color band + Shield fill + status text, not from
+            a verb flip on the button. Pinned at creation - lists
+            below freeze onto the workspace and can't be edited after
+            (archive + recreate to change). */}
+        <button
+          type="button"
+          onClick={() => setSandbox(!sandbox)}
+          className={cn(
+            "flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left transition-colors",
+            sandbox
+              ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 hover:bg-[var(--color-ok)]/15"
+              : "border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-accent-soft)]",
+          )}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Shield
+              className={cn("h-4 w-4 shrink-0", sandbox ? "text-[var(--color-ok)]" : "text-[var(--color-fg-faint)]")}
+              fill={sandbox ? "currentColor" : "none"}
             />
-            <span className="text-[13px] text-[var(--color-fg-dim)]">
-              {sandbox ? "Sandboxed (seatbelt + allowed hosts)" : "Unsandboxed (default)"}
-            </span>
-          </label>
-        </Field>
-
-        {sandbox && (
-          <div className="ml-1 flex flex-col gap-4 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 p-3">
-            <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-              Sandbox overrides for this workspace
+            <div className="flex flex-col min-w-0">
+              <span className="text-[13.5px] font-medium text-[var(--color-fg)]">Enable sandbox</span>
+              <span className="text-[12px] text-[var(--color-fg-dim)] truncate">
+                {sandbox
+                  ? "Agent runs caged + traffic through allowlist proxy. Pinned at creation."
+                  : "Restrict filesystem + network. Pinned at creation."}
+              </span>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-[12px]">
-              <span className="text-[var(--color-fg-faint)]">Preset:</span>
-              {SANDBOX_PRESETS.map(p => (
-                <button
-                  key={p.id} type="button"
-                  title={p.hint}
-                  onClick={() => {
-                    setSbRw(p.rwPaths.join("\n"));
-                    setSbDeny(p.denyPaths.join("\n"));
-                    setSbHosts(p.allowedHosts.join("\n"));
-                  }}
-                  className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            <Field label="Writable paths" hint="One per line. $HOME and $WORKSPACE substituted. Workspace path + agent dirs + caches + TMPDIR are always allowed; these are extras.">
-              <textarea
-                value={sbRw}
-                onChange={e => setSbRw(e.target.value)}
-                rows={3}
-                placeholder={"$HOME/.config/myproject\n/opt/homebrew/var/myproject"}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-              />
-            </Field>
-            <Field label="Denied paths" hint="On top of the built-in secret deny list (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.kube, ...).">
-              <textarea
-                value={sbDeny}
-                onChange={e => setSbDeny(e.target.value)}
-                rows={2}
-                placeholder="$HOME/private-notes"
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-              />
-            </Field>
-            <Field label="Allowed hosts" hint="POSIX regex, one per line. Per-CLI vendor + github + npm/pypi/crates are always allowed; these are extras.">
-              <textarea
-                value={sbHosts}
-                onChange={e => setSbHosts(e.target.value)}
-                rows={4}
-                placeholder={"^.+\\.mycompany\\.com$\n^bitbucket\\.org$"}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-              />
-            </Field>
           </div>
-        )}
+          <Checkbox checked={sandbox} onChange={setSandbox} />
+        </button>
+      </div>
 
-        {err && <p className="text-[13.5px] text-[var(--color-err)]">{err}</p>}
+      {/* Right column: sandbox config form, only when enabled.
+          Otherwise the form is single-column and this branch renders
+          nothing. */}
+      {sandbox && (
+        <div className="flex flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6">
+          <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
+            Sandbox config for this workspace
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-[12px]">
+            <span className="text-[var(--color-fg-faint)]">Preset:</span>
+            {SANDBOX_PRESETS.map(p => (
+              <button
+                key={p.id} type="button"
+                title={p.hint}
+                onClick={() => {
+                  setSbRw(p.rwPaths.join("\n"));
+                  setSbDeny(p.denyPaths.join("\n"));
+                  setSbHosts(p.allowedHosts.join("\n"));
+                }}
+                className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <Field label="Allowed paths" hint="One per line. Workspace + agent state + caches + TMPDIR are always allowed. Add extras here.">
+            <textarea
+              value={sbRw}
+              onChange={e => setSbRw(e.target.value)}
+              rows={3}
+              placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
+              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+            />
+          </Field>
+          <Field label="Extra denied paths" hint="On top of the built-in secret deny list (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.kube, ...).">
+            <textarea
+              value={sbDeny}
+              onChange={e => setSbDeny(e.target.value)}
+              rows={2}
+              placeholder="$WORKSPACE/.git/hooks"
+              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+            />
+          </Field>
+          <Field label="Allowed hosts" hint="One per line. Use * as a wildcard. Per-CLI vendor + github + npm/pypi/crates are always allowed; these are extras.">
+            <textarea
+              value={sbHosts}
+              onChange={e => setSbHosts(e.target.value)}
+              rows={3}
+              placeholder={"*.mycompany.com\nbitbucket.org"}
+              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+            />
+          </Field>
+        </div>
+      )}
 
-        <div className="mt-2 flex justify-end gap-2">
+      {/* Error + actions row spans both columns when sandbox is on. */}
+      <div className={cn(sandbox && "col-span-2")}>
+        {err && <p className="mb-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
+        <div className="flex justify-end gap-2">
           <Button variant="ghost" type="button" onClick={close}>Cancel</Button>
           <Button variant="primary" type="submit" disabled={busy || !name.trim() || !branch.trim()}>Create</Button>
         </div>
+      </div>
       </form>
       )}
     </AppDialog>

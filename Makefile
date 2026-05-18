@@ -151,19 +151,52 @@ uninstall: ## Remove the installed copy from /Applications (user data untouched)
 
 # ─── cleanup ──────────────────────────────────────────────────────────
 
-nuke-data: ## DESTRUCTIVE: wipe local app data (projects, settings, window state). Confirms first.
-	@APP_DATA="$$HOME/Library/Application Support/termic"; \
+reset: ## DESTRUCTIVE: wipe every byte of termic state on this Mac (config, caches, window state, sandbox temp). Confirms first.
+	@BUNDLE_ID="com.simion.termic"; \
+	APP_DATA="$$HOME/Library/Application Support/termic"; \
+	APP_DATA_CAP="$$HOME/Library/Application Support/Termic"; \
 	BUNDLE_DATA="$$HOME/Library/Application Support/com.simion.termic"; \
+	CACHES="$$HOME/Library/Caches/com.simion.termic"; \
+	CACHES_CAP="$$HOME/Library/Caches/Termic"; \
+	PREFS="$$HOME/Library/Preferences/com.simion.termic.plist"; \
+	SAVED="$$HOME/Library/Saved Application State/com.simion.termic.savedState"; \
+	WEBKIT="$$HOME/Library/WebKit/com.simion.termic"; \
+	TMPD=$$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || dirname "$$(mktemp -u)"); \
 	echo "This will delete:"; \
 	echo "  $$APP_DATA"; \
+	echo "  $$APP_DATA_CAP"; \
 	echo "  $$BUNDLE_DATA"; \
+	echo "  $$CACHES"; \
+	echo "  $$CACHES_CAP"; \
+	echo "  $$PREFS"; \
+	echo "  $$SAVED"; \
+	echo "  $$WEBKIT"; \
+	echo "  $$TMPD/termic-sandbox-*.sb"; \
+	echo "  $$TMPD/termic-proxy-*.filter"; \
+	echo "  $$TMPD/termic-debug.log"; \
+	echo ""; \
+	echo "Worktrees at ~/termic/workspaces/ are NOT touched (real git checkouts;"; \
+	echo "if you want those too, run: rm -rf ~/termic/workspaces — destructive)."; \
+	echo ""; \
 	read -p "Type 'yes' to confirm: " confirm; \
-	if [ "$$confirm" = "yes" ]; then \
-	    rm -rf "$$APP_DATA" "$$BUNDLE_DATA"; \
-	    echo "✓ Wiped. Worktrees on disk are untouched."; \
-	else \
-	    echo "✗ Aborted."; \
-	fi
+	if [ "$$confirm" != "yes" ]; then echo "✗ Aborted."; exit 1; fi; \
+	echo "→ Quitting any running termic (bundle $$BUNDLE_ID)"; \
+	osascript -e "tell application id \"$$BUNDLE_ID\" to quit" 2>/dev/null || true; \
+	pkill -f "target/debug/termic" 2>/dev/null || true; \
+	pkill -f "/Applications/Termic.app/Contents/MacOS/termic" 2>/dev/null || true; \
+	pkill -f "/Applications/termic.app/Contents/MacOS/termic" 2>/dev/null || true; \
+	sleep 1; \
+	rm -rf "$$APP_DATA" "$$APP_DATA_CAP" "$$BUNDLE_DATA" "$$CACHES" "$$CACHES_CAP" "$$WEBKIT"; \
+	rm -f "$$PREFS"; \
+	rm -rf "$$SAVED"; \
+	rm -f "$$TMPD"/termic-sandbox-*.sb 2>/dev/null || true; \
+	rm -f "$$TMPD"/termic-proxy-*.filter 2>/dev/null || true; \
+	rm -f "$$TMPD"/termic-debug.log 2>/dev/null || true; \
+	echo "✓ Wiped. Worktrees on disk are untouched."
+.PHONY: reset
+
+# Back-compat alias for the old `nuke-data` name.
+nuke-data: reset
 .PHONY: nuke-data
 
 clean: ## Remove build artifacts (frontend dist + rust target). Recovers ~3GB.

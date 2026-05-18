@@ -10,8 +10,9 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { workspaceSetSandbox, workspaceRecentDenials, workspaceTestSandbox, type ProbeResult } from "@/lib/ipc";
-import { AlertTriangle, Shield, Zap, RefreshCw, FlaskConical, Check, X } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { workspaceSetSandbox, workspaceTestSandbox, sandboxAvailable, type ProbeResult } from "@/lib/ipc";
+import { AlertTriangle, Shield, Zap, FlaskConical, Check, X } from "lucide-react";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
 export function WorkspaceSandboxDialog() {
@@ -35,15 +36,18 @@ export function WorkspaceSandboxDialog() {
   const [hostsText, setHostsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr]   = useState<string | null>(null);
-  // Recent denials panel. Loaded lazily (only when the user expands
-  // the <details>) to avoid invoking `log show` on every dialog open.
-  const [denies, setDenies] = useState<string[] | null>(null);
-  const [denyBusy, setDenyBusy] = useState(false);
   // Self-test results: null = never run; array = last run's probes.
   // We don't auto-run; the user clicks the Test button. ~3s round-trip
   // (provision + 2 curls); the button shows a spinner while in flight.
   const [probes, setProbes] = useState<ProbeResult[] | null>(null);
   const [testBusy, setTestBusy] = useState(false);
+  // OS sandbox support gate. macOS → true. Linux/Windows → false,
+  // and we disable the enable button + show "unavailable" banner.
+  // Probed once on mount; cheap (one Path::exists() check) but cached.
+  const [osSandboxOk, setOsSandboxOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    sandboxAvailable().then(setOsSandboxOk).catch(() => setOsSandboxOk(false));
+  }, []);
 
   useEffect(() => {
     if (!ws) return;
@@ -53,20 +57,11 @@ export function WorkspaceSandboxDialog() {
     setHostsText((ws.sandbox_allowed_hosts ?? []).join("\n"));
     setErr(null);
     setBusy(false);
-    setDenies(null);  // re-fetch on next expand
   }, [ws?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadDenies = async () => {
-    if (!ws) return;
-    setDenyBusy(true);
-    try {
-      const out = await workspaceRecentDenials(ws.id, 15);
-      setDenies(out);
-    } catch {
-      setDenies([]);
-    } finally {
-      setDenyBusy(false);
-    }
+  const _unused_loadDenies = async () => {
+    // Recent-denies panel removed in favor of the live footer chip.
+    // Stub kept so accidental imports don't break the build.
   };
 
   const runTest = async () => {
@@ -102,14 +97,18 @@ export function WorkspaceSandboxDialog() {
     const ok = await useUI.getState().askConfirm({
       title: `Save sandbox changes for "${ws.name}"?`,
       message:
-        "Any agent running in this workspace will be terminated and will need to be restarted (click \"Restart\" in the terminal overlay). " +
-        "This is by design — the running process holds the OLD sandbox profile until it's replaced.",
+        "Any agent running in this workspace will be terminated and AUTO-restarted under the new sandbox profile. " +
+        "This is by design — the running process holds the OLD profile until it's replaced.",
       confirmLabel: "Save & restart",
     });
     if (!ok) return;
     setBusy(true); setErr(null);
     const lines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
     try {
+      // Mark BEFORE the IPC fires so TerminalPane sees the flag when
+      // the pty-exit handler runs (the SIGKILL is fast - sometimes
+      // exits land before this function's await even unblocks).
+      useUI.getState().markPendingSandboxRestart(ws.id);
       const killed = await workspaceSetSandbox(
         ws.id, enabled,
         lines(rwText), lines(denyText), lines(hostsText),
@@ -178,12 +177,32 @@ export function WorkspaceSandboxDialog() {
             </div>
           </div>
           <Button
-            variant={enabled ? "ghost" : "primary"}
+            // "Disable" gets warn-yellow chrome so it reads as an
+            // intentional action (the previous ghost-styled link was
+            // basically invisible against the green panel). "Enable
+            // sandbox" stays the standard accent-deep primary.
+            variant={enabled ? "secondary" : "primary"}
             onClick={() => setEnabled(!enabled)}
+            disabled={osSandboxOk === false && !enabled}
+            title={osSandboxOk === false ? "Sandbox is macOS-only (requires sandbox-exec). Not available on this platform." : undefined}
+            className={enabled
+              ? "border-[var(--color-warn)]/50 bg-[var(--color-warn)]/15 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/25 hover:border-[var(--color-warn)]"
+              : undefined}
           >
             {enabled ? "Disable" : "Enable sandbox"}
           </Button>
         </div>
+        {osSandboxOk === false && (
+          <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
+            <span>
+              <b className="text-[var(--color-fg)]">Sandbox unavailable on this OS.</b>{" "}
+              Termic's cage uses macOS Seatbelt (<code className="mono">sandbox-exec</code>); Linux + Windows
+              equivalents aren't wired up yet. The network proxy and the
+              CLI agent still work — just without the filesystem cage.
+            </span>
+          </div>
+        )}
 
         {/* YOLO trade-off note. Sandboxed agents auto-skip their own
             permission prompts because the seatbelt is the real boundary -
@@ -245,87 +264,99 @@ export function WorkspaceSandboxDialog() {
           </div>
         )}
 
-        <Field label="Add writable paths" hint="One per line. $HOME and $WORKSPACE are substituted at spawn.">
-          <BuiltInsLine>
-            workspace · <Mono>~/.claude</Mono> · <Mono>~/.gemini</Mono> · <Mono>~/.codex</Mono> · <Mono>~/.npm</Mono> · <Mono>~/.cache</Mono> · <Mono>~/.cargo/registry</Mono> · <Mono>~/Library/Caches</Mono> · <Mono>/private/tmp</Mono> · TMPDIR
-          </BuiltInsLine>
-          <AutoGrowTextarea
-            value={rwText}
-            onChange={e => setRwText(e.target.value)}
-            rows={2}
-            placeholder={"$HOME/.config/myproject\n/opt/homebrew/var/myproject"}
-            className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
-            disabled={!enabled}
-          />
+        <Field
+          label="Allowed paths"
+          hint="Dirs the agent can read AND write. The workspace is always allowed. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
+        >
+          {/* Two columns: user input on the left, what's already
+              covered on the right. items-stretch matches heights so
+              the panel doesn't tower over a small textarea. min-h-full
+              on the textarea wrapper lets it grow with the panel
+              instead of leaving dead space. */}
+          <div className="grid grid-cols-2 items-stretch gap-3">
+            <AutoGrowTextarea
+              value={rwText}
+              onChange={e => setRwText(e.target.value)}
+              rows={4}
+              placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
+              className="h-full min-h-[160px] w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
+              disabled={!enabled}
+            />
+            <DefaultsPanel className="h-full">
+              <ChipGroup tone="allow" label="Always allowed (runtime)">
+                <Chip tone="allow">workspace</Chip>
+                <Chip tone="allow">~/.claude</Chip>
+                <Chip tone="allow">~/.codex</Chip>
+                <Chip tone="allow">~/.gemini</Chip>
+                <Chip tone="allow" muted>+ XDG variants</Chip>
+                <Chip tone="allow">~/.npm</Chip>
+                <Chip tone="allow">~/.cache</Chip>
+                <Chip tone="allow">~/.cargo</Chip>
+                <Chip tone="allow">~/Library/Caches</Chip>
+                <Chip tone="allow">~/Library/Logs</Chip>
+                <Chip tone="allow">~/Library/Application Support</Chip>
+                <Chip tone="allow">/private/tmp</Chip>
+                <Chip tone="allow">TMPDIR</Chip>
+                <Chip tone="allow" muted>system dirs</Chip>
+              </ChipGroup>
+              <ChipGroup tone="deny" label="Default-denied">
+                <Chip tone="deny">~/.ssh</Chip>
+                <Chip tone="deny">~/.aws</Chip>
+                <Chip tone="deny">~/.gnupg</Chip>
+                <Chip tone="deny">~/.netrc</Chip>
+                <Chip tone="deny">~/.kube</Chip>
+                <Chip tone="deny">~/Documents</Chip>
+                <Chip tone="deny">~/Desktop</Chip>
+                <Chip tone="deny">~/Downloads</Chip>
+                <Chip tone="deny" muted>Mail</Chip>
+                <Chip tone="deny" muted>Messages</Chip>
+                <Chip tone="deny" muted>browser data</Chip>
+                <Chip tone="deny" muted>shell histories</Chip>
+              </ChipGroup>
+              <p className="mt-2 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
+                Add the <i>exact</i> path on the left to override a default-deny —
+                typing the parent does NOT re-expose secrets.
+              </p>
+            </DefaultsPanel>
+          </div>
         </Field>
-        <Field label="Add denied paths" hint="On top of the built-in secret deny list.">
-          <BuiltInsLine>
-            secrets: <Mono>~/.ssh</Mono> · <Mono>~/.aws</Mono> · <Mono>~/.gnupg</Mono> · <Mono>~/.netrc</Mono> · <Mono>~/.docker/config.json</Mono> · <Mono>~/.kube</Mono> · <Mono>~/.config/gh/hosts.yml</Mono>
-            <br />
-            personal data: <Mono>~/Documents</Mono> · <Mono>~/Desktop</Mono> · <Mono>~/Downloads</Mono> · <Mono>~/Movies</Mono> · <Mono>~/Pictures</Mono> · <Mono>~/Music</Mono> · Mail · Messages · Calendars · Safari · Firefox · Chrome · Brave · Arc · shell histories
-          </BuiltInsLine>
+        <Field label="Extra denied paths (optional)" hint="Layered on top of the allow-list — useful when you want to expose a parent dir but lock down a specific subdir inside it.">
           <AutoGrowTextarea
             value={denyText}
             onChange={e => setDenyText(e.target.value)}
             rows={2}
-            placeholder="$HOME/private-notes"
+            placeholder="$WORKSPACE/.git/hooks"
             className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
             disabled={!enabled}
           />
         </Field>
         <Field label="Add allowed hosts" hint="One per line. Use * as a wildcard. Examples: *.mycompany.com, bitbucket.org">
-          <BuiltInsLine>
-            vendor API for {ws?.cli ?? "this CLI"} · github · npmjs · pypi · crates.io · CA OCSP
-          </BuiltInsLine>
-          <AutoGrowTextarea
-            value={hostsText}
-            onChange={e => setHostsText(e.target.value)}
-            rows={2}
-            placeholder={"*.mycompany.com\nbitbucket.org"}
-            className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
-            disabled={!enabled}
-          />
+          <div className="grid grid-cols-2 items-stretch gap-3">
+            <AutoGrowTextarea
+              value={hostsText}
+              onChange={e => setHostsText(e.target.value)}
+              rows={3}
+              placeholder={"*.mycompany.com\nbitbucket.org"}
+              className="h-full min-h-[100px] w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
+              disabled={!enabled}
+            />
+            <DefaultsPanel className="h-full">
+              <ChipGroup tone="allow" label="Always reachable">
+                <Chip tone="allow">vendor API for {ws?.cli ?? "this CLI"}</Chip>
+                <Chip tone="allow">github.com</Chip>
+                <Chip tone="allow">npmjs.org</Chip>
+                <Chip tone="allow">pypi.org</Chip>
+                <Chip tone="allow">crates.io</Chip>
+                <Chip tone="allow" muted>CA OCSP</Chip>
+              </ChipGroup>
+            </DefaultsPanel>
+          </div>
         </Field>
 
-        {/* Recent denies — debugging panel. macOS log show, scoped
-            by workspace path. Lazy-loaded on expand so we don't run
-            `log show` (~200ms shell-out) on every dialog open. */}
-        <details
-          className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]"
-          onToggle={(e) => {
-            if ((e.target as HTMLDetailsElement).open && denies === null) loadDenies();
-          }}
-        >
-          <summary className="flex cursor-pointer select-none items-center gap-2 font-medium text-[var(--color-fg)]">
-            Recent denies (last 15 min)
-            {denies !== null && (
-              <span className="rounded-full bg-[var(--color-bg-3)] px-1.5 text-[13px] font-normal text-[var(--color-fg-dim)]">{denies.length}</span>
-            )}
-            <button
-              type="button"
-              onClick={(e) => { e.preventDefault(); loadDenies(); }}
-              className="ml-auto rounded p-0.5 hover:bg-[var(--color-hover)]"
-              title="Refresh"
-            >
-              <RefreshCw className={denyBusy ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
-            </button>
-          </summary>
-          {denies === null && (
-            <div className="mt-2 text-[13px] text-[var(--color-fg-faint)]">
-              Expand to fetch. Surfaces what the kernel sandbox blocked for this workspace; useful when npm/curl/etc silently fail.
-            </div>
-          )}
-          {denies !== null && denies.length === 0 && (
-            <div className="mt-2 text-[13px] text-[var(--color-fg-faint)]">
-              No denies in the last 15 minutes. Either the sandbox isn't blocking anything, or the agent hasn't tried anything blocked.
-            </div>
-          )}
-          {denies !== null && denies.length > 0 && (
-            <pre data-selectable className="mt-2 max-h-[200px] overflow-auto rounded bg-[var(--color-bg)] p-2 font-mono text-[13px] leading-snug text-[var(--color-fg-dim)]">
-              {denies.join("\n")}
-            </pre>
-          )}
-        </details>
+        {/* "Recent denies" panel removed — the TerminalPane footer
+            now shows a live deny counter chip per workspace, which
+            is the discoverable surface. Detailed log lookups belong
+            in the debug.log path, not buried in the dialog. */}
 
         {/* Sandbox self-test. Provisions a one-shot bundle of the
             CURRENT config (not saved yet - so the user can verify
@@ -427,6 +458,85 @@ function BuiltInsLine({ children }: { children: React.ReactNode }) {
       <span className="font-medium text-[var(--color-fg-dim)]">Already covered:</span>{" "}
       {children}
     </div>
+  );
+}
+
+// Replaces the old prose-with-middots BuiltInsLine for the two fields
+// where the default set is more than a handful of paths. A bordered
+// container holds one or more ChipGroups - each group has a tone
+// (allow / deny) and a row of Chip pills. Reads top-to-bottom in
+// O(scan) instead of forcing the user to parse a comma-soup.
+function DefaultsPanel({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn(
+      "rounded-md border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5",
+      className,
+    )}>
+      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-fg-faint)]">
+        Already covered
+      </div>
+      <div className="flex flex-col gap-2">{children}</div>
+    </div>
+  );
+}
+
+function ChipGroup({
+  label,
+  tone,
+  children,
+}: {
+  label: string;
+  tone: "allow" | "deny";
+  children: React.ReactNode;
+}) {
+  // Tone drives the leading dot color + group label color. Keeping
+  // each line as a flex-wrap row lets chips reflow naturally as the
+  // dialog width changes.
+  const dotColor = tone === "allow" ? "var(--color-ok)" : "var(--color-err)";
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-1.5">
+        <span
+          className="inline-block h-1.5 w-1.5 rounded-full"
+          style={{ background: dotColor }}
+          aria-hidden
+        />
+        <span className="text-[11.5px] font-medium text-[var(--color-fg-dim)]">{label}</span>
+      </div>
+      <div className="flex flex-wrap gap-1">{children}</div>
+    </div>
+  );
+}
+
+function Chip({
+  tone,
+  muted = false,
+  children,
+}: {
+  tone: "allow" | "deny";
+  // `muted` for category-summary chips like "+ XDG variants" or
+  // "system dirs" - same shape, no colored border. Keeps the visual
+  // weight of the literal paths higher than the umbrella terms.
+  muted?: boolean;
+  children: React.ReactNode;
+}) {
+  const borderVar = muted
+    ? "var(--color-border)"
+    : tone === "allow"
+      ? "color-mix(in srgb, var(--color-ok) 35%, var(--color-border))"
+      : "color-mix(in srgb, var(--color-err) 35%, var(--color-border))";
+  const bgVar = muted
+    ? "transparent"
+    : tone === "allow"
+      ? "color-mix(in srgb, var(--color-ok) 8%, transparent)"
+      : "color-mix(in srgb, var(--color-err) 8%, transparent)";
+  return (
+    <code
+      className="inline-flex items-center rounded border px-1.5 py-[1px] font-mono text-[11px] text-[var(--color-fg-dim)]"
+      style={{ borderColor: borderVar, background: bgVar }}
+    >
+      {children}
+    </code>
   );
 }
 

@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { RotateCcw, Shield, AlertTriangle, TerminalSquare } from "lucide-react";
+import * as Popover from "@radix-ui/react-popover";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { cn } from "@/lib/utils";
@@ -268,6 +269,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
             setGen(g => g + 1);
             return;
           }
+          // Sandbox-driven restart: the user just hit "Save & restart"
+          // on the Sandbox dialog. Auto-respawn instead of showing the
+          // exited overlay so they don't have to click Restart manually.
+          if (useUI.getState().consumePendingSandboxRestart(ws.id)) {
+            setGen(g => g + 1);
+            return;
+          }
           markAttention(ws.id, tab.id, "exit");
           setExited(true);
         });
@@ -445,6 +453,27 @@ function FooterBar({ ws, sandboxWarning }: {
   const splitOpen = useApp(s => !!s.terminalSplit[ws.id]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
 
+  // Live deny counter. Polls the Rust-side counter every 2s while
+  // the workspace is sandboxed; cheap (one mutex lookup). Replaces
+  // the old "Recent denies" panel that needed `log show` shellouts.
+  const [totalDenies, setTotalDenies] = useState(0);
+  useEffect(() => {
+    if (!ws.sandbox_enabled) { setTotalDenies(0); return; }
+    let cancelled = false;
+    const tick = () => {
+      ipc.sandboxDenyCounts(ws.id)
+        // network + path: footer chip wants the COMBINED total so the
+        // number matches "rows visible in the popover." Previously
+        // showed network-only which under-counted (popover had paths
+        // too). Both come from the same IPC payload.
+        .then(c => { if (!cancelled) setTotalDenies(c.network + c.path); })
+        .catch(() => {});
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [ws.id, ws.sandbox_enabled]);
+
   // Sandbox half — three visual states (warning > on > off). Off
   // state is muted but still clickable so users discover the cage
   // exists.
@@ -488,8 +517,14 @@ function FooterBar({ ws, sandboxWarning }: {
         className="flex flex-1 items-center gap-1.5 truncate text-left hover:text-[var(--color-fg)]"
       >
         {sandboxNode}
-        <span className="ml-2 text-[var(--color-fg-faint)] underline-offset-2">edit</span>
       </button>
+      {/* Live deny counter chip — click to see WHICH hosts got
+          blocked. Sibling of the edit button so its click doesn't
+          bubble to "open Edit dialog." Only shown when sandboxed +
+          we've actually seen denies. */}
+      {ws.sandbox_enabled && totalDenies > 0 && (
+        <DeniedHostsPopover wsId={ws.id} count={totalDenies} />
+      )}
       {/* +Terminal opens the bottom split. Hidden when split is
           already open — no point offering to add what's there.
           (The split itself is owned by WorkspaceView; this is just
@@ -507,4 +542,184 @@ function FooterBar({ ws, sandboxWarning }: {
       )}
     </div>
   );
+}
+
+// Popover showing per-host + per-path deny breakdown. Click the
+// "N blocked" chip in the footer → list of what the cage refused,
+// sorted most-recently-seen first. Each row has an "Allow" button
+// that adds the host to the workspace's allowed list + respawns the
+// agent under the new profile. Polls every 1.5s while open.
+function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
+  const [open, setOpen] = useState(false);
+  const [hosts, setHosts] = useState<ipc.DenyHost[]>([]);
+  const [paths, setPaths] = useState<ipc.DenyPath[]>([]);
+  const [allowing, setAllowing] = useState<string | null>(null);
+  // Cached $HOME for `/Users/...` → `$HOME/...` display rewrite.
+  // Fetched once per popover lifetime; we don't expect the user's
+  // home dir to change mid-session.
+  const [home, setHome] = useState("");
+  useEffect(() => { ipc.homeDir().then(setHome).catch(() => {}); }, []);
+  const shortenPath = (p: string) => {
+    if (home && (p === home || p.startsWith(home + "/"))) {
+      return "$HOME" + p.slice(home.length);
+    }
+    return p;
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const tick = () => {
+      Promise.all([
+        ipc.sandboxRecentDeniedHosts(wsId).catch(() => [] as ipc.DenyHost[]),
+        ipc.sandboxRecentDeniedPaths(wsId).catch(() => [] as ipc.DenyPath[]),
+      ]).then(([h, p]) => {
+        if (cancelled) return;
+        setHosts(h); setPaths(p);
+      });
+    };
+    tick();
+    const id = window.setInterval(tick, 1500);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [open, wsId]);
+
+  async function allow(host: string) {
+    setAllowing(host);
+    try {
+      await ipc.workspaceSandboxAddAllowedHost(wsId, host);
+      const next = await ipc.sandboxRecentDeniedHosts(wsId).catch(() => hosts);
+      setHosts(next);
+    } finally { setAllowing(null); }
+  }
+  async function allowPath(path: string) {
+    setAllowing(path);
+    try {
+      await ipc.workspaceSandboxAddAllowedPath(wsId, path);
+      const next = await ipc.sandboxRecentDeniedPaths(wsId).catch(() => paths);
+      setPaths(next);
+    } finally { setAllowing(null); }
+  }
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/10"
+          title={`${count} request${count === 1 ? "" : "s"} blocked by the sandbox. Click to see details.`}
+        >
+          {count} blocked
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          // Auto-grow to the widest path/host row. Floor at 440px so
+          // short content doesn't make the popover look puny; ceiling
+          // at viewport-2rem so a deeply-nested path never escapes
+          // the terminal pane edges. Rows use whitespace-nowrap so
+          // their natural width drives the container's intrinsic
+          // size; truncation only kicks in when we hit the ceiling.
+          style={{ width: "max-content" }}
+          className="z-50 min-w-[440px] max-w-[calc(100vw-2rem)] max-h-[400px] overflow-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-2 shadow-2xl text-[12px]"
+        >
+          {hosts.length === 0 && paths.length === 0 && (
+            <div className="px-1 py-1 text-[var(--color-fg-faint)]">Loading…</div>
+          )}
+
+          {hosts.length > 0 && (
+            <>
+              <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+                <span>Blocked hosts</span>
+                <span>{hosts.length}</span>
+              </div>
+              <ul className="flex flex-col">
+                {hosts.map(h => (
+                  <li
+                    key={h.host}
+                    className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
+                  >
+                    <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={h.host}>{h.host}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
+                      {h.count}× · {relTime(h.last_seen_unix_ms)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => allow(h.host)}
+                      disabled={allowing === h.host}
+                      className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
+                      title={`Add ${h.host} to allowed hosts. Restarts the agent.`}
+                    >
+                      {allowing === h.host ? "…" : "Allow"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {paths.length > 0 && (
+            <>
+              <div className="mt-3 mb-1.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+                <span>Blocked filesystem paths</span>
+                <span>{paths.length}</span>
+              </div>
+              <ul className="flex flex-col">
+                {paths.map(p => (
+                  <li
+                    key={p.path}
+                    className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
+                  >
+                    {/* Show $HOME-prefixed for compactness; full path
+                        is in the title tooltip. */}
+                    <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={p.path}>{shortenPath(p.path)}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
+                      {p.count}× · {relTime(p.last_seen_unix_ms)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => allowPath(p.path)}
+                      disabled={allowing === p.path}
+                      className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
+                      title={`Add ${p.path} to allowed paths. Restarts the agent.`}
+                    >
+                      {allowing === p.path ? "…" : "Allow"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          <div className="mt-2 px-1 text-[11px] text-[var(--color-fg-faint)]">
+            "Allow" adds the host or path to this workspace's sandbox config and restarts the agent.
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+// Coarse "when was this" formatter. Deliberately low-precision so
+// the popover rows aren't flickering every second while it's open
+// (the previous "5s ago / 6s ago / ..." update on every 1.5s poll
+// was visual noise). Buckets:
+//   <  30s   → "just now"
+//   < 5 min  → "<5m ago"
+//   < 1 hr   → "Xm ago"  rounded to the nearest 5min
+//   < 24 hr  → "Xh ago"
+//   else     → "yesterday" / "Xd ago"
+function relTime(unixMs: number): string {
+  const delta = Math.max(0, Date.now() - unixMs);
+  const s = Math.floor(delta / 1000);
+  if (s < 30) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 5)  return "<5m ago";
+  if (m < 60) return `${Math.round(m / 5) * 5}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? "yesterday" : `${d}d ago`;
 }

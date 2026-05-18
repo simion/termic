@@ -10,6 +10,7 @@ import { projectUpdate, projectRemove } from "@/lib/ipc";
 import type { Project } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Trash2, Check } from "lucide-react";
 
 export function RepositorySection({ projectId }: { projectId: string }) {
@@ -210,29 +211,27 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <h2 className="text-[16px] font-medium">Sandbox</h2>
         <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
-          When a workspace is sandboxed, the agent runs under macOS seatbelt: writes are restricted to the worktree + caches, HTTPS goes through an in-process per-workspace proxy filtered against the allowlist below. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, …) are always denied.
+          When a workspace is sandboxed, the agent runs under macOS seatbelt: the filesystem is allow-listed (workspace + agent state + caches + dirs you list); HTTPS goes through an in-process per-workspace proxy filtered against the host allowlist. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, …) and personal data (<code className="font-mono">~/Documents</code>, <code className="font-mono">~/Desktop</code>, <code className="font-mono">~/Downloads</code>, browser data, mail) are denied by default.
         </p>
 
         <div className="mt-4 flex flex-col gap-5">
           <label className="inline-flex cursor-pointer items-center gap-2 select-none">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={!!draft.default_sandbox}
-              onChange={(e) => patch("default_sandbox", e.target.checked as any)}
-              className="h-4 w-4 accent-[var(--color-accent)]"
+              onChange={(v) => patch("default_sandbox", v as any)}
             />
             <span className="text-[13.5px] font-medium">Sandbox new workspaces by default</span>
           </label>
 
           <Field
-            label="Extra writable paths"
-            hint={"One per line. $HOME and $WORKSPACE substituted at spawn. Workspace path + ~/.claude / ~/.gemini / ~/.codex / ~/.npm / ~/.cache / TMPDIR are always allowed."}
+            label="Allowed paths"
+            hint="Dirs the agent can read AND write. Workspace + agent state dirs + caches + TMPDIR + system dirs are always allowed. Add extras here. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
             control={
               <textarea
                 value={(draft.sandbox_rw_paths ?? []).join("\n")}
                 onChange={(e) => patch("sandbox_rw_paths", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
                 rows={3}
-                placeholder={"$HOME/.config/myproject\n/opt/homebrew/var/myproject"}
+                placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
                 className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
             }
@@ -240,27 +239,27 @@ export function RepositorySection({ projectId }: { projectId: string }) {
 
           <Field
             label="Extra denied paths"
-            hint="One per line. On top of the built-in secret deny list."
+            hint="On top of the built-in secret + personal-data deny list. Useful when you want to expose a parent dir but lock down a specific subdir inside it."
             control={
               <textarea
                 value={(draft.sandbox_deny_paths ?? []).join("\n")}
                 onChange={(e) => patch("sandbox_deny_paths", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
                 rows={2}
-                placeholder="$HOME/private-notes"
+                placeholder="$WORKSPACE/.git/hooks"
                 className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
             }
           />
 
           <Field
-            label="Extra allowed hosts"
-            hint={"POSIX regex, one per line. Matches hostname. Defaults already cover the workspace's CLI vendor, GitHub, npm, pypi, crates.io."}
+            label="Allowed hosts"
+            hint="One per line. Use * as a wildcard. Per-CLI vendor + GitHub + npm/pypi/crates.io are always allowed; these are extras."
             control={
               <textarea
                 value={(draft.sandbox_allowed_hosts ?? []).join("\n")}
                 onChange={(e) => patch("sandbox_allowed_hosts", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
                 rows={4}
-                placeholder={"^.+\\.mycompany\\.com$\n^bitbucket\\.org$"}
+                placeholder={"*.mycompany.com\nbitbucket.org"}
                 className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
             }

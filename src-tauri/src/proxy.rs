@@ -34,7 +34,9 @@
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use crate::dlog;
+use std::collections::HashMap;
 use std::io::{Read, Write, ErrorKind};
+use std::sync::{Mutex, OnceLock};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -55,6 +57,67 @@ pub struct ProxyHandle {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+/// Per-workspace per-host deny tracker. We record count + last-seen
+/// timestamp per blocked hostname so the footer chip popover can
+/// show "what got blocked" instead of just a number. Stored
+/// in-process, lifetime = Termic session (matches user expectation
+/// of "denies I've seen so far").
+#[derive(Clone)]
+pub struct DenyEntry {
+    pub host: String,
+    pub count: u64,
+    pub last_seen_unix_ms: u128,
+}
+
+static DENY_TRACKER: OnceLock<Mutex<HashMap<String, HashMap<String, DenyEntry>>>> = OnceLock::new();
+
+fn tracker() -> &'static Mutex<HashMap<String, HashMap<String, DenyEntry>>> {
+    DENY_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn now_unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Record a network deny: bumps count for (ws_id, host) and updates
+/// the last-seen timestamp. Called from CONNECT + plain-HTTP handlers.
+fn incr_network_deny(ws_id: &str, host: &str) {
+    if ws_id.is_empty() { return; }
+    if let Ok(mut g) = tracker().lock() {
+        let per_ws = g.entry(ws_id.to_string()).or_insert_with(HashMap::new);
+        let entry = per_ws.entry(host.to_string()).or_insert(DenyEntry {
+            host: host.to_string(),
+            count: 0,
+            last_seen_unix_ms: 0,
+        });
+        entry.count += 1;
+        entry.last_seen_unix_ms = now_unix_ms();
+    }
+}
+
+/// Total network-deny count for a workspace (sum across all hosts).
+/// Used by the live footer counter.
+pub fn network_deny_count(ws_id: &str) -> u64 {
+    tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().map(|e| e.count).sum()))
+        .unwrap_or(0)
+}
+
+/// Snapshot of denied hosts for a workspace, sorted by most-recently-
+/// seen first. Used by the footer chip popover to show "what got
+/// blocked." Caller-side cap on rendered rows is fine; the data here
+/// is bounded by however many unique hosts the agent has tried.
+pub fn network_deny_list(ws_id: &str) -> Vec<DenyEntry> {
+    let mut out: Vec<DenyEntry> = tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().cloned().collect()))
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
+    out
+}
+
 impl Drop for ProxyHandle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
@@ -70,7 +133,9 @@ impl Drop for ProxyHandle {
 /// the accept loop runs in a background thread. `allowed_patterns` is
 /// the host-allowlist regex set (one entry per line of the workspace's
 /// allowed_hosts config); patterns are tried in order, first match wins.
-pub fn start(allowed_patterns: Vec<String>) -> Result<ProxyHandle> {
+/// `ws_id` is stored so denies can be attributed to the owning
+/// workspace (drives the footer-chip counter via `network_deny_count`).
+pub fn start(allowed_patterns: Vec<String>, ws_id: String) -> Result<ProxyHandle> {
     // Compile up front so a bad regex fails the workspace spawn cleanly
     // rather than silently 403-ing every request.
     let regexes: Vec<Regex> = allowed_patterns
@@ -87,6 +152,7 @@ pub fn start(allowed_patterns: Vec<String>) -> Result<ProxyHandle> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
     let regexes = Arc::new(regexes);
+    let ws_id = Arc::new(ws_id);
 
     let thread = thread::spawn(move || {
         loop {
@@ -103,11 +169,12 @@ pub fn start(allowed_patterns: Vec<String>) -> Result<ProxyHandle> {
                     // never sees the TLS ClientHello and resets.
                     let _ = stream.set_nonblocking(false);
                     let regexes = Arc::clone(&regexes);
+                    let ws_id = Arc::clone(&ws_id);
                     // Each connection on its own thread. Slightly
                     // wasteful but keeps the code obvious and the
                     // per-PTY connection count low.
                     thread::spawn(move || {
-                        if let Err(e) = handle_connection(stream, &regexes) {
+                        if let Err(e) = handle_connection(stream, &regexes, &ws_id) {
                             // Log only - we never want a malformed
                             // request to take down the proxy.
                             eprintln!("[proxy] connection error: {e}");
@@ -132,7 +199,7 @@ pub fn start(allowed_patterns: Vec<String>) -> Result<ProxyHandle> {
 
 // ─── connection handler ──────────────────────────────────────────────
 
-fn handle_connection(mut stream: TcpStream, regexes: &[Regex]) -> Result<()> {
+fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str) -> Result<()> {
     // Bound how long we wait for the client's request headers so a
     // half-open connection can't pin a thread forever.
     stream.set_read_timeout(Some(Duration::from_millis(READ_HEADER_TIMEOUT_MS)))?;
@@ -145,9 +212,9 @@ fn handle_connection(mut stream: TcpStream, regexes: &[Regex]) -> Result<()> {
     let _version = parts.next().unwrap_or("");
 
     if method == "CONNECT" {
-        handle_connect(stream, target, regexes)
+        handle_connect(stream, target, regexes, ws_id)
     } else {
-        handle_plain_http(stream, &method, target, &headers, &leftover, regexes)
+        handle_plain_http(stream, &method, target, &headers, &leftover, regexes, ws_id)
     }
 }
 
@@ -185,7 +252,7 @@ fn find_double_crlf(buf: &[u8]) -> Option<usize> {
 
 // ─── CONNECT (HTTPS tunneling) ───────────────────────────────────────
 
-fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex]) -> Result<()> {
+fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id: &str) -> Result<()> {
     // CONNECT target is "host:port".
     let (host, port_str) = match target.rsplit_once(':') {
         Some(t) => t,
@@ -203,7 +270,8 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex]) -> Res
     };
 
     if !host_allowed(host, regexes) {
-        dlog(&format!("[proxy] CONNECT {host}:{port} → 403 (not on allowlist)"));
+        incr_network_deny(ws_id, host);
+        dlog(&format!("[proxy] CONNECT {host}:{port} → 403 (not on allowlist) ws={ws_id}"));
         // 403 with a self-identifying reason phrase + body + custom
         // header so the AGENT sees that THIS proxy (not the upstream
         // server, not a corporate gateway) rejected the request. The
@@ -282,6 +350,7 @@ fn handle_plain_http(
     headers: &str,
     leftover: &[u8],
     regexes: &[Regex],
+    ws_id: &str,
 ) -> Result<()> {
     // Plain HTTP target is "http://host[:port]/path?query".
     if !target.to_ascii_lowercase().starts_with("http://") {
@@ -302,7 +371,8 @@ fn handle_plain_http(
         // Same self-identifying 403 as the CONNECT path so plain-HTTP
         // clients (older code, agents that haven't moved to HTTPS for
         // a given target) see the Termic-specific signal too.
-        dlog(&format!("[proxy] HTTP {method} {host}:{port} → 403 (not on allowlist)"));
+        incr_network_deny(ws_id, host);
+        dlog(&format!("[proxy] HTTP {method} {host}:{port} → 403 (not on allowlist) ws={ws_id}"));
         let body = format!(
             "Blocked by Termic sandbox.\n\n\
              Host: {host}\n\

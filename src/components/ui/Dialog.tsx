@@ -23,7 +23,19 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
             text behind the dialog look fuzzy/out of focus, which read as
             an anti-aliasing bug. Plain dim is cleaner and matches Conductor's
             backdrop style. */}
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/65 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        {/* Mark the dim backdrop as a Tauri drag region so users can
+            move the window even while a dialog is open (welcome wizard
+            is the worst offender — it covers the whole frame for new
+            users who'd otherwise be stuck). The Content below has
+            its own `pointer-events-auto` so inputs/buttons keep
+            working. Tauri picks up mousedown+move as drag; a pure
+            click (no movement) still bubbles to Radix for outside-
+            click-to-dismiss. */}
+        <Dialog.Overlay
+          data-tauri-drag-region
+          style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+          className="fixed inset-0 z-40 bg-black/65 data-[state=open]:animate-in data-[state=open]:fade-in-0"
+        />
         {/* Vertical centering is safe ONLY because Dialog.Content below sets
             an explicit `translate3d(0,0,0)` — that promotes it to its own
             compositing layer, which WebKit pixel-snaps. Without the layer
@@ -43,11 +55,28 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
               className,
             )}
           >
-            {title && <Dialog.Title className="text-base font-medium">{title}</Dialog.Title>}
-            {description && <Dialog.Description className="text-xs text-[var(--color-fg-dim)] -mt-1">{description}</Dialog.Description>}
+            {(title || description) && (
+              // Title strip = drag region. Same affordance as a macOS
+              // window title bar - the user grabs the chrome at the top
+              // of the dialog and drags the window. Close button below
+              // is positioned absolute and opts out via its own
+              // data-tauri-drag-region="false".
+              <div
+                data-tauri-drag-region
+                style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+                className="cursor-grab active:cursor-grabbing select-none"
+              >
+                {title && <Dialog.Title className="text-base font-medium">{title}</Dialog.Title>}
+                {description && <Dialog.Description className="text-xs text-[var(--color-fg-dim)] -mt-1">{description}</Dialog.Description>}
+              </div>
+            )}
             {children}
             {!hideClose && (
-              <Dialog.Close className="absolute right-3 top-3 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)]">
+              <Dialog.Close
+                data-tauri-drag-region="false"
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                className="absolute right-3 top-3 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)]"
+              >
                 <X className="h-4 w-4" />
               </Dialog.Close>
             )}

@@ -42,6 +42,44 @@ export const workspaceSetSandbox = (
   id, enabled,
   rwPaths, denyPaths, allowedHosts,
 });
+/** Whether the OS supports the sandbox at all. Returns false on
+ *  Linux / Windows (Seatbelt is macOS-only). Frontend uses this to
+ *  grey out the cage toggle + show an "unavailable on your OS"
+ *  banner instead of letting the user enable something that would
+ *  crash agent spawn. */
+export const sandboxAvailable = () => invoke<boolean>("sandbox_available");
+
+/** Per-workspace deny counters surfaced in the TerminalPane footer
+ *  chip. Currently only `network` (the proxy bumps it on every CONNECT
+ *  / HTTP request that fails the host allowlist). Cheap to poll. */
+export interface SandboxDenyCounts { network: number; path: number }
+export const sandboxDenyCounts = (id: string) =>
+  invoke<SandboxDenyCounts>("sandbox_deny_counts", { id });
+
+/** Per-host breakdown for the "N blocked" footer chip popover.
+ *  Sorted by most-recently-seen first. */
+export interface DenyHost { host: string; count: number; last_seen_unix_ms: number }
+export const sandboxRecentDeniedHosts = (id: string) =>
+  invoke<DenyHost[]>("sandbox_recent_denied_hosts", { id });
+
+/** Per-path filesystem deny breakdown. Parsed from macOS log stream
+ *  in the background (one watcher per sandboxed workspace). */
+export interface DenyPath { path: string; count: number; last_seen_unix_ms: number }
+export const sandboxRecentDeniedPaths = (id: string) =>
+  invoke<DenyPath[]>("sandbox_recent_denied_paths", { id });
+
+/** Append a host to the workspace's allowed-hosts list AND respawn
+ *  any live PTYs so the new profile takes effect. Returns the number
+ *  of agents that were killed. Backs the "Allow" button next to each
+ *  blocked host in the footer chip popover. */
+export const workspaceSandboxAddAllowedHost = (id: string, host: string) =>
+  invoke<number>("workspace_sandbox_add_allowed_host", { id, host });
+
+/** Mirror for filesystem paths — append to allowed_rw_paths and
+ *  respawn the agent. Backs the "Allow" button on path rows. */
+export const workspaceSandboxAddAllowedPath = (id: string, path: string) =>
+  invoke<number>("workspace_sandbox_add_allowed_path", { id, path });
+
 /** Newest-first list of macOS Sandbox denial lines from `log show` for
  *  the given workspace, last `minutes` minutes (default 10). Surfaces
  *  what got blocked when `npm install` etc. silently failed in a

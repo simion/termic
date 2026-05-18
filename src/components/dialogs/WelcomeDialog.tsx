@@ -16,13 +16,15 @@ import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave } from "@/lib/ipc";
-import type { CliInfo } from "@/lib/types";
+import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, projectAdd } from "@/lib/ipc";
+import { Checkbox } from "@/components/ui/Checkbox";
+import type { CliInfo, DiscoveredRepo } from "@/lib/types";
+import { useApp } from "@/store/app";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { TermicMark } from "@/icons/TermicLogo";
 import { cn } from "@/lib/utils";
 import { usePrefs, applyTheme, type ThemeMode } from "@/store/prefs";
-import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Shield, Network, FolderLock, Zap } from "lucide-react";
+import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2 } from "lucide-react";
 
 type Step = 0 | 1 | 2;
 
@@ -35,6 +37,13 @@ export function WelcomeDialog() {
   const [dir, setDir] = useState("");
   const [summary, setSummary] = useState("");
   const [clis, setClis] = useState<CliInfo[]>([]);
+  // Discovered repos (populated by the step-0 effect below). Lifted to
+  // the parent so step 3's project-picker has the data ready without
+  // re-fetching when the user reaches it.
+  const [repos, setRepos] = useState<DiscoveredRepo[]>([]);
+  // Selected paths for step 3. Defaults to all-unadded checked when
+  // the discovery result first lands.
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
 
   const [busy, setBusy] = useState(false);
 
@@ -48,15 +57,20 @@ export function WelcomeDialog() {
   }, [open]);
 
   useEffect(() => {
-    if (!open || !dir) { setSummary(""); return; }
+    if (!open || !dir) { setSummary(""); setRepos([]); setSelectedPaths(new Set()); return; }
     const t = window.setTimeout(async () => {
       try {
-        const repos = await discoverRepos(dir);
-        const unadded = repos.filter(r => !r.already_added).length;
-        setSummary(repos.length === 0
+        const found = await discoverRepos(dir);
+        setRepos(found);
+        // Don't pre-check anything. Auto-adding every repo in a dev
+        // directory is wildly invasive on first launch — let the user
+        // tick what they actually want.
+        setSelectedPaths(new Set());
+        const unadded = found.filter(r => !r.already_added).length;
+        setSummary(found.length === 0
           ? `No git repos found in ${dir}.`
-          : `Found ${repos.length} repo${repos.length === 1 ? "" : "s"} (${unadded} not yet added).`);
-      } catch { setSummary("Couldn't read that path."); }
+          : `Found ${found.length} repo${found.length === 1 ? "" : "s"} (${unadded} not yet added).`);
+      } catch { setSummary("Couldn't read that path."); setRepos([]); setSelectedPaths(new Set()); }
     }, 200);
     return () => window.clearTimeout(t);
   }, [dir, open]);
@@ -69,13 +83,23 @@ export function WelcomeDialog() {
   async function finish(skipRepos: boolean) {
     setBusy(true);
     try {
-      const { settingsLoad } = await import("@/lib/ipc");
       const cur = await settingsLoad();
       await settingsSave({
         ...cur,
         repos_dir: skipRepos ? "" : dir.trim(),
         welcomed: true,
       });
+      // Create projects for every path the user ticked in step 3.
+      // Best-effort: log failures but don't block wizard close (the
+      // user can re-add via the dashboard's Add project button).
+      const toAdd = repos.filter(r => selectedPaths.has(r.path) && !r.already_added);
+      if (toAdd.length > 0) {
+        await Promise.all(toAdd.map(r =>
+          projectAdd(r.path).catch(err => console.error("project add failed:", r.path, err))
+        ));
+        // Refresh app store so the dashboard immediately shows what we added.
+        try { await useApp.getState().loadAll(); } catch {}
+      }
       close();
     } finally { setBusy(false); }
   }
@@ -87,18 +111,30 @@ export function WelcomeDialog() {
     <AppDialog open={open} onOpenChange={() => {}}
       hideClose className="max-w-[560px]"
     >
-      <div className="mb-4 flex items-center gap-3 -mt-1">
+      {/* Whole header bar is a drag region so users can move the
+          window by grabbing the title strip - same affordance as
+          macOS app title bars. The pip buttons opt out via
+          data-tauri-drag-region="false" so they stay clickable. */}
+      <div
+        data-tauri-drag-region
+        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+        className="mb-4 flex items-center gap-3 -mt-1 cursor-grab active:cursor-grabbing select-none"
+      >
         <TermicMark size={40} />
         <div className="flex-1 min-w-0">
           <div className="text-[18px] font-semibold leading-tight">Welcome to Termic</div>
           <div className="text-[12.5px] text-[var(--color-fg-dim)]">
             {step === 0 && "Repos & CLIs."}
             {step === 1 && "Pick your theme."}
-            {step === 2 && "Sandbox basics."}
+            {step === 2 && "Pick projects to add."}
           </div>
         </div>
         {/* Tiny pip indicator. Click to jump (handy for skipping back). */}
-        <div className="flex gap-1.5">
+        <div
+          className="flex gap-1.5"
+          data-tauri-drag-region="false"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
           {[0, 1, 2].map(i => (
             <button key={i} onClick={() => setStep(i as Step)}
               aria-label={`Step ${i + 1}`}
@@ -117,7 +153,14 @@ export function WelcomeDialog() {
         />
       )}
       {step === 1 && <StepTheme />}
-      {step === 2 && <StepSandbox />}
+      {step === 2 && (
+        <StepProjects
+          dir={dir}
+          repos={repos}
+          selected={selectedPaths}
+          setSelected={setSelectedPaths}
+        />
+      )}
 
       <div className="mt-5 flex items-center justify-between gap-2">
         <Button variant="ghost" type="button" onClick={back} disabled={step === 0 || busy}>
@@ -136,7 +179,11 @@ export function WelcomeDialog() {
           )}
           {step === 2 && (
             <Button variant="primary" type="button" onClick={() => finish(!dir.trim())} disabled={busy}>
-              {busy ? "Saving…" : "Get started"}
+              {busy
+                ? "Adding…"
+                : selectedPaths.size > 0
+                  ? `Add ${selectedPaths.size} project${selectedPaths.size === 1 ? "" : "s"}`
+                  : "Get started"}
             </Button>
           )}
         </div>
@@ -245,6 +292,7 @@ const THEME_ITEMS: { id: ThemeMode; label: string; icon: typeof Sun; swatch: [st
   { id: "auto",      label: "System",         icon: Monitor, swatch: ["#0a0a0a", "#fdf6e3", "#d97757"] },
   { id: "light",     label: "Light",          icon: Sun,     swatch: ["#faf9f6", "#1c1b1a", "#c25e3d"] },
   { id: "dark",      label: "Dark",           icon: Moon,    swatch: ["#0a0a0a", "#f0efed", "#d97757"] },
+  { id: "vscode",    label: "VS Code Dark",   icon: Code2,   swatch: ["#1e1e1e", "#d4d4d4", "#d97757"] },
   { id: "solarized", label: "Solarized Dark", icon: Sunrise, swatch: ["#002b36", "#93a1a1", "#cb4b16"] },
   { id: "cobalt",    label: "Cobalt",         icon: Droplet, swatch: ["#193549", "#e1efff", "#66c4ff"] },
   { id: "matrix",    label: "Matrix",         icon: Binary,  swatch: ["#000800", "#00ff41", "#00ff41"] },
@@ -303,77 +351,107 @@ function StepTheme() {
   );
 }
 
-// ── Step 3: sandbox primer + global default ──────────────────────────
-function StepSandbox() {
-  const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
-  const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
+// ── Step 3: pick discovered projects to add ──────────────────────────
+// Reuses the repo list discovered in step 1 (no second IPC trip).
+// User ticks the repos they want, "Add N projects" creates them; the
+// wizard closes onto a populated dashboard instead of a sandbox lecture.
+// Sandbox itself is discoverable via the shield icon on workspace
+// rows + the dialog behind it - users don't need a tour on day 1.
+function StepProjects({ dir, repos, selected, setSelected }: {
+  dir: string;
+  repos: DiscoveredRepo[];
+  selected: Set<string>;
+  setSelected: (v: Set<string>) => void;
+}) {
+  const unadded = repos.filter(r => !r.already_added);
+  const added = repos.filter(r => r.already_added);
+
+  const toggle = (path: string) => {
+    const next = new Set(selected);
+    if (next.has(path)) next.delete(path); else next.add(path);
+    setSelected(next);
+  };
+  const checkAll = () => setSelected(new Set(unadded.map(r => r.path)));
+  const checkNone = () => setSelected(new Set());
+
+  if (!dir.trim()) {
+    return (
+      <div className="flex flex-col gap-3 text-[13px] text-[var(--color-fg-dim)]">
+        <p>You skipped the repos directory in step 1. No projects to suggest.</p>
+        <p className="text-[12px] text-[var(--color-fg-faint)]">
+          You can add projects any time from the dashboard's "Add project" card,
+          or pick a repos dir in Settings → General to enable discovery.
+        </p>
+      </div>
+    );
+  }
+  if (repos.length === 0) {
+    return (
+      <div className="flex flex-col gap-3 text-[13px] text-[var(--color-fg-dim)]">
+        <p>No git repos found in <code className="mono">{dir}</code>.</p>
+        <p className="text-[12px] text-[var(--color-fg-faint)]">
+          Either the path is empty or you went back and changed it — give the
+          scanner a moment, or pick a different dir in step 1.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-[13px] text-[var(--color-fg-dim)]">
-        Agents can run inside a kernel sandbox - the macOS one Apple uses to
-        cage its own apps. When you enable it for a workspace:
-      </p>
-      <ul className="flex flex-col gap-2 text-[13px]">
-        <li className="flex items-start gap-2">
-          <FolderLock className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent)]" />
-          <span>
-            <b className="text-[var(--color-fg)]">Filesystem is locked down.</b>{" "}
-            The agent can read your repo, write to its worktree, touch its own
-            config + caches. Secrets (<code className="mono">~/.ssh</code>,{" "}
-            <code className="mono">~/.aws</code>, …) are always denied.
-          </span>
-        </li>
-        <li className="flex items-start gap-2">
-          <Network className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent)]" />
-          <span>
-            <b className="text-[var(--color-fg)]">Network goes through an allowlist.</b>{" "}
-            Vendor APIs (anthropic / google / openai), GitHub, npm, pypi, crates.io
-            are on by default. Anything else: blocked. You can add hosts per project.
-          </span>
-        </li>
-        <li className="flex items-start gap-2">
-          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent)]" />
-          <span>
-            <b className="text-[var(--color-fg)]">Per workspace, editable.</b>{" "}
-            Each workspace owns its own sandbox config. Edit it anytime from
-            the Shield icon on the workspace row - saving restarts the agent.
-          </span>
-        </li>
-        <li className="flex items-start gap-2">
-          <Zap className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-ok)]" />
-          <span>
-            <b className="text-[var(--color-fg)]">YOLO is auto-on inside the cage.</b>{" "}
-            Sandboxed workspaces skip the agent's own permission prompts -
-            the seatbelt profile is the real boundary, prompts are just
-            friction once you're inside it. Outside the sandbox, the YOLO
-            toolbar button turns <span className="text-[var(--color-err)] font-medium">red</span> as a warning.
-          </span>
-        </li>
-      </ul>
-
-      <label className="mt-2 inline-flex cursor-pointer items-start gap-2 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/60 p-3 select-none">
-        <input
-          type="checkbox"
-          checked={globalDefaultSandbox}
-          onChange={e => setGlobalDefaultSandbox(e.target.checked)}
-          className="mt-0.5 h-4 w-4 accent-[var(--color-accent)]"
-        />
-        <span className="flex-1">
-          <span className="text-[13.5px] font-medium text-[var(--color-fg)]">
-            Sandbox new workspaces by default
-          </span>
-          <span className="mt-0.5 block text-[12px] text-[var(--color-fg-dim)]">
-            You can flip this per project later. Already-existing workspaces aren't
-            affected.
-          </span>
+      <div className="flex items-center justify-between text-[12.5px] text-[var(--color-fg-dim)]">
+        <span>
+          {unadded.length === 0
+            ? `All ${repos.length} repo${repos.length === 1 ? "" : "s"} already added — nothing new to pick.`
+            : `${unadded.length} unadded repo${unadded.length === 1 ? "" : "s"} in ${dir}. Tick what you want.`}
         </span>
-      </label>
+        {unadded.length > 0 && (
+          <div className="flex gap-2">
+            <button type="button" onClick={checkAll} className="text-[var(--color-accent)] hover:underline">all</button>
+            <button type="button" onClick={checkNone} className="text-[var(--color-fg-faint)] hover:text-[var(--color-fg)] hover:underline">none</button>
+          </div>
+        )}
+      </div>
+
+      {unadded.length > 0 && (
+        <div className="max-h-[280px] overflow-y-auto rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)]">
+          {unadded.map(r => {
+            const isOn = selected.has(r.path);
+            return (
+              <div
+                key={r.path}
+                onClick={() => toggle(r.path)}
+                className="flex cursor-pointer items-center gap-3 border-b border-[var(--color-border-soft)] px-3 py-2 last:border-b-0 hover:bg-[var(--color-hover)]"
+              >
+                <Checkbox checked={isOn} onChange={() => toggle(r.path)} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{r.name}</div>
+                  <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{r.path}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {added.length > 0 && (
+        <details className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-3 py-2 text-[12px] text-[var(--color-fg-dim)]">
+          <summary className="cursor-pointer select-none">
+            {added.length} repo{added.length === 1 ? "" : "s"} already added (won't duplicate)
+          </summary>
+          <ul className="mt-1.5 flex flex-col gap-0.5 pl-1">
+            {added.map(r => (
+              <li key={r.path} className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{r.name}</li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       <p className="text-[11.5px] text-[var(--color-fg-faint)]">
-        The host allowlist runs through an in-process proxy — no external
-        dependency, no install step. Hit the Sandbox button on a workspace
-        to tweak the per-workspace allowlist.
+        Each project lets you spawn workspaces (git worktrees) per agent. You
+        can also add projects later from the dashboard.
       </p>
     </div>
   );
 }
+

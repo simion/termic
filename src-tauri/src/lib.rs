@@ -955,6 +955,145 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
 /// this on the IPC handler thread froze the whole window (the WKWebView
 /// event loop runs on the same thread in dev) - this is exactly the
 /// "make heavy IO async" rule from CLAUDE.md.
+/// Whether the OS supports the sandbox at all. Frontend uses this to
+/// grey out the cage toggle on Linux / Windows builds and show an
+/// "unavailable on your OS" message instead of letting the user enable
+/// something that would later crash the agent spawn.
+#[tauri::command]
+fn sandbox_available() -> bool { sandbox::available() }
+
+/// Per-workspace deny counters surfaced in the TerminalPane footer
+/// chip. Currently network-only (the proxy bumps it on every CONNECT/
+/// HTTP request that fails the host allowlist). Filesystem deny
+/// counting would need `log show` polling which is too expensive for
+/// the cadence the footer wants. Cheap IPC; safe to poll every 2s.
+#[derive(Clone, Serialize)]
+struct SandboxDenyCounts {
+    network: u64,
+    path: u64,
+}
+
+#[tauri::command]
+fn sandbox_deny_counts(id: String) -> SandboxDenyCounts {
+    SandboxDenyCounts {
+        network: proxy::network_deny_count(&id),
+        path:    sandbox::path_deny_count(&id),
+    }
+}
+
+/// Detailed per-host breakdown of network denies for a workspace.
+/// Backs the popover that opens when the user clicks the "N blocked"
+/// chip in the footer. Sorted by most-recently-seen first.
+#[derive(Clone, Serialize)]
+struct DenyHost {
+    host: String,
+    count: u64,
+    last_seen_unix_ms: f64,
+}
+#[tauri::command]
+fn sandbox_recent_denied_hosts(id: String) -> Vec<DenyHost> {
+    proxy::network_deny_list(&id).into_iter().map(|e| DenyHost {
+        host: e.host,
+        count: e.count,
+        // Cap as f64 for JSON safety (Tauri's serde-json round-trips
+        // u128 as a string; f64 fits 53 bits which covers timestamps
+        // far past the heat death of the sun).
+        last_seen_unix_ms: e.last_seen_unix_ms as f64,
+    }).collect()
+}
+
+#[derive(Clone, Serialize)]
+struct DenyPath {
+    path: String,
+    count: u64,
+    last_seen_unix_ms: f64,
+}
+#[tauri::command]
+fn sandbox_recent_denied_paths(id: String) -> Vec<DenyPath> {
+    sandbox::path_deny_list(&id).into_iter().map(|e| DenyPath {
+        path: e.path,
+        count: e.count,
+        last_seen_unix_ms: e.last_seen_unix_ms as f64,
+    }).collect()
+}
+
+/// Append a host to the workspace's `sandbox_allowed_hosts` list, save,
+/// and SIGKILL any live PTYs of that workspace so the next mount picks
+/// up the new profile. Backs the "Allow" button next to each blocked
+/// host in the footer chip popover - one click to whitelist what the
+/// agent just tried to reach.
+#[tauri::command]
+fn workspace_sandbox_add_allowed_host(
+    state: State<'_, PtyManager>, id: String, host: String,
+) -> Result<usize, String> {
+    let host = host.trim().to_string();
+    if host.is_empty() { return Err("empty host".into()); }
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    if !w.sandbox_allowed_hosts.iter().any(|h| h == &host) {
+        w.sandbox_allowed_hosts.push(host);
+    }
+    save_workspace(w).map_err(|e| e.to_string())?;
+
+    // SIGKILL the matching PTYs so they respawn with the new profile.
+    // Same shape as workspace_set_sandbox.
+    let victims: Vec<Option<u32>> = {
+        let map = state.inner.lock();
+        map.iter()
+            .filter(|(_, slot)| slot.workspace_id.as_deref() == Some(&id))
+            .map(|(_, slot)| slot.child_pid)
+            .collect()
+    };
+    let count = victims.len();
+    for pid in victims {
+        if let Some(p) = pid {
+            unsafe { libc::kill(p as i32, libc::SIGKILL); }
+        }
+    }
+    Ok(count)
+}
+
+/// Mirror of `workspace_sandbox_add_allowed_host` but for filesystem
+/// paths. Append to `sandbox_rw_paths`, save, SIGKILL the live PTYs.
+/// Backs the "Allow" button next to each blocked path in the footer
+/// popover.
+#[tauri::command]
+fn workspace_sandbox_add_allowed_path(
+    state: State<'_, PtyManager>, id: String, path: String,
+) -> Result<usize, String> {
+    let path = path.trim().to_string();
+    if path.is_empty() { return Err("empty path".into()); }
+    // Replace the literal $HOME prefix with the $HOME token so the
+    // stored entry stays portable + readable (we substitute at spawn
+    // anyway). Only the LEADING prefix — `/Users/simion/Pictures` is
+    // the user's home; embedded `/Users/...` elsewhere is left alone.
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let stored = if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
+        path.replacen(&home, "$HOME", 1)
+    } else { path };
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    if !w.sandbox_rw_paths.iter().any(|p| p == &stored) {
+        w.sandbox_rw_paths.push(stored);
+    }
+    save_workspace(w).map_err(|e| e.to_string())?;
+
+    let victims: Vec<Option<u32>> = {
+        let map = state.inner.lock();
+        map.iter()
+            .filter(|(_, slot)| slot.workspace_id.as_deref() == Some(&id))
+            .map(|(_, slot)| slot.child_pid)
+            .collect()
+    };
+    let count = victims.len();
+    for pid in victims {
+        if let Some(p) = pid {
+            unsafe { libc::kill(p as i32, libc::SIGKILL); }
+        }
+    }
+    Ok(count)
+}
+
 #[tauri::command]
 async fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
     tauri::async_runtime::spawn_blocking(move || -> Vec<String> {
@@ -2229,7 +2368,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_update, project_remove,
             workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
-            workspace_recent_denials, workspace_test_sandbox,
+            sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_read, workspace_dir_list,
@@ -2270,9 +2409,27 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
         }
     }
 
-    let win_size = win.outer_size()?;
+    // Clamp the window to the target monitor before positioning.
+    // tauri-plugin-window-state may have restored a size that's
+    // larger than the CURRENT monitor (saved on a 4K, now on a
+    // laptop screen; saved fullscreen on a different display;
+    // etc.). Without this clamp the previous "just center it"
+    // code would happily place an oversized window so half of it
+    // hangs off the edge - which the user reported as "huge size
+    // doesn't even fit." Leave 10% margin (roughly the dock + menu
+    // bar + a little breathing room).
+    let mut win_size = win.outer_size()?;
     let p = target.position();
     let s = target.size();
+    let max_w = ((s.width as f32) * 0.95) as u32;
+    let max_h = ((s.height as f32) * 0.90) as u32;
+    if win_size.width > max_w || win_size.height > max_h {
+        let new_w = win_size.width.min(max_w);
+        let new_h = win_size.height.min(max_h);
+        let _ = win.set_size(tauri::PhysicalSize::new(new_w, new_h));
+        win_size = win.outer_size()?;
+    }
+
     let x = p.x + (s.width as i32 - win_size.width as i32) / 2;
     let y = p.y + (s.height as i32 - win_size.height as i32) / 2;
     win.set_position(tauri::PhysicalPosition::new(x, y))?;

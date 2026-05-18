@@ -33,6 +33,13 @@ interface UIState {
    *  resolve callback fires with the user's choice when the modal
    *  closes; the ConfirmDialog component reads this and renders. */
   confirm: { req: ConfirmRequest; resolve: (ok: boolean) => void } | null;
+  /** Workspaces whose PTYs are about to be SIGKILL'd because the user
+   *  explicitly hit "Save & restart" on the Sandbox dialog. The next
+   *  pty-exit for any PTY belonging to one of these workspaces will
+   *  trigger an immediate respawn (the TerminalPane checks the set on
+   *  exit instead of showing the "Restart agent" overlay). Cleared
+   *  per-(ws,tab) when the respawn fires. */
+  pendingSandboxRestarts: Set<string>;
 
   // actions
   openNewProject: () => void;
@@ -51,6 +58,13 @@ interface UIState {
    *  replacement for `window.confirm()` with our own chrome + theming. */
   askConfirm: (req: ConfirmRequest) => Promise<boolean>;
   resolveConfirm: (ok: boolean) => void;
+  /** Mark a workspace for auto-restart on the next PTY exit. Called
+   *  by the Sandbox dialog right before `workspace_set_sandbox` (the
+   *  IPC that SIGKILL's the live agents). */
+  markPendingSandboxRestart: (wsId: string) => void;
+  /** Pop the marker — TerminalPane calls this after consuming a
+   *  pending restart so a SUBSEQUENT real exit shows the overlay. */
+  consumePendingSandboxRestart: (wsId: string) => boolean;
 }
 
 export const useUI = create<UIState>(set => ({
@@ -61,6 +75,7 @@ export const useUI = create<UIState>(set => ({
   sandboxForWsId: null,
   busyMessage: null,
   confirm: null,
+  pendingSandboxRestarts: new Set<string>(),
 
   openNewProject:    () => set({ newProjectOpen: true }),
   closeNewProject:   () => set({ newProjectOpen: false }),
@@ -79,5 +94,18 @@ export const useUI = create<UIState>(set => ({
     const c = useUI.getState().confirm;
     if (c) c.resolve(ok);
     set({ confirm: null });
+  },
+  markPendingSandboxRestart: (wsId) => set(s => {
+    const next = new Set(s.pendingSandboxRestarts);
+    next.add(wsId);
+    return { pendingSandboxRestarts: next };
+  }),
+  consumePendingSandboxRestart: (wsId) => {
+    const s = useUI.getState();
+    if (!s.pendingSandboxRestarts.has(wsId)) return false;
+    const next = new Set(s.pendingSandboxRestarts);
+    next.delete(wsId);
+    useUI.setState({ pendingSandboxRestarts: next });
+    return true;
   },
 }));

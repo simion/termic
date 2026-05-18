@@ -18,7 +18,7 @@ export function Settings() {
   const openSettings = useApp(s => s.openSettings);
   const projects = useApp(s => s.projects);
 
-  const tab = view.settingsTab ?? "appearance";
+  const tab = view.settingsTab ?? "general";
   const repoId = view.settingsRepoId;
   const isRepoSelected = tab === "repositories" && !!repoId;
 

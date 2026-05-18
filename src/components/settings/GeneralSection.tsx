@@ -80,8 +80,8 @@ export function GeneralSection() {
 
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
-          label="Work-done highlight"
-          hint="Color a workspace's agent icon when its output goes idle (i.e., the agent is waiting on you). Turn off to keep the sidebar fully calm regardless of agent activity."
+          label="Work-done highlight (WIP)"
+          hint="Color a workspace's agent icon when its output goes idle (i.e., the agent is waiting on you). WIP — the detector currently has too many false positives, so this ships off by default; we're improving it. Turn on if you want to try the current heuristic."
           value={settledHighlight}
           onChange={setSettledHighlight}
         />

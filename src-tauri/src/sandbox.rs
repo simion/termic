@@ -35,10 +35,11 @@
 // trivial because there's no platform-specific binary to bundle.
 
 use anyhow::{anyhow, Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use crate::Workspace;
 use crate::proxy;
@@ -60,6 +61,175 @@ pub struct SandboxBundle {
     /// EMFILE, etc.) - the caller downgrades to "filesystem sandbox +
     /// no network" rather than failing the spawn outright.
     pub proxy: Option<proxy::ProxyHandle>,
+    /// `log stream` child process tailing macOS unified log for
+    /// seatbelt deny events touching this workspace's path. Counts
+    /// per-path go into PATH_DENY_TRACKER (queryable via
+    /// `path_deny_count` / `path_deny_list`). None when log stream
+    /// couldn't start. Killed on Drop.
+    #[allow(dead_code)]
+    pub path_watcher: Option<PathWatcher>,
+}
+
+pub struct PathWatcher {
+    child: Child,
+}
+impl Drop for PathWatcher {
+    fn drop(&mut self) {
+        // log stream doesn't catch SIGTERM cleanly on macOS in some
+        // versions; SIGKILL is fine - it's a passive reader.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+// ─── Per-workspace path-deny tracker (mirror of proxy's net tracker) ──
+#[derive(Clone)]
+pub struct PathDenyEntry {
+    pub path: String,
+    pub count: u64,
+    pub last_seen_unix_ms: u128,
+}
+
+static PATH_DENY_TRACKER: OnceLock<Mutex<HashMap<String, HashMap<String, PathDenyEntry>>>> = OnceLock::new();
+
+fn path_tracker() -> &'static Mutex<HashMap<String, HashMap<String, PathDenyEntry>>> {
+    PATH_DENY_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn now_unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn incr_path_deny(ws_id: &str, path: &str) {
+    if ws_id.is_empty() || path.is_empty() { return; }
+    if let Ok(mut g) = path_tracker().lock() {
+        let per_ws = g.entry(ws_id.to_string()).or_insert_with(HashMap::new);
+        let entry = per_ws.entry(path.to_string()).or_insert(PathDenyEntry {
+            path: path.to_string(),
+            count: 0,
+            last_seen_unix_ms: 0,
+        });
+        entry.count += 1;
+        entry.last_seen_unix_ms = now_unix_ms();
+    }
+}
+
+pub fn path_deny_count(ws_id: &str) -> u64 {
+    path_tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().map(|e| e.count).sum()))
+        .unwrap_or(0)
+}
+
+pub fn path_deny_list(ws_id: &str) -> Vec<PathDenyEntry> {
+    let mut out: Vec<PathDenyEntry> = path_tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().cloned().collect()))
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
+    out
+}
+
+/// Spawn `log stream` filtered to seatbelt denies for this workspace.
+/// Parses stdout line-by-line, increments the per-path deny tracker.
+/// Returns None if the child couldn't start - non-fatal, just means
+/// no path counter for this workspace.
+fn start_path_watcher(workspace_id: &str, workspace_path: &str) -> Option<PathWatcher> {
+    use std::io::{BufRead, BufReader};
+    use std::thread;
+
+    // Predicate kept loose - some macOS versions tag seatbelt denies
+    // under kernel/sandboxd, others under com.apple.libsandbox, others
+    // don't tag at all. We match on "Sandbox:" in the message which is
+    // present in every form, then filter further in the parser.
+    let predicate = "eventMessage CONTAINS \"Sandbox:\" AND eventMessage CONTAINS \"deny\"";
+    let mut child = Command::new("/usr/bin/log")
+        .args(["stream", "--predicate", predicate, "--style", "compact"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let stdout = child.stdout.take()?;
+    let ws_id = workspace_id.to_string();
+    let ws_path = workspace_path.to_string();
+    let ws_id_dbg = ws_id.clone();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        let mut seen_first = false;
+        for line in reader.lines().flatten() {
+            // Sample deny line on macOS 15 (Sequoia):
+            //   2026-05-18 ...  Sandbox: openssl(12345) deny(1) file-write-create /Users/x/Pictures/ccc.txt
+            //
+            // Older macOS variants:
+            //   ... Sandbox: <proc>/<thread> deny(1) <op> <path>
+            //
+            // We look for the operation token (`file-` or `network-`)
+            // and treat everything after it as the path. Falls back to
+            // the first absolute-path prefix in the line if no op token
+            // is present.
+            if !line.contains("deny") { continue; }
+            let path = extract_deny_path(&line);
+            let Some(path) = path else { continue; };
+            // Only count user-visible paths. System-internal denies
+            // (caches, daemons checking ports we blocked, etc.) are
+            // noise. Workspace path or anything under /Users/ is in.
+            if !path.starts_with(&ws_path) && !path.starts_with("/Users/") {
+                continue;
+            }
+            if !seen_first {
+                dlog(&format!("[sandbox/{ws_id_dbg}] first path-deny seen: {path}"));
+                seen_first = true;
+            }
+            incr_path_deny(&ws_id, &path);
+        }
+        dlog(&format!("[sandbox/{ws_id_dbg}] path-deny watcher exited"));
+    });
+    Some(PathWatcher { child })
+}
+
+/// Pick the absolute path out of a Sandbox deny log line.
+///
+/// macOS deny lines look like:
+///   ... deny(1) file-write-create /Users/x/Library/Application Support/Foo/bar
+///
+/// The path is the LAST argument and runs to end of line. Splitting
+/// on the first whitespace (previous behavior) truncated paths with
+/// spaces - "Application Support" became "Application", and every
+/// retry showed up as a "new" partial path inflating the deny counter.
+/// Fix: take everything from the path start to the end of the line
+/// (the log_stream output is one line per event), then trim trailing
+/// whitespace.
+fn extract_deny_path(line: &str) -> Option<String> {
+    for op in &["file-write-create", "file-write-data", "file-write*", "file-write",
+                "file-read-data", "file-read-metadata", "file-read*", "file-read",
+                "file-issue-extension", "file-test-existence", "file-ioctl"] {
+        if let Some(i) = line.find(op) {
+            let after = line[i + op.len()..].trim_start();
+            if after.starts_with('/') {
+                // Path runs to EOL. Trim trailing whitespace/punctuation
+                // but keep embedded spaces ("Application Support").
+                return Some(after.trim_end_matches(|c: char|
+                    c == '\n' || c == '\r' || c == '\t' || c == ' '
+                ).to_string());
+            }
+        }
+    }
+    // Fallback: first abs-path prefix → end of line.
+    let starts = ["/Users/", "/private/", "/var/", "/opt/", "/tmp/"];
+    let mut best: Option<usize> = None;
+    for s in &starts {
+        if let Some(i) = line.find(s) {
+            best = Some(best.map_or(i, |b| b.min(i)));
+        }
+    }
+    let start = best?;
+    let rest = line[start..].trim_end_matches(|c: char|
+        c == '\n' || c == '\r' || c == '\t' || c == ' '
+    );
+    Some(rest.to_string())
 }
 
 /// Build a fully-rendered SBPL profile for one workspace. Substitutes
@@ -75,70 +245,129 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
         .into_owned();
     let workspace_path = canonicalize_or_keep(&workspace.path);
     let subst = |p: &str| -> String {
-        let mut s = p.replace("$HOME", &home);
+        let p = p.trim();
+        // Leading tilde expansion. ~/foo and ~ both reach the user's
+        // home dir; ~user/foo (another user's home) is not supported
+        // - too niche, treat as literal. Only the LEADING tilde is
+        // touched so paths like `/somewhere/~bak` stay literal.
+        let mut s = if p == "~" {
+            home.clone()
+        } else if let Some(rest) = p.strip_prefix("~/") {
+            format!("{home}/{rest}")
+        } else {
+            p.to_string()
+        };
+        s = s.replace("$HOME", &home);
         s = s.replace("$WORKSPACE", &workspace_path);
+        // Strip trailing slashes - SBPL's (subpath "...") matches by
+        // string prefix, and "/Users/x/Downloads/" vs "/Users/x/Downloads"
+        // produce different rule strings even though they resolve to
+        // the same dir. Normalize to no-trailing-slash so users get
+        // the same cage whether they typed it with or without.
+        while s.len() > 1 && s.ends_with('/') {
+            s.pop();
+        }
         s
     };
 
-    let mut rw: Vec<String> = builtin_rw_paths(&home, &workspace_path);
+    // The user's "Allowed paths" list - what they explicitly want
+    // exposed to the agent. Workspace path is always implicitly here.
+    // Field is still called sandbox_rw_paths for storage compat but
+    // the meaning shifted: it's now the unified allow-list, not just
+    // writes. UI presents it as "Allowed paths" (one textarea).
+    let mut user_allowed: Vec<String> = vec![workspace_path.clone()];
     for p in &workspace.sandbox_rw_paths {
         let s = subst(p);
-        if !s.is_empty() { rw.push(s); }
+        if !s.is_empty() { user_allowed.push(s); }
     }
-    dedupe(&mut rw);
+    dedupe(&mut user_allowed);
 
-    let mut deny: Vec<String> = builtin_deny_paths(&home);
+    // Runtime dirs the agent NEEDS access to or it can't launch.
+    // Always allowed; never asked of the user. We give the cage broad
+    // read+write but compute denies for $HOME entries the user didn't
+    // allow - these built-in paths are excluded from the deny set so
+    // they stay accessible regardless of user config.
+    let runtime = builtin_runtime_paths(&home, &workspace_path);
+
+    // Auto-deny via $HOME enumeration was attempted (the "allow-list
+    // mental model" pivot) but reintroduced the Bun retry-on-EPERM
+    // hang in claude — claude touches enough random $HOME paths that
+    // we can't reliably enumerate every runtime dir to keep it alive.
+    // Kept compute_home_denies around as dead code in case we can
+    // revisit (e.g., once we ship the container backend). For now:
+    // broad allow + targeted personal-data + secret denies. User's
+    // "Allowed paths" textarea is additive only (the cage is already
+    // open everywhere); "Extra denied paths" is the actual lockdown
+    // lever.
+    let _auto_denies_unused: Vec<String> = Vec::new();
+
+    // User's explicit extra denies (textarea in the dialog). Layered
+    // ON TOP of broad allow for per-workspace lockdown.
+    let mut extra_deny: Vec<String> = Vec::new();
     for p in &workspace.sandbox_deny_paths {
         let s = subst(p);
-        if !s.is_empty() { deny.push(s); }
+        if !s.is_empty() { extra_deny.push(s); }
     }
-    dedupe(&mut deny);
+    dedupe(&mut extra_deny);
 
-    let mut out = String::with_capacity(2048);
+    // Hardcoded secret denies (~/.ssh family). Default-on but the
+    // user can EXPLICITLY override: if they listed the exact secret
+    // path in their allowed paths textarea (e.g. `$HOME/.ssh`), we
+    // drop that path from the deny set so the allow wins. Parent
+    // allow-list entries DON'T count - typing `$HOME` doesn't
+    // re-expose ~/.ssh by mistake. The user has to opt in per path.
+    let user_allowed_set: HashSet<&String> = user_allowed.iter().collect();
+    let secret_deny: Vec<String> = builtin_deny_paths(&home)
+        .into_iter()
+        .filter(|p| !user_allowed_set.contains(p))
+        .collect();
+
+    let mut out = String::with_capacity(4096);
     out.push_str(SBPL_HEADER);
 
-    // BISECT step 2: writes restricted to subpaths (the real security
-    // boundary), reads + ALL OTHER file ops broadly allowed. The
-    // operations Bun/Ink need that we previously missed are likely
-    // `file-test-existence`, `file-search`, `file-issue-extension`,
-    // `file-map-executable` — none of which are covered by the
-    // `file-read*` / `file-write*` wildcards. The blanket `file*`
-    // catches them; explicit names below do the same without
-    // collapsing writes.
-    out.push_str("\n;; --- Permissive non-write file ops (bisect-tuned) ---\n");
+    // Base file ops - broad allow. Bun's runtime hangs on EPERM
+    // retry loops if we restrict reads OR writes; the cage is
+    // implemented as broad-allow + targeted denies below.
+    out.push_str("\n;; --- File ops base (broad allow; denies below) ---\n");
     out.push_str("(allow file-read*)\n");
     out.push_str("(allow file-read-metadata)\n");
     out.push_str("(allow file-test-existence)\n");
     out.push_str("(allow file-map-executable)\n");
     out.push_str("(allow file-issue-extension)\n");
-
-    // Writes are broadly allowed. We tried subpath-restricted writes
-    // (the "real" cage boundary) but claude's Bun runtime hangs at
-    // TUI init when ANY write target gets EPERM - the React-Ink
-    // event loop waits on the blocked write forever and the screen
-    // never paints past the initial 13-byte cursor sequence. After
-    // a multi-hour bisect (writes broad ✅, writes per-subpath ❌
-    // even with ~/Library/Logs + ~/Library/Application Support
-    // added) we accept this tradeoff:
-    //   * Network IS tightly gated (proxy + allowlist) - the high-
-    //     value protection against exfiltration / supply-chain.
-    //   * Filesystem WRITES are broad except the secret carve-outs
-    //     below - the agent can write anywhere it could write
-    //     unsandboxed. Reads are also broad.
-    //   * Secrets (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, etc.) are
-    //     hard-denied for both read and write below - the items we
-    //     most don't want the agent to touch.
-    // The `rw` list is now informational only (kept in the workspace
-    // record + shown in the UI for users who tighten further per-
-    // workspace via the deny list).
-    out.push_str("\n;; --- File writes: broad with secret carve-outs ---\n");
     out.push_str("(allow file-write*)\n");
-    for p in &rw {
-        out.push_str(&format!(";; (configured rw subpath, advisory only: \"{}\")\n", sbpl_escape(p)));
+
+    // Advisory: log what the user listed in "Allowed paths" so they
+    // can see it took effect (no rule emitted - reads/writes are
+    // already broadly allowed).
+    if user_allowed.len() > 1 {
+        out.push_str("\n;; --- User allow-list (advisory; already broadly allowed) ---\n");
+        for p in &user_allowed {
+            out.push_str(&format!(";; allowed: {}\n", sbpl_escape(p)));
+        }
     }
 
-    out.push_str("\n;; --- Deny carve-outs for plaintext secret stores ---\n");
-    for p in &deny {
+    // Advisory: ditto for runtime paths.
+    out.push_str("\n;; --- Runtime paths (advisory; already broadly allowed) ---\n");
+    for p in &runtime {
+        out.push_str(&format!(";; runtime: {}\n", sbpl_escape(p)));
+    }
+
+    // ── User extra denies (textarea). Layered after the broad allow
+    //    so they actually deny.
+    if !extra_deny.is_empty() {
+        out.push_str("\n;; --- User extra denies ---\n");
+        for p in &extra_deny {
+            out.push_str(&format!("(deny file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
+            out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+        }
+    }
+
+    // ── Secret + personal-data denies - hardcoded, LAST so nothing
+    //    re-exposes them. The .ssh/.aws/.gnupg/etc. set + Documents
+    //    /Desktop/Downloads etc. the agent should never read
+    //    regardless of user config.
+    out.push_str("\n;; --- Hardcoded secret denies (final word) ---\n");
+    for p in &secret_deny {
         out.push_str(&format!("(deny file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
         out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
@@ -157,11 +386,16 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
     Ok(out)
 }
 
-/// Built-in writable paths every sandboxed workspace gets. These are
-/// the things agents legitimately need to write: their own config
-/// directory, the workspace they're working in, TMPDIR. Adding more
-/// goes through `Project.sandbox_rw_paths`.
-fn builtin_rw_paths(home: &str, workspace_path: &str) -> Vec<String> {
+/// Runtime paths every sandboxed agent NEEDS access to or it can't
+/// launch (auth read, log write, cache I/O, TMPDIR, ...). Always
+/// allowed, regardless of user config - the deny-list compute below
+/// excludes these from auto-denies, and we re-allow them explicitly
+/// after auto-denies in case the user accidentally tried to lock
+/// down a parent. Adding to this list is how we permanently unblock
+/// a real-world agent breakage; the user's "Allowed paths" list is
+/// for their own dirs (other repos, notes, etc.), not for chasing
+/// runtime quirks.
+fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
     vec![
         workspace_path.to_string(),
         // macOS TMPDIR resolves into /private/var/folders/...; agents
@@ -195,6 +429,12 @@ fn builtin_rw_paths(home: &str, workspace_path: &str) -> Vec<String> {
         format!("{home}/.cache"),
         format!("{home}/.cargo/registry"),
         format!("{home}/Library/Caches"),
+        // Bun runtime cache. claude is Bun-compiled; Bun's runtime
+        // pokes here for install cache + bunfig lookups. Missing
+        // this was the most likely cause of "claude doesn't launch"
+        // under the allow-list cage.
+        format!("{home}/.bun"),
+        format!("{home}/.deno"),
         // macOS conventional app-data paths. Bun-compiled agents
         // (claude in particular) write logs + state here in addition
         // to XDG; without these claude's TUI hangs at init waiting on
@@ -204,6 +444,25 @@ fn builtin_rw_paths(home: &str, workspace_path: &str) -> Vec<String> {
         // either let securityd guard or hard-deny separately).
         format!("{home}/Library/Logs"),
         format!("{home}/Library/Application Support"),
+        // Shell + git init files. Tool subprocesses (the agent shells
+        // out to git, gh, npm, ...) read these on startup; denying
+        // them breaks every git/gh/shell invocation. Single files,
+        // no secret content (those go in ~/.ssh / ~/.aws / Keychain
+        // which are hard-denied below).
+        format!("{home}/.gitconfig"),
+        format!("{home}/.gitignore_global"),
+        format!("{home}/.zshrc"),
+        format!("{home}/.zprofile"),
+        format!("{home}/.zshenv"),
+        format!("{home}/.bashrc"),
+        format!("{home}/.bash_profile"),
+        format!("{home}/.bash_logout"),
+        format!("{home}/.inputrc"),
+        format!("{home}/.profile"),
+        // ssh known_hosts is read by every git/gh fetch. Not a secret
+        // (just trust fingerprints); the secret keys are in ~/.ssh/
+        // which stays hard-denied. We allow JUST the file, not the dir.
+        format!("{home}/.ssh/known_hosts"),
     ]
 }
 
@@ -258,6 +517,16 @@ fn builtin_deny_paths(home: &str) -> Vec<String> {
     ]
 }
 
+/// True iff this OS supports the sandbox at all. macOS-only because
+/// the implementation uses sandbox-exec (Apple's Seatbelt frontend).
+/// Linux + Windows return false; the frontend uses this to grey out
+/// the toggle and show "unavailable on your OS." `provision()` also
+/// short-circuits on non-macOS so a missed UI check can't crash the
+/// agent spawn.
+pub fn available() -> bool {
+    cfg!(target_os = "macos") && std::path::Path::new("/usr/bin/sandbox-exec").exists()
+}
+
 /// Default host allowlist (regex per line) for a workspace, keyed off
 /// the agent it runs. We add the API endpoints for that agent's vendor
 /// plus a baseline of stuff every dev needs (github + popular package
@@ -278,6 +547,11 @@ pub fn render_filter(workspace: &Workspace) -> String {
             r"^code\.claude\.com$".into(),
             r"^.+\.anthropic\.com$".into(),
             r"^.+\.claude\.ai$".into(),
+            // Anthropic ships claude with Datadog as its telemetry
+            // backend; refusing this just fills the deny chip with
+            // noise on every launch. Same shape as statsig.anthropic.com
+            // - vendor-blessed analytics for a CLI the user installed.
+            r"^.+\.datadoghq\.com$".into(),
         ]),
         "gemini" => hosts.extend([
             r"^generativelanguage\.googleapis\.com$".into(),
@@ -361,6 +635,15 @@ pub fn host_patterns(workspace: &Workspace) -> Vec<String> {
 /// Profile/filter files live in tempdir under predictable names so the
 /// user can inspect them when something denies surprisingly.
 pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
+    // Hard-fail early on platforms where Seatbelt doesn't exist.
+    // The frontend should be gating on sandbox_available(), but
+    // defense in depth - missing this check would crash the agent
+    // spawn with a "sandbox-exec: command not found" later.
+    if !available() {
+        return Err(anyhow!(
+            "sandbox unavailable on this OS (requires macOS sandbox-exec)"
+        ));
+    }
     let tmp = std::env::temp_dir();
     let profile_path = tmp.join(format!("termic-sandbox-{}.sb", workspace.id));
     let filter_path  = tmp.join(format!("termic-proxy-{}.filter", workspace.id));
@@ -371,7 +654,11 @@ pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
 
     let patterns = host_patterns(workspace);
     dlog(&format!("[sandbox/{}] provisioning, {} host patterns", workspace.id, patterns.len()));
-    let proxy = match proxy::start(patterns) {
+    let path_watcher = start_path_watcher(&workspace.id, &canonicalize_or_keep(&workspace.path));
+    if path_watcher.is_some() {
+        dlog(&format!("[sandbox/{}] path-deny watcher started", workspace.id));
+    }
+    let proxy = match proxy::start(patterns, workspace.id.clone()) {
         Ok(p) => {
             dlog(&format!("[sandbox/{}] proxy up on port {}", workspace.id, p.port));
             Some(p)
@@ -388,7 +675,7 @@ pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
         .with_context(|| format!("write {}", profile_path.display()))?;
     dlog(&format!("[sandbox/{}] profile written: {}", workspace.id, profile_path.display()));
 
-    Ok(SandboxBundle { profile_path, filter_path, proxy })
+    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher })
 }
 
 /// Wrap an agent command with `sandbox-exec -f <profile> env <vars>
@@ -637,6 +924,67 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 (allow file-write-data (vnode-type CHARACTER-DEVICE))
 (allow file-ioctl      (vnode-type CHARACTER-DEVICE))
 "#;
+
+/// Enumerate top-level entries under $HOME and return the absolute
+/// paths of those NOT covered by `user_allowed` and NOT covered by
+/// `runtime`. The result is the auto-deny set the cage emits to
+/// give the user "allow-list" semantics without restricting writes
+/// at the SBPL level (which hangs Bun runtimes).
+///
+/// "Covered" means: either path == entry, OR path starts with
+/// entry+"/". So if user_allowed contains `~/Work/myproject`, the
+/// `~/Work` entry is NOT excluded - we still deny it - and the
+/// caller re-allows the specific subpath after the deny rule.
+fn compute_home_denies(home: &str, user_allowed: &[String], runtime: &[String]) -> Vec<String> {
+    let home_path = std::path::Path::new(home);
+    let entries = match fs::read_dir(home_path) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    // Pre-compute prefixes from allow-list + runtime. A user_allowed
+    // entry covers its own dir or a parent IF that parent IS the
+    // entry. We use exact-match for that decision (not prefix) so
+    // ~/Work containing ~/Work/myproject still gets denied at the
+    // parent level and re-allowed at the child level.
+    let covered: HashSet<String> = user_allowed.iter()
+        .chain(runtime.iter())
+        .cloned()
+        .collect();
+
+    let mut denies: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Skip the . and .. (read_dir doesn't return them on macOS but be defensive)
+        if name == "." || name == ".." { continue; }
+        let full = format!("{home}/{name}");
+
+        // If this entry IS exactly in covered, skip (covered = allowed).
+        if covered.contains(&full) { continue; }
+
+        // If anything in covered LIVES INSIDE this entry (e.g. covered
+        // has ~/Work/myproject and entry is ~/Work), we STILL deny
+        // the parent - the caller re-allows the child after, which
+        // takes precedence due to SBPL last-match-wins ordering.
+
+        // If this entry is INSIDE a covered prefix (e.g. covered has
+        // ~/Library/Caches and entry is ~/Library), do NOT auto-deny:
+        // the user/runtime want access to a child, and denying the
+        // parent would mask the re-allow we emit AFTER, which would
+        // work via SBPL precedence BUT also blocks intermediate
+        // operations (directory listing of ~/Library itself). Safer
+        // to leave the parent open and let the runtime/user
+        // re-allows handle specifics.
+        let is_ancestor_of_covered = covered.iter().any(|c| {
+            c.starts_with(&full) && c.as_bytes().get(full.len()) == Some(&b'/')
+        });
+        if is_ancestor_of_covered { continue; }
+
+        denies.push(full);
+    }
+    denies.sort();
+    denies
+}
 
 /// Resolve symlinks so the SBPL rules match what the kernel sees.
 /// Seatbelt evaluates the *canonical* path; a worktree symlinked

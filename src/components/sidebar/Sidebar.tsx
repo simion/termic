@@ -63,6 +63,10 @@ export function Sidebar() {
 
   // Inline rename state: `{ kind: "ws"|"proj", id }`. Only one at a time.
   const [renaming, setRenaming] = useState<{ kind: "ws" | "proj"; id: string; value: string } | null>(null);
+  // Project whose `+` dropdown is currently open. Used to keep the row
+  // visually "hovered" (bg + Cog visible) while the menu is open;
+  // otherwise the menu trigger looks like it un-selected its parent.
+  const [menuOpenProjectId, setMenuOpenProjectId] = useState<string | null>(null);
 
   async function commitRename() {
     if (!renaming) return;
@@ -126,17 +130,12 @@ export function Sidebar() {
                     // Settings → Repositories instead.
                     onClick={() => setProjectCollapsed(p.id, !collapsed)}
                     className={cn(
-                      // Project row reads as a *section header*, not an item:
-                      // mono + smaller + uppercase + tracked-wide + dim
-                      // color, matching the "PROJECTS" header above. That
-                      // way workspaces (regular sans, normal case, brighter
-                      // text) read as the actual list items below their
-                      // section. Without this the project name was
-                      // bold-white and the workspaces were dim-white, which
-                      // visually flipped the hierarchy: heavier-looking
-                      // category labels competing with the items they
-                      // contained for attention.
                       "group flex items-center justify-between rounded-md font-mono text-[12.5px] font-extrabold uppercase tracking-[0.06em] text-[var(--color-fg)] hover:bg-[var(--color-hover)] cursor-pointer transition-colors",
+                      // Keep the row visually "hovered" while its `+`
+                      // dropdown is open so the row doesn't appear to
+                      // un-select underneath the menu. Same treatment
+                      // as the Cog button's data-[state=open] below.
+                      menuOpenProjectId === p.id && "bg-[var(--color-hover)]",
                       compact ? "px-0 py-1 justify-center" : "px-2 py-1.5",
                     )}
                   >
@@ -178,7 +177,15 @@ export function Sidebar() {
                         <div className="flex items-center gap-0.5">
                           <Tip content="Repo settings">
                             <button
-                              className="rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100 transition-opacity"
+                              className={cn(
+                                "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] transition-opacity",
+                                // Stay visible while the `+` dropdown is
+                                // open (otherwise the gear vanishes the
+                                // moment the user opens the menu).
+                                menuOpenProjectId === p.id
+                                  ? "opacity-100"
+                                  : "opacity-0 group-hover:opacity-100",
+                              )}
                               onClick={(e) => { e.stopPropagation(); useApp.getState().openSettings("repositories", p.id); }}
                             ><Cog className="h-4 w-4" /></button>
                           </Tip>
@@ -188,7 +195,9 @@ export function Sidebar() {
                               used to show side by side — less visual noise
                               on the row, clearer affordance (the universal
                               "+" = "create / open something here"). */}
-                          <DropdownRoot>
+                          <DropdownRoot
+                            onOpenChange={(o) => setMenuOpenProjectId(o ? p.id : null)}
+                          >
                             <Tip content="New…">
                               <DropdownTrigger asChild>
                                 <button
@@ -333,11 +342,13 @@ export function Sidebar() {
                               {!isRepo && <span className="truncate">{w.name}</span>}
                               {isRepo && (
                                 <span className={cn(
-                                  "rounded px-1 py-px text-[10px] font-semibold uppercase tracking-wider shrink-0",
-                                  // Active REPO row has no name label to
-                                  // carry the active feel — bump the chip
-                                  // to fg color so the row doesn't look
-                                  // muted. Inactive stays faded.
+                                  // inline-flex + items-center pins the
+                                  // chip's content to its own vertical
+                                  // center instead of inheriting the
+                                  // row's text baseline (which sat the
+                                  // 10px caps slightly above the CLI
+                                  // icon's optical center).
+                                  "inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider shrink-0 leading-none",
                                   activeWs === w.id
                                     ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
                                     : "bg-[var(--color-bg-3)] text-[var(--color-fg-faint)]",

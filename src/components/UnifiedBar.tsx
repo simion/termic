@@ -13,7 +13,7 @@ import * as HoverCard from "@radix-ui/react-hover-card";
 import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, FolderOpen, Play, Archive, ShieldCheck,
-  Sun, Moon, Monitor, Zap, ArrowUpToLine, Sunrise, Droplet, Binary,
+  Sun, Moon, Monitor, Zap, ArrowUpToLine, Sunrise, Droplet, Binary, Code2,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
@@ -292,6 +292,7 @@ function ThemePicker({
     { id: "auto",      label: "System",         icon: Monitor },
     { id: "light",     label: "Light",          icon: Sun },
     { id: "dark",      label: "Dark",           icon: Moon },
+    { id: "vscode",    label: "VS Code Dark",   icon: Code2 },
     { id: "solarized", label: "Solarized Dark", icon: Sunrise },
     { id: "cobalt",    label: "Cobalt",         icon: Droplet },
     { id: "matrix",    label: "Matrix",         icon: Binary },

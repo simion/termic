@@ -104,6 +104,32 @@
     color-scheme: light;
   }
 
+  /* VS Code Dark — modeled after Microsoft's "Dark (Visual Studio)"
+     theme. Sits between our default Dark (near-black #0a0a0a, the
+     "ultra dark" end of the spectrum) and Light: the editor bg is
+     #1e1e1e, sidebar one stop up to #252526, tabs/panels at #2d2d30 -
+     the same 4-stop ladder VS Code uses. Same terracotta accent as
+     Dark so the brand identity carries; only the surface family
+     changes. Good pick for users who find #0a0a0a too contrasty for
+     long sessions but still want a dark UI. */
+  html.vscode {
+    --color-bg:          #1e1e1e;       /* editor surface */
+    --color-bg-1:        #252526;       /* sidebar */
+    --color-bg-2:        #2d2d30;       /* tabs, panels */
+    --color-bg-3:        #37373d;       /* hover/selected surface */
+    --color-fg:          #d4d4d4;
+    --color-fg-dim:      #a0a0a0;
+    --color-fg-faint:    #6e6e6e;
+    --color-border:      #3e3e42;
+    --color-border-soft: #2b2b2b;
+    --color-hover:       rgba(255, 255, 255, 0.05);
+    --color-sel:         rgba(217, 119, 87, 0.20);
+    --color-accent:      #d97757;       /* same brown as Dark */
+    --color-accent-soft: rgba(217, 119, 87, 0.22);
+    --color-accent-deep: #b35e3f;
+    color-scheme: dark;
+  }
+
   /* Cobalt — Wes Bos's Cobalt 2 palette. Deep navy surfaces with a
      bright sky-blue chrome accent (Cobalt the element is blue; the
      accent should match the name). Yellow #ffc600 is Cobalt 2's

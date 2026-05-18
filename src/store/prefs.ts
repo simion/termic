@@ -17,12 +17,12 @@ const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
 
-export type ThemeMode = "auto" | "light" | "dark" | "solarized" | "cobalt" | "matrix";
+export type ThemeMode = "auto" | "light" | "dark" | "vscode" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
  *  never returned; it gets mapped to light/dark based on OS preference. */
-export type ResolvedTheme = "light" | "dark" | "solarized" | "cobalt" | "matrix";
+export type ResolvedTheme = "light" | "dark" | "vscode" | "solarized" | "cobalt" | "matrix";
 
-const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "solarized", "cobalt", "matrix"];
+const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "vscode", "solarized", "cobalt", "matrix"];
 /** Defensive parse: localStorage may hold a theme id that's been
  *  removed in a later version. Fall back to "dark" instead of letting
  *  the unknown string flow through and silently land on the @theme
@@ -46,6 +46,22 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#eceef1",
     brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
     brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
+  },
+  vscode: {
+    // VS Code Dark (Visual Studio) palette - editor bg #1e1e1e + the
+    // familiar muted-gray ANSI set. Same brown cursor as our `dark`
+    // so the brand accent carries across themes; ANSI 16 picks
+    // VS Code's integrated-terminal default colors so `ls --color`
+    // and tput sequences look at home next to the chrome.
+    background: "#1e1e1e",
+    foreground: "#cccccc",
+    cursor: "#d97757",
+    cursorAccent: "#1e1e1e",
+    selectionBackground: "rgba(217,119,87,0.30)",
+    black: "#000000", red: "#cd3131", green: "#0dbc79", yellow: "#e5e510",
+    blue: "#2472c8", magenta: "#bc3fbc", cyan: "#11a8cd", white: "#e5e5e5",
+    brightBlack: "#666666", brightRed: "#f14c4c", brightGreen: "#23d18b", brightYellow: "#f5f543",
+    brightBlue: "#3b8eea", brightMagenta: "#d670d6", brightCyan: "#29b8db", brightWhite: "#e5e5e5",
   },
   light: {
     background: "#faf9f6",
@@ -334,7 +350,12 @@ const initialLigatures    = lsGetBool(LS_LIGATURES, true);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "dark"));
 const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
-const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
+// WIP feature - the "agent has settled" heuristic produces false
+// positives often enough that the highlight is noise more than
+// signal. Ship default-off; flip back to true once the detector is
+// reliable. Existing users who explicitly toggled it on keep their
+// setting (lsGetBool returns their stored value when present).
+const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, false);
 const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 
 export const usePrefs = create<PrefsState>(set => ({
@@ -437,6 +458,7 @@ export function applyTheme(mode: ThemeMode) {
   const html = document.documentElement;
   html.classList.toggle("light",     resolved === "light");
   html.classList.toggle("dark",      resolved === "dark");
+  html.classList.toggle("vscode",    resolved === "vscode");
   html.classList.toggle("solarized", resolved === "solarized");
   html.classList.toggle("cobalt",    resolved === "cobalt");
   html.classList.toggle("matrix",    resolved === "matrix");
