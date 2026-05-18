@@ -236,7 +236,7 @@ export function UnifiedBar() {
                     // on disk is untouched and can be re-opened later.
                     message: ws.is_repo_root
                       ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched — you can re-open it any time. Any agent running here will be terminated."
-                      : "The git worktree will be removed and any running agent terminated. This can't be undone from inside Termic — the branch survives in git but the local worktree directory and its contents (node_modules, .venv, untracked files) are gone.",
+                      : "The branch stays in git — you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent. Can't be undone from inside Termic.",
                     confirmLabel: ws.is_repo_root ? "Remove entry" : "Archive",
                     destructive: true,
                   });

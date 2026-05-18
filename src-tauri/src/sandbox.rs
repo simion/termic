@@ -276,6 +276,15 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
     // the meaning shifted: it's now the unified allow-list, not just
     // writes. UI presents it as "Allowed paths" (one textarea).
     let mut user_allowed: Vec<String> = vec![workspace_path.clone()];
+    // Multi-repo workspaces: each composition member's resolved path
+    // (worktree dir OR symlink target for RepoRoot mode) must be
+    // explicitly allowed. Seatbelt evaluates canonical paths, so a
+    // symlink under the wrapper alone wouldn't cover the live
+    // checkout it points to — canonicalize each one to be safe.
+    for m in &workspace.composition {
+        let resolved = canonicalize_or_keep(&m.path);
+        if !resolved.is_empty() { user_allowed.push(resolved); }
+    }
     for p in &workspace.sandbox_rw_paths {
         let s = subst(p);
         if !s.is_empty() { user_allowed.push(s); }
@@ -366,10 +375,48 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
     //    re-exposes them. The .ssh/.aws/.gnupg/etc. set + Documents
     //    /Desktop/Downloads etc. the agent should never read
     //    regardless of user config.
-    out.push_str("\n;; --- Hardcoded secret denies (final word) ---\n");
+    out.push_str("\n;; --- Hardcoded secret denies ---\n");
     for p in &secret_deny {
         out.push_str(&format!("(deny file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
         out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
+
+    // ── User allow-list re-open: any user-allowed path that's a
+    //    DESCENDANT of a hard-denied parent gets explicitly re-opened
+    //    here (after the deny block, so last-match-wins picks the
+    //    allow for that specific subpath only — siblings stay denied).
+    //
+    //    This is what makes "one path per line" actually behave that
+    //    way: clicking Allow on
+    //      $HOME/Library/Application Support/Arc/User Data
+    //    used to silently no-op because the parent .../Arc was in the
+    //    hard-deny set. Now it gets a targeted re-allow so the leaf
+    //    works without exposing the rest of the protected parent.
+    //
+    //    Safety net preserved: we ONLY re-allow when the user path is
+    //    a strict descendant (starts_with deny + dir-boundary slash).
+    //    Typing an ANCESTOR like `~` doesn't satisfy this check, so
+    //    it can't accidentally re-expose ~/.ssh / ~/Documents / etc.
+    //    Exact-match override still happens above via secret_deny
+    //    filter — typing the exact deny path drops the deny entirely.
+    let mut reopens: Vec<&String> = Vec::new();
+    for u in &user_allowed {
+        for d in builtin_deny_paths(&home).iter() {
+            if u.len() > d.len()
+                && u.starts_with(d)
+                && u.as_bytes().get(d.len()) == Some(&b'/')
+            {
+                reopens.push(u);
+                break;
+            }
+        }
+    }
+    if !reopens.is_empty() {
+        out.push_str("\n;; --- User allow-list re-opens (under hard-deny parents) ---\n");
+        for u in &reopens {
+            out.push_str(&format!("(allow file-read*  (subpath \"{}\"))\n", sbpl_escape(u)));
+            out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(u)));
+        }
     }
 
 

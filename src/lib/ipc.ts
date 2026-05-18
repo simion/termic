@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  Project, Workspace, CreateWorkspaceArgs, Settings, DiscoveredRepo,
+  Project, Workspace, CreateWorkspaceArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   CliInfo, ChangeFile, Changes, FileEntry, Agent,
 } from "./types";
 
@@ -13,6 +13,10 @@ import type {
 
 export const projectsList   = () => invoke<Project[]>("projects_list");
 export const projectAdd     = (rootPath: string) => invoke<Project>("project_add", { rootPath });
+export const projectAddMulti = (rootPath: string, memberIds: string[]) =>
+  invoke<Project>("project_add_multi", { rootPath, memberIds });
+export const projectSetMembers = (id: string, memberIds: string[]) =>
+  invoke<void>("project_set_members", { id, memberIds });
 export const projectUpdate  = (p: Project) => invoke<void>("project_update", { p });
 export const projectRemove  = (id: string) => invoke<void>("project_remove", { id });
 export const projectRename  = (id: string, name: string) => invoke<void>("project_rename", { id, name });
@@ -21,6 +25,7 @@ export const projectRename  = (id: string, name: string) => invoke<void>("projec
 
 export const workspacesList    = () => invoke<Workspace[]>("workspaces_list");
 export const workspaceCreate   = (args: CreateWorkspaceArgs) => invoke<Workspace>("workspace_create", { args });
+export const workspaceCreateMulti = (args: CreateMultiArgs) => invoke<Workspace>("workspace_create_multi", { args });
 export const workspaceOpenRepo = (projectId: string, cli?: string) =>
   invoke<Workspace>("workspace_open_repo", { projectId, cli });
 export const workspaceArchive  = (id: string) => invoke<void>("workspace_archive", { id });

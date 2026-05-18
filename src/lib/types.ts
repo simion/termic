@@ -30,6 +30,29 @@ export interface Project {
   /** Extra POSIX-regex hostname allowlist entries appended to the
    *  per-CLI defaults the proxy enforces. Format mirrors tinyproxy. */
   sandbox_allowed_hosts?: string[];
+
+  /** "single" (default) = one git repo, worktrees branched off it.
+   *  "multi" = host repo for shared CLAUDE.md / AGENTS.md / .claude/
+   *  + a list of member project ids. Workspaces under a multi project
+   *  are worktrees of the host with each member worktree'd or
+   *  symlinked inside named subdirs. */
+  type?: "single" | "multi";
+  /** Member project ids — references rows already in projects.json.
+   *  Only meaningful when `type == "multi"`. */
+  members?: string[];
+}
+
+export type MemberMode = "worktree" | "repo_root";
+
+/** One entry in a multi-repo workspace's composition. Frozen at
+ *  workspace creation; the wrapper dir IS the host's worktree and
+ *  member entries live at `<wrapper>/<dir_name>`. */
+export interface WorkspaceMember {
+  project_id: string;
+  dir_name: string;
+  mode: MemberMode;
+  branch: string;
+  path: string;
 }
 
 export interface Workspace {
@@ -65,6 +88,31 @@ export interface Workspace {
    *  Create, and from then on the workspace owns them. Editing the
    *  project's defaults later WILL NOT reach back into existing
    *  workspaces - matches the immutability promise of sandbox_enabled. */
+  sandbox_rw_paths?: string[];
+  sandbox_deny_paths?: string[];
+  sandbox_allowed_hosts?: string[];
+  /** Multi-repo composition. Empty for single-repo workspaces. */
+  composition?: WorkspaceMember[];
+}
+
+/** Per-member input for `workspace_create_multi`. */
+export interface CreateMultiMember {
+  project_id: string;
+  dir_name?: string;
+  mode: MemberMode;
+  branch?: string;
+  base_branch?: string;
+}
+
+export interface CreateMultiArgs {
+  project_id: string;
+  name: string;
+  cli?: string;
+  branch?: string;
+  base_branch?: string;
+  members: CreateMultiMember[];
+  id?: string;
+  sandbox_enabled?: boolean;
   sandbox_rw_paths?: string[];
   sandbox_deny_paths?: string[];
   sandbox_allowed_hosts?: string[];

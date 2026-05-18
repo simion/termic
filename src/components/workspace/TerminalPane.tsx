@@ -586,6 +586,13 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
   async function allow(host: string) {
     setAllowing(host);
     try {
+      // Mark BEFORE the IPC fires — the Rust handler SIGKILLs the
+      // live PTY, and TerminalPane's exit handler checks this flag
+      // to decide between auto-respawn (under the new sandbox) and
+      // showing the "agent exited" overlay. Without the mark the
+      // agent stays dead and the user thinks the Allow click did
+      // nothing.
+      useUI.getState().markPendingSandboxRestart(wsId);
       await ipc.workspaceSandboxAddAllowedHost(wsId, host);
       const next = await ipc.sandboxRecentDeniedHosts(wsId).catch(() => hosts);
       setHosts(next);
@@ -594,6 +601,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
   async function allowPath(path: string) {
     setAllowing(path);
     try {
+      useUI.getState().markPendingSandboxRestart(wsId);
       await ipc.workspaceSandboxAddAllowedPath(wsId, path);
       const next = await ipc.sandboxRecentDeniedPaths(wsId).catch(() => paths);
       setPaths(next);

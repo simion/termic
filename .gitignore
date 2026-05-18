@@ -127,3 +127,8 @@ coverage/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
 .tmp-*
+
+# ── local-only working docs (plans, scratch notes) ────────────────────
+PLAN-*.md
+plans/
+

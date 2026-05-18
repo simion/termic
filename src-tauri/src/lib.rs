@@ -42,6 +42,11 @@ use sandbox::SandboxBundle;
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// Filesystem path to the project's git repo. For
+    /// `ProjectType::Single` this is the only repo in play. For
+    /// `ProjectType::Multi` it's the HOST repo — the one that owns
+    /// the shared CLAUDE.md / AGENTS.md / .claude/ and acts as the
+    /// workspace wrapper when a multi-repo workspace is created.
     pub root_path: String,
     pub workspaces_path: String,
     pub base_branch: String,
@@ -76,6 +81,23 @@ pub struct Project {
     /// matched against the request hostname.
     #[serde(default)]
     pub sandbox_allowed_hosts: Vec<String>,
+
+    /// Project type. Defaults to Single for back-compat with all the
+    /// `projects.json` rows written before multi-repo shipped.
+    #[serde(default, rename = "type")]
+    pub project_type: ProjectType,
+    /// Multi-repo members. Each entry references another Project's
+    /// `id`. Empty / ignored when `project_type == Single`.
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectType {
+    #[default]
+    Single,
+    Multi,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -132,6 +154,47 @@ pub struct Workspace {
     pub sandbox_deny_paths: Vec<String>,
     #[serde(default)]
     pub sandbox_allowed_hosts: Vec<String>,
+    /// Multi-repo composition. Empty for single-repo workspaces (the
+    /// usual case — `path` already points at the worktree of the one
+    /// project this workspace belongs to). For workspaces created
+    /// under a `ProjectType::Multi` project this lists the host repo
+    /// + every member with its resolved on-disk path. The PTY spawn
+    /// + sandbox profile generator iterate this list when populated.
+    #[serde(default)]
+    pub composition: Vec<WorkspaceMember>,
+}
+
+/// One entry in a multi-repo workspace's composition. The host repo
+/// itself is the first member (its `path` is the workspace wrapper
+/// dir, which IS a git worktree of the host); subsequent entries are
+/// the user-picked member repos worktree'd or symlinked inside it.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WorkspaceMember {
+    /// References Project.id. Resolves to the Project record for
+    /// sandbox-list union + display.
+    pub project_id: String,
+    /// Display name shown in the file tree / sidebar. Defaults to
+    /// the project's name; member dirs are created under this name
+    /// inside the wrapper (`<wrapper>/<dir_name>`).
+    pub dir_name: String,
+    /// Worktree branched off `base_branch`, or a plain symlink to
+    /// the project's `root_path` (live, no isolation).
+    pub mode: MemberMode,
+    /// Branch the worktree was cut from. RepoRoot mode leaves empty.
+    pub branch: String,
+    /// Resolved on-disk path. Worktree mode = the worktree dir;
+    /// RepoRoot mode = the project's `root_path`. Frozen here so the
+    /// sandbox profile + file-tree code don't need to re-resolve.
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberMode {
+    #[default]
+    Worktree,
+    RepoRoot,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -650,10 +713,111 @@ fn project_add(root_path: String) -> Result<Project, String> {
         sandbox_rw_paths: Vec::new(),
         sandbox_deny_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
+        // Default to single-repo. project_add_multi is the entry
+        // point for multi-repo projects (it sets type + members).
+        project_type: ProjectType::Single,
+        members: Vec::new(),
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
     Ok(p)
+}
+
+/// Create a multi-repo project. The `root_path` must be an existing
+/// git repo (the HOST repo — the one that holds shared CLAUDE.md /
+/// AGENTS.md / .claude/skills). `member_ids` references already-added
+/// Termic projects; members can be edited later via
+/// `project_set_members`. The host itself is NOT in the member list —
+/// it's implicit (it's the project record).
+#[tauri::command]
+fn project_add_multi(root_path: String, member_ids: Vec<String>) -> Result<Project, String> {
+    // Same git-repo validation as project_add.
+    let trimmed = root_path.trim();
+    let expanded: String = if let Some(rest) = trimmed.strip_prefix("~/") {
+        dirs::home_dir().map(|h| h.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|| trimmed.to_string())
+    } else { trimmed.to_string() };
+    let pb = PathBuf::from(&expanded);
+    if !pb.exists() {
+        return Err(format!("{} does not exist", expanded));
+    }
+    if git(&["rev-parse", "--git-dir"], &pb).is_err() {
+        return Err(format!("{} is not a git repo — multi-repo projects use the host as their persistent knowledge layer", expanded));
+    }
+    let mut list = load_projects();
+    let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
+    if list.iter().any(|p| p.root_path == canon.to_string_lossy()) {
+        return Err("a project at this path is already added".into());
+    }
+
+    // Validate member references — fail fast if any id is unknown
+    // or points back at the host we're about to add.
+    let mut seen: HashSet<String> = HashSet::new();
+    for mid in &member_ids {
+        if !seen.insert(mid.clone()) {
+            return Err(format!("duplicate member: {mid}"));
+        }
+        if !list.iter().any(|p| &p.id == mid) {
+            return Err(format!("unknown member project id: {mid}"));
+        }
+    }
+
+    let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
+    let base = detect_base_branch(&canon).unwrap_or_else(|_| "main".into());
+    let remote = detect_default_remote(&canon);
+    let ws_path = worktrees_base().map_err(|e| e.to_string())?
+        .join(&name).to_string_lossy().into_owned();
+    let p = Project {
+        id: Uuid::new_v4().to_string(),
+        name,
+        root_path: canon.to_string_lossy().into_owned(),
+        workspaces_path: ws_path,
+        base_branch: format!("{remote}/{base}"),
+        remote,
+        preview_url: String::new(),
+        // No file-copy defaults for multi-repo: each member already has
+        // its own copy list; the host repo is for docs/skills, not code.
+        files_to_copy: Vec::new(),
+        setup_script: String::new(),
+        run_script: String::new(),
+        archive_script: String::new(),
+        default_cli: "claude".into(),
+        created: chrono::Utc::now().to_rfc3339(),
+        default_sandbox: false,
+        sandbox_rw_paths: Vec::new(),
+        sandbox_deny_paths: Vec::new(),
+        sandbox_allowed_hosts: Vec::new(),
+        project_type: ProjectType::Multi,
+        members: member_ids,
+    };
+    list.push(p.clone());
+    save_projects(&list).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+/// Edit a multi-repo project's member list post-create. No-op for
+/// single-repo projects (returns an error so the frontend surfaces it).
+#[tauri::command]
+fn project_set_members(id: String, member_ids: Vec<String>) -> Result<(), String> {
+    let mut list = load_projects();
+    let host_exists = list.iter().any(|p| p.id == id);
+    if !host_exists { return Err("no such project".into()); }
+    // Validate every member id resolves to a real project and isn't
+    // the host itself.
+    let mut seen: HashSet<String> = HashSet::new();
+    for mid in &member_ids {
+        if mid == &id { return Err("a multi-repo project can't list itself as a member".into()); }
+        if !seen.insert(mid.clone()) { return Err(format!("duplicate member: {mid}")); }
+        if !list.iter().any(|p| &p.id == mid) {
+            return Err(format!("unknown member project id: {mid}"));
+        }
+    }
+    let p = list.iter_mut().find(|p| p.id == id).unwrap();
+    if p.project_type != ProjectType::Multi {
+        return Err("only multi-repo projects have a members list".into());
+    }
+    p.members = member_ids;
+    save_projects(&list).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -760,6 +924,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
         sandbox_rw_paths: Vec::new(),
         sandbox_deny_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
+        composition: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -902,6 +1067,11 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         sandbox_rw_paths,
         sandbox_deny_paths,
         sandbox_allowed_hosts,
+        // Single-project workspaces leave composition empty. Multi-
+        // repo workspace creation runs through a separate code path
+        // (workspace_create_multi) that populates this and re-uses
+        // the same Workspace + sandbox plumbing.
+        composition: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -929,6 +1099,293 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     }
 
     Ok(ws)
+}
+
+// ───────────────────────── multi-repo workspace ─────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateMultiArgs {
+    pub project_id: String,
+    pub name: String,
+    pub cli: Option<String>,
+    /// Branch to create on the HOST repo (the multi-repo project's
+    /// own repo, where CLAUDE.md / AGENTS.md / .claude/ live).
+    pub branch: Option<String>,
+    /// Base ref to branch from on the host. Default = host's
+    /// `base_branch`.
+    pub base_branch: Option<String>,
+    /// Per-member spec, frozen onto the Workspace.composition.
+    pub members: Vec<CreateMultiMember>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub sandbox_enabled: Option<bool>,
+    #[serde(default)]
+    pub sandbox_rw_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub sandbox_deny_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub sandbox_allowed_hosts: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateMultiMember {
+    pub project_id: String,
+    /// Dir name inside the wrapper. Defaults to the member project's
+    /// `name` field — pinned at create time so renames don't break
+    /// the workspace layout.
+    pub dir_name: Option<String>,
+    pub mode: MemberMode,
+    /// Worktree mode only. Defaults to `branch` from CreateMultiArgs
+    /// (i.e. all members branch off the same name).
+    pub branch: Option<String>,
+    /// Worktree mode only. Defaults to the member project's
+    /// `base_branch`.
+    pub base_branch: Option<String>,
+}
+
+/// Create a workspace under a multi-repo project. Builds:
+///   - the host worktree at `<workspaces>/<host-slug>/<wsname>/`,
+///   - each member worktree'd or symlinked into a named subdir,
+///   - a Termic-managed `.gitignore` block in the host worktree
+///     pinning the member dir names so they're not auto-staged.
+///
+/// All operations are best-effort cleanup on error: a failed member
+/// rolls back what's been created so far before returning.
+#[tauri::command]
+async fn workspace_create_multi(app: AppHandle, args: CreateMultiArgs) -> Result<Workspace, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace_create_multi_sync(app, args))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn workspace_create_multi_sync(_app: AppHandle, args: CreateMultiArgs) -> Result<Workspace, String> {
+    let projects = load_projects();
+    let host = projects.iter().find(|p| p.id == args.project_id)
+        .ok_or("host project not found")?.clone();
+    if host.project_type != ProjectType::Multi {
+        return Err("workspace_create_multi requires a multi-repo project".into());
+    }
+
+    let slug = slugify(&args.name);
+    let branch = args.branch
+        .as_ref().map(|b| b.trim()).filter(|b| !b.is_empty())
+        .map(|b| b.to_string()).unwrap_or_else(|| slug.clone());
+    let base_branch = args.base_branch
+        .as_ref().map(|b| b.trim()).filter(|b| !b.is_empty())
+        .map(|b| b.to_string()).unwrap_or_else(|| host.base_branch.clone());
+
+    // Validate members + freeze dir names. dir_name collisions inside
+    // the wrapper are a hard error — they'd silently overwrite.
+    let mut frozen: Vec<(Project, CreateMultiMember, String)> = Vec::new();
+    let mut seen_dirs: HashSet<String> = HashSet::new();
+    for m in &args.members {
+        let p = projects.iter().find(|p| p.id == m.project_id)
+            .ok_or_else(|| format!("member project not found: {}", m.project_id))?.clone();
+        let dir_name = m.dir_name.clone().unwrap_or_else(|| p.name.clone());
+        if dir_name.contains('/') || dir_name.is_empty() {
+            return Err(format!("invalid member dir name: {dir_name:?}"));
+        }
+        if !seen_dirs.insert(dir_name.clone()) {
+            return Err(format!("duplicate member dir name: {dir_name}"));
+        }
+        frozen.push((p, m.clone(), dir_name));
+    }
+
+    // Wrapper dir = `<workspaces_root>/<host-slug>/<wsname>/`. The
+    // host's existing workspaces_path already encodes that pattern.
+    let wrapper = PathBuf::from(&host.workspaces_path).join(&slug);
+    if wrapper.exists() {
+        return Err(format!("a workspace already exists at {}", wrapper.display()));
+    }
+
+    // Ensure the parent dir exists; git worktree add will create the
+    // wrapper itself.
+    if let Some(parent) = wrapper.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let host_repo = PathBuf::from(&host.root_path);
+    // Create the host worktree first. Branch reuse logic mirrors the
+    // single-repo create: if branch exists locally, just check out;
+    // else create from base.
+    let branch_exists = git(&["rev-parse", "--verify", &branch], &host_repo).is_ok();
+    let add_args: Vec<&str> = if branch_exists {
+        vec!["worktree", "add", wrapper.to_str().unwrap(), &branch]
+    } else {
+        vec!["worktree", "add", "-b", &branch, wrapper.to_str().unwrap(), &base_branch]
+    };
+    if let Err(e) = git(&add_args, &host_repo) {
+        return Err(format!("host worktree add failed: {e}"));
+    }
+
+    // Helper that tears down everything we've created so far on
+    // failure. Order: members first (so the host worktree git still
+    // knows about them), then the host. Best-effort.
+    let rollback = |members_done: &[(Project, CreateMultiMember, String, MemberMode, String)]| {
+        for (mp, _, _, mode, path) in members_done {
+            match mode {
+                MemberMode::RepoRoot => {
+                    let _ = fs::remove_file(path);
+                }
+                MemberMode::Worktree => {
+                    let _ = git(&["worktree", "remove", "--force", path], Path::new(&mp.root_path));
+                    let _ = fs::remove_dir_all(path);
+                }
+            }
+        }
+        let _ = git(&["worktree", "remove", "--force", wrapper.to_str().unwrap()], &host_repo);
+        let _ = fs::remove_dir_all(&wrapper);
+    };
+
+    // Now create each member. members_done accumulates so rollback
+    // can unwind a partial composition.
+    let mut composition: Vec<WorkspaceMember> = Vec::new();
+    let mut done: Vec<(Project, CreateMultiMember, String, MemberMode, String)> = Vec::new();
+    for (mp, spec, dir_name) in frozen.into_iter() {
+        let target = wrapper.join(&dir_name);
+        match spec.mode {
+            MemberMode::RepoRoot => {
+                if let Err(e) = std::os::unix::fs::symlink(&mp.root_path, &target) {
+                    rollback(&done);
+                    return Err(format!("symlink {dir_name}: {e}"));
+                }
+                composition.push(WorkspaceMember {
+                    project_id: mp.id.clone(),
+                    dir_name: dir_name.clone(),
+                    mode: MemberMode::RepoRoot,
+                    branch: String::new(),
+                    path: mp.root_path.clone(),
+                });
+                done.push((mp.clone(), spec, dir_name, MemberMode::RepoRoot, target.to_string_lossy().into_owned()));
+            }
+            MemberMode::Worktree => {
+                let mbranch = spec.branch.clone()
+                    .map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
+                    .unwrap_or_else(|| branch.clone());
+                let mbase = spec.base_branch.clone()
+                    .map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
+                    .unwrap_or_else(|| mp.base_branch.clone());
+                let mrepo = PathBuf::from(&mp.root_path);
+                let mexists = git(&["rev-parse", "--verify", &mbranch], &mrepo).is_ok();
+                let margs: Vec<&str> = if mexists {
+                    vec!["worktree", "add", target.to_str().unwrap(), &mbranch]
+                } else {
+                    vec!["worktree", "add", "-b", &mbranch, target.to_str().unwrap(), &mbase]
+                };
+                if let Err(e) = git(&margs, &mrepo) {
+                    rollback(&done);
+                    return Err(format!("member {dir_name} worktree add failed: {e}"));
+                }
+                composition.push(WorkspaceMember {
+                    project_id: mp.id.clone(),
+                    dir_name: dir_name.clone(),
+                    mode: MemberMode::Worktree,
+                    branch: mbranch,
+                    path: target.to_string_lossy().into_owned(),
+                });
+                done.push((mp.clone(), spec, dir_name, MemberMode::Worktree, target.to_string_lossy().into_owned()));
+            }
+        }
+    }
+
+    // Manage the wrapper's .gitignore so the host repo doesn't try
+    // to track the member dirs. Leading-slash entries anchor to the
+    // wrapper root only.
+    let dir_names: Vec<String> = composition.iter().map(|m| m.dir_name.clone()).collect();
+    if let Err(e) = ensure_multirepo_gitignore(&wrapper, &dir_names) {
+        eprintln!("multi-repo gitignore write failed (non-fatal): {e}");
+    }
+
+    // Sandbox: same union/merge logic as single-repo create, but the
+    // base set unions across every member project too.
+    let globals = load_settings_inner();
+    let sandbox_enabled = args.sandbox_enabled.unwrap_or(host.default_sandbox);
+    let mut base_rw: Vec<String> = Vec::new();
+    let mut base_deny: Vec<String> = Vec::new();
+    let mut base_hosts: Vec<String> = Vec::new();
+    let extend_unique = |target: &mut Vec<String>, src: &[String]| {
+        for v in src {
+            if !target.contains(v) { target.push(v.clone()); }
+        }
+    };
+    extend_unique(&mut base_rw,    &globals.sandbox_default_rw_paths);
+    extend_unique(&mut base_deny,  &globals.sandbox_default_deny_paths);
+    extend_unique(&mut base_hosts, &globals.sandbox_default_allowed_hosts);
+    extend_unique(&mut base_rw,    &host.sandbox_rw_paths);
+    extend_unique(&mut base_deny,  &host.sandbox_deny_paths);
+    extend_unique(&mut base_hosts, &host.sandbox_allowed_hosts);
+    for m in &composition {
+        if let Some(mp) = projects.iter().find(|p| p.id == m.project_id) {
+            extend_unique(&mut base_rw,    &mp.sandbox_rw_paths);
+            extend_unique(&mut base_deny,  &mp.sandbox_deny_paths);
+            extend_unique(&mut base_hosts, &mp.sandbox_allowed_hosts);
+        }
+    }
+    let sandbox_rw_paths    = args.sandbox_rw_paths.unwrap_or(base_rw);
+    let sandbox_deny_paths  = args.sandbox_deny_paths.unwrap_or(base_deny);
+    let sandbox_allowed_hosts = args.sandbox_allowed_hosts.unwrap_or(base_hosts);
+
+    let cli = args.cli.unwrap_or_else(|| host.default_cli.clone());
+    let port = 18100 + (load_workspaces().len() as u16);
+    let ws = Workspace {
+        id: args.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
+        project_id: host.id.clone(),
+        name: args.name,
+        branch,
+        base_branch,
+        path: wrapper.to_string_lossy().into_owned(),
+        cli,
+        port,
+        created: chrono::Utc::now().to_rfc3339(),
+        archived: false,
+        is_repo_root: false,
+        spawn_count: 0,
+        has_resumable_history: false,
+        sandbox_enabled,
+        sandbox_rw_paths,
+        sandbox_deny_paths,
+        sandbox_allowed_hosts,
+        composition,
+    };
+    save_workspace(&ws).map_err(|e| e.to_string())?;
+    Ok(ws)
+}
+
+/// Rewrite (or insert) a fenced Termic-managed block at the bottom of
+/// `<wrapper>/.gitignore` so the host repo ignores each member dir.
+/// Leading-`/` form anchors each entry to the wrapper root, so a
+/// nested `backend/` inside `.claude/skills/backend/` stays tracked.
+/// User content outside the fence is preserved untouched.
+fn ensure_multirepo_gitignore(wrapper: &Path, member_dirs: &[String]) -> std::io::Result<()> {
+    const BEGIN: &str = "# ── termic: multi-repo member dirs (managed) ──";
+    const END:   &str = "# ── /termic ──";
+    let path = wrapper.join(".gitignore");
+    let prior = fs::read_to_string(&path).unwrap_or_default();
+    // Strip any existing managed block first (idempotent on re-runs).
+    let stripped: String = {
+        let mut out: Vec<&str> = Vec::new();
+        let mut skip = false;
+        for line in prior.lines() {
+            if line.trim() == BEGIN { skip = true; continue; }
+            if line.trim() == END   { skip = false; continue; }
+            if !skip { out.push(line); }
+        }
+        let mut s = out.join("\n");
+        // Trim trailing blank lines so we don't accumulate them.
+        while s.ends_with('\n') { s.pop(); }
+        s
+    };
+    let mut next = stripped;
+    if !next.is_empty() { next.push('\n'); next.push('\n'); }
+    next.push_str(BEGIN); next.push('\n');
+    for d in member_dirs {
+        next.push('/');
+        next.push_str(d);
+        next.push('\n');
+    }
+    next.push_str(END); next.push('\n');
+    fs::write(&path, next)
 }
 
 #[tauri::command]
@@ -1306,6 +1763,44 @@ fn workspace_archive_sync(id: String) -> Result<(), String> {
         delete_workspace_file(&id).map_err(|e| e.to_string())?;
         return Ok(());
     }
+
+    // Multi-repo workspaces tear down each member first, then the
+    // host worktree. Members in RepoRoot mode are symlinks — unlink
+    // them, NEVER touch the linked checkout. Errors per-member are
+    // recorded but don't abort the loop (best-effort cleanup).
+    if !w.composition.is_empty() {
+        let all_projects = load_projects();
+        for m in &w.composition {
+            match m.mode {
+                MemberMode::RepoRoot => {
+                    // <wrapper>/<dir_name> is a symlink to the live
+                    // repo. Removing the symlink is just removing the
+                    // dir entry; readlink/exists succeed without
+                    // following it. fs::remove_file works for
+                    // symlinks on Unix.
+                    let link = Path::new(&w.path).join(&m.dir_name);
+                    if link.symlink_metadata().is_ok() {
+                        if let Err(e) = fs::remove_file(&link) {
+                            errs.push(format!("rm symlink {}: {e}", m.dir_name));
+                        }
+                    }
+                }
+                MemberMode::Worktree => {
+                    if let Some(mp) = all_projects.iter().find(|p| p.id == m.project_id) {
+                        if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&mp.root_path)) {
+                            errs.push(format!("worktree remove {}: {e}", m.dir_name));
+                        }
+                    }
+                    if Path::new(&m.path).exists() {
+                        if let Err(e) = fs::remove_dir_all(&m.path) {
+                            errs.push(format!("rm member dir {}: {e}", m.dir_name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(p) = &proj {
         if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
             errs.push(format!("worktree remove: {e}"));
@@ -2401,8 +2896,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            projects_list, project_add, project_update, project_remove,
-            workspaces_list, workspace_create, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
+            projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove,
+            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
