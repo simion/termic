@@ -312,7 +312,7 @@ export function NewWorkspaceDialog() {
                 className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
             </Field>
-            <Field label="Denied paths" hint="On top of the built-in secret deny list (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.kube, Keychains, ...).">
+            <Field label="Denied paths" hint="On top of the built-in secret deny list (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.kube, ...).">
               <textarea
                 value={sbDeny}
                 onChange={e => setSbDeny(e.target.value)}

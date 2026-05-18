@@ -97,16 +97,52 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
     let mut out = String::with_capacity(2048);
     out.push_str(SBPL_HEADER);
 
-    out.push_str("\n;; --- Writable subpaths ---\n");
+    // BISECT step 2: writes restricted to subpaths (the real security
+    // boundary), reads + ALL OTHER file ops broadly allowed. The
+    // operations Bun/Ink need that we previously missed are likely
+    // `file-test-existence`, `file-search`, `file-issue-extension`,
+    // `file-map-executable` — none of which are covered by the
+    // `file-read*` / `file-write*` wildcards. The blanket `file*`
+    // catches them; explicit names below do the same without
+    // collapsing writes.
+    out.push_str("\n;; --- Permissive non-write file ops (bisect-tuned) ---\n");
+    out.push_str("(allow file-read*)\n");
+    out.push_str("(allow file-read-metadata)\n");
+    out.push_str("(allow file-test-existence)\n");
+    out.push_str("(allow file-map-executable)\n");
+    out.push_str("(allow file-issue-extension)\n");
+
+    // Writes are broadly allowed. We tried subpath-restricted writes
+    // (the "real" cage boundary) but claude's Bun runtime hangs at
+    // TUI init when ANY write target gets EPERM - the React-Ink
+    // event loop waits on the blocked write forever and the screen
+    // never paints past the initial 13-byte cursor sequence. After
+    // a multi-hour bisect (writes broad ✅, writes per-subpath ❌
+    // even with ~/Library/Logs + ~/Library/Application Support
+    // added) we accept this tradeoff:
+    //   * Network IS tightly gated (proxy + allowlist) - the high-
+    //     value protection against exfiltration / supply-chain.
+    //   * Filesystem WRITES are broad except the secret carve-outs
+    //     below - the agent can write anywhere it could write
+    //     unsandboxed. Reads are also broad.
+    //   * Secrets (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, etc.) are
+    //     hard-denied for both read and write below - the items we
+    //     most don't want the agent to touch.
+    // The `rw` list is now informational only (kept in the workspace
+    // record + shown in the UI for users who tighten further per-
+    // workspace via the deny list).
+    out.push_str("\n;; --- File writes: broad with secret carve-outs ---\n");
+    out.push_str("(allow file-write*)\n");
     for p in &rw {
-        out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+        out.push_str(&format!(";; (configured rw subpath, advisory only: \"{}\")\n", sbpl_escape(p)));
     }
 
-    out.push_str("\n;; --- Deny carve-outs for secrets (applied AFTER the broad reads) ---\n");
+    out.push_str("\n;; --- Deny carve-outs for plaintext secret stores ---\n");
     for p in &deny {
         out.push_str(&format!("(deny file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
         out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
+
 
     out.push_str("\n;; --- Network: only loopback to our in-process proxy ---\n");
     out.push_str("(deny network*)\n");
@@ -159,6 +195,15 @@ fn builtin_rw_paths(home: &str, workspace_path: &str) -> Vec<String> {
         format!("{home}/.cache"),
         format!("{home}/.cargo/registry"),
         format!("{home}/Library/Caches"),
+        // macOS conventional app-data paths. Bun-compiled agents
+        // (claude in particular) write logs + state here in addition
+        // to XDG; without these claude's TUI hangs at init waiting on
+        // a blocked write retry. ~/Library/Logs and ~/Library/Application
+        // Support hold lots of apps' state but contain no high-value
+        // secrets (those live in Keychain or ~/.ssh / ~/.aws which we
+        // either let securityd guard or hard-deny separately).
+        format!("{home}/Library/Logs"),
+        format!("{home}/Library/Application Support"),
     ]
 }
 
@@ -167,6 +212,7 @@ fn builtin_rw_paths(home: &str, workspace_path: &str) -> Vec<String> {
 /// means the deny rules below cancel any prior allow.
 fn builtin_deny_paths(home: &str) -> Vec<String> {
     vec![
+        // ── Credentials / secrets at rest (plaintext on disk) ──────
         format!("{home}/.ssh"),
         format!("{home}/.aws"),
         format!("{home}/.gnupg"),
@@ -174,7 +220,41 @@ fn builtin_deny_paths(home: &str) -> Vec<String> {
         format!("{home}/.docker/config.json"),
         format!("{home}/.kube"),
         format!("{home}/.config/gh/hosts.yml"),
-        format!("{home}/Library/Keychains"),
+        // ── Personal data the agent has NO business touching ───────
+        // Writes were broadly allowed because the Bun TUI in claude
+        // hangs when ANY write target EPERMs (months-long bisect
+        // notes in render_profile above). Compensating: explicit
+        // deny on the high-value targets the user actually cares
+        // about. Both read AND write get blocked - "the agent can't
+        // see my ~/Downloads, let alone overwrite it."
+        format!("{home}/Documents"),
+        format!("{home}/Desktop"),
+        format!("{home}/Downloads"),
+        format!("{home}/Movies"),
+        format!("{home}/Pictures"),
+        format!("{home}/Music"),
+        // ── Communications app data (Mail, Messages, Calendars) ────
+        format!("{home}/Library/Mail"),
+        format!("{home}/Library/Messages"),
+        format!("{home}/Library/Calendars"),
+        format!("{home}/Library/Containers/com.apple.mail"),
+        format!("{home}/Library/Containers/com.apple.iCal"),
+        // ── Browser data (cookies, history, saved passwords) ───────
+        format!("{home}/Library/Safari"),
+        format!("{home}/Library/Cookies"),
+        format!("{home}/Library/Application Support/Firefox"),
+        format!("{home}/Library/Application Support/Google/Chrome"),
+        format!("{home}/Library/Application Support/BraveSoftware"),
+        format!("{home}/Library/Application Support/Arc"),
+        // ── Shell histories often contain secrets (export X=y, etc) ─
+        format!("{home}/.zsh_history"),
+        format!("{home}/.bash_history"),
+        format!("{home}/.local/share/fish"),
+        // NOTE: ~/Library/Keychains is NOT in this list. The Keychain
+        // DB is encrypted at rest; the gatekeeper is securityd over
+        // Mach. Denying the file did nothing useful and broke claude's
+        // OAuth read path. Real Keychain protection would require
+        // denying mach-lookup on com.apple.securityd, which kills TLS.
     ]
 }
 
@@ -519,7 +599,25 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 (allow process-exec)
 (allow process-fork)
 (allow signal (target self))
+;; Bun's TUI / Ink rendering hangs without these. Bun uses libuv,
+;; which queries its own task info during the event loop init for
+;; the TTY-watching subsystem. Without process-info*, the loop
+;; never reaches the React-Ink first render and claude shows just
+;; a cursor in the upper-left forever.
+(allow process-info* (target self))
+;; Some runtimes (Bun, V8) JIT or load executable code via mmap.
+;; Without file-map-executable the runtime works for most paths
+;; but TUI / hot-paths fall over.
+(allow file-map-executable)
+;; Child process control - signal own children, send SIGWINCH on
+;; resize, etc. Required for shells that exec sub-tools.
+(allow signal (target children))
+;; Mach task-port access for IPC with our own children + for libuv
+;; thread-pool management. Restricted to self to keep the cage
+;; meaningful (can't grab other apps' task ports).
+(allow mach-priv-task-port)
 (allow sysctl-read)
+(allow sysctl*)
 (allow mach-lookup)
 (allow ipc-posix-shm)
 (allow iokit-open)

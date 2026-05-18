@@ -2,6 +2,17 @@
   "name": "termic",
   "private": true,
   "version": "0.1.1",
+  "description": "Run claude, gemini, and codex in parallel — each in its own git worktree.",
+  "license": "AGPL-3.0-or-later",
+  "author": "Simion Agavriloaei",
+  "homepage": "https://termic.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simion/termic.git"
+  },
+  "bugs": {
+    "url": "https://github.com/simion/termic/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

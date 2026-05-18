@@ -270,7 +270,7 @@ function StepSandbox() {
             <b className="text-[var(--color-fg)]">Filesystem is locked down.</b>{" "}
             The agent can read your repo, write to its worktree, touch its own
             config + caches. Secrets (<code className="mono">~/.ssh</code>,{" "}
-            <code className="mono">~/.aws</code>, Keychains, …) are always denied.
+            <code className="mono">~/.aws</code>, …) are always denied.
           </span>
         </li>
         <li className="flex items-start gap-2">

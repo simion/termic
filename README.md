@@ -2,7 +2,7 @@
 
 # termic
 
-**Run `claude`, `gemini`, and `codex` side by side — each in its own git worktree.**
+**Run `claude`, `gemini`, and `codex` in parallel — each in its own git worktree.**
 
 [![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
@@ -28,9 +28,8 @@ brew install --cask simion/termic/termic
 ```
 
 That single command auto-taps `simion/homebrew-termic`, downloads the
-latest `.dmg`, installs `termic.app` into `/Applications`, and pulls
-`tinyproxy` as a dependency (used by the per-workspace network sandbox).
-No Gatekeeper warning — the tap is configured to bypass it.
+latest `.dmg`, and installs `termic.app` into `/Applications`. No
+Gatekeeper warning — the tap is configured to bypass it.
 
 Updates: Termic ships with a self-updater. When a new release lands you'll
 see an **Update X.Y.Z** pill in the top-right of the toolbar; click it
@@ -56,7 +55,7 @@ xattr -dr com.apple.quarantine /Applications/termic.app
 ```sh
 git clone https://github.com/simion/termic
 cd termic
-make setup          # brew/rust/node/tinyproxy + npm install + cargo check
+make setup          # brew/rust/node + npm install + cargo check
 make dev            # vite HMR + Rust auto-rebuild
 make run            # build, install to /Applications, launch
 ```
@@ -94,10 +93,10 @@ The product surface:
 
 ## Sandbox
 
-Optional per-workspace macOS Seatbelt (`sandbox-exec`) + per-workspace
-`tinyproxy` cage. Configured per project, pinned per workspace at creation
-(editable later from the workspace's Shield icon), enforced from the
-moment the agent spawns.
+Optional per-workspace macOS Seatbelt (`sandbox-exec`) + an in-process
+HTTPS CONNECT proxy per workspace. Configured per project, pinned per
+workspace at creation (editable later from the workspace's Shield icon),
+enforced from the moment the agent spawns.
 
 The cage:
 
@@ -105,17 +104,19 @@ The cage:
   `~/.gemini`, `~/.codex`), package caches (`~/.npm`, `~/.cache`,
   `~/.cargo/registry`), and TMPDIR. Always-denied: `~/.ssh`, `~/.aws`,
   `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, Keychains.
-- **Network restricted** via `tinyproxy` with a regex allowlist. Per-CLI
-  vendor APIs (anthropic / google / openai) + GitHub + npmjs + PyPI +
-  crates.io baked in. Add custom hosts per project.
+- **Network restricted** via an in-process CONNECT proxy with a regex
+  hostname allowlist. Per-CLI vendor APIs (anthropic / google / openai)
+  + GitHub + npmjs + PyPI + crates.io baked in. Add custom hosts per
+  project. No external daemon — the proxy lives inside the Tauri
+  binary, so there's nothing extra to install.
 - **YOLO auto-on inside the cage.** The seatbelt profile IS the security
   boundary, so the agent's own permission prompts are skipped. The toolbar
   lightning icon turns red when YOLO is on *without* a sandbox (intentional
   danger signal — agents can `rm -rf $HOME` at that point).
 
-For the full sandbox design — including the recent-denies debug panel,
-the auto-restart-on-edit flow, and the tinyproxy bundling story — see
-[CLAUDE.md](./CLAUDE.md) §"Sandbox".
+For the full sandbox design — including the recent-denies debug panel
+and the auto-restart-on-edit flow — see [CLAUDE.md](./CLAUDE.md)
+§"Sandbox".
 
 ---
 

@@ -435,14 +435,38 @@ fn pty_spawn(
     let id_r = id.clone();
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut total: u64 = 0;
+        let mut bursts: u64 = 0;
+        let start = std::time::Instant::now();
+        let mut first_byte_logged = false;
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    dlog(&format!("[pty/{id_r}] EOF after {total} bytes / {bursts} bursts / {:.2}s", start.elapsed().as_secs_f32()));
+                    break;
+                }
                 Ok(n) => {
+                    if !first_byte_logged {
+                        dlog(&format!("[pty/{id_r}] first byte burst ({n} bytes) at {:.2}s — first 80B: {:?}",
+                            start.elapsed().as_secs_f32(),
+                            String::from_utf8_lossy(&buf[..n.min(80)])));
+                        first_byte_logged = true;
+                    }
+                    total += n as u64;
+                    bursts += 1;
+                    // Periodic heartbeat so we can tell "claude is silently emitting
+                    // ANSI" vs "claude is silent". Every 50 bursts ≈ a couple of
+                    // screens of output - cheap signal-to-noise.
+                    if bursts % 50 == 0 {
+                        dlog(&format!("[pty/{id_r}] {total} bytes / {bursts} bursts so far"));
+                    }
                     let chunk = PtyChunk { data: buf[..n].to_vec() };
                     let _ = app_r.emit(&format!("pty://{}", id_r), chunk);
                 }
-                Err(_) => break,
+                Err(e) => {
+                    dlog(&format!("[pty/{id_r}] read error after {total} bytes: {e}"));
+                    break;
+                }
             }
         }
     });
@@ -456,6 +480,7 @@ fn pty_spawn(
     thread::spawn(move || {
         let status = child.wait().ok();
         let code = status.and_then(|s| i32::try_from(s.exit_code()).ok());
+        dlog(&format!("[pty/{id_w}] child exited code={code:?}"));
         let _ = app_w.emit(&format!("pty-exit://{}", id_w), PtyExit { code });
         let mut map = state_w.lock();
         map.remove(&id_w);

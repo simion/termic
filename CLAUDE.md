@@ -1,6 +1,6 @@
 # termic — context for Claude Code
 
-One window, many parallel agents (claude / gemini / codex) each in its own git-worktree workspace with an embedded terminal. **Performance trumps polish.** Author is the primary tester — they screenshot bugs, drive iteratively. Mixes Romanian + English freely.
+One window, many parallel agents (claude / gemini / codex) each in its own git-worktree workspace with an embedded terminal. **Performance trumps polish** — a 1-frame terminal flicker, a >100ms editor open, or an unnecessary sidebar re-render are all real regressions.
 
 ## Stack
 
@@ -130,21 +130,19 @@ Interactive containers opt out with both `data-tauri-drag-region="false"` and `W
 
 ## Sandbox (`src-tauri/src/sandbox.rs` + `WorkspaceSandboxDialog`)
 
-Per-workspace macOS sandbox-exec (Seatbelt) + per-workspace tinyproxy. Configured per-project (defaults), pinned per-workspace at creation, **editable post-creation** with a forced PTY restart.
+Per-workspace macOS sandbox-exec (Seatbelt) + per-workspace in-process HTTPS CONNECT proxy (`src-tauri/src/proxy.rs`). Configured per-project (defaults), pinned per-workspace at creation, **editable post-creation** with a forced PTY restart.
 
 **Scope (do NOT confuse)**: ONLY the agent CLI's PTY is sandboxed. The aux/scratch terminal (`AuxTerminal`), setup script, run script, and archive script all run **unsandboxed by design** — they're explicit user-authored shell that needs full reach (`gh pr create`, `kubectl apply`, `docker build`). The agent is the threat model; everything else is the user. The "no sandbox" carve-out is enforced by simply not passing `workspace_id` in `pty_spawn` / by routing scripts through the separate `run_script` codepath that never calls `sandbox::provision`.
 
 **Layered model**:
-1. `sandbox-exec -f <profile.sb>` — kernel seatbelt. SBPL profile rendered per spawn under `$TMPDIR/termic-sandbox-<wsId>.sb`. Allows broad `file-read*`, narrow `file-write*` on workspace + agent dirs + caches; secrets (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, `~/.config/gh/hosts.yml`, Keychains) ALWAYS denied; `(deny network*)` except loopback to per-workspace tinyproxy.
-2. Per-workspace **tinyproxy** child on an OS-assigned free port; regex hostname allowlist filter file at `$TMPDIR/termic-proxy-<wsId>.filter`. Per-CLI vendor APIs (claude→anthropic, gemini→google, codex→openai) + baseline (github, npmjs, pypi, crates.io, CA OCSP) + workspace-specific extras. SIGKILLed via `SandboxBundle::Drop` when the PTY teardown removes the slot.
+1. `sandbox-exec -f <profile.sb>` — kernel seatbelt. SBPL profile rendered per spawn under `$TMPDIR/termic-sandbox-<wsId>.sb`. Allows broad `file-read*`, narrow `file-write*` on workspace + agent dirs + caches; secrets (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, `~/.config/gh/hosts.yml`, Keychains) ALWAYS denied; `(deny network*)` except loopback to the per-workspace in-process proxy.
+2. Per-workspace **in-process CONNECT proxy** on an OS-assigned free port (Rust thread inside the Tauri binary — no external daemon). Regex hostname allowlist baked into Rust per CLI: claude→anthropic, gemini→google, codex→openai + baseline (github, npmjs, pypi, crates.io, CA OCSP) + workspace-specific extras. Non-matching hostnames get HTTP 403. Thread + listener stop via `SandboxBundle::Drop` when PTY teardown removes the slot.
 
 **Pinning & edit**: `Workspace.sandbox_enabled` is captured at create time. Edit later via `workspace_set_sandbox` IPC, which persists the new lists AND SIGKILLs every live PTY for that workspace (otherwise the running process holds the OLD profile's permissions — the exact thing we're enforcing against). `WorkspaceSandboxDialog` warns before save.
 
 **YOLO interaction (critical)**: when `ws.sandbox_enabled`, spawn args always include the CLI's `yolo_args` regardless of the global YOLO toggle — the seatbelt is the real boundary, so the agent's own permission prompts are friction. Toolbar `Zap` button visualizes safety: OFF→gray, ON+sandboxed→green, ON+UNsandboxed→**red, pulsing, ⚠️ tooltip**. Code is in `UnifiedBar.tsx` near the YOLO button.
 
 **Default sets** are baked into Rust (`builtin_rw_paths` / `builtin_deny_paths` and the per-CLI `render_filter` block in `sandbox.rs`). The Project's `sandbox_*` fields are *extras only*, seeded into a workspace at creation. Surfaced read-only in the dialog's "Built-in defaults" details/summary so users don't waste lines re-typing them.
-
-**tinyproxy is required** for network allowlisting. Without it, sandboxed spawns silently downgrade to "filesystem sandbox + full network deny" (logged to stderr; not a hard failure). `TinyproxyBanner` probes `sandbox_tinyproxy_available` at startup and surfaces a once-per-session warning when missing AND any sandboxing is in play. `just setup` installs it.
 
 **Recent denies** debugging: `workspace_recent_denials(id, minutes?)` IPC shells out to `log show --predicate '...' --last <N>m` filtered to the workspace path and lines containing `deny`. Surfaced in the sandbox dialog under a lazy-load `<details>` — when `npm install` silently fails inside a sandbox, this is the only sane way to diagnose what was blocked.
 
@@ -177,9 +175,9 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 - **Right-click contextmenu** — `window.addEventListener("contextmenu", e => e.preventDefault())` in `main.tsx`.
 - **App icon missing in dev** — dev runs raw binary, not `.app` bundle. Custom icon appears only after `npm run tauri:build`.
 
-## When the user reports a bug
+## Triaging a bug report
 
-1. Cross-reference the screenshot against the relevant component.
+1. Cross-reference the screenshot/repro against the relevant component.
 2. Blank/unresponsive terminal → check `pty_spawn` arg shape and `onPtyData` payload unpacking first.
 3. Drag dead → verify capability present + full rebuild picked it up.
 4. Missing syntax highlight → add lang pack + extend `langForPath` in `EditorPane`.
@@ -198,10 +196,10 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 - Sandbox the aux terminal, setup script, run script, or archive script. These are explicit user-authored shell with the user's full reach by design; only the agent CLI's PTY is the threat model.
 - Expose a mutator for `Workspace.sandbox_enabled` that doesn't SIGKILL the matching live PTYs. A running process holds its OLD seatbelt permissions — the kill is the security boundary, not a UX nicety.
 
-## What the user values
+## Project values
 
-- **Performance.** They notice a 1-frame terminal flicker, a >100ms editor open, an unnecessary sidebar re-render.
+- **Performance.** A 1-frame terminal flicker, a >100ms editor open, an unnecessary sidebar re-render — all real regressions, measured before merge.
 - **Pragmatism.** Ship the fix that works now; iterate.
-- **Honest reports.** Tell them how to verify (⌘+R, quit + relaunch, etc.). Never claim untested success.
-- **Direct chat.** No filler, no "great question!", push back when they're wrong.
-- **Polish details when noticed** — hide chrome that doesn't apply, match Termic.build behavior closely.
+- **Honest reports.** Always say how to verify (⌘+R, quit + relaunch, etc.). Never claim untested success.
+- **Direct chat.** No filler. Push back when something's wrong instead of nodding.
+- **Polish details when noticed** — hide chrome that doesn't apply; the rendering and chrome are part of the product, not afterthoughts.

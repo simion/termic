@@ -8,7 +8,7 @@ contributions that fit the [philosophy](#philosophy) are welcome.
 ```sh
 git clone https://github.com/simion/termic
 cd termic
-make setup          # installs brew/rust/node/tinyproxy, runs npm install + cargo check
+make setup          # installs brew/rust/node, runs npm install + cargo check
 make dev            # vite HMR + Rust auto-rebuild
 ```
 
@@ -20,7 +20,6 @@ make dev            # vite HMR + Rust auto-rebuild
 - Homebrew (`make setup` uses it to install missing deps)
 - Rust toolchain ([rustup](https://rustup.rs/))
 - Node.js 20+
-- [tinyproxy](https://tinyproxy.github.io) — only needed for the per-workspace network sandbox; `make setup` installs it via brew
 
 Verify with `make doctor` — exits non-zero on the first missing dep with
 a fix message. Safe to run in CI.
@@ -40,7 +39,8 @@ src/                       # React 19 + Vite 8 + TypeScript frontend
 src-tauri/                 # Rust + Tauri 2 backend
 ├── Cargo.toml
 ├── src/lib.rs             # PTY manager, project/workspace IO, settings, scripts
-├── src/sandbox.rs         # seatbelt profile renderer + tinyproxy lifecycle
+├── src/sandbox.rs         # seatbelt profile renderer + in-process CONNECT proxy lifecycle
+├── src/proxy.rs           # the in-process HTTPS CONNECT proxy (regex hostname allowlist)
 ├── tauri.conf.json        # window, bundle, updater config
 ├── capabilities/          # tauri permission grants
 └── icons/                 # rasterized icons (regenerate with `make icons`)

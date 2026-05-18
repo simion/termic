@@ -10,7 +10,6 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { RotateCcw } from "lucide-react";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 
@@ -157,9 +156,9 @@ export function AuxTerminal({ wsPath, active }: { wsPath: string; active: boolea
           <div className="text-[13px] text-[var(--color-fg-dim)]">Shell exited.</div>
           <button
             onClick={() => setGen(g => g + 1)}
-            className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-1.5 text-[12.5px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)]"
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-1.5 text-[12.5px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)]"
           >
-            <RotateCcw className="h-3.5 w-3.5" /> New shell
+            New shell
           </button>
         </div>
       )}

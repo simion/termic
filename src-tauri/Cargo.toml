@@ -1,9 +1,14 @@
 [package]
 name = "termic"
 version = "0.1.1"
-description = "Parallel-agent orchestrator with embedded terminals"
-authors = ["simion"]
+description = "Run claude, gemini, and codex in parallel — each in its own git worktree."
+authors = ["Simion Agavriloaei"]
 edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/simion/termic"
+homepage = "https://termic.dev"
+readme = "../README.md"
+publish = false
 
 [lib]
 name = "termic_lib"

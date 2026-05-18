@@ -260,7 +260,9 @@ export function WorkspaceSandboxDialog() {
         </Field>
         <Field label="Add denied paths" hint="On top of the built-in secret deny list.">
           <BuiltInsLine>
-            <Mono>~/.ssh</Mono> · <Mono>~/.aws</Mono> · <Mono>~/.gnupg</Mono> · <Mono>~/.netrc</Mono> · <Mono>~/.docker/config.json</Mono> · <Mono>~/.kube</Mono> · <Mono>~/.config/gh/hosts.yml</Mono> · macOS Keychains
+            secrets: <Mono>~/.ssh</Mono> · <Mono>~/.aws</Mono> · <Mono>~/.gnupg</Mono> · <Mono>~/.netrc</Mono> · <Mono>~/.docker/config.json</Mono> · <Mono>~/.kube</Mono> · <Mono>~/.config/gh/hosts.yml</Mono>
+            <br />
+            personal data: <Mono>~/Documents</Mono> · <Mono>~/Desktop</Mono> · <Mono>~/Downloads</Mono> · <Mono>~/Movies</Mono> · <Mono>~/Pictures</Mono> · <Mono>~/Music</Mono> · Mail · Messages · Calendars · Safari · Firefox · Chrome · Brave · Arc · shell histories
           </BuiltInsLine>
           <AutoGrowTextarea
             value={denyText}

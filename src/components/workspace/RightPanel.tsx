@@ -9,7 +9,7 @@ import {
 } from "@/lib/ipc";
 import type { Changes, Workspace, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Play, ChevronDown, ChevronUp, TerminalSquare, Square, ExternalLink, X, Plus } from "lucide-react";
+import { Play, ChevronDown, ChevronUp, TerminalSquare, Square, Globe, X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { AuxTerminal } from "./AuxTerminal";
 import { FileTree } from "./FileTree";
@@ -157,7 +157,7 @@ export function RightPanel() {
             }}
           />
         )}
-        <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] px-1.5">
+        <div className="flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b border-[var(--color-border-soft)] px-1.5">
           {/* Leftmost: toggle the bottom split terminal in the main area
               (same action as ⌘T). Active state latches when the split is
               open. Sits before the collapse chevron because the user wants
@@ -215,6 +215,7 @@ export function RightPanel() {
           {footTab !== "term" && (
             <RunToolbar
               ws={ws} project={project} kind={footTab as "setup" | "run"} run={footRun}
+              compact={footerTerm}
               onStart={() => {
                 useScriptRuns.getState().start(ws.id, footTab as "setup" | "run");
                 setFootCollapsed(false);
@@ -270,12 +271,15 @@ function FTab({ label, active, onClick, onClose }: {
   return (
     <div
       className={cn(
-        "group flex items-center rounded-md text-[13.5px] transition-colors",
+        // shrink-0 so tabs hold their width when the row gets cramped
+        // (a sibling like RunToolbar grows instead) and rounded-md
+        // keeps the underline-active treatment intact.
+        "group flex shrink-0 items-center rounded-md text-[12.5px] transition-colors",
         active ? "text-[var(--color-fg)] border-b-2 border-[var(--color-accent)]" : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
       )}
       style={active ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : undefined}
     >
-      <button onClick={onClick} className="px-2 py-1">{label}</button>
+      <button onClick={onClick} className="px-1.5 py-1">{label}</button>
       {onClose && (
         <button
           onClick={(e) => { e.stopPropagation(); onClose(); }}
@@ -314,37 +318,55 @@ function expandPreviewUrl(project: Project | null, ws: Workspace): string | null
 /** Right-aligned toolbar group: Open (if URL known) + Run / Stop (toggles by
  *  current run status). Open is enabled regardless of status so users can hit
  *  their dev server preview the moment they remember the URL is sticky. */
-function RunToolbar({ ws, project, kind, run, onStart, onStop }: {
+function RunToolbar({ ws, project, kind, run, onStart, onStop, compact }: {
   ws: Workspace; project: Project | null; kind: "setup" | "run";
   run: { status: "idle" | "running" | "done" | "error" };
   onStart: () => void; onStop: () => void;
+  /** When the footer is cramped (Terminal tab open, panel narrow),
+   *  collapse buttons to icon-only with the label moved to the title.
+   *  Saves ~50px per button which is enough to keep everything in the
+   *  panel without overflow. */
+  compact?: boolean;
 }) {
   const url = expandPreviewUrl(project, ws);
   const running = run.status === "running";
+  // Square button when icon-only; pill with label otherwise.
+  const btnCls = compact ? "h-6 w-6 p-0" : "h-6 gap-1 px-1.5 text-[12px]";
   return (
-    <div className="ml-auto flex items-center gap-1">
+    <div className="ml-auto flex shrink-0 items-center gap-1">
       {kind === "run" && url && (
         <Button
           size="sm" variant="secondary"
           onClick={() => openPath(url).catch(err => console.error("open failed:", err))}
-          title={url}
-          className="h-6 gap-1 px-2 text-[12.5px]"
-        ><ExternalLink className="h-3 w-3" /> Open</Button>
+          title={compact ? `Open ${url}` : url}
+          className={btnCls}
+        >
+          <Globe className="h-3 w-3" />
+          {!compact && <span>Open</span>}
+        </Button>
       )}
       {running ? (
         <Button
           size="sm" variant="secondary"
           onClick={onStop}
+          title="Stop"
           // Red tint so Stop reads as a destructive control without taking
           // over the whole toolbar with a full-red `danger` variant.
-          className="h-6 gap-1 px-2 text-[12.5px] text-[var(--color-err)] hover:text-[var(--color-err)]"
-        ><Square className="h-3 w-3 fill-current" /> Stop</Button>
+          className={cn(btnCls, "text-[var(--color-err)] hover:text-[var(--color-err)]")}
+        >
+          <Square className="h-3 w-3 fill-current" />
+          {!compact && <span>Stop</span>}
+        </Button>
       ) : (
         <Button
           size="sm" variant="secondary"
           onClick={onStart}
-          className="h-6 gap-1 px-2 text-[12.5px]"
-        ><Play className="h-3 w-3" /> {kind === "setup" ? "Run setup" : "Run"}</Button>
+          title={kind === "setup" ? "Run setup" : "Run"}
+          className={btnCls}
+        >
+          <Play className="h-3 w-3" />
+          {!compact && <span>{kind === "setup" ? "Run setup" : "Run"}</span>}
+        </Button>
       )}
     </div>
   );

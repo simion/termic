@@ -26,7 +26,7 @@ help: ## Show this help (default target).
 
 # ─── setup ────────────────────────────────────────────────────────────
 
-setup: ## One-shot dev env bootstrap (brew/rust/node/tinyproxy + npm install + cargo check).
+setup: ## One-shot dev env bootstrap (brew/rust/node + npm install + cargo check).
 	@echo "→ Termic dev environment bootstrap"
 	@if ! command -v brew >/dev/null 2>&1; then \
 	    echo "✗ homebrew required. Install from https://brew.sh and re-run."; \
@@ -45,12 +45,6 @@ setup: ## One-shot dev env bootstrap (brew/rust/node/tinyproxy + npm install + c
 	    echo "  installing node"; brew install node; \
 	else \
 	    echo "  ✓ node present ($$(node --version))"; \
-	fi
-	@echo "→ Checking tinyproxy (per-workspace HTTPS allowlist for sandboxed agents)"
-	@if ! command -v tinyproxy >/dev/null 2>&1; then \
-	    echo "  installing tinyproxy"; brew install tinyproxy; \
-	else \
-	    echo "  ✓ tinyproxy present"; \
 	fi
 	@echo "→ Installing npm packages"
 	@npm install
@@ -74,11 +68,6 @@ doctor: ## Verify the dev env without installing anything (CI-friendly, exits no
 	check brew brew --version; \
 	check rust cargo --version; \
 	check node node --version; \
-	if command -v tinyproxy >/dev/null 2>&1; then \
-	    echo "  ✓ tinyproxy present"; \
-	else \
-	    echo "  ✗ tinyproxy missing (sandboxed workspaces will spawn with full network deny — run: make setup)"; \
-	fi; \
 	if [ -d node_modules ]; then \
 	    echo "  ✓ node_modules present"; \
 	else \
@@ -120,24 +109,11 @@ release: ## Cut a release tag (CI does the rest). Use BUMP=patch|minor|major|<ve
 	@./scripts/release.sh $(BUMP)
 .PHONY: release
 
-# ─── icons + sandbox bundling ─────────────────────────────────────────
+# ─── icons ────────────────────────────────────────────────────────────
 
 icons: ## Regenerate every icon size + format from src-tauri/icons/icon.svg.
 	@./scripts/gen-icon.sh
 .PHONY: icons
-
-bundle-tinyproxy: ## Copy local tinyproxy into src-tauri/resources/ so the next build bundles it.
-	@SRC="$$(command -v tinyproxy || true)"; \
-	if [ -z "$$SRC" ]; then \
-	    echo "✗ tinyproxy not on PATH. Install: brew install tinyproxy"; \
-	    exit 1; \
-	fi; \
-	DEST="src-tauri/resources/tinyproxy"; \
-	mkdir -p "$$(dirname "$$DEST")"; \
-	cp "$$SRC" "$$DEST"; \
-	echo "✓ bundled $$(file "$$DEST" | sed 's/.*: //') → $$DEST"; \
-	echo "  Next: npm run tauri:build (the .app will ship with tinyproxy)."
-.PHONY: bundle-tinyproxy
 
 # ─── build / install / run ────────────────────────────────────────────
 

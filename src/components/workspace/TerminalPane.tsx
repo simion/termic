@@ -3,8 +3,9 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield, AlertTriangle } from "lucide-react";
+import { RotateCcw, Shield, AlertTriangle, TerminalSquare } from "lucide-react";
 import { useUI } from "@/store/ui";
+import { useApp } from "@/store/app";
 import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -12,7 +13,6 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
-import { useApp } from "@/store/app";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive } from "@/lib/agents";
 
@@ -409,51 +409,16 @@ export function TerminalPane({ ws, tab, active }: Props) {
   return (
     <div className="relative flex h-full w-full flex-col">
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
-      {/* Sandbox status footer - always-visible reminder that this
-          workspace's agent runs caged + a one-click jump to the
-          editor. Only shown when actually sandboxed; otherwise the
-          terminal owns the full pane height. */}
-      {ws.sandbox_enabled && (
-        <button
-          type="button"
-          onClick={() => useUI.getState().openSandbox(ws.id)}
-          className={cn(
-            // Bg MUST be fully opaque - the chip sits on top of the
-            // xterm canvas, and any alpha lets the terminal's last
-            // rendered glyphs bleed through under the footer text,
-            // producing what looks like doubled characters
-            // ("02extrahosts" instead of "0 extra hosts").
-            "flex shrink-0 items-center gap-1.5 border-t px-3 py-1 text-left text-[11.5px] hover:text-[var(--color-fg)]",
-            sandboxWarning
-              ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)] text-[var(--color-fg)] hover:brightness-110"
-              : "border-[var(--color-border-soft)] bg-[var(--color-bg-1)] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)]",
-          )}
-          title={sandboxWarning ?? "Edit sandbox for this workspace"}
-        >
-          {sandboxWarning ? (
-            <>
-              <AlertTriangle className="h-3 w-3 text-[var(--color-warn)]" />
-              <span className="font-medium">Sandbox degraded</span>
-              <span className="text-[var(--color-fg-faint)]">·</span>
-              <span className="truncate">{sandboxWarning}</span>
-            </>
-          ) : (
-            <>
-              <Shield className="h-3 w-3 text-[var(--color-ok)]" />
-              <span>Sandboxed</span>
-              <span className="text-[var(--color-fg-faint)]">·</span>
-              <span>
-                {(ws.sandbox_allowed_hosts?.length ?? 0)} extra host{(ws.sandbox_allowed_hosts?.length ?? 0) === 1 ? "" : "s"}
-              </span>
-              <span className="text-[var(--color-fg-faint)]">·</span>
-              <span>
-                {(ws.sandbox_rw_paths?.length ?? 0)} extra path{(ws.sandbox_rw_paths?.length ?? 0) === 1 ? "" : "s"}
-              </span>
-            </>
-          )}
-          <span className="ml-auto text-[var(--color-fg-faint)] underline-offset-2">edit</span>
-        </button>
-      )}
+      {/* Status bar — ALWAYS visible. Left chunk: sandbox status
+          (click → open Sandbox dialog). Right chunk: +Terminal that
+          opens the bottom split. Hidden when the split is already
+          open (no point offering to add what's already there). The
+          row is a flex div with two click targets, not one giant
+          button, because each half has its own action.
+          Bg MUST be fully opaque — alpha lets xterm's last-rendered
+          glyphs bleed through, producing what looks like doubled
+          text ("02extrahosts" instead of "0 extra hosts"). */}
+      <FooterBar ws={ws} sandboxWarning={sandboxWarning} />
       {exited && (
         // Overlay on the dead xterm. The terminal underneath stays mounted
         // so the user can still scroll through whatever the agent printed
@@ -468,6 +433,77 @@ export function TerminalPane({ ws, tab, active }: Props) {
             <RotateCcw className="h-3.5 w-3.5" /> Restart {tab.cli}
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function FooterBar({ ws, sandboxWarning }: {
+  ws: { id: string; sandbox_enabled?: boolean; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[] };
+  sandboxWarning: string | null;
+}) {
+  const splitOpen = useApp(s => !!s.terminalSplit[ws.id]);
+  const toggleSplit = useApp(s => s.toggleTerminalSplit);
+
+  // Sandbox half — three visual states (warning > on > off). Off
+  // state is muted but still clickable so users discover the cage
+  // exists.
+  const sandboxNode = sandboxWarning ? (
+    <>
+      <AlertTriangle className="h-3 w-3 text-[var(--color-warn)]" />
+      <span className="font-medium">Sandbox degraded</span>
+      <span className="text-[var(--color-fg-faint)]">·</span>
+      <span className="truncate">{sandboxWarning}</span>
+    </>
+  ) : ws.sandbox_enabled ? (
+    <>
+      <Shield className="h-3 w-3 text-[var(--color-ok)]" fill="currentColor" />
+      <span>Sandboxed</span>
+      <span className="text-[var(--color-fg-faint)]">·</span>
+      <span>{(ws.sandbox_allowed_hosts?.length ?? 0)} extra host{(ws.sandbox_allowed_hosts?.length ?? 0) === 1 ? "" : "s"}</span>
+      <span className="text-[var(--color-fg-faint)]">·</span>
+      <span>{(ws.sandbox_rw_paths?.length ?? 0)} extra path{(ws.sandbox_rw_paths?.length ?? 0) === 1 ? "" : "s"}</span>
+    </>
+  ) : (
+    <>
+      <Shield className="h-3 w-3 text-[var(--color-fg-faint)]" />
+      <span>Unsandboxed</span>
+      <span className="ml-1 text-[var(--color-fg-faint)]">— full filesystem + network</span>
+    </>
+  );
+
+  return (
+    <div
+      className={cn(
+        "flex shrink-0 items-center gap-1.5 border-t px-3 py-1 text-[11.5px]",
+        sandboxWarning
+          ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)] text-[var(--color-fg)]"
+          : "border-[var(--color-border-soft)] bg-[var(--color-bg-1)] text-[var(--color-fg-dim)]",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => useUI.getState().openSandbox(ws.id)}
+        title={sandboxWarning ?? (ws.sandbox_enabled ? "Edit sandbox" : "Enable sandbox")}
+        className="flex flex-1 items-center gap-1.5 truncate text-left hover:text-[var(--color-fg)]"
+      >
+        {sandboxNode}
+        <span className="ml-2 text-[var(--color-fg-faint)] underline-offset-2">edit</span>
+      </button>
+      {/* +Terminal opens the bottom split. Hidden when split is
+          already open — no point offering to add what's there.
+          (The split itself is owned by WorkspaceView; this is just
+          a convenient trigger that lives where you'd expect it.) */}
+      {!splitOpen && (
+        <button
+          type="button"
+          onClick={() => toggleSplit(ws.id)}
+          title="Open a bottom terminal split"
+          className="ml-2 flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
+        >
+          <TerminalSquare className="h-3 w-3" />
+          <span>Terminal</span>
+        </button>
       )}
     </div>
   );
