@@ -219,6 +219,33 @@ reset: ## DESTRUCTIVE: wipe every byte of termic state on this Mac (config, cach
 nuke-data: reset
 .PHONY: nuke-data
 
+reset-size: ## Clear ONLY the saved window + sidebar/right-panel sizes. Everything else (projects, settings, theme) is kept.
+	@BUNDLE_ID="com.simion.termic"; \
+	WINSTATE_LC="$$HOME/Library/Application Support/termic/.window-state.json"; \
+	WINSTATE_CAP="$$HOME/Library/Application Support/Termic/.window-state.json"; \
+	WINSTATE_BUNDLE="$$HOME/Library/Application Support/com.simion.termic/.window-state.json"; \
+	LS_DIRS=$$(ls -d "$$HOME/Library/WebKit/com.simion.termic/WebsiteData/LocalStorage" \
+	                  "$$HOME/Library/WebKit/Termic/WebsiteData/LocalStorage" \
+	                  "$$HOME/Library/WebKit/termic/WebsiteData/LocalStorage" 2>/dev/null); \
+	echo "→ Quitting any running termic"; \
+	osascript -e "tell application id \"$$BUNDLE_ID\" to quit" 2>/dev/null || true; \
+	pkill -f "target/debug/termic" 2>/dev/null || true; \
+	pkill -f "/Applications/Termic.app/Contents/MacOS/termic" 2>/dev/null || true; \
+	sleep 1; \
+	for f in "$$WINSTATE_LC" "$$WINSTATE_CAP" "$$WINSTATE_BUNDLE"; do \
+	  if [ -f "$$f" ]; then rm -f "$$f" && echo "  removed $$f"; fi; \
+	done; \
+	for d in $$LS_DIRS; do \
+	  for db in "$$d"/*/localstorage.sqlite3; do \
+	    [ -f "$$db" ] || continue; \
+	    sqlite3 "$$db" "DELETE FROM ItemTable WHERE key IN ('sidebarWidth','rightPanelWidth','rightFooterHeight','terminalSplit','terminalSplitHeight');" 2>/dev/null \
+	      && echo "  cleared size keys in $$db" \
+	      || echo "  ! could not edit $$db (try: brew install sqlite)"; \
+	  done; \
+	done; \
+	echo "✓ Reset window + sidebar/right-panel sizes. Relaunch termic to see defaults."
+.PHONY: reset-size
+
 clean: ## Remove build artifacts (frontend dist + rust target). Recovers ~3GB.
 	@rm -rf dist node_modules/.vite src-tauri/target
 	@echo "✓ Cleaned dist/, .vite cache, src-tauri/target/"

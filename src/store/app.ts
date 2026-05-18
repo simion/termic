@@ -115,8 +115,8 @@ const numOrDefault = (k: string, fallback: number) => {
   try { const v = Math.round(Number(localStorage.getItem(k))); return Number.isFinite(v) && v > 0 ? v : fallback; }
   catch { return fallback; }
 };
-const initialSBW = numOrDefault(LS_SBW, 220);
-const initialRPW = numOrDefault(LS_RPW, 360);
+const initialSBW = numOrDefault(LS_SBW, 280);
+const initialRPW = numOrDefault(LS_RPW, 280);
 const initialRFH = numOrDefault(LS_RFH, 260);
 
 export const useApp = create<AppState>((set, get) => ({
