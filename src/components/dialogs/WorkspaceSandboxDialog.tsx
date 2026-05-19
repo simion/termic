@@ -24,6 +24,7 @@ export function WorkspaceSandboxDialog() {
   // from these at creation; if the user since updated the project,
   // this button re-syncs (one click, no auto-overwrite).
   const project = useApp(s => ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null);
+  const agent   = useApp(s => ws ? s.agents.find(a => a.id === ws.cli) ?? null : null);
   const loadAll = useApp(s => s.loadAll);
 
   // Local edit state, snapshotted from the workspace whenever the
@@ -32,7 +33,6 @@ export function WorkspaceSandboxDialog() {
   // the array split.
   const [enabled, setEnabled] = useState(false);
   const [rwText,    setRwText]    = useState("");
-  const [denyText,  setDenyText]  = useState("");
   const [hostsText, setHostsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr]   = useState<string | null>(null);
@@ -53,7 +53,6 @@ export function WorkspaceSandboxDialog() {
     if (!ws) return;
     setEnabled(!!ws.sandbox_enabled);
     setRwText((ws.sandbox_rw_paths ?? []).join("\n"));
-    setDenyText((ws.sandbox_deny_paths ?? []).join("\n"));
     setHostsText((ws.sandbox_allowed_hosts ?? []).join("\n"));
     setErr(null);
     setBusy(false);
@@ -75,7 +74,7 @@ export function WorkspaceSandboxDialog() {
       const split = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
       const out = await workspaceTestSandbox(ws.id, {
         rwPaths:       split(rwText),
-        denyPaths:     split(denyText),
+        denyPaths:     [],
         allowedHosts:  split(hostsText),
       });
       setProbes(out);
@@ -100,7 +99,6 @@ export function WorkspaceSandboxDialog() {
   const dirty = ws ? (
     enabled !== !!ws.sandbox_enabled ||
     !arrEq(splitLines(rwText),    ws.sandbox_rw_paths      ?? []) ||
-    !arrEq(splitLines(denyText),  ws.sandbox_deny_paths    ?? []) ||
     !arrEq(splitLines(hostsText), ws.sandbox_allowed_hosts ?? [])
   ) : false;
 
@@ -127,7 +125,7 @@ export function WorkspaceSandboxDialog() {
       useUI.getState().markPendingSandboxRestart(ws.id);
       const killed = await workspaceSetSandbox(
         ws.id, enabled,
-        lines(rwText), lines(denyText), lines(hostsText),
+        lines(rwText), [], lines(hostsText),
       );
       await loadAll();
       // Quiet success - the kill is the visible feedback (overlay
@@ -205,7 +203,7 @@ export function WorkspaceSandboxDialog() {
               // them from the union of project + global defaults so
               // the user starts with a sensible baseline instead of a
               // blank cage. Only fires when there's nothing to lose.
-              if (next && !rwText.trim() && !denyText.trim() && !hostsText.trim()) {
+              if (next && !rwText.trim() && !hostsText.trim()) {
                 try {
                   const s = await settingsLoad();
                   const merge = (g: string[] = [], pr: string[] = []) => {
@@ -216,7 +214,6 @@ export function WorkspaceSandboxDialog() {
                     return out.join("\n");
                   };
                   setRwText   (merge(s.sandbox_default_rw_paths,      project?.sandbox_rw_paths));
-                  setDenyText (merge(s.sandbox_default_deny_paths,    project?.sandbox_deny_paths));
                   setHostsText(merge(s.sandbox_default_allowed_hosts, project?.sandbox_allowed_hosts));
                 } catch {}
               }
@@ -277,7 +274,6 @@ export function WorkspaceSandboxDialog() {
                 title={p.hint}
                 onClick={() => {
                   setRwText(p.rwPaths.join("\n"));
-                  setDenyText(p.denyPaths.join("\n"));
                   setHostsText(p.allowedHosts.join("\n"));
                 }}
                 className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
@@ -291,7 +287,6 @@ export function WorkspaceSandboxDialog() {
                 title={`Re-sync from ${project.name}'s current sandbox defaults (Settings → Repositories).`}
                 onClick={() => {
                   setRwText((project.sandbox_rw_paths ?? []).join("\n"));
-                  setDenyText((project.sandbox_deny_paths ?? []).join("\n"));
                   setHostsText((project.sandbox_allowed_hosts ?? []).join("\n"));
                 }}
                 className="rounded-md border border-[var(--color-accent-soft)] bg-[var(--color-bg)] px-2 py-0.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-fg)]"
@@ -304,69 +299,64 @@ export function WorkspaceSandboxDialog() {
 
         <Field
           label="Allowed paths"
-          hint="Dirs the agent can read AND write. The workspace is always allowed. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
+          hint="Extra dirs the agent can read AND write, on top of the workspace + agent + runtime defaults shown on the right. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
         >
-          {/* Two columns: user input on the left, what's already
-              covered on the right. items-stretch matches heights so
-              the panel doesn't tower over a small textarea. min-h-full
-              on the textarea wrapper lets it grow with the panel
-              instead of leaving dead space. */}
+          {/* Two columns, locked to the same height. box-border on
+              both so the explicit h-[] applies to the OUTER box
+              (border + padding included) instead of the content
+              area — otherwise the textarea (content-box default)
+              renders ~2px taller than the panel and they don't line
+              up. scrollbar-gutter:stable so the right panel reserves
+              space for its scrollbar and the chips don't reflow when
+              scrolling kicks in. */}
           <div className="grid grid-cols-2 items-stretch gap-3">
             <AutoGrowTextarea
               value={rwText}
               onChange={e => setRwText(e.target.value)}
               rows={4}
               placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
-              className="h-full min-h-[160px] w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
+              className="box-border h-[180px] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               disabled={!enabled}
             />
-            <DefaultsPanel className="h-full">
-              <ChipGroup tone="allow" label="Always allowed (runtime)">
+            <DefaultsPanel className="box-border h-[180px] overflow-y-auto [scrollbar-gutter:stable]">
+              <ChipGroup tone="allow" label="Always allowed — read + write (workspace + runtime)">
                 <Chip tone="allow">workspace</Chip>
-                <Chip tone="allow">~/.claude</Chip>
-                <Chip tone="allow">~/.codex</Chip>
-                <Chip tone="allow">~/.gemini</Chip>
-                <Chip tone="allow" muted>+ XDG variants</Chip>
                 <Chip tone="allow">~/.npm</Chip>
                 <Chip tone="allow">~/.cache</Chip>
                 <Chip tone="allow">~/.cargo</Chip>
+                <Chip tone="allow">~/.bun</Chip>
                 <Chip tone="allow">~/Library/Caches</Chip>
-                <Chip tone="allow">~/Library/Logs</Chip>
-                <Chip tone="allow">~/Library/Application Support</Chip>
                 <Chip tone="allow">/private/tmp</Chip>
                 <Chip tone="allow">TMPDIR</Chip>
-                <Chip tone="allow" muted>system dirs</Chip>
               </ChipGroup>
-              <ChipGroup tone="deny" label="Default-denied">
-                <Chip tone="deny">~/.ssh</Chip>
-                <Chip tone="deny">~/.aws</Chip>
-                <Chip tone="deny">~/.gnupg</Chip>
-                <Chip tone="deny">~/.netrc</Chip>
-                <Chip tone="deny">~/.kube</Chip>
-                <Chip tone="deny">~/Documents</Chip>
-                <Chip tone="deny">~/Desktop</Chip>
-                <Chip tone="deny">~/Downloads</Chip>
-                <Chip tone="deny" muted>Mail</Chip>
-                <Chip tone="deny" muted>Messages</Chip>
-                <Chip tone="deny" muted>browser data</Chip>
-                <Chip tone="deny" muted>shell histories</Chip>
+              <ChipGroup tone="allow" label="Always allowed — read only (system bins + linker)">
+                <Chip tone="allow">/usr</Chip>
+                <Chip tone="allow">/opt</Chip>
+                <Chip tone="allow">/bin</Chip>
+                <Chip tone="allow">/sbin</Chip>
+                <Chip tone="allow">/dev</Chip>
+                <Chip tone="allow">/etc</Chip>
+                <Chip tone="allow" muted>dyld / ld.so cache</Chip>
+                <Chip tone="allow" muted>/lib /lib64 (linux)</Chip>
+                <Chip tone="allow" muted>/proc /sys /run (linux)</Chip>
               </ChipGroup>
+              {agent && (agent.sandbox_allowed_paths?.length ?? 0) > 0 && (
+                <ChipGroup tone="allow" label={`Always allowed for ${agent.display_name || agent.id}`}>
+                  {(agent.sandbox_allowed_paths ?? []).map(p => (
+                    <Chip key={p} tone="allow">{p.replace(/^\$HOME/, "~")}</Chip>
+                  ))}
+                </ChipGroup>
+              )}
               <p className="mt-2 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-                Add the <i>exact</i> path on the left to override a default-deny —
-                typing the parent does NOT re-expose secrets.
+                Everything outside the allow-list is denied. Secrets
+                (<span className="font-mono">~/.ssh</span>,{" "}
+                <span className="font-mono">~/.aws</span>,{" "}
+                <span className="font-mono">~/.gnupg</span>, Keychains,
+                browser data) stay denied even if you allow a parent —
+                add the <i>exact</i> path on the left to override.
               </p>
             </DefaultsPanel>
           </div>
-        </Field>
-        <Field label="Extra denied paths (optional)" hint="Layered on top of the allow-list — useful when you want to expose a parent dir but lock down a specific subdir inside it.">
-          <AutoGrowTextarea
-            value={denyText}
-            onChange={e => setDenyText(e.target.value)}
-            rows={2}
-            placeholder="$WORKSPACE/.git/hooks"
-            className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
-            disabled={!enabled}
-          />
         </Field>
         <Field label="Add allowed hosts" hint="One per line. Use * as a wildcard. Examples: *.mycompany.com, bitbucket.org">
           <div className="grid grid-cols-2 items-stretch gap-3">

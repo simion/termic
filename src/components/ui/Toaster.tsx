@@ -17,7 +17,7 @@ const TONE = {
   error:   "border-[var(--color-err)]/40 text-[var(--color-err)]",
 };
 
-const TTL_MS = 3200;
+const DEFAULT_TTL_MS = 3200;
 
 export function Toaster() {
   const toasts = useUI(s => s.toasts);
@@ -31,20 +31,34 @@ export function Toaster() {
 function ToastItem({ t }: { t: Toast }) {
   const dismiss = useUI(s => s.dismissToast);
   useEffect(() => {
-    const h = setTimeout(() => dismiss(t.id), TTL_MS);
+    const ttl = t.ttlMs ?? DEFAULT_TTL_MS;
+    const h = setTimeout(() => dismiss(t.id), ttl);
     return () => clearTimeout(h);
-  }, [t.id, dismiss]);
+  }, [t.id, t.ttlMs, dismiss]);
   const Ic = ICONS[t.kind];
   return (
     <div
       className={cn(
-        "pointer-events-auto flex max-w-[360px] items-center gap-2.5 rounded-md border bg-[var(--color-bg-1)] py-2 pl-3 pr-2 shadow-2xl",
+        // Wider ceiling for long path/URL messages; items-start so the
+        // icon and action button stay aligned to the first line when
+        // the message wraps to multiple lines. break-words so long
+        // unbroken segments (paths, URLs) don't blow out the width.
+        "pointer-events-auto flex max-w-[min(640px,calc(100vw-2rem))] items-start gap-2.5 rounded-md border bg-[var(--color-bg-1)] py-2 pl-3 pr-2 shadow-2xl",
         TONE[t.kind],
       )}
       role="status"
     >
-      <Ic className="h-4 w-4 shrink-0" />
-      <span className="flex-1 text-[12.5px] text-[var(--color-fg)]">{t.msg}</span>
+      <Ic className="mt-0.5 h-4 w-4 shrink-0" />
+      <span className="flex-1 break-words text-[12.5px] leading-snug text-[var(--color-fg)]">{t.msg}</span>
+      {t.action && (
+        <button
+          type="button"
+          onClick={() => { t.action!.onClick(); dismiss(t.id); }}
+          className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-0.5 text-[11.5px] font-medium text-[var(--color-fg)] hover:border-[var(--color-accent-soft)]"
+        >
+          {t.action.label}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => dismiss(t.id)}

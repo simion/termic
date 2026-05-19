@@ -146,9 +146,22 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
       //   3. Semibold weight on the label.
       // Inactive: muted bg-1 hover, fg-dim text, no border — sinks back.
       className={cn(
-        "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13.5px] transition-colors max-w-[220px] border",
+        // flex-[1_1_0] makes each tab share the available bar width
+        // equally instead of sizing to its label's intrinsic width.
+        // min-w floors so they're still readable when many tabs are
+        // open; max-w caps so a single tab on a wide bar doesn't
+        // become an enormous pill. Combined effect: tabs feel stable
+        // in width even when titles change (Working… / Ready /
+        // Action Required all map to the same slot).
+        "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors border",
+        "flex-[1_1_0] min-w-[140px] max-w-[260px]",
+        // Active state cue: brighter bg + colored border + brighter fg.
+        // Used to also use `font-semibold` but a weight change resizes
+        // the label's intrinsic width, which made the cell jiggle on
+        // every active-tab switch. Visual difference is preserved
+        // via the bg+border+text-color trio.
         active
-          ? "bg-[var(--color-bg-3)] text-[var(--color-fg)] border-[var(--color-accent-soft)] font-semibold"
+          ? "bg-[var(--color-bg-3)] text-[var(--color-fg)] border-[var(--color-accent-soft)]"
           : "border-transparent text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
@@ -183,13 +196,17 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
           }}
           onClick={e => e.stopPropagation()}
           onDoubleClick={e => e.stopPropagation()}
-          className="w-auto min-w-0 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1 text-[13.5px] text-[var(--color-fg)] outline-none"
+          className="w-auto min-w-0 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1 text-[12.5px] text-[var(--color-fg)] outline-none"
         />
       ) : (
         // Manual rename wins (customTitle locked at rename time).
         // Otherwise show the live OSC 0/2 title the agent set, falling
         // back to the static cli/type label when none arrived yet.
-        <span className="truncate" title={tab.liveTitle && !tab.customTitle ? tab.liveTitle : undefined}>
+        // min-w-0 + flex-1 so `truncate` actually clips inside the
+        // flex pill — without min-w-0 the span keeps its intrinsic
+        // width and pushes the pill larger, defeating the fixed-cell
+        // layout. Title attr surfaces the full text on hover.
+        <span className="min-w-0 flex-1 truncate" title={tab.liveTitle && !tab.customTitle ? tab.liveTitle : undefined}>
           {tab.customTitle ? tab.title : (tab.liveTitle || tab.title)}
         </span>
       )}

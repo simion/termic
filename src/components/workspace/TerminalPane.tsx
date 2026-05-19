@@ -94,6 +94,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
+  const clearAttention = useApp(s => s.clearAttention);
   const setTabLiveTitle = useApp(s => s.setTabLiveTitle);
   // Per-effect busy ref: tracks whether OSC 9;4 has us in a busy state.
   // Used to emit a "done" attention edge when the program transitions
@@ -135,6 +136,49 @@ export function TerminalPane({ ws, tab, active }: Props) {
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+
+    // Shift+Enter → newline-without-submit.
+    //
+    // xterm.js by default sends plain \r for BOTH Enter and Shift+Enter,
+    // so without an override the agent can't tell them apart.
+    //
+    // We send `\\` + `\r` (literal backslash then CR) — the same
+    // sequence `/terminal-setup` writes into iTerm2 for Claude Code.
+    // Claude's input parser reads the trailing backslash as a
+    // continuation marker and inserts a soft newline instead of
+    // submitting. Gemini + codex also accept this convention.
+    //
+    // ESC+CR (`\x1b\r`, the old Option+Enter convention) was tried
+    // first but recent claude builds no longer recognize it — they
+    // require the explicit backslash-Enter pair.
+    term.attachCustomKeyEventHandler((e) => {
+      const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter";
+      if (e.type === "keydown" && e.shiftKey && isEnter && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        const pid = ptyRef.current;
+        if (pid) {
+          // `\` + `\r` (0x5c 0x0d) — claude's `hasUsedBackslashReturn`
+          // path. Gemini + codex accept it too.
+          ipc.ptyWrite(pid, [0x5c, 0x0d]).catch(() => {});
+        }
+        // BOTH stops are required:
+        //   - return false      → xterm.js skips its keydown handler
+        //                         (otherwise it'd also emit \r)
+        //   - preventDefault    → WKWebView skips inserting `\n` into
+        //                         the helper textarea, which would
+        //                         otherwise fire xterm's input-event
+        //                         listener and submit anyway. This was
+        //                         the bit that took the longest to
+        //                         find: every "right" byte sequence
+        //                         (ESC+CR, \\\r, LF, modifyOtherKeys)
+        //                         was being suffixed by a stray LF
+        //                         from the textarea insertion, so
+        //                         claude always submitted.
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
+      return true;
+    });
 
     // ── Sender-driven status signals ──────────────────────────────────
     //
@@ -274,6 +318,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
         armDoneTimer(`OSC 9;4;${state}`, OSC_DONE_DELAY_MS);
       } else if (nowBusy) {
         cancelDoneTimer(`OSC 9;4;${state}`);
+        // New work started — drop the stale "done" check (set on a
+        // previous turn) so it doesn't read as "this turn finished
+        // immediately." The next busy→idle transition arms a fresh
+        // done-mark.
+        const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id)?.unread;
+        if (cur?.reason === "done") clearAttention(ws.id, tab.id);
       }
       busyRef.current = nowBusy;
       return false;
@@ -282,19 +332,19 @@ export function TerminalPane({ ws, tab, active }: Props) {
     const cancelOscDoneTimer = cancelDoneTimer;
     const armOscDoneTimer = (reason: string) => armDoneTimer(reason, OSC_DONE_DELAY_MS);
     void cancelOscDoneTimer; void armOscDoneTimer;
-    // Stash the push-on-data hook on a ref so the PTY data listener
-    // (registered later in the spawn flow) can call it without holding
-    // a direct reference to doneTimer. Output activity == agent still
-    // streaming, so push the timer out (regardless of which signal
-    // armed it — OSC 9;4 or title classifier).
-    pushOscDoneRef.current = () => {
-      if (!doneTimer) return;
-      // Don't endlessly extend — cap at 60s total. If the agent is
-      // genuinely working that long without an OSC busy=true or a
-      // busy title, fall back to the next signal.
-      if (Date.now() - doneArmedAt > 60_000) return;
-      armDoneTimer(`pty-data (extending)`, doneArmedDelay);
-    };
+    // Push-on-data extender is INTENTIONALLY a no-op now.
+    //
+    // Previously we extended the done-timer on every PTY output burst
+    // so a chatty agent (long tool output, streaming thoughts) didn't
+    // trigger "done" while it was still talking. Side-effect: the done
+    // timer kept rearming indefinitely while claude streamed, spamming
+    // the work-done log and sometimes never firing the actual "done"
+    // because OSC idle was always followed by another byte.
+    //
+    // Now: we trust OSC 9;4 entirely. The agent's sender-driven
+    // busy=true / busy=false transitions arm + cancel the timer; PTY
+    // bytes don't matter. Less noise, more honest "done."
+    pushOscDoneRef.current = () => {};
     // OSC 1337 — iTerm proprietary. RequestAttention=yes/fireworks is
     // an explicit "user, look at me." Treat as "done" too — both want
     // the sidebar dot + a notification.
@@ -387,6 +437,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // Rust consults ws.sandbox_enabled. Passing the id is harmless
           // when sandbox is off; Rust just spawns the cmd directly.
           workspace_id: ws.id,
+          // The tab's CLI may differ from the workspace's primary CLI
+          // (claude workspace with a gemini tab open, etc.). Send the
+          // tab's agent id so the rendered SBPL profile uses THIS
+          // agent's allowed paths + host allowlist, not the workspace
+          // default.
+          agent_id: tab.cli,
           rows, cols,
         });
         const ptyId = spawn.id;
@@ -834,6 +890,28 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
       await ipc.workspaceSandboxAddAllowedPath(wsId, path);
       const next = await ipc.sandboxRecentDeniedPaths(wsId).catch(() => paths);
       setPaths(next);
+      // Confirmation + undo. The toast TTL is bumped to 6s (vs default
+      // 3.2s) so the user actually has time to read the path and decide
+      // whether to revert.
+      const display = path.startsWith("$HOME") ? path : path.replace(/^.*\/Users\/[^/]+/, "$HOME");
+      useUI.getState().pushToast(
+        `Allowed ${display} (workspace + project defaults)`,
+        "success",
+        {
+          ttlMs: 6000,
+          action: {
+            label: "Undo",
+            onClick: async () => {
+              try {
+                await ipc.workspaceSandboxRemoveAllowedPath(wsId, path);
+                useUI.getState().pushToast(`Removed ${display} from allow-list`, "info");
+              } catch (e) {
+                useUI.getState().pushToast(`Undo failed: ${e}`, "error");
+              }
+            },
+          },
+        },
+      );
     } finally { setAllowing(null); }
   }
 
@@ -899,9 +977,12 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
 
           {paths.length > 0 && (
             <>
-              <div className="mt-3 mb-1.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+              <div className="mt-3 mb-0.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
                 <span>Blocked filesystem paths</span>
                 <span>{paths.length}</span>
+              </div>
+              <div className="mb-1.5 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
+                Click any path segment to allow that prefix. Hover to preview which part you'll allow — green = will be allowed, dimmed = trimmed off.
               </div>
               <ul className="flex flex-col">
                 {paths.map(p => (
@@ -909,29 +990,37 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                     key={p.path}
                     className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
                   >
-                    {/* Show $HOME-prefixed for compactness; full path
-                        is in the title tooltip. */}
-                    <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={p.path}>{shortenPath(p.path)}</span>
-                    <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
+                    {/* Path is split into clickable segments — clicking
+                        a segment allows the prefix up to and including
+                        that segment. Lets the user pick a parent dir
+                        (e.g. `$HOME/.agents/skills`) instead of being
+                        forced to allow each leaf separately. */}
+                    <PathSegments
+                      display={shortenPath(p.path)}
+                      pending={allowing === p.path}
+                      onAllow={(prefix) => allowPath(prefix)}
+                    />
+                    <span
+                      className="ml-auto shrink-0 text-[11px] text-[var(--color-fg-faint)]"
+                      title={p.last_proc ? `Process: ${p.last_proc}(${p.last_pid})` : undefined}
+                    >
+                      {p.last_proc && (
+                        <span className="mr-2 font-mono text-[var(--color-fg-dim)]">
+                          {p.last_proc}({p.last_pid})
+                        </span>
+                      )}
                       {p.count}× · {relTime(p.last_seen_unix_ms)}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => allowPath(p.path)}
-                      disabled={allowing === p.path}
-                      className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                      title={`Add ${p.path} to allowed paths. Takes effect on next agent restart.`}
-                    >
-                      {allowing === p.path ? "…" : "Allow"}
-                    </button>
                   </li>
                 ))}
               </ul>
             </>
           )}
 
-          <div className="mt-2 px-1 text-[11px] text-[var(--color-fg-faint)]">
-            "Allow" adds the host or path to this workspace's sandbox config. Changes take effect on the next agent restart — the running agent keeps its current (narrower) permissions.
+          <div className="mt-2 max-w-[460px] px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
+            Clicking adds the path or host to this workspace's allow-list.
+            <br />
+            Takes effect on next agent restart — the running agent keeps its current (narrower) permissions.
           </div>
         </Popover.Content>
       </Popover.Portal>
@@ -948,6 +1037,64 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
 //   < 1 hr   → "Xm ago"  rounded to the nearest 5min
 //   < 24 hr  → "Xh ago"
 //   else     → "yesterday" / "Xd ago"
+/** Clickable path-segment ribbon. Splits a `$HOME/.foo/bar/baz` (or
+ *  absolute) path into individual segments; each segment-click allows
+ *  the prefix up to and INCLUDING that segment. The trailing segments
+ *  dim to hint at the cut-off. Lets the user pick a parent dir without
+ *  having to retype the path into the sandbox dialog. */
+function PathSegments({ display, onAllow, pending }: {
+  display: string;
+  onAllow: (prefix: string) => void;
+  pending: boolean;
+}) {
+  // Hover state: index up to which the user is "selecting" — segments
+  // 0..=hovered get the green-on-hover treatment, segments after dim.
+  const [hovered, setHovered] = useState<number | null>(null);
+
+  const absolute = display.startsWith("/");
+  const parts = display.split("/").filter(Boolean);
+  // Reconstruct the prefix string for each segment index. For absolute
+  // paths we keep the leading "/"; for $HOME-relative the first segment
+  // *is* $HOME and the rest concatenate with "/".
+  const prefixAt = (i: number) =>
+    (absolute ? "/" : "") + parts.slice(0, i + 1).join("/");
+
+  return (
+    <span
+      className="flex min-w-0 flex-wrap items-center gap-0 font-mono text-[12px] text-[var(--color-fg)]"
+      onMouseLeave={() => setHovered(null)}
+    >
+      {parts.map((seg, i) => {
+        const isPrefix = hovered !== null && i <= hovered;
+        const isSuffix = hovered !== null && i > hovered;
+        return (
+          <span key={i} className="flex items-center">
+            {i > 0 && (
+              <span className={cn(
+                "select-none px-0.5 text-[var(--color-fg-faint)]",
+                isSuffix && "opacity-40",
+              )}>/</span>
+            )}
+            <button
+              type="button"
+              onMouseEnter={() => setHovered(i)}
+              onClick={() => onAllow(prefixAt(i))}
+              disabled={pending}
+              title={`Allow ${prefixAt(i)}. Takes effect on next agent restart.`}
+              className={cn(
+                "rounded px-1 transition-colors disabled:opacity-50",
+                isPrefix && "bg-[var(--color-ok)]/15 text-[var(--color-fg)]",
+                isSuffix && "text-[var(--color-fg-faint)] opacity-40",
+                hovered === null && "hover:bg-[var(--color-hover)]",
+              )}
+            >{seg}</button>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 function relTime(unixMs: number): string {
   const delta = Math.max(0, Date.now() - unixMs);
   const s = Math.floor(delta / 1000);

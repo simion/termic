@@ -160,33 +160,23 @@ export function UnifiedBar() {
             <span className={cn("flex items-center self-center", CLI_BRAND_COLOR[ws.cli])}>
               <CliIcon cli={ws.cli} className="h-4 w-4" />
             </span>
-            <span className="truncate font-medium leading-none text-[var(--color-fg)]">{ws.name}</span>
-            <span className="leading-none text-[var(--color-fg-faint)]">on</span>
-            <span className="truncate font-mono text-[12px] leading-none text-[var(--color-fg-dim)]">{ws.branch}</span>
-            {/* Multi-repo: list each member with its frozen branch so
-                the user can see at-a-glance what worktrees + live
-                checkouts are mounted under this workspace. Compact —
-                hidden on narrow widths to protect the breadcrumb. */}
+            <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]">{ws.name}</span>
+            <span className="leading-tight text-[var(--color-fg-faint)]">on</span>
+            <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{ws.branch}</span>
+            {/* Multi-repo: just a small chip with the member count.
+                The full per-member breakdown (which dir_name, which
+                branch, worktree vs live) lives in the right-panel
+                target tabs where it actually matters. Stuffing it
+                into the breadcrumb made the bar unreadable past 2
+                members and pushed real chrome (Review / Send to main)
+                off-screen on narrow windows. */}
             {(ws.composition?.length ?? 0) > 0 && (
-              // Use leading-none everywhere in this strip so the
-              // chips share a baseline with the breadcrumb instead
-              // of dropping a few px. inline-flex + items-center on
-              // the LIVE pill keeps its label vertically centered
-              // inside its rounded bg without nudging the row.
-              <div className="hidden min-w-0 items-center gap-1.5 overflow-hidden font-mono text-[12px] leading-none text-[var(--color-fg-faint)] lg:flex">
-                <span className="opacity-50">·</span>
-                {ws.composition!.map((m, i) => (
-                  <span key={m.project_id} className="flex shrink-0 items-center gap-1 leading-none">
-                    {i > 0 && <span className="opacity-50">·</span>}
-                    <span className="text-[var(--color-fg-dim)] leading-none">{m.dir_name}</span>
-                    {m.mode === "worktree" ? (
-                      <span className="text-[var(--color-fg-faint)] leading-none">@{m.branch}</span>
-                    ) : (
-                      <span className="inline-flex items-center rounded bg-[var(--color-warn)]/15 px-1 py-[1px] text-[10px] font-sans uppercase tracking-wider leading-none text-[var(--color-warn)]">live</span>
-                    )}
-                  </span>
-                ))}
-              </div>
+              <span
+                className="ml-1 inline-flex shrink-0 items-center rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider leading-none text-[var(--color-fg-dim)]"
+                title={ws.composition!.map(m => m.mode === "worktree" ? `${m.dir_name} @${m.branch}` : `${m.dir_name} (live)`).join(" · ")}
+              >
+                {ws.composition!.length} repos
+              </span>
             )}
           </>
         ) : (

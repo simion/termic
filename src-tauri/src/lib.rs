@@ -471,6 +471,14 @@ pub struct SpawnArgs {
     /// returned is the same shape either way.
     #[serde(default)]
     pub workspace_id: Option<String>,
+    /// The agent ID being spawned in *this* tab. May differ from
+    /// `workspace.cli` because a workspace can host multiple tabs
+    /// running different agents (e.g. a claude workspace with a gemini
+    /// tab open). Drives which agent's `sandbox_allowed_paths` +
+    /// per-CLI host allowlist get baked into the freshly-provisioned
+    /// SBPL profile. Falls back to `workspace.cli` when absent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 fn default_rows() -> u16 { 40 }
 fn default_cols() -> u16 { 120 }
@@ -502,12 +510,13 @@ fn pty_spawn(
         .and_then(|wid| load_workspaces().into_iter().find(|w| w.id == wid))
         .filter(|w| w.sandbox_enabled)
     {
-        Some(ws) => match sandbox::provision(&ws) {
+        Some(ws) => match sandbox::provision(&ws, args.agent_id.as_deref()) {
             Ok(bundle) => {
                 let port = bundle.proxy.as_ref().map(|p| p.port).unwrap_or(0);
+                let effective_cli = args.agent_id.as_deref().unwrap_or(&ws.cli);
                 dlog(&format!(
                     "[pty_spawn] sandbox=ON ws={} cli={} proxy_port={} profile={}",
-                    ws.id, ws.cli, port, bundle.profile_path.display(),
+                    ws.id, effective_cli, port, bundle.profile_path.display(),
                 ));
                 let (c, a) = sandbox::wrap_command(&bundle, &args.cmd, &args.args);
                 dlog(&format!("[pty_spawn] wrapped: {c} {a:?}"));
@@ -570,6 +579,14 @@ fn pty_spawn(
     let child_pid = child.process_id();
     drop(pair.slave);
 
+    // Register the PID with the sandbox's PID-ancestry tracker. The
+    // path watcher uses this to filter system-wide deny noise: only
+    // denies whose PID (or some ancestor) is in this set get counted
+    // against this workspace.
+    if let (Some(pid), Some(wid)) = (child_pid, args.workspace_id.as_deref()) {
+        sandbox::register_root_pid(wid, pid);
+    }
+
     let id = Uuid::new_v4().to_string();
     let master = pair.master;
     let mut reader = master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -601,11 +618,19 @@ fn pty_spawn(
     let app_w = app.clone();
     let id_w = id.clone();
     let state_w = state.inner.clone();
+    let ws_for_waiter = args.workspace_id.clone();
+    let pid_for_waiter = child_pid;
     thread::spawn(move || {
         let status = child.wait().ok();
         let code = status.and_then(|s| i32::try_from(s.exit_code()).ok());
         dlog(&format!("[pty/{id_w}] child exited code={code:?}"));
         let _ = app_w.emit(&format!("pty-exit://{}", id_w), PtyExit { code });
+        // Drop this PID from the sandbox's PID set so the path watcher
+        // stops counting denies from anything that happened to inherit
+        // this PID after exit (rare but possible on macOS).
+        if let (Some(pid), Some(ws)) = (pid_for_waiter, ws_for_waiter.as_deref()) {
+            sandbox::unregister_root_pid(ws, pid);
+        }
         let mut map = state_w.lock();
         map.remove(&id_w);
     });
@@ -1841,6 +1866,12 @@ struct DenyPath {
     path: String,
     count: u64,
     last_seen_unix_ms: f64,
+    /// Last PID / process name observed denying this path. Surfaced on
+    /// the popover row so a user investigating a surprising deny
+    /// (Opera/Vivaldi/Chromium under claude, etc.) can pin it to a
+    /// specific process without having to `ps -p <pid>` themselves.
+    last_pid: u32,
+    last_proc: String,
 }
 #[tauri::command]
 fn sandbox_recent_denied_paths(id: String) -> Vec<DenyPath> {
@@ -1848,6 +1879,8 @@ fn sandbox_recent_denied_paths(id: String) -> Vec<DenyPath> {
         path: e.path,
         count: e.count,
         last_seen_unix_ms: e.last_seen_unix_ms as f64,
+        last_pid: e.last_pid,
+        last_proc: e.last_proc,
     }).collect()
 }
 
@@ -1866,9 +1899,24 @@ fn workspace_sandbox_add_allowed_host(
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
     if !w.sandbox_allowed_hosts.iter().any(|h| h == &host) {
-        w.sandbox_allowed_hosts.push(host);
+        w.sandbox_allowed_hosts.push(host.clone());
     }
+    let project_id = w.project_id.clone();
     save_workspace(w).map_err(|e| e.to_string())?;
+    // Lift into the project's sandbox defaults too, so future
+    // workspaces under the same project inherit. The agent probes
+    // the same hosts in every workspace it runs; saving per-project
+    // means the user doesn't have to re-click Allow on each new
+    // workspace they create. Sibling workspaces that already exist
+    // are NOT retroactively patched (would surprise the user) —
+    // they'll still hit the deny once and click Allow themselves.
+    let mut projects = load_projects();
+    if let Some(p) = projects.iter_mut().find(|p| p.id == project_id) {
+        if !p.sandbox_allowed_hosts.iter().any(|h| h == &host) {
+            p.sandbox_allowed_hosts.push(host);
+            let _ = save_projects(&projects);
+        }
+    }
     Ok(0)
 }
 
@@ -1887,16 +1935,67 @@ fn workspace_sandbox_add_allowed_path(
     // anyway). Only the LEADING prefix — `/Users/simion/Pictures` is
     // the user's home; embedded `/Users/...` elsewhere is left alone.
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    // Tokenized form for persistence ($HOME/...).
     let stored = if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
         path.replacen(&home, "$HOME", 1)
-    } else { path };
+    } else if !home.is_empty() && (path == "$HOME" || path.starts_with("$HOME/")) {
+        path.clone()
+    } else {
+        path.clone()
+    };
+    // Absolute form for the deny-tracker prune (the tracker stores
+    // absolute paths from the kernel deny log). The frontend may have
+    // sent either form depending on whether the click was on a
+    // shortened or raw display.
+    let absolute = if !home.is_empty() && (path == "$HOME" || path.starts_with("$HOME/")) {
+        path.replacen("$HOME", &home, 1)
+    } else {
+        path
+    };
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
     if !w.sandbox_rw_paths.iter().any(|p| p == &stored) {
-        w.sandbox_rw_paths.push(stored);
+        w.sandbox_rw_paths.push(stored.clone());
     }
+    let project_id = w.project_id.clone();
     save_workspace(w).map_err(|e| e.to_string())?;
+    // Lift to project defaults too so future workspaces inherit.
+    // See workspace_sandbox_add_allowed_host for rationale.
+    let mut projects = load_projects();
+    if let Some(p) = projects.iter_mut().find(|p| p.id == project_id) {
+        if !p.sandbox_rw_paths.iter().any(|p| p == &stored) {
+            p.sandbox_rw_paths.push(stored);
+            let _ = save_projects(&projects);
+        }
+    }
+    // Prune historical deny entries under this prefix so the popover
+    // row vanishes after click. Without this the in-memory tracker
+    // keeps the entry around and the user thinks the click did nothing.
+    sandbox::clear_path_denies_under(&id, &absolute);
     Ok(0)
+}
+
+/// Undo of `workspace_sandbox_add_allowed_path`. Removes the path from
+/// the workspace's `sandbox_rw_paths` list. Used by the toast's Undo
+/// button after a click in the blocked-paths popover. Idempotent —
+/// removing a path that isn't in the list is a no-op success.
+#[tauri::command]
+fn workspace_sandbox_remove_allowed_path(
+    _state: State<'_, PtyManager>, id: String, path: String,
+) -> Result<(), String> {
+    let path = path.trim().to_string();
+    if path.is_empty() { return Ok(()); }
+    // Match both raw and $HOME-tokenized forms (the stored entry was
+    // tokenized at add-time, but the caller may pass either).
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let tokenized = if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
+        path.replacen(&home, "$HOME", 1)
+    } else { path.clone() };
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    w.sandbox_rw_paths.retain(|p| p != &path && p != &tokenized);
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -3122,6 +3221,14 @@ pub struct Agent {
     /// the UI parses `KEY=VAL` lines and round-trips them through this map.
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+    /// Paths joined into the workspace sandbox allow-list whenever this
+    /// agent's CLI is launched. The sandbox is allowlist-only (default-deny
+    /// reads + writes outside this set); per-agent paths cover the dirs the
+    /// CLI itself needs (its config / session / cache). Cannot be removed
+    /// per-workspace — the workspace's own `sandbox_rw_paths` only ADDS
+    /// to this set. `$HOME` substitution happens at sandbox provision time.
+    #[serde(default)]
+    pub sandbox_allowed_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -3166,6 +3273,21 @@ fn default_agents() -> Vec<Agent> {
                 resume_args: vec!["--continue".into()],
             },
             env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                // Covers $HOME/.claude/, $HOME/.claude.json,
+                // $HOME/.claude.lock, $HOME/.claude.json.lock, and
+                // $HOME/.claude.json.tmp.<pid>.<hash> atomic-write
+                // tempfiles in one shot. (subpath ...) in seatbelt
+                // only matches `prefix/` boundary, so the sidecar
+                // files needed a regex or an explicit literal each.
+                "regex:^$HOME/\\.claude(\\.[^/]*|/.*)?$".into(),
+                "$HOME/.config/claude".into(),
+                "$HOME/.local/share/claude".into(),
+                "$HOME/.local/state/claude".into(),
+                "$HOME/Library/Application Support/Claude".into(),
+                // ~/.agents (the skills convention) is universal — see
+                // builtin_runtime_paths in sandbox.rs; not duplicated here.
+            ],
         },
         Agent {
             id: "gemini".into(),
@@ -3184,6 +3306,13 @@ fn default_agents() -> Vec<Agent> {
                 resume_args: vec!["--resume".into(), "latest".into()],
             },
             env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                "$HOME/.gemini".into(),
+                "$HOME/.config/gemini".into(),
+                "$HOME/.local/share/gemini".into(),
+                "$HOME/.local/state/gemini".into(),
+                "$HOME/Library/Application Support/Gemini".into(),
+            ],
         },
         Agent {
             id: "codex".into(),
@@ -3202,6 +3331,13 @@ fn default_agents() -> Vec<Agent> {
                 resume_args: vec!["resume".into(), "--last".into()],
             },
             env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                "$HOME/.codex".into(),
+                "$HOME/.config/codex".into(),
+                "$HOME/.local/share/codex".into(),
+                "$HOME/.local/state/codex".into(),
+                "$HOME/Library/Application Support/Codex".into(),
+            ],
         },
     ]
 }
@@ -3210,7 +3346,7 @@ fn settings_file() -> Result<PathBuf> {
     Ok(data_dir()?.join("settings.json"))
 }
 
-fn load_settings_inner() -> Settings {
+pub(crate) fn load_settings_inner() -> Settings {
     let f = match settings_file() { Ok(p) => p, Err(_) => return seeded_defaults() };
     let mut s: Settings = match fs::read_to_string(&f) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
@@ -3225,6 +3361,47 @@ fn load_settings_inner() -> Settings {
         for def in default_agents() {
             if !s.agents.iter().any(|a| a.id == def.id) {
                 s.agents.push(def);
+            }
+        }
+    }
+    // Migration: backfill missing `sandbox_allowed_paths` entries on
+    // BUILT-IN agents. We MERGE the shipped defaults into the stored
+    // list (preserving user-added entries + ordering) rather than
+    // replacing. This way each release that adds a new shipped path
+    // (e.g. the v0.3.11 → 0.3.12 regex consolidation for claude's
+    // sidecars) flows out to existing installs without the user
+    // needing to click Reset.
+    //
+    // Trade-off: a user who DELIBERATELY removed a shipped path will
+    // see it come back on the next launch. Acceptable because (a) the
+    // shipped list is the minimum the CLI needs to function, removing
+    // entries usually breaks the agent, and (b) it's a single line
+    // to re-remove in Settings → Agents. Custom agents are left alone.
+    let mut migrated = false;
+    for def in default_agents() {
+        if let Some(a) = s.agents.iter_mut().find(|a| a.id == def.id && a.builtin) {
+            let existing: std::collections::HashSet<&String> =
+                a.sandbox_allowed_paths.iter().collect();
+            let missing: Vec<String> = def.sandbox_allowed_paths
+                .iter()
+                .filter(|p| !existing.contains(p))
+                .cloned()
+                .collect();
+            drop(existing);
+            if !missing.is_empty() {
+                a.sandbox_allowed_paths.extend(missing);
+                migrated = true;
+            }
+        }
+    }
+    // Persist the migration so jq / external tooling sees the fields,
+    // and so subsequent loads don't re-do the same work. Best-effort:
+    // a read-only filesystem or transient I/O error shouldn't fail the
+    // load (in-memory state is still correct).
+    if migrated {
+        if let Ok(f) = settings_file() {
+            if let Ok(serialized) = serde_json::to_string_pretty(&s) {
+                let _ = fs::write(f, serialized);
             }
         }
     }
@@ -3493,7 +3670,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
             workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
-            sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_recent_denials, workspace_test_sandbox,
+            sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_dir_list,

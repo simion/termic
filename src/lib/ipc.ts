@@ -70,7 +70,7 @@ export const sandboxRecentDeniedHosts = (id: string) =>
 
 /** Per-path filesystem deny breakdown. Parsed from macOS log stream
  *  in the background (one watcher per sandboxed workspace). */
-export interface DenyPath { path: string; count: number; last_seen_unix_ms: number }
+export interface DenyPath { path: string; count: number; last_seen_unix_ms: number; last_pid: number; last_proc: string }
 export const sandboxRecentDeniedPaths = (id: string) =>
   invoke<DenyPath[]>("sandbox_recent_denied_paths", { id });
 
@@ -85,6 +85,11 @@ export const workspaceSandboxAddAllowedHost = (id: string, host: string) =>
  *  respawn the agent. Backs the "Allow" button on path rows. */
 export const workspaceSandboxAddAllowedPath = (id: string, path: string) =>
   invoke<number>("workspace_sandbox_add_allowed_path", { id, path });
+
+/** Undo of add-allowed-path. Drops the entry from the workspace's
+ *  sandbox_rw_paths list (matches both raw and $HOME-tokenized form). */
+export const workspaceSandboxRemoveAllowedPath = (id: string, path: string) =>
+  invoke<void>("workspace_sandbox_remove_allowed_path", { id, path });
 
 /** Newest-first list of macOS Sandbox denial lines from `log show` for
  *  the given workspace, last `minutes` minutes (default 10). Surfaces
@@ -165,6 +170,11 @@ export interface SpawnArgs {
    *  was created with sandbox_enabled. Omit for agent-less PTYs
    *  (e.g. AuxTerminal scratch shell) - those never get sandboxed. */
   workspace_id?: string;
+  /** Agent ID for THIS tab. Can differ from the workspace's primary
+   *  CLI (multi-CLI tabs). Drives which per-agent sandbox allowlist +
+   *  host-pattern set the rendered SBPL profile uses. Defaults to the
+   *  workspace's `cli` when omitted. */
+  agent_id?: string;
 }
 
 /** Sandbox status returned alongside the PTY id - tells the caller

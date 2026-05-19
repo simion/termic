@@ -68,16 +68,22 @@ interface UIState {
    *  pending restart so a SUBSEQUENT real exit shows the overlay. */
   consumePendingSandboxRestart: (wsId: string) => boolean;
   /** Push a transient toast. Returns its id (so callers can dismiss
-   *  early if needed). Auto-dismiss is handled by <Toaster/>. */
-  pushToast: (msg: string, kind?: ToastKind) => string;
+   *  early if needed). Auto-dismiss is handled by <Toaster/>.
+   *  `opts.action` adds a button (e.g. "Undo") whose click runs the
+   *  callback AND dismisses the toast. */
+  pushToast: (msg: string, kind?: ToastKind, opts?: { action?: ToastAction; ttlMs?: number }) => string;
   dismissToast: (id: string) => void;
 }
 
 export type ToastKind = "success" | "info" | "error";
+export interface ToastAction { label: string; onClick: () => void; }
 export interface Toast {
   id: string;
   msg: string;
   kind: ToastKind;
+  action?: ToastAction;
+  /** Override the global TTL for this toast (e.g. longer for undo). */
+  ttlMs?: number;
 }
 
 export const useUI = create<UIState>(set => ({
@@ -122,9 +128,9 @@ export const useUI = create<UIState>(set => ({
     useUI.setState({ pendingSandboxRestarts: next });
     return true;
   },
-  pushToast: (msg, kind = "success") => {
+  pushToast: (msg, kind = "success", opts) => {
     const id = crypto.randomUUID();
-    set(s => ({ toasts: [...s.toasts, { id, msg, kind }] }));
+    set(s => ({ toasts: [...s.toasts, { id, msg, kind, action: opts?.action, ttlMs: opts?.ttlMs }] }));
     return id;
   },
   dismissToast: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),

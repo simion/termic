@@ -118,6 +118,21 @@ pub fn network_deny_list(ws_id: &str) -> Vec<DenyEntry> {
     out
 }
 
+/// Wipe the network-deny tracker for `ws_id`. Called from
+/// `sandbox::provision()` so a fresh PTY spawn starts with no stale
+/// host-deny rows (e.g. after the user added a hostname to the
+/// workspace allow-list, or after a migration updated the per-CLI
+/// baseline). If anything is still being denied under the new
+/// allowlist regex, the next request from the agent re-fills it.
+pub fn clear_network_denies(ws_id: &str) {
+    if ws_id.is_empty() { return; }
+    if let Ok(mut g) = tracker().lock() {
+        if let Some(per_ws) = g.get_mut(ws_id) {
+            per_ws.clear();
+        }
+    }
+}
+
 impl Drop for ProxyHandle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
@@ -301,7 +316,10 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
         client.write_all(resp.as_bytes())?;
         return Ok(());
     }
-    dlog(&format!("[proxy] CONNECT {host}:{port} → allowed, resolving"));
+    // Per-connection success logs intentionally suppressed — every
+    // agent request is many connections; the chatter was burying real
+    // signals (403s, upstream failures) in the debug log. Only denies
+    // + upstream failures emit dlog now.
 
     // Connect to the actual upstream. ToSocketAddrs handles DNS in
     // one call; we don't constrain IPv6 vs IPv4 - whichever resolves.
@@ -323,7 +341,9 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
             return Err(anyhow!("connect upstream {host}:{port}: {e}"));
         }
     };
-    dlog(&format!("[proxy] CONNECT {host}:{port} → 200 (tunneling)"));
+    // Successful-tunnel dlog suppressed — see the per-connection
+    // success comment above the resolve block. Only denies (403) and
+    // upstream failures (502) log now.
 
     // CONNECT 2xx MUST NOT carry Content-Length / Transfer-Encoding
     // (RFC 9110 §9.3.6). And `Connection: close` here makes curl

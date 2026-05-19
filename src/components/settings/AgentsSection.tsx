@@ -128,6 +128,7 @@ export function AgentsSection() {
       color: "#9aa0a6",
       builtin: false,
       capabilities: { yolo_args: [], runtime_yolo_command: "" },
+      sandbox_allowed_paths: [],
     };
     mutate([...agents, fresh]);
     // Tell that card to scroll-into-view + focus on mount.
@@ -420,6 +421,16 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
             onChange={(env) => onPatch({ env })}
           />
         </Field>
+        <Field
+          label="Sandbox allowed paths"
+          hint="One path per line. $HOME and ~ expand. Joined into every workspace sandbox that uses this agent — workspaces cannot remove them. Reset to defaults restores the shipped list."
+        >
+          <PathsTextarea
+            value={agent.sandbox_allowed_paths ?? []}
+            onChange={(sandbox_allowed_paths) => onPatch({ sandbox_allowed_paths })}
+            placeholder={"$HOME/.claude\n$HOME/.config/claude"}
+          />
+        </Field>
       </div>
     </div>
   );
@@ -462,6 +473,46 @@ function EnvTextarea({ value, onChange }: {
       placeholder={"CLAUDE_CODE_NO_FLICKER=1\nHTTPS_PROXY=http://localhost:8080"}
     />
   );
+}
+
+/** One-path-per-line textarea. Same draft-state pattern as EnvTextarea so the
+ *  user can leave incomplete lines while typing. Trims each line and drops
+ *  blanks + `#` comments; otherwise passes through verbatim (no $HOME
+ *  expansion here — that happens on the Rust side at sandbox provision). */
+function PathsTextarea({ value, onChange, placeholder }: {
+  value: string[]; onChange: (next: string[]) => void; placeholder?: string;
+}) {
+  const serialize = (v: string[]) => v.join("\n");
+  const [draft, setDraft] = useState(serialize(value));
+  const externalText = serialize(value);
+  useEffect(() => {
+    if (parsePaths(draft).join("\n") === externalText) return;
+    setDraft(externalText);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalText]);
+  return (
+    <textarea
+      value={draft}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onChange(parsePaths(e.target.value));
+      }}
+      spellCheck={false}
+      rows={4}
+      className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] focus:border-[var(--color-accent-soft)] focus:outline-none"
+      placeholder={placeholder}
+    />
+  );
+}
+
+function parsePaths(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    out.push(line);
+  }
+  return out;
 }
 
 /** Parse `KEY=VALUE` lines into a stable map. Order is preserved by insertion

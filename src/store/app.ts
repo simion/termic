@@ -211,7 +211,14 @@ export const useApp = create<AppState>((set, get) => ({
       // Clicking the workspace = "I've seen this" → clear all.
       const tabs = get().tabs[id] || [];
       for (const t of tabs) {
-        if (t.type === "terminal" && t.unread) get().clearAttention(id, t.id);
+        // Clear bell/attention/exit (the user is now LOOKING, they've
+        // "seen" the alert). KEEP work-done — it's a passive
+        // "agent finished this turn" indicator that's useful at-a-glance
+        // even after activation; it gets overwritten by the next
+        // busy→done transition (see TerminalPane's OSC 9;4 handler).
+        if (t.type === "terminal" && t.unread && t.unread.reason !== "done") {
+          get().clearAttention(id, t.id);
+        }
       }
     }
   },

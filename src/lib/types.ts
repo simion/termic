@@ -196,6 +196,11 @@ export interface Agent {
    *  for things like `CLAUDE_CODE_NO_FLICKER=1` without wrapping the CLI
    *  in a shell script. UI parses `KEY=VAL` lines and round-trips them. */
   env?: Record<string, string>;
+  /** Paths joined into every sandbox built for a workspace using this
+   *  agent. Cannot be removed per-workspace — to drop one, edit the
+   *  agent in Settings → Agents (affects every workspace using it).
+   *  `$HOME` substitution happens at the Rust side. */
+  sandbox_allowed_paths?: string[];
 }
 
 export interface Settings {

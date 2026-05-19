@@ -454,18 +454,17 @@ export function Sidebar() {
                             ASLEEP layers extra opacity drop. */}
                         <span className={cn(
                           "shrink-0 transition-colors",
-                          // Work-done is its own row-level visual (green
-                          // check after the label). Brand-coloring the
-                          // CLI icon on top would be a second cue for
-                          // the same thing — keep the icon calm and let
-                          // the check carry the signal. Brand color is
-                          // reserved for "louder" unread reasons (bell,
-                          // exit) where the green check doesn't apply.
-                          unread && !workDone && !attention
-                            ? (CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg)]")
-                            : activeWs === w.id
-                              ? "text-[var(--color-fg)]"
-                              : "text-[var(--color-fg-faint)]",
+                          // CLI icon stays neutral regardless of unread
+                          // / work-done / attention state — those
+                          // signals already show up on the row itself
+                          // (green check, yellow bell, brighter row bg).
+                          // Coloring the icon on activity flickered
+                          // every output burst and made REPO ROOT rows
+                          // look "always alerting." Two states only:
+                          // active = white, inactive = faded.
+                          activeWs === w.id
+                            ? "text-[var(--color-fg)]"
+                            : "text-[var(--color-fg-faint)]",
                           asleep && "opacity-50",
                         )}>
                           {/* Workspace-row CLI icon is one step smaller
@@ -509,12 +508,27 @@ export function Sidebar() {
                                   // row's text baseline (which sat the
                                   // 10px caps slightly above the CLI
                                   // icon's optical center).
+                                  //
+                                  // Active vs inactive uses BOTH a bg-
+                                  // and a border-color shift so the chip
+                                  // pops at-a-glance — when several REPO
+                                  // ROOT rows stack in the sidebar (one
+                                  // per agent), the previous "same bg,
+                                  // only text-tone differs" was too
+                                  // subtle.
                                   "inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider shrink-0 leading-none",
-                                  activeWs === w.id
-                                    ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
-                                    : "bg-[var(--color-bg-3)] text-[var(--color-fg-dim)]",
+                                  // The chip only distinguishes AWAKE vs ASLEEP —
+                                  // the row's own bg/border already carries the
+                                  // "clicked / active" cue, so doubling up on the
+                                  // chip just made the active row shout while
+                                  // burying the awake-but-inactive distinction
+                                  // (which is the one that actually needs to
+                                  // pop next to dim sleeping rows).
+                                  asleep
+                                    ? "bg-[var(--color-bg-2)] text-[var(--color-fg-faint)]"
+                                    : "bg-[var(--color-bg-3)] text-[var(--color-fg)]",
                                 )}>
-                                  repo
+                                  repo root
                                 </span>
                               )}
                               {/* Sandbox indicator moved into the trailing

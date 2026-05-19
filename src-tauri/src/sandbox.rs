@@ -88,6 +88,12 @@ pub struct PathDenyEntry {
     pub path: String,
     pub count: u64,
     pub last_seen_unix_ms: u128,
+    /// Last PID the kernel attributed this deny to. Useful for "is
+    /// this really claude, or some helper it spawned?" — the popover
+    /// shows it so the user can pin a confusing deny to a real process.
+    pub last_pid: u32,
+    /// Process name from the deny line (`claude`, `node`, `git`, etc.).
+    pub last_proc: String,
 }
 
 static PATH_DENY_TRACKER: OnceLock<Mutex<HashMap<String, HashMap<String, PathDenyEntry>>>> = OnceLock::new();
@@ -103,7 +109,7 @@ fn now_unix_ms() -> u128 {
         .unwrap_or(0)
 }
 
-fn incr_path_deny(ws_id: &str, path: &str) {
+fn incr_path_deny(ws_id: &str, path: &str, pid: u32, proc: &str) {
     if ws_id.is_empty() || path.is_empty() { return; }
     if let Ok(mut g) = path_tracker().lock() {
         let per_ws = g.entry(ws_id.to_string()).or_insert_with(HashMap::new);
@@ -111,9 +117,13 @@ fn incr_path_deny(ws_id: &str, path: &str) {
             path: path.to_string(),
             count: 0,
             last_seen_unix_ms: 0,
+            last_pid: 0,
+            last_proc: String::new(),
         });
         entry.count += 1;
         entry.last_seen_unix_ms = now_unix_ms();
+        entry.last_pid = pid;
+        entry.last_proc = proc.to_string();
     }
 }
 
@@ -129,6 +139,129 @@ pub fn path_deny_list(ws_id: &str) -> Vec<PathDenyEntry> {
         .unwrap_or_default();
     out.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
     out
+}
+
+/// Wipe the workspace's entire path-deny tracker. Called from
+/// `provision()` so each fresh PTY spawn starts from a clean slate —
+/// otherwise denies logged under an older SBPL profile (before a
+/// migration added a path, before the user clicked Allow, etc.)
+/// stick around in the popover even though the new profile would
+/// permit them. If anything is still being denied under the new
+/// profile, the kernel re-logs and the tracker fills back up
+/// instantly.
+pub fn clear_path_denies(ws_id: &str) {
+    if ws_id.is_empty() { return; }
+    if let Ok(mut g) = path_tracker().lock() {
+        if let Some(per_ws) = g.get_mut(ws_id) {
+            per_ws.clear();
+        }
+    }
+}
+
+/// Drop every path-deny entry for this workspace whose path is at or
+/// under `prefix`. Called after the user clicks "Allow" on a path so
+/// the historical deny rows actually disappear from the popover —
+/// without this, the in-memory tracker keeps the entry around and the
+/// row sticks even though future accesses succeed.
+// ─── PID ancestry tracker ────────────────────────────────────────────
+//
+// The path-deny watcher subscribes to a system-wide log predicate, so
+// without filtering it picks up EVERY sandboxed process on the Mac
+// (Finder hitting iCloud, browser sandboxes, Spotlight indexer, ...).
+// The fix: only count denies whose process is a descendant of one of
+// the PIDs we spawned under our sandbox. Each pty_spawn registers its
+// child PID here; the watcher walks the kernel PPID chain for every
+// deny and accepts only matches.
+
+static SANDBOX_PIDS: OnceLock<Mutex<HashMap<String, HashSet<u32>>>> = OnceLock::new();
+
+fn sandbox_pids() -> &'static Mutex<HashMap<String, HashSet<u32>>> {
+    SANDBOX_PIDS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register a freshly-spawned PID as a sandbox root for `ws_id`. Called
+/// from pty_spawn right after we get the child pid from CommandBuilder.
+pub fn register_root_pid(ws_id: &str, pid: u32) {
+    if ws_id.is_empty() || pid == 0 { return; }
+    if let Ok(mut g) = sandbox_pids().lock() {
+        g.entry(ws_id.to_string()).or_default().insert(pid);
+    }
+}
+
+/// Drop a root PID when its PTY exits. Keeps the set from growing
+/// unboundedly across sessions.
+pub fn unregister_root_pid(ws_id: &str, pid: u32) {
+    if ws_id.is_empty() || pid == 0 { return; }
+    if let Ok(mut g) = sandbox_pids().lock() {
+        if let Some(set) = g.get_mut(ws_id) {
+            set.remove(&pid);
+        }
+    }
+}
+
+/// Read PPID for a live PID via `/bin/ps`. Returns None if the process
+/// already exited (most likely for short-lived helpers); the watcher
+/// treats that as "not ours" — false negative is preferred over false
+/// positive (counting other apps' denies under our workspace).
+fn ppid_of(pid: u32) -> Option<u32> {
+    let out = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "ppid="])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.trim().parse::<u32>().ok()
+}
+
+/// Authoritative process name for a PID via `/bin/ps`. Used to back-fill
+/// the popover's per-row "what tried to access this?" indicator when the
+/// log-line parse turns up a weird/empty/version-only string. Returns
+/// None if the process is already gone.
+fn comm_of(pid: u32) -> Option<String> {
+    let out = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Is `pid` (or any ancestor up to launchd) one of our registered
+/// sandbox root PIDs for this workspace? Walks up to a depth of 20 to
+/// guard against pathological pid loops (shouldn't happen on macOS).
+pub fn is_our_sandboxed_pid(ws_id: &str, mut pid: u32) -> bool {
+    if pid == 0 { return false; }
+    let our_pids: HashSet<u32> = match sandbox_pids().lock() {
+        Ok(g) => g.get(ws_id).cloned().unwrap_or_default(),
+        Err(_) => return false,
+    };
+    if our_pids.is_empty() { return false; }
+    for _ in 0..20 {
+        if our_pids.contains(&pid) { return true; }
+        if pid <= 1 { return false; }
+        match ppid_of(pid) {
+            Some(p) if p != pid => pid = p,
+            _ => return false,
+        }
+    }
+    false
+}
+
+pub fn clear_path_denies_under(ws_id: &str, prefix: &str) {
+    if ws_id.is_empty() || prefix.is_empty() { return; }
+    // Normalize trailing slash so the prefix check is unambiguous:
+    // we treat "/a/b" as covering "/a/b" AND "/a/b/...". A leaf-match
+    // also covers the leaf itself (path == prefix), so the user can
+    // allow a single-file deny and have it disappear.
+    let prefix = prefix.trim_end_matches('/');
+    let sep_prefix = format!("{prefix}/");
+    if let Ok(mut g) = path_tracker().lock() {
+        if let Some(per_ws) = g.get_mut(ws_id) {
+            per_ws.retain(|p, _| {
+                let p_norm = p.trim_end_matches('/');
+                p_norm != prefix && !p_norm.starts_with(&sep_prefix)
+            });
+        }
+    }
 }
 
 /// Spawn `log stream` filtered to seatbelt denies for this workspace.
@@ -158,7 +291,6 @@ fn start_path_watcher(workspace_id: &str, workspace_path: &str) -> Option<PathWa
     let ws_id_dbg = ws_id.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
-        let mut seen_first = false;
         for line in reader.lines().flatten() {
             // Sample deny line on macOS 15 (Sequoia):
             //   2026-05-18 ...  Sandbox: openssl(12345) deny(1) file-write-create /Users/x/Pictures/ccc.txt
@@ -171,19 +303,43 @@ fn start_path_watcher(workspace_id: &str, workspace_path: &str) -> Option<PathWa
             // the first absolute-path prefix in the line if no op token
             // is present.
             if !line.contains("deny") { continue; }
+            // Reject false positives BEFORE path extraction. The log
+            // predicate is system-wide ("Sandbox: ... deny") so we'd
+            // otherwise pick up Finder, Spotlight, every other sandboxed
+            // app on the Mac. Parse the PID and check PPID ancestry —
+            // only denies from our spawned PTYs (or their descendants)
+            // count.
+            let pid = extract_deny_pid(&line);
+            let Some(pid) = pid else { continue; };
+            if !is_our_sandboxed_pid(&ws_id, pid) { continue; }
             let path = extract_deny_path(&line);
             let Some(path) = path else { continue; };
-            // Only count user-visible paths. System-internal denies
-            // (caches, daemons checking ports we blocked, etc.) are
-            // noise. Workspace path or anything under /Users/ is in.
+            // Belt-and-suspenders: even after the PID check, ignore
+            // any path outside /Users/ — system caches etc.
             if !path.starts_with(&ws_path) && !path.starts_with("/Users/") {
                 continue;
             }
-            if !seen_first {
-                dlog(&format!("[sandbox/{ws_id_dbg}] first path-deny seen: {path}"));
-                seen_first = true;
-            }
-            incr_path_deny(&ws_id, &path);
+            // Prefer the log-parsed proc name; if it looks like a bare
+            // version string (claude logs itself as `claude 2.1.144`
+            // and some formatters strip the leading word), fall back to
+            // `ps -p X -o comm=` for the authoritative kernel name.
+            let parsed = extract_deny_proc(&line).unwrap_or_default();
+            let looks_versionlike = !parsed.is_empty()
+                && parsed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-');
+            let proc = if parsed.is_empty() || looks_versionlike {
+                comm_of(pid).unwrap_or_else(|| if parsed.is_empty() { "?".into() } else { parsed.clone() })
+            } else {
+                parsed
+            };
+            let op = extract_deny_op(&line).unwrap_or_else(|| "?".into());
+            // Log EVERY deny — not just the first — so users can audit
+            // exactly which process is hitting which path AND what kind
+            // of access was attempted (file-read-data vs file-write-data
+            // vs file-test-existence …). The op token tells you whether
+            // claude is *reading* a browser config (privacy concern) or
+            // just stat()-ing to check if it exists.
+            dlog(&format!("[sandbox/{ws_id_dbg}] DENY {proc}({pid}) {op} {path}"));
+            incr_path_deny(&ws_id, &path, pid, &proc);
         }
         dlog(&format!("[sandbox/{ws_id_dbg}] path-deny watcher exited"));
     });
@@ -202,6 +358,66 @@ fn start_path_watcher(workspace_id: &str, workspace_path: &str) -> Option<PathWa
 /// Fix: take everything from the path start to the end of the line
 /// (the log_stream output is one line per event), then trim trailing
 /// whitespace.
+/// Pull the PID out of a Sandbox deny line. Format on macOS 14/15 is:
+///   ... Sandbox: <procname>(<pid>) deny(...)
+/// On older variants:
+///   ... Sandbox: <procname>/<thread> deny(...)
+///   ... kernel[0]: (Sandbox) Sandbox: env(81203) deny(1) ...
+/// We look for the LAST `(<digits>)` token before `deny(` since the
+/// `deny(<count>)` token also matches `(<digits>)`.
+fn extract_deny_pid(line: &str) -> Option<u32> {
+    let deny_at = line.find("deny(")?;
+    let head = &line[..deny_at];
+    // Find the last '(...)' in head.
+    let close = head.rfind(')')?;
+    let open  = head[..close].rfind('(')?;
+    head[open + 1..close].trim().parse::<u32>().ok()
+}
+
+/// Pull the process identifier out of a deny line.
+///
+/// macOS Sandbox lines come in a few shapes:
+///   ... Sandbox: openssl(12345) deny(1) ...
+///   ... (Sandbox) Sandbox: env(81203) deny(1) ...
+///   ... Sandbox: claude 2.1.144(48523) deny(1) ...   ← claude's own format,
+///       proc-name + space + version, then pid in parens
+///
+/// We take EVERYTHING between the `Sandbox:` marker and the `(`-of-pid
+/// (rather than splitting on whitespace and taking the last token) so
+/// "claude 2.1.144" stays intact instead of being mis-reported as just
+/// "2.1.144".
+fn extract_deny_proc(line: &str) -> Option<String> {
+    let deny_at = line.find("deny(")?;
+    let head = &line[..deny_at];
+    let close = head.rfind(')')?;
+    let open  = head[..close].rfind('(')?;
+    let before = head[..open].trim_end();
+    // Anchor to the "Sandbox:" marker if present so we strip the timestamp
+    // / source-tag prefix the log emits ("(Sandbox) Sandbox: …"). Fall
+    // back to "everything after the last colon" otherwise.
+    let start = before.rfind("Sandbox:").map(|i| i + "Sandbox:".len())
+        .or_else(|| before.rfind(':').map(|i| i + 1))
+        .unwrap_or(0);
+    let name = before[start..].trim();
+    if name.is_empty() { None } else { Some(name.to_string()) }
+}
+
+/// Pull the operation token (file-read-data / file-write-create / …)
+/// from a deny line. Same OP list as extract_deny_path's matcher; this
+/// helper just returns the matched token so we can include it in the
+/// audit log line. Useful for distinguishing "claude read browser
+/// config" (privacy concern) from "claude stat()-ed to check
+/// existence" (benign probe).
+fn extract_deny_op(line: &str) -> Option<String> {
+    for op in &["file-write-create", "file-write-data", "file-write*", "file-write",
+                "file-read-data", "file-read-metadata", "file-read*", "file-read",
+                "file-issue-extension", "file-test-existence", "file-ioctl",
+                "network-outbound", "network-inbound", "network-bind", "network*"] {
+        if line.contains(op) { return Some((*op).into()); }
+    }
+    None
+}
+
 fn extract_deny_path(line: &str) -> Option<String> {
     for op in &["file-write-create", "file-write-data", "file-write*", "file-write",
                 "file-read-data", "file-read-metadata", "file-read*", "file-read",
@@ -238,7 +454,7 @@ fn extract_deny_path(line: &str) -> Option<String> {
 /// `file-read*` allow so they take precedence. Reads extras from the
 /// workspace's own frozen-at-creation arrays - project edits don't
 /// reach back into already-created workspaces.
-pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> {
+pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Option<&str>) -> Result<String> {
     let home = dirs::home_dir()
         .ok_or_else(|| anyhow!("no home dir"))?
         .to_string_lossy()
@@ -285,122 +501,263 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
         let resolved = canonicalize_or_keep(&m.path);
         if !resolved.is_empty() { user_allowed.push(resolved); }
     }
+    // ── Worktree's parent .git/ ─────────────────────────────────────
+    // The workspace's path is a git worktree whose `.git` is a FILE
+    // pointing to `<parent>/.git/worktrees/<name>/`. The `commondir`
+    // metadata inside that points back to `<parent>/.git`, where the
+    // shared objects + packed-refs live. ANY git operation (status,
+    // fetch, commit, checkout) needs read+write on the parent's
+    // .git/ — without it the worktree is non-functional. Detect by
+    // reading the `.git` file; if it parses as `gitdir: …`, derive
+    // the parent .git/ and add to the allow-list.
+    //
+    // Same for every multi-repo member that's a worktree.
+    for ws_root in std::iter::once(workspace_path.as_str())
+        .chain(workspace.composition.iter().map(|m| m.path.as_str()))
+    {
+        if let Some(parent_git) = parent_git_dir_for_worktree(ws_root) {
+            user_allowed.push(parent_git);
+        }
+    }
+    // Paths starting with `regex:` are treated as raw regex patterns
+    // (after $HOME / $WORKSPACE substitution) and emitted as
+    // (allow ... (regex #"...")) in SBPL. Everything else is a normal
+    // subpath. Splits a flat textarea entry into one of two buckets
+    // so the emit loop later can pick the right SBPL form.
+    let split_regex = |raw: &str, subs: &mut Vec<String>, regs: &mut Vec<String>| {
+        let raw = raw.trim();
+        if let Some(rest) = raw.strip_prefix("regex:") {
+            // Substitute literal path tokens; $HOME and $WORKSPACE
+            // need regex-escaping so a path with e.g. `+` in it doesn't
+            // change the pattern's meaning. Typical macOS home paths
+            // are safe, but Linux/CI users could have weirder layouts.
+            let home_esc = regex::escape(&home);
+            let ws_esc   = regex::escape(&workspace_path);
+            let pat = rest.trim()
+                .replace("$HOME", &home_esc)
+                .replace("$WORKSPACE", &ws_esc);
+            if !pat.is_empty() { regs.push(pat); }
+        } else {
+            let s = subst(raw);
+            if !s.is_empty() { subs.push(s); }
+        }
+    };
+
+    let mut user_allowed_regexes: Vec<String> = Vec::new();
     for p in &workspace.sandbox_rw_paths {
-        let s = subst(p);
-        if !s.is_empty() { user_allowed.push(s); }
+        split_regex(p, &mut user_allowed, &mut user_allowed_regexes);
     }
     dedupe(&mut user_allowed);
+    dedupe(&mut user_allowed_regexes);
+
+    // Per-agent allowed paths from the agent registry (Settings → Agents).
+    // Each agent declares its own runtime/config dirs; these are joined
+    // into the allow-list whenever that agent's CLI is launched in this
+    // workspace. The user CANNOT remove them per-workspace — to drop an
+    // entry they have to edit the agent (which affects every workspace
+    // using that agent). settings_load is best-effort: if the file is
+    // missing or corrupt, the registry falls back to seeded defaults via
+    // crate::load_settings_inner, which still returns the three built-ins.
+    let mut agent_allowed: Vec<String> = Vec::new();
+    let mut agent_allowed_regexes: Vec<String> = Vec::new();
+    let settings = crate::load_settings_inner();
+    // Use the tab-specific agent override if the caller passed one
+    // (multi-CLI workspaces); fall back to the workspace's primary CLI.
+    let effective_cli = agent_override.unwrap_or(&workspace.cli);
+    if let Some(a) = settings.agents.iter().find(|a| a.id == effective_cli) {
+        for p in &a.sandbox_allowed_paths {
+            split_regex(p, &mut agent_allowed, &mut agent_allowed_regexes);
+        }
+    }
+    dedupe(&mut agent_allowed);
+    dedupe(&mut agent_allowed_regexes);
 
     // Runtime dirs the agent NEEDS access to or it can't launch.
-    // Always allowed; never asked of the user. We give the cage broad
-    // read+write but compute denies for $HOME entries the user didn't
-    // allow - these built-in paths are excluded from the deny set so
-    // they stay accessible regardless of user config.
+    // Always allowed; never asked of the user. Universal across all
+    // CLIs (TMPDIR, package caches, shell rc files, etc.); per-CLI
+    // specifics live on each agent's sandbox_allowed_paths.
     let runtime = builtin_runtime_paths(&home, &workspace_path);
 
-    // Auto-deny via $HOME enumeration was attempted (the "allow-list
-    // mental model" pivot) but reintroduced the Bun retry-on-EPERM
-    // hang in claude — claude touches enough random $HOME paths that
-    // we can't reliably enumerate every runtime dir to keep it alive.
-    // Kept compute_home_denies around as dead code in case we can
-    // revisit (e.g., once we ship the container backend). For now:
-    // broad allow + targeted personal-data + secret denies. User's
-    // "Allowed paths" textarea is additive only (the cage is already
-    // open everywhere); "Extra denied paths" is the actual lockdown
-    // lever.
-    let _auto_denies_unused: Vec<String> = Vec::new();
+    // ── Read-only system roots. MINIMUM set — binaries, dynamic
+    //    linker, and basic syscall config. If a user genuinely needs
+    //    to load a system-wide framework or read /Applications, they
+    //    should disable the cage or add the exact subpath per
+    //    workspace; the cage doesn't try to be transparent. Writes
+    //    here are NEVER allowed.
+    //
+    //    Deliberately NOT included:
+    //      /System (broad)       → firmlink-exposes user data; narrowed
+    //                              to /System/Library + dyld cryptex.
+    //      /Library              → every system-wide app's shared data
+    //                              dir; user adds per-workspace if needed.
+    //      /Applications         → headless CLI agents don't need this.
+    //      /Library/Frameworks   → third-party frameworks; add per-ws.
+    //
+    //    /private/var/db                        → dyld cache (macOS 12)
+    //    /System/Volumes/Preboot/Cryptexes      → dyld cache (macOS 13+)
+    //    /System/Library                        → system frameworks
+    let system_read_roots: &[&str] = &[
+        // ── Binaries (macOS + Linux overlap) ──────────────────────────
+        "/usr",
+        "/opt",
+        "/bin",
+        "/sbin",
+        // ── Devices + syscall config ──────────────────────────────────
+        "/dev",
+        "/private/etc",  // macOS: /etc is a symlink to /private/etc
+        "/etc",          // Linux: /etc lives at the real path
+        // ── Dynamic linker / loader ───────────────────────────────────
+        // macOS dyld:
+        "/System/Library",
+        "/System/Volumes/Preboot/Cryptexes",  // macOS 13+ cryptex cache
+        "/private/var/db",                    // macOS 12 dyld cache
+        // Linux ld.so / glibc / musl:
+        "/lib",
+        "/lib32",
+        "/lib64",
+        "/libx32",
+        // ── Linux runtime/state pseudo-filesystems ────────────────────
+        // Required for `/proc/self/...`, `/sys/devices/...`,
+        // `/run/systemd/resolve/...` etc. that tools read at startup.
+        // No-op on macOS (paths don't exist); kept here so the same
+        // constant is right when the Linux sandbox impl lands.
+        "/proc",
+        "/sys",
+        "/run",
+        // Windows is intentionally absent — its sandbox model is
+        // AppContainer / Job Objects / integrity levels, not SBPL.
+        // When that backend ships, it'll use its own allow-list.
+    ];
 
-    // User's explicit extra denies (textarea in the dialog). Layered
-    // ON TOP of broad allow for per-workspace lockdown.
-    let mut extra_deny: Vec<String> = Vec::new();
-    for p in &workspace.sandbox_deny_paths {
-        let s = subst(p);
-        if !s.is_empty() { extra_deny.push(s); }
-    }
-    dedupe(&mut extra_deny);
-
-    // Hardcoded secret denies (~/.ssh family). Default-on but the
-    // user can EXPLICITLY override: if they listed the exact secret
-    // path in their allowed paths textarea (e.g. `$HOME/.ssh`), we
-    // drop that path from the deny set so the allow wins. Parent
-    // allow-list entries DON'T count - typing `$HOME` doesn't
-    // re-expose ~/.ssh by mistake. The user has to opt in per path.
-    let user_allowed_set: HashSet<&String> = user_allowed.iter().collect();
+    // Hardcoded secret denies (~/.ssh family). Default-on, always
+    // applied LAST so allow-list entries can't accidentally re-expose
+    // them. The user CAN explicitly override by listing the exact
+    // secret path in their workspace allowed-paths list; parent
+    // allow-list entries DON'T count — typing `$HOME` doesn't
+    // re-expose ~/.ssh by mistake. Combined set of workspace + agent
+    // allows is checked for the override.
+    let all_allowed: HashSet<&String> = user_allowed.iter().chain(agent_allowed.iter()).collect();
     let secret_deny: Vec<String> = builtin_deny_paths(&home)
         .into_iter()
-        .filter(|p| !user_allowed_set.contains(p))
+        .filter(|p| !all_allowed.contains(p))
         .collect();
 
     let mut out = String::with_capacity(4096);
     out.push_str(SBPL_HEADER);
 
-    // Base file ops - broad allow. Bun's runtime hangs on EPERM
-    // retry loops if we restrict reads OR writes; the cage is
-    // implemented as broad-allow + targeted denies below.
-    out.push_str("\n;; --- File ops base (broad allow; denies below) ---\n");
-    out.push_str("(allow file-read*)\n");
+    // ── File ops base: ALLOWLIST.
+    //
+    // SBPL_HEADER ships with `(deny default)` and no broad `(allow
+    // file-read*)`. We then carve out only the paths the agent
+    // actually needs. Reads and writes are both default-deny outside
+    // the listed paths. Last-match-wins, so the secret denies at the
+    // bottom override any allow-list entry under a sensitive parent.
+    //
+    // `file-read-metadata` + `file-test-existence` are broadly allowed
+    // because `ls`, `stat`, `realpath`, and shell completion all rely
+    // on them; denying makes paths look "missing" rather than denied,
+    // which produces terrible UX without adding meaningful protection
+    // (metadata leaks dir structure, not contents).
+    out.push_str("\n;; --- File ops base (allowlist) ---\n");
     out.push_str("(allow file-read-metadata)\n");
     out.push_str("(allow file-test-existence)\n");
     out.push_str("(allow file-map-executable)\n");
     out.push_str("(allow file-issue-extension)\n");
-    out.push_str("(allow file-write*)\n");
 
-    // Advisory: log what the user listed in "Allowed paths" so they
-    // can see it took effect (no rule emitted - reads/writes are
-    // already broadly allowed).
-    if user_allowed.len() > 1 {
-        out.push_str("\n;; --- User allow-list (advisory; already broadly allowed) ---\n");
-        for p in &user_allowed {
-            out.push_str(&format!(";; allowed: {}\n", sbpl_escape(p)));
+    // ── System read roots (broadly readable, NEVER writable).
+    out.push_str("\n;; --- System read roots (allowlist; reads only) ---\n");
+    // Root directory ENTRY itself (not its descendants). Required so
+    // dyld + libsystem can stat / open `/` during process startup; the
+    // (subpath ...) entries below only match descendants, never the
+    // root itself. Without this, `env` exits 1 with
+    //   "deny(1) file-read-data /"
+    // and no agent ever launches.
+    out.push_str("(allow file-read* (literal \"/\"))\n");
+    for p in system_read_roots {
+        out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
+
+    // ── Workspace + per-workspace user allows (read + write).
+    out.push_str("\n;; --- Workspace + user allow-list (read + write) ---\n");
+    for p in &user_allowed {
+        out.push_str(&format!("(allow file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
+        out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+    }
+    for r in &user_allowed_regexes {
+        // Use regex-safe escape (only "), NOT sbpl_escape — the latter
+        // doubles `\`, which corrupts every backslash in the pattern
+        // (\. → \\. ; seatbelt then matches literal backslash, not dot).
+        out.push_str(&format!("(allow file-read*  (regex #\"{}\"))\n", sbpl_regex_escape(r)));
+        out.push_str(&format!("(allow file-write* (regex #\"{}\"))\n", sbpl_regex_escape(r)));
+    }
+
+    // ── Per-agent allow-list (read + write). Joined from the agent
+    //    registry; user can edit in Settings → Agents but not remove
+    //    per-workspace.
+    if !agent_allowed.is_empty() || !agent_allowed_regexes.is_empty() {
+        out.push_str(&format!("\n;; --- Agent allow-list for `{}` (read + write) ---\n", effective_cli));
+        for p in &agent_allowed {
+            out.push_str(&format!("(allow file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
+            out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+        }
+        for r in &agent_allowed_regexes {
+            out.push_str(&format!("(allow file-read*  (regex #\"{}\"))\n", sbpl_regex_escape(r)));
+            out.push_str(&format!("(allow file-write* (regex #\"{}\"))\n", sbpl_regex_escape(r)));
         }
     }
 
-    // Advisory: ditto for runtime paths.
-    out.push_str("\n;; --- Runtime paths (advisory; already broadly allowed) ---\n");
+    // ── Universal runtime paths (read + write). TMPDIR, package
+    //    caches, shell rcs, etc. — required for any agent to launch.
+    //
+    //    Symlink resolution: seatbelt evaluates the CANONICAL path of
+    //    each syscall (kernel resolves symlinks before the sandbox
+    //    check). If the user has `~/.zshrc` symlinked into
+    //    iCloud (`~/Library/Mobile Documents/com~apple~CloudDocs/…`),
+    //    an allow on `~/.zshrc` doesn't match the resolved iCloud
+    //    path. We canonicalize each runtime entry and emit BOTH the
+    //    source AND the resolved target so symlinked dotfiles work
+    //    without the user having to add iCloud paths by hand.
+    out.push_str("\n;; --- Universal runtime paths (read + write) ---\n");
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut emit_subpath = |out: &mut String, p: &str, label: Option<&str>| {
+        if !emitted.insert(p.to_string()) { return; }
+        if let Some(label) = label {
+            out.push_str(&format!(";; {label}\n"));
+        }
+        out.push_str(&format!("(allow file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
+        out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+    };
     for p in &runtime {
-        out.push_str(&format!(";; runtime: {}\n", sbpl_escape(p)));
-    }
-
-    // ── User extra denies (textarea). Layered after the broad allow
-    //    so they actually deny.
-    if !extra_deny.is_empty() {
-        out.push_str("\n;; --- User extra denies ---\n");
-        for p in &extra_deny {
-            out.push_str(&format!("(deny file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
-            out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
+        emit_subpath(&mut out, p, None);
+        // Resolve symlinks. If the target differs from the source,
+        // emit it too. We use canonicalize_or_keep so a missing path
+        // (file the user doesn't actually have) doesn't blow up;
+        // canonicalize returns the input unchanged in that case.
+        let canon = canonicalize_or_keep(p);
+        if canon != *p && !canon.is_empty() {
+            emit_subpath(&mut out, &canon, Some(&format!("↳ symlink target of {p}")));
         }
     }
 
-    // ── Secret + personal-data denies - hardcoded, LAST so nothing
-    //    re-exposes them. The .ssh/.aws/.gnupg/etc. set + Documents
-    //    /Desktop/Downloads etc. the agent should never read
-    //    regardless of user config.
-    out.push_str("\n;; --- Hardcoded secret denies ---\n");
+    // ── Secret + personal-data denies — hardcoded, LAST so they
+    //    win even when an allow-list entry would cover them. The
+    //    .ssh/.aws/.gnupg/etc. set + Documents/Desktop/Downloads/
+    //    Pictures/Music/Movies — never reachable regardless of
+    //    allow-list config (unless the user typed the EXACT secret
+    //    path into their workspace allow-list, in which case
+    //    secret_deny excluded it above).
+    out.push_str("\n;; --- Hardcoded secret denies (allowlist backstop) ---\n");
     for p in &secret_deny {
         out.push_str(&format!("(deny file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
         out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
 
-    // ── User allow-list re-open: any user-allowed path that's a
-    //    DESCENDANT of a hard-denied parent gets explicitly re-opened
-    //    here (after the deny block, so last-match-wins picks the
-    //    allow for that specific subpath only — siblings stay denied).
-    //
-    //    This is what makes "one path per line" actually behave that
-    //    way: clicking Allow on
-    //      $HOME/Library/Application Support/Arc/User Data
-    //    used to silently no-op because the parent .../Arc was in the
-    //    hard-deny set. Now it gets a targeted re-allow so the leaf
-    //    works without exposing the rest of the protected parent.
-    //
-    //    Safety net preserved: we ONLY re-allow when the user path is
-    //    a strict descendant (starts_with deny + dir-boundary slash).
-    //    Typing an ANCESTOR like `~` doesn't satisfy this check, so
-    //    it can't accidentally re-expose ~/.ssh / ~/Documents / etc.
-    //    Exact-match override still happens above via secret_deny
-    //    filter — typing the exact deny path drops the deny entirely.
+    // ── Allow-list re-open under hard-deny parents. Same logic as
+    //    before: clicking Allow on `$HOME/Library/Application
+    //    Support/Arc/User Data` re-opens just that leaf so the rest
+    //    of `.../Arc` (the deny parent) stays denied.
     let mut reopens: Vec<&String> = Vec::new();
-    for u in &user_allowed {
+    for u in user_allowed.iter().chain(agent_allowed.iter()) {
         for d in builtin_deny_paths(&home).iter() {
             if u.len() > d.len()
                 && u.starts_with(d)
@@ -412,7 +769,7 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16) -> Result<String> 
         }
     }
     if !reopens.is_empty() {
-        out.push_str("\n;; --- User allow-list re-opens (under hard-deny parents) ---\n");
+        out.push_str("\n;; --- Allow-list re-opens (under hard-deny parents) ---\n");
         for u in &reopens {
             out.push_str(&format!("(allow file-read*  (subpath \"{}\"))\n", sbpl_escape(u)));
             out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(u)));
@@ -450,47 +807,55 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         // pip build artifacts).
         "/private/tmp".to_string(),
         "/private/var/folders".to_string(),
-        // Agent state dirs - legacy single-dir convention.
-        format!("{home}/.claude"),
-        format!("{home}/.gemini"),
-        format!("{home}/.codex"),
-        // Agent state dirs - XDG-style (what the modern CLIs actually
-        // write to for sessions, history, telemetry, cache). codex in
-        // particular writes session logs to ~/.config/codex and exits
-        // with EPERM if it can't - this was the "Operation not
-        // permitted (os error 1)" crash. Each CLI gets all three XDG
-        // bases so we don't have to chase per-version variants.
-        format!("{home}/.config/claude"),
-        format!("{home}/.config/codex"),
-        format!("{home}/.config/gemini"),
-        format!("{home}/.local/share/claude"),
-        format!("{home}/.local/share/codex"),
-        format!("{home}/.local/share/gemini"),
-        format!("{home}/.local/state/claude"),
-        format!("{home}/.local/state/codex"),
-        format!("{home}/.local/state/gemini"),
+        // Per-CLI agent state dirs (claude/gemini/codex) moved onto each
+        // agent's `sandbox_allowed_paths` (Settings → Agents) so a claude
+        // sandbox no longer has gemini/codex dirs reachable, and so custom
+        // agents declare their own. See default_agents() in lib.rs.
+        //
         // Package manager caches - npm/pip/cargo all write here on
         // first install. Without these even a `git clone && npm i`
         // breaks in a sandboxed workspace.
         format!("{home}/.npm"),
         format!("{home}/.cache"),
         format!("{home}/.cargo/registry"),
+        // Rustup writes ~/.cargo/env — a tiny shell-source file that
+        // adds ~/.cargo/bin to PATH. Sourced by every zsh that starts
+        // in a workspace if the user has rustup installed. NOT
+        // broadening to ~/.cargo (which contains credentials.toml).
+        format!("{home}/.cargo/env"),
+        format!("{home}/.cargo/bin"),
         format!("{home}/Library/Caches"),
+        // User-local binaries (pipx, `pip install --user`, `cargo install`,
+        // `npm i -g` with a user prefix, and direct ~/.local/bin scripts).
+        // Most agents shell out to tools that end up here.
+        format!("{home}/.local/bin"),
+        // gh CLI's non-secret state (device-id, cache). The credentials
+        // file (~/.config/gh/hosts.yml) is hard-denied separately.
+        format!("{home}/.local/state/gh"),
+        // macOS Cocoa runtime reads this on launch for locale/encoding
+        // detection. Empty file, no user data — just denying it makes
+        // every Foundation-linked binary log a sandbox violation.
+        format!("{home}/.CFUserTextEncoding"),
+        // Agent-skills convention: ~/.agents/skills/<name>/SKILL.md +
+        // bundled assets. Cross-agent because the skill manifest format
+        // is shared. Per-agent vendor dirs (~/.claude, ~/.gemini,
+        // ~/.codex) live on each agent's sandbox_allowed_paths and are
+        // intentionally NOT here — a claude sandbox shouldn't have
+        // access to gemini's OAuth token store and vice versa.
+        format!("{home}/.agents"),
         // Bun runtime cache. claude is Bun-compiled; Bun's runtime
         // pokes here for install cache + bunfig lookups. Missing
         // this was the most likely cause of "claude doesn't launch"
         // under the allow-list cage.
         format!("{home}/.bun"),
         format!("{home}/.deno"),
-        // macOS conventional app-data paths. Bun-compiled agents
-        // (claude in particular) write logs + state here in addition
-        // to XDG; without these claude's TUI hangs at init waiting on
-        // a blocked write retry. ~/Library/Logs and ~/Library/Application
-        // Support hold lots of apps' state but contain no high-value
-        // secrets (those live in Keychain or ~/.ssh / ~/.aws which we
-        // either let securityd guard or hard-deny separately).
-        format!("{home}/Library/Logs"),
-        format!("{home}/Library/Application Support"),
+        // ~/Library/Logs and ~/Library/Application Support are
+        // INTENTIONALLY NOT universal
+        // — it holds every macOS app's data (browsers, Slack/Discord,
+        // password-manager configs, etc.). Each agent declares its own
+        // specific subdir via Settings → Agents → "Sandbox allowed
+        // paths" (e.g. claude lists $HOME/Library/Application Support/
+        // Claude). User can add more per workspace if needed.
         // Shell + git init files. Tool subprocesses (the agent shells
         // out to git, gh, npm, ...) read these on startup; denying
         // them breaks every git/gh/shell invocation. Single files,
@@ -581,18 +946,26 @@ pub fn available() -> bool {
 /// The output is the file contents (with leading comment); use
 /// `host_patterns` if you just want the regexes for feeding to the
 /// proxy.
+#[allow(dead_code)]
 pub fn render_filter(workspace: &Workspace) -> String {
+    render_filter_for(workspace, None)
+}
+
+pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) -> String {
     let mut hosts: Vec<String> = Vec::new();
+    let effective_cli = agent_override.unwrap_or(&workspace.cli);
 
     // Per-CLI vendor APIs.
-    match workspace.cli.as_str() {
+    match effective_cli {
         "claude" => hosts.extend([
             r"^api\.anthropic\.com$".into(),
             r"^statsig\.anthropic\.com$".into(),
             r"^console\.anthropic\.com$".into(),
             r"^claude\.ai$".into(),
             r"^code\.claude\.com$".into(),
+            r"^platform\.claude\.com$".into(),
             r"^.+\.anthropic\.com$".into(),
+            r"^.+\.claude\.com$".into(),
             r"^.+\.claude\.ai$".into(),
             // Anthropic ships claude with Datadog as its telemetry
             // backend; refusing this just fills the deny chip with
@@ -610,6 +983,7 @@ pub fn render_filter(workspace: &Workspace) -> String {
         "codex" => hosts.extend([
             r"^api\.openai\.com$".into(),
             r"^chatgpt\.com$".into(),
+            r"^.+\.chatgpt\.com$".into(),
             r"^.+\.openai\.com$".into(),
             r"^auth\.openai\.com$".into(),
             r"^cdn\.openai\.com$".into(),
@@ -665,8 +1039,13 @@ pub fn render_filter(workspace: &Workspace) -> String {
 /// Same default set as `render_filter` (which keeps the on-disk debug
 /// file), minus the comment header - this is what we feed to the
 /// in-process proxy at start time.
+#[allow(dead_code)]
 pub fn host_patterns(workspace: &Workspace) -> Vec<String> {
-    render_filter(workspace)
+    host_patterns_for(workspace, None)
+}
+
+pub fn host_patterns_for(workspace: &Workspace, agent_override: Option<&str>) -> Vec<String> {
+    render_filter_for(workspace, agent_override)
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -681,7 +1060,7 @@ pub fn host_patterns(workspace: &Workspace) -> Vec<String> {
 ///
 /// Profile/filter files live in tempdir under predictable names so the
 /// user can inspect them when something denies surprisingly.
-pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
+pub fn provision(workspace: &Workspace, agent_override: Option<&str>) -> Result<SandboxBundle> {
     // Hard-fail early on platforms where Seatbelt doesn't exist.
     // The frontend should be gating on sandbox_available(), but
     // defense in depth - missing this check would crash the agent
@@ -691,15 +1070,25 @@ pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
             "sandbox unavailable on this OS (requires macOS sandbox-exec)"
         ));
     }
+    // Fresh start for the popover trackers. Each PTY spawn re-renders
+    // the SBPL profile + restarts the proxy with potentially different
+    // allowlists; carrying historical denies forward would falsely
+    // surface paths/hosts that are now permitted (the rendered profile
+    // is the truth, the tracker is just a heuristic for "what was the
+    // last thing claude tried to reach"). If something is *still*
+    // blocked, the kernel + proxy will refill the trackers within
+    // milliseconds of the agent retrying.
+    clear_path_denies(&workspace.id);
+    crate::proxy::clear_network_denies(&workspace.id);
     let tmp = std::env::temp_dir();
     let profile_path = tmp.join(format!("termic-sandbox-{}.sb", workspace.id));
     let filter_path  = tmp.join(format!("termic-proxy-{}.filter", workspace.id));
 
     // Filter file is purely for the user's `cat` benefit now; the proxy
     // gets its patterns from memory below. Best-effort write.
-    let _ = fs::write(&filter_path, render_filter(workspace));
+    let _ = fs::write(&filter_path, render_filter_for(workspace, agent_override));
 
-    let patterns = host_patterns(workspace);
+    let patterns = host_patterns_for(workspace, agent_override);
     dlog(&format!("[sandbox/{}] provisioning, {} host patterns", workspace.id, patterns.len()));
     let path_watcher = start_path_watcher(&workspace.id, &canonicalize_or_keep(&workspace.path));
     if path_watcher.is_some() {
@@ -717,7 +1106,7 @@ pub fn provision(workspace: &Workspace) -> Result<SandboxBundle> {
     };
     let port = proxy.as_ref().map(|p| p.port).unwrap_or(0);
 
-    let profile = render_profile(workspace, port)?;
+    let profile = render_profile(workspace, port, agent_override)?;
     fs::write(&profile_path, &profile)
         .with_context(|| format!("write {}", profile_path.display()))?;
     dlog(&format!("[sandbox/{}] profile written: {}", workspace.id, profile_path.display()));
@@ -790,7 +1179,7 @@ pub fn run_self_test(workspace: &Workspace) -> Vec<ProbeResult> {
     // reuse the live agent's bundle (race), and this way the user
     // can run the test even with no agent running. Bundle's Drop
     // tears down the proxy thread when this function returns.
-    let bundle = match provision(workspace) {
+    let bundle = match provision(workspace, None) {
         Ok(b) => b,
         Err(e) => return vec![
             ProbeResult {
@@ -957,9 +1346,11 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 (allow iokit-open)
 (allow system-socket)
 
-;; Filesystem: broad read, narrow write. Deny carve-outs come AFTER.
-(allow file-read*)
-(allow file-read-metadata)
+;; Filesystem: ALLOWLIST. The header intentionally does NOT broadly
+;; allow file-read*; render_profile emits per-path (allow file-read*
+;; (subpath "...")) entries for the workspace, agent, runtime, and
+;; system roots. `(deny default)` at the very top is the actual
+;; default for everything not listed.
 
 ;; Character devices the runtime expects to read/write/ioctl on. The
 ;; permissive vnode-type rule covers /dev/null, /dev/tty, the PTY
@@ -1043,6 +1434,45 @@ fn canonicalize_or_keep(p: &str) -> String {
         .unwrap_or_else(|_| p.to_string())
 }
 
+/// If `workspace_root` is a git worktree (its `.git` is a regular file
+/// with `gitdir: <path>`), return the parent repo's `.git/` directory
+/// so the cage can allow reads+writes against it. Returns None when
+/// the workspace is the parent checkout itself (is_repo_root) or not
+/// a git working tree at all.
+///
+/// Logic:
+///   1. Read `<workspace_root>/.git`.
+///   2. Expect `gitdir: <abs path to /<parent>/.git/worktrees/<name>>`.
+///   3. Walk up to `<parent>/.git` (i.e. trim `/worktrees/<name>` suffix).
+///   4. Canonicalize and return.
+fn parent_git_dir_for_worktree(workspace_root: &str) -> Option<String> {
+    let dot_git = std::path::Path::new(workspace_root).join(".git");
+    // For a regular checkout (is_repo_root), `.git` is a directory and
+    // we don't need to widen — the workspace allow already covers it
+    // via the workspace path subpath. We only act for the file-form.
+    let meta = fs::metadata(&dot_git).ok()?;
+    if !meta.is_file() { return None; }
+    let contents = fs::read_to_string(&dot_git).ok()?;
+    let line = contents.lines().find(|l| l.starts_with("gitdir:"))?;
+    let raw_gitdir = line.trim_start_matches("gitdir:").trim();
+    // gitdir may be relative to the worktree root; resolve.
+    let gitdir_abs = if std::path::Path::new(raw_gitdir).is_absolute() {
+        raw_gitdir.to_string()
+    } else {
+        std::path::Path::new(workspace_root).join(raw_gitdir).to_string_lossy().into_owned()
+    };
+    // The gitdir path lands on `<parent>/.git/worktrees/<name>`. We
+    // want `<parent>/.git`. Trim the last two path components only if
+    // the second-to-last is literally "worktrees" — otherwise we'd
+    // truncate non-worktree gitdirs (rare but possible for submodule
+    // configurations).
+    let p = std::path::Path::new(&gitdir_abs);
+    let parent_worktrees = p.parent()?;
+    if parent_worktrees.file_name()?.to_string_lossy() != "worktrees" { return None; }
+    let parent_git = parent_worktrees.parent()?;
+    Some(canonicalize_or_keep(&parent_git.to_string_lossy()))
+}
+
 fn dedupe(v: &mut Vec<String>) {
     let mut seen: HashSet<String> = HashSet::new();
     v.retain(|s| seen.insert(s.clone()));
@@ -1090,4 +1520,12 @@ fn sbpl_escape(s: &str) -> String {
     // the rendered path comes from canonicalize() so it's a normal
     // POSIX path. Defensive escape just in case.
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// SBPL `(regex #"...")` patterns are verbatim — backslashes are part of
+/// the regex metalanguage and MUST be preserved (e.g. `\.` = literal dot).
+/// Only `"` needs escaping to keep the literal closing-quote intact.
+/// Calling sbpl_escape here doubles every `\` and corrupts the pattern.
+fn sbpl_regex_escape(s: &str) -> String {
+    s.replace('"', "\\\"")
 }
