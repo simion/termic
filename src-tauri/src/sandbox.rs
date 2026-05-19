@@ -825,6 +825,15 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         format!("{home}/.cargo/env"),
         format!("{home}/.cargo/bin"),
         format!("{home}/Library/Caches"),
+        // OAuth token store. claude / gemini / codex all keep their
+        // login state via securityd → Keychain ACLs; the encrypted DB
+        // file itself lives here. Pre-v0.4.0 the broad-allow model
+        // let agents touch it implicitly, the new allowlist would
+        // deny it by default and break "claude is logged in" on every
+        // sandboxed spawn. File contents are encrypted; access is
+        // gated by macOS's per-item ACL via securityd regardless of
+        // file-level reads.
+        format!("{home}/Library/Keychains"),
         // User-local binaries (pipx, `pip install --user`, `cargo install`,
         // `npm i -g` with a user prefix, and direct ~/.local/bin scripts).
         // Most agents shell out to tools that end up here.
