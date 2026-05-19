@@ -339,23 +339,29 @@ export const useApp = create<AppState>((set, get) => ({
     const closing = list[idx];
     // Best-effort PTY kill; ignore failures (already-dead PTYs etc.).
     if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
-    const next = list.filter(t => t.id !== tabId);
+    let next = list.filter(t => t.id !== tabId);
     let active = s.activeTab[wsId];
     if (active === tabId) active = next[Math.max(0, idx - 1)]?.id || next[0]?.id || "";
-    // Last tab closed → put the workspace to sleep: clear the active
-    // selection (so the dashboard takes over the main pane) and let
-    // ensureDefaultTab respawn one when the user re-enters. Every PTY
-    // for this workspace gets a kill above as the tabs are popped, so
-    // nothing stays running in the background after this.
+    const ws = s.workspaces.find(w => w.id === wsId);
     const isLast = next.length === 0;
-    const update: Partial<typeof s> = {
+    // Last tab in the ACTIVE workspace: don't drop to a tabless limbo
+    // (the "+" button is too easy to miss). Auto-spawn a fresh default
+    // tab for whichever CLI the workspace was created with — same as
+    // first activation. The user can archive the workspace explicitly
+    // if they want it offline.
+    // Inactive workspace going empty stays empty; ensureDefaultTab
+    // handles the re-spawn on next activation.
+    if (isLast && s.activeWorkspaceId === wsId && ws) {
+      const fresh: TerminalTab = {
+        id: crypto.randomUUID(), type: "terminal", title: ws.cli, cli: ws.cli, is_default: true,
+      };
+      next = [fresh];
+      active = fresh.id;
+    }
+    return {
       tabs: { ...s.tabs, [wsId]: next },
       activeTab: { ...s.activeTab, [wsId]: active },
     };
-    if (isLast && s.activeWorkspaceId === wsId) {
-      (update as any).activeWorkspaceId = null;
-    }
-    return update as any;
   }),
 
   setActiveTabId: (wsId, tabId) => set(s => {
