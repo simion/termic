@@ -100,7 +100,20 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
       } catch (e) { term.write(`\x1b[1;31mspawn failed: ${e}\x1b[0m\r\n`); }
     })();
 
-    const ro = new ResizeObserver(() => { try { fit.fit(); } catch {} });
+    // Skip fit() when the host has zero geometry — happens on the parent
+    // toggling display:none for the split's collapse animation. fit()ing at
+    // 0×0 resizes the PTY to 0 cols/rows, the agent re-paints on the new
+    // size, then a second RO callback fires with the real size on expand
+    // and the PTY re-grows. The double resize is visible as a flicker
+    // inside the terminal text. Bailing early avoids the spurious resize
+    // entirely; the next non-zero RO fire on expand still calls fit().
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const r = e.contentRect;
+        if (r.width === 0 || r.height === 0) return;
+      }
+      try { fit.fit(); } catch {}
+    });
     ro.observe(hostRef.current);
 
     return () => {

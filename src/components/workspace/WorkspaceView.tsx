@@ -11,7 +11,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { TabBar } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
 import { AuxTerminal } from "./AuxTerminal";
-import { X, Plus, TerminalSquare } from "lucide-react";
+import { X, Plus, TerminalSquare, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
@@ -57,7 +57,8 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   const split        = useApp(s => !!s.terminalSplit[ws.id]);
   const splitHeight  = useApp(s => s.terminalSplitHeight[ws.id] ?? DEFAULT_SPLIT_HEIGHT);
   const setSplitHeight = useApp(s => s.setTerminalSplitHeight);
-  const toggleSplit  = useApp(s => s.toggleTerminalSplit);
+  const collapsed    = useApp(s => !!s.terminalSplitCollapsed[ws.id]);
+  const toggleCollapsed = useApp(s => s.toggleTerminalSplitCollapsed);
   const bottomTabs   = useApp(s => s.bottomTabs[ws.id]);
   const activeBottom = useApp(s => s.activeBottomTab[ws.id]);
   const addBottomTab = useApp(s => s.addBottomTab);
@@ -99,24 +100,37 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
             <div
               data-bottom-split=""
               className="relative shrink-0 flex-col bg-[var(--color-bg-1)] border-t border-[var(--color-border-soft)] flex"
-              style={{ height: splitHeight }}
+              // h-9 tab strip = 36px; when collapsed, panel shrinks to the
+              // strip and the terminals div is display:none'd below. Shells
+              // stay mounted, so re-expanding doesn't respawn anything.
+              style={{ height: collapsed ? 36 : splitHeight }}
             >
               {/* Shared 1px handle on the top edge — matches the sidebar /
-                  right-panel / footer handles instead of the old fat 6px bar. */}
-              <ResizeHandle
-                direction="y"
-                className="top-0"
-                onDrag={(dy) => {
-                  const containerH = containerRef.current?.clientHeight ?? 600;
-                  const cur = useApp.getState().terminalSplitHeight[ws.id] ?? DEFAULT_SPLIT_HEIGHT;
-                  const next = Math.round(Math.max(MIN_HEIGHT, Math.min(containerH - MIN_HEIGHT, cur - dy)));
-                  setSplitHeight(ws.id, next);
-                }}
-              />
+                  right-panel / footer handles instead of the old fat 6px bar.
+                  Hidden when collapsed; nothing to resize to. */}
+              {!collapsed && (
+                <ResizeHandle
+                  direction="y"
+                  className="top-0"
+                  onDrag={(dy) => {
+                    const containerH = containerRef.current?.clientHeight ?? 600;
+                    const cur = useApp.getState().terminalSplitHeight[ws.id] ?? DEFAULT_SPLIT_HEIGHT;
+                    const next = Math.round(Math.max(MIN_HEIGHT, Math.min(containerH - MIN_HEIGHT, cur - dy)));
+                    setSplitHeight(ws.id, next);
+                  }}
+                />
+              )}
               {/* Tab strip: matches the main TabBar's geometry — h-9 / px-2
                   / gap-0.5 — so the split-bottom feels like the same UI
                   primitive, not a smaller cousin. */}
-              <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2">
+              <div className={cn(
+                "flex h-9 shrink-0 items-center gap-0.5 bg-[var(--color-bg-1)] px-2",
+                // Strip's border-b separates strip-from-terminals when expanded.
+                // When collapsed there are no terminals below — FooterBar's own
+                // border-t becomes the only divider, and stacking both produces
+                // a visible double line.
+                !collapsed && "border-b border-[var(--color-border-soft)]",
+              )}>
                 {(bottomTabs || []).map(t => (
                   <BottomTabPill
                     key={t.id}
@@ -133,15 +147,24 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   className="ml-1 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                 ><Plus className="h-4 w-4" /></button>
                 <button
-                  title="Close split terminal"
-                  onClick={() => toggleSplit(ws.id)}
+                  title={collapsed ? "Expand terminal" : "Collapse terminal"}
+                  onClick={() => toggleCollapsed(ws.id)}
                   className="ml-auto rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-                ><X className="h-4 w-4" /></button>
+                >
+                  {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </button>
               </div>
               {/* Terminals: render each tab as an AuxTerminal kept mounted with
                   visibility toggle, same as the main tabs — switching tabs must
                   not respawn the shell. */}
-              <div className="relative min-h-0 flex-1">
+              <div
+                className="relative min-h-0 flex-1"
+                // display:none keeps the AuxTerminals in the React tree (so
+                // PTYs + xterm instances stay alive) but stops the WebGL
+                // render loop while hidden. ResizeObserver inside AuxTerminal
+                // fires fit() when we toggle back, so the cell grid recovers.
+                style={{ display: collapsed ? "none" : "block" }}
+              >
                 {(bottomTabs || []).map(t => (
                   <div
                     key={t.id}

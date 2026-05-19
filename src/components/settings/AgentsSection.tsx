@@ -40,33 +40,40 @@ export function AgentsSection() {
 
   /** True if any field on the agent differs from its ship-time default.
    *  Used to gate the "Reset to defaults" button per agent so it's only
-   *  shown when there's actually something to reset. */
+   *  shown when there's actually something to reset. Env is excluded
+   *  from the comparison: user-set env is a personal augmentation, not
+   *  a "modification" of the agent's command shape, and we never
+   *  clobber it on reset. */
   function isModified(a: Agent): boolean {
     const d = defaults.find(d => d.id === a.id);
     if (!d) return false; // custom agents have no "defaults" to revert to
-    return JSON.stringify(d) !== JSON.stringify({ ...a, display_name: a.display_name });
+    const stripEnv = (x: Agent) => { const { env: _e, ...rest } = x; void _e; return rest; };
+    return JSON.stringify(stripEnv(d)) !== JSON.stringify(stripEnv(a));
   }
 
   /** Reset one agent to its ship-time defaults (preserves display_name +
-   *  ordering). Custom agents (no matching default id) are no-op. */
+   *  ordering AND the user's per-agent env block — env is a personal
+   *  setup detail, not part of the agent's command shape, so a reset
+   *  shouldn't wipe `CLAUDE_CODE_NO_FLICKER=1` etc.). Custom agents
+   *  (no matching default id) are no-op. */
   function resetAgent(id: string) {
     const d = defaults.find(d => d.id === id);
     if (!d) return;
-    mutate(agents.map(a => a.id === id ? { ...d } : a));
+    mutate(agents.map(a => a.id === id ? { ...d, env: a.env ?? {} } : a));
   }
 
   /** Reset every built-in to ship defaults; preserves custom agents the
-   *  user added. */
+   *  user added AND each agent's env block. */
   async function resetAllBuiltins() {
     const ok = await useUI.getState().askConfirm({
       title: "Reset built-in agents to defaults?",
-      message: "Resets claude, gemini, codex to their ship-default commands. Custom agents you added are kept.",
+      message: "Resets claude, gemini, codex to their ship-default commands. Custom agents and per-agent env blocks are kept.",
       confirmLabel: "Reset built-ins",
     });
     if (!ok) return;
     const next = agents.map(a => {
       const d = defaults.find(d => d.id === a.id);
-      return d ? { ...d } : a;
+      return d ? { ...d, env: a.env ?? {} } : a;
     });
     mutate(next);
   }
@@ -374,7 +381,7 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
       </header>
 
       <div className="grid grid-cols-1 gap-3">
-        <Field label="Command" hint="Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work. For env setup or shell features, point this at a wrapper script and pass its args via 'Default args' below.">
+        <Field label="Command" hint="Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work, and shell-style `VAR=val cmd` prefixes won't either; use the Environment box below for env vars.">
           <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder="claude" />
         </Field>
         <Field
@@ -404,9 +411,84 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
             className="font-mono" placeholder="--continue"
           />
         </Field>
+        <Field
+          label="Environment"
+          hint="One KEY=VALUE per line. Merged into the spawn env on top of inherited parent env. Lines starting with # are ignored. Preserved across Reset."
+        >
+          <EnvTextarea
+            value={agent.env ?? {}}
+            onChange={(env) => onPatch({ env })}
+          />
+        </Field>
       </div>
     </div>
   );
+}
+
+/** KEY=VAL lines ⇄ Record<string,string>. Edits live in a local draft string
+ *  so the user can type incomplete lines without us clobbering or dropping
+ *  characters; we only re-parse and bubble up on change. Comments (#) and
+ *  blank lines are stripped. Keys without `=` get an empty string value so a
+ *  user line like `DEBUG` still parses (rather than disappearing). */
+function EnvTextarea({ value, onChange }: {
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const serialize = (v: Record<string, string>) =>
+    Object.entries(v).map(([k, val]) => `${k}=${val}`).join("\n");
+  const [draft, setDraft] = useState(serialize(value));
+  // Sync down when the parent value changes from outside (reset, tab switch).
+  // We compare serialized forms so re-typing the same content doesn't fight
+  // the user's cursor position.
+  const externalText = serialize(value);
+  useEffect(() => {
+    if (parseEnv(draft) === externalText) return;
+    setDraft(externalText);
+  // We intentionally depend on externalText (a string snapshot), NOT on the
+  // value object — its identity changes on every patch from the parent.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalText]);
+  return (
+    <textarea
+      value={draft}
+      onChange={(e) => {
+        const next = e.target.value;
+        setDraft(next);
+        onChange(parseEnvToMap(next));
+      }}
+      spellCheck={false}
+      rows={4}
+      className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] focus:border-[var(--color-accent-soft)] focus:outline-none"
+      placeholder={"CLAUDE_CODE_NO_FLICKER=1\nHTTPS_PROXY=http://localhost:8080"}
+    />
+  );
+}
+
+/** Parse `KEY=VALUE` lines into a stable map. Order is preserved by insertion
+ *  order in the Map → object; duplicate keys: last wins. */
+function parseEnvToMap(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 0) { out[line] = ""; continue; }
+    const k = line.slice(0, eq).trim();
+    const v = line.slice(eq + 1);
+    if (k) out[k] = v;
+  }
+  return out;
+}
+
+/** Serialize for the round-trip equality check above. Sorted-key match
+ *  isn't right here because users may care about line order, but the only
+ *  caller compares the *serialized form*, so iteration order of the parsed
+ *  map vs the externally-sourced map matters. We canonicalize by sorting
+ *  keys for the equality check; the textarea itself preserves whatever the
+ *  user typed. */
+function parseEnv(text: string): string {
+  const m = parseEnvToMap(text);
+  return Object.keys(m).sort().map(k => `${k}=${m[k]}`).join("\n");
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {

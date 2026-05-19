@@ -71,7 +71,11 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
   },
 };
 
-function findAgent(cli: string): { command: string; args: string[]; caps: NonNullable<Agent["capabilities"]> } {
+function findAgent(cli: string): {
+  command: string; args: string[];
+  caps: NonNullable<Agent["capabilities"]>;
+  env: Record<string, string>;
+} {
   const registry = useApp.getState().agents;
   const a = registry.find(a => a.id === cli);
   if (a) {
@@ -83,14 +87,15 @@ function findAgent(cli: string): { command: string; args: string[]; caps: NonNul
         runtime_yolo_command: a.capabilities?.runtime_yolo_command ?? "",
         resume_args: a.capabilities?.resume_args ?? [],
       },
+      env: { ...(a.env ?? {}) },
     };
   }
   const fb = BUILTIN_FALLBACK[cli];
-  if (fb) return { command: fb.command, args: [...fb.args], caps: fb.capabilities };
+  if (fb) return { command: fb.command, args: [...fb.args], caps: fb.capabilities, env: {} };
   // Unknown custom agent that's been deleted — best effort: use the cli id
   // as the command so the user at least sees "command not found" instead of
   // a silent black terminal.
-  return { command: cli, args: [], caps: { yolo_args: [], runtime_yolo_command: "", resume_args: [] } };
+  return { command: cli, args: [], caps: { yolo_args: [], runtime_yolo_command: "", resume_args: [] }, env: {} };
 }
 
 /** Resolved spawn command for an agent. The command is whatever the user
@@ -140,3 +145,8 @@ export async function tryToggleYoloLive(cli: string, ptyId: string, yolo: boolea
 // Old single-CLI accessors kept around so older call sites don't break.
 export const yoloArgsForCli   = (cli: string) => findAgent(cli).caps.yolo_args   ?? [];
 export const resumeArgsForCli = (cli: string) => findAgent(cli).caps.resume_args ?? [];
+
+/** Per-agent env block (from Settings → Agents). Merged into the spawn
+ *  env in TerminalPane; agent-side values take precedence over the
+ *  built-in TERMIC_* / COLORFGBG block so users can override anything. */
+export const envForCli = (cli: string): Record<string, string> => findAgent(cli).env;

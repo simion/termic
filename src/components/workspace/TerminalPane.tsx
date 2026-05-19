@@ -15,7 +15,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli } from "@/lib/agents";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 
@@ -372,14 +372,17 @@ export function TerminalPane({ ws, tab, active }: Props) {
             resume: shouldResume,
             ws,
           }),
+          // Order matters: base TERMIC_*/COLORFGBG block first, then
+          // the user's per-agent env block (Settings → Agents). The
+          // per-agent values win on key collision so a power user can
+          // override e.g. COLORFGBG or even TERMIC_PORT if they really
+          // want to. Rust merges this overlay AFTER the inherited
+          // parent env, so anything set here always trumps a system env.
           env: {
             TERMIC_PORT: String(ws.port),
             TERMIC_WORKSPACE_NAME: ws.name,
-            // Tell the agent which theme our xterm is rendering so its
-            // TUI auto-picks light vs dark colors without a manual flag.
-            // claude/gemini/codex all honor either COLORFGBG or an
-            // explicit theme env; we set both for belt-and-braces.
             COLORFGBG: currentColorFgBg(),
+            ...envForCli(tab.cli),
           },
           // Rust consults ws.sandbox_enabled. Passing the id is harmless
           // when sandbox is off; Rust just spawns the cmd directly.
@@ -510,7 +513,17 @@ export function TerminalPane({ ws, tab, active }: Props) {
     })();
 
     // ResizeObserver keeps the terminal honest when the panel/window grows.
-    const ro = new ResizeObserver(() => { try { fit.fit(); } catch {} });
+    // Skip 0×0 entries: hidden tabs and the bottom-split's display:none
+    // collapse both yield zero-geometry callbacks that would resize the PTY
+    // to 0 cols/rows. The agent re-paints on the new dims, then the second
+    // callback (on un-hide) re-grows everything — visible as a flicker.
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const r = e.contentRect;
+        if (r.width === 0 || r.height === 0) return;
+      }
+      try { fit.fit(); } catch {}
+    });
     ro.observe(host);
 
     return () => {
