@@ -8,6 +8,7 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
 import type { Workspace } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
+import { usePrefs, currentTerminalTheme } from "@/store/prefs";
 import { TabBar } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
 import { AuxTerminal } from "./AuxTerminal";
@@ -64,6 +65,12 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   const addBottomTab = useApp(s => s.addBottomTab);
   const closeBottomTab = useApp(s => s.closeBottomTab);
   const setActiveBottom = useApp(s => s.setActiveBottomTab);
+
+  // Subscribe to themeMode so the terminals-area bg recomputes when the
+  // user switches themes — currentTerminalTheme() reads the live store but
+  // doesn't trigger a re-render on its own.
+  usePrefs(s => s.themeMode);
+  const xtermBg = currentTerminalTheme().background as string;
 
   useEffect(() => { ensureDefaultTab(ws.id, ws.cli); }, [ws.id, ws.cli, ensureDefaultTab]);
 
@@ -163,7 +170,13 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 // PTYs + xterm instances stay alive) but stops the WebGL
                 // render loop while hidden. ResizeObserver inside AuxTerminal
                 // fires fit() when we toggle back, so the cell grid recovers.
-                style={{ display: collapsed ? "none" : "block" }}
+                //
+                // backgroundColor matches xterm's theme bg so the cell-grid
+                // remainder (panel height isn't an integer multiple of cell
+                // height — there's always a few pixels left under the last
+                // row) blends with the terminal instead of showing the
+                // chrome's --color-bg-1 as a darker strip.
+                style={{ display: collapsed ? "none" : "block", backgroundColor: xtermBg }}
               >
                 {(bottomTabs || []).map(t => (
                   <div
