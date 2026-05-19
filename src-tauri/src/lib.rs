@@ -3115,6 +3115,13 @@ pub struct Agent {
     /// `--dangerously-skip-permissions`, the user edits this here and ships on.
     #[serde(default)]
     pub capabilities: AgentCapabilities,
+    /// Per-agent environment variables. Merged into the inherited parent env
+    /// at spawn time (after the parent env, so these win). Useful for things
+    /// like `CLAUDE_CODE_NO_FLICKER=1` or pointing the CLI at a custom config
+    /// dir without wrapping it in a shell script. Keys/values stored verbatim;
+    /// the UI parses `KEY=VAL` lines and round-trips them through this map.
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -3158,6 +3165,7 @@ fn default_agents() -> Vec<Agent> {
                 // scheme but doesn't dead-end.
                 resume_args: vec!["--continue".into()],
             },
+            env: std::collections::HashMap::new(),
         },
         Agent {
             id: "gemini".into(),
@@ -3175,6 +3183,7 @@ fn default_agents() -> Vec<Agent> {
                 // named-session scheme but the best gemini offers today.
                 resume_args: vec!["--resume".into(), "latest".into()],
             },
+            env: std::collections::HashMap::new(),
         },
         Agent {
             id: "codex".into(),
@@ -3192,6 +3201,7 @@ fn default_agents() -> Vec<Agent> {
                 // global flags placed before: `codex --yolo resume --last`.
                 resume_args: vec!["resume".into(), "--last".into()],
             },
+            env: std::collections::HashMap::new(),
         },
     ]
 }
@@ -3453,6 +3463,27 @@ pub fn run() {
             // fullscreen app on another display.
             use tauri::Manager;
             if let Some(win) = app.get_webview_window("main") {
+                // tauri-plugin-window-state restores prior bounds verbatim — it
+                // does NOT enforce the minWidth / minHeight from tauri.conf.json.
+                // If a previous session somehow saved a sub-minimum size (seen
+                // after some updates and after first-launch races with the
+                // shown=true → shown=false transition), the window comes back
+                // as a postage stamp. Clamp UP here before showing so the user
+                // never sees the tiny window. Doing it on physical pixels via
+                // inner_size + scale_factor keeps the math correct on retina.
+                if let (Ok(sz), scale) = (win.inner_size(), win.scale_factor().unwrap_or(1.0)) {
+                    let logical_w = (sz.width  as f64) / scale;
+                    let logical_h = (sz.height as f64) / scale;
+                    const MIN_W: f64 = 900.0;
+                    const MIN_H: f64 = 600.0;
+                    if logical_w < MIN_W || logical_h < MIN_H {
+                        // Snap back to a comfortable default instead of the bare
+                        // min — a 900x600 box is still cramped for the app's
+                        // 3-column layout. 1400x900 matches our intended launch
+                        // size on fresh installs.
+                        let _ = win.set_size(tauri::LogicalSize::new(1400.0_f64, 900.0));
+                    }
+                }
                 let _ = position_on_cursor_monitor(&win);
                 let _ = win.show();
                 let _ = win.set_focus();

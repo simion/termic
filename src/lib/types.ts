@@ -192,6 +192,10 @@ export interface Agent {
      *  its own per-directory session). Empty/missing → no auto-resume. */
     resume_args?: string[];
   };
+  /** Per-agent environment variables merged into the spawn env. Useful
+   *  for things like `CLAUDE_CODE_NO_FLICKER=1` without wrapping the CLI
+   *  in a shell script. UI parses `KEY=VAL` lines and round-trips them. */
+  env?: Record<string, string>;
 }
 
 export interface Settings {

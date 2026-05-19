@@ -43,6 +43,11 @@ interface AppState {
   terminalSplit: Record<string, boolean>;
   /** Per-workspace: pixel height of the bottom split terminal. */
   terminalSplitHeight: Record<string, number>;
+  /** Per-workspace: bottom split collapsed = panel shrinks to just the
+   *  tab strip; AuxTerminals stay mounted so shells keep running.
+   *  Distinct from `terminalSplit=false`, which fully unmounts and
+   *  kills the shells. Persisted. */
+  terminalSplitCollapsed: Record<string, boolean>;
   /** Per-workspace: bottom-terminal tab IDs (each = its own scratch shell).
    *  Lives in memory only — like the main terminal tabs, PTYs die with the app. */
   bottomTabs: Record<string, { id: string; title: string }[]>;
@@ -80,6 +85,7 @@ interface AppState {
   disableFooterTerm: (wsId: string) => void;
   setProjectCollapsed: (projectId: string, collapsed: boolean) => void;
   setTerminalSplitHeight: (wsId: string, px: number) => void;
+  toggleTerminalSplitCollapsed: (wsId: string) => void;
   /** Returns the id of the new bottom tab. */
   addBottomTab: (wsId: string) => string;
   closeBottomTab: (wsId: string, tabId: string) => void;
@@ -102,6 +108,7 @@ const LS_COMPACT = "compactSidebar";
 const LS_RPANEL  = "rightPanelHidden";
 const LS_SPLIT   = "terminalSplit";       // Record<wsId, boolean>
 const LS_SPLITH  = "terminalSplitHeight"; // Record<wsId, number>
+const LS_SPLITC  = "terminalSplitCollapsed"; // Record<wsId, boolean>
 const LS_SBW     = "sidebarWidth";
 const LS_RPW     = "rightPanelWidth";
 const LS_RFH     = "rightFooterHeight";
@@ -112,6 +119,7 @@ const initialCompact = (() => { try { return localStorage.getItem(LS_COMPACT) ==
 const initialHidden  = (() => { try { return localStorage.getItem(LS_RPANEL)  === "1"; } catch { return false; } })();
 const initialSplit   = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLIT)  || "{}"); } catch { return {}; } })();
 const initialSplitH  = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLITH) || "{}"); } catch { return {}; } })();
+const initialSplitC  = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLITC) || "{}"); } catch { return {}; } })();
 const numOrDefault = (k: string, fallback: number) => {
   // Math.round on read too — protects against any older saved fractional
   // value sneaking through and re-blurring the layout on next launch.
@@ -136,6 +144,7 @@ export const useApp = create<AppState>((set, get) => ({
   rightFooterHeight: initialRFH,
   terminalSplit: initialSplit,
   terminalSplitHeight: initialSplitH,
+  terminalSplitCollapsed: initialSplitC,
   bottomTabs: {},
   activeBottomTab: {},
   mountedWorkspaces: new Set<string>(),
@@ -257,6 +266,11 @@ export const useApp = create<AppState>((set, get) => ({
     const next = { ...s.terminalSplitHeight, [wsId]: px };
     try { localStorage.setItem(LS_SPLITH, JSON.stringify(next)); } catch {}
     return { terminalSplitHeight: next };
+  }),
+  toggleTerminalSplitCollapsed: (wsId) => set(s => {
+    const next = { ...s.terminalSplitCollapsed, [wsId]: !s.terminalSplitCollapsed[wsId] };
+    try { localStorage.setItem(LS_SPLITC, JSON.stringify(next)); } catch {}
+    return { terminalSplitCollapsed: next };
   }),
   enableFooterTerm:  (wsId) => set(s => ({ footerTerm: { ...s.footerTerm, [wsId]: true } })),
   disableFooterTerm: (wsId) => set(s => {
