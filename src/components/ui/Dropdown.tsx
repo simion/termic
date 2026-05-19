@@ -13,9 +13,14 @@ interface MenuProps {
   className?: string;
   onMouseEnter?: (e: React.MouseEvent) => void;
   onMouseLeave?: (e: React.MouseEvent) => void;
+  /** Pass-through for Radix's `onCloseAutoFocus`. Call
+   *  `event.preventDefault()` to skip the auto focus-return to the
+   *  trigger when the caller is moving focus elsewhere itself
+   *  (e.g. spawning a tab and focusing its terminal). */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
-export function DropdownMenu({ children, align = "end", sideOffset = 4, className, onMouseEnter, onMouseLeave }: MenuProps) {
+export function DropdownMenu({ children, align = "end", sideOffset = 4, className, onMouseEnter, onMouseLeave, onCloseAutoFocus }: MenuProps) {
   return (
     <DM.Portal>
       <DM.Content
@@ -23,6 +28,7 @@ export function DropdownMenu({ children, align = "end", sideOffset = 4, classNam
         sideOffset={sideOffset}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
+        onCloseAutoFocus={onCloseAutoFocus}
         className={cn(
           "z-50 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
           "data-[state=open]:animate-in data-[state=open]:fade-in-0",

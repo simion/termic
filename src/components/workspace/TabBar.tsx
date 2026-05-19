@@ -1,6 +1,6 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Workspace, Tab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
@@ -20,6 +20,10 @@ export function TabBar({ ws }: { ws: Workspace }) {
   const addTab = useApp(s => s.addTab);
   const renameTab = useApp(s => s.renameTab);
   const [open, setOpen] = useState(false);
+  // When spawnTab fires, suppress Radix's auto focus-return so it
+  // doesn't yank focus back to the '+' trigger before our terminal-
+  // focus call lands.
+  const suppressDropdownReturn = useRef(false);
   // Inline rename state: which tab id is being renamed + its draft value.
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
 
@@ -31,6 +35,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
 
   function spawnTab(cli: string) {
     const newId = crypto.randomUUID();
+    suppressDropdownReturn.current = true;
     addTab(ws.id, { id: newId, type: "terminal", title: cli, cli });
     setOpen(false);
     // Focus the NEW tab's terminal so the user can type immediately.
@@ -67,7 +72,15 @@ export function TabBar({ ws }: { ws: Workspace }) {
         <DropdownTrigger asChild>
           <Button size="icon" variant="icon" className="ml-1"><Plus className="h-4 w-4" /></Button>
         </DropdownTrigger>
-        <DropdownMenu align="start">
+        <DropdownMenu
+          align="start"
+          onCloseAutoFocus={(e) => {
+            if (suppressDropdownReturn.current) {
+              suppressDropdownReturn.current = false;
+              e.preventDefault();
+            }
+          }}
+        >
           <DropdownLabel>New agent</DropdownLabel>
           {CLIS.map(c => (
             <DropdownItem key={c} onSelect={() => spawnTab(c)}>
