@@ -636,7 +636,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
   }, [ws.id, tab.id, markAttention]);
 
   return (
-    <div className="relative flex h-full w-full flex-col">
+    <div className="relative flex h-full w-full flex-col" data-tab-id={tab.id}>
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
       {/* Sandbox status footer was here — moved up to WorkspaceView
           so it sits BELOW the bottom-split (when open) and stays the
