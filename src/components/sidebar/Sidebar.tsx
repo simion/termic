@@ -58,7 +58,9 @@ export function Sidebar() {
   const isWorkDone = (wsId: string) =>
     settledHighlight &&
     (tabs[wsId] || []).some(t =>
-      t.type === "terminal" && (t.unread?.reason === "idle" || t.unread?.reason === "done"),
+      // `idle` (old stdout-cadence heuristic) ships too many false
+      // positives — only honor the sender-driven `done` now.
+      t.type === "terminal" && t.unread?.reason === "done",
     );
   // Distinct from work-done: the agent is explicitly blocked on the
   // user (Gemini ✋ Action Required, Codex Waiting, OSC 1337

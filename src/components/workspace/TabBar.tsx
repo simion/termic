@@ -113,7 +113,10 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
   // when the agent is blocked on the user. BEL / exit reasons fall
   // through to no badge (the tab's own contents already explain).
   const reason = tab.unread?.reason;
-  const showCheck = reason === "done" || reason === "idle";
+  // `idle` is the old stdout-cadence heuristic — too many false
+  // positives. Only honor the sender-driven `done` (OSC 9;4 / title
+  // classifier) for the green check now.
+  const showCheck = reason === "done";
   const showBell  = reason === "attention";
   const color = tab.type === "terminal" ? CLI_BRAND_COLOR[tab.cli] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
