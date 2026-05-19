@@ -580,36 +580,15 @@ fn pty_spawn(
     let id_r = id.clone();
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        let mut total: u64 = 0;
-        let mut bursts: u64 = 0;
-        let start = std::time::Instant::now();
-        let mut first_byte_logged = false;
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => {
-                    dlog(&format!("[pty/{id_r}] EOF after {total} bytes / {bursts} bursts / {:.2}s", start.elapsed().as_secs_f32()));
-                    break;
-                }
+                Ok(0) => break,
                 Ok(n) => {
-                    if !first_byte_logged {
-                        dlog(&format!("[pty/{id_r}] first byte burst ({n} bytes) at {:.2}s — first 80B: {:?}",
-                            start.elapsed().as_secs_f32(),
-                            String::from_utf8_lossy(&buf[..n.min(80)])));
-                        first_byte_logged = true;
-                    }
-                    total += n as u64;
-                    bursts += 1;
-                    // Periodic heartbeat so we can tell "claude is silently emitting
-                    // ANSI" vs "claude is silent". Every 50 bursts ≈ a couple of
-                    // screens of output - cheap signal-to-noise.
-                    if bursts % 50 == 0 {
-                        dlog(&format!("[pty/{id_r}] {total} bytes / {bursts} bursts so far"));
-                    }
                     let chunk = PtyChunk { data: buf[..n].to_vec() };
                     let _ = app_r.emit(&format!("pty://{}", id_r), chunk);
                 }
                 Err(e) => {
-                    dlog(&format!("[pty/{id_r}] read error after {total} bytes: {e}"));
+                    dlog(&format!("[pty/{id_r}] read error: {e}"));
                     break;
                 }
             }
@@ -1872,14 +1851,15 @@ fn sandbox_recent_denied_paths(id: String) -> Vec<DenyPath> {
     }).collect()
 }
 
-/// Append a host to the workspace's `sandbox_allowed_hosts` list, save,
-/// and SIGKILL any live PTYs of that workspace so the next mount picks
-/// up the new profile. Backs the "Allow" button next to each blocked
-/// host in the footer chip popover - one click to whitelist what the
-/// agent just tried to reach.
+/// Append a host to the workspace's `sandbox_allowed_hosts` list and
+/// save. Does NOT kill the live PTY — adding to the allowlist is
+/// strictly more permissive than what the running agent already has,
+/// so leaving the existing process on its older (narrower) profile is
+/// safe; the new entry takes effect on the next agent start. Backs the
+/// "Allow" button next to each blocked host in the footer popover.
 #[tauri::command]
 fn workspace_sandbox_add_allowed_host(
-    state: State<'_, PtyManager>, id: String, host: String,
+    _state: State<'_, PtyManager>, id: String, host: String,
 ) -> Result<usize, String> {
     let host = host.trim().to_string();
     if host.is_empty() { return Err("empty host".into()); }
@@ -1889,32 +1869,16 @@ fn workspace_sandbox_add_allowed_host(
         w.sandbox_allowed_hosts.push(host);
     }
     save_workspace(w).map_err(|e| e.to_string())?;
-
-    // SIGKILL the matching PTYs so they respawn with the new profile.
-    // Same shape as workspace_set_sandbox.
-    let victims: Vec<Option<u32>> = {
-        let map = state.inner.lock();
-        map.iter()
-            .filter(|(_, slot)| slot.workspace_id.as_deref() == Some(&id))
-            .map(|(_, slot)| slot.child_pid)
-            .collect()
-    };
-    let count = victims.len();
-    for pid in victims {
-        if let Some(p) = pid {
-            unsafe { libc::kill(p as i32, libc::SIGKILL); }
-        }
-    }
-    Ok(count)
+    Ok(0)
 }
 
 /// Mirror of `workspace_sandbox_add_allowed_host` but for filesystem
-/// paths. Append to `sandbox_rw_paths`, save, SIGKILL the live PTYs.
-/// Backs the "Allow" button next to each blocked path in the footer
-/// popover.
+/// paths. Append to `sandbox_rw_paths`, save. No SIGKILL — same
+/// reasoning: the new entry is purely additive, the running agent's
+/// old profile is narrower, change takes effect on next start.
 #[tauri::command]
 fn workspace_sandbox_add_allowed_path(
-    state: State<'_, PtyManager>, id: String, path: String,
+    _state: State<'_, PtyManager>, id: String, path: String,
 ) -> Result<usize, String> {
     let path = path.trim().to_string();
     if path.is_empty() { return Err("empty path".into()); }
@@ -1932,21 +1896,7 @@ fn workspace_sandbox_add_allowed_path(
         w.sandbox_rw_paths.push(stored);
     }
     save_workspace(w).map_err(|e| e.to_string())?;
-
-    let victims: Vec<Option<u32>> = {
-        let map = state.inner.lock();
-        map.iter()
-            .filter(|(_, slot)| slot.workspace_id.as_deref() == Some(&id))
-            .map(|(_, slot)| slot.child_pid)
-            .collect()
-    };
-    let count = victims.len();
-    for pid in victims {
-        if let Some(p) = pid {
-            unsafe { libc::kill(p as i32, libc::SIGKILL); }
-        }
-    }
-    Ok(count)
+    Ok(0)
 }
 
 #[tauri::command]

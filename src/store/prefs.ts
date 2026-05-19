@@ -16,6 +16,7 @@ const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_TERMINAL_WEIGHT = "terminalFontWeight";
+const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 
 export type ThemeMode = "auto" | "light" | "dark" | "vscode" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
@@ -313,6 +314,12 @@ interface PrefsState {
    *  most of the visual gap with native Terminal.app, which renders heavier
    *  thanks to Core Text + subpixel AA. */
   terminalFontWeight: number;
+  /** Extra pixels added to each xterm cell's advance. xterm.js measures
+   *  the natural glyph advance and rounds to integer px, which produces
+   *  a tighter cell than iTerm/Terminal.app at the same font. Bumping
+   *  to 1 or 2 px adds the cushion. Integer only — fractional values
+   *  misalign the WebGL atlas. */
+  terminalLetterSpacing: number;
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
@@ -321,6 +328,7 @@ interface PrefsState {
   setTerminalFontId:  (id: string) => void;
   setTerminalFontSize:(px: number) => void;
   setTerminalFontWeight:(w: number) => void;
+  setTerminalLetterSpacing:(px: number) => void;
   setEditorFontSize:  (px: number) => void;
   setCodeLigatures:   (v: boolean) => void;
   setThemeMode:       (m: ThemeMode) => void;
@@ -345,6 +353,7 @@ const initialEditorFont   = lsGet(LS_EDITOR_FONT, "jetbrains");
 const initialTerminalFont = lsGet(LS_TERMINAL_FONT, "jetbrains");
 const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, 13);
 const initialTerminalWeight = lsGetNum(LS_TERMINAL_WEIGHT, 400);
+const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, 1)));
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, 13);
 const initialLigatures    = lsGetBool(LS_LIGATURES, true);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "vscode"));
@@ -369,6 +378,7 @@ export const usePrefs = create<PrefsState>(set => ({
   terminalFontId: initialTerminalFont,
   terminalFontSize: initialTerminalSize,
   terminalFontWeight: initialTerminalWeight,
+  terminalLetterSpacing: initialTerminalLetterSpacing,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
 
@@ -390,6 +400,13 @@ export const usePrefs = create<PrefsState>(set => ({
   setTerminalFontWeight: (w) => {
     try { localStorage.setItem(LS_TERMINAL_WEIGHT, String(w)); } catch {}
     set({ terminalFontWeight: w });
+  },
+  setTerminalLetterSpacing: (px) => {
+    // Clamp to non-negative integer. Fractional values misalign the
+    // WebGL atlas; very high values break TUI column math.
+    const clamped = Math.max(0, Math.min(6, Math.round(px)));
+    try { localStorage.setItem(LS_TERMINAL_LETTERSPACING, String(clamped)); } catch {}
+    set({ terminalLetterSpacing: clamped });
   },
   setEditorFontSize: (px) => {
     try { localStorage.setItem(LS_EDITOR_SIZE, String(px)); } catch {}

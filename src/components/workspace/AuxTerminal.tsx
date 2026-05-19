@@ -42,6 +42,7 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
       fontSize: usePrefs.getState().terminalFontSize,
       fontWeight: usePrefs.getState().terminalFontWeight as any,
       fontWeightBold: Math.min(900, usePrefs.getState().terminalFontWeight + 300) as any,
+      letterSpacing: usePrefs.getState().terminalLetterSpacing,
       lineHeight: 1.0,
       theme: currentTerminalTheme() as any,
       scrollback: 2000,
@@ -136,9 +137,10 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
   }, [active]);
 
   // Re-apply font / size when prefs change.
-  const terminalFontId     = usePrefs(s => s.terminalFontId);
-  const terminalFontSize   = usePrefs(s => s.terminalFontSize);
-  const terminalFontWeight = usePrefs(s => s.terminalFontWeight);
+  const terminalFontId        = usePrefs(s => s.terminalFontId);
+  const terminalFontSize      = usePrefs(s => s.terminalFontSize);
+  const terminalFontWeight    = usePrefs(s => s.terminalFontWeight);
+  const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
   const firstFontRun = useRef(true);
   useEffect(() => {
     if (firstFontRun.current) { firstFontRun.current = false; return; }
@@ -148,9 +150,10 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     t.options.fontSize       = terminalFontSize;
     t.options.fontWeight     = terminalFontWeight as any;
     t.options.fontWeightBold = Math.min(900, terminalFontWeight + 300) as any;
+    t.options.letterSpacing  = terminalLetterSpacing;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
-  }, [terminalFontId, terminalFontSize, terminalFontWeight]);
+  }, [terminalFontId, terminalFontSize, terminalFontWeight, terminalLetterSpacing]);
 
   // Live theme swap mirrors TerminalPane's effect; see the comment there.
   const themeMode = usePrefs(s => s.themeMode);

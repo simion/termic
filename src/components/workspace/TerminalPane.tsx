@@ -119,6 +119,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
       // Bold face moves in proportion to regular: keep ~300 above regular but
       // capped at 900 so users on 500 still get a meaningfully bolder bold.
       fontWeightBold: Math.min(900, usePrefs.getState().terminalFontWeight + 300) as any,
+      letterSpacing: usePrefs.getState().terminalLetterSpacing,
       // 1.0 is xterm's default and what TUIs (gemini, claude, etc.) assume.
       // A larger lineHeight inflates every cell vertically, so any row the TUI
       // paints with a bg color reads as a visible "ribbon" instead of a tight
@@ -560,9 +561,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
 
   // refit so the cell grid recomputes against the new metrics. Skips the
   // initial run since the constructor already used the current values.
-  const terminalFontId     = usePrefs(s => s.terminalFontId);
-  const terminalFontSize   = usePrefs(s => s.terminalFontSize);
-  const terminalFontWeight = usePrefs(s => s.terminalFontWeight);
+  const terminalFontId        = usePrefs(s => s.terminalFontId);
+  const terminalFontSize      = usePrefs(s => s.terminalFontSize);
+  const terminalFontWeight    = usePrefs(s => s.terminalFontWeight);
+  const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
   const firstFontRun = useRef(true);
   useEffect(() => {
     if (firstFontRun.current) { firstFontRun.current = false; return; }
@@ -572,9 +574,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
     t.options.fontSize       = terminalFontSize;
     t.options.fontWeight     = terminalFontWeight as any;
     t.options.fontWeightBold = Math.min(900, terminalFontWeight + 300) as any;
+    t.options.letterSpacing  = terminalLetterSpacing;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
-  }, [terminalFontId, terminalFontSize, terminalFontWeight]);
+  }, [terminalFontId, terminalFontSize, terminalFontWeight, terminalLetterSpacing]);
 
   // Live theme swap: when the user picks a different theme in the
   // dropdown, push the new xterm palette into every mounted terminal.
@@ -803,13 +806,10 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
   async function allow(host: string) {
     setAllowing(host);
     try {
-      // Mark BEFORE the IPC fires — the Rust handler SIGKILLs the
-      // live PTY, and TerminalPane's exit handler checks this flag
-      // to decide between auto-respawn (under the new sandbox) and
-      // showing the "agent exited" overlay. Without the mark the
-      // agent stays dead and the user thinks the Allow click did
-      // nothing.
-      useUI.getState().markPendingSandboxRestart(wsId);
+      // Persist only — the Rust handler no longer kills the live PTY.
+      // The new entry is additive, so the running agent's existing
+      // (narrower) profile stays safe; the rule takes effect on the
+      // next agent start. UI hint below the list spells this out.
       await ipc.workspaceSandboxAddAllowedHost(wsId, host);
       const next = await ipc.sandboxRecentDeniedHosts(wsId).catch(() => hosts);
       setHosts(next);
@@ -818,7 +818,6 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
   async function allowPath(path: string) {
     setAllowing(path);
     try {
-      useUI.getState().markPendingSandboxRestart(wsId);
       await ipc.workspaceSandboxAddAllowedPath(wsId, path);
       const next = await ipc.sandboxRecentDeniedPaths(wsId).catch(() => paths);
       setPaths(next);
@@ -875,7 +874,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                       onClick={() => allow(h.host)}
                       disabled={allowing === h.host}
                       className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                      title={`Add ${h.host} to allowed hosts. Restarts the agent.`}
+                      title={`Add ${h.host} to allowed hosts. Takes effect on next agent restart.`}
                     >
                       {allowing === h.host ? "…" : "Allow"}
                     </button>
@@ -908,7 +907,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                       onClick={() => allowPath(p.path)}
                       disabled={allowing === p.path}
                       className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                      title={`Add ${p.path} to allowed paths. Restarts the agent.`}
+                      title={`Add ${p.path} to allowed paths. Takes effect on next agent restart.`}
                     >
                       {allowing === p.path ? "…" : "Allow"}
                     </button>
@@ -919,7 +918,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
           )}
 
           <div className="mt-2 px-1 text-[11px] text-[var(--color-fg-faint)]">
-            "Allow" adds the host or path to this workspace's sandbox config and restarts the agent.
+            "Allow" adds the host or path to this workspace's sandbox config. Changes take effect on the next agent restart — the running agent keeps its current (narrower) permissions.
           </div>
         </Popover.Content>
       </Popover.Portal>

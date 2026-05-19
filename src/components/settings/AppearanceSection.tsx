@@ -17,6 +17,8 @@ export function AppearanceSection() {
   const setTerminalFontSize = usePrefs(s => s.setTerminalFontSize);
   const terminalFontWeight = usePrefs(s => s.terminalFontWeight);
   const setTerminalFontWeight = usePrefs(s => s.setTerminalFontWeight);
+  const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
+  const setTerminalLetterSpacing = usePrefs(s => s.setTerminalLetterSpacing);
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const setEditorFontSize = usePrefs(s => s.setEditorFontSize);
   const codeLigatures = usePrefs(s => s.codeLigatures);
@@ -45,7 +47,7 @@ export function AppearanceSection() {
         label="Editor font size"
         hint={`${editorFontSize}px`}
         control={
-          <SizeSlider value={editorFontSize} onChange={setEditorFontSize} min={10} max={20} />
+          <NumberInput value={editorFontSize} onChange={setEditorFontSize} min={10} max={20} />
         }
       />
 
@@ -70,7 +72,7 @@ export function AppearanceSection() {
         label="Terminal font size"
         hint={`${terminalFontSize}px`}
         control={
-          <SizeSlider value={terminalFontSize} onChange={setTerminalFontSize} min={10} max={20} />
+          <NumberInput value={terminalFontSize} onChange={setTerminalFontSize} min={10} max={20} />
         }
       />
 
@@ -79,6 +81,14 @@ export function AppearanceSection() {
         hint={`${terminalFontWeight} — WKWebView renders lighter than native Terminal.app at the same weight. Bump to 500 to match.`}
         control={
           <WeightPicker value={terminalFontWeight} onChange={setTerminalFontWeight} />
+        }
+      />
+
+      <Field
+        label="Terminal letter spacing"
+        hint={`${terminalLetterSpacing}px added per cell. xterm packs glyphs snug; bump 1–2px to match iTerm / Terminal.app spacing.`}
+        control={
+          <LetterSpacingPicker value={terminalLetterSpacing} onChange={setTerminalLetterSpacing} />
         }
       />
 
@@ -144,12 +154,19 @@ function FontSelect({ value, onChange, fonts }: {
   );
 }
 
-function SizeSlider({ value, onChange, min, max }: { value: number; onChange: (n: number) => void; min: number; max: number }) {
+// Compact integer stepper. Replaces the previous range slider — direct
+// keyboard entry + step buttons is faster than dragging a slider to hit
+// a specific px value, especially for the small 10..20 range we expose.
+function NumberInput({ value, onChange, min, max }: { value: number; onChange: (n: number) => void; min: number; max: number }) {
+  const clamp = (n: number) => Math.max(min, Math.min(max, Math.round(n)));
   return (
     <input
-      type="range" min={min} max={max} step={1} value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="w-[180px] accent-[var(--color-accent)]"
+      type="number" min={min} max={max} step={1} value={value}
+      onChange={(e) => {
+        const n = Number(e.target.value);
+        if (Number.isFinite(n)) onChange(clamp(n));
+      }}
+      className="h-7 w-[64px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] tabular-nums focus:border-[var(--color-accent-soft)] focus:outline-none"
     />
   );
 }
@@ -181,6 +198,33 @@ function WeightPicker({ value, onChange }: { value: number; onChange: (w: number
           // Render each pill's label in its own weight — gives a live preview
           // so the user can compare without applying.
           style={{ fontWeight: w }}
+        >{label}</button>
+      ))}
+    </div>
+  );
+}
+
+// Integer px only. Fractional values misalign the WebGL atlas; values
+// beyond ~3px start making TUI column math read wrong.
+const LETTER_SPACINGS: { px: number; label: string }[] = [
+  { px: 0, label: "Tight" },
+  { px: 1, label: "Default" },
+  { px: 2, label: "Roomy" },
+  { px: 3, label: "Wide" },
+];
+
+function LetterSpacingPicker({ value, onChange }: { value: number; onChange: (px: number) => void }) {
+  return (
+    <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+      {LETTER_SPACINGS.map(({ px, label }) => (
+        <button
+          key={px} type="button" onClick={() => onChange(px)}
+          className={cn(
+            "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
+            value === px
+              ? "bg-[var(--color-accent-deep)] text-white"
+              : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+          )}
         >{label}</button>
       ))}
     </div>

@@ -233,6 +233,26 @@ see in iTerm.
 
 ---
 
+## Roadmap
+
+What's next, roughly in order. No dates — open an issue if you want to
+push something up the list or pick one off.
+
+- **Better git support.** First-class commit / push / pull / branch
+  switch from inside the app instead of dropping to the aux terminal.
+  Currently the diff viewer is read-only and "Send to main" only moves
+  the working tree.
+- **Linear + GitHub PR integration.** Paste a Linear issue or GitHub
+  issue/PR URL → new workspace seeded with the title + body. Create
+  the PR from the app once you're done. No OAuth — uses the `gh` CLI
+  + unauthenticated public APIs so we don't need your repo scopes.
+- **Fix desktop notifications.** The "agent needs input" / "agent
+  finished" notifications miss too often (settled-detection edge
+  cases, OSC 9;4 dropped on resize, title parser regressions). Audit
+  + tighten the per-CLI signal classifier and the OS-level fan-out.
+
+---
+
 ## License
 
 [AGPL-3.0-or-later](./LICENSE). Fork it, modify it, build a derivative —
