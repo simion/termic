@@ -1,7 +1,7 @@
 // AI Code Review: pick a CLI, spawn a new terminal tab in the active workspace,
 // auto-type the review prompt (guidelines + diff) into the agent.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -20,6 +20,13 @@ export function ReviewDialog() {
   const addTab = useApp(s => s.addTab);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Reset transient state whenever the dialog (re-)opens. Without this,
+  // a successful first click leaves `busy=true` forever — agent buttons
+  // stay disabled on the next Review click.
+  useEffect(() => {
+    if (wsId) { setBusy(false); setErr(null); }
+  }, [wsId]);
 
   async function start(cli: string) {
     if (!ws) return;
