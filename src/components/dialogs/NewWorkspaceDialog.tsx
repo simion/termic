@@ -291,10 +291,12 @@ export function NewWorkspaceDialog() {
       onOpenChange={(v) => { if (!v && !busy) close(); }}
       title={isMulti ? "New multi-repo workspace" : "New worktree"}
       description={project ? `in ${project.name}` : undefined}
-      // Widen when sandbox is on so the sandbox form gets a 2nd column
-      // instead of forcing the dialog to scroll. Narrow when off so the
-      // dialog doesn't look empty.
-      className={sandbox ? "max-w-4xl" : "max-w-md"}
+      // Widen the dialog based on what's actually inside:
+      //   - sandbox ON     → 4xl (the sandbox form needs a 2nd column)
+      //   - multi-repo     → 3xl (per-member row = name + Worktree/Repo
+      //                      toggle + branch input — max-w-md overflows)
+      //   - plain worktree → md (anything wider looks empty)
+      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : "max-w-md"}
     >
       {/* Phase-aware body: form on start, then progress view while creating
           + running setup. Form stays unmounted in non-form phases so its
