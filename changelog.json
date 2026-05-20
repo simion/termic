@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.4.5",
+      "date": "2026-05-20",
+      "summary": "Self-update in-app prompts and a detailed Changelog dialog are now live, alongside optimized, decoupled terminal rendering logic."
+    },
+    {
       "version": "0.4.4",
       "date": "2026-05-20",
       "summary": "Characters missing from your chosen terminal font now fall back to the bundled JetBrains Mono instead of a thinner, mismatched system face."
