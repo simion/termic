@@ -3399,13 +3399,15 @@ fn default_agents() -> Vec<Agent> {
                 resume_args: vec!["--continue".into()],
             },
             env: std::collections::HashMap::new(),
-            // Antigravity is brand-new and its on-disk config layout
-            // isn't documented yet — these are the conventional spots a
-            // Gemini-family Google CLI would use. The allowlist is
-            // additive and harmless when a path doesn't exist; once the
-            // real dir is known, trim/extend in Settings → Agents (the
-            // Sandbox dialog's "Recent denies" will surface it).
+            // Antigravity is a Gemini-family CLI and actually keeps its
+            // per-project state under ~/.gemini (the `.antigravitycli/`
+            // dir it drops in a repo just symlinks into
+            // ~/.gemini/config/projects/…), so .gemini must be allowed
+            // for it to work caged. The rest are conventional spots its
+            // own config might land — additive + harmless if absent;
+            // trim/extend in Settings → Agent CLIs once confirmed.
             sandbox_allowed_paths: vec![
+                "$HOME/.gemini".into(),
                 "$HOME/.antigravity".into(),
                 "$HOME/.agy".into(),
                 "$HOME/.config/antigravity".into(),
