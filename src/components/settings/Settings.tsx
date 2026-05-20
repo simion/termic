@@ -2,6 +2,7 @@
 // with sections + a per-repo list, a right content pane that swaps based on
 // the selected section. Reached via the gear icon in the sidebar or ⌘,.
 
+import { useEffect, useState } from "react";
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers } from "lucide-react";
@@ -22,13 +23,41 @@ export function Settings() {
   const repoId = view.settingsRepoId;
   const isRepoSelected = tab === "repositories" && !!repoId;
 
+  // Two-step Esc to close: the first press "arms" (the Close button relabels to
+  // a confirmation), a second press within 2s closes. Guards against an Esc
+  // muscle-memory dismiss losing unsaved input in a section's text fields.
+  const [escArmed, setEscArmed] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (escArmed) closeSettings();
+      else setEscArmed(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [escArmed, closeSettings]);
+  useEffect(() => {
+    if (!escArmed) return;
+    const t = setTimeout(() => setEscArmed(false), 2000);
+    return () => clearTimeout(t);
+  }, [escArmed]);
+
   return (
     <div className="grid h-full" style={{ gridTemplateColumns: "240px 1fr", gridTemplateRows: "minmax(0, 1fr)" }}>
       {/* Left rail */}
       <aside className="flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 py-3">
         <div className="mb-2 border-b border-[var(--color-border-soft)] pb-2">
-          <Button variant="ghost" className="h-10 w-full justify-start gap-2.5 px-3 text-[14px]" onClick={closeSettings}>
-            <X className="h-[18px] w-[18px]" /> Close settings
+          <Button
+            variant="ghost"
+            className={cn(
+              "h-10 w-full justify-start gap-2.5 px-3 text-[14px]",
+              escArmed && "text-[var(--color-accent)] hover:text-[var(--color-accent)]",
+            )}
+            onClick={closeSettings}
+          >
+            <X className="h-[18px] w-[18px]" />
+            {escArmed ? "Esc again to close" : "Close settings"}
           </Button>
         </div>
 
