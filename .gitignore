@@ -129,7 +129,9 @@ coverage/
 /.cocoindex_code/
 .tmp-*
 
-# ── local-only working docs (plans, scratch notes) ────────────────────
+# ── local-only working docs (scratch notes) ──────────────────────────
+# Root-anchored: a root-level plans/ is local scratch, but docs/plans/
+# is intentionally tracked (investigation / resume docs live there).
 PLAN-*.md
-plans/
+/plans/
 
