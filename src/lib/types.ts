@@ -1,6 +1,6 @@
 // Mirrors the Serde structs in src-tauri/src/lib.rs. Keep in sync.
 
-export type CLI = "claude" | "gemini" | "codex";
+export type CLI = "claude" | "gemini" | "codex" | "agy";
 
 export interface Project {
   id: string;
@@ -180,14 +180,23 @@ export interface Agent {
   color: string;
   /** Built-in (the original 3) — user can edit fields but not remove. */
   builtin: boolean;
+  /** User toggle: hide this agent from the CLI pickers (worktree popover,
+   *  New Workspace, Review, the + tab menu). Settings → Agent CLIs still
+   *  lists it so it can be re-enabled; existing workspaces bound to it
+   *  keep working. Missing = false. */
+  disabled?: boolean;
   /** Optional capabilities the app consumes when present. Missing = "not
    *  supported by this CLI" → the corresponding UI gracefully omits the
    *  feature rather than failing. */
   capabilities?: {
     /** Args appended when YOLO mode is on. Empty/missing → YOLO is a no-op. */
     yolo_args?: string[];
-    /** Slash-style command sent to a live PTY to enable YOLO mid-session. */
+    /** Slash-style command sent to a live PTY to switch it INTO YOLO
+     *  mid-session. Empty/missing → the YOLO toggle needs a respawn. */
     runtime_yolo_command?: string;
+    /** Slash-style command sent to a live PTY to switch it back to the
+     *  default approval mode (YOLO off). Empty/missing → respawn. */
+    runtime_default_command?: string;
     /** Args appended after the worktree's first spawn (so the CLI resumes
      *  its own per-directory session). Empty/missing → no auto-resume. */
     resume_args?: string[];
@@ -286,11 +295,24 @@ export interface BaseTab {
    *  agent-emitted "done" or explicit "attention" — agent is blocked
    *  waiting for the user to approve/answer). */
   unread?: { reason: "bell" | "idle" | "exit" | "done" | "attention" } | null;
+  /** Only meaningful for `edit` tabs: true when the editor buffer has
+   *  unsaved changes. Drives the dirty-dot on the tab and the
+   *  close-without-saving confirm. termic never auto-saves — this is
+   *  cleared only by an explicit ⌘S. */
+  dirty?: boolean;
 }
 
 export interface TerminalTab extends BaseTab {
   type: "terminal";
+  /** Agent id (claude / gemini / codex / agy / custom) the tab runs —
+   *  OR the sentinel `"shell"` for a plain login-shell tab spawned from
+   *  the "+" → New terminal menu. */
   cli: string;
+  /** Plain shell tabs (`cli: "shell"`) carry an explicit sandbox choice:
+   *  `true` → spawn inside the workspace's seatbelt cage, `false` →
+   *  uncaged. Agent tabs leave this unset — they always pass through
+   *  the workspace sandbox (Rust gates on `sandbox_enabled`). */
+  sandboxed?: boolean;
   ptyId?: string;
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;

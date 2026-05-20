@@ -4,21 +4,26 @@ import { useRef, useState } from "react";
 import type { Workspace, Tab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
-import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel } from "@/components/ui/Dropdown";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
+import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
 import { Plus, X, GitCompare, FileText, SquareSplitVertical, Check, Bell } from "lucide-react";
 import { Tip } from "@/components/ui/Tooltip";
+import { requestCloseTab } from "@/lib/closeTab";
+import { visibleCliIds } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 
-const CLIS = ["claude", "gemini", "codex"] as const;
+const CLIS = ["claude", "gemini", "codex", "agy"] as const;
 
 export function TabBar({ ws }: { ws: Workspace }) {
   const tabs = useWorkspaceTabs(ws.id);
   const activeId = useActiveTabId(ws.id);
   const setActive = useApp(s => s.setActiveTabId);
-  const closeTab = useApp(s => s.closeTab);
   const addTab = useApp(s => s.addTab);
   const renameTab = useApp(s => s.renameTab);
+  // Hide disabled / not-installed agents from the + (new agent) menu.
+  const registry = useApp(s => s.agents);
+  const detectedClis = useApp(s => s.detectedClis);
+  const visibleClis = visibleCliIds(CLIS, registry, detectedClis);
   const [open, setOpen] = useState(false);
   // When spawnTab fires, suppress Radix's auto focus-return so it
   // doesn't yank focus back to the '+' trigger before our terminal-
@@ -33,10 +38,11 @@ export function TabBar({ ws }: { ws: Workspace }) {
     setRenaming(null);
   }
 
-  function spawnTab(cli: string) {
-    const newId = crypto.randomUUID();
+  // Add a freshly-built terminal tab + move focus into it. Shared by
+  // the agent items and the New-terminal items below.
+  function addAndFocusTab(tab: Tab) {
     suppressDropdownReturn.current = true;
-    addTab(ws.id, { id: newId, type: "terminal", title: cli, cli });
+    addTab(ws.id, tab);
     setOpen(false);
     // Focus the NEW tab's terminal so the user can type immediately.
     // All workspace tabs stay mounted (visibility-toggle keep-alive),
@@ -46,7 +52,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
     // on the dropdown's '+' button after it closes). Poll because the
     // TerminalPane spawn effect commits a few frames later.
     const tryFocus = (tries = 40) => {
-      const host = document.querySelector(`[data-tab-id="${newId}"]`);
+      const host = document.querySelector(`[data-tab-id="${tab.id}"]`);
       const el = host?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
       if (el) { el.focus(); return; }
       if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
@@ -54,12 +60,29 @@ export function TabBar({ ws }: { ws: Workspace }) {
     tryFocus();
   }
 
+  function spawnTab(cli: string) {
+    addAndFocusTab({ id: crypto.randomUUID(), type: "terminal", title: cli, cli });
+  }
+
+  /** Plain login-shell tab. `sandboxed` decides whether it spawns
+   *  inside the workspace's seatbelt cage — only meaningful (and only
+   *  offered) when the workspace has the sandbox enabled. */
+  function spawnShellTab(sandboxed: boolean) {
+    addAndFocusTab({
+      id: crypto.randomUUID(),
+      type: "terminal",
+      title: sandboxed ? "Sandboxed" : "Terminal",
+      cli: "shell",
+      sandboxed,
+    });
+  }
+
   return (
     <div className="termic-tabstrip flex h-9 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 overflow-x-auto overflow-y-hidden">
       {tabs.map(t => (
         <TabPill
           key={t.id} ws={ws} tab={t} active={t.id === activeId}
-          onSelect={() => setActive(ws.id, t.id)} onClose={() => closeTab(ws.id, t.id)}
+          onSelect={() => setActive(ws.id, t.id)} onClose={() => requestCloseTab(ws.id, t.id)}
           renaming={renaming?.id === t.id ? renaming.value : null}
           onStartRename={() => setRenaming({ id: t.id, value: t.title })}
           onChangeRename={(v) => setRenaming(r => r ? { ...r, value: v } : r)}
@@ -82,12 +105,28 @@ export function TabBar({ ws }: { ws: Workspace }) {
           }}
         >
           <DropdownLabel>New agent</DropdownLabel>
-          {CLIS.map(c => (
+          {CLIS.filter(c => visibleClis.has(c)).map(c => (
             <DropdownItem key={c} onSelect={() => spawnTab(c)}>
               <span className={CLI_BRAND_COLOR[c]}><CliIcon cli={c} className="h-4 w-4" /></span>
-              {c}
+              {CLI_LABEL[c] ?? c}
             </DropdownItem>
           ))}
+          <DropdownSeparator />
+          <DropdownLabel>New terminal</DropdownLabel>
+          {/* Plain login shell. "Terminal" is the full-reach shell
+              (always offered). When the workspace is sandboxed, the
+              user can also spawn one inside the cage. CliIcon keeps
+              the glyph aligned + sized exactly like the agent rows. */}
+          <DropdownItem onSelect={() => spawnShellTab(false)}>
+            <span className="text-[var(--color-fg-dim)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
+            Terminal
+          </DropdownItem>
+          {ws.sandbox_enabled && (
+            <DropdownItem onSelect={() => spawnShellTab(true)}>
+              <span className="text-[var(--color-ok)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
+              Sandboxed
+            </DropdownItem>
+          )}
         </DropdownMenu>
       </DropdownRoot>
 
@@ -145,16 +184,21 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
       //   2. Accent-colored border (vs near-invisible border-soft).
       //   3. Semibold weight on the label.
       // Inactive: muted bg-1 hover, fg-dim text, no border — sinks back.
+      // Width: basis is one-third of the bar (minus ~5rem reserved for
+      // the +/split buttons), flex-grow 0 so tabs DON'T balloon to fill
+      // the bar — two tabs stay one-third-width each instead of each
+      // eating half the bar. flex-shrink 1 lets a 4th+ tab squeeze the
+      // set down toward min-w before the strip scrolls. Net: the bar is
+      // always sized to comfortably fit 3 tabs; min-w floors
+      // readability, max-w caps a lone tab on a very wide bar.
+      style={{ flex: "0 1 calc((100% - 5rem) / 3)" }}
       className={cn(
-        // flex-[1_1_0] makes each tab share the available bar width
-        // equally instead of sizing to its label's intrinsic width.
-        // min-w floors so they're still readable when many tabs are
-        // open; max-w caps so a single tab on a wide bar doesn't
-        // become an enormous pill. Combined effect: tabs feel stable
-        // in width even when titles change (Working… / Ready /
-        // Action Required all map to the same slot).
+        // min-w floors so tabs stay readable when many are open; max-w
+        // caps so a single tab on a wide bar doesn't become an
+        // enormous pill. Width stays stable when titles change
+        // (Working… / Ready / Action Required all map to one slot).
         "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors border",
-        "flex-[1_1_0] min-w-[140px] max-w-[260px]",
+        "min-w-[140px] max-w-[260px]",
         // Active state cue: brighter bg + colored border + brighter fg.
         // Used to also use `font-semibold` but a weight change resizes
         // the label's intrinsic width, which made the cell jiggle on
@@ -210,18 +254,29 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
           {tab.customTitle ? tab.title : (tab.liveTitle || tab.title)}
         </span>
       )}
-      {/* Close button — ALWAYS visible (was hover-only), and shown
-          on every tab including the default one. Closing the very
-          last tab puts the workspace to sleep (closeTab in the app
-          store clears activeWorkspaceId in that branch). Rename
-          lives behind dbl-click on the title; no pencil affordance
-          to keep the tab compact. */}
+      {/* Trailing slot — close button, or a dirty dot for an edit tab
+          with unsaved changes. VS Code convention: the dot sits where
+          the × would be and swaps to the × on hover, so the tab never
+          jiggles in width. Closing routes through requestCloseTab,
+          which confirms before discarding an unsaved buffer. */}
       {!isRenaming && (
-        <button
-          title="Close tab"
-          className="rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
-        ><X className="h-3 w-3" /></button>
+        <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+          {tab.dirty && (
+            <span
+              aria-hidden
+              title="Unsaved changes"
+              className="absolute h-[7px] w-[7px] rounded-full bg-[var(--color-fg-dim)] transition-opacity group-hover:opacity-0"
+            />
+          )}
+          <button
+            title="Close tab"
+            className={cn(
+              "rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
+              tab.dirty && "opacity-0 group-hover:opacity-100",
+            )}
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+          ><X className="h-3 w-3" /></button>
+        </span>
       )}
     </div>
   );

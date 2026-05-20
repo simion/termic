@@ -352,7 +352,11 @@ const lsGetBool = (k: string, fallback: boolean) => lsGet(k, fallback ? "1" : "0
 const initialEditorFont   = lsGet(LS_EDITOR_FONT, "jetbrains");
 const initialTerminalFont = lsGet(LS_TERMINAL_FONT, "jetbrains");
 const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, 13);
-const initialTerminalWeight = lsGetNum(LS_TERMINAL_WEIGHT, 400);
+// Default 500 (Medium), not 400: xterm's WebGL addon rasterizes glyphs
+// through Canvas2D, and WKWebView's Canvas2D path renders noticeably
+// lighter/thinner than Core Text (what iTerm / Terminal.app use). 500
+// closes most of that gap out of the box; users can still drop to 400.
+const initialTerminalWeight = lsGetNum(LS_TERMINAL_WEIGHT, 500);
 const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, 1)));
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, 13);
 const initialLigatures    = lsGetBool(LS_LIGATURES, true);

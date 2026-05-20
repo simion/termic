@@ -1,18 +1,19 @@
 // Settings → Agents. Lets the user edit per-CLI launch commands, default
 // args, YOLO flags, and runtime YOLO slash-commands.
 //
-// Built-in agents (claude/gemini/codex) are editable but not removable —
+// Built-in agents (claude/gemini/codex/agy) are editable but not removable —
 // removing them would orphan existing workspaces that reference them.
 // Saves are debounced (500ms) so typing doesn't hammer the JSON file.
 
 import { useEffect, useRef, useState } from "react";
 import { settingsLoad, agentsSave, agentsDefaults } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
-import type { Agent } from "@/lib/types";
+import { useApp } from "@/store/app";
+import type { Agent, CliInfo } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { AppDialog } from "@/components/ui/Dialog";
-import { Trash2, Plus, Check, AlertTriangle, RotateCcw } from "lucide-react";
+import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Eye, EyeOff } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cn } from "@/lib/utils";
 
@@ -36,6 +37,9 @@ export function AgentsSection() {
   useEffect(() => {
     settingsLoad().then(s => setAgents(s.agents || [])).catch(e => setErr(String(e)));
     agentsDefaults().then(setDefaults).catch(() => {});
+    // Re-probe install status each time this tab opens — the chosen
+    // "startup + Settings open" detection cadence.
+    useApp.getState().refreshClis();
   }, []);
 
   /** True if any field on the agent differs from its ship-time default.
@@ -67,7 +71,7 @@ export function AgentsSection() {
   async function resetAllBuiltins() {
     const ok = await useUI.getState().askConfirm({
       title: "Reset built-in agents to defaults?",
-      message: "Resets claude, gemini, codex to their ship-default commands. Custom agents and per-agent env blocks are kept.",
+      message: "Resets the built-in agents (claude, gemini, codex, Antigravity) to their ship-default commands. Custom agents and per-agent env blocks are kept.",
       confirmLabel: "Reset built-ins",
     });
     if (!ok) return;
@@ -91,6 +95,10 @@ export function AgentsSection() {
 
   function mutate(next: Agent[]) {
     setAgents(next);
+    // Mirror into the app store immediately so the CLI pickers + spawn
+    // logic see edits (the disabled toggle, command changes) right away,
+    // without waiting for the next window-focus loadAll.
+    useApp.setState({ agents: next });
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => performSave(next), 500) as unknown as number;
   }
@@ -138,14 +146,14 @@ export function AgentsSection() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-[20px] font-medium">Agents</h1>
+        <h1 className="text-[20px] font-medium">Agent CLIs</h1>
         <div className="flex items-center gap-3">
           <div className="text-[12px] text-[var(--color-fg-faint)] min-h-[1em]">
             {status === "saving" && <span>Saving…</span>}
             {status === "saved"  && <span className="flex items-center gap-1 text-[var(--color-ok)]"><Check className="h-3.5 w-3.5" /> Saved</span>}
             {status === "error"  && <span className="text-[var(--color-err)]">Save failed</span>}
           </div>
-          <Button variant="ghost" size="sm" onClick={resetAllBuiltins} title="Reset claude, gemini, codex to ship defaults (custom agents kept)">
+          <Button variant="ghost" size="sm" onClick={resetAllBuiltins} title="Reset the built-in agents to ship defaults (custom agents kept)">
             <RotateCcw className="h-3.5 w-3.5" /> Reset built-ins
           </Button>
           <Button variant="secondary" size="sm" onClick={addAgent}>
@@ -224,6 +232,8 @@ function AgentsTabs({
   onAutoFocusConsumed: () => void;
 }) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  // PATH-detection results (keyed by agent id) drive the install badge.
+  const detectedClis = useApp(s => s.detectedClis);
   // Default to first agent; when the list churns (delete current,
   // add new) drift to a sensible neighbor instead of going blank.
   useEffect(() => {
@@ -286,6 +296,7 @@ function AgentsTabs({
         <AgentCard
           key={active.id}
           agent={active}
+          detected={detectedClis[active.id]}
           onPatch={(p) => patchAgent(active.id, p)}
           onPatchCaps={(p) => patchCaps(active.id, p)}
           onRemove={() => requestRemoveAgent(active.id)}
@@ -299,8 +310,11 @@ function AgentsTabs({
   );
 }
 
-function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFocusConsumed, modified, onReset }: {
+function AgentCard({ agent, detected, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFocusConsumed, modified, onReset }: {
   agent: Agent;
+  /** PATH-detection result for this agent, once `refreshClis` has run.
+   *  undefined = not probed yet → no badge. */
+  detected?: CliInfo;
   onPatch: (p: Partial<Agent>) => void;
   onPatchCaps: (p: Partial<NonNullable<Agent["capabilities"]>>) => void;
   onRemove: () => void;
@@ -358,8 +372,38 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
               title="Some fields differ from this agent's ship defaults. Use Reset to revert."
             >modified</span>
           )}
+          {/* Install status — from PATH detection (refreshClis). */}
+          {detected && (
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[11px] uppercase tracking-wider",
+                detected.found
+                  ? "bg-[var(--color-ok)]/15 text-[var(--color-ok)]"
+                  : "bg-[var(--color-err)]/15 text-[var(--color-err)]",
+              )}
+              title={detected.found
+                ? `Found: ${detected.path || "on PATH"}${detected.version ? ` — ${detected.version}` : ""}`
+                : "Not found on PATH — hidden from the CLI pickers until it's installed (or point Command at an absolute path)"}
+            >{detected.found ? "installed" : "not found"}</span>
+          )}
         </div>
         <div className="flex items-center gap-1">
+          {/* Force hide/show — disabled agents drop out of every CLI
+              picker (worktree popover, New Workspace, Review, + menu)
+              but stay editable here and keep working for existing
+              workspaces already bound to them. */}
+          <button
+            onClick={() => onPatch({ disabled: !agent.disabled })}
+            className={cn(
+              "rounded p-1.5 hover:bg-[var(--color-bg-3)]",
+              agent.disabled
+                ? "text-[var(--color-warn)]"
+                : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
+            )}
+            title={agent.disabled
+              ? "Hidden from the CLI pickers — click to show"
+              : "Shown in the CLI pickers — click to hide"}
+          >{agent.disabled ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
           {modified && onReset && (
             <button
               onClick={() => {
@@ -391,7 +435,7 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
         >
           <Input value={argsText}
             onChange={e => onPatch({ args: e.target.value.split(/\s+/).filter(Boolean) })}
-            className="font-mono" placeholder="--name {workspace_slug}"
+            className="font-mono" placeholder="--option1 --option2"
           />
         </Field>
         <Field label="YOLO args" hint="Appended when YOLO mode (⚡) is on. Empty = no flag added.">
@@ -400,12 +444,20 @@ function AgentCard({ agent, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFoc
             className="font-mono" placeholder="--dangerously-skip-permissions"
           />
         </Field>
-        <Field label="Runtime YOLO command" hint='Slash-command sent to live PTY when YOLO is toggled. Use {mode} for "yolo" or "default". Empty = no runtime toggle.'>
-          <Input value={agent.capabilities?.runtime_yolo_command || ""}
-            onChange={e => onPatchCaps({ runtime_yolo_command: e.target.value })}
-            className="font-mono" placeholder="/approval-mode {mode}"
-          />
-        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Runtime YOLO command" hint="Slash-command sent to the live agent to switch it into YOLO. Empty = the YOLO toggle needs a respawn.">
+            <Input value={agent.capabilities?.runtime_yolo_command || ""}
+              onChange={e => onPatchCaps({ runtime_yolo_command: e.target.value })}
+              className="font-mono"
+            />
+          </Field>
+          <Field label="Runtime default command" hint="Slash-command sent to switch the live agent back to default (YOLO off). Empty = needs a respawn.">
+            <Input value={agent.capabilities?.runtime_default_command || ""}
+              onChange={e => onPatchCaps({ runtime_default_command: e.target.value })}
+              className="font-mono"
+            />
+          </Field>
+        </div>
         <Field label="Resume args" hint="Appended after the worktree's first spawn so the CLI resumes its own session for that directory. Empty = no auto-resume.">
           <Input value={resumeArgsText}
             onChange={e => onPatchCaps({ resume_args: e.target.value.split(/\s+/).filter(Boolean) })}

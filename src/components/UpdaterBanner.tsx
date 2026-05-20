@@ -44,6 +44,21 @@ export function UpdaterBanner() {
     return () => { cancelled = true; window.clearInterval(id); };
   }, []);
 
+  // Dev builds (`make dev` → vite dev server) show a DEV marker in the
+  // updater's slot. The real update pill can never appear in dev anyway
+  // — there's no signed release to check against — so this just claims
+  // the empty space, making a `make dev` window unmistakable.
+  if (import.meta.env.DEV) {
+    return (
+      <span
+        title="Development build (make dev) — not a released version."
+        className="flex select-none items-center rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-warn)]"
+      >
+        DEV
+      </span>
+    );
+  }
+
   if (!update) return null;
 
   async function install() {

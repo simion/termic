@@ -1,10 +1,10 @@
 // Per-agent CLI knowledge, now driven by the editable agent registry in
 // Settings → Agents (Settings.agents[] in the app store). Hard-coded
-// fallbacks remain ONLY for the three built-ins so the app still works
+// fallbacks remain ONLY for the four built-ins so the app still works
 // if the registry hasn't loaded yet (very first render before loadAll
 // resolves) or if a user removed all agents.
 
-import type { Agent, Workspace } from "@/lib/types";
+import type { Agent, Workspace, CliInfo } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { ptyWrite } from "@/lib/ipc";
 import { slugify } from "@/lib/utils";
@@ -33,7 +33,7 @@ function workspaceVars(ws: Workspace | undefined): Record<string, string> {
   };
 }
 
-/** Hard-coded fallback for the three built-ins. Used only when the
+/** Hard-coded fallback for the four built-ins. Used only when the
  *  registry doesn't have an entry for `cli` yet (pre-load) or when the
  *  registry is empty. The registry is the source of truth in steady state. */
 const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
@@ -55,7 +55,8 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
     command: "gemini", args: [],
     capabilities: {
       yolo_args: ["--yolo"],
-      runtime_yolo_command: "/approval-mode {mode}",
+      runtime_yolo_command: "/approval-mode yolo",
+      runtime_default_command: "/approval-mode default",
       // `gemini --resume latest` — most-recent session in CWD.
       resume_args: ["--resume", "latest"],
     },
@@ -67,6 +68,16 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
       runtime_yolo_command: "",
       // `codex resume --last` — subcommand form, picks most-recent session.
       resume_args: ["resume", "--last"],
+    },
+  },
+  agy: {
+    command: "agy", args: [],
+    capabilities: {
+      // Antigravity CLI 1.0 — mirrors claude: `--dangerously-skip-permissions`
+      // auto-approves tool prompts; `--continue` resumes the latest session.
+      yolo_args: ["--dangerously-skip-permissions"],
+      runtime_yolo_command: "",
+      resume_args: ["--continue"],
     },
   },
 };
@@ -85,6 +96,7 @@ function findAgent(cli: string): {
       caps: {
         yolo_args: a.capabilities?.yolo_args ?? [],
         runtime_yolo_command: a.capabilities?.runtime_yolo_command ?? "",
+        runtime_default_command: a.capabilities?.runtime_default_command ?? "",
         resume_args: a.capabilities?.resume_args ?? [],
       },
       env: { ...(a.env ?? {}) },
@@ -135,7 +147,13 @@ export function spawnArgsForCli(
  *  gemini does (`/approval-mode <mode>`); others need a respawn. */
 export async function tryToggleYoloLive(cli: string, ptyId: string, yolo: boolean): Promise<boolean> {
   const { caps } = findAgent(cli);
-  const tmpl = caps.runtime_yolo_command;
+  // Two explicit commands now (into-YOLO / back-to-default). A legacy
+  // single-field config only has runtime_yolo_command (with a `{mode}`
+  // placeholder) — fall back to it for the default direction so old
+  // configs keep toggling. `{mode}` is still substituted either way.
+  const tmpl = yolo
+    ? caps.runtime_yolo_command
+    : (caps.runtime_default_command || caps.runtime_yolo_command);
   if (!tmpl) return false;
   const cmd = tmpl.replaceAll("{mode}", yolo ? "yolo" : "default");
   const bytes = new TextEncoder().encode(cmd + "\r");
@@ -150,3 +168,28 @@ export const resumeArgsForCli = (cli: string) => findAgent(cli).caps.resume_args
  *  env in TerminalPane; agent-side values take precedence over the
  *  built-in TERMIC_* / COLORFGBG block so users can override anything. */
 export const envForCli = (cli: string): Record<string, string> => findAgent(cli).env;
+
+/** Which agent ids should appear in the CLI pickers (worktree popover,
+ *  New Workspace, Review, the + tab menu). Two filters, in order:
+ *
+ *    1. User `disabled` toggle (Settings → Agent CLIs) — ALWAYS
+ *       respected. Hiding a disabled agent is an explicit choice.
+ *    2. PATH detection — drop agents detected as not-installed.
+ *
+ *  Detection is unreliable (shell-function CLIs, stripped GUI PATH at
+ *  .app launch), so step 2 never strands the user: before detection
+ *  resolves (`detected` empty), or when filtering would empty the
+ *  picker, the detection step is skipped and the enabled set returned
+ *  whole. An id absent from `detected` defaults to visible. */
+export function visibleCliIds(
+  candidateIds: readonly string[],
+  agents: Agent[],
+  detected: Record<string, CliInfo>,
+): Set<string> {
+  const enabled = candidateIds.filter(
+    id => !(agents.find(a => a.id === id)?.disabled ?? false),
+  );
+  if (Object.keys(detected).length === 0) return new Set(enabled);
+  const installed = enabled.filter(id => detected[id]?.found ?? true);
+  return new Set(installed.length ? installed : enabled);
+}

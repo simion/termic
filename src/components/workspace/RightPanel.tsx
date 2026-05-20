@@ -22,6 +22,11 @@ const STATUS_COLOR: Record<string, string> = { M: "var(--color-accent)", A: "var
 
 type FootTab = "setup" | "run" | "term";
 
+// Footer collapse persists across launches. Component-local (no other
+// component reads it) so it's localStorage-backed directly rather than
+// pushed through the app store — same pattern as DiffPane's view mode.
+const LS_FOOT_COLLAPSED = "rightFooterCollapsed";
+
 export function RightPanel() {
   const ws = useActiveWorkspace();
   const addTab = useApp(s => s.addTab);
@@ -44,10 +49,16 @@ export function RightPanel() {
   // Footer holds Setup / Run status only. Scratch shells live in the
   // bottom-split (⇧⌘D) — having a second terminal slot here was redundant.
   const [footTab, setFootTab] = useState<FootTab>("run");
-  // Expanded by default: the Setup / Run tabs are useless when collapsed,
-  // and the bottom split is the dedicated scratch-shell surface — there's
-  // nothing the user gains by hiding the footer on first open.
-  const [footCollapsed, setFootCollapsed] = useState(false);
+  // Expanded by default on a fresh install: the Setup / Run tabs are
+  // useless when collapsed, and the bottom split is the dedicated
+  // scratch-shell surface — nothing gained by hiding the footer on
+  // first open. After that, the user's choice persists across launches.
+  const [footCollapsed, setFootCollapsed] = useState(() => {
+    try { return localStorage.getItem(LS_FOOT_COLLAPSED) === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(LS_FOOT_COLLAPSED, footCollapsed ? "1" : "0"); } catch {}
+  }, [footCollapsed]);
   // Footer height + right-panel width come from the persistent app store so
   // values survive reloads and can be set by the two drag handles below.
   const footHeight        = useApp(s => s.rightFooterHeight);

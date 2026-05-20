@@ -1794,7 +1794,7 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 
 #[tauri::command]
 fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
-    if !["claude", "gemini", "codex"].contains(&cli.as_str()) {
+    if !["claude", "gemini", "codex", "agy"].contains(&cli.as_str()) {
         return Err(format!("unknown cli: {cli}"));
     }
     let mut list = load_workspaces();
@@ -2595,6 +2595,18 @@ fn workspace_file_read(id: String, path: String) -> Result<String, String> {
     fs::read_to_string(&abs).map_err(|e| format!("read failed: {e}"))
 }
 
+/// Overwrite a workspace file with new contents (editor save). The
+/// path is constrained to the worktree by `safe_workspace_path`, same
+/// as the read side. Synchronous to mirror `workspace_file_read` — a
+/// single text file (capped at 2 MB on read) is not the heavy-IO case
+/// the spawn_blocking discipline targets.
+#[tauri::command]
+fn workspace_file_write(id: String, path: String, content: String) -> Result<(), String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    let abs = safe_workspace_path(Path::new(&w.path), &path)?;
+    fs::write(&abs, content).map_err(|e| format!("write failed: {e}"))
+}
+
 /// Return the (original, modified) sides of a tracked file so a
 /// language-aware diff viewer can render them side-by-side with
 /// syntax highlighting. Original = `git show HEAD:<path>` (empty
@@ -3208,6 +3220,13 @@ pub struct Agent {
     /// removed. We use this both at seed-time and at delete-time as a guard.
     #[serde(default)]
     pub builtin: bool,
+    /// User toggle: hide this agent from the CLI pickers (worktree
+    /// popover, New Workspace, Review, the + tab menu). Settings →
+    /// Agent CLIs still lists it so it can be re-enabled. Does NOT
+    /// affect workspaces already bound to this agent — they keep
+    /// resolving it. `#[serde(default)]` → false for pre-agents files.
+    #[serde(default)]
+    pub disabled: bool,
     /// Optional per-agent capabilities. ALL fields are optional — when missing,
     /// the corresponding UI gracefully omits the feature rather than failing.
     /// Lets CLIs drift independently of app code: if Anthropic renames
@@ -3236,9 +3255,15 @@ pub struct Agent {
 pub struct AgentCapabilities {
     /// Args appended when YOLO mode is on. Empty → YOLO is a no-op for this agent.
     pub yolo_args: Vec<String>,
-    /// Slash-style command sent to a live PTY to enable/disable YOLO mid-session.
-    /// `{mode}` is replaced with "yolo" or "default". Empty → no runtime toggle.
+    /// Slash-style command sent to a live PTY to switch it INTO YOLO
+    /// mid-session. Empty → the YOLO toggle needs a respawn instead.
+    /// (A legacy `{mode}` placeholder is still substituted at send time
+    /// for back-compat with the old single-field config.)
     pub runtime_yolo_command: String,
+    /// Slash-style command sent to a live PTY to switch it back to the
+    /// default approval mode (YOLO off). Empty → falls back to
+    /// `runtime_yolo_command` (with `{mode}` → "default"), else respawn.
+    pub runtime_default_command: String,
     /// Args appended on spawn AFTER the first one for a given worktree
     /// (gated by `Workspace.spawn_count > 0`). Lets the CLI resume its own
     /// per-directory history file. Empty → no auto-resume for this agent.
@@ -3262,9 +3287,11 @@ fn default_agents() -> Vec<Agent> {
             icon_id: "claude".into(),
             color: "#d97757".into(),
             builtin: true,
+            disabled: false,
             capabilities: AgentCapabilities {
                 yolo_args: vec!["--dangerously-skip-permissions".into()],
                 runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
                 // `--continue` picks up the most-recent session in CWD
                 // without an interactive picker. Trade-off: if you've
                 // run claude in this dir outside termic, it'll resume
@@ -3297,9 +3324,13 @@ fn default_agents() -> Vec<Agent> {
             icon_id: "gemini".into(),
             color: "#4c8bf5".into(),
             builtin: true,
+            disabled: false,
             capabilities: AgentCapabilities {
                 yolo_args: vec!["--yolo".into()],
-                runtime_yolo_command: "/approval-mode {mode}".into(),
+                // gemini's live approval-mode switch — one command per
+                // direction (the form exposes both as separate fields).
+                runtime_yolo_command: "/approval-mode yolo".into(),
+                runtime_default_command: "/approval-mode default".into(),
                 // gemini supports `--resume latest` to pick up the most
                 // recent session in CWD. Less deterministic than claude's
                 // named-session scheme but the best gemini offers today.
@@ -3322,9 +3353,11 @@ fn default_agents() -> Vec<Agent> {
             icon_id: "codex".into(),
             color: "#16a34a".into(),
             builtin: true,
+            disabled: false,
             capabilities: AgentCapabilities {
                 yolo_args: vec!["--dangerously-bypass-approvals-and-sandbox".into()],
                 runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
                 // codex uses a subcommand for resume: `codex resume --last`
                 // (most-recent session in CWD). Composes correctly with
                 // global flags placed before: `codex --yolo resume --last`.
@@ -3337,6 +3370,49 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/share/codex".into(),
                 "$HOME/.local/state/codex".into(),
                 "$HOME/Library/Application Support/Codex".into(),
+            ],
+        },
+        Agent {
+            // Google Antigravity CLI (`agy`), launched 2025-11-18 — a
+            // Gemini-3-family agentic CLI. `id` is the binary name to
+            // keep the id == command == detect-name invariant the rest
+            // of the codebase relies on; `display_name` carries the
+            // brand.
+            id: "agy".into(),
+            display_name: "Antigravity".into(),
+            command: "agy".into(),
+            args: vec![],
+            icon_id: "agy".into(),
+            color: "#8b5cf6".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                // From `agy --help` (Antigravity CLI 1.0.0):
+                // `--dangerously-skip-permissions` auto-approves every
+                // tool permission prompt — same shape as claude's flag.
+                yolo_args: vec!["--dangerously-skip-permissions".into()],
+                // No documented slash command for a live YOLO toggle.
+                runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
+                // `--continue` (`-c`) continues the most recent
+                // conversation in CWD with no interactive picker.
+                resume_args: vec!["--continue".into()],
+            },
+            env: std::collections::HashMap::new(),
+            // Antigravity is brand-new and its on-disk config layout
+            // isn't documented yet — these are the conventional spots a
+            // Gemini-family Google CLI would use. The allowlist is
+            // additive and harmless when a path doesn't exist; once the
+            // real dir is known, trim/extend in Settings → Agents (the
+            // Sandbox dialog's "Recent denies" will surface it).
+            sandbox_allowed_paths: vec![
+                "$HOME/.antigravity".into(),
+                "$HOME/.agy".into(),
+                "$HOME/.config/antigravity".into(),
+                "$HOME/.config/agy".into(),
+                "$HOME/.local/share/antigravity".into(),
+                "$HOME/.local/state/antigravity".into(),
+                "$HOME/Library/Application Support/Antigravity".into(),
             ],
         },
     ]
@@ -3392,6 +3468,21 @@ pub(crate) fn load_settings_inner() -> Settings {
                 a.sandbox_allowed_paths.extend(missing);
                 migrated = true;
             }
+        }
+    }
+    // Migration: the runtime YOLO toggle used to be ONE `{mode}`-templated
+    // command; it's now two explicit commands (switch-into-YOLO and
+    // switch-to-default). Split any legacy `{mode}` value across both
+    // fields so the Settings form shows them filled. Runs for built-in
+    // AND custom agents — the split is behaviour-preserving either way
+    // ({mode} is still substituted at send time, so un-migrated configs
+    // also keep working).
+    for a in s.agents.iter_mut() {
+        let c = &mut a.capabilities;
+        if c.runtime_default_command.is_empty() && c.runtime_yolo_command.contains("{mode}") {
+            c.runtime_default_command = c.runtime_yolo_command.replace("{mode}", "default");
+            c.runtime_yolo_command = c.runtime_yolo_command.replace("{mode}", "yolo");
+            migrated = true;
         }
     }
     // Persist the migration so jq / external tooling sees the fields,
@@ -3547,56 +3638,84 @@ async fn list_monospace_fonts() -> Vec<String> {
     computed
 }
 
-/// Probe the user's PATH for each supported agent CLI. Used by the welcome
-/// wizard so the user can see at a glance whether they need to install one.
-/// Falls back to hard-coded common install locations when `command -v`
-/// returns empty — covers two real cases:
-///   1. User aliased the CLI as a shell function (e.g. `claude () { ... }`)
-///      so `command -v` returns the function body, not a binary path.
-///   2. termic launched from a context with stripped PATH (Finder, .app
-///      launch, etc.) where /opt/homebrew/bin is missing.
+/// Probe each registered agent's `command` to see whether it resolves.
+/// Drives the install-status badge in Settings → Agent CLIs and the
+/// "hide uninstalled" filtering of the CLI pickers. Registry-driven, so
+/// custom agents (and renamed/absolute commands) are covered — not just
+/// the built-ins. `CliInfo.name` is the agent `id` so the frontend can
+/// match each result back to the registry.
+///
+/// Detection falls back to hard-coded common install locations when
+/// `command -v` returns empty — covers two real cases:
+///   1. The CLI is a shell function (`claude () { ... }`) so `command -v`
+///      returns a function body, not a binary path.
+///   2. termic launched from a stripped-PATH context (Finder / .app)
+///      where /opt/homebrew/bin is missing.
+///
+/// async + spawn_blocking: spawns a `command -v` plus a version probe
+/// per agent, and runs at startup — must stay off the IPC/WKWebView
+/// thread (see the long-running-IPC discipline in CLAUDE.md).
 #[tauri::command]
-fn detect_clis() -> Vec<CliInfo> {
+async fn detect_clis() -> Vec<CliInfo> {
+    tauri::async_runtime::spawn_blocking(detect_clis_blocking)
+        .await
+        .unwrap_or_default()
+}
+
+fn detect_clis_blocking() -> Vec<CliInfo> {
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    ["claude", "gemini", "codex"].iter().map(|name| {
-        // First try: PATH lookup via login shell. Covers the common case
-        // where the binary is on PATH and not shadowed.
+    let agents = load_settings_inner().agents;
+    agents.iter().map(|agent| {
+        let bin = agent.command.trim();
         let mut found = false;
         let mut path = String::new();
-        if let Ok(o) = Command::new("/usr/bin/env")
-            .args(["sh", "-lc", &format!("command -v {} 2>/dev/null", name)])
-            .output()
-        {
-            if o.status.success() {
-                let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                // Reject obvious non-paths (shell function body lookalikes).
-                if !p.is_empty() && (p.starts_with('/') || p.starts_with('~')) {
-                    found = true;
-                    path = p;
+
+        if bin.is_empty() {
+            // No command configured — nothing to probe.
+        } else if bin.starts_with('/') {
+            // Absolute path (e.g. set via the welcome wizard's binary
+            // picker) — just check existence, no PATH lookup.
+            if Path::new(bin).exists() {
+                found = true;
+                path = bin.to_string();
+            }
+        } else {
+            // PATH lookup via login shell — the common case.
+            if let Ok(o) = Command::new("/usr/bin/env")
+                .args(["sh", "-lc", &format!("command -v {} 2>/dev/null", bin)])
+                .output()
+            {
+                if o.status.success() {
+                    let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    // Reject shell-function body lookalikes.
+                    if !p.is_empty() && (p.starts_with('/') || p.starts_with('~')) {
+                        found = true;
+                        path = p;
+                    }
+                }
+            }
+            // Fallback: probe common macOS install locations directly.
+            if !found {
+                for c in [
+                    format!("{home}/.local/bin/{bin}"),
+                    format!("/opt/homebrew/bin/{bin}"),
+                    format!("/usr/local/bin/{bin}"),
+                    format!("{home}/.bun/bin/{bin}"),
+                    format!("{home}/.cargo/bin/{bin}"),
+                ] {
+                    if Path::new(&c).exists() {
+                        found = true;
+                        path = c;
+                        break;
+                    }
                 }
             }
         }
-        // Fallback: probe common macOS install locations directly.
-        if !found {
-            let candidates = [
-                format!("{home}/.local/bin/{name}"),
-                format!("/opt/homebrew/bin/{name}"),
-                format!("/usr/local/bin/{name}"),
-                format!("{home}/.bun/bin/{name}"),
-                format!("{home}/.cargo/bin/{name}"),
-            ];
-            for c in candidates {
-                if Path::new(&c).exists() {
-                    found = true;
-                    path = c;
-                    break;
-                }
-            }
-        }
+
         // Best-effort version probe. Use the resolved path when we have
-        // it (avoids PATH ambiguity); fall back to the bare name.
+        // it (avoids PATH ambiguity); fall back to the bare command.
         let version = if found {
-            let cmd = if path.is_empty() { name.to_string() } else { path.clone() };
+            let cmd = if path.is_empty() { bin.to_string() } else { path.clone() };
             Command::new(&cmd)
                 .arg("--version")
                 .output()
@@ -3604,7 +3723,8 @@ fn detect_clis() -> Vec<CliInfo> {
                 .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
                 .unwrap_or_default()
         } else { String::new() };
-        CliInfo { name: (*name).into(), found, path, version }
+
+        CliInfo { name: agent.id.clone(), found, path, version }
     }).collect()
 }
 
@@ -3673,7 +3793,7 @@ pub fn run() {
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
-            workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_dir_list,
+            workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, home_dir, path_exists, log_line,

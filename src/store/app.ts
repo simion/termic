@@ -68,9 +68,18 @@ interface AppState {
    *  `spawnArgsForCli` can consult `agent.command + args + capabilities`
    *  instead of hard-coding by CLI string. Empty until first loadAll. */
   agents: import("@/lib/types").Agent[];
+  /** PATH-detection results keyed by agent id. Empty until `refreshClis`
+   *  first resolves — an empty map means "show every agent" so the
+   *  pickers are never stranded before/without detection. Drives the
+   *  install badge in Settings and the hide-uninstalled picker filter. */
+  detectedClis: Record<string, import("@/lib/types").CliInfo>;
 
   // ── actions ──
   loadAll: () => Promise<void>;
+  /** Re-probe each agent's command for installed-ness. Fired once at
+   *  startup (App mount) and whenever Settings → Agent CLIs opens —
+   *  deliberately NOT on every window focus. */
+  refreshClis: () => Promise<void>;
   setActiveWorkspace: (id: string | null) => void;
   setView: (page: View["page"]) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string) => void;
@@ -151,6 +160,7 @@ export const useApp = create<AppState>((set, get) => ({
   footerTerm: {},
   collapsedProjects: initialCollapsed as Record<string, boolean>,
   agents: [],
+  detectedClis: {},
 
   loadAll: async () => {
     // Pull projects + workspaces + settings (for the agent registry).
@@ -163,6 +173,17 @@ export const useApp = create<AppState>((set, get) => ({
       ipc.settingsLoad().catch(() => ({ agents: [] } as Partial<import("@/lib/types").Settings>)),
     ]);
     set({ projects, workspaces, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [] });
+  },
+
+  refreshClis: async () => {
+    try {
+      const list = await ipc.detectClis();
+      const map: Record<string, import("@/lib/types").CliInfo> = {};
+      for (const c of list) map[c.name] = c;
+      set({ detectedClis: map });
+    } catch {
+      // Keep prior results; an empty map just means "show all".
+    }
   },
 
   setActiveWorkspace: (id) => {

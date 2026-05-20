@@ -29,7 +29,7 @@ src/
     ├── settings/         (Appearance, General, Agents, Shortcuts, Repository)
     └── dialogs/{Dialogs,NewProject,NewWorkspace,Welcome,Review}.tsx
 src-tauri/
-├── tauri.conf.json       (Overlay titleBarStyle, hiddenTitle, trafficLightPosition {x:16,y:14}, visible:false → positioned then shown)
+├── tauri.conf.json       (Overlay titleBarStyle, hiddenTitle, trafficLightPosition {x:16,y:16}, visible:false → positioned then shown)
 ├── capabilities/default.json   (REQUIRES core:window:allow-start-dragging + allow-toggle-maximize + allow-minimize)
 └── src/lib.rs            ← ALL the Rust (PTY mgr, project/workspace IO, settings, scripts, discovery, git)
 ```

@@ -4,7 +4,7 @@
 
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
-import { ArrowLeft, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -23,27 +23,20 @@ export function Settings() {
   const isRepoSelected = tab === "repositories" && !!repoId;
 
   return (
-    <div className="relative grid h-full" style={{ gridTemplateColumns: "240px 1fr", gridTemplateRows: "minmax(0, 1fr)" }}>
-      {/* Transparent drag strip across the top so the user can move the window
-          from the settings view, and so the macOS traffic lights don't overlap
-          interactive UI below. Height matches the overlay title-bar area. */}
-      <div
-        data-tauri-drag-region
-        className="absolute left-0 right-0 top-0 z-10 h-10"
-        style={{ WebkitAppRegion: "drag" } as any}
-      />
-
+    <div className="grid h-full" style={{ gridTemplateColumns: "240px 1fr", gridTemplateRows: "minmax(0, 1fr)" }}>
       {/* Left rail */}
-      <aside className="flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 pb-3 pt-12">
-        <Button variant="ghost" className="mb-3 justify-start gap-2 px-2" onClick={closeSettings}>
-          <ArrowLeft className="h-4 w-4" /> Back to app
-        </Button>
+      <aside className="flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 py-3">
+        <div className="mb-2 border-b border-[var(--color-border-soft)] pb-2">
+          <Button variant="ghost" className="h-10 w-full justify-start gap-2.5 px-3 text-[14px]" onClick={closeSettings}>
+            <X className="h-[18px] w-[18px]" /> Close settings
+          </Button>
+        </div>
 
         <RailItem icon={<SettingsIcon className="h-4 w-4" />} label="General"
           active={tab === "general"} onClick={() => openSettings("general")} />
         <RailItem icon={<Palette className="h-4 w-4" />} label="Appearance"
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
-        <RailItem icon={<Terminal className="h-4 w-4" />} label="Agents"
+        <RailItem icon={<Terminal className="h-4 w-4" />} label="Agent CLIs"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
         <RailItem icon={<Keyboard className="h-4 w-4" />} label="Shortcuts"
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />
@@ -75,7 +68,7 @@ export function Settings() {
 
       {/* Right pane */}
       <section className="min-h-0 overflow-auto">
-        <div className="mx-auto max-w-5xl p-8 pt-14">
+        <div className="mx-auto max-w-5xl p-8">
           {tab === "general"     && <GeneralSection />}
           {tab === "appearance"  && <AppearanceSection />}
           {tab === "agents"      && <AgentsSection />}

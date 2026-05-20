@@ -6,18 +6,23 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
 import { ptyWrite } from "@/lib/ipc";
 import { REVIEW_PROMPT } from "@/lib/review";
+import { visibleCliIds } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 
-const CLIS = ["claude", "gemini", "codex"] as const;
+const CLIS = ["claude", "gemini", "codex", "agy"] as const;
 
 export function ReviewDialog() {
   const wsId = useUI(s => s.reviewForWsId);
   const close = useUI(s => s.closeReview);
   const ws = useApp(s => wsId ? s.workspaces.find(w => w.id === wsId) : null);
   const addTab = useApp(s => s.addTab);
+  // Hide disabled / not-installed agents from the review picker.
+  const registry = useApp(s => s.agents);
+  const detectedClis = useApp(s => s.detectedClis);
+  const visibleClis = visibleCliIds(CLIS, registry, detectedClis);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -58,7 +63,7 @@ export function ReviewDialog() {
     <AppDialog open={!!wsId} onOpenChange={(v) => (v ? null : close())}
       title="AI code review" description="Pick an agent — we'll feed it your diff + review guidelines.">
       <div className="mt-2 grid grid-cols-3 gap-2">
-        {CLIS.map(c => (
+        {CLIS.filter(c => visibleClis.has(c)).map(c => (
           <button
             key={c}
             disabled={busy}
@@ -71,7 +76,7 @@ export function ReviewDialog() {
             <span className={cn("text-[24px]", CLI_BRAND_COLOR[c])}>
               <CliIcon cli={c} className="h-7 w-7" />
             </span>
-            <span className="text-[13px]">{c}</span>
+            <span className="text-[13px]">{CLI_LABEL[c] ?? c}</span>
           </button>
         ))}
       </div>

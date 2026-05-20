@@ -1,21 +1,15 @@
-// Termic logo — terminal frame with prompt + blinking cursor.
+// Termic logo — terminal frame with prompt.
 //
 // Three variants:
 //   <TermicMark />     — square icon, just the frame (favicon / app bar)
-//   <TermicWordmark /> — "termic" text + animated cursor (in-page banners)
+//   <TermicWordmark /> — "termic" text (in-page banners)
 //   <TermicHero />     — large combined mark + wordmark for the empty state
 //
 // All use currentColor for strokes; pair with a colored wrapper to tint.
-// Cursor blink is CSS animation (no JS timer).
 
 import { cn } from "@/lib/utils";
 
 const blinkStyle = `
-  @keyframes termic-cursor-blink {
-    0%, 49% { opacity: 1; }
-    50%, 100% { opacity: 0; }
-  }
-  .termic-cursor { animation: termic-cursor-blink 1.05s steps(1) infinite; }
   @keyframes termic-glow {
     0%, 100% { filter: drop-shadow(0 0 0px var(--color-accent)); }
     50%      { filter: drop-shadow(0 0 3px var(--color-accent-soft)); }
@@ -23,9 +17,8 @@ const blinkStyle = `
   .termic-frame { animation: termic-glow 4s ease-in-out infinite; }
 
   /* Draw-in: each cell starts invisible + small-scale, pops to full size
-     after its delay. Delay is set inline per-cell so columns scan left-to-right
-     like a typewriter. Once the last cell lands, the cursor takes over its
-     normal blink. */
+     after its delay. Delay is set inline per-cell so columns scan
+     left-to-right like a typewriter. */
   @keyframes termic-cell-in {
     0%   { opacity: 0; transform: scale(0.4); }
     60%  { opacity: 1; transform: scale(1.08); }
@@ -74,26 +67,15 @@ export function TermicMark({ size = 32, className }: { size?: number; className?
   );
 }
 
-/** Wordmark — "termic" + blinking cursor. Use inline next to the mark. */
+/** Wordmark — "termic" text. Use inline next to the mark. */
 export function TermicWordmark({ size = 24, className }: { size?: number; className?: string }) {
   return (
     <span
-      className={cn("inline-flex items-center gap-1 font-mono font-semibold text-[var(--color-fg)]", className)}
+      className={cn("inline-flex items-center font-mono font-semibold text-[var(--color-fg)]", className)}
       style={{ fontSize: size, lineHeight: 1, letterSpacing: "-0.02em" }}
       aria-hidden
     >
-      <style>{blinkStyle}</style>
       <span>termic</span>
-      <span
-        className="termic-cursor inline-block"
-        style={{
-          width: size * 0.55,
-          height: size * 0.85,
-          background: "var(--color-accent)",
-          marginLeft: 2,
-          borderRadius: 1,
-        }}
-      />
     </span>
   );
 }
@@ -127,14 +109,12 @@ const LETTER: Record<string, string[]> = {
 };
 
 /** Block-art wordmark: each letter rendered as a 5×7 grid of small squares.
- *  Square cells (not stretched rectangles like LED segments) — distinct from
- *  Termic's style. Optional cursor block blinks after the final letter. */
+ *  Square cells (not stretched rectangles like LED segments). */
 export function TermicBlockmark({
   cellSize = 8,
   gap = 1,
   letters = "TERMIC",
   className,
-  cursor = true,
   /** When true, cells fade in column-by-column on mount (typewriter feel). */
   animate = true,
   /** Per-column delay in ms during the draw-in animation. */
@@ -144,7 +124,6 @@ export function TermicBlockmark({
   gap?: number;
   letters?: string;
   className?: string;
-  cursor?: boolean;
   animate?: boolean;
   columnStepMs?: number;
 }) {
@@ -153,8 +132,7 @@ export function TermicBlockmark({
   const letterCols = 5;
   const totalCols =
     chars.length * letterCols +
-    (chars.length - 1) +
-    (cursor ? 3 : 0);
+    (chars.length - 1);
 
   const w = totalCols * (cellSize + gap) - gap;
   const h = rows * (cellSize + gap) - gap;
@@ -188,31 +166,6 @@ export function TermicBlockmark({
     }
     colOffset += letterCols + 1;
   }
-  if (cursor) {
-    colOffset += 1;
-    // Cursor reveals last, then transitions into the perpetual blink. Two
-    // separate animations chained via delay: cell-in for the reveal, then
-    // the blink takes over (since both target opacity, the final-state
-    // opacity from cell-in is `1`, so the blink can pick up cleanly).
-    const cursorDelay = animate ? colOffset * columnStepMs + 80 : 0;
-    rects.push(
-      <rect
-        key="cursor"
-        x={colOffset * (cellSize + gap)}
-        y={0}
-        width={cellSize * 2 + gap}
-        height={h}
-        rx={Math.max(0, cellSize * 0.2)}
-        fill="var(--color-accent)"
-        className={animate ? "termic-cell-in termic-cursor" : "termic-cursor"}
-        style={animate ? {
-          animationDelay: `${cursorDelay}ms, ${cursorDelay + 320}ms`,
-          animationFillMode: "forwards, none",
-        } : undefined}
-      />,
-    );
-  }
-
   return (
     <span className={cn("inline-block leading-none text-[var(--color-fg)]", className)} aria-label={letters}>
       <style>{blinkStyle}</style>
