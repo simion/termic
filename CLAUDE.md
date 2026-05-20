@@ -45,6 +45,10 @@ npm run build             # tsc -b && vite build (type-check + bundle)
 
 ⌘+R after frontend changes when HMR can't push (useEffect/useState shape changes, React.lazy swaps, xterm/CodeMirror init edits). **Quit + relaunch** after `tauri.conf.json` / `capabilities/*.json` / any Rust signature change.
 
+## Releasing
+
+`make release` (→ `scripts/release.sh`) cuts the tag; CI does the rest. **Before** running it, add the new version's entry to the TOP of `changelog.json` (repo root) — schema is `{version, date, summary}` and you only write `summary` (`version` from the bump, `date` auto-stamped). `make release` gates on it (scaffolds a stub + aborts if `summary` is empty). The `summary` feeds the in-app Update card and Changelog dialog. CI copies `changelog.json` to `termic.dev` alongside `latest.json`. Full flow + schema: **`RELEASING.md`**. Dev the update UI with `VITE_MOCK_UPDATE=available|whatsnew npm run tauri dev`.
+
 ## Data model
 
 - **Data dirs.** TWO directories — different owners:

@@ -1,0 +1,19 @@
+{
+  "versions": [
+    {
+      "version": "0.4.4",
+      "date": "2026-05-20",
+      "summary": "Characters missing from your chosen terminal font now fall back to the bundled JetBrains Mono instead of a thinner, mismatched system face."
+    },
+    {
+      "version": "0.4.3",
+      "date": "2026-05-20",
+      "summary": "Esc now closes the Settings panel in two deliberate steps, and the sandbox grants the Antigravity agent access to ~/.gemini."
+    },
+    {
+      "version": "0.4.2",
+      "date": "2026-05-20",
+      "summary": "Save files straight from the built-in editor with a dirty-state indicator, use the new Antigravity CLI, and open plain shell tabs alongside your agents."
+    }
+  ]
+}

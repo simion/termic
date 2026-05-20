@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
+import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
@@ -377,12 +377,8 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // We hold a ref to the addon so cleanup can dispose it BEFORE term.dispose().
     // Without that, a pending render frame fires after term._core._store is
     // nulled and throws "undefined is not an object (... _isDisposed)".
-    let webglAddon: WebglAddon | null = null;
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => webglAddon?.dispose());
-      term.loadAddon(webglAddon);
-    } catch (e) { /* WebGL unsupported — DOM renderer remains */ }
+    // Renderer addon — WebGL by default; localStorage override for A/B.
+    const rendererAddon = loadTerminalRenderer(term);
 
     // PTY spawn flow needs the webview to have laid the container out first,
     // otherwise fit.fit() returns 0×0 and we spawn a PTY with garbage dims.
@@ -614,9 +610,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
-      // Dispose WebGL FIRST so its render loop can't fire on a
-      // half-disposed terminal.
-      try { webglAddon?.dispose(); } catch {}
+      // Dispose the renderer addon FIRST so its render loop can't fire
+      // on a half-disposed terminal.
+      try { rendererAddon?.dispose(); } catch {}
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

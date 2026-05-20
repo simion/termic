@@ -5,7 +5,7 @@ name: Release
 # both ad-hoc codesigned and ed25519-signed for the updater. The release
 # job stitches both arches into one GitHub Release; downstream jobs bump:
 #   * simion/homebrew-termic     (Casks/termic.rb gets version + BOTH shas)
-#   * simion/termic.dev          (public/updates/latest.json gets BOTH platforms)
+#   * simion/termic.dev          (public/updates/{latest,changelog}.json)
 #
 # Brew users see the new version on `brew upgrade --cask`; running
 # Termic instances on either arch see the in-app updater pill within
@@ -24,6 +24,7 @@ env:
   TAP_REPO: simion/homebrew-termic
   WEBSITE_REPO: simion/termic.dev
   WEBSITE_MANIFEST_PATH: public/updates/latest.json
+  WEBSITE_CHANGELOG_PATH: public/updates/changelog.json
 
 jobs:
   # Cheap fast-fail: type-check the frontend on Ubuntu (~1 min) before
@@ -220,17 +221,28 @@ jobs:
           git commit -m "termic $VERSION"
           git push
 
-  # ─── Bump the updater manifest (both arches, one universal URL) ────
+  # ─── Bump the updater manifest + changelog ─────────────────────────
+  # Two files land in the termic.dev repo:
+  #   * latest.json    — Tauri updater manifest (Rust-side, signed).
+  #   * changelog.json — what the in-app Update card + Changelog dialog
+  #                      render. Source of truth is changelog.json in
+  #                      THIS repo (authored by scripts/release.sh); it's
+  #                      copied over verbatim.
   bump-website:
     needs: [build-mac, release]
     runs-on: ubuntu-latest
     steps:
+      # The termic.dev repo — where both files get committed.
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.WEBSITE_REPO }}
           token: ${{ secrets.WEBSITE_REPO_TOKEN }}
           path: site
-      - name: Write update manifest
+      # This repo at the pushed tag — for changelog.json.
+      - uses: actions/checkout@v4
+        with:
+          path: app
+      - name: Write update manifest + changelog
         run: |
           cd site
           VERSION="${{ needs.build-mac.outputs.version }}"
@@ -261,8 +273,11 @@ jobs:
             }
           }
           JSON
+          # changelog.json is copied verbatim — the termic repo is its
+          # single source of truth (authored by scripts/release.sh).
+          cp ../app/changelog.json "${{ env.WEBSITE_CHANGELOG_PATH }}"
           git config user.name  "termic-bot"
           git config user.email "termic-bot@users.noreply.github.com"
-          git add "${{ env.WEBSITE_MANIFEST_PATH }}"
-          git commit -m "updater: bump to $VERSION"
+          git add "${{ env.WEBSITE_MANIFEST_PATH }}" "${{ env.WEBSITE_CHANGELOG_PATH }}"
+          git commit -m "updater: bump to $VERSION + changelog"
           git push

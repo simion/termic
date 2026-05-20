@@ -9,6 +9,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Check, Bell, Bug, Mail, Shield } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
+import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -664,41 +665,51 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Footer */}
-      <div className={cn(
-        "mt-auto flex border-t border-[var(--color-border-soft)] p-2 gap-1",
-        compact ? "flex-col items-center" : "items-center",
-      )}>
-        {/* Left cluster (full mode): support — bug + contact. mailto:
-            opens the user's default mail client; only the recipient +
-            subject differ so triage can sort incoming mail by intent.
-            Compact mode is flex-col, so left/right ordering collapses
-            into a simple top/bottom stack. */}
-        <Tip content="Report a bug">
-          <Button size="icon" variant="icon" onClick={() =>
-            openMailto("bugs@termic.dev", "Termic bug report", "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ")
-          }>
-            <Bug className={iconSize(compact)} />
-          </Button>
-        </Tip>
-        <Tip content="Contact">
-          <Button size="icon" variant="icon" onClick={() =>
-            openMailto("contact@termic.dev", "Hello from Termic", "")
-          }>
-            <Mail className={iconSize(compact)} />
-          </Button>
-        </Tip>
-        {/* Right cluster: Add project, then Settings rightmost.
-            Settings sits at the absolute edge so the gear is exactly
-            where users reflexively reach for it (same position as
-            macOS preferences in most apps). +project sits just inside
-            it. ml-auto on the first right-cluster item pushes both. */}
-        <Tip content="Add project"><Button size="icon" variant="icon" className={compact ? undefined : "ml-auto"} onClick={openNewProject}>
-          <FolderPlus className={iconSize(compact)} />
-        </Button></Tip>
-        <Tip content="Settings (⌘,)"><Button size="icon" variant="icon" onClick={() => openSettings()}>
-          <Settings className={iconSize(compact)} />
-        </Button></Tip>
+      {/* Bottom group — pinned to the sidebar's base by a SINGLE
+          `mt-auto`. The update card (when present) sits flush above the
+          footer with no gap; two `mt-auto` siblings would split the
+          slack and leave the card floating mid-sidebar. The card
+          renders nothing in compact mode (the unified-bar pill covers
+          that) or when there's no pending update / unseen release. */}
+      <div className="mt-auto">
+        <UpdateCard />
+
+        {/* Footer */}
+        <div className={cn(
+          "flex border-t border-[var(--color-border-soft)] p-2 gap-1",
+          compact ? "flex-col items-center" : "items-center",
+        )}>
+          {/* Left cluster (full mode): support — bug + contact. mailto:
+              opens the user's default mail client; only the recipient +
+              subject differ so triage can sort incoming mail by intent.
+              Compact mode is flex-col, so left/right ordering collapses
+              into a simple top/bottom stack. */}
+          <Tip content="Report a bug">
+            <Button size="icon" variant="icon" onClick={() =>
+              openMailto("bugs@termic.dev", "Termic bug report", "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ")
+            }>
+              <Bug className={iconSize(compact)} />
+            </Button>
+          </Tip>
+          <Tip content="Contact">
+            <Button size="icon" variant="icon" onClick={() =>
+              openMailto("contact@termic.dev", "Hello from Termic", "")
+            }>
+              <Mail className={iconSize(compact)} />
+            </Button>
+          </Tip>
+          {/* Right cluster: Add project, then Settings rightmost.
+              Settings sits at the absolute edge so the gear is exactly
+              where users reflexively reach for it (same position as
+              macOS preferences in most apps). +project sits just inside
+              it. ml-auto on the first right-cluster item pushes both. */}
+          <Tip content="Add project"><Button size="icon" variant="icon" className={compact ? undefined : "ml-auto"} onClick={openNewProject}>
+            <FolderPlus className={iconSize(compact)} />
+          </Button></Tip>
+          <Tip content="Settings (⌘,)"><Button size="icon" variant="icon" onClick={() => openSettings()}>
+            <Settings className={iconSize(compact)} />
+          </Button></Tip>
+        </div>
       </div>
 
       {/* Drag handle on the sidebar's right edge — disabled in compact mode

@@ -18,6 +18,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { useAttentionNotifier } from "@/hooks/useAttentionNotifier";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
+import { useUpdate } from "@/store/update";
 
 export function App() {
   const loadAll = useApp(s => s.loadAll);
@@ -40,6 +41,8 @@ export function App() {
     // opens (AgentsSection drives the latter). Deliberately NOT on every
     // window focus — `loadAll` re-runs on focus, detection does not.
     useApp.getState().refreshClis();
+    // Kick off the update check + changelog fetch (idempotent).
+    useUpdate.getState().init();
     const onFocus = () => loadAll();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);

@@ -7,6 +7,7 @@ import { settingsLoad } from "@/lib/ipc";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
+import { ChangelogDialog } from "./ChangelogDialog";
 import { ReviewDialog } from "./ReviewDialog";
 import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -26,6 +27,7 @@ export function Dialogs() {
       <NewProjectDialog />
       <NewWorkspaceDialog />
       <WelcomeDialog />
+      <ChangelogDialog />
       <ReviewDialog />
       <WorkspaceSandboxDialog />
       <ConfirmDialog />

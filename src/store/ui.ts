@@ -19,6 +19,8 @@ interface UIState {
   newProjectOpen: boolean;
   newWorkspaceProjectId: string | null;  // null = closed
   welcomeOpen: boolean;
+  /** Changelog dialog — full per-version release notes. */
+  changelogOpen: boolean;
   reviewForWsId: string | null;          // null = closed
   /** Open the Edit Sandbox dialog for a specific workspace. null = closed.
    *  Lives in UI store (not app) so flipping it doesn't churn the
@@ -50,6 +52,8 @@ interface UIState {
   closeNewWorkspace: () => void;
   openWelcome: () => void;
   closeWelcome: () => void;
+  openChangelog: () => void;
+  closeChangelog: () => void;
   openReview: (wsId: string) => void;
   closeReview: () => void;
   openSandbox: (wsId: string) => void;
@@ -90,6 +94,7 @@ export const useUI = create<UIState>(set => ({
   newProjectOpen: false,
   newWorkspaceProjectId: null,
   welcomeOpen: false,
+  changelogOpen: false,
   reviewForWsId: null,
   sandboxForWsId: null,
   busyMessage: null,
@@ -103,6 +108,8 @@ export const useUI = create<UIState>(set => ({
   closeNewWorkspace: () => set({ newWorkspaceProjectId: null }),
   openWelcome:       () => set({ welcomeOpen: true }),
   closeWelcome:      () => set({ welcomeOpen: false }),
+  openChangelog:     () => set({ changelogOpen: true }),
+  closeChangelog:    () => set({ changelogOpen: false }),
   openReview:        (wsId) => set({ reviewForWsId: wsId }),
   closeReview:       () => set({ reviewForWsId: null }),
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
