@@ -997,6 +997,18 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
             r"^auth\.openai\.com$".into(),
             r"^cdn\.openai\.com$".into(),
         ]),
+        // Antigravity (`agy`) is a Gemini-3-family Google CLI — it
+        // talks to the same Google AI / Cloud Code backends gemini
+        // does. Mirrors the gemini host set; if Antigravity uses a
+        // dedicated endpoint a deny will show in the Sandbox dialog.
+        "agy" => hosts.extend([
+            r"^generativelanguage\.googleapis\.com$".into(),
+            r"^.+\.googleapis\.com$".into(),
+            r"^oauth2\.googleapis\.com$".into(),
+            r"^accounts\.google\.com$".into(),
+            r"^cloudcode-pa\.googleapis\.com$".into(),
+            r"^.+\.google\.com$".into(),
+        ]),
         _ => { /* custom agents: user must list hosts explicitly */ }
     }
 

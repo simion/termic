@@ -29,12 +29,38 @@ export function CodexIcon({ className }: Props) {
   );
 }
 
+// Google Antigravity CLI (`agy`). Source: lobehub/icons-static-svg
+// (antigravity.svg) — the stylized "A" peak that echoes the rainbow
+// splash the CLI prints on launch. Single path, currentColor, evenodd.
+export function AntigravityIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={cn("inline-block", className)} aria-hidden>
+      <path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z"/>
+    </svg>
+  );
+}
+
+// Plain shell / terminal tabs (cli: "shell"). Boxed terminal glyph
+// (lucide square-terminal), stroke style to match the generic default.
+export function ShellIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <path d="m7 11 2-2-2-2" />
+      <path d="M11 13h4" />
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+    </svg>
+  );
+}
+
 /** Pick the right icon for a CLI name; falls back to a generic terminal glyph. */
 export function CliIcon({ cli, className }: { cli: string; className?: string }) {
   switch (cli) {
     case "claude": return <ClaudeIcon className={className} />;
     case "gemini": return <GeminiIcon className={className} />;
     case "codex":  return <CodexIcon  className={className} />;
+    case "agy":    return <AntigravityIcon className={className} />;
+    case "shell":  return <ShellIcon className={className} />;
     default: return (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
         strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
@@ -48,4 +74,12 @@ export const CLI_BRAND_COLOR: Record<string, string> = {
   claude: "text-[var(--color-cli-claude)]",
   gemini: "text-[var(--color-cli-gemini)]",
   codex:  "text-[var(--color-cli-codex)]",
+  agy:    "text-[var(--color-cli-agy)]",
+};
+
+/** Display label for a cli id in the pickers. The id stays terse
+ *  ("agy" — the binary name) while the menu shows the recognizable
+ *  brand name. Anything not listed falls back to the id itself. */
+export const CLI_LABEL: Record<string, string> = {
+  agy: "antigravity",
 };

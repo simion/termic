@@ -6,12 +6,15 @@
 //             matches the up/down sidebar visual direction)
 //   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
 //             (Safari / Chrome / iTerm convention — Shift + brackets = tabs)
+//   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘];
+//             pairs with ⌥⌘↑/↓ — up/down = workspaces, left/right = tabs)
 //   ⌘W       → close the active tab
 //   ⇧⌘D      → open a new bottom-split terminal in the active workspace
 //             (opens the split if it's not already open) — matches the
 //             iTerm / Terminal.app convention for "horizontal split".
 import { useEffect } from "react";
 import { useApp } from "@/store/app";
+import { requestCloseTab } from "@/lib/closeTab";
 
 export function useShortcuts() {
   useEffect(() => {
@@ -74,6 +77,22 @@ export function useShortcuts() {
             ? (idx + 1) % awakeWorkspaces.length
             : (idx - 1 + awakeWorkspaces.length) % awakeWorkspaces.length;
         state.setActiveWorkspace(awakeWorkspaces[nextIdx].id);
+        return;
+      }
+
+      // ⌥⌘← / ⌥⌘→ → previous / next tab within the active workspace.
+      //              Arrow-key alt for ⇧⌘[/⇧⌘] (matches Chrome's
+      //              ⌥⌘←/→ tab switch). Pairs with ⌥⌘↑/↓ above:
+      //              up/down = workspaces, left/right = tabs.
+      if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        if (wsId && tabs.length > 1) {
+          e.preventDefault();
+          const idx = tabs.findIndex(t => t.id === activeTabId);
+          const nextIdx = e.key === "ArrowRight"
+            ? (idx + 1) % tabs.length
+            : (idx - 1 + tabs.length) % tabs.length;
+          state.setActiveTabId(wsId, tabs[nextIdx].id);
+        }
         return;
       }
 
@@ -180,7 +199,9 @@ export function useShortcuts() {
         // ALWAYS preventDefault so the OS doesn't interpret ⌘W as
         // "close window" and quit the app.
         e.preventDefault();
-        if (wsId && activeTabId) state.closeTab(wsId, activeTabId);
+        // requestCloseTab confirms first if it's a dirty edit tab —
+        // ⌘W must never silently discard unsaved changes.
+        if (wsId && activeTabId) requestCloseTab(wsId, activeTabId);
         return;
       }
     }

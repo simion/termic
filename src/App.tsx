@@ -17,6 +17,7 @@ import { Toaster } from "@/components/ui/Toaster";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { useAttentionNotifier } from "@/hooks/useAttentionNotifier";
+import { useIsFullscreen } from "@/hooks/useIsFullscreen";
 
 export function App() {
   const loadAll = useApp(s => s.loadAll);
@@ -26,11 +27,19 @@ export function App() {
   const view = useApp(s => s.view.page);
   const settingsOpen = useApp(s => !!s.view.settingsOpen);
 
+  // macOS native full-screen hides the traffic lights, so the Settings modal
+  // doesn't need to reserve the top-left titlebar gap there.
+  const isFullscreen = useIsFullscreen();
+
   useShortcuts();
   useAttentionNotifier();
 
   useEffect(() => {
     loadAll();
+    // CLI install detection runs at startup + when Settings → Agent CLIs
+    // opens (AgentsSection drives the latter). Deliberately NOT on every
+    // window focus — `loadAll` re-runs on focus, detection does not.
+    useApp.getState().refreshClis();
     const onFocus = () => loadAll();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -95,8 +104,13 @@ export function App() {
         </div>
       </div>
       {showSettings && (
-        <div className="fixed inset-0 z-40 bg-[var(--color-bg)]">
-          <ErrorBoundary label="Settings"><Settings /></ErrorBoundary>
+        <div
+          className={`fixed inset-0 z-40 flex bg-black/50 ${isFullscreen ? "p-4" : "px-4 pb-4 pt-10"}`}
+          onMouseDown={e => { if (e.target === e.currentTarget) useApp.getState().closeSettings(); }}
+        >
+          <div className="relative w-full overflow-hidden rounded-xl border border-[var(--color-border-soft)] bg-[var(--color-bg)] shadow-2xl">
+            <ErrorBoundary label="Settings"><Settings /></ErrorBoundary>
+          </div>
         </div>
       )}
       <Dialogs />

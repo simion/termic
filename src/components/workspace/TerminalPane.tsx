@@ -132,7 +132,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    // Links: underline on hover (addon default), but only OPEN on
+    // Cmd/Ctrl+click. A plain click in a terminal means "move cursor /
+    // select" — opening a browser on every stray click is jarring, and
+    // TUIs (gemini/claude) print URLs constantly. Matches the editor's
+    // Cmd-click convention. Route through `open_path` so the link hits
+    // the system browser, not the WKWebView (window.open would navigate
+    // or silently no-op inside the webview).
+    term.loadAddon(
+      new WebLinksAddon((event, uri) => {
+        if (event.metaKey || event.ctrlKey) {
+          ipc.openPath(uri).catch(() => {});
+        }
+      }),
+    );
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
@@ -404,14 +417,17 @@ export function TerminalPane({ ws, tab, active }: Props) {
         spawnStartedAtRef.current = Date.now();
         lastSpawnWasResumeRef.current = shouldResume;
         hasHistoryLocalRef.current = false;
+        // `cli: "shell"` → a plain login shell (the "+" → New terminal
+        // menu), not an agent. It carries its own sandbox choice in
+        // `tab.sandboxed`; agent tabs leave that unset.
+        const isShell = tab.cli === "shell";
         const spawn = await ipc.ptySpawn({
           cwd: ws.path,
-          // Resolve the executable through the agent registry — users can
-          // edit Settings → Agents to point `claude` (or any custom agent
-          // id) at a different binary, wrapper script, etc. without code
-          // changes. Falls back to `tab.cli` for unknown ids.
-          cmd: spawnCommandForCli(tab.cli),
-          args: spawnArgsForCli(tab.cli, {
+          // Agent: resolve the executable through the registry (users
+          // can repoint `claude` etc. in Settings → Agent CLIs). Shell:
+          // a login zsh, mirroring the AuxTerminal scratch shell.
+          cmd: isShell ? "zsh" : spawnCommandForCli(tab.cli),
+          args: isShell ? ["-l"] : spawnArgsForCli(tab.cli, {
             // YOLO auto-on whenever the workspace is sandboxed: the
             // seatbelt cage is the real security boundary, so the
             // agent's own permission-prompt scaffolding is just
@@ -432,17 +448,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
             TERMIC_PORT: String(ws.port),
             TERMIC_WORKSPACE_NAME: ws.name,
             COLORFGBG: currentColorFgBg(),
-            ...envForCli(tab.cli),
+            ...(isShell ? {} : envForCli(tab.cli)),
           },
-          // Rust consults ws.sandbox_enabled. Passing the id is harmless
-          // when sandbox is off; Rust just spawns the cmd directly.
-          workspace_id: ws.id,
+          // Sandbox gating: a shell tab created "no sandbox"
+          // (`sandboxed === false`) omits workspace_id → Rust spawns it
+          // uncaged. Everything else passes the id; Rust then gates on
+          // ws.sandbox_enabled (harmless no-op when sandbox is off).
+          workspace_id: tab.sandboxed === false ? undefined : ws.id,
           // The tab's CLI may differ from the workspace's primary CLI
           // (claude workspace with a gemini tab open, etc.). Send the
           // tab's agent id so the rendered SBPL profile uses THIS
           // agent's allowed paths + host allowlist, not the workspace
-          // default.
-          agent_id: tab.cli,
+          // default. A shell tab has no agent id → Rust falls back to
+          // the workspace's primary CLI for the profile.
+          agent_id: isShell ? undefined : tab.cli,
           rows, cols,
         });
         const ptyId = spawn.id;
@@ -542,6 +561,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // exited overlay so they don't have to click Restart manually.
           if (useUI.getState().consumePendingSandboxRestart(ws.id)) {
             setGen(g => g + 1);
+            return;
+          }
+          // Plain shell tabs close on exit (Ctrl+D / `exit`) — a shell
+          // that's done is done. The "exited / Restart" overlay is for
+          // agents only, where an unexpected death is worth surfacing.
+          if (tab.cli === "shell") {
+            useApp.getState().closeTab(ws.id, tab.id);
             return;
           }
           markAttention(ws.id, tab.id, "exit");
@@ -843,6 +869,10 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
   const [hosts, setHosts] = useState<ipc.DenyHost[]>([]);
   const [paths, setPaths] = useState<ipc.DenyPath[]>([]);
   const [allowing, setAllowing] = useState<string | null>(null);
+  // Hosts/paths allowed during this popover session. `sandbox_recent_
+  // denied_*` is a log query, so an already-allowed entry keeps showing
+  // (its past denial is still inside the log window) — filter locally.
+  const [allowed, setAllowed] = useState<Set<string>>(new Set());
   // Cached $HOME for `/Users/...` → `$HOME/...` display rewrite.
   // Fetched once per popover lifetime; we don't expect the user's
   // home dir to change mid-session.
@@ -875,27 +905,31 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
   async function allow(host: string) {
     setAllowing(host);
     try {
-      // Persist only — the Rust handler no longer kills the live PTY.
-      // The new entry is additive, so the running agent's existing
-      // (narrower) profile stays safe; the rule takes effect on the
-      // next agent start. UI hint below the list spells this out.
+      // Persist only — the Rust handler doesn't kill the live PTY. The
+      // new entry is additive, so the running agent's existing (narrower)
+      // profile stays safe; the rule takes effect on the next spawn.
       await ipc.workspaceSandboxAddAllowedHost(wsId, host);
-      const next = await ipc.sandboxRecentDeniedHosts(wsId).catch(() => hosts);
-      setHosts(next);
+      // Drop the row locally + tell the user it needs a fresh PTY.
+      setAllowed(prev => new Set(prev).add(host));
+      useUI.getState().pushToast(
+        `Allowed ${host} — restart the agent/shell for it to take effect`,
+        "success",
+      );
+    } catch (e) {
+      useUI.getState().pushToast(`Couldn't allow ${host}: ${e}`, "error");
     } finally { setAllowing(null); }
   }
   async function allowPath(path: string) {
     setAllowing(path);
     try {
       await ipc.workspaceSandboxAddAllowedPath(wsId, path);
-      const next = await ipc.sandboxRecentDeniedPaths(wsId).catch(() => paths);
-      setPaths(next);
+      setAllowed(prev => new Set(prev).add(path));
       // Confirmation + undo. The toast TTL is bumped to 6s (vs default
       // 3.2s) so the user actually has time to read the path and decide
       // whether to revert.
       const display = path.startsWith("$HOME") ? path : path.replace(/^.*\/Users\/[^/]+/, "$HOME");
       useUI.getState().pushToast(
-        `Allowed ${display} (workspace + project defaults)`,
+        `Allowed ${display} — restart the agent/shell to apply`,
         "success",
         {
           ttlMs: 6000,
@@ -904,6 +938,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
             onClick: async () => {
               try {
                 await ipc.workspaceSandboxRemoveAllowedPath(wsId, path);
+                setAllowed(prev => { const n = new Set(prev); n.delete(path); return n; });
                 useUI.getState().pushToast(`Removed ${display} from allow-list`, "info");
               } catch (e) {
                 useUI.getState().pushToast(`Undo failed: ${e}`, "error");
@@ -912,8 +947,14 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
           },
         },
       );
+    } catch (e) {
+      useUI.getState().pushToast(`Couldn't allow ${path}: ${e}`, "error");
     } finally { setAllowing(null); }
   }
+
+  // Rows minus anything allowed this popover session (see `allowed`).
+  const visibleHosts = hosts.filter(h => !allowed.has(h.host));
+  const visiblePaths = paths.filter(p => !allowed.has(p.path));
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -944,14 +985,14 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
             <div className="px-1 py-1 text-[var(--color-fg-faint)]">Loading…</div>
           )}
 
-          {hosts.length > 0 && (
+          {visibleHosts.length > 0 && (
             <>
               <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
                 <span>Blocked hosts</span>
-                <span>{hosts.length}</span>
+                <span>{visibleHosts.length}</span>
               </div>
               <ul className="flex flex-col">
-                {hosts.map(h => (
+                {visibleHosts.map(h => (
                   <li
                     key={h.host}
                     className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
@@ -975,17 +1016,17 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
             </>
           )}
 
-          {paths.length > 0 && (
+          {visiblePaths.length > 0 && (
             <>
               <div className="mt-3 mb-0.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
                 <span>Blocked filesystem paths</span>
-                <span>{paths.length}</span>
+                <span>{visiblePaths.length}</span>
               </div>
               <div className="mb-1.5 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
                 Click any path segment to allow that prefix. Hover to preview which part you'll allow — green = will be allowed, dimmed = trimmed off.
               </div>
               <ul className="flex flex-col">
-                {paths.map(p => (
+                {visiblePaths.map(p => (
                   <li
                     key={p.path}
                     className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"

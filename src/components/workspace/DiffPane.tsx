@@ -13,9 +13,9 @@ import { usePrefs } from "@/store/prefs";
 import { MergeView, unifiedMergeView } from "@codemirror/merge";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
-import { githubDarkInit } from "@uiw/codemirror-theme-github";
+import { resolveTheme } from "@/store/prefs";
 import { cn } from "@/lib/utils";
-import { langForPath } from "./EditorPane";
+import { langForPath, editorBaseTheme } from "./EditorPane";
 
 type Mode = "side" | "unified";
 const LS_DIFF_MODE = "diffMode";
@@ -37,6 +37,10 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   const editorRef = useRef<EditorView | null>(null);
   const addTab = useApp(s => s.addTab);
   const editorFontSize = usePrefs(s => s.editorFontSize);
+  // Light/dark diff palette follows the app theme. A theme switch
+  // re-renders → the effect below rebuilds the MergeView with the
+  // matching githubLight/githubDark palette.
+  const themeMode = usePrefs(s => s.themeMode);
 
   function setModeAndPersist(m: Mode) {
     writeMode(m);
@@ -62,37 +66,45 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
         lineNumbers(),
         highlightActiveLine(),
         EditorView.lineWrapping,
-        githubDarkInit({
-          settings: {
-            background: "var(--color-bg)",
-            foreground: "var(--color-fg)",
-            caret: "var(--color-accent)",
-            selection: "rgba(217,119,87,0.15)",
-            lineHighlight: "transparent",
-            gutterBackground: "var(--color-bg)",
-            gutterForeground: "var(--color-fg-faint)",
-          },
-        }),
+        // GitHub light/dark palette, surfaces pulled from the app
+        // theme's CSS vars. lineHighlight is transparent — the diff's
+        // own per-line tints already carry the signal.
+        editorBaseTheme(resolveTheme(themeMode) === "light", { lineHighlight: "transparent" }),
         EditorView.theme({
           "&": { fontSize: `${editorFontSize}px` },
           ".cm-content, .cm-gutters": { fontFamily: "inherit" },
-          // CodeMirror merge's default styles draw a border + underline
-          // around every inline change — looks like every other line is
-          // boxed in green. Override to a flat background tint.
+          // @codemirror/merge styles "changed text" as a 2px
+          // linear-gradient strip pinned to the bottom of the run —
+          // it renders as a ragged green/red underline under every
+          // changed word, the eyesore. Replace it with a flat
+          // translucent highlight box.
+          //
+          // !important is REQUIRED: the merge baseTheme's selector
+          // (`&dark.cm-merge-b .cm-changedText`, 3 classes) out-
+          // specifies a plain `.cm-changedText` rule, so without it
+          // our flat background loses and the gradient underline
+          // stays. The merge rules aren't !important themselves, so
+          // !important wins regardless of specificity.
           ".cm-changedText": {
-            background: "rgba(76,175,80,0.18)",
+            background: "rgba(64,160,90,0.26) !important",
             textDecoration: "none",
             borderRadius: "2px",
             boxShadow: "none",
           },
+          // Side-by-side: the original ("a") editor's changed runs are
+          // removals — tint them red. More specific than the plain
+          // `.cm-changedText` above so it wins on that side only.
+          "&.cm-merge-a .cm-changedText": {
+            background: "rgba(239,83,80,0.24) !important",
+          },
           ".cm-changedLine": {
-            backgroundColor: "rgba(76,175,80,0.06)",
+            backgroundColor: "rgba(64,160,90,0.10) !important",
           },
           ".cm-deletedChunk": {
             backgroundColor: "rgba(239,83,80,0.08)",
           },
           ".cm-deletedText": {
-            background: "rgba(239,83,80,0.22)",
+            background: "rgba(239,83,80,0.26) !important",
             textDecoration: "none",
           },
           // CodeMirror merge wraps inserted/deleted lines in <ins>/<del>
@@ -141,7 +153,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       mergeRef.current?.destroy(); mergeRef.current = null;
       editorRef.current?.destroy(); editorRef.current = null;
     };
-  }, [ws.id, tab.path, editorFontSize, mode]);
+  }, [ws.id, tab.path, editorFontSize, mode, themeMode]);
 
   return (
     // bg MUST be opaque: tab swap keeps the codex/claude terminal

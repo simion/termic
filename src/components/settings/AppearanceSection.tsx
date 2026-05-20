@@ -78,7 +78,7 @@ export function AppearanceSection() {
 
       <Field
         label="Terminal font weight"
-        hint={`${terminalFontWeight} — WKWebView renders lighter than native Terminal.app at the same weight. Bump to 500 to match.`}
+        hint={`${terminalFontWeight} — xterm's WebGL renderer paints lighter than native Terminal.app / iTerm. Medium (500), the default, compensates; nudge heavier or lighter to taste.`}
         control={
           <WeightPicker value={terminalFontWeight} onChange={setTerminalFontWeight} />
         }

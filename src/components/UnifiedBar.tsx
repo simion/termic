@@ -20,10 +20,13 @@ import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { openPath, workspaceRunScript, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
+import { useIsFullscreen } from "@/hooks/useIsFullscreen";
 import { cn } from "@/lib/utils";
 
 // Reserve enough room for the 3 traffic lights + breathing room before the
 // first interactive control. 16 (x offset) + ~58 (3 buttons + gaps) + 10 pad.
+// In macOS full-screen the traffic lights are hidden, so the bar reclaims this
+// space and the controls sit flush-left like the rest of the chrome.
 const TRAFFIC_LIGHT_WIDTH = 84;
 
 export function UnifiedBar() {
@@ -45,6 +48,7 @@ export function UnifiedBar() {
   // overlay a small "A" badge so the auto distinction is visible.
   // The old Monitor/computer icon felt too generic ("display settings")
   // and didn't communicate the resolved theme at a glance.
+  const isFullscreen = useIsFullscreen();
   const isAuto = themeMode === "auto";
   const resolved = resolveTheme(themeMode);
   const ThemeIcon = (themeMode === "light" || (isAuto && resolved === "light")) ? Sun : Moon;
@@ -71,7 +75,9 @@ export function UnifiedBar() {
       }}
       className="flex h-11 shrink-0 items-center gap-1 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2"
       style={{
-        paddingLeft: TRAFFIC_LIGHT_WIDTH,
+        // px-2 (8px) already pads the left in full-screen; only reserve the
+        // wide traffic-light gap when the lights are actually there.
+        paddingLeft: isFullscreen ? undefined : TRAFFIC_LIGHT_WIDTH,
         WebkitAppRegion: "drag",
       } as any}
     >

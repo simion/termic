@@ -141,6 +141,8 @@ export const workspaceFileDiff = (id: string, path: string) => invoke<string>("w
 export const workspaceFileDiffSides = (id: string, path: string) =>
   invoke<{ original: string; modified: string }>("workspace_file_diff_sides", { id, path });
 export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });
+export const workspaceFileWrite = (id: string, path: string, content: string) =>
+  invoke<void>("workspace_file_write", { id, path, content });
 export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
 export const workspaceDirList  = (id: string, rel: string) => invoke<FileEntry[]>("workspace_dir_list", { id, rel });
 export const workspaceChanges  = (id: string) => invoke<Changes>("workspace_changes", { id });

@@ -10,6 +10,7 @@
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { workspaceOpenRepo } from "@/lib/ipc";
+import { visibleCliIds } from "@/lib/agents";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
 
@@ -35,6 +36,7 @@ import { cn } from "@/lib/utils";
 
 export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
   const agents = useApp(s => s.agents);
+  const detectedClis = useApp(s => s.detectedClis);
   const setActive = useApp(s => s.setActiveWorkspace);
   const loadAll = useApp(s => s.loadAll);
   const openNewWorkspace = useUI(s => s.openNewWorkspace);
@@ -44,6 +46,8 @@ export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
   // very different mental model, hints should reflect that.
   const project = useApp(s => s.projects.find(p => p.id === projectId));
   const isMulti = (project?.type ?? "single") === "multi";
+  // Hide disabled / not-installed agents from the Open-repo list.
+  const visibleClis = visibleCliIds(agents.map(a => a.id), agents, detectedClis);
 
   return (
     <>
@@ -81,7 +85,7 @@ export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
           : "Attach an agent directly to the repo root."}
         tone={isMulti ? "warn" : "dim"}
       />
-      {agents.map(a => (
+      {agents.filter(a => visibleClis.has(a.id)).map(a => (
         <DropdownItem key={a.id} onSelect={async () => {
           try {
             const w = await workspaceOpenRepo(projectId, a.id);

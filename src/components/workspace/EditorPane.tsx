@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { EditTab, Workspace } from "@/lib/types";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorState, Compartment, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { keymap } from "@codemirror/view";
@@ -26,12 +26,11 @@ import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { properties } from "@codemirror/legacy-modes/mode/properties";
-import { githubDarkInit } from "@uiw/codemirror-theme-github";
-import { Button } from "@/components/ui/Button";
-import { workspaceFileRead, openPath } from "@/lib/ipc";
-import { FolderOpen, GitCompare } from "lucide-react";
+import { githubDarkInit, githubLightInit } from "@uiw/codemirror-theme-github";
+import { workspaceFileRead, workspaceFileWrite } from "@/lib/ipc";
 import { useApp } from "@/store/app";
-import { usePrefs } from "@/store/prefs";
+import { useUI } from "@/store/ui";
+import { usePrefs, resolveTheme } from "@/store/prefs";
 
 // Map a file path to a CodeMirror language extension. We match by extension
 // first, then fall back to basename heuristics for files like `Dockerfile`,
@@ -69,6 +68,30 @@ export function langForPath(p: string) {
   return null;
 }
 
+/** GitHub light/dark CodeMirror theme for the editor + diff panes.
+ *  Surface colors (bg / gutter / fg / caret) are pulled from the app's
+ *  `@theme` CSS vars so the editor sits flush with the surrounding
+ *  chrome under ANY app theme: the five dark palettes (dark / vscode /
+ *  solarized / cobalt / matrix) all collapse to githubDark here, while
+ *  `light` (and `auto` on a light OS) gets githubLight. The syntax
+ *  palette is the only thing that flips light↔dark — every surface
+ *  color is a `var(...)`, so it tracks the active palette for free.
+ *  Pass `extra` to override individual CodeMirror theme settings. */
+export function editorBaseTheme(isLight: boolean, extra?: Record<string, string>): Extension {
+  const init = isLight ? githubLightInit : githubDarkInit;
+  return init({
+    settings: {
+      background: "var(--color-bg)",
+      gutterBackground: "var(--color-bg)",
+      foreground: "var(--color-fg)",
+      caret: "var(--color-accent)",
+      gutterForeground: "var(--color-fg-faint)",
+      selection: "rgba(217,119,87,0.15)",
+      ...extra,
+    },
+  });
+}
+
 export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -78,20 +101,33 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
   const themeCompRef = useRef(new Compartment());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const addTab = useApp(s => s.addTab);
+  // Mirrors the tab's `dirty` flag so the CodeMirror updateListener
+  // only touches the store on the clean→dirty edge, not every
+  // keystroke (patchTab re-renders the whole TabBar).
+  const dirtyRef = useRef(false);
 
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const codeLigatures  = usePrefs(s => s.codeLigatures);
+  // Light/dark editor palette follows the app theme. Subscribing to
+  // themeMode (not a derived value) so a theme switch re-renders and
+  // the reconfigure effect below fires.
+  const themeMode      = usePrefs(s => s.themeMode);
 
-  function buildTheme(sizePx: number, ligatures: boolean) {
-    return EditorView.theme({
-      "&": { height: "100%", fontSize: `${sizePx}px` },
-      ".cm-scroller": {
-        fontFamily: "var(--font-mono)",
-        // `normal` enables ligatures (=>, !==, etc.); `none` disables them.
-        fontVariantLigatures: ligatures ? "normal" : "none",
-      },
-    });
+  // Everything in the theme compartment: the GitHub light/dark palette
+  // plus font-size / ligature tweaks. All three reconfigure live (no
+  // EditorView rebuild → cursor + undo history survive a theme switch).
+  function buildTheme(sizePx: number, ligatures: boolean, isLight: boolean): Extension[] {
+    return [
+      editorBaseTheme(isLight),
+      EditorView.theme({
+        "&": { height: "100%", fontSize: `${sizePx}px` },
+        ".cm-scroller": {
+          fontFamily: "var(--font-mono)",
+          // `normal` enables ligatures (=>, !==, etc.); `none` disables them.
+          fontVariantLigatures: ligatures ? "normal" : "none",
+        },
+      }),
+    ];
   }
 
   useEffect(() => {
@@ -101,6 +137,28 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
         const content = await workspaceFileRead(ws.id, tab.path);
         if (!alive || !hostRef.current) return;
         const lang = langForPath(tab.path);
+
+        // Flip the tab's dirty dot on the first edit after a load/save.
+        const markDirty = () => {
+          if (dirtyRef.current) return;
+          dirtyRef.current = true;
+          useApp.getState().patchTab(ws.id, tab.id, { dirty: true });
+        };
+        // ⌘S → write the buffer to disk. termic NEVER auto-saves; this
+        // is the only path that clears `dirty`. Returns true so
+        // CodeMirror treats the key as handled and preventDefault's it.
+        const saveDoc = (v: EditorView): boolean => {
+          const name = tab.path.split("/").pop() || tab.path;
+          workspaceFileWrite(ws.id, tab.path, v.state.doc.toString())
+            .then(() => {
+              dirtyRef.current = false;
+              useApp.getState().patchTab(ws.id, tab.id, { dirty: false });
+              useUI.getState().pushToast(`Saved ${name}`, "success");
+            })
+            .catch(e => useUI.getState().pushToast(`Save failed: ${e}`, "error"));
+          return true;
+        };
+
         const view = new EditorView({
           state: EditorState.create({
             doc: content,
@@ -108,10 +166,14 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
               lineNumbers(),
               history(),
               highlightActiveLine(),
+              // ⌘S save — before defaultKeymap so it always wins.
+              keymap.of([{ key: "Mod-s", preventDefault: true, run: saveDoc }]),
               keymap.of([...defaultKeymap, ...historyKeymap]),
-              githubDarkInit({ settings: { background: "#0b0b0d", gutterBackground: "#0b0b0d" } }),
+              EditorView.updateListener.of(u => { if (u.docChanged) markDirty(); }),
               langCompRef.current.of(lang ? [lang] : []),
-              themeCompRef.current.of(buildTheme(editorFontSize, codeLigatures)),
+              themeCompRef.current.of(
+                buildTheme(editorFontSize, codeLigatures, resolveTheme(themeMode) === "light"),
+              ),
             ],
           }),
           parent: hostRef.current,
@@ -124,31 +186,28 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.id, tab.path]);
 
-  // Re-apply theme compartment when the user changes size or ligatures.
+  // Re-apply theme compartment when the user changes size, ligatures,
+  // or the app theme (light↔dark editor palette swap).
   useEffect(() => {
     const v = viewRef.current;
     if (!v) return;
-    v.dispatch({ effects: themeCompRef.current.reconfigure(buildTheme(editorFontSize, codeLigatures)) });
+    v.dispatch({
+      effects: themeCompRef.current.reconfigure(
+        buildTheme(editorFontSize, codeLigatures, resolveTheme(themeMode) === "light"),
+      ),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorFontSize, codeLigatures]);
+  }, [editorFontSize, codeLigatures, themeMode]);
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
-        <span className="font-mono text-[12.5px] text-[var(--color-fg-dim)] truncate">{tab.path}</span>
-        <div className="flex gap-1">
-          <Button size="sm" variant="ghost" onClick={() =>
-            addTab(ws.id, { id: crypto.randomUUID(), type: "diff", path: tab.path, title: `Δ ${tab.path.split("/").pop()}` })
-          }><GitCompare className="h-4 w-4" /> Diff</Button>
-          <Button size="sm" variant="ghost" onClick={() => openPath(`${ws.path}/${tab.path}`).catch(() => {})}>
-            <FolderOpen className="h-4 w-4" /> Open
-          </Button>
-        </div>
-      </div>
-      <div ref={hostRef} className="flex-1 min-h-0 overflow-hidden">
-        {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
-        {err && <div className="p-4 text-[14px] text-[var(--color-err)]">Error: {err}</div>}
-      </div>
+    // No chrome bar: the tab already shows the filename, and the old
+    // Diff / Open buttons were redundant with the Changes panel and the
+    // file tree. The editor fills the whole pane. Opaque bg so nothing
+    // bleeds through during the load frame (terminals stay mounted
+    // underneath via the visibility-toggle keep-alive).
+    <div ref={hostRef} className="h-full overflow-hidden bg-[var(--color-bg)]">
+      {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
+      {err && <div className="p-4 text-[14px] text-[var(--color-err)]">Error: {err}</div>}
     </div>
   );
 }

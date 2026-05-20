@@ -11,13 +11,14 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { visibleCliIds } from "@/lib/agents";
 import { workspaceCreate, workspaceCreateMulti, settingsLoad } from "@/lib/ipc";
 import { slugify, cn } from "@/lib/utils";
 import { Check, Loader2, AlertTriangle, Shield, Layers, GitBranch, Link2 } from "lucide-react";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode } from "@/lib/types";
 
-const CLIS = ["claude", "gemini", "codex"] as const;
+const CLIS = ["claude", "gemini", "codex", "agy"] as const;
 const PREFIXES = ["feature", "hotfix", "__custom__"] as const;
 
 export function NewWorkspaceDialog() {
@@ -27,6 +28,16 @@ export function NewWorkspaceDialog() {
   const setActive = useApp(s => s.setActiveWorkspace);
   const loadAll = useApp(s => s.loadAll);
   const agents = useApp(s => s.agents);
+  const detectedClis = useApp(s => s.detectedClis);
+  // CLI choices: the registry (custom agents included), or the built-in
+  // list before it loads — minus any disabled / not-installed agents.
+  const cliChoices = (() => {
+    const list = agents.length
+      ? agents
+      : CLIS.map(id => ({ id, display_name: id, color: "" } as any));
+    const visible = visibleCliIds(list.map(a => a.id), agents, detectedClis);
+    return list.filter(a => visible.has(a.id));
+  })();
 
   const [name, setName] = useState("");
   const [cli, setCli] = useState<string>("claude");
@@ -329,12 +340,11 @@ export function NewWorkspaceDialog() {
         </Field>
 
         <Field label="CLI">
-          {/* Pulled from the editable agent registry (Settings → Agents),
-              not hard-coded — custom agents the user added show up here
-              alongside the three built-ins. Falls back to the built-in
-              list if the registry hasn't loaded yet. */}
+          {/* Pulled from the editable agent registry (Settings → Agent
+              CLIs), not hard-coded — custom agents show up here. Disabled
+              and not-installed agents are filtered out (see cliChoices). */}
           <div className="inline-flex flex-wrap items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
-            {(agents.length ? agents : CLIS.map(id => ({ id, display_name: id, color: "" } as any))).map(a => (
+            {cliChoices.map(a => (
               <button
                 key={a.id} type="button" onClick={() => setCli(a.id)}
                 className={cn(
@@ -366,8 +376,24 @@ export function NewWorkspaceDialog() {
           </div>
         </Field>
 
-        <Field label="Branch name" hint="Auto-generated from name; edit to override.">
-          <Input value={branch} onChange={e => { setBranch(e.target.value); setBranchEdited(true); }} placeholder="feature/fix-login-bug" required />
+        {/* Branch name is derived from the name + prefix and locked
+            read-only — there's no ambiguity to resolve. Picking the
+            "custom" prefix is the explicit opt-in to type a full
+            branch name yourself. */}
+        <Field
+          label="Branch name"
+          hint={prefix === "__custom__"
+            ? "Type the full branch name."
+            : "Auto-generated from the name + prefix — pick “custom” to edit it."}
+        >
+          <Input
+            value={branch}
+            onChange={e => { setBranch(e.target.value); setBranchEdited(true); }}
+            placeholder="feature/fix-login-bug"
+            required
+            readOnly={prefix !== "__custom__"}
+            className={cn(prefix !== "__custom__" && "cursor-default text-[var(--color-fg-dim)]")}
+          />
         </Field>
 
         <Field label={isMulti ? "Host branch from" : "Branch from"} hint={isMulti ? "Blank = host repo default. Members fall back to their own defaults below." : "Blank = repo default."}>
