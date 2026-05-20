@@ -506,7 +506,18 @@ export function applyEditorFont(id: string) {
 }
 
 export const currentEditorStack   = () => stackFor(usePrefs.getState().editorFontId);
-export const currentTerminalStack = () => stackFor(usePrefs.getState().terminalFontId);
+
+/** Terminal font stack with a bundled fallback injected before the
+ *  generic `monospace`. JetBrains Mono Variable ships with the app, is
+ *  variable-weight (so it honors any `terminalFontWeight`), and covers
+ *  glyphs many monospace fonts lack — notably the Romanian comma-below
+ *  ș/ț (U+0219/U+021B). Without it, a glyph missing from the chosen
+ *  font falls back to the OS `monospace`, which often has no 500 weight
+ *  and renders those characters thinner than the surrounding text. */
+export const currentTerminalStack = () => {
+  const stack = stackFor(usePrefs.getState().terminalFontId);
+  return stack.replace(/\bmonospace\s*$/, '"JetBrains Mono Variable", monospace');
+};
 
 // Apply editor font at module load so the first paint uses the right font.
 applyEditorFont(initialEditorFont);
