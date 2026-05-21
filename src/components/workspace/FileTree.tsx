@@ -1,15 +1,16 @@
 // Lazy-loading file tree for the "All files" panel.
 // - Initial render fetches the workspace root only.
 // - Clicking a dir expands it and fetches its entries on demand (cached by rel-path).
-// - Clicking a file opens an edit tab in the workspace.
+// - Clicking a file opens/selects an edit tab in the workspace.
 // - Indentation reflects depth; chevrons rotate to indicate expansion state.
 
 import { useEffect, useState, useCallback } from "react";
-import { ChevronRight, File as FileIcon, Folder as FolderIcon, FolderOpen } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import type { FileEntry } from "@/lib/types";
 import { workspaceDirList } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { cn } from "@/lib/utils";
+import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
 interface Props { wsId: string; }
 
@@ -55,7 +56,7 @@ export function FileTree({ wsId }: Props) {
   if (rootEntries.length === 0) return <div className="px-3 py-2 text-[13.5px] text-[var(--color-fg-faint)]">(empty)</div>;
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col select-none">
       {rootEntries.map(e => (
         <TreeNode
           key={e.name} wsId={wsId} entry={e} depth={0} rel={e.name}
@@ -78,33 +79,54 @@ interface NodeProps {
 
 function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: NodeProps) {
   const addTab = useApp(s => s.addTab);
+  const setActiveTabId = useApp(s => s.setActiveTabId);
+  const tabs = useApp(s => s.tabs[wsId] || []);
+  const activeTabId = useApp(s => s.activeTab[wsId]);
   const isOpen = expanded.has(rel);
   const kids = children_[rel];
 
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const isActive = activeTab?.type === "edit" && activeTab.path === rel;
+
   function onClick() {
-    if (entry.is_dir) toggle(rel);
-    else addTab(wsId, { id: crypto.randomUUID(), type: "edit", path: rel, title: entry.name });
+    if (entry.is_dir) {
+      toggle(rel);
+    } else {
+      const existing = tabs.find(t => t.type === "edit" && t.path === rel);
+      if (existing) {
+        setActiveTabId(wsId, existing.id);
+      } else {
+        addTab(wsId, { id: crypto.randomUUID(), type: "edit", path: rel, title: entry.name });
+      }
+    }
   }
+
+  const iconUrl = entry.is_dir ? folderIconUrl(entry.name, isOpen) : fileIconUrl(entry.name);
 
   return (
     <>
       <button
         onClick={onClick}
         title={rel}
-        className="flex items-center gap-1.5 px-2 py-1 text-left text-[13px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-        style={{ paddingLeft: 8 + depth * 14 }}
-      >
-        {entry.is_dir ? (
-          <ChevronRight className={cn("h-3 w-3 shrink-0 text-[var(--color-fg-faint)] transition-transform", isOpen && "rotate-90")} />
-        ) : (
-          <span className="w-3 shrink-0" />
+        className={cn(
+          "group flex h-[26px] w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 text-left text-[13px] transition-colors duration-150 outline-none select-none",
+          isActive
+            ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+            : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         )}
-        {entry.is_dir
-          ? (isOpen
-              ? <FolderOpen className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
-              : <FolderIcon className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />)
-          : <FileIcon className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />}
-        <span className="truncate">{entry.name}</span>
+        style={{ paddingLeft: 6 + depth * 12 }}
+      >
+        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[var(--color-fg-faint)]">
+          {entry.is_dir ? (
+            <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-150", isOpen && "rotate-90")} />
+          ) : null}
+        </span>
+        {iconUrl ? (
+          <img src={iconUrl} alt="" className="h-4 w-4 shrink-0" />
+        ) : (
+          <span className="h-4 w-4 shrink-0" />
+        )}
+        <span className="truncate flex-1 min-w-0 font-medium">{entry.name}</span>
       </button>
       {entry.is_dir && isOpen && kids && kids.map(c => (
         <TreeNode
@@ -113,7 +135,10 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: Node
         />
       ))}
       {entry.is_dir && isOpen && !kids && (
-        <div className="px-2 py-1 text-[12px] text-[var(--color-fg-faint)]" style={{ paddingLeft: 8 + (depth + 1) * 14 + 24 }}>
+        <div 
+          className="h-[22px] flex items-center text-[12px] text-[var(--color-fg-faint)] italic" 
+          style={{ paddingLeft: 6 + (depth + 1) * 12 + 22 }}
+        >
           Loading…
         </div>
       )}
