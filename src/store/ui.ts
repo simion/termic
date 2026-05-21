@@ -45,7 +45,7 @@ interface UIState {
   /** Active confirm prompt, if any. null = nothing pending. The
    *  resolve callback fires with the user's choice when the modal
    *  closes; the ConfirmDialog component reads this and renders. */
-  confirm: { req: ConfirmRequest; resolve: (ok: boolean) => void } | null;
+  confirm: { req: ConfirmRequest; resolve: (res: any) => void } | null;
   /** Workspaces whose PTYs are about to be SIGKILL'd because the user
    *  explicitly hit "Save & restart" on the Sandbox dialog. The next
    *  pty-exit for any PTY belonging to one of these workspaces will
@@ -77,7 +77,8 @@ interface UIState {
    *  replacement for `window.confirm()` with our own chrome + theming. */
   askConfirm: {
     (req: ConfirmRequest & { checkbox: ConfirmCheckbox }): Promise<{ confirmed: boolean; checked: boolean }>;
-    (req: ConfirmRequest): Promise<boolean>;
+    (req: ConfirmRequest & { checkbox: undefined }): Promise<boolean>;
+    (req: ConfirmRequest): Promise<boolean | { confirmed: boolean; checked: boolean }>;
   };
   resolveConfirm: (ok: boolean, checked?: boolean) => void;
   /** Mark a workspace for auto-restart on the next PTY exit. Called
