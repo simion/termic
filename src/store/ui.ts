@@ -3,6 +3,12 @@
 
 import { create } from "zustand";
 
+export interface ConfirmCheckbox {
+  label: string;
+  defaultValue?: boolean;
+  branchName?: string;
+}
+
 export interface ConfirmRequest {
   title: string;
   message: string;
@@ -12,6 +18,7 @@ export interface ConfirmRequest {
   /** Renders the confirm button red when true - use for archive /
    *  delete / "ripping the cage" style actions. */
   destructive?: boolean;
+  checkbox?: ConfirmCheckbox;
 }
 
 interface UIState {
@@ -68,8 +75,11 @@ interface UIState {
   /** Open the global confirm modal. Returns a Promise that resolves
    *  to true (user confirmed) or false (cancelled / dismissed). Drop-in
    *  replacement for `window.confirm()` with our own chrome + theming. */
-  askConfirm: (req: ConfirmRequest) => Promise<boolean>;
-  resolveConfirm: (ok: boolean) => void;
+  askConfirm: {
+    (req: ConfirmRequest & { checkbox: ConfirmCheckbox }): Promise<{ confirmed: boolean; checked: boolean }>;
+    (req: ConfirmRequest): Promise<boolean>;
+  };
+  resolveConfirm: (ok: boolean, checked?: boolean) => void;
   /** Mark a workspace for auto-restart on the next PTY exit. Called
    *  by the Sandbox dialog right before `workspace_set_sandbox` (the
    *  IPC that SIGKILL's the live agents). */
@@ -124,11 +134,17 @@ export const useUI = create<UIState>(set => ({
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
   closeSandbox:      () => set({ sandboxForWsId: null }),
   setBusy:           (msg) => set({ busyMessage: msg }),
-  askConfirm: (req) =>
-    new Promise<boolean>(resolve => set({ confirm: { req, resolve } })),
-  resolveConfirm: (ok) => {
+  askConfirm: (req: any) =>
+    new Promise<any>(resolve => set({ confirm: { req, resolve } })),
+  resolveConfirm: (ok, checked) => {
     const c = useUI.getState().confirm;
-    if (c) c.resolve(ok);
+    if (c) {
+      if (c.req.checkbox) {
+        c.resolve({ confirmed: ok, checked: !!checked });
+      } else {
+        c.resolve(ok);
+      }
+    }
     set({ confirm: null });
   },
   markPendingSandboxRestart: (wsId) => set(s => {

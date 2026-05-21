@@ -29,7 +29,7 @@ export const workspaceCreate   = (args: CreateWorkspaceArgs) => invoke<Workspace
 export const workspaceCreateMulti = (args: CreateMultiArgs) => invoke<Workspace>("workspace_create_multi", { args });
 export const workspaceOpenRepo = (projectId: string, cli?: string) =>
   invoke<Workspace>("workspace_open_repo", { projectId, cli });
-export const workspaceArchive  = (id: string) => invoke<void>("workspace_archive", { id });
+export const workspaceArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("workspace_archive", { id, deleteBranch });
 export const workspaceDelete   = (id: string) => invoke<void>("workspace_delete", { id });
 export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("workspace_set_cli", { id, cli });
 /** Update the workspace's sandbox config. The Rust side SIGKILLs every

@@ -1011,7 +1011,7 @@ async fn project_remove(id: String) -> Result<(), String> {
             // archive script, removing the worktree, and saving archived=true.
             // Errors per-workspace are logged but don't abort — we want a
             // best-effort full cleanup even if one worktree is borked.
-            if let Err(e) = workspace_archive_sync(w.id.clone()) {
+            if let Err(e) = workspace_archive_sync(w.id.clone(), false) {
                 eprintln!("project_remove: archive {} failed: {}", w.id, e);
             }
             // Hard-delete the JSON so it doesn't linger as a ghost archived
@@ -2141,13 +2141,13 @@ fn workspace_set_has_history(id: String, value: bool) -> Result<(), String> {
 /// blocked main webview event loop. `spawn_blocking` parks the work on a
 /// background thread so the UI keeps painting and the OS stays responsive.
 #[tauri::command]
-async fn workspace_archive(id: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || workspace_archive_sync(id))
+async fn workspace_archive(id: String, delete_branch: Option<bool>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || workspace_archive_sync(id, delete_branch.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn workspace_archive_sync(id: String) -> Result<(), String> {
+fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("workspace not found")?;
     let proj = load_projects().into_iter().find(|p| p.id == w.project_id);
@@ -2242,6 +2242,11 @@ fn workspace_archive_sync(id: String) -> Result<(), String> {
                         if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&mp.root_path)) {
                             errs.push(format!("worktree remove {}: {e}", m.dir_name));
                         }
+                        if delete_branch && !m.branch.is_empty() {
+                            if let Err(e) = git(&["branch", "-D", &m.branch], Path::new(&mp.root_path)) {
+                                errs.push(format!("branch delete {}: {e}", m.dir_name));
+                            }
+                        }
                     }
                     if Path::new(&m.path).exists() {
                         if let Err(e) = fs::remove_dir_all(&m.path) {
@@ -2256,6 +2261,11 @@ fn workspace_archive_sync(id: String) -> Result<(), String> {
     if let Some(p) = &proj {
         if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
             errs.push(format!("worktree remove: {e}"));
+        }
+        if delete_branch && !w.branch.is_empty() {
+            if let Err(e) = git(&["branch", "-D", &w.branch], Path::new(&p.root_path)) {
+                errs.push(format!("branch delete failed: {e}"));
+            }
         }
     }
     if Path::new(&w.path).exists() {
@@ -2275,7 +2285,7 @@ async fn workspace_delete(id: String) -> Result<(), String> {
     // discipline as workspace_archive — see its doc comment for why.
     let id2 = id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = workspace_archive_sync(id2.clone());
+        let _ = workspace_archive_sync(id2.clone(), false);
         delete_workspace_file(&id2).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())?
 }
