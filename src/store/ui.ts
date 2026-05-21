@@ -22,6 +22,10 @@ interface UIState {
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
   reviewForWsId: string | null;          // null = closed
+  /** Broadcast dialog — send one message to several open agents in a
+   *  workspace at once. null = closed. UI-store (not app) so opening it
+   *  doesn't churn the workspace tree. */
+  broadcastForWsId: string | null;
   /** Open the Edit Sandbox dialog for a specific workspace. null = closed.
    *  Lives in UI store (not app) so flipping it doesn't churn the
    *  workspace tree on every re-render. */
@@ -56,6 +60,8 @@ interface UIState {
   closeChangelog: () => void;
   openReview: (wsId: string) => void;
   closeReview: () => void;
+  openBroadcast: (wsId: string) => void;
+  closeBroadcast: () => void;
   openSandbox: (wsId: string) => void;
   closeSandbox: () => void;
   setBusy: (msg: string | null) => void;
@@ -96,6 +102,7 @@ export const useUI = create<UIState>(set => ({
   welcomeOpen: false,
   changelogOpen: false,
   reviewForWsId: null,
+  broadcastForWsId: null,
   sandboxForWsId: null,
   busyMessage: null,
   confirm: null,
@@ -112,6 +119,8 @@ export const useUI = create<UIState>(set => ({
   closeChangelog:    () => set({ changelogOpen: false }),
   openReview:        (wsId) => set({ reviewForWsId: wsId }),
   closeReview:       () => set({ reviewForWsId: null }),
+  openBroadcast:     (wsId) => set({ broadcastForWsId: wsId }),
+  closeBroadcast:    () => set({ broadcastForWsId: null }),
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
   closeSandbox:      () => set({ sandboxForWsId: null }),
   setBusy:           (msg) => set({ busyMessage: msg }),
