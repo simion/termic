@@ -129,17 +129,17 @@
      changes. Good pick for users who find #0a0a0a too contrasty for
      long sessions but still want a dark UI. */
   html.vscode {
-    --color-bg:          #090b0c;       /* Terax main background (oklch(0.148 0.004 228.8)) */
-    --color-bg-1:        #161b1d;       /* Terax sidebar/card (oklch(0.218 0.008 223.9)) */
-    --color-bg-2:        #22292b;       /* Terax secondary/muted/accent (oklch(0.275 0.011 216.9)) */
-    --color-bg-3:        #2d3539;       /* Slightly lighter elevated gray-slate */
-    --color-fg:          #f9fbfb;       /* Terax primary text (oklch(0.987 0.002 197.1)) */
-    --color-fg-dim:      #9ca8ab;       /* Terax muted-foreground (oklch(0.723 0.014 214.4)) */
-    --color-fg-faint:    #5f6d71;       /* Deep muted slate for secondary icons/text */
-    --color-border:      rgba(255, 255, 255, 0.08); /* Translucent thin borders */
-    --color-border-soft: rgba(255, 255, 255, 0.04); /* Translucent hairline borders */
-    --color-hover:       rgba(255, 255, 255, 0.04); /* Subtle hover overlay */
-    --color-sel:         rgba(156, 168, 171, 0.15); /* Translucent selection highlight */
+    --color-bg:          #1f1e1d;       /* Terax Claude main background (warm neutral charcoal) */
+    --color-bg-1:        #1a1918;       /* Terax Claude sidebar background (deeper warm charcoal) */
+    --color-bg-2:        #262624;       /* Terax Claude secondary/muted/accent (warm gray-charcoal) */
+    --color-bg-3:        #2f2d2a;       /* Slightly lighter elevated warm gray */
+    --color-fg:          #f5f4ee;       /* Terax Claude primary text (warm off-white/cream) */
+    --color-fg-dim:      #b0a89a;       /* Terax Claude muted-foreground (warm clay-gray) */
+    --color-fg-faint:    #64615a;       /* Deep muted warm gray for secondary icons/text */
+    --color-border:      rgba(245, 244, 238, 0.08); /* Translucent thin borders */
+    --color-border-soft: rgba(245, 244, 238, 0.04); /* Translucent hairline borders */
+    --color-hover:       rgba(245, 244, 238, 0.04); /* Subtle hover overlay */
+    --color-sel:         rgba(176, 168, 154, 0.15); /* Translucent selection highlight */
     --color-accent:      #d97757;       /* same brown as Dark */
     --color-accent-soft: rgba(217, 119, 87, 0.22);
     --color-accent-deep: #b35e3f;
