@@ -4,9 +4,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { EditTab, Workspace } from "@/lib/types";
 import { EditorState, Compartment, type Extension } from "@codemirror/state";
-import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { keymap } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
+import { basicSetup } from "codemirror";
+import { search } from "@codemirror/search";
+import { lintGutter } from "@codemirror/lint";
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
 import { rust } from "@codemirror/lang-rust";
@@ -20,17 +21,17 @@ import { xml } from "@codemirror/lang-xml";
 import { cpp } from "@codemirror/lang-cpp";
 import { go } from "@codemirror/lang-go";
 import { java } from "@codemirror/lang-java";
-import { StreamLanguage } from "@codemirror/language";
+import { StreamLanguage, indentUnit } from "@codemirror/language";
 import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { properties } from "@codemirror/legacy-modes/mode/properties";
-import { githubDarkInit, githubLightInit } from "@uiw/codemirror-theme-github";
 import { workspaceFileRead, workspaceFileWrite } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { usePrefs, resolveTheme } from "@/store/prefs";
+import { usePrefs } from "@/store/prefs";
+import { resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
 
 // Map a file path to a CodeMirror language extension. We match by extension
 // first, then fall back to basename heuristics for files like `Dockerfile`,
@@ -68,30 +69,6 @@ export function langForPath(p: string) {
   return null;
 }
 
-/** GitHub light/dark CodeMirror theme for the editor + diff panes.
- *  Surface colors (bg / gutter / fg / caret) are pulled from the app's
- *  `@theme` CSS vars so the editor sits flush with the surrounding
- *  chrome under ANY app theme: the five dark palettes (dark / vscode /
- *  solarized / cobalt / matrix) all collapse to githubDark here, while
- *  `light` (and `auto` on a light OS) gets githubLight. The syntax
- *  palette is the only thing that flips light↔dark — every surface
- *  color is a `var(...)`, so it tracks the active palette for free.
- *  Pass `extra` to override individual CodeMirror theme settings. */
-export function editorBaseTheme(isLight: boolean, extra?: Record<string, string>): Extension {
-  const init = isLight ? githubLightInit : githubDarkInit;
-  return init({
-    settings: {
-      background: "var(--color-bg)",
-      gutterBackground: "var(--color-bg)",
-      foreground: "var(--color-fg)",
-      caret: "var(--color-accent)",
-      gutterForeground: "var(--color-fg-faint)",
-      selection: "rgba(217,119,87,0.15)",
-      ...extra,
-    },
-  });
-}
-
 export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -108,25 +85,17 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
 
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const codeLigatures  = usePrefs(s => s.codeLigatures);
-  // Light/dark editor palette follows the app theme. Subscribing to
-  // themeMode (not a derived value) so a theme switch re-renders and
-  // the reconfigure effect below fires.
-  const themeMode      = usePrefs(s => s.themeMode);
+  // Syntax theme (atomone, tokyo-night, …). Independent of the app
+  // themeMode — surfaces still track the app palette via CSS vars.
+  const editorThemeId  = usePrefs(s => s.editorThemeId);
 
-  // Everything in the theme compartment: the GitHub light/dark palette
-  // plus font-size / ligature tweaks. All three reconfigure live (no
-  // EditorView rebuild → cursor + undo history survive a theme switch).
-  function buildTheme(sizePx: number, ligatures: boolean, isLight: boolean): Extension[] {
+  // Everything in the theme compartment: the chosen syntax theme plus the
+  // surface overrides (font-size / ligatures fold in here too). All
+  // reconfigure live — no EditorView rebuild, so cursor + undo survive.
+  function buildTheme(sizePx: number, ligatures: boolean, themeId: string): Extension[] {
     return [
-      editorBaseTheme(isLight),
-      EditorView.theme({
-        "&": { height: "100%", fontSize: `${sizePx}px` },
-        ".cm-scroller": {
-          fontFamily: "var(--font-mono)",
-          // `normal` enables ligatures (=>, !==, etc.); `none` disables them.
-          fontVariantLigatures: ligatures ? "normal" : "none",
-        },
-      }),
+      resolveEditorTheme(themeId),
+      editorSurfaceTheme(sizePx, ligatures),
     ];
   }
 
@@ -163,16 +132,21 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
           state: EditorState.create({
             doc: content,
             extensions: [
-              lineNumbers(),
-              history(),
-              highlightActiveLine(),
-              // ⌘S save — before defaultKeymap so it always wins.
+              // ⌘S save — first in the array = highest precedence, so it
+              // wins over anything basicSetup's keymaps bind.
               keymap.of([{ key: "Mod-s", preventDefault: true, run: saveDoc }]),
-              keymap.of([...defaultKeymap, ...historyKeymap]),
+              // basicSetup: line numbers, fold gutter, history, indentOnInput,
+              // bracket matching, close-brackets, autocomplete, active-line +
+              // selection-match highlight, and the default/search/history keymaps.
+              basicSetup,
+              search({ top: true }),
+              lintGutter(),
+              indentUnit.of("  "),
+              EditorState.tabSize.of(2),
               EditorView.updateListener.of(u => { if (u.docChanged) markDirty(); }),
               langCompRef.current.of(lang ? [lang] : []),
               themeCompRef.current.of(
-                buildTheme(editorFontSize, codeLigatures, resolveTheme(themeMode) === "light"),
+                buildTheme(editorFontSize, codeLigatures, editorThemeId),
               ),
             ],
           }),
@@ -186,18 +160,18 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.id, tab.path]);
 
-  // Re-apply theme compartment when the user changes size, ligatures,
-  // or the app theme (light↔dark editor palette swap).
+  // Re-apply theme compartment when the user changes font size,
+  // ligatures, or the syntax theme — all reconfigure live.
   useEffect(() => {
     const v = viewRef.current;
     if (!v) return;
     v.dispatch({
       effects: themeCompRef.current.reconfigure(
-        buildTheme(editorFontSize, codeLigatures, resolveTheme(themeMode) === "light"),
+        buildTheme(editorFontSize, codeLigatures, editorThemeId),
       ),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorFontSize, codeLigatures, themeMode]);
+  }, [editorFontSize, codeLigatures, editorThemeId]);
 
   return (
     // No chrome bar: the tab already shows the filename, and the old

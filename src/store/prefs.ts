@@ -6,6 +6,7 @@ import { create } from "zustand";
 import { listMonospaceFonts } from "@/lib/ipc";
 
 const LS_EDITOR_FONT   = "editorFont";
+const LS_EDITOR_THEME  = "editorThemeId";
 const LS_TERMINAL_FONT = "terminalFont";
 const LS_TERMINAL_SIZE = "terminalFontSize";
 const LS_EDITOR_SIZE   = "editorFontSize";
@@ -303,6 +304,10 @@ interface PrefsState {
   themeMode: ThemeMode;
   /** Font for the CodeMirror editor + diff viewer. */
   editorFontId: string;
+  /** Syntax theme for the editor + diff viewer (atomone, tokyo-night, …).
+   *  Independent of the app `themeMode` — the surface still tracks the
+   *  app palette, only the token colors come from this. */
+  editorThemeId: string;
   /** Font for the xterm terminals (main + aux). Kept separate because power
    *  users often want a Nerd Font for the shell but a clean prose-friendly
    *  font for the editor. */
@@ -320,6 +325,7 @@ interface PrefsState {
   codeLigatures: boolean;
 
   setEditorFontId:    (id: string) => void;
+  setEditorThemeId:   (id: string) => void;
   setTerminalFontId:  (id: string) => void;
   setTerminalFontSize:(px: number) => void;
   setTerminalLetterSpacing:(px: number) => void;
@@ -344,6 +350,7 @@ const lsGetNum = (k: string, fallback: number) => {
 const lsGetBool = (k: string, fallback: boolean) => lsGet(k, fallback ? "1" : "0") === "1";
 
 const initialEditorFont   = lsGet(LS_EDITOR_FONT, "jetbrains");
+const initialEditorTheme  = lsGet(LS_EDITOR_THEME, "atomone");
 const initialTerminalFont = lsGet(LS_TERMINAL_FONT, "jetbrains");
 // 14px terminal, matching terax-ai and most native terminals.
 const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, 14);
@@ -371,6 +378,7 @@ export const usePrefs = create<PrefsState>(set => ({
   settledHighlight: initialSettledHighlight,
   globalDefaultSandbox: initialDefaultSandbox,
   editorFontId: initialEditorFont,
+  editorThemeId: initialEditorTheme,
   terminalFontId: initialTerminalFont,
   terminalFontSize: initialTerminalSize,
   terminalLetterSpacing: initialTerminalLetterSpacing,
@@ -381,6 +389,10 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_EDITOR_FONT, id); } catch {}
     applyEditorFont(id);
     set({ editorFontId: id });
+  },
+  setEditorThemeId: (id) => {
+    try { localStorage.setItem(LS_EDITOR_THEME, id); } catch {}
+    set({ editorThemeId: id });
   },
   setTerminalFontId: (id) => {
     try { localStorage.setItem(LS_TERMINAL_FONT, id); } catch {}
