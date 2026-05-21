@@ -14,6 +14,7 @@
 //             iTerm / Terminal.app convention for "horizontal split".
 import { useEffect } from "react";
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
 
 export function useShortcuts() {
@@ -150,6 +151,15 @@ export function useShortcuts() {
           if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
         };
         tryFocus();
+        return;
+      }
+
+      // ⇧⌘B → open the Broadcast dialog for the active workspace (send
+      // one message to several open agents at once). NO `isTyping` guard
+      // — same xterm hidden-textarea reason as ⇧⌘D.
+      if (e.shiftKey && e.key.toLowerCase() === "b" && wsId) {
+        e.preventDefault();
+        useUI.getState().openBroadcast(wsId);
         return;
       }
 

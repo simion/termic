@@ -567,6 +567,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
             return;
           }
           markAttention(ws.id, tab.id, "exit");
+          // Clear the PTY id — the process is gone. Otherwise the dead
+          // id lingers on the tab and features that enumerate live PTYs
+          // (Broadcast) would target a corpse. A Restart respawns and
+          // sets a fresh id; the resume/sandbox-restart branches above
+          // return early and respawn without reaching here.
+          patchTab(ws.id, tab.id, { ptyId: undefined });
           setExited(true);
         });
         unlistenExitRef.current = unlistenExit;

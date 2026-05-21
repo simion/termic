@@ -6,8 +6,9 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
-import { Plus, X, GitCompare, FileText, SquareSplitVertical, Check, Bell } from "lucide-react";
+import { Plus, X, GitCompare, FileText, SquareSplitVertical, Check, Bell, Megaphone } from "lucide-react";
 import { Tip } from "@/components/ui/Tooltip";
+import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
 import { visibleCliIds } from "@/lib/agents";
 import { cn } from "@/lib/utils";
@@ -24,6 +25,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const visibleClis = visibleCliIds(CLIS, registry, detectedClis);
+  const openBroadcast = useUI(s => s.openBroadcast);
   const [open, setOpen] = useState(false);
   // When spawnTab fires, suppress Radix's auto focus-return so it
   // doesn't yank focus back to the '+' trigger before our terminal-
@@ -131,6 +133,15 @@ export function TabBar({ ws }: { ws: Workspace }) {
         </DropdownMenu>
       </DropdownRoot>
 
+      <Tip content="Broadcast message to agents (⇧⌘B)" side="bottom">
+        <Button
+          size="icon" variant="icon" className="ml-auto"
+          onClick={() => openBroadcast(ws.id)}
+        >
+          <Megaphone className="h-4 w-4" />
+        </Button>
+      </Tip>
+
       <SplitToggle wsId={ws.id} />
     </div>
   );
@@ -145,7 +156,7 @@ function SplitToggle({ wsId }: { wsId: string }) {
   return (
     <Tip content={split ? "Close split terminal" : "Split: open shell below"} side="bottom">
       <Button
-        size="icon" variant="icon" className="ml-auto"
+        size="icon" variant="icon"
         onClick={() => toggleSplit(wsId)}
       >
         <SquareSplitVertical className={cn("h-4 w-4", split && "text-[var(--color-accent)]")} />
