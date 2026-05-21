@@ -787,6 +787,33 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     out.push_str("(allow network-bind     (local  ip \"localhost:*\"))\n");
     out.push_str("(allow network-inbound  (local  ip \"localhost:*\"))\n");
 
+    let agent = agent_override.unwrap_or(&workspace.cli);
+    if agent == "agy" || agent == "gemini" {
+        out.push_str("\n;; --- Antigravity/Gemini direct connection bypass ---\n");
+        let bypass_hosts = [
+            "daily-cloudcode-pa.googleapis.com",
+            "cloudcode-pa.googleapis.com",
+            "generativelanguage.googleapis.com",
+            "oauth2.googleapis.com",
+            "accounts.google.com",
+        ];
+        use std::net::ToSocketAddrs;
+        for host in &bypass_hosts {
+            if let Ok(addrs) = format!("{}:443", host).to_socket_addrs() {
+                for addr in addrs {
+                    let ip = addr.ip();
+                    out.push_str(&format!(
+                        "(allow network-outbound (remote ip \"{}:443\"))\n",
+                        ip
+                    ));
+                    dlog(&format!("[sandbox] allowed direct IP bypass for {}: {}", host, ip));
+                }
+            } else {
+                dlog(&format!("[sandbox] failed to resolve IP bypass for {}", host));
+            }
+        }
+    }
+
     Ok(out)
 }
 
