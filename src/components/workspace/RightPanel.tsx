@@ -18,7 +18,8 @@ import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useScriptRuns, useRunState } from "@/store/scriptRuns";
 
 const STATUS_LABEL: Record<string, string> = { M: "modified", A: "added", D: "deleted", R: "renamed", "??": "untracked", "!!": "ignored", U: "conflict" };
-const STATUS_COLOR: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", "??": "var(--color-fg-faint)", U: "var(--color-err)" };
+const STATUS_COLOR: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", "??": "var(--color-ok)", U: "var(--color-err)" };
+const STATUS_CHAR: Record<string, string> = { M: "M", A: "+", "??": "+", D: "D", R: "R", U: "U", "!!": "!" };
 
 type FootTab = "setup" | "run" | "term";
 
@@ -185,7 +186,13 @@ export function RightPanel() {
           // jamming all of it on one row was the prior "too crowded"
           // complaint.
           <>
-            <div className="flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b border-[var(--color-border-soft)] px-1.5">
+            <div className={cn(
+              "flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden px-1.5",
+              // border-b separates the strip from the content below it.
+              // Collapsed → no content below → drop it, else it stacks
+              // with the footer's own border-t into a doubled line.
+              !footCollapsed && "border-b border-[var(--color-border-soft)]",
+            )}>
               <button
                 onClick={() => setFootCollapsed(c => !c)}
                 title={footCollapsed ? "Expand" : "Collapse"}
@@ -267,7 +274,12 @@ export function RightPanel() {
             })()}
           </>
         ) : (
-        <div className="flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b border-[var(--color-border-soft)] px-1.5">
+        <div className={cn(
+          "flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden px-1.5",
+          // Collapsed → nothing below the strip → drop border-b so it
+          // doesn't stack with the footer's border-t into a double line.
+          !footCollapsed && "border-b border-[var(--color-border-soft)]",
+        )}>
           <button
             onClick={() => setFootCollapsed(c => !c)}
             title={footCollapsed ? "Expand" : "Collapse"}
@@ -692,7 +704,7 @@ function ChangeRow({ file, onOpen, clickable }: {
       onClick={() => clickable && onOpen(file.path)}
     >
       <span className="inline-flex h-4 min-w-[18px] items-center justify-center rounded px-1 text-[11.5px] font-semibold text-black"
-            style={{ background: STATUS_COLOR[key] || "var(--color-fg-dim)" }}>{key}</span>
+            style={{ background: STATUS_COLOR[key] || "var(--color-fg-dim)" }}>{STATUS_CHAR[key] || key}</span>
       <span className="truncate font-mono text-[12.5px]">{file.path}</span>
     </button>
   );

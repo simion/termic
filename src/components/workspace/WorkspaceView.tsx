@@ -181,24 +181,17 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 {(bottomTabs || []).map(t => (
                   <div
                     key={t.id}
+                    data-tab-id={t.id}
                     className="absolute inset-0"
                     style={{ visibility: t.id === activeBottom ? "visible" : "hidden", zIndex: t.id === activeBottom ? 1 : 0 }}
                   >
                     <AuxTerminal
                       wsPath={ws.path}
                       active={t.id === activeBottom}
-                      onExited={() => {
-                        closeBottomTab(ws.id, t.id);
-                        // The sibling that becomes active should pick up
-                        // focus — otherwise Ctrl+D'ing through shells
-                        // dumps focus to nowhere and the next shell looks
-                        // dead until clicked.
-                        setTimeout(() => {
-                          const split = document.querySelector("[data-bottom-split]");
-                          const el = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-                          el?.focus();
-                        }, 0);
-                      }}
+                      // closeBottomTab moves focus to the shell that takes
+                      // over (or the main pane if this was the last one),
+                      // so Ctrl+D'ing through shells never dumps focus.
+                      onExited={() => closeBottomTab(ws.id, t.id)}
                     />
                   </div>
                 ))}

@@ -1,6 +1,6 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Workspace, Tab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
@@ -32,32 +32,33 @@ export function TabBar({ ws }: { ws: Workspace }) {
   // Inline rename state: which tab id is being renamed + its draft value.
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
 
+  // ⌘T from the main pane (handled in useShortcuts) opens this menu so
+  // the user can keyboard-pick an agent / terminal. Scoped by wsId —
+  // multiple workspaces stay mounted, so only the targeted TabBar
+  // reacts. Radix focuses the first item on open; arrow + Enter from
+  // there. Listener identity is stable across renders → mount once.
+  useEffect(() => {
+    const onMenu = (e: Event) => {
+      if ((e as CustomEvent<{ wsId?: string }>).detail?.wsId === ws.id) setOpen(true);
+    };
+    window.addEventListener("termic-new-tab-menu", onMenu);
+    return () => window.removeEventListener("termic-new-tab-menu", onMenu);
+  }, [ws.id]);
+
   function commitRename() {
     if (!renaming) return;
     renameTab(ws.id, renaming.id, renaming.value);
     setRenaming(null);
   }
 
-  // Add a freshly-built terminal tab + move focus into it. Shared by
-  // the agent items and the New-terminal items below.
+  // Add a freshly-built terminal tab. `addTab` self-focuses the new
+  // terminal (see store) — all we do here is close the dropdown and
+  // suppress Radix's focus-return so the closing menu doesn't yank
+  // focus back to the '+' trigger before that focus call lands.
   function addAndFocusTab(tab: Tab) {
     suppressDropdownReturn.current = true;
     addTab(ws.id, tab);
     setOpen(false);
-    // Focus the NEW tab's terminal so the user can type immediately.
-    // All workspace tabs stay mounted (visibility-toggle keep-alive),
-    // so we have to target this specific one via data-tab-id rather
-    // than blindly grabbing the first .xterm-helper-textarea on the
-    // page (which would be the previously-active tab, leaving focus
-    // on the dropdown's '+' button after it closes). Poll because the
-    // TerminalPane spawn effect commits a few frames later.
-    const tryFocus = (tries = 40) => {
-      const host = document.querySelector(`[data-tab-id="${tab.id}"]`);
-      const el = host?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-      if (el) { el.focus(); return; }
-      if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
-    };
-    tryFocus();
   }
 
   function spawnTab(cli: string) {

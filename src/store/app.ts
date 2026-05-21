@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import type { Project, Workspace, Tab, TerminalTab } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
+import { focusTerminalTab } from "@/lib/tabFocus";
 
 interface View {
   /** Underlying page — dashboard / history / empty. NOT "settings": Settings
@@ -327,29 +328,46 @@ export const useApp = create<AppState>((set, get) => ({
         activeBottomTab: { ...s.activeBottomTab, [wsId]: id },
       };
     });
+    // Move focus into the freshly-spawned shell so the user can type
+    // straight away. Covers the bottom-strip "+", ⌘T and ⇧⌘D.
+    focusTerminalTab(id);
     return id;
   },
-  closeBottomTab: (wsId, tabId) => set(s => {
-    const list = s.bottomTabs[wsId] || [];
-    const idx = list.findIndex(t => t.id === tabId);
-    if (idx < 0) return s;
-    const next = list.filter(t => t.id !== tabId);
-    let active = s.activeBottomTab[wsId];
-    if (active === tabId) active = next[Math.max(0, idx - 1)]?.id || next[0]?.id || "";
-    // Last shell closed → collapse the split entirely so the user
-    // isn't left staring at an empty terminal pane.
-    if (next.length === 0) {
+  closeBottomTab: (wsId, tabId) => {
+    // Focus follows the close so the user keeps typing in the right
+    // place. `focusId` is resolved inside the updater and applied
+    // after, once React has the new active tab mounted+visible.
+    let focusId = "";
+    set(s => {
+      const list = s.bottomTabs[wsId] || [];
+      const idx = list.findIndex(t => t.id === tabId);
+      if (idx < 0) return s;
+      const next = list.filter(t => t.id !== tabId);
+      const wasActive = s.activeBottomTab[wsId] === tabId;
+      let active = s.activeBottomTab[wsId];
+      if (wasActive) active = next[Math.max(0, idx - 1)]?.id || next[0]?.id || "";
+      // Last shell closed → collapse the split entirely so the user
+      // isn't left staring at an empty terminal pane.
+      if (next.length === 0) {
+        // No bottom shell survives → focus falls back to the main-area
+        // active tab rather than to <body>.
+        if (wasActive) focusId = s.activeTab[wsId] || "";
+        return {
+          bottomTabs:      { ...s.bottomTabs, [wsId]: next },
+          activeBottomTab: { ...s.activeBottomTab, [wsId]: "" },
+          terminalSplit:   { ...s.terminalSplit, [wsId]: false },
+        };
+      }
+      // Closed the focused shell → keep focus in the bottom split by
+      // moving it to the shell that takes over (the previous one).
+      if (wasActive) focusId = active;
       return {
         bottomTabs:      { ...s.bottomTabs, [wsId]: next },
-        activeBottomTab: { ...s.activeBottomTab, [wsId]: "" },
-        terminalSplit:   { ...s.terminalSplit, [wsId]: false },
+        activeBottomTab: { ...s.activeBottomTab, [wsId]: active },
       };
-    }
-    return {
-      bottomTabs:      { ...s.bottomTabs, [wsId]: next },
-      activeBottomTab: { ...s.activeBottomTab, [wsId]: active },
-    };
-  }),
+    });
+    if (focusId) focusTerminalTab(focusId);
+  },
   setActiveBottomTab: (wsId, tabId) => set(s => ({
     activeBottomTab: { ...s.activeBottomTab, [wsId]: tabId },
   })),
@@ -369,12 +387,19 @@ export const useApp = create<AppState>((set, get) => ({
     };
   }),
 
-  addTab: (wsId, tab) => set(s => {
-    const next = [...(s.tabs[wsId] || []), tab];
-    return { tabs: { ...s.tabs, [wsId]: next }, activeTab: { ...s.activeTab, [wsId]: tab.id } };
-  }),
+  addTab: (wsId, tab) => {
+    set(s => {
+      const next = [...(s.tabs[wsId] || []), tab];
+      return { tabs: { ...s.tabs, [wsId]: next }, activeTab: { ...s.activeTab, [wsId]: tab.id } };
+    });
+    // A new terminal tab grabs focus so the user can type immediately.
+    // (edit/diff tabs manage their own focus — no terminal to target.)
+    if (tab.type === "terminal") focusTerminalTab(tab.id);
+  },
 
-  closeTab: (wsId, tabId) => set(s => {
+  closeTab: (wsId, tabId) => {
+   let focusId = "";
+   set(s => {
     const list = s.tabs[wsId] || [];
     const idx = list.findIndex(t => t.id === tabId);
     if (idx < 0) return s;
@@ -382,14 +407,19 @@ export const useApp = create<AppState>((set, get) => ({
     // Best-effort PTY kill; ignore failures (already-dead PTYs etc.).
     if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
     const next = list.filter(t => t.id !== tabId);
+    const wasActive = s.activeTab[wsId] === tabId;
     let active = s.activeTab[wsId];
-    if (active === tabId) active = next[Math.max(0, idx - 1)]?.id || next[0]?.id || "";
+    if (wasActive) active = next[Math.max(0, idx - 1)]?.id || next[0]?.id || "";
     // Last tab closed → put the workspace to sleep. activeWorkspaceId
     // clears so the dashboard takes over the main pane; the workspace
     // also drops out of mountedWorkspaces below so xterm.js + every
     // PTY for it tear down. Re-entering via the sidebar re-mounts
     // and ensureDefaultTab spawns a fresh agent tab.
     const isLast = next.length === 0;
+    // Closed the focused tab and another tab survives → focus follows
+    // to the tab that takes over (the previous one), so ⌘W-ing through
+    // tabs keeps keyboard focus in the main pane.
+    if (wasActive && !isLast) focusId = active;
     const update: Partial<typeof s> = {
       tabs: { ...s.tabs, [wsId]: next },
       activeTab: { ...s.activeTab, [wsId]: active },
@@ -406,7 +436,9 @@ export const useApp = create<AppState>((set, get) => ({
       }
     }
     return update as any;
-  }),
+   });
+   if (focusId) focusTerminalTab(focusId);
+  },
 
   setActiveTabId: (wsId, tabId) => set(s => {
     // Looking at a tab = "I've seen this". Clear its unread inline so

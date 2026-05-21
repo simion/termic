@@ -114,8 +114,14 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
           "ins.cm-insertedLine, ins.cm-insertedLine *": {
             textDecoration: "none !important",
           },
+          "ins.cm-insertedLine .cm-changedText, .cm-insertedLine .cm-changedText, ins.cm-insertedLine .cm-insertedText, .cm-insertedLine .cm-insertedText, ins.cm-insertedLine .cm-inserted, .cm-insertedLine .cm-inserted": {
+            background: "transparent !important",
+          },
           "del.cm-deletedLine, del.cm-deletedLine *": {
             textDecoration: "none !important",
+          },
+          "del.cm-deletedLine .cm-deletedText, .cm-deletedLine .cm-deletedText, del.cm-deletedLine .cm-deleted, .cm-deletedLine .cm-deleted": {
+            background: "transparent !important",
           },
         }),
       ];

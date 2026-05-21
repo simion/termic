@@ -53,7 +53,6 @@ export function Dashboard() {
             label="Add project"
             hint="Pick a git repo on disk"
             onClick={openNewProject}
-            primary
           />
           <ActionCard
             icon={<Compass className="h-5 w-5" />}
@@ -134,20 +133,15 @@ export function Dashboard() {
   );
 }
 
-function ActionCard({ icon, label, hint, onClick, primary }: {
-  icon: React.ReactNode; label: string; hint: string; onClick: () => void; primary?: boolean;
+function ActionCard({ icon, label, hint, onClick }: {
+  icon: React.ReactNode; label: string; hint: string; onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      className={cn(
-        "flex flex-col items-start gap-2 rounded-lg border p-4 text-left transition-colors",
-        primary
-          ? "border-[var(--color-accent-soft)] bg-[var(--color-accent)]/8 hover:bg-[var(--color-accent)]/15 hover:border-[var(--color-accent)]"
-          : "border-[var(--color-border-soft)] bg-[var(--color-bg-1)] hover:border-[var(--color-accent-soft)]",
-      )}
+      className="flex flex-col items-start gap-2 rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-1)] p-4 text-left transition-colors hover:border-[var(--color-accent-soft)]"
     >
-      <span className={cn(primary ? "text-[var(--color-accent)]" : "text-[var(--color-fg-dim)]")}>{icon}</span>
+      <span className="text-[var(--color-fg-dim)]">{icon}</span>
       <div>
         <div className="text-[13.5px] font-semibold">{label}</div>
         <div className="text-[12px] text-[var(--color-fg-faint)]">{hint}</div>

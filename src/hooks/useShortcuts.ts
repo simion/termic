@@ -153,28 +153,24 @@ export function useShortcuts() {
         return;
       }
 
-      // ⌘T → new bottom-split shell tab when focus is inside the
-      // bottom split (mirrors macOS Terminal.app's "new tab" binding
-      // for whichever pane has focus). NO `isTyping` guard for the
-      // same reason as ⇧⌘D — xterm's hidden textarea always reports
-      // as typing.
+      // ⌘T → new tab, behaviour depends on which pane has focus
+      // (mirrors macOS Terminal.app's "new tab" binding for whichever
+      // pane is active). NO `isTyping` guard for the same reason as
+      // ⇧⌘D — xterm's hidden textarea always reports as typing.
       if (e.key.toLowerCase() === "t" && !e.shiftKey && wsId) {
+        e.preventDefault();
         const inBottom = !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
         if (inBottom) {
-          e.preventDefault();
+          // Bottom split: spawn a plain shell straight away — there's
+          // no agent choice to make. addBottomTab self-focuses it.
           state.addBottomTab(wsId);
-          // Focus the newly-active shell — same poll dance as ⇧⌘D
-          // because the xterm helper-textarea isn't in the DOM until
-          // AuxTerminal's spawn effect commits.
-          const tryFocus = (tries = 20) => {
-            const split = document.querySelector("[data-bottom-split]");
-            const el = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-            if (el) { el.focus(); return; }
-            if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
-          };
-          tryFocus();
-          return;
+        } else {
+          // Main pane: open the "+" tab menu so the user can pick an
+          // agent / terminal with the keyboard and hit Enter. The
+          // active workspace's TabBar listens for this event.
+          window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { wsId } }));
         }
+        return;
       }
 
       // ⌘K → clear the focused terminal (xterm `clear()`). Dispatched
@@ -199,6 +195,15 @@ export function useShortcuts() {
         // ALWAYS preventDefault so the OS doesn't interpret ⌘W as
         // "close window" and quit the app.
         e.preventDefault();
+        // Focus-aware: if the bottom-split shell owns focus, ⌘W closes
+        // the active BOTTOM tab — not the main-area tab. (Same
+        // `[data-bottom-split]` ancestor check as ⌘T / ⌘K above.)
+        const inBottom = !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
+        if (inBottom && wsId) {
+          const bottomId = state.activeBottomTab[wsId];
+          if (bottomId) state.closeBottomTab(wsId, bottomId);
+          return;
+        }
         // requestCloseTab confirms first if it's a dirty edit tab —
         // ⌘W must never silently discard unsaved changes.
         if (wsId && activeTabId) requestCloseTab(wsId, activeTabId);
