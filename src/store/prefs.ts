@@ -38,13 +38,13 @@ function parseThemeMode(raw: string): ThemeMode {
  *  `ls --color` looks consistent with the app's surface colors. */
 export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
   dark: {
-    background: "#0b0b0d",
-    foreground: "#eceef1",
+    background: "#060c0b",
+    foreground: "#fff7f1",
     cursor: "#d97757",
-    cursorAccent: "#0b0b0d",
+    cursorAccent: "#060c0b",
     selectionBackground: "rgba(217,119,87,0.30)",
-    black: "#1a1a1d", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
-    blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#eceef1",
+    black: "#0c1e1b", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
+    blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#fff7f1",
     brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
     brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
   },

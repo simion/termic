@@ -27,17 +27,17 @@
      (so panel edges and the top-bar separator actually read), and
      a neutral off-white fg without the warm cream tint our base
      Dark uses. Same terracotta accent. */
-  --color-bg:        #0c0c0c;
-  --color-bg-1:      #141414;
-  --color-bg-2:      #1c1c1c;
-  --color-bg-3:      #282828;
-  --color-fg:        #e8e6e2;
-  --color-fg-dim:    #a8a6a2;
-  --color-fg-faint:  #6e6c68;
-  --color-border:    #333333;
-  --color-border-soft: #232323;
-  --color-hover:     rgba(255, 248, 240, 0.045);
-  --color-sel:       rgba(217, 119, 87, 0.20);
+  --color-bg:        #060c0b; /* Terax main background (oklch(0.148 0.004 228.8)) */
+  --color-bg-1:      #0c1e1b; /* Terax sidebar/card (oklch(0.218 0.008 223.9)) */
+  --color-bg-2:      #0f2e29; /* Terax secondary/muted/accent (oklch(0.275 0.011 216.9)) */
+  --color-bg-3:      #153e37; /* Slightly lighter elevated teal-slate */
+  --color-fg:        #fff7f1; /* Terax primary text (oklch(0.987 0.002 197.1)) */
+  --color-fg-dim:    #8fafa3; /* Terax muted-foreground (oklch(0.723 0.014 214.4)) */
+  --color-fg-faint:  #4e6b61; /* Deep muted slate-teal for secondary icons/text */
+  --color-border:    rgba(255, 255, 255, 0.08); /* Translucent thin borders */
+  --color-border-soft: rgba(255, 255, 255, 0.04); /* Translucent hairline borders */
+  --color-hover:     rgba(255, 255, 255, 0.04); /* Subtle hover overlay */
+  --color-sel:       rgba(143, 175, 163, 0.15); /* Translucent selection highlight */
   --color-accent:    #d97757;
   --color-accent-soft: rgba(217, 119, 87, 0.22);
   /* Darker accent for button surfaces. Pure accent looks fine on
