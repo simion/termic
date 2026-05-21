@@ -50,13 +50,13 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
   },
   vscode: {
     // VS Code Dark (Visual Studio) palette updated with cleaner Terax colors
-    background: "#060c0b",
-    foreground: "#fff7f1",
+    background: "#090b0c",
+    foreground: "#f9fbfb",
     cursor: "#d97757",
-    cursorAccent: "#060c0b",
+    cursorAccent: "#090b0c",
     selectionBackground: "rgba(217,119,87,0.30)",
-    black: "#0c1e1b", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
-    blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#fff7f1",
+    black: "#161b1d", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
+    blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#f9fbfb",
     brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
     brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
   },

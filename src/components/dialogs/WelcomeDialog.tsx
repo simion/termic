@@ -305,7 +305,7 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
 const THEME_ITEMS: { id: ThemeMode; label: string; icon: typeof Sun; swatch: [string, string, string] }[] = [
   { id: "auto",      label: "System",         icon: Monitor, swatch: ["#0a0a0a", "#fdf6e3", "#d97757"] },
   { id: "light",     label: "Light",          icon: Sun,     swatch: ["#faf9f6", "#1c1b1a", "#c25e3d"] },
-  { id: "vscode",    label: "Dark",           icon: Moon,    swatch: ["#060c0b", "#fff7f1", "#d97757"] },
+  { id: "vscode",    label: "Dark",           icon: Moon,    swatch: ["#090b0c", "#f9fbfb", "#d97757"] },
   { id: "dark",      label: "Dark+",          icon: Code2,   swatch: ["#0c0c0c", "#e8e6e2", "#d97757"] },
   { id: "solarized", label: "Solarized Dark", icon: Sunrise, swatch: ["#002b36", "#93a1a1", "#cb4b16"] },
   { id: "cobalt",    label: "Cobalt",         icon: Droplet, swatch: ["#193549", "#e1efff", "#66c4ff"] },
