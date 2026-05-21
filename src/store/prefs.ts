@@ -38,6 +38,18 @@ function parseThemeMode(raw: string): ThemeMode {
  *  `ls --color` looks consistent with the app's surface colors. */
 export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
   dark: {
+    background: "#0b0b0d",
+    foreground: "#eceef1",
+    cursor: "#d97757",
+    cursorAccent: "#0b0b0d",
+    selectionBackground: "rgba(217,119,87,0.30)",
+    black: "#1a1a1d", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
+    blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#eceef1",
+    brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
+    brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
+  },
+  vscode: {
+    // VS Code Dark (Visual Studio) palette updated with cleaner Terax colors
     background: "#060c0b",
     foreground: "#fff7f1",
     cursor: "#d97757",
@@ -47,22 +59,6 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#fff7f1",
     brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
     brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
-  },
-  vscode: {
-    // VS Code Dark (Visual Studio) palette - editor bg #1e1e1e + the
-    // familiar muted-gray ANSI set. Same brown cursor as our `dark`
-    // so the brand accent carries across themes; ANSI 16 picks
-    // VS Code's integrated-terminal default colors so `ls --color`
-    // and tput sequences look at home next to the chrome.
-    background: "#1e1e1e",
-    foreground: "#cccccc",
-    cursor: "#d97757",
-    cursorAccent: "#1e1e1e",
-    selectionBackground: "rgba(217,119,87,0.30)",
-    black: "#000000", red: "#cd3131", green: "#0dbc79", yellow: "#e5e510",
-    blue: "#2472c8", magenta: "#bc3fbc", cyan: "#11a8cd", white: "#e5e5e5",
-    brightBlack: "#666666", brightRed: "#f14c4c", brightGreen: "#23d18b", brightYellow: "#f5f543",
-    brightBlue: "#3b8eea", brightMagenta: "#d670d6", brightCyan: "#29b8db", brightWhite: "#e5e5e5",
   },
   light: {
     background: "#faf9f6",
