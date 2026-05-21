@@ -609,8 +609,22 @@ export function Sidebar() {
                                       : "The branch stays in git — you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent. Can't be undone from inside Termic.",
                                     confirmLabel: w.is_repo_root ? "Remove entry" : "Archive",
                                     destructive: true,
+                                    checkbox: w.is_repo_root
+                                      ? undefined
+                                      : (w.composition?.length ?? 0) > 0
+                                      ? {
+                                          label: "Delete the git branches",
+                                          defaultValue: false,
+                                        }
+                                      : {
+                                          label: "Delete the git branch:",
+                                          branchName: w.branch || undefined,
+                                          defaultValue: false,
+                                        },
                                   });
-                                  if (!ok) return;
+                                  const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
+                                  const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
+                                  if (!confirmed) return;
                                   // Show a blocking overlay while the
                                   // archive runs — fs::remove_dir_all on a
                                   // .venv / node_modules takes seconds and
@@ -618,7 +632,7 @@ export function Sidebar() {
                                   const { setBusy } = useUI.getState();
                                   setBusy(`Archiving "${w.name}"…`);
                                   try {
-                                    await workspaceArchive(w.id);
+                                    await workspaceArchive(w.id, deleteBranch);
                                     if (activeWs === w.id) setActive(null);
                                     await loadAll();
                                   } catch (err) { console.error(err); }

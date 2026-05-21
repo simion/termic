@@ -266,11 +266,25 @@ export function UnifiedBar() {
                       : "The branch stays in git — you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent. Can't be undone from inside Termic.",
                     confirmLabel: ws.is_repo_root ? "Remove entry" : "Archive",
                     destructive: true,
+                    checkbox: ws.is_repo_root
+                      ? undefined
+                      : (ws.composition?.length ?? 0) > 0
+                      ? {
+                          label: "Delete the git branches",
+                          defaultValue: false,
+                        }
+                      : {
+                          label: "Delete the git branch:",
+                          branchName: ws.branch || undefined,
+                          defaultValue: false,
+                        },
                   });
-                  if (!ok) return;
+                  const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
+                  const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
+                  if (!confirmed) return;
                   try {
                     useUI.getState().setBusy(`Archiving "${ws.name}"…`);
-                    await workspaceArchive(ws.id); setActive(null); await loadAll();
+                    await workspaceArchive(ws.id, deleteBranch); setActive(null); await loadAll();
                   } catch (e) { console.error(e); }
                   finally { useUI.getState().setBusy(null); }
                 }}
