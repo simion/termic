@@ -23,9 +23,8 @@ export function GeneralSection() {
   // user can edit mid-line without the array round-trip dropping
   // their cursor.
   const [sbRw, setSbRw]       = useState("");
-  const [sbDeny, setSbDeny]   = useState("");
   const [sbHosts, setSbHosts] = useState("");
-  const [sbOriginal, setSbOriginal] = useState({ rw: "", deny: "", hosts: "" });
+  const [sbOriginal, setSbOriginal] = useState({ rw: "", hosts: "" });
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
@@ -40,14 +39,13 @@ export function GeneralSection() {
       setReposDir(s.repos_dir);
       setOriginalDir(s.repos_dir);
       const rw    = (s.sandbox_default_rw_paths      ?? []).join("\n");
-      const deny  = (s.sandbox_default_deny_paths    ?? []).join("\n");
       const hosts = (s.sandbox_default_allowed_hosts ?? []).join("\n");
-      setSbRw(rw); setSbDeny(deny); setSbHosts(hosts);
-      setSbOriginal({ rw, deny, hosts });
+      setSbRw(rw); setSbHosts(hosts);
+      setSbOriginal({ rw, hosts });
     }).catch(() => {});
   }, []);
 
-  const sbDirty = sbRw !== sbOriginal.rw || sbDeny !== sbOriginal.deny || sbHosts !== sbOriginal.hosts;
+  const sbDirty = sbRw !== sbOriginal.rw || sbHosts !== sbOriginal.hosts;
   const dirty = reposDir !== originalDir;
 
   async function browse() {
@@ -71,12 +69,12 @@ export function GeneralSection() {
       const next: Settings = {
         ...settings,
         sandbox_default_rw_paths:      splitLines(sbRw),
-        sandbox_default_deny_paths:    splitLines(sbDeny),
+        sandbox_default_deny_paths:    [],
         sandbox_default_allowed_hosts: splitLines(sbHosts),
       };
       await settingsSave(next);
       setSettings(next);
-      setSbOriginal({ rw: sbRw, deny: sbDeny, hosts: sbHosts });
+      setSbOriginal({ rw: sbRw, hosts: sbHosts });
     } finally { setBusy(false); }
   }
 
@@ -144,7 +142,6 @@ export function GeneralSection() {
         </div>
         <div className="mt-3 flex flex-col gap-4">
           <SbField label="Allowed paths" placeholder={"~/Documents/notes\n~/scratch"} value={sbRw} onChange={setSbRw} />
-          <SbField label="Extra denied paths" placeholder={"~/.env.shared"} value={sbDeny} onChange={setSbDeny} />
           <SbField label="Allowed hosts" placeholder={"*.example.com\nbitbucket.org"} value={sbHosts} onChange={setSbHosts} />
         </div>
         <div className="mt-3">

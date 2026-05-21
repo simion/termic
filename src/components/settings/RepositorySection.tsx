@@ -342,23 +342,6 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               }
             />
             <Field
-              label="Extra denied paths"
-              hint="On top of the built-in secret + personal-data deny list. Useful when you want to expose a parent dir but lock down a specific subdir inside it."
-              control={
-                <textarea
-                  value={(draft.sandbox_deny_paths ?? []).join("\n")}
-                  onChange={(e) => patch("sandbox_deny_paths", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
-                  rows={2}
-                  placeholder="$WORKSPACE/.git/hooks"
-                  autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-                  className={cn(
-                    "w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]",
-                    flashRing("sandbox_deny_paths"),
-                  )}
-                />
-              }
-            />
-            <Field
               label="Allowed hosts"
               hint="One per line. Use * as a wildcard. Per-CLI vendor + GitHub + npm/pypi/crates.io are always allowed; these are extras."
               control={

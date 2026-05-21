@@ -48,13 +48,12 @@ export function NewWorkspaceDialog() {
   // Sandbox pin captured at creation. Defaults from project, can be
   // overridden for this one workspace, then is permanent post-create.
   const [sandbox, setSandbox] = useState(false);
-  // The three per-workspace sandbox lists. Initialized from the
+  // The sandbox lists. Initialized from the
   // project's defaults whenever projectId changes; the user edits
   // freely until Create. Stored as multi-line text - we convert to
   // arrays at submit time. Using raw text in state lets the textareas
   // behave normally (blank lines while typing don't fight the split).
   const [sbRw,    setSbRw]    = useState("");
-  const [sbDeny,  setSbDeny]  = useState("");
   const [sbHosts, setSbHosts] = useState("");
   // Multi-repo: per-member spec, indexed by member project id. Seeded
   // when the dialog opens for a multi project from project.members.
@@ -112,7 +111,6 @@ export function NewWorkspaceDialog() {
     // Seed with project's lists immediately; once Settings loads,
     // merge global defaults on top (dedupe-preserving order).
     setSbRw((p?.sandbox_rw_paths ?? []).join("\n"));
-    setSbDeny((p?.sandbox_deny_paths ?? []).join("\n"));
     setSbHosts((p?.sandbox_allowed_hosts ?? []).join("\n"));
     // Seed the per-member spec (multi-repo only). Each member starts
     // in Worktree mode on its own default branch — the simplest +
@@ -157,11 +155,6 @@ export function NewWorkspaceDialog() {
           p?.sandbox_rw_paths,
           ...memberLists.map(m => m.sandbox_rw_paths),
         ));
-        setSbDeny(merge(
-          s.sandbox_default_deny_paths,
-          p?.sandbox_deny_paths,
-          ...memberLists.map(m => m.sandbox_deny_paths),
-        ));
         setSbHosts(merge(
           s.sandbox_default_allowed_hosts,
           p?.sandbox_allowed_hosts,
@@ -169,7 +162,6 @@ export function NewWorkspaceDialog() {
         ));
       } else {
         setSbRw(merge(s.sandbox_default_rw_paths,      p?.sandbox_rw_paths));
-        setSbDeny(merge(s.sandbox_default_deny_paths,  p?.sandbox_deny_paths));
         setSbHosts(merge(s.sandbox_default_allowed_hosts, p?.sandbox_allowed_hosts));
       }
     }).catch(() => {});
@@ -264,7 +256,7 @@ export function NewWorkspaceDialog() {
           })),
           sandbox_enabled: sandbox,
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
-          sandbox_deny_paths:     sandbox ? splitLines(sbDeny)  : undefined,
+          sandbox_deny_paths:     sandbox ? []                  : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
         });
       } else {
@@ -279,7 +271,7 @@ export function NewWorkspaceDialog() {
           // Only send lists when sandbox is on - keeps the JSON tidy
           // for unsandboxed workspaces (they don't need these saved).
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
-          sandbox_deny_paths:     sandbox ? splitLines(sbDeny)  : undefined,
+          sandbox_deny_paths:     sandbox ? []                  : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
         });
       }
@@ -540,7 +532,6 @@ export function NewWorkspaceDialog() {
                 title={p.hint}
                 onClick={() => {
                   setSbRw(p.rwPaths.join("\n"));
-                  setSbDeny(p.denyPaths.join("\n"));
                   setSbHosts(p.allowedHosts.join("\n"));
                 }}
                 className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
@@ -555,15 +546,6 @@ export function NewWorkspaceDialog() {
               onChange={e => setSbRw(e.target.value)}
               rows={3}
               placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-            />
-          </Field>
-          <Field label="Extra denied paths" hint="On top of the built-in secret deny list (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.kube, ...).">
-            <textarea
-              value={sbDeny}
-              onChange={e => setSbDeny(e.target.value)}
-              rows={2}
-              placeholder="$WORKSPACE/.git/hooks"
               className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
             />
           </Field>
