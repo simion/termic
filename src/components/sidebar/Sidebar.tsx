@@ -269,7 +269,7 @@ export function Sidebar() {
                       document.addEventListener("pointercancel", onUp);
                     }}
                     className={cn(
-                      "group flex items-center justify-between rounded-md font-mono text-[12.5px] font-extrabold uppercase tracking-[0.06em] text-[var(--color-fg)] hover:bg-[var(--color-hover)] cursor-pointer transition-colors",
+                      "group flex items-center justify-between rounded-md text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg)] hover:bg-[var(--color-hover)] cursor-pointer transition-colors",
                       menuOpenProjectId === p.id && "bg-[var(--color-hover)]",
                       compact ? "px-0 py-1 justify-center" : "px-2 py-1.5",
                       // Accent-tinted while being dragged so it pops

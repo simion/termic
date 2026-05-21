@@ -40,8 +40,10 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
       cursorBlink: true,
       fontFamily: currentTerminalStack(),
       fontSize: usePrefs.getState().terminalFontSize,
-      fontWeight: usePrefs.getState().terminalFontWeight as any,
-      fontWeightBold: Math.min(900, usePrefs.getState().terminalFontWeight + 300) as any,
+      // Regular 400 / bold 700 — the static JetBrains Mono masters. See
+      // TerminalPane for why these are pinned rather than user-tunable.
+      fontWeight: 400,
+      fontWeightBold: 700,
       letterSpacing: usePrefs.getState().terminalLetterSpacing,
       lineHeight: 1.0,
       theme: currentTerminalTheme() as any,
@@ -148,7 +150,6 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
   // Re-apply font / size when prefs change.
   const terminalFontId        = usePrefs(s => s.terminalFontId);
   const terminalFontSize      = usePrefs(s => s.terminalFontSize);
-  const terminalFontWeight    = usePrefs(s => s.terminalFontWeight);
   const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
   const firstFontRun = useRef(true);
   useEffect(() => {
@@ -157,12 +158,10 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     if (!t) return;
     t.options.fontFamily     = currentTerminalStack();
     t.options.fontSize       = terminalFontSize;
-    t.options.fontWeight     = terminalFontWeight as any;
-    t.options.fontWeightBold = Math.min(900, terminalFontWeight + 300) as any;
     t.options.letterSpacing  = terminalLetterSpacing;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
-  }, [terminalFontId, terminalFontSize, terminalFontWeight, terminalLetterSpacing]);
+  }, [terminalFontId, terminalFontSize, terminalLetterSpacing]);
 
   // Live theme swap mirrors TerminalPane's effect; see the comment there.
   const themeMode = usePrefs(s => s.themeMode);

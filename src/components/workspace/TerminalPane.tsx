@@ -116,10 +116,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
       cursorBlink: true,
       fontFamily: currentTerminalStack(),
       fontSize: usePrefs.getState().terminalFontSize,
-      fontWeight: usePrefs.getState().terminalFontWeight as any,
-      // Bold face moves in proportion to regular: keep ~300 above regular but
-      // capped at 900 so users on 500 still get a meaningfully bolder bold.
-      fontWeightBold: Math.min(900, usePrefs.getState().terminalFontWeight + 300) as any,
+      // Regular 400 / bold 700 — the two static JetBrains Mono masters
+      // bundled with the app. Any other weight forces xterm's WebGL atlas
+      // to interpolate, which WKWebView rasterizes soft. Pinned, not a pref.
+      fontWeight: 400,
+      fontWeightBold: 700,
       letterSpacing: usePrefs.getState().terminalLetterSpacing,
       // 1.0 is xterm's default and what TUIs (gemini, claude, etc.) assume.
       // A larger lineHeight inflates every cell vertically, so any row the TUI
@@ -660,7 +661,6 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // initial run since the constructor already used the current values.
   const terminalFontId        = usePrefs(s => s.terminalFontId);
   const terminalFontSize      = usePrefs(s => s.terminalFontSize);
-  const terminalFontWeight    = usePrefs(s => s.terminalFontWeight);
   const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
   const firstFontRun = useRef(true);
   useEffect(() => {
@@ -669,12 +669,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
     if (!t) return;
     t.options.fontFamily     = currentTerminalStack();
     t.options.fontSize       = terminalFontSize;
-    t.options.fontWeight     = terminalFontWeight as any;
-    t.options.fontWeightBold = Math.min(900, terminalFontWeight + 300) as any;
     t.options.letterSpacing  = terminalLetterSpacing;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
-  }, [terminalFontId, terminalFontSize, terminalFontWeight, terminalLetterSpacing]);
+  }, [terminalFontId, terminalFontSize, terminalLetterSpacing]);
 
   // Live theme swap: when the user picks a different theme in the
   // dropdown, push the new xterm palette into every mounted terminal.

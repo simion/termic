@@ -13,9 +13,9 @@ import { usePrefs } from "@/store/prefs";
 import { MergeView, unifiedMergeView } from "@codemirror/merge";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
-import { resolveTheme } from "@/store/prefs";
 import { cn } from "@/lib/utils";
-import { langForPath, editorBaseTheme } from "./EditorPane";
+import { langForPath } from "./EditorPane";
+import { resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
 
 type Mode = "side" | "unified";
 const LS_DIFF_MODE = "diffMode";
@@ -37,10 +37,9 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   const editorRef = useRef<EditorView | null>(null);
   const addTab = useApp(s => s.addTab);
   const editorFontSize = usePrefs(s => s.editorFontSize);
-  // Light/dark diff palette follows the app theme. A theme switch
-  // re-renders → the effect below rebuilds the MergeView with the
-  // matching githubLight/githubDark palette.
-  const themeMode = usePrefs(s => s.themeMode);
+  // Same syntax theme as the editor. A change re-renders → the effect
+  // below rebuilds the diff view with the new palette.
+  const editorThemeId = usePrefs(s => s.editorThemeId);
 
   function setModeAndPersist(m: Mode) {
     writeMode(m);
@@ -66,13 +65,12 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
         lineNumbers(),
         highlightActiveLine(),
         EditorView.lineWrapping,
-        // GitHub light/dark palette, surfaces pulled from the app
-        // theme's CSS vars. lineHighlight is transparent — the diff's
-        // own per-line tints already carry the signal.
-        editorBaseTheme(resolveTheme(themeMode) === "light", { lineHighlight: "transparent" }),
+        // Same syntax theme as the editor; surfaces pulled from the app
+        // CSS vars. dimActiveLine=true — the diff's per-line red/green
+        // tints carry the signal, the active-line wash would muddy it.
+        resolveEditorTheme(editorThemeId),
+        editorSurfaceTheme(editorFontSize, false, true),
         EditorView.theme({
-          "&": { fontSize: `${editorFontSize}px` },
-          ".cm-content, .cm-gutters": { fontFamily: "inherit" },
           // @codemirror/merge styles "changed text" as a 2px
           // linear-gradient strip pinned to the bottom of the run —
           // it renders as a ragged green/red underline under every
@@ -159,7 +157,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       mergeRef.current?.destroy(); mergeRef.current = null;
       editorRef.current?.destroy(); editorRef.current = null;
     };
-  }, [ws.id, tab.path, editorFontSize, mode, themeMode]);
+  }, [ws.id, tab.path, editorFontSize, mode, editorThemeId]);
 
   return (
     // bg MUST be opaque: tab swap keeps the codex/claude terminal

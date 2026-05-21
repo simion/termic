@@ -1,7 +1,16 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 @import "@fontsource-variable/inter";
-@import "@fontsource-variable/jetbrains-mono";
+/* JetBrains Mono — STATIC masters (400 + 700), latin + cyrillic only.
+   NOT the variable font: xterm's WebGL addon rasterizes every glyph
+   through Canvas 2D into a GPU texture atlas, and WKWebView renders a
+   variable font's interpolated (non-master) weights soft and muddy.
+   Shipping the real 400/700 masters makes the terminal atlas crisp.
+   Cyrillic keeps the Romanian comma-below ș/ț (U+0219/021B) sharp. */
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-700.css";
+@import "@fontsource/jetbrains-mono/cyrillic-400.css";
+@import "@fontsource/jetbrains-mono/cyrillic-700.css";
 
 /* ────────────────────────────────────────────────────────────────────────
    termic theme — dark surfaces, terracotta accent (matches legacy).
@@ -48,18 +57,18 @@
   --radius-pill: 999px;
   /* Default mono. Overridden at runtime by the font picker (writes the
      CSS var on document.documentElement and persists in localStorage). */
-  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", "SF Mono",
+  --font-mono: "JetBrains Mono", "SF Mono",
                ui-monospace, Menlo, "Cascadia Mono", Consolas, monospace;
 }
 
 @layer base {
   * { box-sizing: border-box; }
-  /* Force grayscale anti-aliasing. macOS WKWebView's default subpixel rendering
-     produces fuzzy/fringed glyphs on dark backgrounds. Inheritable, so once
-     set on html it cascades to every text-bearing descendant. */
+  /* Subpixel anti-aliasing — macOS WKWebView's default. Renders UI text
+     heavier and crisper than forced grayscale (matches terax-ai's look).
+     The WebGL terminal is a GPU texture and is unaffected by this. */
   html {
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
     text-rendering: optimizeLegibility;
   }
   html, body, #root {
@@ -85,7 +94,8 @@
                  "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     font-size: 14px;
     line-height: 1.5;
-    font-feature-settings: "cv11", "ss01", "ss03";  /* Inter's straight-leg variants — cleaner at UI sizes */
+    /* No font-feature-settings — plain Inter Variable, same as terax-ai.
+       (termic previously enabled cv11/ss01/ss03 stylistic alternates.) */
     color-scheme: dark;
   }
 

@@ -5,18 +5,19 @@
 import { usePrefs, MONO_FONT_OPTIONS, availableMonoFonts, availableMonoFontsAsync } from "@/store/prefs";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { EDITOR_THEMES } from "@/lib/editorTheme";
 import { AuxTerminal } from "@/components/workspace/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
 
 export function AppearanceSection() {
   const editorFontId    = usePrefs(s => s.editorFontId);
   const setEditorFontId = usePrefs(s => s.setEditorFontId);
+  const editorThemeId    = usePrefs(s => s.editorThemeId);
+  const setEditorThemeId = usePrefs(s => s.setEditorThemeId);
   const terminalFontId  = usePrefs(s => s.terminalFontId);
   const setTerminalFontId = usePrefs(s => s.setTerminalFontId);
   const terminalFontSize = usePrefs(s => s.terminalFontSize);
   const setTerminalFontSize = usePrefs(s => s.setTerminalFontSize);
-  const terminalFontWeight = usePrefs(s => s.terminalFontWeight);
-  const setTerminalFontWeight = usePrefs(s => s.setTerminalFontWeight);
   const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
   const setTerminalLetterSpacing = usePrefs(s => s.setTerminalLetterSpacing);
   const editorFontSize = usePrefs(s => s.editorFontSize);
@@ -38,6 +39,14 @@ export function AppearanceSection() {
         hint="Font for the code editor and diff viewer."
         control={
           <FontSelect value={editorFontId} onChange={setEditorFontId} fonts={fonts} />
+        }
+      />
+
+      <Field
+        label="Editor theme"
+        hint="Syntax color scheme for the code editor and diff viewer."
+        control={
+          <ThemeSelect value={editorThemeId} onChange={setEditorThemeId} />
         }
       />
 
@@ -77,14 +86,6 @@ export function AppearanceSection() {
       />
 
       <Field
-        label="Terminal font weight"
-        hint={`${terminalFontWeight} — xterm's WebGL renderer paints lighter than native Terminal.app / iTerm. Medium (500), the default, compensates; nudge heavier or lighter to taste.`}
-        control={
-          <WeightPicker value={terminalFontWeight} onChange={setTerminalFontWeight} />
-        }
-      />
-
-      <Field
         label="Terminal letter spacing"
         hint={`${terminalLetterSpacing}px added per cell. xterm packs glyphs snug; bump 1–2px to match iTerm / Terminal.app spacing.`}
         control={
@@ -100,7 +101,7 @@ export function AppearanceSection() {
       {/* Legacy static preview (kept off behind the `false` gate so
           a future revert is a one-flag change). */}
       {false && (<div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3 font-mono text-[var(--color-fg)]"
-           style={{ fontFamily: stackById(terminalFontId), fontSize: `${terminalFontSize}px`, fontWeight: terminalFontWeight, lineHeight: 1.4 }}>
+           style={{ fontFamily: stackById(terminalFontId), fontSize: `${terminalFontSize}px`, lineHeight: 1.4 }}>
         <span className="text-[#7cd57e]">~/project</span> <span className="text-[#d97757]">main</span> <span className="text-[#f0b13a]">±3</span><br/>
         <span className="text-[#d97757]">{"〉"}</span> npm test <span className="text-[#7cd57e]">✓</span><br/>
         <span className="text-[#a7f3a0]">└─▶ All tests passed!</span>
@@ -154,6 +155,20 @@ function FontSelect({ value, onChange, fonts }: {
   );
 }
 
+function ThemeSelect({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[180px]"
+    >
+      {EDITOR_THEMES.map(t => (
+        <option key={t.id} value={t.id}>{t.label}</option>
+      ))}
+    </select>
+  );
+}
+
 // Compact integer stepper. Replaces the previous range slider — direct
 // keyboard entry + step buttons is faster than dragging a slider to hit
 // a specific px value, especially for the small 10..20 range we expose.
@@ -171,43 +186,10 @@ function NumberInput({ value, onChange, min, max }: { value: number; onChange: (
   );
 }
 
-const WEIGHTS = [
-  { w: 300, label: "Light" },
-  { w: 400, label: "Regular" },
-  { w: 500, label: "Medium" },
-  { w: 600, label: "Semibold" },
-  { w: 700, label: "Bold" },
-];
-
-function WeightPicker({ value, onChange }: { value: number; onChange: (w: number) => void }) {
-  return (
-    <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
-      {WEIGHTS.map(({ w, label }) => (
-        <button
-          key={w} type="button" onClick={() => onChange(w)}
-          className={cn(
-            "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
-            // accent-deep matches every other "active filled pill" in
-            // the app (CLI picker, theme picker tile, settings tabs).
-            // Plain --color-accent is too washed-out on cobalt's navy
-            // surfaces — same reason --color-accent-deep exists.
-            value === w
-              ? "bg-[var(--color-accent-deep)] text-white"
-              : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-          )}
-          // Render each pill's label in its own weight — gives a live preview
-          // so the user can compare without applying.
-          style={{ fontWeight: w }}
-        >{label}</button>
-      ))}
-    </div>
-  );
-}
-
 // Integer px only. Fractional values misalign the WebGL atlas; values
 // beyond ~3px start making TUI column math read wrong.
 const LETTER_SPACINGS: { px: number; label: string }[] = [
-  { px: 0, label: "Tight" },
+  { px: 0, label: "Compact" },
   { px: 1, label: "Default" },
   { px: 2, label: "Roomy" },
   { px: 3, label: "Wide" },
