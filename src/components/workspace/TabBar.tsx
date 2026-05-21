@@ -12,6 +12,7 @@ import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
 import { visibleCliIds } from "@/lib/agents";
 import { cn } from "@/lib/utils";
+import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
 const CLIS = ["claude", "gemini", "codex", "agy"] as const;
 
@@ -81,7 +82,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
   }
 
   return (
-    <div className="termic-tabstrip flex h-9 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 overflow-x-auto overflow-y-hidden">
+    <div className="termic-tabstrip flex h-9 shrink-0 items-center gap-0 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2 pr-2 overflow-x-auto overflow-y-hidden">
       {tabs.map(t => (
         <TabPill
           key={t.id} ws={ws} tab={t} active={t.id === activeId}
@@ -187,6 +188,14 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
   const showBell  = reason === "attention";
   const color = tab.type === "terminal" ? CLI_BRAND_COLOR[tab.cli] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
+
+  let fileIcon: string | null = null;
+  if ((tab.type === "edit" || tab.type === "diff") && (tab as any).path) {
+    const path = (tab as any).path;
+    const name = path.split("/").pop() || tab.title;
+    fileIcon = fileIconUrl(name);
+  }
+
   return (
     <div
       onClick={() => { if (!isRenaming) onSelect(); }}
@@ -212,20 +221,11 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
       // readability, max-w caps a lone tab on a very wide bar.
       style={{ flex: "0 1 calc((100% - 5rem) / 3)" }}
       className={cn(
-        // min-w floors so tabs stay readable when many are open; max-w
-        // caps so a single tab on a wide bar doesn't become an
-        // enormous pill. Width stays stable when titles change
-        // (Working… / Ready / Action Required all map to one slot).
-        "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors border",
+        "group flex h-full self-stretch cursor-pointer items-center gap-1.5 px-3.5 text-[12.5px] transition-colors relative select-none border-r border-[var(--color-border-soft)]",
         "min-w-[140px] max-w-[260px]",
-        // Active state cue: brighter bg + colored border + brighter fg.
-        // Used to also use `font-semibold` but a weight change resizes
-        // the label's intrinsic width, which made the cell jiggle on
-        // every active-tab switch. Visual difference is preserved
-        // via the bg+border+text-color trio.
         active
-          ? "bg-[var(--color-bg-3)] text-[var(--color-fg)] border-[var(--color-accent-soft)]"
-          : "border-transparent text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+          ? "bg-[var(--color-bg)] text-[var(--color-fg)]"
+          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       {showBell && (
@@ -238,11 +238,14 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
           <Check className="h-4 w-4" strokeWidth={3} />
         </span>
       )}
-      <span className={cn("shrink-0", color)}>
-        {tab.type === "terminal" && <CliIcon cli={tab.cli} className="h-4 w-4" />}
-        {tab.type === "edit"     && <FileText className="h-4 w-4" />}
-        {tab.type === "diff"     && <GitCompare className="h-4 w-4" />}
-      </span>
+      {/* Icon slot: Terminals get CLI brand icons, Edit/Diff tabs get dynamic Catppuccin file icons if path is available, else fallback / none */}
+      {(tab.type === "terminal" || fileIcon || tab.type === "diff") && (
+        <span className={cn("shrink-0 flex items-center justify-center", color)}>
+          {tab.type === "terminal" && <CliIcon cli={tab.cli} className="h-4 w-4" />}
+          {tab.type === "edit" && fileIcon && <img src={fileIcon} alt="" className="h-4 w-4 shrink-0" />}
+          {tab.type === "diff" && (fileIcon ? <img src={fileIcon} alt="" className="h-4 w-4 shrink-0" /> : <GitCompare className="h-4 w-4" />)}
+        </span>
+      )}
       {isRenaming ? (
         <input
           autoFocus
@@ -291,11 +294,14 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
             title="Close tab"
             className={cn(
               "rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-              tab.dirty && "opacity-0 group-hover:opacity-100",
+              (!active || tab.dirty) && "opacity-0 group-hover:opacity-100",
             )}
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           ><X className="h-3 w-3" /></button>
         </span>
+      )}
+      {active && (
+        <span className="absolute inset-x-0 bottom-0 h-[2.5px] bg-[var(--color-accent)]" />
       )}
     </div>
   );
