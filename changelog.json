@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.4.6",
+      "date": "2026-05-21",
+      "summary": "Sharper keyboard focus for terminal tabs — closing a tab keeps focus in the same pane, new tabs grab focus on spawn, and ⌘T opens the new-tab menu. Also fixes a doubled border on the collapsed Setup/Run footer."
+    },
+    {
       "version": "0.4.5",
       "date": "2026-05-20",
       "summary": "Self-update in-app prompts and a detailed Changelog dialog are now live, alongside optimized, decoupled terminal rendering logic."
