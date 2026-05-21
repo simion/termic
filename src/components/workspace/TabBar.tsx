@@ -165,7 +165,7 @@ function SplitToggle({ wsId }: { wsId: string }) {
   );
 }
 
-function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename }: {
+function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename }: {
   ws: Workspace; tab: Tab; active: boolean; onSelect: () => void; onClose: () => void;
   renaming: string | null;  // current draft value while renaming, else null
   onStartRename: () => void;
@@ -190,7 +190,14 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
   return (
     <div
       onClick={() => { if (!isRenaming) onSelect(); }}
-      onDoubleClick={(e) => { e.stopPropagation(); onStartRename(); }}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        if (tab.preview) {
+          useApp.getState().persistTab(ws.id, tab.id);
+        } else {
+          onStartRename();
+        }
+      }}
       // Active state needs to win at-a-glance. Three signals stacked:
       //   1. Brighter bg (color-bg-3 vs the bar's color-bg-1).
       //   2. Accent-colored border (vs near-invisible border-soft).
@@ -262,7 +269,7 @@ function TabPill({ ws: _ws, tab, active, onSelect, onClose, renaming, onStartRen
         // flex pill — without min-w-0 the span keeps its intrinsic
         // width and pushes the pill larger, defeating the fixed-cell
         // layout. Title attr surfaces the full text on hover.
-        <span className="min-w-0 flex-1 truncate" title={tab.liveTitle && !tab.customTitle ? tab.liveTitle : undefined}>
+        <span className={cn("min-w-0 flex-1 truncate", tab.preview && "italic")} title={tab.liveTitle && !tab.customTitle ? tab.liveTitle : undefined}>
           {tab.customTitle ? tab.title : (tab.liveTitle || tab.title)}
         </span>
       )}

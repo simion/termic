@@ -150,7 +150,14 @@ export function RightPanel() {
           <ChangesView
             ws={ws}
             changes={changes}
-            onOpenDiff={(path) => addTab(ws.id, { id: crypto.randomUUID(), type: "diff", path, title: `Δ ${path.split("/").pop()}` })}
+            onOpenDiff={(path) => useApp.getState().openPreviewTab(ws.id, { type: "diff", path, title: `Δ ${path.split("/").pop()}` })}
+            onDoubleClickDiff={(path) => {
+              const currentTabs = useApp.getState().tabs[ws.id] || [];
+              const existing = currentTabs.find(t => t.type === "diff" && t.path === path);
+              if (existing) {
+                useApp.getState().persistTab(ws.id, existing.id);
+              }
+            }}
           />
         )}
       </div>
@@ -582,10 +589,11 @@ function RTab({ label, active, badge, onClick }: { label: string; active: boolea
  *  repo_root group are non-clickable (their canonical path resolves
  *  outside the wrapper and the safe_workspace_path check rejects
  *  them, so opening would fail with a confusing error). */
-function ChangesView({ ws, changes, onOpenDiff }: {
+function ChangesView({ ws, changes, onOpenDiff, onDoubleClickDiff }: {
   ws: Workspace;
   changes: Changes;
   onOpenDiff: (path: string) => void;
+  onDoubleClickDiff: (path: string) => void;
 }) {
   const groups = changes.groups ?? [];
   // Single-repo workspaces look exactly like before: flat list, no
@@ -623,7 +631,7 @@ function ChangesView({ ws, changes, onOpenDiff }: {
     const flat = groups[0]?.files ?? changes.files;
     return (
       <div className="flex flex-col">
-        {flat.map(f => <ChangeRow key={f.path} file={f} onOpen={onOpenDiff} clickable />)}
+        {flat.map(f => <ChangeRow key={f.path} file={f} onOpen={onOpenDiff} onDoubleClick={onDoubleClickDiff} clickable />)}
       </div>
     );
   }
@@ -666,6 +674,7 @@ function ChangesView({ ws, changes, onOpenDiff }: {
                     key={f.path}
                     file={f}
                     onOpen={onOpenDiff}
+                    onDoubleClick={onDoubleClickDiff}
                     clickable={clickable}
                   />
                 ))}
@@ -681,9 +690,10 @@ function ChangesView({ ws, changes, onOpenDiff }: {
   );
 }
 
-function ChangeRow({ file, onOpen, clickable }: {
+function ChangeRow({ file, onOpen, onDoubleClick, clickable }: {
   file: { status: string; path: string };
   onOpen: (p: string) => void;
+  onDoubleClick: (p: string) => void;
   clickable: boolean;
 }) {
   const key = file.status.length > 1 ? file.status : file.status.trim() || "M";
@@ -702,6 +712,7 @@ function ChangeRow({ file, onOpen, clickable }: {
         : `${STATUS_LABEL[key] || key}: ${file.path} — open via terminal (live checkout, no in-app diff)`
       }
       onClick={() => clickable && onOpen(file.path)}
+      onDoubleClick={() => clickable && onDoubleClick(file.path)}
     >
       <span className="inline-flex h-4 min-w-[18px] items-center justify-center rounded px-1 text-[11.5px] font-semibold text-black"
             style={{ background: STATUS_COLOR[key] || "var(--color-fg-dim)" }}>{STATUS_CHAR[key] || key}</span>

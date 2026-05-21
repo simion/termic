@@ -105,7 +105,9 @@ interface AppState {
   addTab: (wsId: string, tab: Tab) => void;
   closeTab: (wsId: string, tabId: string) => void;
   setActiveTabId: (wsId: string, tabId: string) => void;
-  patchTab: (wsId: string, tabId: string, patch: Partial<TerminalTab>) => void;
+  persistTab: (wsId: string, tabId: string) => void;
+  openPreviewTab: (wsId: string, data: { type: "edit" | "diff"; path: string; title: string }) => void;
+  patchTab: (wsId: string, tabId: string, patch: Partial<Tab>) => void;
   renameTab: (wsId: string, tabId: string, title: string) => void;
   /** Update the tab's PTY-driven `OSC 0/2` title. No-op when the user
    *  has manually renamed the tab (`customTitle === true`). */
@@ -456,8 +458,61 @@ export const useApp = create<AppState>((set, get) => ({
 
   patchTab: (wsId, tabId, patch) => set(s => {
     const list = s.tabs[wsId] || [];
-    const next = list.map(t => t.id === tabId ? { ...t, ...patch } as Tab : t);
+    const next = list.map(t => {
+      if (t.id === tabId) {
+        const updated = { ...t, ...patch } as Tab;
+        if (patch.dirty === true) {
+          updated.preview = false;
+        }
+        return updated;
+      }
+      return t;
+    });
     return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  persistTab: (wsId, tabId) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const next = list.map(t => t.id === tabId ? { ...t, preview: false } as Tab : t);
+    return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  openPreviewTab: (wsId, data) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const existing = list.find(t => t.type === data.type && (t as any).path === data.path);
+    if (existing) {
+      return { activeTab: { ...s.activeTab, [wsId]: existing.id } };
+    }
+
+    const previewTab = list.find(t => t.preview);
+    if (previewTab) {
+      const next = list.map(t => t.id === previewTab.id ? {
+        ...t,
+        type: data.type,
+        path: data.path,
+        title: data.title,
+        liveTitle: undefined,
+        customTitle: false,
+        dirty: false,
+        preview: true
+      } as Tab : t);
+      return {
+        tabs: { ...s.tabs, [wsId]: next },
+        activeTab: { ...s.activeTab, [wsId]: previewTab.id }
+      };
+    }
+
+    const newTab: Tab = {
+      id: crypto.randomUUID(),
+      type: data.type,
+      title: data.title,
+      path: data.path,
+      preview: true
+    } as any;
+    return {
+      tabs: { ...s.tabs, [wsId]: [...list, newTab] },
+      activeTab: { ...s.activeTab, [wsId]: newTab.id }
+    };
   }),
 
   renameTab: (wsId, tabId, title) => set(s => {

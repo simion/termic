@@ -272,6 +272,7 @@ export type TabType = "terminal" | "diff" | "edit";
 export interface BaseTab {
   id: string;
   type: TabType;
+  preview?: boolean;
   /** Default static label (cli name / file basename / "shell N").
    *  When `customTitle` is true this is what the user typed; otherwise
    *  it's the auto-derived fallback shown when the agent hasn't set a

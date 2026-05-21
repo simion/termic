@@ -78,8 +78,8 @@ interface NodeProps {
 }
 
 function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: NodeProps) {
-  const addTab = useApp(s => s.addTab);
-  const setActiveTabId = useApp(s => s.setActiveTabId);
+  const openPreviewTab = useApp(s => s.openPreviewTab);
+  const persistTab = useApp(s => s.persistTab);
   const tabs = useApp(s => s.tabs[wsId] || []);
   const activeTabId = useApp(s => s.activeTab[wsId]);
   const isOpen = expanded.has(rel);
@@ -92,12 +92,15 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: Node
     if (entry.is_dir) {
       toggle(rel);
     } else {
-      const existing = tabs.find(t => t.type === "edit" && t.path === rel);
-      if (existing) {
-        setActiveTabId(wsId, existing.id);
-      } else {
-        addTab(wsId, { id: crypto.randomUUID(), type: "edit", path: rel, title: entry.name });
-      }
+      openPreviewTab(wsId, { type: "edit", path: rel, title: entry.name });
+    }
+  }
+
+  function onDoubleClick() {
+    if (entry.is_dir) return;
+    const existing = tabs.find(t => t.type === "edit" && t.path === rel);
+    if (existing) {
+      persistTab(wsId, existing.id);
     }
   }
 
@@ -107,6 +110,7 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: Node
     <>
       <button
         onClick={onClick}
+        onDoubleClick={onDoubleClick}
         title={rel}
         className={cn(
           "group flex h-[26px] w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 text-left text-[13px] transition-colors duration-150 outline-none select-none",
