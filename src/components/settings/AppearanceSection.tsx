@@ -5,12 +5,15 @@
 import { usePrefs, MONO_FONT_OPTIONS, availableMonoFonts, availableMonoFontsAsync } from "@/store/prefs";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { EDITOR_THEMES } from "@/lib/editorTheme";
 import { AuxTerminal } from "@/components/workspace/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
 
 export function AppearanceSection() {
   const editorFontId    = usePrefs(s => s.editorFontId);
   const setEditorFontId = usePrefs(s => s.setEditorFontId);
+  const editorThemeId    = usePrefs(s => s.editorThemeId);
+  const setEditorThemeId = usePrefs(s => s.setEditorThemeId);
   const terminalFontId  = usePrefs(s => s.terminalFontId);
   const setTerminalFontId = usePrefs(s => s.setTerminalFontId);
   const terminalFontSize = usePrefs(s => s.terminalFontSize);
@@ -36,6 +39,14 @@ export function AppearanceSection() {
         hint="Font for the code editor and diff viewer."
         control={
           <FontSelect value={editorFontId} onChange={setEditorFontId} fonts={fonts} />
+        }
+      />
+
+      <Field
+        label="Editor theme"
+        hint="Syntax color scheme for the code editor and diff viewer."
+        control={
+          <ThemeSelect value={editorThemeId} onChange={setEditorThemeId} />
         }
       />
 
@@ -139,6 +150,20 @@ function FontSelect({ value, onChange, fonts }: {
     >
       {fonts.map(f => (
         <option key={f.id} value={f.id} style={{ fontFamily: f.stack }}>{f.label}</option>
+      ))}
+    </select>
+  );
+}
+
+function ThemeSelect({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[180px]"
+    >
+      {EDITOR_THEMES.map(t => (
+        <option key={t.id} value={t.id}>{t.label}</option>
       ))}
     </select>
   );
