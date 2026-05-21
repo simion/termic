@@ -169,7 +169,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   const tabs: { id: SubTab; label: string }[] = [
     { id: "scripts",  label: isMulti ? "Members & scripts" : "Scripts & Setup" },
     { id: "sandbox",  label: "Sandbox" },
-    { id: "advanced", label: "Advanced" },
+    { id: "advanced", label: "More" },
   ];
 
   return (
