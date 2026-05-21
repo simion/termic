@@ -15,7 +15,6 @@ const LS_YOLO          = "yoloMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
-const LS_TERMINAL_WEIGHT = "terminalFontWeight";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 
 export type ThemeMode = "auto" | "light" | "dark" | "vscode" | "solarized" | "cobalt" | "matrix";
@@ -138,13 +137,13 @@ export function currentColorFgBg(): string {
   return resolved === "light" ? "0;15" : "15;0";
 }
 
-// Curated list of monospace fonts we probe for. JetBrains Mono Variable ships
+// Curated list of monospace fonts we probe for. JetBrains Mono ships
 // locally via @fontsource so it's always present; the rest are detected at
 // runtime via document.fonts.check(). We don't enumerate the system font
 // catalog (WKWebView has no API for it) — this list covers ~95% of what real
 // devs install. Add yours here if missing.
 export const MONO_FONT_OPTIONS: { id: string; label: string; stack: string }[] = [
-  { id: "jetbrains",     label: "JetBrains Mono",        stack: `"JetBrains Mono Variable", "JetBrains Mono", monospace` },
+  { id: "jetbrains",     label: "JetBrains Mono",        stack: `"JetBrains Mono", monospace` },
   { id: "sfmono",        label: "SF Mono",               stack: `"SF Mono", ui-monospace, monospace` },
   { id: "menlo",         label: "Menlo",                 stack: `Menlo, monospace` },
   { id: "monaco",        label: "Monaco",                stack: `Monaco, monospace` },
@@ -310,10 +309,6 @@ interface PrefsState {
   terminalFontId: string;
   /** xterm font size in px. Editor size is currently fixed at 13. */
   terminalFontSize: number;
-  /** Weight for the xterm regular face (100..900). Bumping to 500 closes
-   *  most of the visual gap with native Terminal.app, which renders heavier
-   *  thanks to Core Text + subpixel AA. */
-  terminalFontWeight: number;
   /** Extra pixels added to each xterm cell's advance. xterm.js measures
    *  the natural glyph advance and rounds to integer px, which produces
    *  a tighter cell than iTerm/Terminal.app at the same font. Bumping
@@ -327,7 +322,6 @@ interface PrefsState {
   setEditorFontId:    (id: string) => void;
   setTerminalFontId:  (id: string) => void;
   setTerminalFontSize:(px: number) => void;
-  setTerminalFontWeight:(w: number) => void;
   setTerminalLetterSpacing:(px: number) => void;
   setEditorFontSize:  (px: number) => void;
   setCodeLigatures:   (v: boolean) => void;
@@ -351,12 +345,10 @@ const lsGetBool = (k: string, fallback: boolean) => lsGet(k, fallback ? "1" : "0
 
 const initialEditorFont   = lsGet(LS_EDITOR_FONT, "jetbrains");
 const initialTerminalFont = lsGet(LS_TERMINAL_FONT, "jetbrains");
-const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, 13);
-// Default 500 (Medium), not 400: xterm's WebGL addon rasterizes glyphs
-// through Canvas2D, and WKWebView's Canvas2D path renders noticeably
-// lighter/thinner than Core Text (what iTerm / Terminal.app use). 500
-// closes most of that gap out of the box; users can still drop to 400.
-const initialTerminalWeight = lsGetNum(LS_TERMINAL_WEIGHT, 500);
+// 14px terminal, matching terax-ai and most native terminals.
+const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, 14);
+// 1px of letter-spacing — a touch of breathing room. xterm packs glyphs
+// snug by default; +1px reads more natural (shown as "Default" in the picker).
 const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, 1)));
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, 13);
 const initialLigatures    = lsGetBool(LS_LIGATURES, true);
@@ -381,7 +373,6 @@ export const usePrefs = create<PrefsState>(set => ({
   editorFontId: initialEditorFont,
   terminalFontId: initialTerminalFont,
   terminalFontSize: initialTerminalSize,
-  terminalFontWeight: initialTerminalWeight,
   terminalLetterSpacing: initialTerminalLetterSpacing,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
@@ -400,10 +391,6 @@ export const usePrefs = create<PrefsState>(set => ({
   setTerminalFontSize: (px) => {
     try { localStorage.setItem(LS_TERMINAL_SIZE, String(px)); } catch {}
     set({ terminalFontSize: px });
-  },
-  setTerminalFontWeight: (w) => {
-    try { localStorage.setItem(LS_TERMINAL_WEIGHT, String(w)); } catch {}
-    set({ terminalFontWeight: w });
   },
   setTerminalLetterSpacing: (px) => {
     // Clamp to non-negative integer. Fractional values misalign the
@@ -508,15 +495,13 @@ export function applyEditorFont(id: string) {
 export const currentEditorStack   = () => stackFor(usePrefs.getState().editorFontId);
 
 /** Terminal font stack with a bundled fallback injected before the
- *  generic `monospace`. JetBrains Mono Variable ships with the app, is
- *  variable-weight (so it honors any `terminalFontWeight`), and covers
- *  glyphs many monospace fonts lack — notably the Romanian comma-below
- *  ș/ț (U+0219/U+021B). Without it, a glyph missing from the chosen
- *  font falls back to the OS `monospace`, which often has no 500 weight
- *  and renders those characters thinner than the surrounding text. */
+ *  generic `monospace`. JetBrains Mono (static 400/700 masters) ships
+ *  with the app and covers glyphs many monospace fonts lack — notably
+ *  the Romanian comma-below ș/ț (U+0219/U+021B). Without it, a glyph
+ *  missing from the chosen font falls back to the OS `monospace`. */
 export const currentTerminalStack = () => {
   const stack = stackFor(usePrefs.getState().terminalFontId);
-  return stack.replace(/\bmonospace\s*$/, '"JetBrains Mono Variable", monospace');
+  return stack.replace(/\bmonospace\s*$/, '"JetBrains Mono", monospace');
 };
 
 // Apply editor font at module load so the first paint uses the right font.
