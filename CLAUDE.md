@@ -179,15 +179,6 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 - **Right-click contextmenu** — `window.addEventListener("contextmenu", e => e.preventDefault())` in `main.tsx`.
 - **App icon missing in dev** — dev runs raw binary, not `.app` bundle. Custom icon appears only after `npm run tauri:build`.
 
-## Triaging a bug report
-
-1. Cross-reference the screenshot/repro against the relevant component.
-2. Blank/unresponsive terminal → check `pty_spawn` arg shape and `onPtyData` payload unpacking first.
-3. Drag dead → verify capability present + full rebuild picked it up.
-4. Missing syntax highlight → add lang pack + extend `langForPath` in `EditorPane`.
-5. Click dead → likely a `data-tauri-drag-region` parent eating the event. Mark the container `="false"`.
-6. UI feels slow/freezes → check whether a Tauri command is sync; convert to `async fn + spawn_blocking`.
-
 ## What NOT to do without asking
 
 - Switch the editor away from CodeMirror 6 (slower in WKWebView, verified).
@@ -199,11 +190,3 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 - Make any IO-heavy Tauri command synchronous (freezes the Mac).
 - Sandbox the aux terminal, setup script, run script, or archive script. These are explicit user-authored shell with the user's full reach by design; only the agent CLI's PTY is the threat model.
 - Expose a mutator for `Workspace.sandbox_enabled` that doesn't SIGKILL the matching live PTYs. A running process holds its OLD seatbelt permissions — the kill is the security boundary, not a UX nicety.
-
-## Project values
-
-- **Performance.** A 1-frame terminal flicker, a >100ms editor open, an unnecessary sidebar re-render — all real regressions, measured before merge.
-- **Pragmatism.** Ship the fix that works now; iterate.
-- **Honest reports.** Always say how to verify (⌘+R, quit + relaunch, etc.). Never claim untested success.
-- **Direct chat.** No filler. Push back when something's wrong instead of nodding.
-- **Polish details when noticed** — hide chrome that doesn't apply; the rendering and chrome are part of the product, not afterthoughts.
