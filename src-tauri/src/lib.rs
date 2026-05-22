@@ -293,10 +293,20 @@ pub struct CreateWorkspaceArgs {
 
 // ───────────────────────────── paths ─────────────────────────────
 
+/// Top-level directory name for all of termic's on-disk data —
+/// `<data_local_dir>/<APP_DIR>/` (projects, settings, workspace
+/// metadata) and `~/<APP_DIR>/` (worktrees, auto-created host repos).
+/// Debug builds (`tauri dev`) use a separate `termic_dev` tree so
+/// day-to-day development can't read or clobber the release app's
+/// data; release builds (`tauri build`) use `termic`. Note the
+/// frontend's localStorage prefs are already dev/prod-separate on
+/// their own (different webview origin: localhost vs asset protocol).
+const APP_DIR: &str = if cfg!(debug_assertions) { "termic_dev" } else { "termic" };
+
 fn data_dir() -> Result<PathBuf> {
     let p = dirs::data_local_dir()
         .ok_or_else(|| anyhow!("no data dir"))?
-        .join("termic");
+        .join(APP_DIR);
     fs::create_dir_all(&p)?;
     Ok(p)
 }
@@ -310,7 +320,7 @@ fn workspaces_dir() -> Result<PathBuf> {
     Ok(p)
 }
 fn worktrees_base() -> Result<PathBuf> {
-    let p = dirs::home_dir().ok_or_else(|| anyhow!("no home"))?.join("termic/workspaces");
+    let p = dirs::home_dir().ok_or_else(|| anyhow!("no home"))?.join(APP_DIR).join("workspaces");
     fs::create_dir_all(&p)?;
     Ok(p)
 }
@@ -836,7 +846,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
     let pb: PathBuf = if trimmed_path.is_empty() {
         let projects_root = dirs::home_dir()
             .ok_or_else(|| "no home dir".to_string())?
-            .join("termic/projects");
+            .join(APP_DIR).join("projects");
         fs::create_dir_all(&projects_root).map_err(|e| e.to_string())?;
         let target = projects_root.join(&slug);
         if target.exists() {

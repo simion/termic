@@ -18,18 +18,20 @@ const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 
-export type ThemeMode = "auto" | "light" | "dark" | "vscode" | "solarized" | "cobalt" | "matrix";
+export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
  *  never returned; it gets mapped to light/dark based on OS preference. */
-export type ResolvedTheme = "light" | "dark" | "vscode" | "solarized" | "cobalt" | "matrix";
+export type ResolvedTheme = "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
 
-const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "vscode", "solarized", "cobalt", "matrix"];
+const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix"];
 /** Defensive parse: localStorage may hold a theme id that's been
- *  removed in a later version. Fall back to "vscode" (the new default
- *  Dark) instead of letting the unknown string flow through and
- *  silently land on the @theme default. */
+ *  removed in a later version. Fall back to "claude" (the default
+ *  theme) instead of letting the unknown string flow through and
+ *  silently land on the @theme default. NOTE: this also migrates the
+ *  old "vscode" id for free — that theme was renamed to "claude", and
+ *  any stale "vscode" string lands here and resolves to it. */
 function parseThemeMode(raw: string): ThemeMode {
-  return (VALID_MODES as readonly string[]).includes(raw) ? (raw as ThemeMode) : "vscode";
+  return (VALID_MODES as readonly string[]).includes(raw) ? (raw as ThemeMode) : "claude";
 }
 
 /** xterm theme objects keyed by resolved palette. Each must define enough
@@ -48,8 +50,8 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
     brightBlue: "#7fb1ff", brightMagenta: "#d7a4ff", brightCyan: "#67e8f9", brightWhite: "#ffffff",
   },
-  vscode: {
-    // VS Code Dark (Visual Studio) palette updated with cleaner Terax colors
+  claude: {
+    // "Claude" — terax-ai's warm-charcoal palette (formerly id "vscode").
     background: "#1f1e1d",
     foreground: "#f5f4ee",
     cursor: "#d97757",
@@ -355,7 +357,7 @@ const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, 14);
 const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, 1)));
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, 13);
 const initialLigatures    = lsGetBool(LS_LIGATURES, true);
-const initialTheme        = parseThemeMode(lsGet(LS_THEME, "vscode"));
+const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
 const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 // WIP feature - the "agent has settled" heuristic produces false
@@ -475,7 +477,7 @@ export function applyTheme(mode: ThemeMode) {
   const html = document.documentElement;
   html.classList.toggle("light",     resolved === "light");
   html.classList.toggle("dark",      resolved === "dark");
-  html.classList.toggle("vscode",    resolved === "vscode");
+  html.classList.toggle("claude",    resolved === "claude");
   html.classList.toggle("solarized", resolved === "solarized");
   html.classList.toggle("cobalt",    resolved === "cobalt");
   html.classList.toggle("matrix",    resolved === "matrix");

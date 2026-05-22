@@ -23,7 +23,12 @@ export function UpdaterBanner() {
   // against). With no mock update injected, claim the slot with a DEV
   // marker so a `tauri dev` window is unmistakable. VITE_MOCK_UPDATE
   // populates `update`, in which case we fall through to the real pill.
-  if (import.meta.env.DEV && !update) {
+  // Opt out of the marker with VITE_HIDE_DEV_PILL=1 (e.g. for screen
+  // recordings / screenshots where the badge is just noise).
+  const hideDevPill =
+    import.meta.env.VITE_HIDE_DEV_PILL === "1" ||
+    import.meta.env.VITE_HIDE_DEV_PILL === "true";
+  if (import.meta.env.DEV && !update && !hideDevPill) {
     return (
       <span
         title="Development build — not a released version."

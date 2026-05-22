@@ -788,30 +788,9 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     out.push_str("(allow network-inbound  (local  ip \"localhost:*\"))\n");
 
     let agent = agent_override.unwrap_or(&workspace.cli);
-    if agent == "agy" || agent == "gemini" {
-        out.push_str("\n;; --- Antigravity/Gemini direct connection bypass ---\n");
-        let bypass_hosts = [
-            "daily-cloudcode-pa.googleapis.com",
-            "cloudcode-pa.googleapis.com",
-            "generativelanguage.googleapis.com",
-            "oauth2.googleapis.com",
-            "accounts.google.com",
-        ];
-        use std::net::ToSocketAddrs;
-        for host in &bypass_hosts {
-            if let Ok(addrs) = format!("{}:443", host).to_socket_addrs() {
-                for addr in addrs {
-                    let ip = addr.ip();
-                    out.push_str(&format!(
-                        "(allow network-outbound (remote ip \"{}:443\"))\n",
-                        ip
-                    ));
-                    dlog(&format!("[sandbox] allowed direct IP bypass for {}: {}", host, ip));
-                }
-            } else {
-                dlog(&format!("[sandbox] failed to resolve IP bypass for {}", host));
-            }
-        }
+    if agent == "agy" {
+        out.push_str("\n;; --- Antigravity: allow direct outbound connections to Google APIs ---\n");
+        out.push_str("(allow network-outbound)\n");
     }
 
     Ok(out)
@@ -1015,6 +994,10 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
             r"^oauth2\.googleapis\.com$".into(),
             r"^accounts\.google\.com$".into(),
             r"^cloudcode-pa\.googleapis\.com$".into(),
+            r"^lh3\.googleusercontent\.com$".into(),
+            r"^.+\.googleusercontent\.com$".into(),
+            r"^antigravity-unleash\.goog$".into(),
+            r"^.+\.antigravity-unleash\.goog$".into(),
         ]),
         "codex" => hosts.extend([
             r"^api\.openai\.com$".into(),
@@ -1035,6 +1018,10 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
             r"^accounts\.google\.com$".into(),
             r"^cloudcode-pa\.googleapis\.com$".into(),
             r"^.+\.google\.com$".into(),
+            r"^lh3\.googleusercontent\.com$".into(),
+            r"^.+\.googleusercontent\.com$".into(),
+            r"^antigravity-unleash\.goog$".into(),
+            r"^.+\.antigravity-unleash\.goog$".into(),
         ]),
         _ => { /* custom agents: user must list hosts explicitly */ }
     }

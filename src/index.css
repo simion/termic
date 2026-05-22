@@ -120,27 +120,27 @@
     color-scheme: light;
   }
 
-  /* VS Code Dark — modeled after Microsoft's "Dark (Visual Studio)"
-     theme. Sits between our default Dark (near-black #0a0a0a, the
-     "ultra dark" end of the spectrum) and Light: the editor bg is
-     #1e1e1e, sidebar one stop up to #252526, tabs/panels at #2d2d30 -
-     the same 4-stop ladder VS Code uses. Same terracotta accent as
-     Dark so the brand identity carries; only the surface family
-     changes. Good pick for users who find #0a0a0a too contrasty for
-     long sessions but still want a dark UI. */
-  html.vscode {
-    --color-bg:          #1f1e1d;       /* Terax Claude main background (warm neutral charcoal) */
-    --color-bg-1:        #1a1918;       /* Terax Claude sidebar background (deeper warm charcoal) */
-    --color-bg-2:        #262624;       /* Terax Claude secondary/muted/accent (warm gray-charcoal) */
-    --color-bg-3:        #2f2d2a;       /* Slightly lighter elevated warm gray */
-    --color-fg:          #f5f4ee;       /* Terax Claude primary text (warm off-white/cream) */
-    --color-fg-dim:      #b0a89a;       /* Terax Claude muted-foreground (warm clay-gray) */
-    --color-fg-faint:    #64615a;       /* Deep muted warm gray for secondary icons/text */
-    --color-border:      rgba(245, 244, 238, 0.08); /* Translucent thin borders */
-    --color-border-soft: rgba(245, 244, 238, 0.04); /* Translucent hairline borders */
-    --color-hover:       rgba(245, 244, 238, 0.04); /* Subtle hover overlay */
-    --color-sel:         rgba(176, 168, 154, 0.15); /* Translucent selection highlight */
-    --color-accent:      #d97757;       /* same brown as Dark */
+  /* "Dark" — termic's default theme, matched to terax-ai's "Claude"
+     palette (warm charcoal). The defining move: chrome surfaces
+     (sidebar / title bar / tab strip / right panel — all bound to
+     --color-bg-1) sit ONE STOP LIGHTER than the main content area
+     (--color-bg), the same elevation direction every other dark
+     theme here uses and exactly what terax does. The previous values
+     had the sidebar (#1a1918) DARKER than the main area (#1f1e1d),
+     inverting the hierarchy so it read nothing like terax. */
+  html.claude {
+    --color-bg:          #1f1e1d;       /* main content area (terax `background`) */
+    --color-bg-1:        #262624;       /* chrome: sidebar / title bar / tabs (terax `card`) */
+    --color-bg-2:        #2a2926;       /* nested cards / badges (terax `secondary`/`muted`) */
+    --color-bg-3:        #2f2d2a;       /* hover + active surfaces (terax `accent`) */
+    --color-fg:          #f5f4ee;       /* primary text (terax `foreground`) */
+    --color-fg-dim:      #b0a89a;       /* muted text (terax `mutedForeground`) */
+    --color-fg-faint:    #6c685f;       /* faint icons / secondary text */
+    --color-border:      rgba(245, 244, 238, 0.10); /* terax `border` */
+    --color-border-soft: rgba(245, 244, 238, 0.05); /* hairline borders */
+    --color-hover:       rgba(245, 244, 238, 0.04); /* subtle hover overlay */
+    --color-sel:         rgba(217, 119, 87, 0.22);  /* terax accent-tinted selection */
+    --color-accent:      #d97757;       /* terax `primary` */
     --color-accent-soft: rgba(217, 119, 87, 0.22);
     --color-accent-deep: #b35e3f;
     color-scheme: dark;

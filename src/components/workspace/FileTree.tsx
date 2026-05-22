@@ -116,7 +116,12 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: Node
           "group flex h-[26px] w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 text-left text-[13px] transition-colors duration-150 outline-none select-none",
           isActive
             ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
-            : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+            // Idle rows: a NEUTRAL dimmed foreground (fg at 85%), not
+            // --color-fg-dim. fg-dim is a warm clay tone reserved for
+            // genuine muted text; on a long file list it reads as
+            // "brown". terax dims its file tree the same way — the
+            // plain foreground knocked back, hue untouched.
+            : "text-[var(--color-fg)]/85 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         )}
         style={{ paddingLeft: 6 + depth * 12 }}
       >

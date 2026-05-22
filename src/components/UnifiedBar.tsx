@@ -332,7 +332,7 @@ function ThemePicker({
     // compatibility with existing localStorage values.
     { id: "auto",      label: "System",         icon: Monitor },
     { id: "light",     label: "Light",          icon: Sun },
-    { id: "vscode",    label: "Dark",           icon: Moon },
+    { id: "claude",    label: "Claude",         icon: Moon },
     { id: "dark",      label: "Dark+",          icon: Code2 },
     { id: "solarized", label: "Solarized Dark", icon: Sunrise },
     { id: "cobalt",    label: "Cobalt",         icon: Droplet },
