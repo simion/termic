@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.5.0",
+      "date": "2026-05-22",
+      "summary": "Broadcast commands to multiple agents concurrently with the new Megaphone dialog (⇧⌘B), explore codebases with a premium file explorer featuring Sublime-style preview tabs, and customize your editor using 8 syntax themes and razor-sharp static typography. Also resolves a macOS sandbox crash and connection blocks for the Antigravity agent, while adding standard Google hosts to the baseline sandbox allowlist for Gemini and Antigravity."
+    },
+    {
       "version": "0.4.6",
       "date": "2026-05-21",
       "summary": "Sharper keyboard focus for terminal tabs — closing a tab keeps focus in the same pane, new tabs grab focus on spawn, and ⌘T opens the new-tab menu. Also fixes a doubled border on the collapsed Setup/Run footer."
