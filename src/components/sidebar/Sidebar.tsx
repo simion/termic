@@ -195,7 +195,7 @@ export function Sidebar() {
       </nav>
 
       {/* Projects section */}
-      <div className={cn(compact ? "px-1.5 py-1.5" : "px-2 py-2")}>
+      <div className={cn("flex-1 overflow-y-auto min-h-0", compact ? "px-1.5 py-1.5" : "px-2 py-2")}>
         <div className={cn(
           "flex items-center justify-between text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]",
           compact ? "flex-col gap-1.5 py-1" : "px-2 py-1",
@@ -404,15 +404,17 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Bottom group — pinned to the sidebar's base by a SINGLE
-          `mt-auto`. The update card (when present) sits flush above the
-          footer with no gap; two `mt-auto` siblings would split the
-          slack and leave the card floating mid-sidebar. The card
-          renders nothing in compact mode (the unified-bar pill covers
-          that) or when there's no pending update / unseen release. */}
-      <div className="mt-auto">
-        <UpdateCard />
+      {/* UpdateCard floats absolutely at the bottom-left of the sidebar,
+          stacked above project rows and the footer so it remains visible
+          regardless of scroll position. Renders nothing in compact mode
+          or when there's no pending update / unseen release. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-[44px] z-20">
+        <div className="pointer-events-auto">
+          <UpdateCard />
+        </div>
+      </div>
 
+      <div>
         {/* Footer */}
         <div className={cn(
           "flex border-t border-[var(--color-border-soft)] p-2 gap-1",
