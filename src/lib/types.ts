@@ -24,9 +24,6 @@ export interface Project {
    *  the workspace path + agent config dirs + TMPDIR baked into the
    *  default. `$HOME` and `$WORKSPACE` are substituted at render time. */
   sandbox_rw_paths?: string[];
-  /** Extra deny carve-outs on top of the secret-default list
-   *  (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.kube, Keychains, …). */
-  sandbox_deny_paths?: string[];
   /** Extra POSIX-regex hostname allowlist entries appended to the
    *  per-CLI defaults the proxy enforces. Format mirrors tinyproxy. */
   sandbox_allowed_hosts?: string[];
@@ -113,7 +110,6 @@ export interface Workspace {
    *  project's defaults later WILL NOT reach back into existing
    *  workspaces - matches the immutability promise of sandbox_enabled. */
   sandbox_rw_paths?: string[];
-  sandbox_deny_paths?: string[];
   sandbox_allowed_hosts?: string[];
   /** Multi-repo composition. Empty for single-repo workspaces. */
   composition?: WorkspaceMember[];
@@ -138,7 +134,6 @@ export interface CreateMultiArgs {
   id?: string;
   sandbox_enabled?: boolean;
   sandbox_rw_paths?: string[];
-  sandbox_deny_paths?: string[];
   sandbox_allowed_hosts?: string[];
 }
 
@@ -161,7 +156,6 @@ export interface CreateWorkspaceArgs {
    *  defaults, the user edits, the final shape lands here. Unset =
    *  Rust falls back to the project's defaults verbatim. */
   sandbox_rw_paths?: string[];
-  sandbox_deny_paths?: string[];
   sandbox_allowed_hosts?: string[];
 }
 
@@ -220,7 +214,6 @@ export interface Settings {
    *  a workspace is created with sandbox enabled; pre-filled into the
    *  Edit Sandbox dialog when the user enables the cage from scratch. */
   sandbox_default_rw_paths?: string[];
-  sandbox_default_deny_paths?: string[];
   sandbox_default_allowed_hosts?: string[];
 }
 
@@ -337,3 +330,17 @@ export interface EditTab extends BaseTab {
 }
 
 export type Tab = TerminalTab | DiffTab | EditTab;
+
+/** Mirror of `repo_config::RepoConfig` (src-tauri/src/repo_config.rs).
+ *  Parsed from the repo-root `.termic.yaml` — committed, team-shared
+ *  behavior config (scripts, preview, sandbox allow-lists), also read
+ *  by the standalone `termic` CLI. */
+export interface RepoConfig {
+  version: number;
+  scripts: { setup: string; run: string; archive: string; preview_url: string; files_to_copy: string[] };
+  sandbox: {
+    enabled_by_default: boolean;
+    allowed_hosts: string[];
+    allowed_paths: string[];
+  };
+}

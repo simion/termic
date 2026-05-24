@@ -1,20 +1,23 @@
 // Left sidebar: traffic-light spacer, toggle, primary nav, projects tree, footer.
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
-import { useRef, useState } from "react";
-import { useApp } from "@/store/app";
+import { useEffect, useRef, useState } from "react";
+import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Check, Bell, Bug, Mail, Shield } from "lucide-react";
+import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Check, Bell, Bug, Mail, Shield, X } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { agentDisplayName } from "@/lib/agents";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
+import { requestCloseTab } from "@/lib/closeTab";
 import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, openPath, projectReorder } from "@/lib/ipc";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
+import type { Workspace, TerminalTab } from "@/lib/types";
 
 export function Sidebar() {
   const compact = useApp(s => s.compactSidebar);
@@ -74,8 +77,9 @@ export function Sidebar() {
   const isLoaded = (wsId: string) =>
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.ptyId);
 
-  // Inline rename state: `{ kind: "ws"|"proj", id }`. Only one at a time.
-  const [renaming, setRenaming] = useState<{ kind: "ws" | "proj"; id: string; value: string } | null>(null);
+  // Inline rename state for PROJECTS only. Workspace rename is managed
+  // inside WorkspaceRow so it can co-exist with per-tab rename state.
+  const [renaming, setRenaming] = useState<{ kind: "proj"; id: string; value: string } | null>(null);
   // Project whose `+` dropdown is currently open. Used to keep the row
   // visually "hovered" (bg + Cog visible) while the menu is open;
   // otherwise the menu trigger looks like it un-selected its parent.
@@ -164,13 +168,12 @@ export function Sidebar() {
 
   async function commitRename() {
     if (!renaming) return;
-    const { kind, id, value } = renaming;
+    const { id, value } = renaming;
     setRenaming(null);
     const trimmed = value.trim();
     if (!trimmed) return;
     try {
-      if (kind === "ws") await workspaceRename(id, trimmed);
-      else await projectRename(id, trimmed);
+      await projectRename(id, trimmed);
       await loadAll();
     } catch (e) { console.error("rename failed", e); }
   }
@@ -269,11 +272,10 @@ export function Sidebar() {
                       document.addEventListener("pointercancel", onUp);
                     }}
                     className={cn(
-                      "group flex items-center justify-between rounded-md text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg)] hover:bg-[var(--color-hover)] cursor-pointer transition-colors",
+                      "group flex items-center justify-between rounded-md text-[12px] font-semibold uppercase tracking-[0.06em] hover:bg-[var(--color-hover)] cursor-pointer transition-colors",
+                      wsList.length === 0 ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg)]",
                       menuOpenProjectId === p.id && "bg-[var(--color-hover)]",
-                      compact ? "px-0 py-1 justify-center" : "px-2 py-1.5",
-                      // Accent-tinted while being dragged so it pops
-                      // visually as the user moves it through the list.
+                      compact ? "px-0 py-1 justify-center" : "pl-2 pr-0 py-1.5",
                       dragProjectId === p.id && "bg-[var(--color-accent)]/15 text-[var(--color-accent)]",
                     )}
                   >
@@ -313,6 +315,7 @@ export function Sidebar() {
                                 else if (e.key === "Escape") setRenaming(null);
                               }}
                               onClick={e => e.stopPropagation()}
+                              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
                               className="rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[13.5px] outline-none w-full"
                             />
                           ) : (
@@ -324,7 +327,7 @@ export function Sidebar() {
                             so the row stays clean; New-workspace stays
                             visible because it's the headline action. */}
                         <div className="flex items-center gap-0.5">
-                          <Tip content="Repo settings">
+                          <Tip content="Project settings">
                             <button
                               className={cn(
                                 "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] transition-opacity",
@@ -347,7 +350,7 @@ export function Sidebar() {
                           <DropdownRoot
                             onOpenChange={(o) => setMenuOpenProjectId(o ? p.id : null)}
                           >
-                            <Tip content="New…">
+                            <Tip content="New workspace for this project">
                               <DropdownTrigger asChild>
                                 <button
                                   onClick={e => e.stopPropagation()}
@@ -392,287 +395,9 @@ export function Sidebar() {
                   </div>
                 )}
 
-                {/* Repo workspaces (the project's live checkout, no worktree)
-                    rendered first as a pinned row so they're visually separate
-                    from per-branch worktree workspaces. Hidden entirely when
-                    the project header is collapsed. */}
-                {!collapsed && [...wsList].sort((a, b) => Number(!!b.is_repo_root) - Number(!!a.is_repo_root)).map(w => {
-                  const isRenaming = renaming?.kind === "ws" && renaming.id === w.id;
-                  const unread = isUnread(w.id);
-                  const workDone = isWorkDone(w.id);
-                  const attention = needsAttention(w.id);
-                  const loaded = isLoaded(w.id);
-                  const asleep = !loaded && !unread && activeWs !== w.id;
-                  const isRepo = !!w.is_repo_root;
-                  return (
-                    <Tip key={w.id} content={compact ? `${w.name} · ${w.cli}${isRepo ? " (repo)" : ""}${asleep ? " · asleep" : ""}` : ""}>
-                      <div
-                        onDoubleClick={() => !compact && setRenaming({ kind: "ws", id: w.id, value: w.name })}
-                        onClick={() => { if (!isRenaming) setActive(w.id); }}
-                        className={cn(
-                          "group relative flex w-full items-center gap-2 rounded-md text-[13px] truncate cursor-pointer",
-                          compact ? "justify-center py-1.5 px-0" : "py-1.5 pl-5 pr-1.5",
-                          unread ? "font-semibold text-[var(--color-fg)]" : "font-medium",
-                          activeWs === w.id
-                            ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
-                            : unread
-                              ? "hover:bg-[var(--color-hover)]"
-                              : asleep
-                                ? "text-[var(--color-fg-faint)] opacity-70 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg-dim)] hover:opacity-100"
-                                : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-                        )}
-                      >
-                        {/* The icon's color transition (faded → full brand)
-                            is the unread signal now — the old red dot was
-                            redundant and made the sidebar look alarming.
-                            Keep ONLY for compact mode where there's no
-                            label/icon swap visible at a glance — small
-                            accent dot remains as the only state cue. */}
-                        {unread && compact && (
-                          <span className="absolute right-1.5 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
-                        )}
-                        {/* Workspace agent icon — color carries state.
-                            DEFAULT: muted/faded (text-fg-faint) so the
-                                     sidebar reads as calm during normal use.
-                            ACTIVE:  full CLI brand color (you're looking at
-                                     it, color reinforces "this is the one").
-                            UNREAD:  full CLI brand color (agent has output
-                                     waiting — the color transition itself
-                                     is the attention signal, no separate
-                                     red dot needed).
-                            ASLEEP:  extra opacity drop on top of muted.
-                            Replaces the previous always-colored icon + red
-                            dot combo, which painted the sidebar like a
-                            Christmas tree and trained you to ignore it. */}
-                        {/* Three-state icon coloring:
-                              UNREAD   → full CLI brand color (eye-grab)
-                              ACTIVE   → bright fg (no brand color, just
-                                         not faded) — so the active row
-                                         doesn't look dead, especially
-                                         REPO rows which have no name
-                                         label to carry the active feel.
-                              ELSE     → faded fg-faint (calm)
-                            ASLEEP layers extra opacity drop. */}
-                        <span className={cn(
-                          "shrink-0 transition-colors",
-                          // CLI icon stays neutral regardless of unread
-                          // / work-done / attention state — those
-                          // signals already show up on the row itself
-                          // (green check, yellow bell, brighter row bg).
-                          // Coloring the icon on activity flickered
-                          // every output burst and made REPO ROOT rows
-                          // look "always alerting." Two states only:
-                          // active = white, inactive = faded.
-                          activeWs === w.id
-                            ? "text-[var(--color-fg)]"
-                            : "text-[var(--color-fg-faint)]",
-                          asleep && "opacity-50",
-                        )}>
-                          {/* Workspace-row CLI icon is one step smaller
-                              than the nav-rail icons (h-4 vs h-[18px])
-                              so it doesn't dominate the label next to
-                              compact 13px row text. Compact mode keeps
-                              the bigger 24px since the icon IS the row. */}
-                          <CliIcon cli={w.cli} className={compact ? "h-6 w-6" : "h-4 w-4"} />
-                        </span>
-                        {!compact && (
-                          isRenaming ? (
-                            // Sized to fit the row (h-5, no extra py) so the row's
-                            // vertical rhythm doesn't jump when editing.
-                            <input
-                              autoFocus
-                              onFocus={e => e.target.select()}
-                              value={renaming!.value}
-                              onChange={e => setRenaming({ ...renaming!, value: e.target.value })}
-                              onBlur={commitRename}
-                              onKeyDown={e => {
-                                if (e.key === "Enter") commitRename();
-                                else if (e.key === "Escape") setRenaming(null);
-                                e.stopPropagation();
-                              }}
-                              onClick={e => e.stopPropagation()}
-                              className="h-5 min-w-0 flex-1 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1.5 py-0 text-[13px] leading-none outline-none"
-                            />
-                          ) : (
-                            <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                              {/* Repo-checkout workspace name is just a
-                                  duplicate of the project name shown right
-                                  above — render the REPO chip alone as the
-                                  row's label instead. Worktrees still show
-                                  their (distinct) branch-derived name. */}
-                              {!isRepo && <span className="truncate">{w.name}</span>}
-                              {isRepo && (
-                                <span className={cn(
-                                  // inline-flex + items-center pins the
-                                  // chip's content to its own vertical
-                                  // center instead of inheriting the
-                                  // row's text baseline (which sat the
-                                  // 10px caps slightly above the CLI
-                                  // icon's optical center).
-                                  //
-                                  // Active vs inactive uses BOTH a bg-
-                                  // and a border-color shift so the chip
-                                  // pops at-a-glance — when several REPO
-                                  // ROOT rows stack in the sidebar (one
-                                  // per agent), the previous "same bg,
-                                  // only text-tone differs" was too
-                                  // subtle.
-                                  "inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider shrink-0 leading-none",
-                                  // The chip only distinguishes AWAKE vs ASLEEP —
-                                  // the row's own bg/border already carries the
-                                  // "clicked / active" cue, so doubling up on the
-                                  // chip just made the active row shout while
-                                  // burying the awake-but-inactive distinction
-                                  // (which is the one that actually needs to
-                                  // pop next to dim sleeping rows).
-                                  asleep
-                                    ? "bg-[var(--color-bg-2)] text-[var(--color-fg-faint)]"
-                                    : "bg-[var(--color-bg-3)] text-[var(--color-fg)]",
-                                )}>
-                                  repo root
-                                </span>
-                              )}
-                              {/* Sandbox indicator moved into the trailing
-                                  action button below — the icon IS the
-                                  control, so there's exactly one shield
-                                  per row (filled-green when caged, dim
-                                  outline when open). */}
-                              {/* Work-done check — small accent ✓ when the
-                                  agent has settled (output stopped). Gated
-                                  on `settledHighlight` pref (Settings →
-                                  General). Sits after the label so it
-                                  reads as a status suffix, not a control. */}
-                              {/* Attention takes precedence over work-done:
-                                  the agent is BLOCKED on your input (yes/no,
-                                  approve, answer prompt). Bell + warning
-                                  color reads as more urgent than the calm
-                                  green ✓. */}
-                              {attention && (
-                                <Tip content="Agent needs your input">
-                                  <span className="shrink-0 text-[var(--color-warn)]">
-                                    <Bell className="h-4 w-4" strokeWidth={2.5} />
-                                  </span>
-                                </Tip>
-                              )}
-                              {workDone && !attention && (
-                                <Tip content="Agent settled — waiting on you">
-                                  <span className="shrink-0 text-[var(--color-ok)]">
-                                    <Check className="h-4 w-4" strokeWidth={3} />
-                                  </span>
-                                </Tip>
-                              )}
-                              {/* Moon comes AFTER the label/chip so the
-                                  asleep indicator trails everything else —
-                                  reads as a state suffix, not a leading
-                                  control between the icon and the name. */}
-                              {asleep && (
-                                <Tip content="Asleep — click to relaunch" delay={1000}>
-                                  <span className="shrink-0 text-[var(--color-fg-faint)] opacity-60">
-                                    <Moon className="h-3.5 w-3.5" />
-                                  </span>
-                                </Tip>
-                              )}
-                            </span>
-                          )
-                        )}
-                        {!compact && !isRenaming && (
-                          // Trailing actions: each button gets a fixed
-                          // 22x22 slot (flex-centered) so the icons sit
-                          // at identical X/Y regardless of whether the
-                          // glyph is a thin Plus, full Shield, or
-                          // filled Shield. Without the slot, lucide's
-                          // varying stroke widths produced "optical
-                          // misalignment" across rows.
-                          <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                            {/* Archive: hover-only. Sits to the LEFT of
-                                the sandbox indicator so the shield is
-                                the always-visible rightmost anchor and
-                                rows don't visually shift between hover/
-                                non-hover states. */}
-                            <Tip content="Archive workspace">
-                              <button
-                                className="flex h-[22px] w-[22px] items-center justify-center rounded text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)] group-hover:opacity-100 transition-opacity"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  const ok = await useUI.getState().askConfirm({
-                                    title: `Archive "${w.name}"?`,
-                                    // Repo-root entries aren't worktrees -
-                                    // archiving just drops the Termic row;
-                                    // the actual checkout on disk is left
-                                    // alone. Worktree workspaces get the
-                                    // full warning (their directory + its
-                                    // contents really are removed).
-                                    message: w.is_repo_root
-                                      ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched — you can re-open it any time. Any agent running here will be terminated."
-                                      : (w.composition?.length ?? 0) > 0
-                                      ? `Branches stay in git — you can recreate the workspace later. This removes: the host worktree + every member worktree (${w.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts (those live repos are NOT touched). Any running agent will be terminated.`
-                                      : "The branch stays in git — you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent. Can't be undone from inside Termic.",
-                                    confirmLabel: w.is_repo_root ? "Remove entry" : "Archive",
-                                    destructive: true,
-                                    checkbox: w.is_repo_root
-                                      ? undefined
-                                      : (w.composition?.length ?? 0) > 0
-                                      ? {
-                                          label: "Delete the git branches",
-                                          defaultValue: false,
-                                        }
-                                      : {
-                                          label: "Delete the git branch:",
-                                          branchName: w.branch || undefined,
-                                          defaultValue: false,
-                                        },
-                                  });
-                                  const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
-                                  const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
-                                  if (!confirmed) return;
-                                  // Show a blocking overlay while the
-                                  // archive runs — fs::remove_dir_all on a
-                                  // .venv / node_modules takes seconds and
-                                  // the user needs to know it's working.
-                                  const { setBusy } = useUI.getState();
-                                  setBusy(`Archiving "${w.name}"…`);
-                                  try {
-                                    await workspaceArchive(w.id, deleteBranch);
-                                    if (activeWs === w.id) setActive(null);
-                                    await loadAll();
-                                  } catch (err) { console.error(err); }
-                                  finally { setBusy(null); }
-                                }}
-                              ><Archive className="h-4 w-4" /></button>
-                            </Tip>
-                            {/* Sandbox indicator — always visible, rightmost
-                                anchor of the row. Click opens the editor.
-                                Filled green = caged, dim outline = open.
-                                No opacity dance: faint stays faint, looks
-                                stable instead of "loading". Shown on
-                                repo-root workspaces too — the kernel
-                                cage is just as applicable to a main
-                                checkout as to a worktree. */}
-                            <Tip content={w.sandbox_enabled ? "Sandbox on" : "Sandbox off"}>
-                              <button
-                                className={cn(
-                                  "flex h-[22px] w-[22px] items-center justify-center rounded transition-colors hover:bg-[var(--color-bg-3)]",
-                                  w.sandbox_enabled
-                                    ? "text-[var(--color-ok)]"
-                                    : "text-[var(--color-fg-faint)]",
-                                )}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  useUI.getState().openSandbox(w.id);
-                                }}
-                              >
-                                <Shield
-                                  className="h-[15px] w-[15px]"
-                                  fill={w.sandbox_enabled ? "currentColor" : "none"}
-                                />
-                              </button>
-                            </Tip>
-                          </div>
-                        )}
-                      </div>
-                    </Tip>
-                  );
-                })}
+                {!collapsed && [...wsList].sort((a, b) => Number(!!b.is_repo_root) - Number(!!a.is_repo_root)).map(w => (
+                  <WorkspaceRow key={w.id} w={w} compact={compact} />
+                ))}
               </div>
             );
           })}
@@ -761,6 +486,312 @@ function iconSize(compact: boolean) {
   // the size since there's no label crutch.
   return compact ? "h-6 w-6" : "h-[18px] w-[18px]";
 }
+
+// Tiny status badge reused on both the workspace header (aggregated, when
+// collapsed) and on each tab child row.
+function TabBadge({ reason }: { reason: "attention" | "done" }) {
+  return reason === "attention" ? (
+    <span className="shrink-0 text-[var(--color-warn)]" title="Agent needs your input">
+      <Bell className="h-3 w-3" strokeWidth={2.5} />
+    </span>
+  ) : (
+    <span className="shrink-0 text-[var(--color-ok)]" title="Agent finished a turn">
+      <Check className="h-3.5 w-3.5" strokeWidth={3} />
+    </span>
+  );
+}
+
+// ─── WorkspaceRow ────────────────────────────────────────────────────────────
+// Extracted component so each workspace subscribes only to its own tab state
+// (isolated re-renders). Handles expand/collapse, ws rename, tab rename, and
+// shows all terminal tabs as indented children.
+
+function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
+  const tabs = useWorkspaceTabs(w.id);
+  const activeTabId = useActiveTabId(w.id);
+  const activeWsId = useApp(s => s.activeWorkspaceId);
+  const setActive = useApp(s => s.setActiveWorkspace);
+  const setActiveTabId = useApp(s => s.setActiveTabId);
+  const loadAll = useApp(s => s.loadAll);
+  const terminalTabCount = useApp(s => (s.tabs[w.id] ?? []).filter(t => t.type === "terminal").length);
+  const collapsed = useApp(s => s.collapsedWorkspaces[w.id] ?? (terminalTabCount <= 1));
+  const setWorkspaceCollapsed = useApp(s => s.setWorkspaceCollapsed);
+  const addTab = useApp(s => s.addTab);
+  const registry = useApp(s => s.agents);
+  const renameTab = useApp(s => s.renameTab);
+  const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
+  const settledHighlight = usePrefs(s => s.settledHighlight);
+
+  const isActive = activeWsId === w.id;
+  const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
+  const isLoaded = terminalTabs.some(t => t.ptyId);
+
+  // Workspace rename
+  const [wsRenaming, setWsRenaming] = useState<string | null>(null);
+  // Tab rename — per-tab id + draft value
+  const [tabRenaming, setTabRenaming] = useState<{ id: string; value: string } | null>(null);
+
+  // Auto-expand 1→2+; auto-collapse back to 0.
+  const prevCountRef = useRef(terminalTabCount);
+  useEffect(() => {
+    const prev = prevCountRef.current;
+    prevCountRef.current = terminalTabCount;
+    if (prev <= 1 && terminalTabCount >= 2) {
+      setWorkspaceCollapsed(w.id, false);
+    } else if (prev > 0 && terminalTabCount === 0) {
+      setWorkspaceCollapsed(w.id, true);
+    }
+  }, [terminalTabCount, w.id, setWorkspaceCollapsed]);
+
+  // Aggregated attention/done status shown on the row header when collapsed.
+  const hasAttention = settledHighlight && tabs.some(t => t.unread?.reason === "attention");
+  const hasDone = settledHighlight && !hasAttention && tabs.some(t => t.unread?.reason === "done");
+
+  async function commitWsRename() {
+    if (wsRenaming === null) return;
+    const trimmed = wsRenaming.trim();
+    setWsRenaming(null);
+    // Empty → reset to the branch name (clears any custom label).
+    const next = trimmed || w.branch;
+    if (next === w.name) return;
+    try { await workspaceRename(w.id, next); await loadAll(); }
+    catch (e) { console.error("rename failed", e); }
+  }
+
+  function commitTabRename() {
+    if (!tabRenaming) return;
+    const trimmed = tabRenaming.value.trim();
+    if (trimmed) renameTab(w.id, tabRenaming.id, trimmed);
+    else clearTabCustomTitle(w.id, tabRenaming.id);
+    setTabRenaming(null);
+  }
+
+  // Compact mode: render a minimal icon-only row (no tree, no children).
+  if (compact) {
+    return (
+      <Tip content={w.name} side="right">
+        <div
+          onClick={() => setActive(w.id)}
+          className={cn(
+            "mx-auto flex h-8 w-8 items-center justify-center rounded-md cursor-pointer transition-colors",
+            isActive
+              ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+              : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+            !isLoaded && "opacity-60",
+          )}
+        >
+          <CliIcon cli={w.cli} className="h-4 w-4" />
+        </div>
+      </Tip>
+    );
+  }
+
+  return (
+    <div className="mb-px">
+      {/* Workspace header row */}
+      <div
+        onClick={() => {
+          setActive(w.id);
+          if (terminalTabs.length === 0) {
+            // No terminals yet — launch the default agent; stays collapsed (1 terminal = collapsed by default).
+            const cli = w.cli || "claude";
+            addTab(w.id, { id: crypto.randomUUID(), type: "terminal", title: agentDisplayName(cli, registry), cli });
+          } else {
+            if (activeTabId) setActiveTabId(w.id, activeTabId);
+            if (isActive) setWorkspaceCollapsed(w.id, !collapsed);
+          }
+        }}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          if (wsRenaming === null) setWsRenaming(w.name);
+        }}
+        className={cn(
+          "group/wsrow ml-3 flex items-center gap-1 rounded-md px-1 py-1 text-[13px] cursor-pointer select-none transition-colors",
+          isActive && collapsed
+            ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+            : isActive
+            ? "text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
+            : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+          !isLoaded && "opacity-60",
+        )}
+      >
+        {terminalTabs.length === 0
+          ? <Moon className="shrink-0 h-3.5 w-3.5 mx-0.5 text-[var(--color-fg-faint)] opacity-40" />
+          : <button
+              onClick={(e) => { e.stopPropagation(); setWorkspaceCollapsed(w.id, !collapsed); }}
+              className="shrink-0 rounded p-0.5 hover:bg-[var(--color-bg-3)] transition-colors"
+              data-no-drag
+            >
+              {collapsed
+                ? <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                : <ChevronDown  className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+              }
+            </button>
+        }
+
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          {wsRenaming !== null ? (
+            <input
+              autoFocus
+              value={wsRenaming}
+              onChange={e => setWsRenaming(e.target.value)}
+              onBlur={commitWsRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitWsRename();
+                else if (e.key === "Escape") setWsRenaming(null);
+                e.stopPropagation();
+              }}
+              onClick={e => e.stopPropagation()}
+              onDoubleClick={e => e.stopPropagation()}
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+              className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-[3px] text-[13px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
+            />
+          ) : w.is_repo_root && w.name === w.branch ? (
+            <span className="-ml-1 shrink-0 rounded px-1 py-px text-[10.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-dim)]">
+              REPO ROOT
+            </span>
+          ) : (
+            <>
+              <span className="min-w-0 truncate font-medium">{w.name}</span>
+              {w.is_repo_root && (
+                <span className="shrink-0 rounded px-1 py-px text-[9.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-faint)]">
+                  REPO
+                </span>
+              )}
+            </>
+          )}
+          {/* Terminal count — only shown when >1 */}
+          {!wsRenaming && terminalTabs.length > 1 && (
+            <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
+              ({terminalTabs.length})
+            </span>
+          )}
+        </div>
+
+        {collapsed && hasAttention && <TabBadge reason="attention" />}
+        {collapsed && hasDone      && <TabBadge reason="done" />}
+
+        {/* Archive — before shield so shield stays pinned at the far right.
+            Always in DOM (opacity-only toggle) so shield position never shifts.
+            Plain title avoids Radix portal repaints that flicker in WKWebView. */}
+        <button
+          data-no-drag
+          title="Archive workspace"
+          onClick={async (e) => {
+            e.stopPropagation();
+            if (wsRenaming !== null) return;
+            const ok = await useUI.getState().askConfirm({
+              title: `Archive "${w.name}"?`,
+              message: w.is_repo_root
+                ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched — you can re-open it any time. Any agent running here will be terminated."
+                : (w.composition?.length ?? 0) > 0
+                ? `Branches stay in git — you can recreate the workspace later. This removes: the host worktree + every member worktree (${w.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts. Any running agent will be terminated.`
+                : "The branch stays in git — you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory and terminates any running agent. Can't be undone from inside Termic.",
+              confirmLabel: "Archive",
+              destructive: true,
+              checkbox: w.is_repo_root ? undefined : (w.composition?.length ?? 0) > 0
+                ? { label: "Delete the git branches", defaultValue: false }
+                : { label: "Delete the git branch:", branchName: w.branch || undefined, defaultValue: false },
+            });
+            const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
+            const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
+            if (!confirmed) return;
+            const { setBusy } = useUI.getState();
+            setBusy(`Archiving "${w.name}"…`);
+            try {
+              await workspaceArchive(w.id, deleteBranch);
+              if (isActive) setActive(null);
+              await loadAll();
+            } catch (err) { console.error(err); }
+            finally { setBusy(null); }
+          }}
+          className={cn(
+            "shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 group-hover/wsrow:opacity-100 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)]",
+            wsRenaming !== null ? "pointer-events-none" : "group-hover/wsrow:pointer-events-auto pointer-events-none",
+          )}
+        >
+          <Archive className="h-3.5 w-3.5" />
+        </button>
+
+        {/* Shield — always rightmost so its position is stable regardless of archive visibility */}
+        <Tip content={w.sandbox_enabled ? "Sandbox settings" : "Enable sandbox"} side="bottom">
+          <button
+            data-no-drag
+            onClick={(e) => { e.stopPropagation(); useUI.getState().openSandbox(w.id); }}
+            className={cn(
+              "shrink-0 rounded p-0.5 hover:bg-[var(--color-bg-3)] transition-colors",
+              w.sandbox_enabled ? "text-[var(--color-ok)]" : "text-[var(--color-fg-faint)]",
+            )}
+          >
+            <Shield className="h-3.5 w-3.5" fill={w.sandbox_enabled ? "currentColor" : "none"} />
+          </button>
+        </Tip>
+      </div>
+
+      {/* Tab children — terminal tabs only; edit/diff are transient file views */}
+      {!collapsed && terminalTabs.map(tab => {
+        const isTabActive = isActive && tab.id === activeTabId;
+        const title = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
+        const showBell  = settledHighlight && tab.unread?.reason === "attention";
+        const showCheck = settledHighlight && tab.unread?.reason === "done";
+        const isTabRenaming = tabRenaming?.id === tab.id;
+
+        return (
+          <div
+            key={tab.id}
+            onClick={() => { setActive(w.id); setActiveTabId(w.id, tab.id); }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              if (!isTabRenaming) setTabRenaming({ id: tab.id, value: title });
+            }}
+            className={cn(
+              "group/tab ml-8 flex items-center gap-1.5 rounded-md px-1.5 py-[3px] text-[12.5px] cursor-pointer select-none transition-colors",
+              isTabActive
+                ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+                : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+            )}
+          >
+            {/* Status overrides the brand icon when there's something to report */}
+            {showBell ? <TabBadge reason="attention" /> : showCheck ? <TabBadge reason="done" /> : (
+              <span className={cn("shrink-0", CLI_BRAND_COLOR[tab.cli] || "text-[var(--color-fg-dim)]")}>
+                <CliIcon cli={tab.cli} className="h-3.5 w-3.5" />
+              </span>
+            )}
+
+            {isTabRenaming ? (
+              <input
+                autoFocus
+                value={tabRenaming!.value}
+                onChange={e => setTabRenaming(r => r ? { ...r, value: e.target.value } : r)}
+                onBlur={commitTabRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); commitTabRename(); }
+                  else if (e.key === "Escape") { e.preventDefault(); setTabRenaming(null); }
+                  e.stopPropagation();
+                }}
+                onClick={e => e.stopPropagation()}
+                onDoubleClick={e => e.stopPropagation()}
+                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+                className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-[3px] text-[12.5px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
+              />
+            ) : (
+              <span className="min-w-0 flex-1 truncate">{title}</span>
+            )}
+            <button
+              title="Close tab"
+              onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
+              className="shrink-0 rounded p-0.5 opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function NavItem({ icon, label, active, compact, onClick }: {
   icon: React.ReactNode; label: string; active?: boolean; compact: boolean; onClick: () => void;

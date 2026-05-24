@@ -13,12 +13,13 @@ import type { Agent, CliInfo } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { AppDialog } from "@/components/ui/Dialog";
-import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Eye, EyeOff } from "lucide-react";
+import { Trash2, Plus, Check, AlertTriangle, RotateCcw } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
-import { cn } from "@/lib/utils";
+import { cn, slugify } from "@/lib/utils";
 
 export function AgentsSection() {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [err, setErr] = useState<string | null>(null);
   const saveTimer = useRef<number | null>(null);
@@ -51,7 +52,7 @@ export function AgentsSection() {
   function isModified(a: Agent): boolean {
     const d = defaults.find(d => d.id === a.id);
     if (!d) return false; // custom agents have no "defaults" to revert to
-    const stripEnv = (x: Agent) => { const { env: _e, ...rest } = x; void _e; return rest; };
+    const stripEnv = (x: Agent) => { const { env: _e, disabled: _d, ...rest } = x; void _e; void _d; return rest; };
     return JSON.stringify(stripEnv(d)) !== JSON.stringify(stripEnv(a));
   }
 
@@ -105,6 +106,20 @@ export function AgentsSection() {
 
   function patchAgent(id: string, patch: Partial<Agent>) {
     mutate(agents.map(a => a.id === id ? { ...a, ...patch } : a));
+  }
+
+  function commitAgentId(id: string, newDisplayName: string) {
+    const a = agents.find(x => x.id === id);
+    if (!a || a.builtin) return;
+    const slug = slugify(newDisplayName);
+    if (slug && slug !== id && !agents.some(other => other.id === slug)) {
+      mutate(agents.map(x => x.id === id ? { ...x, id: slug } : x));
+      setActiveId(slug);
+      // Update any workspaces referencing the old ID in the app store
+      useApp.setState(s => ({
+        workspaces: s.workspaces.map(w => w.cli === id ? { ...w, cli: slug } : w)
+      }));
+    }
   }
   function patchCaps(id: string, patch: Partial<NonNullable<Agent["capabilities"]>>) {
     mutate(agents.map(a => a.id === id
@@ -172,10 +187,13 @@ export function AgentsSection() {
 
       <AgentsTabs
         agents={agents}
+        activeId={activeId}
+        setActiveId={setActiveId}
         autoFocusId={autoFocusId}
         defaults={defaults}
         isModified={isModified}
         patchAgent={patchAgent}
+        onCommitId={commitAgentId}
         patchCaps={patchCaps}
         requestRemoveAgent={requestRemoveAgent}
         resetAgent={resetAgent}
@@ -218,20 +236,22 @@ export function AgentsSection() {
  *  mount; clicking "+ Add agent" elsewhere flips the active tab to
  *  the freshly-created one via the autoFocusId signal. */
 function AgentsTabs({
-  agents, autoFocusId, defaults, isModified,
-  patchAgent, patchCaps, requestRemoveAgent, resetAgent, onAutoFocusConsumed,
+  agents, activeId, setActiveId, autoFocusId, defaults, isModified,
+  patchAgent, onCommitId, patchCaps, requestRemoveAgent, resetAgent, onAutoFocusConsumed,
 }: {
   agents: Agent[];
+  activeId: string | null;
+  setActiveId: (id: string | null) => void;
   autoFocusId: string | null;
   defaults: Agent[];
   isModified: (a: Agent) => boolean;
   patchAgent: (id: string, p: Partial<Agent>) => void;
+  onCommitId: (id: string, newDisplayName: string) => void;
   patchCaps: (id: string, p: Partial<NonNullable<Agent["capabilities"]>>) => void;
   requestRemoveAgent: (id: string) => void;
   resetAgent: (id: string) => void;
   onAutoFocusConsumed: () => void;
 }) {
-  const [activeId, setActiveId] = useState<string | null>(null);
   // PATH-detection results (keyed by agent id) drive the install badge.
   const detectedClis = useApp(s => s.detectedClis);
   // Default to first agent; when the list churns (delete current,
@@ -254,7 +274,7 @@ function AgentsTabs({
           border under inactive tabs, accent underline beneath the
           active one. Keeps the visual language consistent across
           settings pages. */}
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-[var(--color-border-soft)]">
+      <div className="flex items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-[var(--color-border-soft)]">
         {agents.map((a, idx) => (
           <button
             key={a.id}
@@ -298,6 +318,7 @@ function AgentsTabs({
           agent={active}
           detected={detectedClis[active.id]}
           onPatch={(p) => patchAgent(active.id, p)}
+          onCommitId={(newDisplayName) => onCommitId(active.id, newDisplayName)}
           onPatchCaps={(p) => patchCaps(active.id, p)}
           onRemove={() => requestRemoveAgent(active.id)}
           autoFocus={autoFocusId === active.id}
@@ -310,12 +331,13 @@ function AgentsTabs({
   );
 }
 
-function AgentCard({ agent, detected, onPatch, onPatchCaps, onRemove, autoFocus, onAutoFocusConsumed, modified, onReset }: {
+function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove, autoFocus, onAutoFocusConsumed, modified, onReset }: {
   agent: Agent;
   /** PATH-detection result for this agent, once `refreshClis` has run.
    *  undefined = not probed yet → no badge. */
   detected?: CliInfo;
   onPatch: (p: Partial<Agent>) => void;
+  onCommitId: (newDisplayName: string) => void;
   onPatchCaps: (p: Partial<NonNullable<Agent["capabilities"]>>) => void;
   onRemove: () => void;
   /** True for a freshly-created card — scrolls into view + focuses the name
@@ -360,6 +382,16 @@ function AgentCard({ agent, detected, onPatch, onPatchCaps, onRemove, autoFocus,
             ref={nameRef}
             value={agent.display_name}
             onChange={(e) => onPatch({ display_name: e.target.value })}
+            onBlur={() => onCommitId(agent.display_name)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                nameRef.current?.blur();
+              }
+            }}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             className="bg-transparent text-[14px] font-semibold outline-none border-b border-transparent focus:border-[var(--color-accent)]"
           />
           <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] font-mono">{agent.id}</span>
@@ -387,23 +419,40 @@ function AgentCard({ agent, detected, onPatch, onPatchCaps, onRemove, autoFocus,
             >{detected.found ? "installed" : "not found"}</span>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
           {/* Force hide/show — disabled agents drop out of every CLI
               picker (worktree popover, New Workspace, Review, + menu)
               but stay editable here and keep working for existing
               workspaces already bound to them. */}
+          <span
+            onClick={() => onPatch({ disabled: !agent.disabled })}
+            className="text-[12.5px] text-[var(--color-fg-dim)] font-medium select-none cursor-pointer hover:text-[var(--color-fg)] transition-colors mr-0.5"
+            title={agent.disabled
+              ? "Hidden from the CLI pickers — click to show"
+              : "Shown in the CLI pickers — click to hide"}
+          >
+            Enable
+          </span>
           <button
+            type="button"
+            role="switch"
+            aria-checked={!agent.disabled}
             onClick={() => onPatch({ disabled: !agent.disabled })}
             className={cn(
-              "rounded p-1.5 hover:bg-[var(--color-bg-3)]",
-              agent.disabled
-                ? "text-[var(--color-warn)]"
-                : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
+              "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none mr-1.5 items-center",
+              !agent.disabled ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
             )}
             title={agent.disabled
               ? "Hidden from the CLI pickers — click to show"
               : "Shown in the CLI pickers — click to hide"}
-          >{agent.disabled ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
+          >
+            <span
+              className={cn(
+                "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                !agent.disabled ? "translate-x-4" : "translate-x-0"
+              )}
+            />
+          </button>
           {modified && onReset && (
             <button
               onClick={() => {
@@ -480,7 +529,7 @@ function AgentCard({ agent, detected, onPatch, onPatchCaps, onRemove, autoFocus,
           <PathsTextarea
             value={agent.sandbox_allowed_paths ?? []}
             onChange={(sandbox_allowed_paths) => onPatch({ sandbox_allowed_paths })}
-            placeholder={"$HOME/.claude\n$HOME/.config/claude"}
+            placeholder={"$HOME/.claude\n$HOME/.config/claude\n~/work"}
           />
         </Field>
       </div>
@@ -522,7 +571,7 @@ function EnvTextarea({ value, onChange }: {
       spellCheck={false}
       rows={4}
       className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] focus:border-[var(--color-accent-soft)] focus:outline-none"
-      placeholder={"CLAUDE_CODE_NO_FLICKER=1\nHTTPS_PROXY=http://localhost:8080"}
+      placeholder={"CLAUDE_CODE_NO_FLICKER=1\nHTTPS_PROXY=http://localhost:8080\nANTHROPIC_API_KEY=sk-ant-..."}
     />
   );
 }

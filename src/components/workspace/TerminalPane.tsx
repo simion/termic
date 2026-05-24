@@ -15,7 +15,7 @@ import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName } from "@/lib/agents";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 
@@ -748,12 +748,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // before it died — we just block input + offer a restart. `gen++`
         // tears down the spawn effect and re-runs it with a fresh PTY.
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-bg)]/85">
-          <div className="text-[13px] text-[var(--color-fg-dim)]">{tab.cli} exited.</div>
+          <div className="text-[13px] text-[var(--color-fg-dim)]">{agentDisplayName(tab.cli)} exited.</div>
           <button
             onClick={() => { setExited(false); setGen(g => g + 1); }}
             className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-1.5 text-[12.5px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)]"
           >
-            <RotateCcw className="h-3.5 w-3.5" /> Restart {tab.cli}
+            <RotateCcw className="h-3.5 w-3.5" /> Restart {agentDisplayName(tab.cli)}
           </button>
         </div>
       )}

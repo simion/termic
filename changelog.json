@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.5.1",
+      "date": "2026-05-25",
+      "summary": "Smarter sidebar: workspaces collapse by default when they have one terminal, auto-expand when a second is added, and show a moon icon when idle. Clicking a focused workspace toggles collapse; clicking an unfocused one just activates it. Single-tab workspaces start collapsed. Inline .termic.yaml editing for scripts and sandbox settings with a .termic.yaml / Personal toggle. Live syntax-highlighted code preview in Appearance settings. Sandbox bypass-permissions preference. Remove the one-agent-per-repo-root limit. No spellcheck on rename inputs."
+    },
+    {
       "version": "0.5.0",
       "date": "2026-05-22",
       "summary": "Broadcast commands to multiple agents concurrently with the new Megaphone dialog (⇧⌘B), explore codebases with a premium file explorer featuring Sublime-style preview tabs, and customize your editor using 8 syntax themes and razor-sharp static typography. Also resolves a macOS sandbox crash and connection blocks for the Antigravity agent, while adding standard Google hosts to the baseline sandbox allowlist for Gemini and Antigravity."

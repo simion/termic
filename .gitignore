@@ -135,3 +135,9 @@ coverage/
 PLAN-*.md
 /plans/
 
+# ── per-repo termic config ────────────────────────────────────────────
+# .termic.yaml is meant to be committed in repos that USE termic. This
+# repo dogfoods termic, so ignore its own .termic.yaml to keep the tree
+# clean. (Repos that use termic won't have this line in their .gitignore.)
+.termic.yaml
+

@@ -10,7 +10,7 @@ import { Plus, X, GitCompare, FileText, SquareSplitVertical, Check, Bell, Megaph
 import { Tip } from "@/components/ui/Tooltip";
 import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
-import { visibleCliIds } from "@/lib/agents";
+import { visibleCliIds, agentDisplayName } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
@@ -25,7 +25,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
   // Hide disabled / not-installed agents from the + (new agent) menu.
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
-  const visibleClis = visibleCliIds(CLIS, registry, detectedClis);
+  const visibleClis = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
   const openBroadcast = useUI(s => s.openBroadcast);
   const [open, setOpen] = useState(false);
   // When spawnTab fires, suppress Radix's auto focus-return so it
@@ -65,7 +65,8 @@ export function TabBar({ ws }: { ws: Workspace }) {
   }
 
   function spawnTab(cli: string) {
-    addAndFocusTab({ id: crypto.randomUUID(), type: "terminal", title: cli, cli });
+    const displayName = agentDisplayName(cli, registry);
+    addAndFocusTab({ id: crypto.randomUUID(), type: "terminal", title: displayName, cli });
   }
 
   /** Plain login-shell tab. `sandboxed` decides whether it spawns
@@ -109,10 +110,10 @@ export function TabBar({ ws }: { ws: Workspace }) {
           }}
         >
           <DropdownLabel>New agent</DropdownLabel>
-          {CLIS.filter(c => visibleClis.has(c)).map(c => (
-            <DropdownItem key={c} onSelect={() => spawnTab(c)}>
-              <span className={CLI_BRAND_COLOR[c]}><CliIcon cli={c} className="h-4 w-4" /></span>
-              {CLI_LABEL[c] ?? c}
+          {registry.filter(a => visibleClis.has(a.id)).map(a => (
+            <DropdownItem key={a.id} onSelect={() => spawnTab(a.id)}>
+              <span className={cn("shrink-0", CLI_BRAND_COLOR[a.id] || "text-[var(--color-fg-dim)]")}><CliIcon cli={a.id} className="h-4 w-4" /></span>
+              {a.display_name}
             </DropdownItem>
           ))}
           <DropdownSeparator />
@@ -242,8 +243,8 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
       {(tab.type === "terminal" || fileIcon || tab.type === "diff") && (
         <span className={cn("shrink-0 flex items-center justify-center", color)}>
           {tab.type === "terminal" && <CliIcon cli={tab.cli} className="h-4 w-4" />}
-          {tab.type === "edit" && fileIcon && <img src={fileIcon} alt="" className="h-4 w-4 shrink-0" />}
-          {tab.type === "diff" && (fileIcon ? <img src={fileIcon} alt="" className="h-4 w-4 shrink-0" /> : <GitCompare className="h-4 w-4" />)}
+          {tab.type === "edit" && fileIcon && <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" />}
+          {tab.type === "diff" && (fileIcon ? <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" /> : <GitCompare className="h-4 w-4" />)}
         </span>
       )}
       {isRenaming ? (
@@ -262,6 +263,7 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
           }}
           onClick={e => e.stopPropagation()}
           onDoubleClick={e => e.stopPropagation()}
+          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
           className="w-auto min-w-0 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1 text-[12.5px] text-[var(--color-fg)] outline-none"
         />
       ) : (

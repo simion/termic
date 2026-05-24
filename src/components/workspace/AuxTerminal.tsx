@@ -115,7 +115,8 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     ro.observe(hostRef.current);
 
     return () => {
-      cancelled = true; ro.disconnect();
+      cancelled = true;
+      ro.disconnect();
       unlistenData?.(); unlistenExit?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose the renderer addon FIRST so its render loop can't fire

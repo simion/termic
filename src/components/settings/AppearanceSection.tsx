@@ -2,12 +2,16 @@
 // Mirrors Termic's split: "Mono Font" governs the editor; "Terminal Font"
 // governs xterm. Sizes are independent.
 
-import { usePrefs, MONO_FONT_OPTIONS, availableMonoFonts, availableMonoFontsAsync } from "@/store/prefs";
-import { useEffect, useState } from "react";
+import { usePrefs, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync } from "@/store/prefs";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { EDITOR_THEMES } from "@/lib/editorTheme";
+import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
+import { Button } from "@/components/ui/Button";
 import { AuxTerminal } from "@/components/workspace/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
+import { EditorView } from "@codemirror/view";
+import { EditorState, Compartment } from "@codemirror/state";
+import { javascript } from "@codemirror/lang-javascript";
 
 export function AppearanceSection() {
   const editorFontId    = usePrefs(s => s.editorFontId);
@@ -24,15 +28,37 @@ export function AppearanceSection() {
   const setEditorFontSize = usePrefs(s => s.setEditorFontSize);
   const codeLigatures = usePrefs(s => s.codeLigatures);
   const setCodeLigatures = usePrefs(s => s.setCodeLigatures);
+  const resetAppearance = usePrefs(s => s.resetAppearance);
 
   // Start with the curated subset so the picker is usable instantly, then
   // upgrade to the full system list when font-kit comes back (~50–200ms).
   const [fonts, setFonts] = useState(() => availableMonoFonts());
   useEffect(() => { availableMonoFontsAsync().then(setFonts).catch(() => {}); }, []);
 
+  // Disable the reset button when every appearance pref already matches
+  // the factory defaults — nothing to undo.
+  const atDefaults =
+    editorFontId          === APPEARANCE_DEFAULTS.editorFontId &&
+    terminalFontId        === APPEARANCE_DEFAULTS.terminalFontId &&
+    terminalFontSize      === APPEARANCE_DEFAULTS.terminalFontSize &&
+    terminalLetterSpacing === APPEARANCE_DEFAULTS.terminalLetterSpacing &&
+    editorFontSize        === APPEARANCE_DEFAULTS.editorFontSize &&
+    codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures;
+
   return (
     <div className="flex flex-col gap-8">
-      <h1 className="text-[20px] font-medium">Appearance</h1>
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-[20px] font-medium">Appearance</h1>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={atDefaults}
+          onClick={resetAppearance}
+          title="Restore fonts, sizes, weight, letter spacing and ligatures to their defaults."
+        >
+          Reset to defaults
+        </Button>
+      </div>
 
       <Field
         label="Editor font"
@@ -50,7 +76,7 @@ export function AppearanceSection() {
         }
       />
 
-      <CodePreview fontStack={stackById(editorFontId)} size={editorFontSize} />
+      <CodePreview />
 
       <Field
         label="Editor font size"
@@ -257,21 +283,55 @@ function Toggle({ label, hint, value, onChange }: { label: string; hint?: string
 
 function Divider() { return <div className="h-px bg-[var(--color-border-soft)]" />; }
 
-function CodePreview({ fontStack, size }: { fontStack: string; size: number }) {
-  // Plain pre with explicit newlines via a template literal. JSX whitespace
-  // between sibling spans is collapsed, so the previous per-token coloring
-  // produced one giant line and a horizontal scrollbar. Keeping it monochrome
-  // (and wrapping) avoids that — the editor itself shows the real syntax
-  // highlighting; this is just a font preview.
-  const sample = `// Fetch user data
+const CODE_SAMPLE = `// Fetch user data
 async function getUser(id: number) {
   const response = await fetch(\`/api/users/\${id}\`);
   return response.json();
 }`;
+
+function CodePreview() {
+  const themeId  = usePrefs(s => s.editorThemeId);
+  const size     = usePrefs(s => s.editorFontSize);
+  const ligatures = usePrefs(s => s.codeLigatures);
+  const hostRef  = useRef<HTMLDivElement>(null);
+  const viewRef  = useRef<EditorView | null>(null);
+  const themeComp = useRef(new Compartment());
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: CODE_SAMPLE,
+        extensions: [
+          javascript({ typescript: true }),
+          EditorView.editable.of(false),
+          EditorView.theme({ "&.cm-editor": { outline: "none" } }),
+          themeComp.current.of([
+            resolveEditorTheme(themeId),
+            editorSurfaceTheme(size, ligatures),
+          ]),
+        ],
+      }),
+      parent: hostRef.current,
+    });
+    viewRef.current = view;
+    return () => { view.destroy(); viewRef.current = null; };
+  // theme/size/ligatures are picked up by the reconfigure effect below
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const v = viewRef.current;
+    if (!v) return;
+    v.dispatch({
+      effects: themeComp.current.reconfigure([
+        resolveEditorTheme(themeId),
+        editorSurfaceTheme(size, ligatures),
+      ]),
+    });
+  }, [themeId, size, ligatures]);
+
   return (
-    <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-4 overflow-hidden"
-         style={{ fontFamily: fontStack, fontSize: `${size}px`, lineHeight: 1.5 }}>
-      <pre className="whitespace-pre-wrap text-[var(--color-fg)]">{sample}</pre>
-    </div>
+    <div ref={hostRef} className="rounded-lg border border-[var(--color-border-soft)] overflow-hidden bg-[var(--color-bg)]" />
   );
 }

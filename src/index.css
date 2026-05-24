@@ -120,6 +120,11 @@
     color-scheme: light;
   }
 
+  /* Enhance file/folder icons contrast in light mode to prevent them from looking faded */
+  html.light .file-icon {
+    filter: brightness(0.7) saturate(1.4) contrast(1.15);
+  }
+
   /* "Dark" — termic's default theme, matched to terax-ai's "Claude"
      palette (warm charcoal). The defining move: chrome surfaces
      (sidebar / title bar / tab strip / right panel — all bound to

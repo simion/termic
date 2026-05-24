@@ -71,10 +71,10 @@ export function Settings() {
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />
 
         <div className="mt-5 px-2 pb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-          Repositories
+          Projects
         </div>
         {projects.length === 0 && (
-          <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">No repositories yet.</div>
+          <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">No projects yet.</div>
         )}
         {projects.map(p => {
           const isMulti = (p.type ?? "single") === "multi";
@@ -105,7 +105,7 @@ export function Settings() {
           {tab === "repositories" && (
             isRepoSelected
               ? <RepositorySection projectId={repoId!} />
-              : <div className="text-[13.5px] text-[var(--color-fg-faint)]">Pick a repository on the left to edit its settings.</div>
+              : <div className="text-[13.5px] text-[var(--color-fg-faint)]">Pick a project on the left to edit its settings.</div>
           )}
         </div>
       </section>
@@ -120,7 +120,7 @@ function RailItem({ icon, label, active, onClick }: {
     <button
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13.5px]",
+        "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] font-medium",
         active ? "bg-[var(--color-sel)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >

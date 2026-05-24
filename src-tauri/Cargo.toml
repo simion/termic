@@ -38,6 +38,9 @@ font-kit = "0.14"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 regex = "1.12.3"
+# YAML parse/serialize for the repo-root `.termic.yaml`. serde_yml is the
+# maintained fork of the now-unmaintained serde_yaml.
+serde_yml = "0.0.12"
 
 [dev-dependencies]
 tempfile = "3"

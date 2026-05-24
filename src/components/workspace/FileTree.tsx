@@ -131,10 +131,11 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: Node
           ) : null}
         </span>
         {iconUrl ? (
-          <img src={iconUrl} alt="" className="h-4 w-4 shrink-0" />
+          <img src={iconUrl} alt="" className="h-4 w-4 shrink-0 file-icon" />
         ) : (
           <span className="h-4 w-4 shrink-0" />
-        )}
+        )
+      }
         <span className="truncate flex-1 min-w-0 font-medium">{entry.name}</span>
       </button>
       {entry.is_dir && isOpen && kids && kids.map(c => (

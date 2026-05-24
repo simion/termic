@@ -5,8 +5,8 @@
 # homebrew tap and the website's update manifest + changelog.
 #
 # Before bumping versions this script gates on changelog.json: the
-# entry for the new version must exist with a title + summary (it's
-# what the in-app Update card and Changelog dialog render). A stub is
+# entry for the new version must exist with a summary (it's what the
+# in-app Update card and Changelog dialog render). A stub is
 # scaffolded if missing — fill it in and re-run. See RELEASING.md.
 #
 # Usage:

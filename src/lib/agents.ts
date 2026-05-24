@@ -82,6 +82,22 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
   },
 };
 
+/** Helper to get an agent's display name by its id. Consulting the registry first,
+ *  then falling back to built-in names and finally returning the id itself. */
+export function agentDisplayName(cli: string, agents: Agent[] = useApp.getState().agents): string {
+  const a = agents.find(x => x.id === cli);
+  if (a) return a.display_name;
+  // Fallback for built-ins if the registry is not yet loaded or empty
+  switch (cli) {
+    case "claude": return "Claude";
+    case "gemini": return "Gemini";
+    case "codex":  return "Codex";
+    case "agy":    return "Antigravity";
+    case "shell":  return "Terminal";
+    default:       return cli;
+  }
+}
+
 function findAgent(cli: string): {
   command: string; args: string[];
   caps: NonNullable<Agent["capabilities"]>;

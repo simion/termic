@@ -5,6 +5,7 @@ import { create } from "zustand";
 import type { Project, Workspace, Tab, TerminalTab } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { focusTerminalTab } from "@/lib/tabFocus";
+import { agentDisplayName } from "@/lib/agents";
 
 interface View {
   /** Underlying page — dashboard / history / empty. NOT "settings": Settings
@@ -65,6 +66,7 @@ interface AppState {
   /** Per-project collapse state in the sidebar. true = workspaces hidden.
    *  Persisted to localStorage so the user's tree shape survives launches. */
   collapsedProjects: Record<string, boolean>;
+  collapsedWorkspaces: Record<string, boolean>;
   /** Editable agent registry from settings.json. Loaded by `loadAll` so
    *  `spawnArgsForCli` can consult `agent.command + args + capabilities`
    *  instead of hard-coding by CLI string. Empty until first loadAll. */
@@ -93,7 +95,8 @@ interface AppState {
   toggleTerminalSplit: (wsId: string) => void;
   enableFooterTerm: (wsId: string) => void;
   disableFooterTerm: (wsId: string) => void;
-  setProjectCollapsed: (projectId: string, collapsed: boolean) => void;
+  setProjectCollapsed:   (projectId: string, collapsed: boolean) => void;
+  setWorkspaceCollapsed: (wsId: string,      collapsed: boolean) => void;
   setTerminalSplitHeight: (wsId: string, px: number) => void;
   toggleTerminalSplitCollapsed: (wsId: string) => void;
   /** Returns the id of the new bottom tab. */
@@ -109,6 +112,7 @@ interface AppState {
   openPreviewTab: (wsId: string, data: { type: "edit" | "diff"; path: string; title: string }) => void;
   patchTab: (wsId: string, tabId: string, patch: Partial<Tab>) => void;
   renameTab: (wsId: string, tabId: string, title: string) => void;
+  clearTabCustomTitle: (wsId: string, tabId: string) => void;
   /** Update the tab's PTY-driven `OSC 0/2` title. No-op when the user
    *  has manually renamed the tab (`customTitle === true`). */
   setTabLiveTitle: (wsId: string, tabId: string, liveTitle: string) => void;
@@ -125,7 +129,9 @@ const LS_SBW     = "sidebarWidth";
 const LS_RPW     = "rightPanelWidth";
 const LS_RFH     = "rightFooterHeight";
 const LS_COLLAPSED_PROJ = "collapsedProjects"; // Record<projId, true>
-const initialCollapsed = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_PROJ) || "{}"); } catch { return {}; } })();
+const LS_COLLAPSED_WS   = "collapsedWorkspaces"; // Record<wsId, bool>
+const initialCollapsed   = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_PROJ) || "{}"); } catch { return {}; } })();
+const initialCollapsedWs = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_WS)   || "{}"); } catch { return {}; } })();
 
 const initialCompact = (() => { try { return localStorage.getItem(LS_COMPACT) === "1"; } catch { return false; } })();
 const initialHidden  = (() => { try { return localStorage.getItem(LS_RPANEL)  === "1"; } catch { return false; } })();
@@ -161,7 +167,8 @@ export const useApp = create<AppState>((set, get) => ({
   activeBottomTab: {},
   mountedWorkspaces: new Set<string>(),
   footerTerm: {},
-  collapsedProjects: initialCollapsed as Record<string, boolean>,
+  collapsedProjects:   initialCollapsed   as Record<string, boolean>,
+  collapsedWorkspaces: initialCollapsedWs as Record<string, boolean>,
   agents: [],
   detectedClis: {},
 
@@ -319,6 +326,11 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem(LS_COLLAPSED_PROJ, JSON.stringify(next)); } catch {}
     return { collapsedProjects: next };
   }),
+  setWorkspaceCollapsed: (wsId, collapsed) => set(s => {
+    const next = { ...s.collapsedWorkspaces, [wsId]: collapsed };
+    try { localStorage.setItem(LS_COLLAPSED_WS, JSON.stringify(next)); } catch {}
+    return { collapsedWorkspaces: next };
+  }),
 
   addBottomTab: (wsId) => {
     const id = crypto.randomUUID();
@@ -382,7 +394,8 @@ export const useApp = create<AppState>((set, get) => ({
     // tabs (via the "+" button → `addTab`) leave it unset so they
     // start fresh - otherwise every new tab tries to resume the
     // same conversation and we get N copies fighting.
-    const tab: TerminalTab = { id: crypto.randomUUID(), type: "terminal", title: cli, cli, is_default: true };
+    const title = agentDisplayName(cli, s.agents);
+    const tab: TerminalTab = { id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true };
     return {
       tabs: { ...s.tabs, [wsId]: [tab] },
       activeTab: { ...s.activeTab, [wsId]: tab.id },
@@ -523,6 +536,12 @@ export const useApp = create<AppState>((set, get) => ({
     // from the running program won't overwrite it (`customTitle` is
     // the gate the TabBar / setTabLiveTitle path checks).
     const next = list.map(t => t.id === tabId ? { ...t, title: trimmed, customTitle: true } as Tab : t);
+    return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  clearTabCustomTitle: (wsId, tabId) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const next = list.map(t => t.id !== tabId ? t : { ...t, customTitle: false } as Tab);
     return { tabs: { ...s.tabs, [wsId]: next } };
   }),
 

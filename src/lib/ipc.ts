@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Workspace, CreateWorkspaceArgs, CreateMultiArgs, Settings, DiscoveredRepo,
-  CliInfo, ChangeFile, Changes, FileEntry, Agent,
+  CliInfo, ChangeFile, Changes, FileEntry, Agent, RepoConfig,
 } from "./types";
 
 // ───────────────────────────── projects ─────────────────────────────
@@ -42,11 +42,10 @@ export const workspaceSetSandbox = (
   id: string,
   enabled: boolean,
   rwPaths: string[],
-  denyPaths: string[],
   allowedHosts: string[],
 ) => invoke<number>("workspace_set_sandbox", {
   id, enabled,
-  rwPaths, denyPaths, allowedHosts,
+  rwPaths, allowedHosts,
 });
 /** Whether the OS supports the sandbox at all. Returns false on
  *  Linux / Windows (Seatbelt is macOS-only). Frontend uses this to
@@ -91,6 +90,34 @@ export const workspaceSandboxAddAllowedPath = (id: string, path: string) =>
 export const workspaceSandboxRemoveAllowedPath = (id: string, path: string) =>
   invoke<void>("workspace_sandbox_remove_allowed_path", { id, path });
 
+/** "Allow for this repo" — append a host to the repo's committed
+ *  `.termic.yaml` (shared with the team, read by the termic CLI).
+ *  Comment-preserving; takes effect on the next agent restart.
+ *  Counterpart to `workspaceSandboxAddAllowedHost`, which writes the
+ *  personal, uncommitted "allow for me" overrides instead. */
+export const repoConfigAddAllowedHost = (id: string, host: string) =>
+  invoke<void>("repo_config_add_allowed_host", { id, host });
+
+/** Mirror for filesystem paths — append to the repo's `.termic.yaml`. */
+export const repoConfigAddAllowedPath = (id: string, path: string) =>
+  invoke<void>("repo_config_add_allowed_path", { id, path });
+
+/** Read a project's committed `.termic.yaml` (at its repo root).
+ *  Resolves to null when the repo has no such file; rejects when it
+ *  exists but is malformed. */
+export const repoConfigLoad = (projectId: string) =>
+  invoke<RepoConfig | null>("repo_config_load", { projectId });
+
+/** Write a project's `.termic.yaml` (full re-serialize — does not
+ *  preserve hand-written comments). Backs the Repository settings. */
+export const repoConfigSave = (projectId: string, config: RepoConfig) =>
+  invoke<void>("repo_config_save", { projectId, config });
+
+/** Write a fresh `.termic.yaml` scaffold to a project's repo if it
+ *  has none. Resolves true if a file was created. */
+export const repoConfigScaffold = (projectId: string) =>
+  invoke<boolean>("repo_config_scaffold", { projectId });
+
 /** Newest-first list of macOS Sandbox denial lines from `log show` for
  *  the given workspace, last `minutes` minutes (default 10). Surfaces
  *  what got blocked when `npm install` etc. silently failed in a
@@ -116,12 +143,11 @@ export interface ProbeResult {
  *  test what's on disk. */
 export const workspaceTestSandbox = (
   id: string,
-  candidate?: { rwPaths: string[]; denyPaths: string[]; allowedHosts: string[] },
+  candidate?: { rwPaths: string[]; allowedHosts: string[] },
 ) =>
   invoke<ProbeResult[]>("workspace_test_sandbox", {
     id,
     rwPaths: candidate?.rwPaths,
-    denyPaths: candidate?.denyPaths,
     allowedHosts: candidate?.allowedHosts,
   });
 

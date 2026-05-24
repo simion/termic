@@ -20,7 +20,7 @@ import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, proj
 import { Checkbox } from "@/components/ui/Checkbox";
 import type { CliInfo, DiscoveredRepo } from "@/lib/types";
 import { useApp } from "@/store/app";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
 import { TermicMark } from "@/icons/TermicLogo";
 import { cn } from "@/lib/utils";
 import { usePrefs, applyTheme, type ThemeMode } from "@/store/prefs";
@@ -219,8 +219,9 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
   // include /opt/homebrew/bin. Saves the absolute path to the agent
   // registry so the spawn uses it regardless of PATH at launch time.
   async function pickBinary(name: string) {
+    const displayName = CLI_LABEL[name] ?? name;
     const picked = await openDialog({
-      title: `Pick the ${name} binary`,
+      title: `Pick the ${displayName} binary`,
       multiple: false,
       directory: false,
     });
@@ -273,7 +274,7 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
             <span className={c.found ? CLI_BRAND_COLOR[c.name] : "text-[var(--color-fg-faint)]"}>
               <CliIcon cli={c.name} className="h-4 w-4" />
             </span>
-            <span className="min-w-[60px]">{c.name}</span>
+            <span className="min-w-[60px]">{CLI_LABEL[c.name] ?? c.name}</span>
             {c.found ? (
               <span className="truncate font-mono text-[12px] text-[var(--color-fg-dim)]" title={c.path}>
                 {c.version || c.path}
@@ -285,7 +286,7 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
                   type="button"
                   onClick={() => pickBinary(c.name)}
                   className="ml-auto rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-0.5 text-[11.5px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-                  title={`Locate the ${c.name} binary manually`}
+                  title={`Locate the ${CLI_LABEL[c.name] ?? c.name} binary manually`}
                 >
                   Set path…
                 </button>

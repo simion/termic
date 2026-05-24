@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 mod sandbox;
 mod proxy;
+mod repo_config;
 mod shell_env;
 use sandbox::SandboxBundle;
 
@@ -72,10 +73,6 @@ pub struct Project {
     /// single string — keeps the SBPL output one rule per line.
     #[serde(default)]
     pub sandbox_rw_paths: Vec<String>,
-    /// Extra deny carve-outs beyond the secret-default list. Same
-    /// substitution rules as `sandbox_rw_paths`.
-    #[serde(default)]
-    pub sandbox_deny_paths: Vec<String>,
     /// Extra allowed-host regexes for the per-workspace network proxy,
     /// beyond the per-CLI defaults. One POSIX/Rust regex per line,
     /// matched against the request hostname.
@@ -195,8 +192,6 @@ pub struct Workspace {
     #[serde(default)]
     pub sandbox_rw_paths: Vec<String>,
     #[serde(default)]
-    pub sandbox_deny_paths: Vec<String>,
-    #[serde(default)]
     pub sandbox_allowed_hosts: Vec<String>,
     /// Multi-repo composition. Empty for single-repo workspaces (the
     /// usual case — `path` already points at the worktree of the one
@@ -285,8 +280,6 @@ pub struct CreateWorkspaceArgs {
     /// back to the project's default arrays.
     #[serde(default)]
     pub sandbox_rw_paths: Option<Vec<String>>,
-    #[serde(default)]
-    pub sandbox_deny_paths: Option<Vec<String>>,
     #[serde(default)]
     pub sandbox_allowed_hosts: Option<Vec<String>>,
 }
@@ -493,6 +486,85 @@ pub struct SpawnArgs {
 fn default_rows() -> u16 { 40 }
 fn default_cols() -> u16 { 120 }
 
+/// `.termic.yaml` always lives at — and is read from — the project's
+/// `root_path` (the user's main checkout), never a per-workspace
+/// worktree. That keeps one source of truth: a Repository-settings
+/// edit, a footer "Allow", and the spawn-time read all hit the same
+/// file. It is also OUTSIDE the per-workspace sandbox, so a caged
+/// agent cannot edit the config the sandbox reads.
+fn repo_config_for(proj: &Project) -> repo_config::RepoConfig {
+    repo_config::load_or_default(Path::new(&proj.root_path))
+}
+
+/// Compute the live sandbox allow-lists for a workspace at spawn time.
+/// Unions four layers:
+///   1. global Settings defaults,
+///   2. the workspace's own pinned arrays (Sandbox dialog),
+///   3. each contributing project's personal "allow for me" overrides
+///      from `projects.json`,
+///   4. each contributing project's committed `.termic.yaml` sandbox
+///      block — re-read fresh on every spawn.
+fn live_sandbox_lists(ws: &Workspace) -> (Vec<String>, Vec<String>) {
+    let globals = load_settings_inner();
+    let projects = load_projects();
+    let mut rw = globals.sandbox_default_rw_paths.clone();
+    let mut hosts = globals.sandbox_default_allowed_hosts.clone();
+    // The workspace's own pinned arrays — the Sandbox dialog's
+    // per-workspace personal layer.
+    rw.extend(ws.sandbox_rw_paths.iter().cloned());
+    hosts.extend(ws.sandbox_allowed_hosts.iter().cloned());
+
+    // Projects contributing to this workspace: the lone one for a
+    // single-project workspace, or every member of a multi-repo one.
+    let pids: Vec<String> = if ws.composition.is_empty() {
+        vec![ws.project_id.clone()]
+    } else {
+        ws.composition.iter().map(|m| m.project_id.clone()).collect()
+    };
+    for pid in pids {
+        if let Some(p) = projects.iter().find(|p| p.id == pid) {
+            let cfg = repo_config_for(p);
+            rw.extend(cfg.sandbox.allowed_paths);
+            hosts.extend(cfg.sandbox.allowed_hosts);
+            rw.extend(p.sandbox_rw_paths.iter().cloned());
+            hosts.extend(p.sandbox_allowed_hosts.iter().cloned());
+        }
+    }
+    (dedup_strings(rw), dedup_strings(hosts))
+}
+
+fn dedup_strings(v: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    v.into_iter().filter(|x| seen.insert(x.clone())).collect()
+}
+
+/// Effective (setup, run, archive) scripts for a single-repo project.
+/// The project's personal override in `projects.json` wins when
+/// non-empty; otherwise the repo's committed `.termic.yaml`. This
+/// fallback also keeps legacy projects (scripts in `projects.json`,
+/// no `.termic.yaml`) working unchanged.
+fn effective_scripts(proj: &Project) -> (String, String, String) {
+    let cfg = repo_config_for(proj);
+    let pick = |ovr: &str, repo: String| {
+        if ovr.trim().is_empty() { repo } else { ovr.to_string() }
+    };
+    (
+        pick(&proj.setup_script, cfg.scripts.setup),
+        pick(&proj.run_script, cfg.scripts.run),
+        pick(&proj.archive_script, cfg.scripts.archive),
+    )
+}
+
+/// Effective `files_to_copy` globs — the project's `projects.json`
+/// override wins when non-empty, otherwise the repo's committed
+/// `.termic.yaml` list. Same override rule as `effective_scripts`.
+fn effective_files_to_copy(proj: &Project) -> Vec<String> {
+    if !proj.files_to_copy.is_empty() {
+        return proj.files_to_copy.clone();
+    }
+    repo_config_for(proj).scripts.files_to_copy
+}
+
 #[tauri::command]
 fn pty_spawn(
     app: AppHandle,
@@ -519,6 +591,16 @@ fn pty_spawn(
         .as_deref()
         .and_then(|wid| load_workspaces().into_iter().find(|w| w.id == wid))
         .filter(|w| w.sandbox_enabled)
+        // Re-render the allow-lists each spawn so committed
+        // `.termic.yaml` edits are picked up live, unioned with the
+        // personal (workspace/project/global) layers. See
+        // `live_sandbox_lists` / repo_config.rs.
+        .map(|mut ws| {
+            let (rw, hosts) = live_sandbox_lists(&ws);
+            ws.sandbox_rw_paths = rw;
+            ws.sandbox_allowed_hosts = hosts;
+            ws
+        })
     {
         Some(ws) => match sandbox::provision(&ws, args.agent_id.as_deref()) {
             Ok(bundle) => {
@@ -800,7 +882,6 @@ fn project_add(root_path: String) -> Result<Project, String> {
         // project Vec fields are for project-specific extras.
         default_sandbox: false,
         sandbox_rw_paths: Vec::new(),
-        sandbox_deny_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         // Default to single-repo. project_add_multi is the entry
         // point for multi-repo projects (it sets type + members).
@@ -937,7 +1018,6 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         created: chrono::Utc::now().to_rfc3339(),
         default_sandbox: false,
         sandbox_rw_paths: Vec::new(),
-        sandbox_deny_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         project_type: ProjectType::Multi,
         members,
@@ -1058,19 +1138,6 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
     let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"], &repo)
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "HEAD".to_string());
-    // Idempotence per (project, cli) — let users have one open-repo
-    // workspace per agent for the same project (claude + codex + gemini
-    // can all run against the same checkout in parallel). Existing entry
-    // gets its branch refreshed in place.
-    if let Some(mut existing) = load_workspaces().into_iter()
-        .find(|w| w.project_id == project_id && w.is_repo_root && w.cli == cli && !w.archived) {
-        if existing.branch != branch || existing.base_branch != branch {
-            existing.branch = branch.clone();
-            existing.base_branch = branch;
-            save_workspace(&existing).map_err(|e| e.to_string())?;
-        }
-        return Ok(existing);
-    }
     let port = 18100 + (load_workspaces().len() as u16);
 
     // Multi-repo project opened in REPO mode: drop a symlink for
@@ -1138,9 +1205,10 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
     let ws = Workspace {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
-        // Just the project name — the frontend appends a "REPO" badge so the
-        // visual differentiation comes from chrome, not the name itself.
-        name: proj.name.clone(),
+        // Branch name as default — frontend shows "REPO ROOT" chip when
+        // name == branch, so this keeps the chip visible until the user
+        // explicitly renames the workspace.
+        name: branch.clone(),
         branch: branch.clone(),
         base_branch: branch,
         path: proj.root_path.clone(),
@@ -1159,7 +1227,6 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
         // the main checkout as against a worktree.
         sandbox_enabled: false,
         sandbox_rw_paths: Vec::new(),
-        sandbox_deny_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         composition,
     };
@@ -1245,8 +1312,9 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         return Err(e.to_string());
     }
 
-    // Copy files_to_copy (glob patterns relative to repo root).
-    for pat in &proj.files_to_copy {
+    // Copy files_to_copy (glob patterns relative to repo root) —
+    // the repo's `.termic.yaml` list merged with the project override.
+    for pat in &effective_files_to_copy(&proj) {
         copy_matching(&repo, &wt_path, pat);
     }
 
@@ -1260,7 +1328,12 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     // Resolve sandbox pin: explicit arg wins; otherwise project default.
     // This is the ONLY place sandbox_enabled gets written. No setter
     // anywhere - by design.
-    let sandbox_enabled = args.sandbox_enabled.unwrap_or(proj.default_sandbox);
+    // `.termic.yaml`'s committed `sandbox.enabled_by_default` is a
+    // team-shared default; the project's local `default_sandbox`
+    // (projects.json) is the personal one. Either flips it on.
+    let sandbox_enabled = args.sandbox_enabled.unwrap_or(
+        proj.default_sandbox || repo_config_for(&proj).sandbox.enabled_by_default,
+    );
     // Sandbox lists are frozen at creation. The dialog seeds them
     // from the project's defaults (the user may have added/removed
     // before clicking Create); whatever it sends is what we store.
@@ -1282,8 +1355,6 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     };
     let sandbox_rw_paths = args.sandbox_rw_paths
         .unwrap_or_else(|| merge(&globals.sandbox_default_rw_paths, &proj.sandbox_rw_paths));
-    let sandbox_deny_paths = args.sandbox_deny_paths
-        .unwrap_or_else(|| merge(&globals.sandbox_default_deny_paths, &proj.sandbox_deny_paths));
     let sandbox_allowed_hosts = args.sandbox_allowed_hosts
         .unwrap_or_else(|| merge(&globals.sandbox_default_allowed_hosts, &proj.sandbox_allowed_hosts));
     let ws = Workspace {
@@ -1302,7 +1373,6 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         has_resumable_history: false,
         sandbox_enabled,
         sandbox_rw_paths,
-        sandbox_deny_paths,
         sandbox_allowed_hosts,
         // Single-project workspaces leave composition empty. Multi-
         // repo workspace creation runs through a separate code path
@@ -1315,13 +1385,14 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     // Run setup script in a background thread so the IPC handler returns
     // immediately and the UI doesn't freeze. Errors are surfaced via a
     // notification rather than failing workspace creation.
-    if !proj.setup_script.trim().is_empty() {
+    let (setup_script, _, _) = effective_scripts(&proj);
+    if !setup_script.trim().is_empty() {
         // Stream stdout+stderr to the frontend so the New Workspace dialog
         // can show live progress. Frontend listens on:
         //   setup-output://<ws.id>  (per-line)
         //   setup-done://<ws.id>    (final exit code)
         run_script_streaming(
-            proj.setup_script.clone(),
+            setup_script.clone(),
             wt_path.clone(),
             ws.port,
             ws.name.clone(),
@@ -1359,8 +1430,6 @@ pub struct CreateMultiArgs {
     pub sandbox_enabled: Option<bool>,
     #[serde(default)]
     pub sandbox_rw_paths: Option<Vec<String>>,
-    #[serde(default)]
-    pub sandbox_deny_paths: Option<Vec<String>>,
     #[serde(default)]
     pub sandbox_allowed_hosts: Option<Vec<String>>,
 }
@@ -1588,7 +1657,6 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     let globals = load_settings_inner();
     let sandbox_enabled = args.sandbox_enabled.unwrap_or(host.default_sandbox);
     let mut base_rw: Vec<String> = Vec::new();
-    let mut base_deny: Vec<String> = Vec::new();
     let mut base_hosts: Vec<String> = Vec::new();
     let extend_unique = |target: &mut Vec<String>, src: &[String]| {
         for v in src {
@@ -1596,20 +1664,16 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         }
     };
     extend_unique(&mut base_rw,    &globals.sandbox_default_rw_paths);
-    extend_unique(&mut base_deny,  &globals.sandbox_default_deny_paths);
     extend_unique(&mut base_hosts, &globals.sandbox_default_allowed_hosts);
     extend_unique(&mut base_rw,    &host.sandbox_rw_paths);
-    extend_unique(&mut base_deny,  &host.sandbox_deny_paths);
     extend_unique(&mut base_hosts, &host.sandbox_allowed_hosts);
     for m in &composition {
         if let Some(mp) = projects.iter().find(|p| p.id == m.project_id) {
             extend_unique(&mut base_rw,    &mp.sandbox_rw_paths);
-            extend_unique(&mut base_deny,  &mp.sandbox_deny_paths);
             extend_unique(&mut base_hosts, &mp.sandbox_allowed_hosts);
         }
     }
     let sandbox_rw_paths    = args.sandbox_rw_paths.unwrap_or(base_rw);
-    let sandbox_deny_paths  = args.sandbox_deny_paths.unwrap_or(base_deny);
     let sandbox_allowed_hosts = args.sandbox_allowed_hosts.unwrap_or(base_hosts);
 
     let cli = args.cli.unwrap_or_else(|| host.default_cli.clone());
@@ -1630,7 +1694,6 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         has_resumable_history: false,
         sandbox_enabled,
         sandbox_rw_paths,
-        sandbox_deny_paths,
         sandbox_allowed_hosts,
         composition,
     };
@@ -2008,6 +2071,101 @@ fn workspace_sandbox_remove_allowed_path(
     Ok(())
 }
 
+// ───────────────── repo-root `.termic.yaml` config ─────────────────
+//
+// The "Allow for this repo" destination. Where `workspace_sandbox_add_*`
+// (above) writes the personal, uncommitted "allow for me" overrides
+// into `projects.json`, these write the committed, team-shared
+// `.termic.yaml` at the repo root. Both feed `live_sandbox_lists`.
+
+/// Tokenize a leading `$HOME` prefix so the stored `.termic.yaml`
+/// entry stays portable. Mirrors `workspace_sandbox_add_allowed_path`.
+fn tokenize_home_prefix(path: &str) -> String {
+    let home = dirs::home_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
+        path.replacen(&home, "$HOME", 1)
+    } else {
+        path.to_string()
+    }
+}
+
+/// Read a project's committed `.termic.yaml` (at its `root_path`).
+/// `Ok(None)` when the repo has no such file; `Err` when it exists but
+/// is malformed. Keyed by project — backs the Repository settings.
+#[tauri::command]
+fn repo_config_load(project_id: String) -> Result<Option<repo_config::RepoConfig>, String> {
+    let p = load_projects()
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or("no such project")?;
+    repo_config::load(Path::new(&p.root_path)).map_err(|e| e.to_string())
+}
+
+/// Write a project's `.termic.yaml` (full re-serialize — see
+/// `repo_config::save`). Backs the Repository settings' Scripts tab.
+#[tauri::command]
+fn repo_config_save(project_id: String, config: repo_config::RepoConfig) -> Result<(), String> {
+    let p = load_projects()
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or("no such project")?;
+    repo_config::save(Path::new(&p.root_path), &config).map_err(|e| e.to_string())
+}
+
+/// Write a fresh `.termic.yaml` scaffold to a project's repo if it has
+/// none. Returns true if a file was created.
+#[tauri::command]
+fn repo_config_scaffold(project_id: String) -> Result<bool, String> {
+    let p = load_projects()
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or("no such project")?;
+    repo_config::scaffold(Path::new(&p.root_path)).map_err(|e| e.to_string())
+}
+
+/// "Allow for this repo" — append a host to the repo's committed
+/// `.termic.yaml`. Comment-preserving; no SIGKILL (purely additive,
+/// takes effect on the next user-initiated spawn).
+#[tauri::command]
+fn repo_config_add_allowed_host(id: String, host: String) -> Result<(), String> {
+    let host = host.trim().to_string();
+    if host.is_empty() {
+        return Err("empty host".into());
+    }
+    let proj = workspace_project(&id)?;
+    repo_config::add_allowed(Path::new(&proj.root_path), repo_config::AllowKind::Host, &host)
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve a workspace id to its owning Project (for repo_config writes
+/// keyed at the project's `root_path`).
+fn workspace_project(ws_id: &str) -> Result<Project, String> {
+    let ws = load_workspaces()
+        .into_iter()
+        .find(|w| w.id == ws_id)
+        .ok_or("no such ws")?;
+    load_projects()
+        .into_iter()
+        .find(|p| p.id == ws.project_id)
+        .ok_or_else(|| "no such project".into())
+}
+
+/// "Allow for this repo" — append a path to the repo's committed
+/// `.termic.yaml`. The leading `$HOME` is tokenized for portability.
+#[tauri::command]
+fn repo_config_add_allowed_path(id: String, path: String) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("empty path".into());
+    }
+    let stored = tokenize_home_prefix(path);
+    let proj = workspace_project(&id)?;
+    repo_config::add_allowed(Path::new(&proj.root_path), repo_config::AllowKind::Path, &stored)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
     tauri::async_runtime::spawn_blocking(move || -> Vec<String> {
@@ -2036,7 +2194,6 @@ async fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<Strin
 async fn workspace_test_sandbox(
     id: String,
     rw_paths: Option<Vec<String>>,
-    deny_paths: Option<Vec<String>>,
     allowed_hosts: Option<Vec<String>>,
 ) -> Result<Vec<sandbox::ProbeResult>, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<sandbox::ProbeResult>, String> {
@@ -2046,7 +2203,6 @@ async fn workspace_test_sandbox(
         // We never save - the user's "Save & restart" button is the
         // only place workspace_set_sandbox gets called.
         if let Some(rw) = rw_paths { ws.sandbox_rw_paths = rw; }
-        if let Some(deny) = deny_paths { ws.sandbox_deny_paths = deny; }
         if let Some(hosts) = allowed_hosts { ws.sandbox_allowed_hosts = hosts; }
         // Force sandbox_enabled=true for the test even if the
         // candidate has it off - testing an off-sandbox is
@@ -2077,14 +2233,12 @@ fn workspace_set_sandbox(
     id: String,
     enabled: bool,
     rw_paths: Vec<String>,
-    deny_paths: Vec<String>,
     allowed_hosts: Vec<String>,
 ) -> Result<usize, String> {
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
     w.sandbox_enabled = enabled;
     w.sandbox_rw_paths = rw_paths;
-    w.sandbox_deny_paths = deny_paths;
     w.sandbox_allowed_hosts = allowed_hosts;
     save_workspace(w).map_err(|e| e.to_string())?;
 
@@ -2192,8 +2346,9 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
             }
         }
     } else if let Some(p) = &proj {
-        if !p.archive_script.trim().is_empty() {
-            let _ = run_script(&p.archive_script, Path::new(&w.path), w.port, &w.name);
+        let archive = effective_scripts(p).2;
+        if !archive.trim().is_empty() {
+            let _ = run_script(&archive, Path::new(&w.path), w.port, &w.name);
         }
     }
 
@@ -2304,10 +2459,11 @@ async fn workspace_delete(id: String) -> Result<(), String> {
 fn workspace_run_script(id: String, which: String) -> Result<String, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such ws")?;
     let p = load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
+    let (setup, run, archive) = effective_scripts(&p);
     let script = match which.as_str() {
-        "setup" => p.setup_script,
-        "run" => p.run_script,
-        "archive" => p.archive_script,
+        "setup" => setup,
+        "run" => run,
+        "archive" => archive,
         _ => return Err("unknown script".into()),
     };
     if script.trim().is_empty() {
@@ -3005,9 +3161,10 @@ fn workspace_run_script_stream(
     // workspace's port.
     let (script, cwd, target_port) = match &member_dir {
         None => {
+            let (setup, run, _) = effective_scripts(&p);
             let s = match kind.as_str() {
-                "setup" => p.setup_script.clone(),
-                "run"   => p.run_script.clone(),
+                "setup" => setup,
+                "run"   => run,
                 other   => return Err(format!("unknown script kind: {other}")),
             };
             (s, std::path::PathBuf::from(&w.path), w.port)
@@ -3219,7 +3376,6 @@ pub struct Settings {
     /// Workspaces still freeze a per-workspace copy at creation time —
     /// editing these later only affects NEW workspaces.
     pub sandbox_default_rw_paths: Vec<String>,
-    pub sandbox_default_deny_paths: Vec<String>,
     pub sandbox_default_allowed_hosts: Vec<String>,
 }
 
@@ -3813,6 +3969,7 @@ pub fn run() {
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
             workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
+            repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
             workspace_diff, workspace_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,

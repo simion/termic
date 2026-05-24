@@ -20,6 +20,15 @@ import { useUpdate, entryFor, cmpVersion } from "@/store/update";
 import { cn } from "@/lib/utils";
 import { X, ArrowDownToLine, RotateCw, ArrowRight, Sparkles } from "lucide-react";
 
+function truncateWords(text: string, maxWords: number): { text: string; truncated: boolean } {
+  const words = text.trim().split(/\s+/);
+  if (words.length <= maxWords) return { text, truncated: false };
+  return {
+    text: words.slice(0, maxWords).join(" "),
+    truncated: true,
+  };
+}
+
 export function UpdateCard() {
   const compact = useApp(s => s.compactSidebar);
   const openChangelog = useUI(s => s.openChangelog);
@@ -55,6 +64,7 @@ export function UpdateCard() {
   const summary =
     entry?.summary ||
     (mode === "update" ? "A new version of Termic is ready to install." : "");
+  const { text: truncatedSummary, truncated: isTruncated } = truncateWords(summary, 12);
 
   return (
     <div className="relative mx-2 mb-2 shrink-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] p-3">
@@ -87,7 +97,19 @@ export function UpdateCard() {
           mode === "update" && "pr-5",
         )}
       >
-        {summary}
+        {truncatedSummary}
+        {isTruncated && (
+          <>
+            <span>…</span>
+            <button
+              type="button"
+              onClick={openChangelog}
+              className="inline-flex items-center text-[var(--color-accent)] hover:underline font-medium ml-1"
+            >
+              read more
+            </button>
+          </>
+        )}
       </p>
 
       {mode === "update" && (

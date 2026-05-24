@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useApp, useActiveWorkspace } from "@/store/app";
 import {
-  workspaceChanges, workspaceRunScriptStream, workspaceStopScript, openPath,
+  workspaceChanges, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad,
 } from "@/lib/ipc";
 import type { Changes, Workspace, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -111,6 +111,20 @@ export function RightPanel() {
 
   // Resolve project so we can expand `preview_url` for the Open button.
   const project = useApp(s => (ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null));
+  // Fallback preview URLs from each project's committed .termic.yaml.
+  // Keyed by project_id so both single-repo and multi-repo members resolve.
+  const [yamlPreviewUrls, setYamlPreviewUrls] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!ws) { setYamlPreviewUrls({}); return; }
+    const ids = [ws.project_id, ...(ws.composition ?? []).map(m => m.project_id)];
+    const unique = [...new Set(ids)].filter(Boolean);
+    Promise.all(unique.map(id =>
+      repoConfigLoad(id)
+        .then(rc => [id, rc?.scripts?.preview_url?.trim() ?? ""] as const)
+        .catch(() => [id, ""] as const),
+    )).then(entries => setYamlPreviewUrls(Object.fromEntries(entries)));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws?.project_id, ws?.composition?.map(m => m.project_id).sort().join("|")]);
   const footerTerm = useApp(s => (ws ? !!s.footerTerm[ws.id] : false));
   const footRun = useRunState(ws?.id, footTab === "term" ? "run" : footTab, footTarget);
 
@@ -231,7 +245,7 @@ export function RightPanel() {
                   the target tab strip — same row as the targets so
                   the relationship is obvious ("these buttons
                   affect those tabs"). */}
-              <AllMembersToolbar ws={ws} project={project} onExpand={() => setFootCollapsed(false)} />
+              <AllMembersToolbar ws={ws} project={project} yamlPreviewUrls={yamlPreviewUrls} onExpand={() => setFootCollapsed(false)} />
             </div>
             {/* Row 2 — only for non-terminal targets (terminal has
                 no setup/run, just the shell). */}
@@ -255,7 +269,7 @@ export function RightPanel() {
                   <FTab label="Setup" active={footTab === "setup"} onClick={() => setFootTab("setup")} />
                   <FTab label="Run"   active={footTab === "run"}   onClick={() => setFootTab("run")} />
                   <RunToolbar
-                    ws={syntheticWs} project={memberProject} kind={footTab as "setup" | "run"} run={footRun}
+                    ws={syntheticWs} project={memberProject} yamlPreviewUrl={yamlPreviewUrls[m?.project_id ?? ""]} kind={footTab as "setup" | "run"} run={footRun}
                     compact={footerTerm}
                     onStart={() => {
                       const kind = footTab as "setup" | "run";
@@ -309,7 +323,7 @@ export function RightPanel() {
           )}
           {footTab !== "term" && (
             <RunToolbar
-              ws={ws} project={project} kind={footTab as "setup" | "run"} run={footRun}
+              ws={ws} project={project} yamlPreviewUrl={yamlPreviewUrls[ws.project_id]} kind={footTab as "setup" | "run"} run={footRun}
               compact={footerTerm}
               onStart={() => {
                 const kind = footTab as "setup" | "run";
@@ -395,8 +409,8 @@ function FTab({ label, active, onClick, onClose }: {
  *  path. Supports `$TERMIC_PORT`, `${TERMIC_PORT}`, `$PORT` (legacy), and
  *  `${TERMIC_WORKSPACE_NAME}`. Returns null if no template is set so the
  *  toolbar can hide the Open button. */
-function expandPreviewUrl(project: Project | null, ws: Workspace): string | null {
-  const tmpl = project?.preview_url?.trim();
+function expandPreviewUrl(project: Project | null, ws: Workspace, yamlUrl = ""): string | null {
+  const tmpl = project?.preview_url?.trim() || yamlUrl.trim();
   if (!tmpl) return `http://localhost:${ws.port}`;
   // Expand `$VAR` and `${VAR}` for the variables we set in run_script env.
   // Includes legacy `$CONDUCTOR_*` aliases so preview_url templates saved
@@ -418,8 +432,8 @@ function expandPreviewUrl(project: Project | null, ws: Workspace): string | null
 /** Right-aligned toolbar group: Open (if URL known) + Run / Stop (toggles by
  *  current run status). Open is enabled regardless of status so users can hit
  *  their dev server preview the moment they remember the URL is sticky. */
-function RunToolbar({ ws, project, kind, run, onStart, onStop, compact }: {
-  ws: Workspace; project: Project | null; kind: "setup" | "run";
+function RunToolbar({ ws, project, yamlPreviewUrl = "", kind, run, onStart, onStop, compact }: {
+  ws: Workspace; project: Project | null; yamlPreviewUrl?: string; kind: "setup" | "run";
   run: { status: "idle" | "running" | "done" | "error" };
   onStart: () => void; onStop: () => void;
   /** When the footer is cramped (Terminal tab open, panel narrow),
@@ -428,7 +442,7 @@ function RunToolbar({ ws, project, kind, run, onStart, onStop, compact }: {
    *  panel without overflow. */
   compact?: boolean;
 }) {
-  const url = expandPreviewUrl(project, ws);
+  const url = expandPreviewUrl(project, ws, yamlPreviewUrl);
   const running = run.status === "running";
   // Square button when icon-only; pill with label otherwise.
   const btnCls = compact ? "h-6 w-6 p-0" : "h-6 gap-1 px-1.5 text-[12px]";
@@ -729,9 +743,10 @@ function ChangeRow({ file, onOpen, onDoubleClick, clickable }: {
  *  member tab strip so the relationship is visible ("these buttons
  *  control all of those tabs"). Per-member RunToolbar (Row 2) stays
  *  for individual control. */
-function AllMembersToolbar({ ws, project, onExpand }: {
+function AllMembersToolbar({ ws, project, yamlPreviewUrls, onExpand }: {
   ws: Workspace;
   project: Project | null;
+  yamlPreviewUrls: Record<string, string>;
   onExpand: () => void;
 }) {
   // Project is the multi-repo HOST project. We need each member
@@ -781,17 +796,17 @@ function AllMembersToolbar({ ws, project, onExpand }: {
       // can swap $TERMIC_PORT for the member's port instead of the
       // workspace's. Cheap; the function only reads .port + .name.
       const synthetic: Workspace = { ...ws, port };
-      const url = expandPreviewUrl(mp ?? null, synthetic);
+      const url = expandPreviewUrl(mp ?? null, synthetic, yamlPreviewUrls[m.project_id]);
       if (url) openPath(url).catch(err => console.error("openPath failed:", err));
     }
   };
   // Skip the OPEN button on workspaces where no member has a
-  // preview_url + the host doesn't either — avoids opening a wave
-  // of `http://localhost:<port>` defaults at the user.
+  // preview_url (personal or yaml) — avoids opening a wave of
+  // `http://localhost:<port>` defaults at the user.
   void project;
   const anyPreview = members.some(m => {
     const mp = allProjects.find(p => p.id === m.project_id);
-    return !!mp?.preview_url?.trim();
+    return !!mp?.preview_url?.trim() || !!yamlPreviewUrls[m.project_id];
   });
 
   // Toggle Run all ↔ Stop all based on whether any member is

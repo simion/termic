@@ -32,6 +32,8 @@ export function GeneralSection() {
   const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
   const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
   const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
+  const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
+  const setSandboxBypassPermissions = usePrefs(s => s.setSandboxBypassPermissions);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -69,7 +71,6 @@ export function GeneralSection() {
       const next: Settings = {
         ...settings,
         sandbox_default_rw_paths:      splitLines(sbRw),
-        sandbox_default_deny_paths:    [],
         sandbox_default_allowed_hosts: splitLines(sbHosts),
       };
       await settingsSave(next);
@@ -123,7 +124,7 @@ export function GeneralSection() {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
           label="Sandbox new workspaces by default"
-          hint="When on, the New workspace dialog pre-checks its Sandbox toggle for every project. Individual projects can still opt out (Settings → Repositories). Already-created workspaces aren't affected - their sandbox pin is captured at creation."
+          hint="When on, the New workspace dialog pre-checks its Sandbox toggle for every project. Individual projects can still opt out (Settings → Projects). Already-created workspaces aren't affected - their sandbox pin is captured at creation."
           value={globalDefaultSandbox}
           onChange={setGlobalDefaultSandbox}
         />
@@ -149,6 +150,20 @@ export function GeneralSection() {
             {busy ? "Saving…" : "Save defaults"}
           </Button>
         </div>
+      </div>
+
+      {/* Bypass-permissions default for sandboxed agents. When on, a
+          sandboxed agent spawns with its "auto-approve everything" flag
+          regardless of the YOLO toggle — the seatbelt is the real
+          boundary, the agent's own prompts are just friction. Affects
+          new PTY spawns; respawn (⌘R / new tab) to pick up a change. */}
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Bypass permissions in sandboxed workspaces"
+          hint="When on, agents in a sandboxed workspace skip their own permission prompts — the macOS seatbelt is the real boundary. Turn off to make sandboxed agents still ask. Applies to newly spawned terminals."
+          value={sandboxBypassPermissions}
+          onChange={setSandboxBypassPermissions}
+        />
       </div>
     </div>
   );

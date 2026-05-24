@@ -6,7 +6,7 @@
 //
 // All update state — the check() probe, changelog fetch, install +
 // relaunch dance — lives in store/update.ts. This component is pure
-// presentation plus the dev "DEV" marker.
+// presentation.
 
 import { useApp } from "@/store/app";
 import { useUpdate } from "@/store/update";

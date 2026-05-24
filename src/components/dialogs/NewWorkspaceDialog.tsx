@@ -256,7 +256,6 @@ export function NewWorkspaceDialog() {
           })),
           sandbox_enabled: sandbox,
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
-          sandbox_deny_paths:     sandbox ? []                  : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
         });
       } else {
@@ -271,7 +270,6 @@ export function NewWorkspaceDialog() {
           // Only send lists when sandbox is on - keeps the JSON tidy
           // for unsandboxed workspaces (they don't need these saved).
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
-          sandbox_deny_paths:     sandbox ? []                  : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
         });
       }

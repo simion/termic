@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TextareaHTMLAttributes } from "react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
+import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ export function WorkspaceSandboxDialog() {
   const project = useApp(s => ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null);
   const agent   = useApp(s => ws ? s.agents.find(a => a.id === ws.cli) ?? null : null);
   const loadAll = useApp(s => s.loadAll);
+  const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
 
   // Local edit state, snapshotted from the workspace whenever the
   // dialog opens for a new id. Saving pushes back via IPC; cancelling
@@ -74,7 +76,6 @@ export function WorkspaceSandboxDialog() {
       const split = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
       const out = await workspaceTestSandbox(ws.id, {
         rwPaths:       split(rwText),
-        denyPaths:     [],
         allowedHosts:  split(hostsText),
       });
       setProbes(out);
@@ -125,7 +126,7 @@ export function WorkspaceSandboxDialog() {
       useUI.getState().markPendingSandboxRestart(ws.id);
       const killed = await workspaceSetSandbox(
         ws.id, enabled,
-        lines(rwText), [], lines(hostsText),
+        lines(rwText), lines(hostsText),
       );
       await loadAll();
       // Quiet success - the kill is the visible feedback (overlay
@@ -241,8 +242,10 @@ export function WorkspaceSandboxDialog() {
 
         {/* YOLO trade-off note. Sandboxed agents auto-skip their own
             permission prompts because the seatbelt is the real boundary -
-            users should know this is happening, not stumble onto it. */}
-        {enabled && (
+            users should know this is happening, not stumble onto it.
+            Honors the Settings → General "Bypass permissions in sandboxed
+            workspaces" toggle. */}
+        {enabled && sandboxBypassPermissions && (
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-ok)]/25 bg-[var(--color-ok)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
             <span>
@@ -284,7 +287,7 @@ export function WorkspaceSandboxDialog() {
             {project && (
               <button
                 type="button"
-                title={`Re-sync from ${project.name}'s current sandbox defaults (Settings → Repositories).`}
+                title={`Re-sync from ${project.name}'s current sandbox defaults (Settings → Projects).`}
                 onClick={() => {
                   setRwText((project.sandbox_rw_paths ?? []).join("\n"));
                   setHostsText((project.sandbox_allowed_hosts ?? []).join("\n"));

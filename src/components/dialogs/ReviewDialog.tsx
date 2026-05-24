@@ -41,7 +41,8 @@ export function ReviewDialog() {
       // is sent verbatim — Termic's prompt has a baked-in git-diff fallback
       // so the agent fetches the diff itself; we don't pre-inject it.
       const newTabId = crypto.randomUUID();
-      addTab(ws.id, { id: newTabId, type: "terminal", title: `${cli} · review`, cli });
+      const displayName = CLI_LABEL[cli] ?? cli;
+      addTab(ws.id, { id: newTabId, type: "terminal", title: `${displayName} · review`, cli });
       close();
 
       // Wait for the TerminalPane effect to spawn the PTY, then type the prompt.

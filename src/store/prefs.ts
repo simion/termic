@@ -16,6 +16,7 @@ const LS_YOLO          = "yoloMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
+const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 
 export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
@@ -198,37 +199,6 @@ export const MONO_FONT_OPTIONS: { id: string; label: string; stack: string }[] =
   { id: "meslopl",       label: "Meslo LG S for Powerline", stack: `"Meslo LG S for Powerline", monospace` },
 ];
 
-/**
- * Reliable font-installed check via canvas width comparison.
- * `document.fonts.check()` is unreliable in WKWebView — it returns true for
- * any font NAME it recognizes (including from @font-face that hasn't loaded
- * a real face). The canvas trick renders a probe string in the candidate
- * font with a known fallback; if the widths match the fallback, the
- * candidate wasn't applied (font not installed).
- */
-function isFontInstalled(family: string): boolean {
-  if (!family) return false;
-  const ctx = document.createElement("canvas").getContext("2d");
-  if (!ctx) return false;
-  // Use a long mixed string so even fonts with overlapping metrics for short
-  // runs still show a measurable diff.
-  const probe = "abcdefghijklmnopqrstuvwxyz1234567890 mmmmmiiiii";
-  const size = 24;
-  // Compare against TWO baselines (monospace + serif) so a candidate that
-  // happens to match one fallback's metrics is still detected.
-  ctx.font = `${size}px monospace`;
-  const monoBase  = ctx.measureText(probe).width;
-  ctx.font = `${size}px serif`;
-  const serifBase = ctx.measureText(probe).width;
-  // Test against monospace fallback (most apt for mono fonts).
-  ctx.font = `${size}px "${family}", monospace`;
-  const wMono  = ctx.measureText(probe).width;
-  ctx.font = `${size}px "${family}", serif`;
-  const wSerif = ctx.measureText(probe).width;
-  // Installed iff the candidate produced a width different from BOTH fallbacks
-  // (matching either means the system fell back to the generic).
-  return wMono !== monoBase || wSerif !== serifBase;
-}
 
 /** Returns the subset of MONO_FONT_OPTIONS whose primary face is actually
  *  installed (always includes the bundled JetBrains Mono). Synchronous —
@@ -298,6 +268,12 @@ interface PrefsState {
    *  effect. Lets a single-keystroke toggle apply across all projects
    *  without per-project bookkeeping. */
   globalDefaultSandbox: boolean;
+  /** When a workspace is sandboxed, auto-pass the agent's "bypass
+   *  permissions" (YOLO) flag at spawn even if the YOLO toggle is off.
+   *  ON by default: the seatbelt cage is the real security boundary, so
+   *  the agent's own permission prompts are just friction. Users who
+   *  still want the agent to ask inside a sandbox can turn this off. */
+  sandboxBypassPermissions: boolean;
   /** Color scheme: explicit dark/light, or auto = follow system. */
   themeMode: ThemeMode;
   /** Font for the CodeMirror editor + diff viewer. */
@@ -329,6 +305,10 @@ interface PrefsState {
   setTerminalLetterSpacing:(px: number) => void;
   setEditorFontSize:  (px: number) => void;
   setCodeLigatures:   (v: boolean) => void;
+  /** Restore every Appearance-section pref (fonts, sizes, weight,
+   *  letter-spacing, ligatures) to `APPEARANCE_DEFAULTS`. Theme is
+   *  left alone — it's not part of the Appearance page. */
+  resetAppearance:    () => void;
   setThemeMode:       (m: ThemeMode) => void;
   /** Convenience: cycle auto → light → dark → auto. */
   cycleThemeMode:     () => void;
@@ -336,6 +316,7 @@ interface PrefsState {
   setDesktopNotifications: (v: boolean) => void;
   setSettledHighlight: (v: boolean) => void;
   setGlobalDefaultSandbox: (v: boolean) => void;
+  setSandboxBypassPermissions: (v: boolean) => void;
 }
 
 const lsGet = (k: string, fallback: string) => {
@@ -347,16 +328,28 @@ const lsGetNum = (k: string, fallback: number) => {
 };
 const lsGetBool = (k: string, fallback: boolean) => lsGet(k, fallback ? "1" : "0") === "1";
 
-const initialEditorFont   = lsGet(LS_EDITOR_FONT, "jetbrains");
+/** Factory defaults for the Appearance section — single source of
+ *  truth for both first-launch fallbacks and the "Reset to defaults"
+ *  button. Default weight is 500 (Medium), not 400: xterm's WebGL
+ *  addon rasterizes glyphs through Canvas2D, and WKWebView's Canvas2D
+ *  path renders noticeably lighter than Core Text (what iTerm /
+ *  Terminal.app use). 500 closes most of that gap out of the box. */
+export const APPEARANCE_DEFAULTS = {
+  editorFontId:          "jetbrains",
+  terminalFontId:        "jetbrains",
+  terminalFontSize:      14,
+  terminalLetterSpacing: 1,
+  editorFontSize:        13,
+  codeLigatures:         true,
+} as const;
+
+const initialEditorFont   = lsGet(LS_EDITOR_FONT, APPEARANCE_DEFAULTS.editorFontId);
 const initialEditorTheme  = lsGet(LS_EDITOR_THEME, "atomone");
-const initialTerminalFont = lsGet(LS_TERMINAL_FONT, "jetbrains");
-// 14px terminal, matching terax-ai and most native terminals.
-const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, 14);
-// 1px of letter-spacing — a touch of breathing room. xterm packs glyphs
-// snug by default; +1px reads more natural (shown as "Default" in the picker).
-const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, 1)));
-const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, 13);
-const initialLigatures    = lsGetBool(LS_LIGATURES, true);
+const initialTerminalFont = lsGet(LS_TERMINAL_FONT, APPEARANCE_DEFAULTS.terminalFontId);
+const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, APPEARANCE_DEFAULTS.terminalFontSize);
+const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));
+const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
+const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
 const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
@@ -368,6 +361,9 @@ const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 // keep their setting (lsGetBool returns the stored value when present).
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
 const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
+// ON by default — sandboxed agents bypass their own permission prompts
+// because the seatbelt is the real boundary. Users can opt out.
+const initialSandboxBypass = lsGetBool(LS_SANDBOX_BYPASS, true);
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
@@ -375,6 +371,7 @@ export const usePrefs = create<PrefsState>(set => ({
   desktopNotifications: initialDesktopNotif,
   settledHighlight: initialSettledHighlight,
   globalDefaultSandbox: initialDefaultSandbox,
+  sandboxBypassPermissions: initialSandboxBypass,
   editorFontId: initialEditorFont,
   editorThemeId: initialEditorTheme,
   terminalFontId: initialTerminalFont,
@@ -417,6 +414,18 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_LIGATURES, v ? "1" : "0"); } catch {}
     set({ codeLigatures: v });
   },
+  resetAppearance: () => {
+    // Route through the individual setters so each one's side
+    // effects fire (localStorage write, applyEditorFont, clamps).
+    const d = APPEARANCE_DEFAULTS;
+    const s = usePrefs.getState();
+    s.setEditorFontId(d.editorFontId);
+    s.setTerminalFontId(d.terminalFontId);
+    s.setTerminalFontSize(d.terminalFontSize);
+    s.setTerminalLetterSpacing(d.terminalLetterSpacing);
+    s.setEditorFontSize(d.editorFontSize);
+    s.setCodeLigatures(d.codeLigatures);
+  },
   setThemeMode: (m) => {
     try { localStorage.setItem(LS_THEME, m); } catch {}
     applyTheme(m);
@@ -437,6 +446,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setGlobalDefaultSandbox: (v) => {
     try { localStorage.setItem(LS_DEFAULT_SANDBOX, v ? "1" : "0"); } catch {}
     set({ globalDefaultSandbox: v });
+  },
+  setSandboxBypassPermissions: (v) => {
+    try { localStorage.setItem(LS_SANDBOX_BYPASS, v ? "1" : "0"); } catch {}
+    set({ sandboxBypassPermissions: v });
   },
   cycleThemeMode: () => {
     // Cycle only the original three for the keyboard shortcut - explicit

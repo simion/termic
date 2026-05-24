@@ -51,38 +51,9 @@ export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
 
   return (
     <>
-      {/* New worktree comes FIRST — it's the more common multi-agent
-          workflow (parallel branched copies); Open repo is the rarer
-          "I want to touch the actual checkout" case. Order signals
-          recommended path. */}
-      {/* Single-row action — hint stays inline with the button
-          because there's only one variant (no per-agent duplication
-          to dedupe). Mirrors the original single-repo layout. */}
-      <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
-        <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate">New worktree</span>
-          {isMulti ? (
-            <>
-              <span className="text-[11.5px] text-[var(--color-fg-faint)]">branched copy of every</span>
-              <span className="text-[11.5px] text-[var(--color-fg-faint)]">member repo · isolated</span>
-            </>
-          ) : (
-            <>
-              <span className="text-[11.5px] text-[var(--color-fg-faint)]">separate copy · own port</span>
-              <span className="text-[11.5px] text-[var(--color-fg-faint)]">for parallel work</span>
-            </>
-          )}
-        </div>
-      </DropdownItem>
-      <DropdownSeparator />
-      {/* Section header for Open repo — collapses the per-row hint
-          repeat into one explanation above the agent list. */}
       <SectionHeader
-        title="OPEN REPO"
-        hint={isMulti
-          ? "Host repo with live symlinks to every member. Edits land on the real checkouts."
-          : "Attach an agent directly to the repo root."}
+        title="RUN IN REPO"
+        hint="No worktree, launch the agent in the repo's current branch."
         tone={isMulti ? "warn" : "dim"}
       />
       {agents.filter(a => visibleClis.has(a.id)).map(a => (
@@ -101,6 +72,16 @@ export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
           <span className="truncate">{a.display_name}</span>
         </DropdownItem>
       ))}
+      <DropdownSeparator />
+      <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
+        <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate">New git worktree</span>
+          <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+            {isMulti ? "Separate working directory per member, run agents in parallel" : "Separate working directory, run agents in parallel"}
+          </span>
+        </div>
+      </DropdownItem>
     </>
   );
 }

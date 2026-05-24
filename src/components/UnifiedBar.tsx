@@ -42,6 +42,7 @@ export function UnifiedBar() {
   const setThemeMode = usePrefs(s => s.setThemeMode);
   const yoloMode = usePrefs(s => s.yoloMode);
   const setYoloMode = usePrefs(s => s.setYoloMode);
+  const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
   // When the user picked an explicit theme, show that theme's icon.
   // When "auto" is selected, show the icon for whatever the OS resolved
   // to (Sun / Moon) — that's the theme they're actually looking at — and
@@ -128,14 +129,19 @@ export function UnifiedBar() {
             unsandboxed workspaces. */}
         {(() => {
           const sandboxed = !!ws?.sandbox_enabled;
+          // Sandboxed workspaces auto-pass YOLO at spawn unless the user
+          // disabled it in Settings → General.
+          const autoYolo = sandboxed && sandboxBypassPermissions;
           const dangerous = yoloMode && !sandboxed;
           const tipContent = dangerous
             ? "⚠️ YOLO ON without a sandbox — agents auto-approve EVERY action, including writes outside the worktree, network calls, and shell commands. Click to disable or enable the workspace sandbox first."
             : yoloMode && sandboxed
               ? "YOLO ON — safe: this workspace is sandboxed, so auto-approval is bounded by the seatbelt profile."
-              : sandboxed
+              : autoYolo
                 ? "YOLO OFF (but this workspace is sandboxed, so YOLO is auto-on for it anyway)."
-                : "YOLO OFF — agents will ask for approvals. Turn on per workspace once you've sandboxed it.";
+                : sandboxed
+                  ? "YOLO OFF — this workspace is sandboxed but bypass-permissions is off, so agents still ask for approvals."
+                  : "YOLO OFF — agents will ask for approvals. YOLO mode is automatically enabled for sandboxed agents.";
           return (
             <Tip content={tipContent} side="bottom">
               <Button

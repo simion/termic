@@ -83,7 +83,7 @@ doctor: ## Verify the dev env without installing anything (CI-friendly, exits no
 # ─── dev ──────────────────────────────────────────────────────────────
 
 dev: ## Run termic in dev mode (Vite HMR + Rust auto-rebuild).
-	@npm run tauri dev
+	@npm run tauri:dev
 .PHONY: dev
 
 check: ## Type-check the Rust backend (fast — no codegen, no link).

@@ -6,8 +6,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { projectUpdate, projectRemove, projectSetMembers } from "@/lib/ipc";
-import type { Project } from "@/lib/types";
+import { projectUpdate, projectRemove, projectSetMembers, repoConfigLoad, repoConfigSave } from "@/lib/ipc";
+import type { Project, RepoConfig } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -23,6 +23,17 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // after last keystroke) — no explicit Save button. The status indicator
   // tells the user when the save lands so they know it's not lost.
   const [draft, setDraft] = useState<Project | null>(null);
+  // Working copy of the repo's committed `.termic.yaml`. Single-repo
+  // scripts + files-to-copy are edited here and saved via a separate
+  // debounced `repo_config_save`. Initialized to the EFFECTIVE values:
+  // a legacy `projects.json` script wins until the first edit migrates
+  // it into `.termic.yaml`.
+  const [rc, setRc] = useState<RepoConfig | null>(null);
+  // Storage target for sandbox allow-lists and scripts/files — whether edits
+  // write to the committed .termic.yaml (team-shared) or to projects.json
+  // (personal overrides, local only). Reset on project switch.
+  const [sandboxTarget, setSandboxTarget] = useState<"yaml" | "personal">("yaml");
+  const [scriptTarget,  setScriptTarget]  = useState<"yaml" | "personal">("yaml");
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [err, setErr] = useState<string | null>(null);
   // Per-field save-success flash. patch() records every field key
@@ -39,8 +50,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // switch so jumping between projects lands on the same starting
   // point every time.
   const [subTab, setSubTab] = useState<SubTab>("scripts");
-  useEffect(() => { setSubTab("scripts"); }, [projectId]);
+  useEffect(() => { setSubTab("scripts"); setSandboxTarget("yaml"); setScriptTarget("yaml"); }, [projectId]);
   const saveTimer = useRef<number | null>(null);
+  const rcSaveTimer = useRef<number | null>(null);
+  // Pending `.termic.yaml` payload, kept in a ref so a debounced save
+  // can be flushed if Settings closes mid-edit.
+  const pendingRc = useRef<RepoConfig | null>(null);
+  const flushRcRef = useRef<() => void>(() => {});
   const savedFlashTimer = useRef<number | null>(null);
   // Skip the save-on-mount that would otherwise fire when we hydrate `draft`
   // from `project`. We only want saves driven by actual user edits.
@@ -65,7 +81,31 @@ export function RepositorySection({ projectId }: { projectId: string }) {
     (n, w) => n + (project && w.project_id === project.id && !w.is_repo_root ? 1 : 0), 0,
   ));
 
-  if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">Repository not found.</div>;
+  // Load raw `.termic.yaml` into rc. rc is the yaml content exactly —
+  // draft (projects.json) is shown separately on the Personal tab.
+  // Neither view merges the other; the user picks where to edit.
+  useEffect(() => {
+    let cancelled = false;
+    const empty: RepoConfig = {
+      version: 1,
+      scripts: { setup: "", run: "", archive: "", preview_url: "", files_to_copy: [] },
+      sandbox: { enabled_by_default: false, allowed_hosts: [], allowed_paths: [] },
+    };
+    repoConfigLoad(projectId)
+      .then(loaded => { if (!cancelled) setRc(loaded ?? empty); })
+      .catch(e => {
+        if (cancelled) return;
+        setErr(`Couldn't read .termic.yaml: ${e}`);
+        setRc(empty);
+      });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  // Flush a pending `.termic.yaml` save if Settings closes mid-edit so
+  // a sub-debounce-window edit isn't silently dropped.
+  useEffect(() => () => flushRcRef.current(), []);
+
+  if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">Project not found.</div>;
 
   async function performSave(next: Project) {
     // Snapshot the keys we're about to commit + clear the accumulator
@@ -121,6 +161,68 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       : "transition-colors";
   void firstSync;  // reserved for future skip logic
 
+  // ── `.termic.yaml` (rc) editing ──
+  function flushRcSave() {
+    if (rcSaveTimer.current) { window.clearTimeout(rcSaveTimer.current); rcSaveTimer.current = null; }
+    const next = pendingRc.current;
+    if (!next) return;
+    pendingRc.current = null;
+    const cleaned: RepoConfig = {
+      ...next,
+      scripts: {
+        ...next.scripts,
+        files_to_copy: next.scripts.files_to_copy.map(s => s.trim()).filter(Boolean),
+      },
+    };
+    setStatus("saving"); setErr(null);
+    repoConfigSave(projectId, cleaned)
+      .then(() => {
+        setStatus("saved");
+        if (savedFlashTimer.current) window.clearTimeout(savedFlashTimer.current);
+        savedFlashTimer.current = window.setTimeout(() => setStatus("idle"), 1500) as unknown as number;
+      })
+      .catch(e => { setErr(String(e)); setStatus("error"); });
+  }
+  flushRcRef.current = flushRcSave;
+
+  function scheduleRcSave(next: RepoConfig) {
+    pendingRc.current = next;
+    if (rcSaveTimer.current) window.clearTimeout(rcSaveTimer.current);
+    rcSaveTimer.current = window.setTimeout(flushRcSave, 500) as unknown as number;
+  }
+  function patchScript(which: "setup" | "run" | "archive", v: string) {
+    setRc(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, scripts: { ...prev.scripts, [which]: v } };
+      scheduleRcSave(next);
+      return next;
+    });
+  }
+  function patchRcPreview(url: string) {
+    setRc(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, scripts: { ...prev.scripts, preview_url: url } };
+      scheduleRcSave(next);
+      return next;
+    });
+  }
+  function patchFilesToCopy(text: string) {
+    setRc(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, scripts: { ...prev.scripts, files_to_copy: text.split("\n") } };
+      scheduleRcSave(next);
+      return next;
+    });
+  }
+  function patchRcSandbox(paths: string[], hosts: string[]) {
+    setRc(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, sandbox: { ...prev.sandbox, allowed_paths: paths, allowed_hosts: hosts } };
+      scheduleRcSave(next);
+      return next;
+    });
+  }
+
   // Hoist into a const so TS keeps the non-null narrowing across closures.
   const proj = project;
   async function remove() {
@@ -155,16 +257,16 @@ export function RepositorySection({ projectId }: { projectId: string }) {
     finally { setBusy(null); }
   }
 
-  // files_to_copy → textarea text + back.
-  const filesText = Array.isArray(draft.files_to_copy)
-    ? draft.files_to_copy.join("\n")
-    : String(draft.files_to_copy ?? "");
-
   const isMulti = (draft.type ?? "single") === "multi";
+  // For single-repo, files-to-copy source depends on which tab is active.
+  const filesArr = isMulti || scriptTarget === "personal"
+    ? (Array.isArray(draft.files_to_copy) ? draft.files_to_copy : [])
+    : (rc?.scripts.files_to_copy ?? []);
+  const filesText = filesArr.join("\n");
   // Tab order signals importance + frequency of edit:
   //   Scripts first  → the thing you actually came here to tune
   //   Files / Sandbox → focused single-concept tabs
-  //   Advanced last  → set-once metadata (paths, branch, remote)
+  //   More last      → set-once metadata (paths, branch, remote)
   //                    + irreversible Remove action at the bottom
   const tabs: { id: SubTab; label: string }[] = [
     { id: "scripts",  label: isMulti ? "Members & scripts" : "Scripts & Setup" },
@@ -231,11 +333,37 @@ export function RepositorySection({ projectId }: { projectId: string }) {
 
       {subTab === "scripts" && (
         <div className="flex flex-col gap-7">
-          {/* Preview URL FIRST — the single field 90% of users come
-              here to set. Pinned to the very top of the page so it's
-              the first thing visible. Single-line input below a
-              tight description; users can identify and edit in
-              under a second. */}
+          {/* Storage target strip — same underline-tab pattern as
+              Scripts / Sandbox / More. Hidden for multi-repo projects
+              since they always write to projects.json (no single
+              canonical .termic.yaml to target). */}
+          {!isMulti && (
+            <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
+              {([
+                { id: "yaml",     label: ".termic.yaml", hint: "committed · shared with team" },
+                { id: "personal", label: "Personal",     hint: "overrides when set"           },
+              ] as const).map(t => (
+                <button
+                  key={t.id} type="button"
+                  onClick={() => setScriptTarget(t.id)}
+                  className={cn(
+                    "relative -mb-px flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors",
+                    scriptTarget === t.id
+                      ? "text-[var(--color-fg)]"
+                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  {t.label}
+                  <span className="text-[11px] font-normal text-[var(--color-fg-faint)]">{t.hint}</span>
+                  {scriptTarget === t.id && (
+                    <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Preview URL */}
           <div>
             <div className="text-[14px] font-medium">Preview URL</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
@@ -245,9 +373,11 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               Blank = auto-detect from output logs.
             </div>
             <Input
-              value={draft.preview_url}
-              onChange={(e) => patch("preview_url", e.target.value)}
-              className={cn("mt-2 font-mono", flashRing("preview_url"))}
+              value={!isMulti && scriptTarget === "yaml" ? (rc?.scripts.preview_url ?? "") : draft.preview_url}
+              onChange={(e) => !isMulti && scriptTarget === "yaml"
+                ? patchRcPreview(e.target.value)
+                : patch("preview_url", e.target.value)}
+              className={cn("mt-2 font-mono", !isMulti && scriptTarget === "personal" && flashRing("preview_url"))}
               placeholder="http://localhost:$TERMIC_PORT"
             />
           </div>
@@ -255,41 +385,35 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           {isMulti ? (
             <MultiMembersEditor project={draft} onSaved={() => { void loadAll(); }} />
           ) : (
-            // Tab title ("Scripts & Setup") + the per-field hints
-            // below already say what these are; an extra header
-            // would be noise.
             <div className="flex flex-col gap-5">
               <ScriptField
                 label="Setup script"
                 hint="Runs when a new workspace is created."
-                value={draft.setup_script}
-                onChange={(v) => patch("setup_script", v)}
+                value={scriptTarget === "yaml" ? (rc?.scripts.setup ?? "") : (draft.setup_script ?? "")}
+                onChange={(v) => scriptTarget === "yaml" ? patchScript("setup", v) : patch("setup_script", v)}
                 placeholder="docker compose up -d"
-                flash={flashKeys.has("setup_script")}
+                flash={scriptTarget === "personal" && flashKeys.has("setup_script")}
               />
               <ScriptField
                 label="Run script"
                 hint={<>Runs when you click the Run button. Use <Token>$TERMIC_PORT</Token> so each workspace gets its own port.</>}
-                value={draft.run_script}
-                onChange={(v) => patch("run_script", v)}
+                value={scriptTarget === "yaml" ? (rc?.scripts.run ?? "") : (draft.run_script ?? "")}
+                onChange={(v) => scriptTarget === "yaml" ? patchScript("run", v) : patch("run_script", v)}
                 placeholder="PORT=$TERMIC_PORT npm run dev"
-                flash={flashKeys.has("run_script")}
+                flash={scriptTarget === "personal" && flashKeys.has("run_script")}
               />
               <ScriptField
                 label="Archive script"
                 hint="Runs before a workspace is archived. Termic already removes the worktree dir + its contents, so this is for stopping external services your run script started."
-                value={draft.archive_script}
-                onChange={(v) => patch("archive_script", v)}
+                value={scriptTarget === "yaml" ? (rc?.scripts.archive ?? "") : (draft.archive_script ?? "")}
+                onChange={(v) => scriptTarget === "yaml" ? patchScript("archive", v) : patch("archive_script", v)}
                 placeholder="docker compose down"
-                flash={flashKeys.has("archive_script")}
+                flash={scriptTarget === "personal" && flashKeys.has("archive_script")}
               />
             </div>
           )}
 
-          {/* Files to copy — every new workspace gets these copied
-              from the repo root. Same family as the setup script;
-              the parent flex gap already separates this section
-              visually, no divider line needed. */}
+          {/* Files to copy */}
           <div>
             <div className="text-[14px] font-medium">Files to copy</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
@@ -297,13 +421,19 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             </div>
             <textarea
               value={filesText}
-              onChange={(e) => patch("files_to_copy", e.target.value.split("\n") as unknown as Project["files_to_copy"])}
+              onChange={(e) => {
+                if (isMulti || scriptTarget === "personal") {
+                  patch("files_to_copy", e.target.value.split("\n") as unknown as Project["files_to_copy"]);
+                } else {
+                  patchFilesToCopy(e.target.value);
+                }
+              }}
               rows={6}
               placeholder=".env*&#10;src/config/local.py"
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
               className={cn(
                 "mt-2 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]",
-                flashRing("files_to_copy"),
+                scriptTarget === "personal" && flashRing("files_to_copy"),
               )}
             />
           </div>
@@ -324,19 +454,59 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               />
               <span className="text-[13.5px] font-medium">Sandbox new workspaces by default</span>
             </label>
+
+            {/* Storage target tabs — same underline-tab style as the
+                top-level Scripts / Sandbox / More strip. Controls
+                whether the allow-lists below read/write the committed
+                .termic.yaml (shared with the team) or the local
+                projects.json personal override. Both layers are merged
+                at spawn time. */}
+            <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
+              {([
+                { id: "yaml",     label: ".termic.yaml", hint: "committed · shared with team" },
+                { id: "personal", label: "Personal",     hint: "local only · merged on top"   },
+              ] as const).map(t => (
+                <button
+                  key={t.id} type="button"
+                  onClick={() => setSandboxTarget(t.id)}
+                  className={cn(
+                    "relative -mb-px flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors",
+                    sandboxTarget === t.id
+                      ? "text-[var(--color-fg)]"
+                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  {t.label}
+                  <span className="text-[11px] font-normal text-[var(--color-fg-faint)]">{t.hint}</span>
+                  {sandboxTarget === t.id && (
+                    <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]" />
+                  )}
+                </button>
+              ))}
+            </div>
+
             <Field
               label="Allowed paths"
-              hint="Dirs the agent can read AND write. Workspace + agent state dirs + caches + TMPDIR + system dirs are always allowed. Add extras here. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
+              hint="Dirs the agent can read AND write. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
               control={
                 <textarea
-                  value={(draft.sandbox_rw_paths ?? []).join("\n")}
-                  onChange={(e) => patch("sandbox_rw_paths", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
+                  value={sandboxTarget === "yaml"
+                    ? (rc?.sandbox.allowed_paths ?? []).join("\n")
+                    : (draft.sandbox_rw_paths ?? []).join("\n")}
+                  onChange={(e) => {
+                    const lines = e.target.value.split("\n");
+                    if (sandboxTarget === "yaml") {
+                      patchRcSandbox(lines, rc?.sandbox.allowed_hosts ?? []);
+                    } else {
+                      patch("sandbox_rw_paths", lines.map(s => s.trim()).filter(Boolean) as any);
+                    }
+                  }}
                   rows={3}
                   placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
                   autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
                   className={cn(
                     "w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]",
-                    flashRing("sandbox_rw_paths"),
+                    sandboxTarget === "personal" && flashRing("sandbox_rw_paths"),
                   )}
                 />
               }
@@ -346,14 +516,23 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               hint="One per line. Use * as a wildcard. Per-CLI vendor + GitHub + npm/pypi/crates.io are always allowed; these are extras."
               control={
                 <textarea
-                  value={(draft.sandbox_allowed_hosts ?? []).join("\n")}
-                  onChange={(e) => patch("sandbox_allowed_hosts", e.target.value.split("\n").map(s => s.trim()).filter(Boolean) as any)}
+                  value={sandboxTarget === "yaml"
+                    ? (rc?.sandbox.allowed_hosts ?? []).join("\n")
+                    : (draft.sandbox_allowed_hosts ?? []).join("\n")}
+                  onChange={(e) => {
+                    const lines = e.target.value.split("\n");
+                    if (sandboxTarget === "yaml") {
+                      patchRcSandbox(rc?.sandbox.allowed_paths ?? [], lines);
+                    } else {
+                      patch("sandbox_allowed_hosts", lines.map(s => s.trim()).filter(Boolean) as any);
+                    }
+                  }}
                   rows={4}
                   placeholder={"*.mycompany.com\nbitbucket.org"}
                   autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
                   className={cn(
                     "w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]",
-                    flashRing("sandbox_allowed_hosts"),
+                    sandboxTarget === "personal" && flashRing("sandbox_allowed_hosts"),
                   )}
                 />
               }
@@ -379,13 +558,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 <option value="claude">claude</option>
                 <option value="gemini">gemini</option>
                 <option value="codex">codex</option>
-                <option value="agy">agy</option>
+                <option value="agy">Antigravity</option>
               </select>
             }
           />
           <Field
             label="Root path"
-            hint="The git repo on disk. Do not move or delete this directory — remove the repository in Termic instead."
+            hint="The git repo on disk. Do not move or delete this directory — remove the project in Termic instead."
             control={<Input value={draft.root_path} readOnly className="font-mono opacity-70 cursor-not-allowed" />}
           />
           <Field
@@ -404,14 +583,14 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             control={<Input value={draft.remote} onChange={(e) => patch("remote", e.target.value)} className={cn("font-mono", flashRing("remote"))} placeholder="origin" />}
           />
 
-          {/* Danger zone pinned to the bottom of Advanced — same
+          {/* Danger zone pinned to the bottom of More — same
               page as the rarely-touched metadata, since it's also
               rarely-touched + irreversible. Distinct red card so it
               can't be confused with the editable fields above. */}
           <div className="mt-2 rounded-md border border-[var(--color-err)]/40 bg-[var(--color-err)]/5 p-4">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-[13.5px] font-medium text-[var(--color-fg)]">Remove repository</div>
+                <div className="text-[13.5px] font-medium text-[var(--color-fg)]">Remove project</div>
                 <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
                   Drops the project from the sidebar + archives every workspace under it. The actual repo at <code className="font-mono">{draft.root_path}</code> stays on disk.
                 </div>

@@ -81,5 +81,5 @@ export const CLI_BRAND_COLOR: Record<string, string> = {
  *  ("agy" — the binary name) while the menu shows the recognizable
  *  brand name. Anything not listed falls back to the id itself. */
 export const CLI_LABEL: Record<string, string> = {
-  agy: "antigravity",
+  agy: "Antigravity",
 };
