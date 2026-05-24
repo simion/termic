@@ -1,29 +1,22 @@
 {
   "versions": [
     {
-      "version": "0.5.2",
+      "version": "0.5.3",
       "date": "2026-05-24",
-      "summary": "Bulleted release notes and a new CLI order: Claude, Codex, Antigravity, Gemini.",
+      "summary": "Scrollable sidebar, smarter workspace collapse, inline .termic.yaml editing, bulleted changelog, reordered agents.",
       "notes": [
+        "Sidebar project list now scrolls when it overflows, and the Update card floats above the footer so it stays visible no matter how far you scroll",
+        "Workspaces auto-collapse when they have a single terminal and auto-expand the moment a second tab is added",
+        "Idle workspaces show a moon icon in the sidebar",
+        "Clicking a focused workspace toggles its collapse; clicking an unfocused one just activates it",
+        "Inline .termic.yaml editing for scripts and sandbox settings, with a .termic.yaml / Personal toggle",
+        "Live syntax-highlighted code preview in Appearance settings",
+        "New sandbox bypass-permissions preference",
+        "Removed the one-agent-per-repo-root limit",
+        "No spellcheck on rename inputs",
         "Changelog dialog now shows each version as a short headline plus a bulleted list of changes",
         "Sidebar Update card shows just the headline — the full details live one click away in the Changelog",
         "Reordered the built-in agents to Claude, Codex, Antigravity, Gemini across the new-tab menu, new-workspace picker, review picker, and Settings"
-      ]
-    },
-    {
-      "version": "0.5.1",
-      "date": "2026-05-24",
-      "summary": "Smarter sidebar collapse, inline .termic.yaml editing, live appearance preview.",
-      "notes": [
-        "Workspaces collapse by default when they have one terminal and auto-expand when a second is added",
-        "Idle workspaces show a moon icon",
-        "Clicking a focused workspace toggles collapse; clicking an unfocused one just activates it",
-        "Single-tab workspaces start collapsed",
-        "Inline .termic.yaml editing for scripts and sandbox settings, with a .termic.yaml / Personal toggle",
-        "Live syntax-highlighted code preview in Appearance settings",
-        "Sandbox bypass-permissions preference",
-        "Removed the one-agent-per-repo-root limit",
-        "No spellcheck on rename inputs"
       ]
     },
     {
