@@ -18,7 +18,7 @@ import { Check, Loader2, AlertTriangle, Shield, Layers, GitBranch, Link2 } from 
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode } from "@/lib/types";
 
-const CLIS = ["claude", "gemini", "codex", "agy"] as const;
+const CLIS = ["claude", "codex", "agy", "gemini"] as const;
 const PREFIXES = ["feature", "hotfix", "__custom__"] as const;
 
 export function NewWorkspaceDialog() {

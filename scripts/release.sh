@@ -76,18 +76,27 @@ CL_STATUS="$(node -e '
   if (!Array.isArray(j.versions)) j.versions = [];
   let top = j.versions[0];
   if (!top || top.version !== v) {
-    top = { version: v, date: "", summary: "" };
+    top = { version: v, date: "", summary: "", notes: [""] };
     j.versions.unshift(top);
   }
+  if (!Array.isArray(top.notes) || top.notes.length === 0) top.notes = [""];
   top.date = new Date().toISOString().slice(0, 10);
   fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
-  process.stdout.write(top.summary ? "OK" : "INCOMPLETE");
+  const haveSummary = typeof top.summary === "string" && top.summary.trim().length > 0;
+  const haveNotes = top.notes.some(n => typeof n === "string" && n.trim().length > 0);
+  if (!haveSummary || !haveNotes) { process.stdout.write("INCOMPLETE"); process.exit(0); }
+  const words = top.summary.trim().split(/\s+/).length;
+  if (words > 15) {
+    process.stderr.write("  ⚠ summary is " + words + " words (target ≤15) — it renders in a narrow sidebar card.\n");
+  }
+  process.stdout.write("OK");
 ' "$NEW")"
 if [[ "$CL_STATUS" != "OK" ]]; then
   echo ""
   echo "✗ changelog.json needs the $NEW entry filled in."
   echo "  A stub for $NEW is now at the top of changelog.json — write its"
-  echo "  one-line \"summary\", then re-run:"
+  echo "  short \"summary\" (≤15 words) and at least one \"notes\" bullet,"
+  echo "  then re-run:"
   echo "      make release BUMP=$BUMP"
   exit 1
 fi

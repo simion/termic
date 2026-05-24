@@ -1,39 +1,90 @@
 {
   "versions": [
     {
+      "version": "0.5.2",
+      "date": "",
+      "summary": "Bulleted release notes and a new CLI order: Claude, Codex, Antigravity, Gemini.",
+      "notes": [
+        "Changelog dialog now shows each version as a short headline plus a bulleted list of changes",
+        "Sidebar Update card shows just the headline — the full details live one click away in the Changelog",
+        "Reordered the built-in agents to Claude, Codex, Antigravity, Gemini across the new-tab menu, new-workspace picker, review picker, and Settings"
+      ]
+    },
+    {
       "version": "0.5.1",
       "date": "2026-05-24",
-      "summary": "Smarter sidebar: workspaces collapse by default when they have one terminal, auto-expand when a second is added, and show a moon icon when idle. Clicking a focused workspace toggles collapse; clicking an unfocused one just activates it. Single-tab workspaces start collapsed. Inline .termic.yaml editing for scripts and sandbox settings with a .termic.yaml / Personal toggle. Live syntax-highlighted code preview in Appearance settings. Sandbox bypass-permissions preference. Remove the one-agent-per-repo-root limit. No spellcheck on rename inputs."
+      "summary": "Smarter sidebar collapse, inline .termic.yaml editing, live appearance preview.",
+      "notes": [
+        "Workspaces collapse by default when they have one terminal and auto-expand when a second is added",
+        "Idle workspaces show a moon icon",
+        "Clicking a focused workspace toggles collapse; clicking an unfocused one just activates it",
+        "Single-tab workspaces start collapsed",
+        "Inline .termic.yaml editing for scripts and sandbox settings, with a .termic.yaml / Personal toggle",
+        "Live syntax-highlighted code preview in Appearance settings",
+        "Sandbox bypass-permissions preference",
+        "Removed the one-agent-per-repo-root limit",
+        "No spellcheck on rename inputs"
+      ]
     },
     {
       "version": "0.5.0",
       "date": "2026-05-22",
-      "summary": "Broadcast commands to multiple agents concurrently with the new Megaphone dialog (⇧⌘B), explore codebases with a premium file explorer featuring Sublime-style preview tabs, and customize your editor using 8 syntax themes and razor-sharp static typography. Also resolves a macOS sandbox crash and connection blocks for the Antigravity agent, while adding standard Google hosts to the baseline sandbox allowlist for Gemini and Antigravity."
+      "summary": "Broadcast to multiple agents, premium file explorer, 8 syntax themes.",
+      "notes": [
+        "Broadcast commands to multiple agents concurrently with the new Megaphone dialog (⇧⌘B)",
+        "Premium file explorer with Sublime-style preview tabs",
+        "8 syntax themes and razor-sharp static typography",
+        "Fixed a macOS sandbox crash and connection blocks for the Antigravity agent",
+        "Added standard Google hosts to the baseline sandbox allowlist for Gemini and Antigravity"
+      ]
     },
     {
       "version": "0.4.6",
       "date": "2026-05-21",
-      "summary": "Sharper keyboard focus for terminal tabs — closing a tab keeps focus in the same pane, new tabs grab focus on spawn, and ⌘T opens the new-tab menu. Also fixes a doubled border on the collapsed Setup/Run footer."
+      "summary": "Sharper keyboard focus for terminal tabs.",
+      "notes": [
+        "Closing a tab keeps focus in the same pane",
+        "New tabs grab focus on spawn",
+        "⌘T opens the new-tab menu",
+        "Fixed a doubled border on the collapsed Setup/Run footer"
+      ]
     },
     {
       "version": "0.4.5",
       "date": "2026-05-20",
-      "summary": "Self-update in-app prompts and a detailed Changelog dialog are now live, alongside optimized, decoupled terminal rendering logic."
+      "summary": "In-app self-update prompts and a detailed Changelog dialog.",
+      "notes": [
+        "Self-update in-app prompts",
+        "Detailed Changelog dialog",
+        "Optimized, decoupled terminal rendering logic"
+      ]
     },
     {
       "version": "0.4.4",
       "date": "2026-05-20",
-      "summary": "Characters missing from your chosen terminal font now fall back to the bundled JetBrains Mono instead of a thinner, mismatched system face."
+      "summary": "Missing glyphs fall back to bundled JetBrains Mono.",
+      "notes": [
+        "Characters missing from your chosen terminal font now fall back to the bundled JetBrains Mono instead of a thinner, mismatched system face"
+      ]
     },
     {
       "version": "0.4.3",
       "date": "2026-05-20",
-      "summary": "Esc now closes the Settings panel in two deliberate steps, and the sandbox grants the Antigravity agent access to ~/.gemini."
+      "summary": "Two-step Esc to close Settings, Antigravity sandbox access to ~/.gemini.",
+      "notes": [
+        "Esc now closes the Settings panel in two deliberate steps",
+        "Sandbox grants the Antigravity agent access to ~/.gemini"
+      ]
     },
     {
       "version": "0.4.2",
       "date": "2026-05-20",
-      "summary": "Save files straight from the built-in editor with a dirty-state indicator, use the new Antigravity CLI, and open plain shell tabs alongside your agents."
+      "summary": "Save from the built-in editor, Antigravity CLI, plain shell tabs.",
+      "notes": [
+        "Save files straight from the built-in editor with a dirty-state indicator",
+        "Use the new Antigravity CLI",
+        "Open plain shell tabs alongside your agents"
+      ]
     }
   ]
 }

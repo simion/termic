@@ -1,7 +1,7 @@
 // Settings → Agents. Lets the user edit per-CLI launch commands, default
 // args, YOLO flags, and runtime YOLO slash-commands.
 //
-// Built-in agents (claude/gemini/codex/agy) are editable but not removable —
+// Built-in agents (claude/codex/agy/gemini) are editable but not removable —
 // removing them would orphan existing workspaces that reference them.
 // Saves are debounced (500ms) so typing doesn't hammer the JSON file.
 
@@ -72,7 +72,7 @@ export function AgentsSection() {
   async function resetAllBuiltins() {
     const ok = await useUI.getState().askConfirm({
       title: "Reset built-in agents to defaults?",
-      message: "Resets the built-in agents (claude, gemini, codex, Antigravity) to their ship-default commands. Custom agents and per-agent env blocks are kept.",
+      message: "Resets the built-in agents (claude, codex, Antigravity, gemini) to their ship-default commands. Custom agents and per-agent env blocks are kept.",
       confirmLabel: "Reset built-ins",
     });
     if (!ok) return;

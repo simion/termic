@@ -81,7 +81,14 @@ export function ChangelogDialog() {
                 )}
               </div>
               {e.summary && (
-                <p className="text-[12.5px] leading-snug text-[var(--color-fg-dim)]">{e.summary}</p>
+                <p className="text-[12.5px] leading-snug text-[var(--color-fg)]">{e.summary}</p>
+              )}
+              {e.notes && e.notes.length > 0 && (
+                <ul className="mt-1 list-disc space-y-1 pl-5 text-[12.5px] leading-snug text-[var(--color-fg-dim)] marker:text-[var(--color-fg-faint)]">
+                  {e.notes.map((n, i) => (
+                    <li key={i}>{n}</li>
+                  ))}
+                </ul>
               )}
             </article>
           ))}

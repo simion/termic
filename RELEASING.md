@@ -23,10 +23,12 @@ its `summary`, then re-run the same command.
 ## Step 1 — author the changelog entry
 
 `changelog.json` (repo root) is the **single source of truth** for release
-notes. One `summary` string per version, shown in two places:
+notes. Each version carries a short `summary` and a bulleted `notes` list,
+shown in two places:
 
-- the in-app **Update card** (sidebar) — the latest version's `summary`;
-- the in-app **Changelog dialog** — every version's `summary`, dated.
+- the in-app **Update card** (sidebar) — the latest version's `summary` only;
+- the in-app **Changelog dialog** — every version's `summary` as the heading
+  plus its `notes` as a bullet list, dated.
 
 Add a new object to the **top** of the `versions` array:
 
@@ -34,20 +36,24 @@ Add a new object to the **top** of the `versions` array:
 {
   "version": "0.4.5",   // must match the version you're releasing
   "date": "",           // leave empty — release.sh stamps it
-  "summary": "One or two sentences describing the release."
+  "summary": "Short headline (≤15 words).",
+  "notes": [
+    "First change",
+    "Second change",
+    "…"
+  ]
 }
 ```
-
-That's the whole schema — three fields, and you only ever write `summary`
-(`version` comes from the bump, `date` is auto-stamped).
 
 Field notes:
 
 - **`version`** — must equal the version being released. `make release` gates
   on this: the top entry's `version` must match the computed new version.
 - **`date`** — leave empty; `release.sh` stamps today's date automatically.
-- **`summary`** — required. `make release` refuses to proceed if it's blank.
-  Keep it short — it renders in a ~200px sidebar card.
+- **`summary`** — required, ≤15 words. Renders in a narrow sidebar card —
+  `release.sh` prints a warning if it exceeds 15 words.
+- **`notes`** — required, at least one non-empty bullet. Plain strings, no
+  markdown. Each becomes a `<li>` in the Changelog dialog.
 
 Newest entry first. Never reorder or delete old entries — the dialog shows the
 whole history.

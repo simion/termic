@@ -1867,7 +1867,7 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 
 #[tauri::command]
 fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
-    if !["claude", "gemini", "codex", "agy"].contains(&cli.as_str()) {
+    if !["claude", "codex", "agy", "gemini"].contains(&cli.as_str()) {
         return Err(format!("unknown cli: {cli}"));
     }
     let mut list = load_workspaces();
@@ -3493,35 +3493,6 @@ fn default_agents() -> Vec<Agent> {
             ],
         },
         Agent {
-            id: "gemini".into(),
-            display_name: "gemini".into(),
-            command: "gemini".into(),
-            args: vec![],
-            icon_id: "gemini".into(),
-            color: "#4c8bf5".into(),
-            builtin: true,
-            disabled: false,
-            capabilities: AgentCapabilities {
-                yolo_args: vec!["--yolo".into()],
-                // gemini's live approval-mode switch — one command per
-                // direction (the form exposes both as separate fields).
-                runtime_yolo_command: "/approval-mode yolo".into(),
-                runtime_default_command: "/approval-mode default".into(),
-                // gemini supports `--resume latest` to pick up the most
-                // recent session in CWD. Less deterministic than claude's
-                // named-session scheme but the best gemini offers today.
-                resume_args: vec!["--resume".into(), "latest".into()],
-            },
-            env: std::collections::HashMap::new(),
-            sandbox_allowed_paths: vec![
-                "$HOME/.gemini".into(),
-                "$HOME/.config/gemini".into(),
-                "$HOME/.local/share/gemini".into(),
-                "$HOME/.local/state/gemini".into(),
-                "$HOME/Library/Application Support/Gemini".into(),
-            ],
-        },
-        Agent {
             id: "codex".into(),
             display_name: "codex".into(),
             command: "codex".into(),
@@ -3591,6 +3562,35 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/share/antigravity".into(),
                 "$HOME/.local/state/antigravity".into(),
                 "$HOME/Library/Application Support/Antigravity".into(),
+            ],
+        },
+        Agent {
+            id: "gemini".into(),
+            display_name: "gemini".into(),
+            command: "gemini".into(),
+            args: vec![],
+            icon_id: "gemini".into(),
+            color: "#4c8bf5".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                yolo_args: vec!["--yolo".into()],
+                // gemini's live approval-mode switch — one command per
+                // direction (the form exposes both as separate fields).
+                runtime_yolo_command: "/approval-mode yolo".into(),
+                runtime_default_command: "/approval-mode default".into(),
+                // gemini supports `--resume latest` to pick up the most
+                // recent session in CWD. Less deterministic than claude's
+                // named-session scheme but the best gemini offers today.
+                resume_args: vec!["--resume".into(), "latest".into()],
+            },
+            env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                "$HOME/.gemini".into(),
+                "$HOME/.config/gemini".into(),
+                "$HOME/.local/share/gemini".into(),
+                "$HOME/.local/state/gemini".into(),
+                "$HOME/Library/Application Support/Gemini".into(),
             ],
         },
     ]

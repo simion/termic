@@ -35,16 +35,22 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 const LS_DISMISSED = "updateDismissedVersion"; // update-card dismissal
 const LS_LAST_SEEN = "updateLastSeenVersion";  // what's-new watermark
 
-/** One per-version entry in changelog.json. Authored at release time
- *  by scripts/release.sh; see RELEASING.md for the schema. The same
- *  `summary` string is shown on the in-app card (latest entry only)
- *  and as each version's line in the Changelog dialog. */
+/** One per-version entry in changelog.json. Authored at release time;
+ *  see RELEASING.md for the schema.
+ *  - `summary` (≤15 words): single-sentence headline, rendered on the
+ *    sidebar UpdateCard and as each version's heading line in the
+ *    Changelog dialog.
+ *  - `notes`: bulleted detail, rendered as a list under the summary in
+ *    the Changelog dialog only. Optional for back-compat with older
+ *    entries that pre-date the split. */
 export interface ChangelogEntry {
   version: string;
   /** ISO date (YYYY-MM-DD), auto-stamped by release.sh. */
   date: string;
-  /** One or two sentences describing the release. */
+  /** One short sentence (≤15 words). */
   summary: string;
+  /** Bullet list of changes. Plain strings — no markdown. */
+  notes?: string[];
 }
 
 /** Numeric x.y.z compare. Returns >0 when `a` is newer than `b`.
@@ -208,12 +214,21 @@ const MOCK_CHANGELOG: ChangelogEntry[] = [
   {
     version: "9.9.9",
     date: "2026-05-21",
-    summary: "Configure Spotlight testing per repository, and preview HTML files right inside your workspace.",
+    summary: "Per-repository Spotlight testing and in-workspace HTML preview.",
+    notes: [
+      "Configure Spotlight testing per repository",
+      "Preview HTML files right inside your workspace",
+      "Faster cold-start when opening large repos",
+    ],
   },
   {
     version: "9.9.8",
     date: "2026-05-18",
-    summary: "A prior version, here so the Changelog dialog has some history to scroll through.",
+    summary: "A prior version so the Changelog dialog has history to scroll.",
+    notes: [
+      "Sample bullet one",
+      "Sample bullet two",
+    ],
   },
 ];
 

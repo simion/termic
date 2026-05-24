@@ -423,7 +423,7 @@ function ThemePicker({
               across launches. Surfacing this here so users discover it
               the first time they switch themes. */}
           <div className="mt-1 border-t border-[var(--color-border-soft)] px-2 py-1.5 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-            Tip: run <span className="mono text-[var(--color-fg-dim)]">/theme</span> inside claude / gemini / codex once to match. The setting persists.
+            Tip: run <span className="mono text-[var(--color-fg-dim)]">/theme</span> inside claude / codex / gemini once to match. The setting persists.
           </div>
         </div>
       )}

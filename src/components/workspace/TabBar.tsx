@@ -14,7 +14,7 @@ import { visibleCliIds, agentDisplayName } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
-const CLIS = ["claude", "gemini", "codex", "agy"] as const;
+const CLIS = ["claude", "codex", "agy", "gemini"] as const;
 
 export function TabBar({ ws }: { ws: Workspace }) {
   const tabs = useWorkspaceTabs(ws.id);
