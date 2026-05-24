@@ -2,7 +2,7 @@
   "versions": [
     {
       "version": "0.5.2",
-      "date": "",
+      "date": "2026-05-24",
       "summary": "Bulleted release notes and a new CLI order: Claude, Codex, Antigravity, Gemini.",
       "notes": [
         "Changelog dialog now shows each version as a short headline plus a bulleted list of changes",
