@@ -301,7 +301,17 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // because "✋ Action Required" is always actionable.
     let lastTitleState: "busy" | "idle" | "attention" | null = null;
     term.onTitleChange(t => {
-      setTabLiveTitle(ws.id, tab.id, t);
+      // Strip the agent's state-glyph prefix from the displayed title.
+      // Claude prefixes with "✳ ", Gemini with "◇ " (these are also the
+      // markers classifyTitle keys off, but we keep the raw `t` for that
+      // call below). Stripping makes the sidebar / tab bar read like
+      // plain prose instead of "✳ Fix coupon text encodin...".
+      const STRIP_PREFIX: Record<string, RegExp> = {
+        claude: /^\s*✳\s+/,
+        gemini: /^\s*◇\s+/,
+      };
+      const strip = STRIP_PREFIX[tab.cli];
+      setTabLiveTitle(ws.id, tab.id, strip ? t.replace(strip, "") : t);
       const state = classifyTitle(tab.cli, t);
       wdlog(`title change [classifier=${state ?? "unknown"}, last=${lastTitleState ?? "none"}]`, t);
       if (state === "idle") {

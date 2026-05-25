@@ -2,8 +2,9 @@
 //   ⌘1..⌘9   → jump to the Nth active workspace
 //   ⌘L       → focus the active workspace's terminal
 //   ⌘[, ⌘]   → previous / next workspace (cycles non-archived in sidebar order)
-//   ⌥⌘↑, ⌥⌘↓ → previous / next workspace (arrow-key alt for the brackets;
-//             matches the up/down sidebar visual direction)
+//   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded
+//             terminal tabs underneath) — basically "what you can see"
+//   ⌥⌘↑, ⌥⌘↓ → previous / next workspace (skip expanded tabs)
 //   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
 //             (Safari / Chrome / iTerm convention — Shift + brackets = tabs)
 //   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘];
@@ -21,14 +22,52 @@ export function useShortcuts() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const isMeta = e.metaKey || e.ctrlKey;
-      if (!isMeta) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable;
-
       const state = useApp.getState();
       const wsId = state.activeWorkspaceId;
       const tabs = wsId ? state.tabs[wsId] || [] : [];
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
+
+      // ⌥↑ / ⌥↓ → previous / next VISIBLE sidebar row. Walks the same flat
+      // list the user sees: each workspace, plus its terminal tabs when the
+      // workspace is expanded. Selecting a tab also activates its workspace.
+      // No isTyping guard for the same xterm-helper-textarea reason as ⌘T/⌘W.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
+          && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        type Row = { wsId: string; tabId?: string };
+        const rows: Row[] = [];
+        for (const p of state.projects) {
+          for (const w of state.workspaces) {
+            if (w.project_id !== p.id || w.archived) continue;
+            rows.push({ wsId: w.id });
+            const wsTabs = state.tabs[w.id] ?? [];
+            const terminalTabs = wsTabs.filter(t => t.type === "terminal");
+            const explicit = state.collapsedWorkspaces[w.id];
+            const collapsed = explicit ?? (terminalTabs.length <= 1);
+            if (!collapsed) {
+              for (const t of terminalTabs) rows.push({ wsId: w.id, tabId: t.id });
+            }
+          }
+        }
+        if (rows.length <= 1) return;
+        e.preventDefault();
+        const activeTab = wsId ? state.activeTab[wsId] : undefined;
+        // Prefer matching the active tab row when the workspace is expanded;
+        // otherwise the workspace header row.
+        let idx = rows.findIndex(r => r.wsId === wsId && r.tabId === activeTab);
+        if (idx < 0) idx = rows.findIndex(r => r.wsId === wsId && !r.tabId);
+        const dir = e.key === "ArrowDown" ? 1 : -1;
+        const nextIdx = idx < 0
+          ? (dir > 0 ? 0 : rows.length - 1)
+          : (idx + dir + rows.length) % rows.length;
+        const target = rows[nextIdx];
+        state.setActiveWorkspace(target.wsId);
+        if (target.tabId) state.setActiveTabId(target.wsId, target.tabId);
+        return;
+      }
+
+      if (!isMeta) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable;
 
       // ⌘, → open settings (macOS convention).
       if (e.key === ",") {
