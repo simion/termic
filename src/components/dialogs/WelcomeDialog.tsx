@@ -20,7 +20,7 @@ import { discoverRepos, detectClis, settingsLoad, settingsSave, agentsSave, proj
 import { Checkbox } from "@/components/ui/Checkbox";
 import type { CliInfo, DiscoveredRepo } from "@/lib/types";
 import { useApp } from "@/store/app";
-import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
+import { CliIcon, CLI_LABEL } from "@/icons/cli";
 import { TermicMark } from "@/icons/TermicLogo";
 import { cn } from "@/lib/utils";
 import { usePrefs, applyTheme, type ThemeMode } from "@/store/prefs";
@@ -270,18 +270,24 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
           <div className="text-[13.5px] text-[var(--color-fg-faint)]">Checking…</div>
         )}
         {clis.map(c => (
-          <div key={c.name} className={cn("flex items-center gap-2 py-1 text-[13.5px]", !c.found && "opacity-80")}>
-            <span className={c.found ? CLI_BRAND_COLOR[c.name] : "text-[var(--color-fg-faint)]"}>
+          <div key={c.name} className={cn("flex items-center gap-2 py-1 text-[13.5px]", !c.found && "opacity-70")}>
+            {/* Most users will have one or two of these CLIs installed,
+                not all four. Painting the absent ones red made every
+                wizard look like a wall of failures. Now: found = green
+                (status badge), missing = gray (neutral, "not relevant
+                here"). The "Set path..." button is still available for
+                anything you do want to wire up. */}
+            <span className={c.found ? "text-[var(--color-ok)]" : "text-[var(--color-fg-faint)]"}>
               <CliIcon cli={c.name} className="h-4 w-4" />
             </span>
-            <span className="min-w-[60px]">{CLI_LABEL[c.name] ?? c.name}</span>
+            <span className={cn("min-w-[60px]", !c.found && "text-[var(--color-fg-dim)]")}>{CLI_LABEL[c.name] ?? c.name}</span>
             {c.found ? (
               <span className="truncate font-mono text-[12px] text-[var(--color-fg-dim)]" title={c.path}>
                 {c.version || c.path}
               </span>
             ) : (
               <>
-                <span className="text-[var(--color-err)] text-[12px]">not installed</span>
+                <span className="text-[var(--color-fg-faint)] text-[12px]">not installed</span>
                 <button
                   type="button"
                   onClick={() => pickBinary(c.name)}

@@ -53,6 +53,7 @@
   --color-cli-gemini: #4c8bf5;
   --color-cli-codex:  #16a34a;
   --color-cli-agy:    #8b5cf6;
+  --color-cli-grok:   #cbd5e1;
 
   --radius-pill: 999px;
   /* Default mono. Overridden at runtime by the font picker (writes the
@@ -117,6 +118,9 @@
     --color-accent:      #c25e3d;       /* shifted slightly for contrast on light bg */
     --color-accent-soft: rgba(194, 94, 61, 0.20);
     --color-accent-deep: #a04a2c;       /* button bg on cream surfaces */
+    /* Grok's mark is neutral, not a vivid brand hue — bump to a darker
+       slate in light mode so it doesn't disappear against the cream bg. */
+    --color-cli-grok:    #64748b;
     color-scheme: light;
   }
 

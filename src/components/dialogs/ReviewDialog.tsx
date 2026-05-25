@@ -12,7 +12,7 @@ import { REVIEW_PROMPT } from "@/lib/review";
 import { visibleCliIds } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 
-const CLIS = ["claude", "codex", "agy", "gemini"] as const;
+const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
 
 export function ReviewDialog() {
   const wsId = useUI(s => s.reviewForWsId);

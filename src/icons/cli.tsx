@@ -40,6 +40,21 @@ export function AntigravityIcon({ className }: Props) {
   );
 }
 
+// xAI Grok Build TUI (`grok`). The Grok wordmark is a ring with a
+// diagonal slash overhanging both ends — render it as a stroked
+// circle + a slash, both currentColor so the brand tint flows
+// through. strokeLinecap="round" matches the polished caps in the
+// official mark.
+export function GrokIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <circle cx="12" cy="12" r="7.5" />
+      <path d="M20 4 L4 20" />
+    </svg>
+  );
+}
+
 // Plain shell / terminal tabs (cli: "shell"). Boxed terminal glyph
 // (lucide square-terminal), stroke style to match the generic default.
 export function ShellIcon({ className }: Props) {
@@ -60,6 +75,7 @@ export function CliIcon({ cli, className }: { cli: string; className?: string })
     case "gemini": return <GeminiIcon className={className} />;
     case "codex":  return <CodexIcon  className={className} />;
     case "agy":    return <AntigravityIcon className={className} />;
+    case "grok":   return <GrokIcon className={className} />;
     case "shell":  return <ShellIcon className={className} />;
     default: return (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
@@ -75,11 +91,13 @@ export const CLI_BRAND_COLOR: Record<string, string> = {
   gemini: "text-[var(--color-cli-gemini)]",
   codex:  "text-[var(--color-cli-codex)]",
   agy:    "text-[var(--color-cli-agy)]",
+  grok:   "text-[var(--color-cli-grok)]",
 };
 
 /** Display label for a cli id in the pickers. The id stays terse
  *  ("agy" — the binary name) while the menu shows the recognizable
  *  brand name. Anything not listed falls back to the id itself. */
 export const CLI_LABEL: Record<string, string> = {
-  agy: "Antigravity",
+  agy:  "Antigravity",
+  grok: "Grok",
 };

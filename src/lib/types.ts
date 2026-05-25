@@ -1,6 +1,6 @@
 // Mirrors the Serde structs in src-tauri/src/lib.rs. Keep in sync.
 
-export type CLI = "claude" | "codex" | "agy" | "gemini";
+export type CLI = "claude" | "codex" | "agy" | "gemini" | "grok";
 
 export interface Project {
   id: string;

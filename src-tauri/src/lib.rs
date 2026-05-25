@@ -1867,7 +1867,7 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 
 #[tauri::command]
 fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
-    if !["claude", "codex", "agy", "gemini"].contains(&cli.as_str()) {
+    if !["claude", "codex", "agy", "gemini", "grok"].contains(&cli.as_str()) {
         return Err(format!("unknown cli: {cli}"));
     }
     let mut list = load_workspaces();
@@ -3770,6 +3770,35 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/share/gemini".into(),
                 "$HOME/.local/state/gemini".into(),
                 "$HOME/Library/Application Support/Gemini".into(),
+            ],
+        },
+        Agent {
+            // xAI's Grok Build TUI. Help text confirmed:
+            //   --always-approve     auto-approves every tool call (yolo)
+            //   -c, --continue       continue the most recent CWD session
+            //   sessions / memory    state lives under ~/.grok by default
+            id: "grok".into(),
+            display_name: "grok".into(),
+            command: "grok".into(),
+            args: vec![],
+            icon_id: "grok".into(),
+            color: "#cbd5e1".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                yolo_args: vec!["--always-approve".into()],
+                // No documented slash command for a live YOLO toggle.
+                runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
+                resume_args: vec!["--continue".into()],
+            },
+            env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                "$HOME/.grok".into(),
+                "$HOME/.config/grok".into(),
+                "$HOME/.local/share/grok".into(),
+                "$HOME/.local/state/grok".into(),
+                "$HOME/Library/Application Support/Grok".into(),
             ],
         },
     ]
