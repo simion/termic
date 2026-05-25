@@ -1,6 +1,14 @@
 {
   "versions": [
     {
+      "version": "0.5.6",
+      "date": "2026-05-25",
+      "summary": "Wider Changelog dialog so release notes have room to breathe.",
+      "notes": [
+        "Changelog dialog is now noticeably wider (max-w-2xl) so multi-line bullets stop wrapping into narrow ribbons"
+      ]
+    },
+    {
       "version": "0.5.5",
       "date": "2026-05-25",
       "summary": "Save sandbox changes without restarting the agent, plus a make run alias.",
