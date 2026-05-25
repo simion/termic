@@ -19,7 +19,11 @@ import { cn } from "@/lib/utils";
 
 const MAX_FILES = 50;
 const MAX_HITS_PER_FILE = 12;
-const DEBOUNCE_MS = 120;
+const DEBOUNCE_MS = 250;
+// Progressive reveal: render this many rows up-front, then reveal another
+// chunk when the user scrolls near the bottom. Keeps the DOM small during
+// the hot path (typing) without committing to full virtualization.
+const RENDER_CHUNK = 80;
 
 interface FileGroup { path: string; hits: GrepHit[] }
 
@@ -68,6 +72,7 @@ export function FindInFilesDialog() {
   const [searching, setSearching] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
+  const [renderLimit, setRenderLimit] = useState(RENDER_CHUNK);
   const listRef = useRef<HTMLDivElement>(null);
 
   // searchId is bumped each keystroke; late events from older searches
@@ -104,8 +109,11 @@ export function FindInFilesDialog() {
     const t = window.setTimeout(() => {
       const searchId = crypto.randomUUID();
       activeSearchIdRef.current = searchId;
-      setGroups([]);
-      setTruncated(false);
+      // Don't clear groups/truncated here — keep the previous query's
+      // results visible until the new search produces its own. Replacing
+      // atomically on flush avoids the empty→populated flash on every
+      // keystroke. Highlight will momentarily mismatch the stale rows
+      // against the new needle, which is still less jarring than blank.
       setSearching(true);
 
       // Accumulator outside React state so high-rate result events don't
@@ -145,6 +153,9 @@ export function FindInFilesDialog() {
       onGrepDone(searchId, d => {
         if (activeSearchIdRef.current !== searchId) return;
         if (pendingFlush != null) { clearTimeout(pendingFlush); flush(); }
+        // Zero-result searches never call flush(), so the stale groups
+        // from the previous query would otherwise linger. Clear here.
+        if (acc.size === 0) setGroups([]);
         setTruncated(d.truncated);
         setSearching(false);
         unResult?.(); unResult = null;
@@ -176,6 +187,9 @@ export function FindInFilesDialog() {
     // After results change, snap to the first hit if available.
     const firstHit = rows.findIndex(r => r.kind === "hit");
     setActiveIdx(firstHit >= 0 ? firstHit : 0);
+    setRenderLimit(RENDER_CHUNK);
+    // Scroll back to top so newly arrived results aren't hidden below.
+    if (listRef.current) listRef.current.scrollTop = 0;
   }, [rows.length]);
 
   function pickHit(hit: GrepHit) {
@@ -196,6 +210,10 @@ export function FindInFilesDialog() {
     while (i >= 0 && i < rows.length && rows[i].kind !== "hit") i += delta;
     if (i < 0 || i >= rows.length) return;
     setActiveIdx(i);
+    // Keyboard nav crossing the render boundary needs to grow the slice
+    // so the active row actually exists in the DOM (otherwise scrollIntoView
+    // would no-op and the user would be selecting an invisible row).
+    if (i >= renderLimit) setRenderLimit(Math.min(rows.length, i + RENDER_CHUNK));
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -245,7 +263,16 @@ export function FindInFilesDialog() {
               </span>
             )}
           </div>
-          <div ref={listRef} className="max-h-[78vh] overflow-y-auto py-1">
+          <div
+            ref={listRef}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              if (el.scrollHeight - el.scrollTop - el.clientHeight < 240 && renderLimit < rows.length) {
+                setRenderLimit(Math.min(rows.length, renderLimit + RENDER_CHUNK));
+              }
+            }}
+            className="max-h-[78vh] overflow-y-auto py-1"
+          >
             {!query && (
               <div className="px-3 py-3 text-[13px] text-[var(--color-fg-dim)]">
                 Searching <span className="font-semibold text-[var(--color-fg)]">{projectName ?? "this workspace"}</span> via <code className="text-[12px]">git grep</code>. Respects <code className="text-[12px]">.gitignore</code>.
@@ -254,7 +281,7 @@ export function FindInFilesDialog() {
             {query && !searching && groups.length === 0 && (
               <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">No matches</div>
             )}
-            {rows.map((r, i) => {
+            {rows.slice(0, renderLimit).map((r, i) => {
               if (r.kind === "header") {
                 const name = r.path.split("/").pop() || r.path;
                 const dir = r.path.slice(0, r.path.length - name.length).replace(/\/$/, "");
