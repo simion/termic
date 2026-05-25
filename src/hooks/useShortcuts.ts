@@ -37,6 +37,24 @@ export function useShortcuts() {
         return;
       }
 
+      // ⌘P → file finder (Sublime / VS Code convention). NO `isTyping`
+      // guard — xterm's hidden textarea always reports as typing, and we
+      // want ⌘P to fire from the terminal too. Scoped to having an
+      // active workspace; without one there's no file list to search.
+      if (e.key.toLowerCase() === "p" && !e.shiftKey && wsId) {
+        e.preventDefault();
+        useUI.getState().openFileFinder(wsId);
+        return;
+      }
+
+      // ⇧⌘F → find-in-files (Sublime / VS Code convention). Same
+      // no-`isTyping` rationale as ⌘P. Requires an active workspace.
+      if (e.shiftKey && e.key.toLowerCase() === "f" && wsId) {
+        e.preventDefault();
+        useUI.getState().openFindInFiles(wsId);
+        return;
+      }
+
       // ⌘1..⌘9 → jump to Nth workspace in SIDEBAR order. The sidebar
       // groups workspaces by project (projects.flatMap(p =>
       // workspaces.filter(w => w.project_id === p.id))), so iterating

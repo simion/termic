@@ -12,6 +12,8 @@ import { ReviewDialog } from "./ReviewDialog";
 import { BroadcastDialog } from "./BroadcastDialog";
 import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { FileFinderDialog } from "./FileFinderDialog";
+import { FindInFilesDialog } from "./FindInFilesDialog";
 import { Loader2 } from "lucide-react";
 
 export function Dialogs() {
@@ -33,6 +35,8 @@ export function Dialogs() {
       <BroadcastDialog />
       <WorkspaceSandboxDialog />
       <ConfirmDialog />
+      <FileFinderDialog />
+      <FindInFilesDialog />
       {/* Blocking work overlay: shown while a slow IPC call is in flight
           (archive workspace, etc.). Click-blocks the whole window so users
           don't fire the action twice mid-wait. */}

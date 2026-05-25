@@ -38,6 +38,31 @@ export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("work
  *  use it to word the user-facing warning ("This will restart N agents").
  *  The frontend's PTY exit listener fires on each kill; existing
  *  TerminalPane already surfaces the Restart overlay on exit. */
+export const workspaceListFilesForFinder = (id: string) =>
+  invoke<string[]>("workspace_list_files_for_finder", { id });
+
+// ───────────────────────────── find in files ─────────────────────────────
+
+export interface GrepHit { path: string; line: number; col: number; preview: string }
+
+/** Start a streaming `git grep` in the workspace. Results arrive via
+ *  `grep-result://<searchId>` events (see `onGrepResult`) and a final
+ *  `grep-done://<searchId>` (`onGrepDone`). The caller generates a fresh
+ *  `searchId` per keystroke so we can ignore late events from cancelled
+ *  searches; Rust auto-SIGKILLs any prior grep for the same workspace. */
+export const workspaceGrepStart = (id: string, query: string, searchId: string) =>
+  invoke<void>("workspace_grep_start", { id, query, searchId });
+
+export const workspaceGrepCancel = (id: string) =>
+  invoke<void>("workspace_grep_cancel", { id });
+
+export function onGrepResult(searchId: string, cb: (h: GrepHit) => void): Promise<UnlistenFn> {
+  return listen<GrepHit>(`grep-result://${searchId}`, ev => cb(ev.payload));
+}
+export function onGrepDone(searchId: string, cb: (d: { truncated: boolean }) => void): Promise<UnlistenFn> {
+  return listen<{ truncated: boolean }>(`grep-done://${searchId}`, ev => cb(ev.payload));
+}
+
 export const workspaceSetSandbox = (
   id: string,
   enabled: boolean,
