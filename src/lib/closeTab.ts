@@ -17,7 +17,7 @@ export async function requestCloseTab(wsId: string, tabId: string) {
     const name = tab.path.split("/").pop() || tab.path;
     const ok = await useUI.getState().askConfirm({
       title: "Close without saving?",
-      message: `"${name}" has unsaved changes. Closing the tab will discard them — ⌘S to save first.`,
+      message: `"${name}" has unsaved changes. Closing the tab will discard them. ⌘S to save first.`,
       confirmLabel: "Discard & close",
       destructive: true,
     });

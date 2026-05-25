@@ -80,7 +80,7 @@ export function WorkspaceSandboxDialog() {
       });
       setProbes(out);
     } catch (e) {
-      setProbes([{ host: "—", expected: "allow", ok: false, http_code: null, note: String(e) }]);
+      setProbes([{ host: "?", expected: "allow", ok: false, http_code: null, note: String(e) }]);
     } finally {
       setTestBusy(false);
     }
@@ -113,7 +113,7 @@ export function WorkspaceSandboxDialog() {
       title: `Save sandbox changes for "${ws.name}"?`,
       message: restart
         ? "Any agent running in this workspace will be terminated and AUTO-restarted under the new sandbox profile. " +
-          "This is by design — the running process holds the OLD profile until it's replaced."
+          "This is by design: the running process holds the OLD profile until it's replaced."
         : "Saving without restart. Any agent currently running in this workspace keeps its OLD sandbox profile until it next respawns. " +
           "New tabs use the saved profile immediately.",
       confirmLabel: restart ? "Save & restart" : "Save without restart",
@@ -238,7 +238,7 @@ export function WorkspaceSandboxDialog() {
               <b className="text-[var(--color-fg)]">Sandbox unavailable on this OS.</b>{" "}
               Termic's cage uses macOS Seatbelt (<code className="mono">sandbox-exec</code>); Linux + Windows
               equivalents aren't wired up yet. The network proxy and the
-              CLI agent still work — just without the filesystem cage.
+              CLI agent still work, just without the filesystem cage.
             </span>
           </div>
         )}
@@ -325,7 +325,7 @@ export function WorkspaceSandboxDialog() {
               disabled={!enabled}
             />
             <DefaultsPanel className="box-border h-[180px] overflow-y-auto [scrollbar-gutter:stable]">
-              <ChipGroup tone="allow" label="Always allowed — read + write (workspace + runtime)">
+              <ChipGroup tone="allow" label="Always allowed, read + write (workspace + runtime)">
                 <Chip tone="allow">workspace</Chip>
                 <Chip tone="allow">~/.npm</Chip>
                 <Chip tone="allow">~/.cache</Chip>
@@ -335,7 +335,7 @@ export function WorkspaceSandboxDialog() {
                 <Chip tone="allow">/private/tmp</Chip>
                 <Chip tone="allow">TMPDIR</Chip>
               </ChipGroup>
-              <ChipGroup tone="allow" label="Always allowed — read only (system bins + linker)">
+              <ChipGroup tone="allow" label="Always allowed, read only (system bins + linker)">
                 <Chip tone="allow">/usr</Chip>
                 <Chip tone="allow">/opt</Chip>
                 <Chip tone="allow">/bin</Chip>
@@ -358,8 +358,8 @@ export function WorkspaceSandboxDialog() {
                 (<span className="font-mono">~/.ssh</span>,{" "}
                 <span className="font-mono">~/.aws</span>,{" "}
                 <span className="font-mono">~/.gnupg</span>, Keychains,
-                browser data) stay denied even if you allow a parent —
-                add the <i>exact</i> path on the left to override.
+                browser data) stay denied even if you allow a parent.
+                Add the <i>exact</i> path on the left to override.
               </p>
             </DefaultsPanel>
           </div>
@@ -403,7 +403,7 @@ export function WorkspaceSandboxDialog() {
             <div className="flex items-center gap-2">
               <FlaskConical className="h-3.5 w-3.5 text-[var(--color-fg-dim)]" />
               <span className="font-medium text-[var(--color-fg)]">Test sandbox</span>
-              <span className="text-[var(--color-fg-faint)]">— runs <code className="mono">curl</code> against an allowed host and a denied host inside the cage.</span>
+              <span className="text-[var(--color-fg-faint)]">runs <code className="mono">curl</code> against an allowed host and a denied host inside the cage.</span>
               <button
                 type="button"
                 onClick={runTest}

@@ -388,8 +388,8 @@ function FTab({ label, active, onClick, onClose }: {
         // shrink-0 so tabs hold their width when the row gets cramped
         // (a sibling like RunToolbar grows instead) and rounded-md
         // keeps the underline-active treatment intact.
-        "group flex shrink-0 items-center rounded-md text-[12.5px] transition-colors",
-        active ? "text-[var(--color-fg)] border-b-2 border-[var(--color-accent)]" : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+        "group flex shrink-0 items-center rounded-md text-[12.5px] transition-colors border-b-2",
+        active ? "text-[var(--color-fg)] border-[var(--color-accent)]" : "text-[var(--color-fg-dim)] border-transparent hover:text-[var(--color-fg)]",
       )}
       style={active ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : undefined}
     >

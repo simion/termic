@@ -564,12 +564,12 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           />
           <Field
             label="Root path"
-            hint="The git repo on disk. Do not move or delete this directory — remove the project in Termic instead."
+            hint="The git repo on disk. Do not move or delete this directory; remove the project in Termic instead."
             control={<Input value={draft.root_path} readOnly className="font-mono opacity-70 cursor-not-allowed" />}
           />
           <Field
             label="Workspaces path"
-            hint="Where each new worktree lives. Don't move or delete subdirectories — archive workspaces in Termic instead."
+            hint="Where each new worktree lives. Don't move or delete subdirectories; archive workspaces in Termic instead."
             control={<Input value={draft.workspaces_path} onChange={(e) => patch("workspaces_path", e.target.value)} className={cn("font-mono", flashRing("workspaces_path"))} />}
           />
           <Field
@@ -742,7 +742,7 @@ function MultiMembersEditor({ project, onSaved }: {
         Repos to mount inside every workspace under this multi-repo project,
         and the <b>Setup / Run / Archive</b> commands to use for each. These
         scripts live on the multi-repo project (independent of the member
-        project's own scripts). Edits apply to <b>future</b> workspaces —
+        project's own scripts). Edits apply to <b>future</b> workspaces;
         existing ones freeze at creation.
       </div>
       {/* Cross-member port discovery: every member's scripts +

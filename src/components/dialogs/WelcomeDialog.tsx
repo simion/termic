@@ -420,7 +420,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
       <div className="flex flex-col gap-3 text-[13px] text-[var(--color-fg-dim)]">
         <p>No git repos found in <code className="mono">{dir}</code>.</p>
         <p className="text-[12px] text-[var(--color-fg-faint)]">
-          Either the path is empty or you went back and changed it — give the
+          Either the path is empty or you went back and changed it. Give the
           scanner a moment, or pick a different dir in step 1.
         </p>
       </div>
@@ -432,7 +432,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
       <div className="flex items-center justify-between text-[12.5px] text-[var(--color-fg-dim)]">
         <span>
           {unadded.length === 0
-            ? `All ${repos.length} repo${repos.length === 1 ? "" : "s"} already added — nothing new to pick.`
+            ? `All ${repos.length} repo${repos.length === 1 ? "" : "s"} already added. Nothing new to pick.`
             : `${unadded.length} unadded repo${unadded.length === 1 ? "" : "s"} in ${dir}. Tick what you want.`}
         </span>
         {unadded.length > 0 && (

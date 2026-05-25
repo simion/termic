@@ -844,6 +844,16 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         // `npm i -g` with a user prefix, and direct ~/.local/bin scripts).
         // Most agents shell out to tools that end up here.
         format!("{home}/.local/bin"),
+        // XDG_DATA_HOME. Modern cross-platform tools drop runtimes,
+        // interpreters, and package stores here: uv (Python interps
+        // — venv shims symlink in, so denying breaks dyld with
+        // "file system sandbox blocked open()" on libpython load),
+        // pipx, pnpm store, mise/asdf/rtx shims, fnm, JetBrains
+        // configs, etc. Per-tool allowlisting is endless. On macOS
+        // this dir is essentially unused by the OS, and the real
+        // secret stores (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc,
+        // ~/Library/Keychains) live elsewhere + are hard-denied.
+        format!("{home}/.local/share"),
         // gh CLI's non-secret state (device-id, cache). The credentials
         // file (~/.config/gh/hosts.yml) is hard-denied separately.
         format!("{home}/.local/state/gh"),
@@ -878,6 +888,9 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         // which are hard-denied below).
         format!("{home}/.gitconfig"),
         format!("{home}/.gitignore_global"),
+        format!("{home}/.config/git/ignore"),
+        format!("{home}/.config/git/config"),
+        format!("{home}/.config/git/attributes"),
         format!("{home}/.zshrc"),
         format!("{home}/.zprofile"),
         format!("{home}/.zshenv"),

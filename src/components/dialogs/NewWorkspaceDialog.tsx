@@ -374,7 +374,7 @@ export function NewWorkspaceDialog() {
           label="Branch name"
           hint={prefix === "__custom__"
             ? "Type the full branch name."
-            : "Auto-generated from the name + prefix — pick “custom” to edit it."}
+            : "Auto-generated from the name + prefix. Pick “custom” to edit it."}
         >
           <Input
             value={branch}
@@ -462,7 +462,7 @@ export function NewWorkspaceDialog() {
                       </div>
                     ) : (
                       <div className="mt-2 text-[11.5px] text-[var(--color-warn)]">
-                        Live symlink — agent edits land directly on your real checkout.
+                        Live symlink. Agent edits land directly on your real checkout.
                       </div>
                     )}
                   </div>
@@ -473,7 +473,7 @@ export function NewWorkspaceDialog() {
               <div className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]">
                 <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
                 One or more members are linked to live checkouts. The agent
-                can directly modify those repos — no worktree isolation.
+                can directly modify those repos. No worktree isolation.
               </div>
             )}
           </div>

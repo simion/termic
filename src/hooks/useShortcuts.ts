@@ -37,10 +37,18 @@ export function useShortcuts() {
         return;
       }
 
-      // ⌘1..⌘9 → jump to Nth workspace
+      // ⌘1..⌘9 → jump to Nth workspace in SIDEBAR order. The sidebar
+      // groups workspaces by project (projects.flatMap(p =>
+      // workspaces.filter(w => w.project_id === p.id))), so iterating
+      // raw state.workspaces picks the wrong row whenever the insert
+      // order diverges from the project-grouped visual order — that
+      // was the "⌘1 sometimes selects the last workspace" bug.
       if (/^[1-9]$/.test(e.key)) {
         const n = Number(e.key) - 1;
-        const w = state.workspaces.filter(w => !w.archived)[n];
+        const ordered = state.projects.flatMap(p =>
+          state.workspaces.filter(w => w.project_id === p.id && !w.archived),
+        );
+        const w = ordered[n];
         if (w) { e.preventDefault(); state.setActiveWorkspace(w.id); }
         return;
       }

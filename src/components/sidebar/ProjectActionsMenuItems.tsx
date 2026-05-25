@@ -31,7 +31,7 @@ function SectionHeader({ title, hint, tone = "dim" }: {
     </div>
   );
 }
-import { GitBranchPlus } from "lucide-react";
+import { GitBranchPlus, TerminalSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
@@ -72,6 +72,23 @@ export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
           <span className="truncate">{a.display_name}</span>
         </DropdownItem>
       ))}
+      {/* Plain login-shell variant of "Run in repo" — same workspace
+          shape (no worktree, current branch), but the default tab is
+          a shell instead of an agent. cli="shell" is the same sentinel
+          the TabBar uses for its "+ New terminal" option, and
+          TerminalPane.tsx switches on it to skip agent argv resolution. */}
+      <DropdownItem onSelect={async () => {
+        try {
+          const w = await workspaceOpenRepo(projectId, "shell");
+          await loadAll();
+          setActive(w.id);
+        } catch (err) {
+          console.error("workspace_open_repo (shell) failed:", err);
+        }
+      }}>
+        <TerminalSquare className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
+        <span className="truncate">Terminal</span>
+      </DropdownItem>
       <DropdownSeparator />
       <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
         <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />

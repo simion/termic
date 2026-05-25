@@ -179,6 +179,16 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 - **Right-click contextmenu** — `window.addEventListener("contextmenu", e => e.preventDefault())` in `main.tsx`.
 - **App icon missing in dev** — dev runs raw binary, not `.app` bundle. Custom icon appears only after `npm run tauri:build`.
 
+## Copy / typography rules
+
+- **No em dashes (—) anywhere on the website or in the app.** Applies to all
+  user-visible text: marketing copy on `termic.dev`, dialog/toast/tooltip
+  strings, button labels, JSX/HTML text content, the in-app Changelog
+  summaries and notes (`changelog.json`), error messages. Use a comma, a
+  period, parentheses, or a colon instead. Comments in source files are not
+  user-visible and are exempt, but prefer rewriting them too so the convention
+  doesn't leak into copy via copy-paste.
+
 ## What NOT to do without asking
 
 - Switch the editor away from CodeMirror 6 (slower in WKWebView, verified).

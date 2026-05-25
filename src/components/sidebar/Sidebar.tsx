@@ -293,17 +293,6 @@ export function Sidebar() {
                             ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
                             : <ChevronDown  className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
                           }
-                          {/* Multi-repo projects get a Layers icon next
-                              to their name so they're visually
-                              distinguishable from regular single-repo
-                              projects. The icon uses the accent color
-                              so it pops at the typography weight
-                              everything else in the row sits at. */}
-                          {(p.type ?? "single") === "multi" && (
-                            <Tip content="Multi-repo project">
-                              <Layers className="h-3 w-3 shrink-0 text-[var(--color-accent)]" />
-                            </Tip>
-                          )}
                           {renaming && renaming.kind === "proj" && renaming.id === p.id ? (
                             <input
                               autoFocus
@@ -320,6 +309,14 @@ export function Sidebar() {
                             />
                           ) : (
                             <span className="truncate">{p.name}</span>
+                          )}
+                          {/* Multi-repo marker sits AFTER the name so
+                              project names stay vertically aligned
+                              regardless of type (no snake-indent). */}
+                          {(p.type ?? "single") === "multi" && (
+                            <Tip content="Multi-repo project">
+                              <Layers className="h-3 w-3 shrink-0 text-[var(--color-accent)]" />
+                            </Tip>
                           )}
                         </div>
                         {/* Trio of project-row actions revealed on hover.
@@ -685,10 +682,10 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             const ok = await useUI.getState().askConfirm({
               title: `Archive "${w.name}"?`,
               message: w.is_repo_root
-                ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched — you can re-open it any time. Any agent running here will be terminated."
+                ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it any time. Any agent running here will be terminated."
                 : (w.composition?.length ?? 0) > 0
-                ? `Branches stay in git — you can recreate the workspace later. This removes: the host worktree + every member worktree (${w.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts. Any running agent will be terminated.`
-                : "The branch stays in git — you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory and terminates any running agent. Can't be undone from inside Termic.",
+                ? `Branches stay in git, so you can recreate the workspace later. This removes: the host worktree + every member worktree (${w.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts. Any running agent will be terminated.`
+                : "The branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory and terminates any running agent. Can't be undone from inside Termic.",
               confirmLabel: "Archive",
               destructive: true,
               checkbox: w.is_repo_root ? undefined : (w.composition?.length ?? 0) > 0
