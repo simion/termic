@@ -13,7 +13,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import { settingsLoad, workspaceSetSandbox, workspaceTestSandbox, sandboxAvailable, type ProbeResult } from "@/lib/ipc";
-import { AlertTriangle, Shield, Zap, FlaskConical, Check, X } from "lucide-react";
+import { AlertTriangle, Shield, Zap, FlaskConical, Check, X, Save, RotateCw } from "lucide-react";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
 export function WorkspaceSandboxDialog() {
@@ -103,7 +103,7 @@ export function WorkspaceSandboxDialog() {
     !arrEq(splitLines(hostsText), ws.sandbox_allowed_hosts ?? [])
   ) : false;
 
-  async function save() {
+  async function save(restart: boolean) {
     if (!ws || busy) return;
     // Pre-flight confirm. We don't have a live PTY count on the
     // frontend (the Rust side will tell us when the IPC returns),
@@ -111,10 +111,12 @@ export function WorkspaceSandboxDialog() {
     // for this; soft-warning is enough.
     const ok = await useUI.getState().askConfirm({
       title: `Save sandbox changes for "${ws.name}"?`,
-      message:
-        "Any agent running in this workspace will be terminated and AUTO-restarted under the new sandbox profile. " +
-        "This is by design — the running process holds the OLD profile until it's replaced.",
-      confirmLabel: "Save & restart",
+      message: restart
+        ? "Any agent running in this workspace will be terminated and AUTO-restarted under the new sandbox profile. " +
+          "This is by design — the running process holds the OLD profile until it's replaced."
+        : "Saving without restart. Any agent currently running in this workspace keeps its OLD sandbox profile until it next respawns. " +
+          "New tabs use the saved profile immediately.",
+      confirmLabel: restart ? "Save & restart" : "Save without restart",
     });
     if (!ok) return;
     setBusy(true); setErr(null);
@@ -123,10 +125,11 @@ export function WorkspaceSandboxDialog() {
       // Mark BEFORE the IPC fires so TerminalPane sees the flag when
       // the pty-exit handler runs (the SIGKILL is fast - sometimes
       // exits land before this function's await even unblocks).
-      useUI.getState().markPendingSandboxRestart(ws.id);
+      if (restart) useUI.getState().markPendingSandboxRestart(ws.id);
       const killed = await workspaceSetSandbox(
         ws.id, enabled,
         lines(rwText), lines(hostsText),
+        restart,
       );
       await loadAll();
       // Quiet success - the kill is the visible feedback (overlay
@@ -449,12 +452,23 @@ export function WorkspaceSandboxDialog() {
         <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-[var(--color-border-soft)] pt-3">
           <Button variant="ghost" type="button" onClick={close} disabled={busy}>Cancel</Button>
           <Button
-            variant="primary" type="button" onClick={save}
+            variant="secondary" type="button" onClick={() => save(false)}
+            disabled={busy || !dirty}
+            title={!dirty
+              ? "No changes to save"
+              : "Persist the profile but leave the running agent alone. It keeps the OLD profile until it next respawns."}
+            className="gap-1.5"
+          >
+            <Save className="h-3.5 w-3.5" />
+            Save without restart
+          </Button>
+          <Button
+            variant="primary" type="button" onClick={() => save(true)}
             disabled={busy || !dirty}
             title={!dirty ? "No changes to save" : undefined}
             className="gap-1.5"
           >
-            <Shield className="h-3.5 w-3.5" fill="currentColor" />
+            <RotateCw className="h-3.5 w-3.5" />
             {busy ? "Saving…" : "Save & restart terminal"}
           </Button>
         </div>

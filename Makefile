@@ -86,6 +86,9 @@ dev: ## Run termic in dev mode (Vite HMR + Rust auto-rebuild).
 	@npm run tauri:dev
 .PHONY: dev
 
+run: dev ## Alias for `make dev`.
+.PHONY: run
+
 check: ## Type-check the Rust backend (fast — no codegen, no link).
 	@cd src-tauri && cargo check
 .PHONY: check

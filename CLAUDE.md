@@ -189,4 +189,4 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 - Force subpixel font smoothing (fringing on dark).
 - Make any IO-heavy Tauri command synchronous (freezes the Mac).
 - Sandbox the aux terminal, setup script, run script, or archive script. These are explicit user-authored shell with the user's full reach by design; only the agent CLI's PTY is the threat model.
-- Expose a mutator for `Workspace.sandbox_enabled` that doesn't SIGKILL the matching live PTYs. A running process holds its OLD seatbelt permissions — the kill is the security boundary, not a UX nicety.
+- Expose a mutator for `Workspace.sandbox_enabled` that doesn't SIGKILL the matching live PTYs by default. The kill is the security boundary. The dialog's "Save without restart" button (`workspace_set_sandbox` with `kill_live=false`) is an explicit, confirmed escape hatch — the user is warned that the running agent retains its OLD profile until respawn. Don't make this the default; don't drop the warning.

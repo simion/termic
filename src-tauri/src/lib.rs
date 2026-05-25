@@ -2234,6 +2234,7 @@ fn workspace_set_sandbox(
     enabled: bool,
     rw_paths: Vec<String>,
     allowed_hosts: Vec<String>,
+    kill_live: bool,
 ) -> Result<usize, String> {
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
@@ -2241,6 +2242,13 @@ fn workspace_set_sandbox(
     w.sandbox_rw_paths = rw_paths;
     w.sandbox_allowed_hosts = allowed_hosts;
     save_workspace(w).map_err(|e| e.to_string())?;
+
+    // `kill_live=false` is an INFORMED escape hatch: the user explicitly
+    // chose "Save without restart" knowing the running agent keeps the
+    // OLD profile. The dialog warns them; this is not a default.
+    if !kill_live {
+        return Ok(0);
+    }
 
     // Find + SIGKILL every live PTY belonging to this workspace. We
     // hold the manager lock only long enough to collect (id, pid)

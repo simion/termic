@@ -43,9 +43,15 @@ export const workspaceSetSandbox = (
   enabled: boolean,
   rwPaths: string[],
   allowedHosts: string[],
+  /** SIGKILL live PTYs so they relaunch under the new profile.
+   *  Pass false ONLY from the explicit "Save without restart" path —
+   *  the running agent retains its OLD seatbelt permissions until it
+   *  next respawns. The dialog warns the user about this. */
+  killLive: boolean = true,
 ) => invoke<number>("workspace_set_sandbox", {
   id, enabled,
   rwPaths, allowedHosts,
+  killLive,
 });
 /** Whether the OS supports the sandbox at all. Returns false on
  *  Linux / Windows (Seatbelt is macOS-only). Frontend uses this to
