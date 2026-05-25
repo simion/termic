@@ -90,6 +90,15 @@ export function UpdateCard() {
         {summary}
       </p>
 
+      <button
+        type="button"
+        onClick={openChangelog}
+        className="mt-2 flex items-center gap-1 text-[12px] font-medium text-[var(--color-accent)] hover:underline"
+      >
+        Changelog
+        <ArrowRight className="h-3 w-3" />
+      </button>
+
       {mode === "update" && (
         <button
           type="button"
@@ -117,15 +126,6 @@ export function UpdateCard() {
           )}
         </button>
       )}
-
-      <button
-        type="button"
-        onClick={openChangelog}
-        className="mt-2 flex items-center gap-1 text-[12px] font-medium text-[var(--color-accent)] hover:underline"
-      >
-        Changelog
-        <ArrowRight className="h-3 w-3" />
-      </button>
     </div>
   );
 }
