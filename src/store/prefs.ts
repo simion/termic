@@ -337,7 +337,7 @@ const lsGetBool = (k: string, fallback: boolean) => lsGet(k, fallback ? "1" : "0
 export const APPEARANCE_DEFAULTS = {
   editorFontId:          "jetbrains",
   terminalFontId:        "jetbrains",
-  terminalFontSize:      14,
+  terminalFontSize:      13,
   terminalLetterSpacing: 1,
   editorFontSize:        13,
   codeLigatures:         true,

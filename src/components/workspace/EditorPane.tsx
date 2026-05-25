@@ -54,7 +54,11 @@ export function langForPath(p: string) {
   if (ext === "rs")                                        return rust();
   if (ext === "json")                                      return json();
   if (["md", "markdown", "mdx"].includes(ext))             return markdown();
-  if (["html", "htm"].includes(ext))                       return html();
+  // HTML-ish template formats reuse the HTML grammar — component markup
+  // gets tag highlighting; <script>/<style> blocks won't get deep JS/CSS
+  // parsing but the same trade VS Code makes without dedicated extensions.
+  if (["html", "htm", "vue", "svelte", "astro", "hbs", "handlebars",
+       "ejs", "mustache", "twig", "liquid", "njk"].includes(ext)) return html();
   if (ext === "css")                                       return css();
   if (["yaml", "yml"].includes(ext))                       return yaml();
   if (ext === "sql")                                       return sql();
@@ -67,6 +71,26 @@ export function langForPath(p: string) {
   if (["rb", "rake"].includes(ext))                        return StreamLanguage.define(ruby);
   if (["properties", "conf", "ini", "env"].includes(ext))  return StreamLanguage.define(properties);
   return null;
+}
+
+/** Scroll the editor to a 1-based line/col and place the cursor there.
+ *  Centers the line vertically. Clamps line to the doc bounds so a stale
+ *  grep hit on a file that's since shrunk doesn't blow up. */
+function revealLine(view: EditorView, line: number, col?: number) {
+  const doc = view.state.doc;
+  const safe = Math.max(1, Math.min(line, doc.lines));
+  const lineObj = doc.line(safe);
+  const pos = col && col > 0
+    ? Math.min(lineObj.from + col - 1, lineObj.to)
+    : lineObj.from;
+  view.dispatch({
+    selection: { anchor: pos, head: pos },
+    effects: EditorView.scrollIntoView(pos, { y: "center" }),
+  });
+  // Defer focus to next frame — if the editor isn't visible yet (lazy
+  // mount), focus() would no-op silently. requestAnimationFrame gives
+  // the layout a tick to settle.
+  requestAnimationFrame(() => view.focus());
 }
 
 export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
@@ -154,11 +178,28 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
         });
         viewRef.current = view;
         setLoading(false);
+        // Initial jump-to-line for Find-in-Files: do it once the view
+        // exists. The other useEffect below handles subsequent jumps
+        // (clicking a different match while the tab's already open).
+        if (tab.revealAt) {
+          revealLine(view, tab.revealAt.line, tab.revealAt.col);
+          useApp.getState().consumeReveal(ws.id, tab.id);
+        }
       } catch (e) { setErr(String(e)); setLoading(false); }
     })();
     return () => { alive = false; viewRef.current?.destroy(); viewRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.id, tab.path]);
+
+  // Subsequent jumps: tab.revealAt changes when the user clicks a new
+  // Find-in-Files result for an already-open file. Mount effect above
+  // handles the first jump (view doesn't exist yet at that point).
+  useEffect(() => {
+    const v = viewRef.current;
+    if (!v || !tab.revealAt) return;
+    revealLine(v, tab.revealAt.line, tab.revealAt.col);
+    useApp.getState().consumeReveal(ws.id, tab.id);
+  }, [tab.revealAt, ws.id, tab.id]);
 
   // Re-apply theme compartment when the user changes font size,
   // ligatures, or the syntax theme — all reconfigure live.

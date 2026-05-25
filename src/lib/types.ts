@@ -327,6 +327,11 @@ export interface DiffTab extends BaseTab {
 export interface EditTab extends BaseTab {
   type: "edit";
   path: string;
+  /** Optional 1-based line + column to scroll to and select on (re)mount.
+   *  Set when opening a tab via Find-in-Files; the EditorPane consumes it
+   *  and clears it via `consumeReveal` so subsequent re-renders don't
+   *  re-jump the cursor every time. */
+  revealAt?: { line: number; col?: number };
 }
 
 export type Tab = TerminalTab | DiffTab | EditTab;
