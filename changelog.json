@@ -1,6 +1,23 @@
 {
   "versions": [
     {
+      "version": "0.6.0",
+      "date": "2026-05-25",
+      "summary": "File finder, find in files, and richer sidebar navigation.",
+      "notes": [
+        "⌘P opens a fast fuzzy file finder for the active workspace",
+        "⇧⌘F runs find-in-files: literal, case-insensitive, .gitignore-aware, streams live (250ms debounce so a typing burst issues one search, not five)",
+        "⌥↑ / ⌥↓ now walk every visible sidebar row (workspaces plus their expanded terminal tabs); ⌥⌘↑ / ⌥⌘↓ still hops workspace-only",
+        "⌘1..⌘9 switches between tabs in the active workspace (Chrome / VS Code convention) instead of jumping workspaces",
+        "Workspace breadcrumb drops the redundant 'name on branch' when the workspace was never renamed; repo-root workspaces get the same REPO ROOT chip the sidebar shows",
+        "Tab titles no longer carry the agent's leading state glyph (Claude's ✳, Gemini's ◇); busy/idle detection still uses the raw title",
+        "Project menu has a new Terminal entry that opens the repo in a plain shell tab",
+        "Denied hosts popover gets one-click copy for hosts and paths",
+        "Sandbox now allows ~/.local/share (uv, pipx, pnpm, mise) and ~/.config/git/{ignore,config,attributes} by default",
+        "Multi-repo Layers marker sits after the project name so rows stay vertically aligned"
+      ]
+    },
+    {
       "version": "0.5.6",
       "date": "2026-05-25",
       "summary": "Wider Changelog dialog so release notes have room to breathe.",
