@@ -1,6 +1,14 @@
 {
   "versions": [
     {
+      "version": "0.5.4",
+      "date": "2026-05-25",
+      "summary": "Update card puts the Changelog link above the Update button.",
+      "notes": [
+        "Reordered the sidebar Update card so the Changelog link sits between the summary and the Update button"
+      ]
+    },
+    {
       "version": "0.5.3",
       "date": "2026-05-24",
       "summary": "Scrollable sidebar, smarter workspace collapse, inline .termic.yaml editing, bulleted changelog, reordered agents.",
