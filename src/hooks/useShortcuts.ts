@@ -1,5 +1,5 @@
 // Global keyboard shortcuts:
-//   ⌘1..⌘9   → jump to the Nth active workspace
+//   ⌘1..⌘9   → switch to the Nth tab in the active workspace
 //   ⌘L       → focus the active workspace's terminal
 //   ⌘[, ⌘]   → previous / next workspace (cycles non-archived in sidebar order)
 //   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded
@@ -94,19 +94,15 @@ export function useShortcuts() {
         return;
       }
 
-      // ⌘1..⌘9 → jump to Nth workspace in SIDEBAR order. The sidebar
-      // groups workspaces by project (projects.flatMap(p =>
-      // workspaces.filter(w => w.project_id === p.id))), so iterating
-      // raw state.workspaces picks the wrong row whenever the insert
-      // order diverges from the project-grouped visual order — that
-      // was the "⌘1 sometimes selects the last workspace" bug.
+      // ⌘1..⌘9 → switch to Nth tab in the active workspace (Chrome /
+      // VS Code convention). Indexes the full tab list so position
+      // matches what the user sees in the TabBar.
       if (/^[1-9]$/.test(e.key)) {
-        const n = Number(e.key) - 1;
-        const ordered = state.projects.flatMap(p =>
-          state.workspaces.filter(w => w.project_id === p.id && !w.archived),
-        );
-        const w = ordered[n];
-        if (w) { e.preventDefault(); state.setActiveWorkspace(w.id); }
+        if (wsId && tabs.length > 0) {
+          const n = Number(e.key) - 1;
+          const t = tabs[n];
+          if (t) { e.preventDefault(); state.setActiveTabId(wsId, t.id); }
+        }
         return;
       }
 

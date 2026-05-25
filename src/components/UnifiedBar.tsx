@@ -172,9 +172,23 @@ export function UnifiedBar() {
             <span className={cn("flex items-center self-center", CLI_BRAND_COLOR[ws.cli])}>
               <CliIcon cli={ws.cli} className="h-4 w-4" />
             </span>
-            <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]">{ws.name}</span>
-            <span className="leading-tight text-[var(--color-fg-faint)]">on</span>
-            <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{ws.branch}</span>
+            {/* Workspace name == branch means the user never renamed it,
+                so "<branch> on <branch>" reads as noise. Mirror the
+                sidebar: render the REPO ROOT chip for the repo-root
+                pseudo-workspace; otherwise just show the branch alone. */}
+            {ws.is_repo_root && ws.name === ws.branch ? (
+              <span className="shrink-0 rounded px-1 py-px text-[10.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-dim)]">
+                REPO ROOT
+              </span>
+            ) : ws.name === ws.branch ? (
+              <span className="truncate font-mono text-[13px] leading-tight text-[var(--color-fg)]">{ws.branch}</span>
+            ) : (
+              <>
+                <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]">{ws.name}</span>
+                <span className="leading-tight text-[var(--color-fg-faint)]">on</span>
+                <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{ws.branch}</span>
+              </>
+            )}
             {/* Multi-repo: just a small chip with the member count.
                 The full per-member breakdown (which dir_name, which
                 branch, worktree vs live) lives in the right-panel
