@@ -32,7 +32,7 @@ export function ChangelogDialog() {
       open={open}
       onOpenChange={(v) => { if (!v) close(); }}
       title="Changelog"
-      className="max-w-lg"
+      className="max-w-2xl"
     >
       {!changelog && status === "loading" && (
         <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-[var(--color-fg-dim)]">
