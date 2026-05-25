@@ -1,6 +1,16 @@
 {
   "versions": [
     {
+      "version": "0.5.5",
+      "date": "2026-05-25",
+      "summary": "Save sandbox changes without restarting the agent, plus a make run alias.",
+      "notes": [
+        "Sandbox dialog now has a Save without restart button — persists the new profile while leaving the running agent on its OLD profile until it next respawns",
+        "Save & restart terminal button gets a clearer restart icon",
+        "make run is now an alias for make dev"
+      ]
+    },
+    {
       "version": "0.5.4",
       "date": "2026-05-25",
       "summary": "Update card puts the Changelog link above the Update button.",
