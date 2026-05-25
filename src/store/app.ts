@@ -109,7 +109,10 @@ interface AppState {
   closeTab: (wsId: string, tabId: string) => void;
   setActiveTabId: (wsId: string, tabId: string) => void;
   persistTab: (wsId: string, tabId: string) => void;
-  openPreviewTab: (wsId: string, data: { type: "edit" | "diff"; path: string; title: string }) => void;
+  openPreviewTab: (wsId: string, data: { type: "edit" | "diff"; path: string; title: string; revealAt?: { line: number; col?: number } }) => void;
+  /** Clear an edit tab's `revealAt` after EditorPane has consumed it,
+   *  so a re-render doesn't re-jump the cursor. */
+  consumeReveal: (wsId: string, tabId: string) => void;
   patchTab: (wsId: string, tabId: string, patch: Partial<Tab>) => void;
   renameTab: (wsId: string, tabId: string, title: string) => void;
   clearTabCustomTitle: (wsId: string, tabId: string) => void;
@@ -494,7 +497,16 @@ export const useApp = create<AppState>((set, get) => ({
     const list = s.tabs[wsId] || [];
     const existing = list.find(t => t.type === data.type && (t as any).path === data.path);
     if (existing) {
-      return { activeTab: { ...s.activeTab, [wsId]: existing.id } };
+      // If a revealAt was requested (Find-in-Files click), refresh it on
+      // the existing tab so EditorPane scrolls to the new line. Otherwise
+      // leave the tab as-is.
+      const next = data.revealAt && existing.type === "edit"
+        ? list.map(t => t.id === existing.id ? { ...t, revealAt: data.revealAt } as Tab : t)
+        : list;
+      return {
+        tabs: { ...s.tabs, [wsId]: next },
+        activeTab: { ...s.activeTab, [wsId]: existing.id }
+      };
     }
 
     const previewTab = list.find(t => t.preview);
@@ -507,7 +519,8 @@ export const useApp = create<AppState>((set, get) => ({
         liveTitle: undefined,
         customTitle: false,
         dirty: false,
-        preview: true
+        preview: true,
+        ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
       } as Tab : t);
       return {
         tabs: { ...s.tabs, [wsId]: next },
@@ -520,12 +533,22 @@ export const useApp = create<AppState>((set, get) => ({
       type: data.type,
       title: data.title,
       path: data.path,
-      preview: true
+      preview: true,
+      ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
     } as any;
     return {
       tabs: { ...s.tabs, [wsId]: [...list, newTab] },
       activeTab: { ...s.activeTab, [wsId]: newTab.id }
     };
+  }),
+
+  consumeReveal: (wsId, tabId) => set(s => {
+    const list = s.tabs[wsId] || [];
+    if (!list.some(t => t.id === tabId && t.type === "edit" && (t as any).revealAt)) return s;
+    const next = list.map(t => t.id === tabId && t.type === "edit"
+      ? { ...t, revealAt: undefined } as Tab
+      : t);
+    return { tabs: { ...s.tabs, [wsId]: next } };
   }),
 
   renameTab: (wsId, tabId, title) => set(s => {

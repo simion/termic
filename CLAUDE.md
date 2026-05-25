@@ -112,6 +112,7 @@ TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible vi
 - `CliIcon cli={...}` + `CLI_BRAND_COLOR[cli]` for claude/gemini/codex (orange/blue/green) — tab bar, sidebar, popovers, dialogs.
 - Tooltips default `delay: 0`. Override per-call for chrome.
 - `cn()` from `@/lib/utils` for class composition — never concatenate manually.
+- **Never enable spell check on inputs/textareas.** Always set `spellCheck={false}` (and `autoCorrect="off"` / `autoCapitalize="off"` / `autoComplete="off"` where appropriate) on every `<input>` and `<textarea>`. This is a developer tool — file names, paths, agent names, branch names, shell commands are never English words and squiggles are pure noise.
 
 ## Window chrome / drag
 
