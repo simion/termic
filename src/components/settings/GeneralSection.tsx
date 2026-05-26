@@ -9,6 +9,7 @@ import type { Settings } from "@/lib/types";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Tip } from "@/components/ui/Tooltip";
 import { usePrefs } from "@/store/prefs";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,8 @@ export function GeneralSection() {
   const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
   const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
   const setSandboxBypassPermissions = usePrefs(s => s.setSandboxBypassPermissions);
+  const workspaceExpandMode = usePrefs(s => s.workspaceExpandMode);
+  const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -96,6 +99,37 @@ export function GeneralSection() {
           <Button variant="primary" disabled={!dirty || busy} onClick={save}>
             {busy ? "Saving…" : "Save"}
           </Button>
+        </div>
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <div className="flex items-start justify-between gap-6">
+          <div className="min-w-0 flex-1">
+            <div className="text-[14px] font-medium">Workspace expand behavior</div>
+            <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+              How a workspace's agent list reveals itself in the sidebar.
+            </div>
+          </div>
+          <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+            {([
+              ["chevron", "Chevron only", "Row click only activates. Use the chevron to expand."],
+              ["click",   "Click name",   "Click the active row's name to toggle; auto-expand at 2+ agents."],
+              ["always",  "Auto open",    "Start expanded. The chevron still collapses, and that sticks."],
+            ] as const).map(([id, label, hint]) => (
+              <Tip key={id} content={hint} side="top">
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceExpandMode(id)}
+                  className={cn(
+                    "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
+                    workspaceExpandMode === id
+                      ? "bg-[var(--color-accent-deep)] text-white"
+                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  )}
+                >{label}</button>
+              </Tip>
+            ))}
+          </div>
         </div>
       </div>
 

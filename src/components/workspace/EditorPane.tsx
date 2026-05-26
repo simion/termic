@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { EditTab, Workspace } from "@/lib/types";
 import { EditorState, Compartment, type Extension } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { search } from "@codemirror/search";
 import { lintGutter } from "@codemirror/lint";
@@ -72,6 +72,34 @@ export function langForPath(p: string) {
   if (["properties", "conf", "ini", "env"].includes(ext))  return StreamLanguage.define(properties);
   return null;
 }
+
+// CodeMirror's search/replace panel inputs (plus any future panel that
+// renders text inputs) inherit WKWebView's spellcheck + autocorrect.
+// They squiggle every regex, identifier, and non-English token the
+// user types. A MutationObserver on the view's DOM strips the attrs
+// off any input that appears, including inputs added later when the
+// search panel opens. Cheap: one observer per editor instance.
+const noAutocorrectOnPanelInputs = ViewPlugin.define(view => {
+  const strip = (root: ParentNode) => {
+    root.querySelectorAll("input, textarea").forEach(el => {
+      const i = el as HTMLInputElement | HTMLTextAreaElement;
+      i.spellcheck = false;
+      i.setAttribute("autocorrect", "off");
+      i.setAttribute("autocapitalize", "off");
+      i.setAttribute("autocomplete", "off");
+    });
+  };
+  strip(view.dom);
+  const mo = new MutationObserver(muts => {
+    for (const m of muts) {
+      m.addedNodes.forEach(n => {
+        if (n instanceof HTMLElement) strip(n);
+      });
+    }
+  });
+  mo.observe(view.dom, { childList: true, subtree: true });
+  return { destroy() { mo.disconnect(); } };
+});
 
 /** Scroll the editor to a 1-based line/col and place the cursor there.
  *  Centers the line vertically. Clamps line to the doc bounds so a stale
@@ -164,6 +192,12 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
               // selection-match highlight, and the default/search/history keymaps.
               basicSetup,
               search({ top: true }),
+              // CodeMirror's search panel inputs inherit WKWebView's
+              // browser defaults (spellcheck + autocorrect ON), which
+              // squiggle every regex / identifier / non-English token
+              // the user types into Find/Replace. Strip the attrs on
+              // any input that appears inside the editor's DOM.
+              noAutocorrectOnPanelInputs,
               lintGutter(),
               indentUnit.of("  "),
               EditorState.tabSize.of(2),

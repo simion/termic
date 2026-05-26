@@ -6,8 +6,8 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy } from "lucide-react";
-import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check } from "lucide-react";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
@@ -36,6 +36,7 @@ export function Sidebar() {
   const openNewWorkspace = useUI(s => s.openNewWorkspace);
   const collapsedProjects = useApp(s => s.collapsedProjects);
   const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
+  const setAllWorkspacesCollapsed = useApp(s => s.setAllWorkspacesCollapsed);
   // (agents subscription lives inside ProjectActionsMenuItems now —
   // Sidebar itself doesn't need the registry.)
 
@@ -43,6 +44,8 @@ export function Sidebar() {
   // every isUnread() call returns false — the icon stays in its calm
   // state regardless of agent activity.
   const settledHighlight = usePrefs(s => s.settledHighlight);
+  const workspaceExpandMode = usePrefs(s => s.workspaceExpandMode);
+  const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
   const isUnread = (wsId: string) =>
     settledHighlight &&
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread);
@@ -203,9 +206,52 @@ export function Sidebar() {
         )}>
           {!compact && <span>Projects</span>}
           <div className={cn("flex gap-0.5", compact && "flex-col")}>
-            <Tip content="Refresh"><Button size="icon" variant="icon" onClick={() => loadAll()}>
-              <RefreshCw className={iconSize(compact)} /></Button></Tip>
-            <Tip content="Add project"><Button size="icon" variant="icon" onClick={openNewProject}>
+            <DropdownRoot>
+              <Tip content="Agents: expand / collapse / behavior">
+                <DropdownTrigger asChild>
+                  <Button size="icon" variant="icon">
+                    <ChevronsUpDown className={iconSize(compact)} />
+                  </Button>
+                </DropdownTrigger>
+              </Tip>
+              <DropdownMenu align="end" sideOffset={4} className="w-[280px]">
+                <DropdownItem onSelect={() => setAllWorkspacesCollapsed(false)}>
+                  <ChevronsUpDown className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                  <span>Expand all agents</span>
+                </DropdownItem>
+                <DropdownItem onSelect={() => setAllWorkspacesCollapsed(true)}>
+                  <ChevronsDownUp className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                  <span>Collapse all agents</span>
+                </DropdownItem>
+                <DropdownSeparator />
+                <DropdownLabel>Default expand behavior</DropdownLabel>
+                {([
+                  ["chevron", "Chevron only", "Only the chevron toggles."],
+                  ["click",   "Click name",   "Active row toggles; auto-expands at 2+."],
+                  ["always",  "Auto open",    "Start expanded; chevron still collapses."],
+                ] as const).map(([id, label, hint]) => {
+                  const isActive = workspaceExpandMode === id;
+                  return (
+                    <DropdownItem
+                      key={id}
+                      onSelect={() => setWorkspaceExpandMode(id)}
+                      className={isActive
+                        ? "bg-[var(--color-sel)] data-[highlighted]:bg-[var(--color-sel)]"
+                        : undefined}
+                    >
+                      {isActive
+                        ? <Check className="h-4 w-4 text-[var(--color-accent)]" />
+                        : <span className="h-4 w-4 shrink-0" />}
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <span className={isActive ? "text-[var(--color-accent)] font-medium" : undefined}>{label}</span>
+                        <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">{hint}</span>
+                      </div>
+                    </DropdownItem>
+                  );
+                })}
+              </DropdownMenu>
+            </DropdownRoot>
+            <Tip content="Add project (repo)"><Button size="icon" variant="icon" onClick={openNewProject}>
               <FolderPlus className={iconSize(compact)} /></Button></Tip>
           </div>
         </div>
@@ -532,7 +578,19 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const setActiveTabId = useApp(s => s.setActiveTabId);
   const loadAll = useApp(s => s.loadAll);
   const terminalTabCount = useApp(s => (s.tabs[w.id] ?? []).filter(t => t.type === "terminal").length);
-  const collapsed = useApp(s => s.collapsedWorkspaces[w.id] ?? (terminalTabCount <= 1));
+  const expandMode = usePrefs(s => s.workspaceExpandMode);
+  // Default collapsed state varies with the user's chosen expand mode.
+  // The user can still override per-row via the chevron — once they
+  // explicitly toggle, `collapsedWorkspaces[w.id]` holds and the mode
+  // default is ignored for that workspace.
+  //   chevron → start collapsed; row click never toggles.
+  //   click   → legacy behavior: collapsed when ≤1 tab, auto-expanded at 2+.
+  //   always  → start expanded; chevron-collapsed sticks.
+  const defaultCollapsed =
+    expandMode === "always"  ? false :
+    expandMode === "chevron" ? true  :
+    /* click */                terminalTabCount <= 1;
+  const collapsed = useApp(s => s.collapsedWorkspaces[w.id] ?? defaultCollapsed);
   const setWorkspaceCollapsed = useApp(s => s.setWorkspaceCollapsed);
   const addTab = useApp(s => s.addTab);
   const registry = useApp(s => s.agents);
@@ -550,17 +608,28 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   // Tab rename — per-tab id + draft value
   const [tabRenaming, setTabRenaming] = useState<{ id: string; value: string } | null>(null);
 
-  // Auto-expand 1→2+; auto-collapse back to 0.
+  // Auto-expand rules per mode:
+  //   "click"  — auto-expand 1→2+ (legacy behavior).
+  //   "always" — on wake (0→1+), clear any prior chevron-collapse so
+  //              the mode default (expanded) wins again. Users who
+  //              collapse a workspace and then put it to sleep
+  //              shouldn't return to a still-collapsed row when they
+  //              wake the agent — that contradicts "Auto open".
+  //   "chevron"— never auto-expand (the whole point: predictability).
+  // Auto-collapse on going to 0 stays in all modes — an empty
+  // workspace has nothing to expand.
   const prevCountRef = useRef(terminalTabCount);
   useEffect(() => {
     const prev = prevCountRef.current;
     prevCountRef.current = terminalTabCount;
-    if (prev <= 1 && terminalTabCount >= 2) {
+    if (expandMode === "click" && prev <= 1 && terminalTabCount >= 2) {
+      setWorkspaceCollapsed(w.id, false);
+    } else if (expandMode === "always" && prev === 0 && terminalTabCount > 0) {
       setWorkspaceCollapsed(w.id, false);
     } else if (prev > 0 && terminalTabCount === 0) {
       setWorkspaceCollapsed(w.id, true);
     }
-  }, [terminalTabCount, w.id, setWorkspaceCollapsed]);
+  }, [terminalTabCount, w.id, setWorkspaceCollapsed, expandMode]);
 
   // Aggregated work status shown on the row header when collapsed.
   // Priority: attention > done. ("working" intentionally not surfaced.)
@@ -619,7 +688,11 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             addTab(w.id, { id: crypto.randomUUID(), type: "terminal", title: agentDisplayName(cli, registry), cli });
           } else {
             if (activeTabId) setActiveTabId(w.id, activeTabId);
-            if (isActive) setWorkspaceCollapsed(w.id, !collapsed);
+            // Only the "click" mode treats a row click on the already
+            // active workspace as a collapse toggle. The other modes
+            // require the explicit chevron, which removed the "random
+            // expand" feel users complained about.
+            if (isActive && expandMode === "click") setWorkspaceCollapsed(w.id, !collapsed);
           }
         }}
         className={cn(
@@ -677,9 +750,11 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               )}
             </>
           )}
-          {/* Terminal count — only shown when >1 */}
+          {/* Terminal count — only shown when >1. Was fg-faint which
+              vanished on warm-dark surfaces; bump to fg-dim + tabular
+              nums so the digit stays legible at small sizes. */}
           {!wsRenaming && terminalTabs.length > 1 && (
-            <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
+            <span className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-fg-dim)]">
               ({terminalTabs.length})
             </span>
           )}

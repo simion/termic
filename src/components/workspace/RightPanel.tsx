@@ -9,7 +9,7 @@ import {
 } from "@/lib/ipc";
 import type { Changes, Workspace, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2 } from "lucide-react";
+import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2, Wrench, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { AuxTerminal } from "./AuxTerminal";
@@ -111,24 +111,59 @@ export function RightPanel() {
 
   // Resolve project so we can expand `preview_url` for the Open button.
   const project = useApp(s => (ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null));
-  // Fallback preview URLs from each project's committed .termic.yaml.
-  // Keyed by project_id so both single-repo and multi-repo members resolve.
+  // Fallback preview URLs + setup scripts from each project's committed
+  // .termic.yaml. Keyed by project_id so both single-repo and multi-repo
+  // members resolve. Setup-script presence drives whether the toolbar
+  // even shows a Setup button — projects with no setup configured (in
+  // either the in-app config or .termic.yaml) hide it entirely.
   const [yamlPreviewUrls, setYamlPreviewUrls] = useState<Record<string, string>>({});
+  const [yamlSetupScripts, setYamlSetupScripts] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (!ws) { setYamlPreviewUrls({}); return; }
+    if (!ws) { setYamlPreviewUrls({}); setYamlSetupScripts({}); return; }
     const ids = [ws.project_id, ...(ws.composition ?? []).map(m => m.project_id)];
     const unique = [...new Set(ids)].filter(Boolean);
     Promise.all(unique.map(id =>
       repoConfigLoad(id)
-        .then(rc => [id, rc?.scripts?.preview_url?.trim() ?? ""] as const)
-        .catch(() => [id, ""] as const),
-    )).then(entries => setYamlPreviewUrls(Object.fromEntries(entries)));
+        .then(rc => [id, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? ""] as const)
+        .catch(() => [id, "", ""] as const),
+    )).then(entries => {
+      setYamlPreviewUrls(Object.fromEntries(entries.map(([id, url]) => [id, url])));
+      setYamlSetupScripts(Object.fromEntries(entries.map(([id, , setup]) => [id, setup])));
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws?.project_id, ws?.composition?.map(m => m.project_id).sort().join("|")]);
   const footerTerm = useApp(s => (ws ? !!s.footerTerm[ws.id] : false));
+  const setupRunState = useRunState(ws?.id, "setup", footTarget);
+  const runRunState   = useRunState(ws?.id, "run",   footTarget);
+  // The Setup tab is transient: it only appears once Setup has been
+  // invoked for this (workspace, target). Closing it resets the run
+  // state back to idle and the tab disappears again.
+  const showSetupTab = setupRunState.status !== "idle";
   const footRun = useRunState(ws?.id, footTab === "term" ? "run" : footTab, footTarget);
 
+  // If the Setup tab vanishes (close button or workspace switch) while
+  // the user is currently viewing it, fall back to Run so the footer
+  // doesn't render an empty stream.
+  useEffect(() => {
+    if (!showSetupTab && footTab === "setup") setFootTab("run");
+  }, [showSetupTab, footTab]);
+
   if (!ws) return null;
+
+  // Shared start/stop. Setup auto-switches the footer view to the Setup
+  // tab (which the user can close once they're done reading the log).
+  const startScript = (kind: "setup" | "run") => {
+    useScriptRuns.getState().start(ws.id, kind, footTarget);
+    setFootCollapsed(false);
+    if (kind === "setup") setFootTab("setup");
+    workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
+      console.error("workspace_run_script_stream failed:", err));
+  };
+  const stopScript = (kind: "setup" | "run") => {
+    useScriptRuns.getState().finish(ws.id, kind, null, false, footTarget);
+    workspaceStopScript(ws.id, kind, footTarget || undefined).catch(err =>
+      console.error("workspace_stop_script failed:", err));
+  };
 
   return (
     <aside ref={asideRef} className="relative flex h-full flex-col border-l border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
@@ -266,29 +301,27 @@ export function RightPanel() {
               const syntheticWs: Workspace = { ...ws, port: memberPort };
               return (
                 <div className="flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-1.5">
-                  <FTab label="Setup" active={footTab === "setup"} onClick={() => setFootTab("setup")} />
                   <FTab label="Run"   active={footTab === "run"}   onClick={() => setFootTab("run")} />
+                  {showSetupTab && (
+                    <FTab
+                      label="Setup"
+                      active={footTab === "setup"}
+                      onClick={() => setFootTab("setup")}
+                      onClose={() => {
+                        useScriptRuns.getState().reset(ws.id, "setup", footTarget);
+                        setFootTab("run");
+                      }}
+                    />
+                  )}
                   <RunToolbar
-                    ws={syntheticWs} project={memberProject} yamlPreviewUrl={yamlPreviewUrls[m?.project_id ?? ""]} kind={footTab as "setup" | "run"} run={footRun}
+                    ws={syntheticWs} project={memberProject} yamlPreviewUrl={yamlPreviewUrls[m?.project_id ?? ""]}
+                    hasSetup={!!(m?.setup_script?.trim() || memberProject?.setup_script?.trim() || yamlSetupScripts[m?.project_id ?? ""]?.trim())}
+                    setupStatus={setupRunState.status} runStatus={runRunState.status}
                     compact={footerTerm}
-                    onStart={() => {
-                      const kind = footTab as "setup" | "run";
-                      useScriptRuns.getState().start(ws.id, kind, footTarget);
-                      setFootCollapsed(false);
-                      workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
-                        console.error("workspace_run_script_stream failed:", err));
-                    }}
-                    onStop={() => {
-                      const kind = footTab as "setup" | "run";
-                      // Flip the button immediately. The script-done
-                      // event eventually arrives and re-confirms, but
-                      // some scripts (Django runserver, etc.) drag
-                      // their feet on SIGTERM and leave the user
-                      // staring at a Stop button that "did nothing".
-                      useScriptRuns.getState().finish(ws.id, kind, null, false, footTarget);
-                      workspaceStopScript(ws.id, kind, footTarget || undefined).catch(err =>
-                        console.error("workspace_stop_script failed:", err));
-                    }}
+                    onSetupStart={() => startScript("setup")}
+                    onSetupStop={()  => stopScript("setup")}
+                    onRunStart={()   => startScript("run")}
+                    onRunStop={()    => stopScript("run")}
                   />
                 </div>
               );
@@ -308,8 +341,18 @@ export function RightPanel() {
           >
             {footCollapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
-          <FTab label="Setup" active={footTab === "setup"} onClick={() => { setFootTab("setup"); setFootCollapsed(false); }} />
           <FTab label="Run"   active={footTab === "run"}   onClick={() => { setFootTab("run");   setFootCollapsed(false); }} />
+          {showSetupTab && (
+            <FTab
+              label="Setup"
+              active={footTab === "setup"}
+              onClick={() => { setFootTab("setup"); setFootCollapsed(false); }}
+              onClose={() => {
+                useScriptRuns.getState().reset(ws.id, "setup", footTarget);
+                setFootTab("run");
+              }}
+            />
+          )}
           {footerTerm && (
             <FTab
               label="Terminal"
@@ -323,21 +366,14 @@ export function RightPanel() {
           )}
           {footTab !== "term" && (
             <RunToolbar
-              ws={ws} project={project} yamlPreviewUrl={yamlPreviewUrls[ws.project_id]} kind={footTab as "setup" | "run"} run={footRun}
+              ws={ws} project={project} yamlPreviewUrl={yamlPreviewUrls[ws.project_id]}
+              hasSetup={!!(project?.setup_script?.trim() || yamlSetupScripts[ws.project_id]?.trim())}
+              setupStatus={setupRunState.status} runStatus={runRunState.status}
               compact={footerTerm}
-              onStart={() => {
-                const kind = footTab as "setup" | "run";
-                useScriptRuns.getState().start(ws.id, kind, footTarget);
-                setFootCollapsed(false);
-                workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
-                  console.error("workspace_run_script_stream failed:", err));
-              }}
-              onStop={() => {
-                const kind = footTab as "setup" | "run";
-                useScriptRuns.getState().finish(ws.id, kind, null, false, footTarget);
-                workspaceStopScript(ws.id, kind, footTarget || undefined).catch(err =>
-                  console.error("workspace_stop_script failed:", err));
-              }}
+              onSetupStart={() => startScript("setup")}
+              onSetupStop={()  => stopScript("setup")}
+              onRunStart={()   => startScript("run")}
+              onRunStop={()    => stopScript("run")}
             />
           )}
         </div>
@@ -429,13 +465,22 @@ function expandPreviewUrl(project: Project | null, ws: Workspace, yamlUrl = ""):
     .replaceAll("$CONDUCTOR_WORKSPACE_NAME",   ws.name);
 }
 
-/** Right-aligned toolbar group: Open (if URL known) + Run / Stop (toggles by
- *  current run status). Open is enabled regardless of status so users can hit
- *  their dev server preview the moment they remember the URL is sticky. */
-function RunToolbar({ ws, project, yamlPreviewUrl = "", kind, run, onStart, onStop, compact }: {
-  ws: Workspace; project: Project | null; yamlPreviewUrl?: string; kind: "setup" | "run";
-  run: { status: "idle" | "running" | "done" | "error" };
-  onStart: () => void; onStop: () => void;
+/** Right-aligned toolbar group: Setup / Run / Open. Setup and Run each toggle
+ *  to Stop when their script is running; Open is always enabled when a preview
+ *  URL is known so users can hit the dev server preview the moment they want.
+ *  Setup is one-shot in practice (run at create-time) but kept available for
+ *  re-runs after dep bumps or script edits — its output streams into a
+ *  transient Setup tab that only appears post-invocation. */
+function RunToolbar({ ws, project, yamlPreviewUrl = "", hasSetup, setupStatus, runStatus, onSetupStart, onSetupStop, onRunStart, onRunStop, compact }: {
+  ws: Workspace; project: Project | null; yamlPreviewUrl?: string;
+  /** Whether a setup script is configured for this project/member — gates
+   *  the Setup button entirely. Projects without setup (e.g. simple
+   *  scratch repos) get a tidier toolbar. */
+  hasSetup: boolean;
+  setupStatus: "idle" | "running" | "done" | "error";
+  runStatus: "idle" | "running" | "done" | "error";
+  onSetupStart: () => void; onSetupStop: () => void;
+  onRunStart: () => void; onRunStop: () => void;
   /** When the footer is cramped (Terminal tab open, panel narrow),
    *  collapse buttons to icon-only with the label moved to the title.
    *  Saves ~50px per button which is enough to keep everything in the
@@ -443,12 +488,35 @@ function RunToolbar({ ws, project, yamlPreviewUrl = "", kind, run, onStart, onSt
   compact?: boolean;
 }) {
   const url = expandPreviewUrl(project, ws, yamlPreviewUrl);
-  const running = run.status === "running";
-  // Square button when icon-only; pill with label otherwise.
+  const setupRunning = setupStatus === "running";
+  const runRunning = runStatus === "running";
   const btnCls = compact ? "h-6 w-6 p-0" : "h-6 gap-1 px-1.5 text-[12px]";
+  const stopCls = cn(btnCls, "text-[var(--color-err)] hover:text-[var(--color-err)]");
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1">
-      {kind === "run" && url && (
+      {hasSetup && (setupRunning ? (
+        <Button size="sm" variant="secondary" onClick={onSetupStop} title="Stop setup" className={stopCls}>
+          <Square className="h-3 w-3 fill-current" />
+          {!compact && <span>Stop setup</span>}
+        </Button>
+      ) : (
+        <Button size="sm" variant="secondary" onClick={onSetupStart} title="Run setup" className={btnCls}>
+          <Wrench className="h-3 w-3" />
+          {!compact && <span>Setup</span>}
+        </Button>
+      ))}
+      {runRunning ? (
+        <Button size="sm" variant="secondary" onClick={onRunStop} title="Stop" className={stopCls}>
+          <Square className="h-3 w-3 fill-current" />
+          {!compact && <span>Stop</span>}
+        </Button>
+      ) : (
+        <Button size="sm" variant="secondary" onClick={onRunStart} title="Run" className={btnCls}>
+          <Play className="h-3 w-3" />
+          {!compact && <span>Run</span>}
+        </Button>
+      )}
+      {url && (
         <Button
           size="sm" variant="secondary"
           onClick={() => openPath(url).catch(err => console.error("open failed:", err))}
@@ -459,30 +527,33 @@ function RunToolbar({ ws, project, yamlPreviewUrl = "", kind, run, onStart, onSt
           {!compact && <span>Open</span>}
         </Button>
       )}
-      {running ? (
-        <Button
-          size="sm" variant="secondary"
-          onClick={onStop}
-          title="Stop"
-          // Red tint so Stop reads as a destructive control without taking
-          // over the whole toolbar with a full-red `danger` variant.
-          className={cn(btnCls, "text-[var(--color-err)] hover:text-[var(--color-err)]")}
-        >
-          <Square className="h-3 w-3 fill-current" />
-          {!compact && <span>Stop</span>}
-        </Button>
-      ) : (
-        <Button
-          size="sm" variant="secondary"
-          onClick={onStart}
-          title={kind === "setup" ? "Run setup" : "Run"}
-          className={btnCls}
-        >
-          <Play className="h-3 w-3" />
-          {!compact && <span>{kind === "setup" ? "Run setup" : "Run"}</span>}
-        </Button>
-      )}
+      {url && <CopyUrlButton url={url} />}
     </div>
+  );
+}
+
+/** Icon-only "copy preview URL" button. Flashes a checkmark for ~1.2s after
+ *  copy so the user gets feedback without a toast. Tooltip carries the URL
+ *  so users can see what's about to be copied before clicking. */
+function CopyUrlButton({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  const doCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch (err) {
+      console.error("clipboard write failed:", err);
+    }
+  };
+  return (
+    <Tip content={copied ? "Copied" : `Copy ${url}`} side="top">
+      <Button size="sm" variant="secondary" onClick={doCopy} className="h-6 w-6 p-0">
+        {copied
+          ? <Check className="h-3 w-3 text-[var(--color-ok)]" />
+          : <Copy  className="h-3 w-3" />}
+      </Button>
+    </Tip>
   );
 }
 

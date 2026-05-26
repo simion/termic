@@ -18,6 +18,7 @@ const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
+const LS_WS_EXPAND_MODE = "workspaceExpandMode";
 
 export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
@@ -297,6 +298,14 @@ interface PrefsState {
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
+  /** How a workspace row's tab list (its "agents") expands in the sidebar:
+   *  - "chevron": only the chevron toggles. Row click just activates.
+   *               No auto-expand. Default — most predictable.
+   *  - "click":   click on the active row's title also toggles, AND the
+   *               workspace auto-expands when it grows to 2+ agents.
+   *  - "always":  workspaces are always expanded by default. The chevron
+   *               still collapses, and that collapsed-state sticks. */
+  workspaceExpandMode: "chevron" | "click" | "always";
 
   setEditorFontId:    (id: string) => void;
   setEditorThemeId:   (id: string) => void;
@@ -317,6 +326,7 @@ interface PrefsState {
   setSettledHighlight: (v: boolean) => void;
   setGlobalDefaultSandbox: (v: boolean) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
+  setWorkspaceExpandMode: (m: "chevron" | "click" | "always") => void;
 }
 
 const lsGet = (k: string, fallback: string) => {
@@ -366,6 +376,10 @@ const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 // ON by default — sandboxed agents bypass their own permission prompts
 // because the seatbelt is the real boundary. Users can opt out.
 const initialSandboxBypass = lsGetBool(LS_SANDBOX_BYPASS, true);
+const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
+  const raw = lsGet(LS_WS_EXPAND_MODE, "chevron");
+  return raw === "click" || raw === "always" ? raw : "chevron";
+})();
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
@@ -381,6 +395,7 @@ export const usePrefs = create<PrefsState>(set => ({
   terminalLetterSpacing: initialTerminalLetterSpacing,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
+  workspaceExpandMode: initialWsExpandMode,
 
   setEditorFontId: (id) => {
     try { localStorage.setItem(LS_EDITOR_FONT, id); } catch {}
@@ -452,6 +467,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setSandboxBypassPermissions: (v) => {
     try { localStorage.setItem(LS_SANDBOX_BYPASS, v ? "1" : "0"); } catch {}
     set({ sandboxBypassPermissions: v });
+  },
+  setWorkspaceExpandMode: (m) => {
+    try { localStorage.setItem(LS_WS_EXPAND_MODE, m); } catch {}
+    set({ workspaceExpandMode: m });
   },
   cycleThemeMode: () => {
     // Cycle only the original three for the keyboard shortcut - explicit

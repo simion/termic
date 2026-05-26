@@ -97,6 +97,9 @@ interface AppState {
   disableFooterTerm: (wsId: string) => void;
   setProjectCollapsed:   (projectId: string, collapsed: boolean) => void;
   setWorkspaceCollapsed: (wsId: string,      collapsed: boolean) => void;
+  /** Bulk set: flips every workspace's explicit collapsed state to the
+   *  given value in one update (single localStorage write + render). */
+  setAllWorkspacesCollapsed: (collapsed: boolean) => void;
   setTerminalSplitHeight: (wsId: string, px: number) => void;
   toggleTerminalSplitCollapsed: (wsId: string) => void;
   /** Returns the id of the new bottom tab. */
@@ -356,6 +359,16 @@ export const useApp = create<AppState>((set, get) => ({
   }),
   setWorkspaceCollapsed: (wsId, collapsed) => set(s => {
     const next = { ...s.collapsedWorkspaces, [wsId]: collapsed };
+    try { localStorage.setItem(LS_COLLAPSED_WS, JSON.stringify(next)); } catch {}
+    return { collapsedWorkspaces: next };
+  }),
+  setAllWorkspacesCollapsed: (collapsed) => set(s => {
+    // Build a fresh map covering every workspace so the default-by-mode
+    // fallback in WorkspaceRow can't sneak back in for any of them. We
+    // intentionally write entries for archived workspaces too: cheap,
+    // and unifies behavior if one is later restored.
+    const next: Record<string, boolean> = {};
+    for (const w of s.workspaces) next[w.id] = collapsed;
     try { localStorage.setItem(LS_COLLAPSED_WS, JSON.stringify(next)); } catch {}
     return { collapsedWorkspaces: next };
   }),

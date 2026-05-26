@@ -121,8 +121,16 @@ export function useShortcuts() {
       // at when the user X's out the last tab. Cycling through
       // asleep ones would silently respawn PTYs the user already
       // killed, which is surprising.
-      const awakeWorkspaces = state.workspaces.filter(
-        w => !w.archived && (state.tabs[w.id]?.length ?? 0) > 0,
+      //
+      // Order MUST match the sidebar's visual order: project1 → its
+      // workspaces → project2 → its workspaces → ... Otherwise ⌥⌘↑/↓
+      // (and ⌘[/⌘]) jump around "randomly" because raw `workspaces`
+      // is in JSON load order, not sidebar grouping. Match the same
+      // grouping the sidebar uses in Sidebar.tsx#projects.map.
+      const awakeWorkspaces = state.projects.flatMap(p =>
+        state.workspaces.filter(w =>
+          w.project_id === p.id && !w.archived && (state.tabs[w.id]?.length ?? 0) > 0,
+        ),
       );
 
       // ⌥⌘↑ / ⌥⌘↓ → previous / next AWAKE workspace (arrow-key alt
