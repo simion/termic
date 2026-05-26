@@ -7,7 +7,7 @@
 [![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-d97757)](https://github.com/simion/termic/releases/latest)
-[![Linux + Windows: build from source](https://img.shields.io/badge/Linux%20%2B%20Windows-build%20from%20source-d97757)](#linux-self-build-no-sandbox)
+[![Linux + Windows: build from source](https://img.shields.io/badge/Linux%20%2B%20Windows-build%20from%20source-d97757)](#linux-build-once-install-use)
 [![termic.dev](https://img.shields.io/badge/website-termic.dev-d97757)](https://termic.dev)
 
 Free, open-source desktop app for running AI coding-agent CLIs in parallel,
@@ -65,37 +65,84 @@ make install        # build, copy to /Applications, launch
 `make dev` (vite HMR + Rust auto-rebuild) is the iteration loop — see
 [CONTRIBUTING.md](./CONTRIBUTING.md) if you plan to hack on the code.
 
-#### Linux (self-build, no sandbox)
+#### Linux (build once, install, use)
 
-There are no prebuilt Linux binaries yet, but the stack (Tauri 2 +
-portable-pty + xterm.js + WebKitGTK) builds and runs fine. **The
-sandbox feature is macOS-only** (it shells out to `sandbox-exec`); on
-Linux the workspace's Shield toggle is greyed out and agents run
-unsandboxed. Everything else — worktrees, parallel tabs, themes,
-in-app diff, the in-process CONNECT proxy — works as on macOS.
+No prebuilt `.deb` / `.rpm` / `.AppImage` yet, so the path is "build
+locally once, then install the resulting bundle." After that you
+launch Termic from your app menu like any other app. **The sandbox
+feature is macOS-only** — on Linux the workspace's Shield toggle is
+disabled and agents run unsandboxed. Everything else (worktrees,
+parallel tabs, themes, in-app diff, file finder, find-in-files, the
+in-process CONNECT proxy) works the same.
 
-Prerequisites on a recent Debian / Ubuntu:
+Prerequisites — Debian / Ubuntu (24.04+ has WebKitGTK 4.1):
 
 ```sh
-sudo apt-get install -y \
-  build-essential curl wget file libssl-dev libayatana-appindicator3-dev \
-  librsvg2-dev libwebkit2gtk-4.1-dev libgtk-3-dev libudev-dev
-# Rust (stable) — https://rustup.rs
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-# Node 20+ via your package manager of choice (nvm/fnm/asdf/distro).
+sudo apt update
+sudo apt install -y \
+  build-essential curl wget file git pkg-config \
+  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+  librsvg2-dev libssl-dev libsoup-3.0-dev libxdo-dev
 
+# Rust stable
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
+
+# Node 20+ — distro package, nvm, fnm, asdf, or mise (whichever you use)
+```
+
+Fedora:
+
+```sh
+sudo dnf install -y \
+  @development-tools curl wget file git pkgconfig \
+  webkit2gtk4.1-devel gtk3-devel libappindicator-gtk3-devel \
+  librsvg2-devel openssl-devel libsoup3-devel libxdo-devel
+```
+
+Arch:
+
+```sh
+sudo pacman -S --needed base-devel curl wget file git pkgconf \
+  webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg openssl libsoup3 xdotool
+```
+
+Build and install:
+
+```sh
 git clone https://github.com/simion/termic
 cd termic
 npm install
-npm run tauri build              # → src-tauri/target/release/bundle/
-# .deb + .rpm + .AppImage land under appimage/ and deb/ inside bundle/
+npm run tauri build           # ~5 min first time, faster on incremental
 ```
 
-Run from source while hacking: `npm run tauri dev`.
+The bundles land under `src-tauri/target/release/bundle/`. Pick whichever
+fits your distro:
 
-For Fedora / Arch / openSUSE, swap the apt line for your distro's
-equivalents of the same dev packages (the WebKitGTK 4.1 + GTK3 +
-AppIndicator3 + librsvg2 quartet is what Tauri 2 needs).
+```sh
+# Debian / Ubuntu / Pop / Mint
+sudo apt install ./src-tauri/target/release/bundle/deb/termic_*_amd64.deb
+
+# Fedora / RHEL / openSUSE
+sudo dnf install ./src-tauri/target/release/bundle/rpm/termic-*.x86_64.rpm
+
+# Distro-agnostic — no install needed, just make it executable and run
+chmod +x src-tauri/target/release/bundle/appimage/termic_*_amd64.AppImage
+./src-tauri/target/release/bundle/appimage/termic_*_amd64.AppImage
+```
+
+After the `.deb` / `.rpm` install, "Termic" shows up in your application
+launcher. Self-update inside the app won't work on Linux yet (no signed
+update channel for Linux); to upgrade, `git pull && npm run tauri build`
+and reinstall the package, or replace the `.AppImage` in place.
+
+If the window looks slightly off — an empty gap on the left of the top
+bar, for example — that's the 84px reservation for macOS traffic-light
+controls. Harmless, will be cleaned up when the cross-platform chrome
+lands.
+
+Wayland note: if fonts render thin, force X11 with
+`GDK_BACKEND=x11 termic` (or set it in the `.desktop` file's `Exec=`).
 
 #### Windows (self-build, no sandbox)
 
