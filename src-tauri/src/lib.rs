@@ -661,6 +661,18 @@ fn pty_spawn(
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // Claim iTerm2 compatibility so agents that gate "fancy" OSC
+    // emission on a known host (Claude Code's OSC 9 / OSC 9;4
+    // progress, OSC 133 shell-integration, OSC 1337 attention)
+    // actually emit those signals. Without this they default to
+    // "dumb terminal" silence and our work-done detection in
+    // TerminalPane.tsx never receives the busy/idle edges. We DO
+    // implement the relevant subset (OSC 9, OSC 9;4, OSC 133, OSC
+    // 1337) — see TerminalPane's registerOscHandler calls — so the
+    // claim is honest. Version string is high enough to clear common
+    // feature-gate checks in agents that look for "iTerm2 ≥ 3.x".
+    cmd.env("TERM_PROGRAM", "iTerm.app");
+    cmd.env("TERM_PROGRAM_VERSION", "3.5.0");
 
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
         let s = e.to_string();
@@ -1296,11 +1308,51 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     // branch is already checked out in another worktree (often the main
     // checkout), git refuses — fall back to checking out the branch
     // detached so the new worktree still works.
+    //
+    // `--no-track` is critical: creating a new branch directly from a
+    // remote-tracking base (e.g. "origin/main") would otherwise set
+    // the new branch's upstream to origin/main. Later, when the user
+    // deletes the worktree branch with `git branch -D`, git's tooling
+    // sometimes offers / prompts to also delete the upstream — wiping
+    // a shared remote branch. Decoupling tracking up-front avoids
+    // that footgun. We create the branch in two steps so the
+    // `--no-track` flag applies cleanly (worktree add -b doesn't
+    // surface a `--no-track` of its own).
+    // git-crypt detection: if the source repo has `.git/git-crypt/`,
+    // a normal worktree-add's checkout will fail because the smudge
+    // filter looks for the key under the new per-worktree gitdir
+    // (which doesn't exist there). Two-step: --no-checkout, symlink
+    // the key dir from the common gitdir into the new worktree's
+    // gitdir, then `git checkout -- .` re-runs the smudge with the
+    // key now reachable.
+    let common_gitdir = git(&["rev-parse", "--git-common-dir"], &repo)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .map(|s| {
+            let p = PathBuf::from(&s);
+            if p.is_absolute() { p } else { repo.join(p) }
+        });
+    let has_git_crypt = common_gitdir
+        .as_ref()
+        .map(|p| p.join("git-crypt").exists())
+        .unwrap_or(false);
+
     let branch_exists = git(&["rev-parse", "--verify", &branch], &repo).is_ok();
-    let add_result = if branch_exists {
-        git(&["worktree", "add", wt_path.to_str().unwrap(), &branch], &repo)
+    let wt_arg = wt_path.to_str().unwrap();
+    let add_args: Vec<&str> = if has_git_crypt {
+        // Skip checkout; we'll run it manually after symlinking the
+        // git-crypt key dir into the per-worktree gitdir below.
+        vec!["worktree", "add", "--no-checkout", wt_arg, &branch]
     } else {
-        git(&["worktree", "add", "-b", &branch, wt_path.to_str().unwrap(), &base_full], &repo)
+        vec!["worktree", "add", wt_arg, &branch]
+    };
+    let add_result = if branch_exists {
+        git(&add_args, &repo)
+    } else {
+        match git(&["branch", "--no-track", &branch, &base_full], &repo) {
+            Ok(_) => git(&add_args, &repo),
+            Err(e) => Err(e),
+        }
     };
     if let Err(e) = add_result {
         if e.to_string().contains("already used by worktree") {
@@ -1310,6 +1362,41 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
             ));
         }
         return Err(e.to_string());
+    }
+
+    // git-crypt: bridge the key dir from the common .git into the new
+    // worktree's per-worktree gitdir, then run a full checkout so the
+    // smudge filter has the key available. The symlink is critical
+    // because git-crypt's smudge looks under $GIT_DIR/git-crypt — for
+    // a worktree, $GIT_DIR is the per-worktree dir, not the common
+    // one. If anything here fails, we leave the half-checked-out
+    // worktree in place and bubble up a useful error.
+    if has_git_crypt {
+        // Per-worktree gitdir = <common>/worktrees/<slug>. Resolve via
+        // `git -C <new-worktree> rev-parse --git-dir` to be robust.
+        let wt_gitdir_raw = git(&["rev-parse", "--git-dir"], &wt_path)
+            .map_err(|e| format!("git-crypt setup: couldn't resolve worktree gitdir: {e}"))?;
+        let wt_gitdir = {
+            let p = PathBuf::from(wt_gitdir_raw.trim());
+            if p.is_absolute() { p } else { wt_path.join(p) }
+        };
+        let key_target = common_gitdir.as_ref().unwrap().join("git-crypt");
+        let key_link = wt_gitdir.join("git-crypt");
+        if !key_link.exists() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&key_target, &key_link)
+                .map_err(|e| format!("git-crypt setup: symlink {} → {} failed: {e}",
+                    key_link.display(), key_target.display()))?;
+        }
+        // Populate the worktree. `--no-checkout` left the index empty
+        // (and the working tree empty too), so `checkout -- .` has
+        // nothing to match. `reset --hard HEAD` is the canonical way
+        // to fill index + working tree from HEAD; the smudge filter
+        // runs during the working-tree write and can now find the
+        // git-crypt key via the symlink. Safe here because the
+        // worktree is brand new — there's nothing to overwrite.
+        git(&["reset", "--hard", "HEAD"], &wt_path)
+            .map_err(|e| format!("git-crypt setup: post-symlink checkout failed: {e}"))?;
     }
 
     // Copy files_to_copy (glob patterns relative to repo root) —
@@ -1515,13 +1602,19 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     // Create the host worktree first. Branch reuse logic mirrors the
     // single-repo create: if branch exists locally, just check out;
     // else create from base.
+    // --no-track when creating from a remote ref so the new branch
+    // isn't tied to origin/main as its upstream. See the single-repo
+    // create site for the rationale.
     let branch_exists = git(&["rev-parse", "--verify", &branch], &host_repo).is_ok();
-    let add_args: Vec<&str> = if branch_exists {
-        vec!["worktree", "add", wrapper.to_str().unwrap(), &branch]
+    let create_result = if branch_exists {
+        git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo)
     } else {
-        vec!["worktree", "add", "-b", &branch, wrapper.to_str().unwrap(), &base_branch]
+        match git(&["branch", "--no-track", &branch, &base_branch], &host_repo) {
+            Ok(_) => git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo),
+            Err(e) => Err(e),
+        }
     };
-    if let Err(e) = git(&add_args, &host_repo) {
+    if let Err(e) = create_result {
         return Err(format!("host worktree add failed: {e}"));
     }
 
@@ -1591,13 +1684,20 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                     .map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
                     .unwrap_or_else(|| mp.base_branch.clone());
                 let mrepo = PathBuf::from(&mp.root_path);
+                // --no-track when creating from origin/* base — see
+                // single-repo create site for the rationale (deleting
+                // the worktree's branch later shouldn't risk wiping
+                // the remote upstream).
                 let mexists = git(&["rev-parse", "--verify", &mbranch], &mrepo).is_ok();
-                let margs: Vec<&str> = if mexists {
-                    vec!["worktree", "add", target.to_str().unwrap(), &mbranch]
+                let mres = if mexists {
+                    git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo)
                 } else {
-                    vec!["worktree", "add", "-b", &mbranch, target.to_str().unwrap(), &mbase]
+                    match git(&["branch", "--no-track", &mbranch, &mbase], &mrepo) {
+                        Ok(_) => git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo),
+                        Err(e) => Err(e),
+                    }
                 };
-                if let Err(e) = git(&margs, &mrepo) {
+                if let Err(e) = mres {
                     rollback(&done);
                     return Err(format!("member {dir_name} worktree add failed: {e}"));
                 }

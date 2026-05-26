@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
-import { Plus, X, GitCompare, FileText, SquareSplitVertical, Check, Bell, Megaphone } from "lucide-react";
+import { Plus, X, GitCompare, FileText, SquareSplitVertical, Bell, Megaphone } from "lucide-react";
 import { Tip } from "@/components/ui/Tooltip";
 import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
@@ -135,7 +135,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
         </DropdownMenu>
       </DropdownRoot>
 
-      <Tip content="Broadcast message to agents (⇧⌘B)" side="bottom">
+      <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
         <Button
           size="icon" variant="icon" className="ml-auto"
           onClick={() => openBroadcast(ws.id)}
@@ -176,17 +176,15 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
   onCancelRename: () => void;
 }) {
   const isUnread = !!tab.unread;
-  // Sender-driven status icon on the tab itself. Replaces the old
-  // brown unread dot — too generic, no signal about WHY the tab is
-  // unread. Now: green ✓ when the agent finished a turn; yellow 🔔
-  // when the agent is blocked on the user. BEL / exit reasons fall
-  // through to no badge (the tab's own contents already explain).
+  // iTerm2-parity status indicator on the tab.
+  //   attention (orange bell) → agent explicitly blocked on user.
+  //   done      (blue bullet) → agent finished a turn; clears on input.
+  // Priority: attention > done > brand icon. ("working" spinner +
+  // progress bar removed — too many false positives in real-world TUIs.)
   const reason = tab.unread?.reason;
-  // `idle` is the old stdout-cadence heuristic — too many false
-  // positives. Only honor the sender-driven `done` (OSC 9;4 / title
-  // classifier) for the green check now.
-  const showCheck = reason === "done";
-  const showBell  = reason === "attention";
+  const workState = tab.type === "terminal" ? tab.workState : undefined;
+  const showBell    = reason === "attention";
+  const showDone    = !showBell && workState === "done";
   const color = tab.type === "terminal" ? CLI_BRAND_COLOR[tab.cli] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
 
@@ -229,16 +227,7 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
           : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
-      {showBell && (
-        <span className="shrink-0 text-[var(--color-warn)]" title="Agent needs your input">
-          <Bell className="h-3.5 w-3.5" strokeWidth={2.5} />
-        </span>
-      )}
-      {showCheck && !showBell && (
-        <span className="shrink-0 text-[var(--color-ok)]" title="Agent finished a turn">
-          <Check className="h-4 w-4" strokeWidth={3} />
-        </span>
-      )}
+      {/* Work-state badge moved to the trailing slot — see below. */}
       {/* Icon slot: Terminals get CLI brand icons, Edit/Diff tabs get dynamic Catppuccin file icons if path is available, else fallback / none */}
       {(tab.type === "terminal" || fileIcon || tab.type === "diff") && (
         <span className={cn("shrink-0 flex items-center justify-center", color)}>
@@ -278,14 +267,28 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
           {tab.customTitle ? tab.title : (tab.liveTitle || tab.title)}
         </span>
       )}
-      {/* Trailing slot — close button, or a dirty dot for an edit tab
-          with unsaved changes. VS Code convention: the dot sits where
-          the × would be and swaps to the × on hover, so the tab never
-          jiggles in width. Closing routes through requestCloseTab,
-          which confirms before discarding an unsaved buffer. */}
+      {/* Trailing slot — iTerm2 convention: status badge / dirty dot
+          by default; close × on hover. Fixed cell so the pill never
+          jiggles. Priority: attention > done > dirty > none. */}
       {!isRenaming && (
         <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-          {tab.dirty && (
+          {(showBell || showDone) ? (
+            <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover:opacity-0">
+              {showBell && (
+                <span className="text-[var(--color-warn)]" title="Agent needs your input">
+                  <Bell className="h-3.5 w-3.5" strokeWidth={2.5} />
+                </span>
+              )}
+              {showDone && (
+                <span title="Agent finished a turn" aria-label="Work done">
+                  <span
+                    className="block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: "var(--color-info, #4aa3ff)" }}
+                  />
+                </span>
+              )}
+            </span>
+          ) : tab.dirty && (
             <span
               aria-hidden
               title="Unsaved changes"
@@ -295,8 +298,8 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
           <button
             title="Close tab"
             className={cn(
-              "rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-              (!active || tab.dirty) && "opacity-0 group-hover:opacity-100",
+              "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
+              (!active || tab.dirty || showBell || showDone) && "opacity-0 group-hover:opacity-100",
             )}
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           ><X className="h-3 w-3" /></button>

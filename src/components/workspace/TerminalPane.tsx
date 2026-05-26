@@ -21,7 +21,11 @@ interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 
 // Settled-detection knobs. We sample the visible buffer every SAMPLE_MS and
 // mark the tab "settled" once SETTLE_SAMPLES consecutive samples produce the
-// same hash. Net stillness threshold = SETTLE_SAMPLES * SAMPLE_MS.
+// same hash. Net stillness threshold = SETTLE_SAMPLES * SAMPLE_MS = 6 s.
+// This only fires when the tab was ALREADY in "working" — so a 6 s gap in
+// the middle of an agent turn would demote spuriously only if every sender
+// signal also fell silent during that gap. Acceptable tradeoff vs. 12 s of
+// stale spinner after a real finish.
 const SAMPLE_MS = 3000;
 const SETTLE_SAMPLES = 2;
 
@@ -64,6 +68,31 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // consecutive identical samples + whether we've already marked this cycle
   // (so we mark once per "agent goes from working → settled" transition).
   const settledRef = useRef({ lastHash: 0, unchangedCount: 0, marked: false });
+  // Wall-clock of last PTY byte we received. Used by the
+  // byte-based idle fallback: if `workState === "working"` and this
+  // timestamp is older than QUIET_MS, force `done`. More robust than
+  // content-hash for TUIs that repaint status bars during/after work.
+  const lastDataAtRef = useRef(0);
+  // Scrollback line count over time. Real work GROWS the scrollback
+  // (agent prints lines that scroll off). Status-bar ticks ("Cooking
+  // for 5s"), cursor blinks, and in-place repaints do NOT — they
+  // rewrite the same row(s) without scrolling. ONLY VALID FOR NORMAL
+  // BUFFER (Claude Code prints linearly). Alt-screen TUIs (Codex)
+  // keep a fixed-length buffer; for those we fall through to the
+  // hard-ceiling check.
+  const scrollbackRef = useRef({ lastLen: -1, stableCount: 0, marked: false });
+  // Timestamp when workState last transitioned TO "working". Hard
+  // ceiling: after WORKING_HARD_CEILING_MS without any demoter firing,
+  // force `done`. Last-resort safety net for alt-screen TUIs whose
+  // sender signal we missed and whose status counter keeps producing
+  // bytes (so byte-quiet never fires).
+  const workingStartedAtRef = useRef(0);
+  // Most recent sender-classified state from a title / OSC handler.
+  // Heuristic demoters (byte-quiet, settled-hash, scrollback) skip when
+  // this is "busy" — the sender just told us the agent is still
+  // working, so a quiet 4 s gap doesn't mean it's done. Cleared back to
+  // null/idle when a sender says so, or when the user submits.
+  const senderStateRef = useRef<"busy" | "idle" | "attention" | null>(null);
   // Respawn machinery: when the agent process exits (user typed `exit`,
   // claude crashed, etc.) we tear down the PTY but KEEP the terminal
   // mounted with its scrollback. The "Restart" overlay then bumps `gen`
@@ -94,13 +123,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
-  const clearAttention = useApp(s => s.clearAttention);
   const setTabLiveTitle = useApp(s => s.setTabLiveTitle);
-  // Per-effect busy ref: tracks whether OSC 9;4 has us in a busy state.
-  // Used to emit a "done" attention edge when the program transitions
-  // busy → idle (state = 0). Persisting on the tab model would just be
-  // noise — only the edge matters.
-  const busyRef = useRef(false);
+  const setWorkState = useApp(s => s.setWorkState);
+  const setWorkProgress = useApp(s => s.setWorkProgress);
   // Bridge from the PTY data listener (registered deep inside the
   // spawn flow) to the OSC 9;4 done timer (defined right after the
   // terminal is opened). Set inside the effect after the timer is
@@ -194,37 +219,36 @@ export function TerminalPane({ ws, tab, active }: Props) {
       return true;
     });
 
-    // ── Sender-driven status signals ──────────────────────────────────
+    // ── Sender-driven status signals (iTerm2-parity) ──────────────────
     //
-    // Each agent CLI has its own dialect (researched from upstream
-    // source). Termic listens to ALL of them so detection works
-    // regardless of which agent is running in this tab:
+    // Reliability strategy: trust authoritative sender signals over
+    // heuristics. Priority (high → low):
     //
-    //   Claude Code → OSC 9;4 (ConEmu progress protocol). State 1/3 =
-    //     busy, state 0 = idle. The reliable signal. Caveat: Claude
-    //     emits 0 between tool calls too, so we debounce.
+    //   1. OSC 9 (plain)   — Claude Code "Send notification". Body text
+    //                        is verbatim from the agent. iTerm2 forwards
+    //                        it to the OS as a banner notification; we
+    //                        do the same and treat it as a definitive
+    //                        attention/done transition.
+    //   2. OSC 777;notify  — VTE/urxvt notification dialect. Same
+    //                        treatment as OSC 9 plain.
+    //   3. OSC 9;4         — ConEmu progress protocol. State 1/2/3/4 =
+    //                        busy, 0 = idle. Reliable busy/idle edge
+    //                        from Claude Code.
+    //   4. OSC 133;C / ;D  — FinalTerm semantic prompt marks. Command
+    //                        running / command ended. Works for any
+    //                        shell-integration-aware tool.
+    //   5. OSC 1337        — iTerm proprietary. RequestAttention → fire
+    //                        attention.
+    //   6. OSC 0/2 title   — Gemini/Codex per-state strings (fallback
+    //                        for CLIs that don't emit 9 or 133).
+    //   7. Settled-hash    — interval-based viewport stillness, only
+    //                        fires "done" if no higher-priority signal
+    //                        was seen this turn.
     //
-    //   Gemini CLI → OSC 0 title with explicit per-state strings from
-    //     packages/cli/src/utils/windowTitle.ts:
-    //       "◇  Ready (folder)"           idle
-    //       "✦  Working… (folder)"        busy
-    //       "⏲  Working… (folder)"        busy (silent variant)
-    //       "✋  Action Required (folder)" busy/waiting (treat as busy
-    //                                      so the agent looks live;
-    //                                      attention dot is separate)
+    // The reducer below is the single funnel. Every signal calls
+    // `transition(kind)` so we never end up with two timers racing.
     //
-    //   Codex → OSC 0 title with literal status words from
-    //     codex-rs/tui/src/chatwidget/status_surfaces.rs:
-    //       "Ready"                       idle
-    //       "Working" / "Thinking"        busy
-    //       "Waiting" / "Action Required" busy/waiting
-    //
-    // For unknown CLIs (custom agents) we fall back to the OSC 9;4
-    // signal only — no title heuristic, no churn timer (which always
-    // ran the risk of false positives).
-    //
-    // Set `localStorage.debugWorkDone = "1"` in devtools to log every
-    // signal — useful for diagnosing future mis-fires.
+    // Set `localStorage.debugWorkDone = "1"` to log every signal.
     const wdDebug = (() => { try { return localStorage.getItem("debugWorkDone") === "1"; } catch { return false; } })();
     const wdlog = (msg: string, extra?: unknown) => {
       if (!wdDebug) return;
@@ -233,16 +257,141 @@ export function TerminalPane({ ws, tab, active }: Props) {
       else console.log(tag, msg);
     };
 
-    // Per-CLI title classifier. Three states:
-    //   "busy"      → agent is actively working; cancel any pending done-mark.
-    //   "idle"      → agent finished, no input needed; fire "done" (green ✓).
-    //   "attention" → agent stopped, waiting on user (Action Required,
-    //                 Waiting, ✋); fire "attention" (orange bell).
-    // Returns null when the title doesn't match any known state for
-    // this CLI.
+    // ── State machine ──
+    //
+    // localBusy is the "agent is currently working" truth as decided by
+    // whichever signal last spoke. settleTimer arms a `working → done`
+    // transition after SETTLE_MS of declared idleness; canceled if a new
+    // busy signal arrives. The settled-hash fallback in the
+    // poll-interval effect below only fires when `workState === "working"`
+    // — which itself only becomes true via sender signals — so the
+    // heuristic can never produce false-positive `done` out of cold start.
+    const SETTLE_MS = 2_000;
+    let localBusy = false;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    // Submit-anchored heuristic: when the user presses Enter we open a
+    // detection window. Any PTY data inside the window promotes to
+    // "working" once; once we go to "done" the window closes until the
+    // next Enter. Splash screens / periodic redraws on tabs the user
+    // has never submitted to → no false positive. Cleared on workState
+    // going back to idle (next submit reopens it cleanly).
+    let submitWindowUntil = 0;
+    // Reset workState for this (re)spawn — stale "done" from a prior
+    // PTY (or pre-Restart session) would otherwise show a bullet for a
+    // freshly-spawned agent.
+    setWorkState(ws.id, tab.id, "idle");
+
+    const cancelSettle = (reason: string) => {
+      if (!settleTimer) return;
+      clearTimeout(settleTimer);
+      settleTimer = null;
+      wdlog(`settle cancelled (${reason})`);
+    };
+    const armSettle = (reason: string, delay = SETTLE_MS) => {
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        wdlog(`settle fired → workState=done`);
+        setWorkState(ws.id, tab.id, "done");
+        settleTimer = null;
+      }, delay);
+      wdlog(`settle armed (${reason}) for ${delay}ms`);
+    };
+    const goWorking = (reason: string) => {
+      cancelSettle(reason);
+      if (!localBusy) {
+        wdlog(`→ working (${reason})`);
+        localBusy = true;
+        workingStartedAtRef.current = Date.now();
+      }
+      setWorkState(ws.id, tab.id, "working");
+    };
+    const goIdle = (reason: string, delay = SETTLE_MS) => {
+      cancelSettle(reason);
+      if (delay === 0) {
+        // Hard idle (OSC 133;D, OSC 9 notify) — flip to done now. No
+        // settle window: the sender explicitly told us the turn ended.
+        wdlog(`→ done (${reason})`);
+        localBusy = false;
+        setWorkState(ws.id, tab.id, "done");
+        return;
+      }
+      const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id);
+      const wasWorking = localBusy || (cur?.type === "terminal" && cur.workState === "working");
+      if (wasWorking) {
+        wdlog(`→ settling (${reason})`);
+        localBusy = false;
+        armSettle(reason, delay);
+      }
+      // No prior busy → ignore: avoids "Ready" titles on cold spawn
+      // marking the tab done out of nowhere.
+    };
+    const goAttention = (reason: string) => {
+      cancelSettle(reason);
+      localBusy = false;
+      // Mark workState=done so the visual indicator is consistent — the
+      // agent has stopped. The orange "attention" badge is layered on top
+      // via the unread channel.
+      setWorkState(ws.id, tab.id, "done");
+      markAttention(ws.id, tab.id, "attention");
+    };
+
+    // ── OS notification forwarding (the iTerm2 "session is …" banner) ──
+    //
+    // OSC 9 plain + OSC 777 are agent-authored notification requests.
+    // We forward the body to the OS verbatim, skipping only when the
+    // user has the desktopNotifications pref off OR is currently
+    // looking at the workspace. iTerm2 does the same focus-gating.
+    // Format mirrors the screenshot the user provided:
+    //   Title: "Session ⁂ <workspace> (<cli>)"
+    //   Body:  <agent's verbatim message>
+    const forwardNotification = (msg: string) => {
+      const trimmed = msg.trim();
+      if (!trimmed) return;
+      try {
+        const prefs = usePrefs.getState();
+        if (!prefs.desktopNotifications) {
+          wdlog(`OS notify suppressed (pref off): ${trimmed}`);
+          return;
+        }
+        const app = useApp.getState();
+        // Skip focused workspace — matches useAttentionNotifier's gating.
+        if (app.activeWorkspaceId === ws.id) {
+          wdlog(`OS notify suppressed (focused workspace): ${trimmed}`);
+          return;
+        }
+        const title = `${ws.name} · ${tab.cli}`;
+        ipc.notify(title, trimmed).catch(() => {});
+        // Seed the focus-edge router so the user clicking the banner
+        // (or otherwise refocusing the window within ROUTE_WINDOW_MS)
+        // lands on the tab that emitted the notification. See
+        // useAttentionNotifier.ts for the consumer.
+        useUI.getState().setNotifyRoute({ wsId: ws.id, tabId: tab.id });
+        wdlog(`OS notify fired: ${title} — ${trimmed}`);
+      } catch (e) {
+        wdlog(`OS notify error`, e);
+      }
+    };
+
+    // Per-CLI title classifier (fallback for agents that don't emit
+    // OSC 9 / 133). Three states: busy / idle / attention.
     const classifyTitle = (cli: string, title: string): "busy" | "idle" | "attention" | null => {
       const t = title.trim();
       if (!t) return null;
+      if (cli === "claude") {
+        // Idle/done: title starts with "✳" (Claude's brand glyph).
+        // Working: title leads with one or two spinner frames — we've
+        // seen Braille (U+2800..U+28FF) AND combinations like "⠐ ⠂".
+        // Rule: if the leading non-whitespace char is NOT ✳, it's the
+        // spinner = busy. Falsely flagging an unknown title as busy
+        // is the safer side: a momentary spurious busy gets reconciled
+        // when the title next becomes "✳" or via byte-quiet; the
+        // reverse (missing busy → premature done) is the bug we're
+        // chasing.
+        if (/^\s*✳/.test(t)) return "idle";
+        // Any leading non-✳ glyph → assume spinner = working.
+        if (/^\s*\S/.test(t) && !/^\s*[A-Za-z0-9]/.test(t)) return "busy";
+        return null;
+      }
       if (cli === "gemini") {
         if (t.startsWith("✋") || /Action Required/i.test(t)) return "attention";
         if (t.startsWith("◇") || /^\s*Ready\b/.test(t)) return "idle";
@@ -258,123 +407,144 @@ export function TerminalPane({ ws, tab, active }: Props) {
       return null;
     };
 
-    // Single done-timer shared between OSC 9;4 (Claude) and the title
-    // classifier (Gemini, Codex). Arming twice cancels the prior arm;
-    // any "busy" signal cancels outright. PTY data activity also pushes
-    // it out — see pushOscDoneRef below.
-    busyRef.current = false;
-    const OSC_DONE_DELAY_MS = 8_000;
-    const TITLE_DONE_DELAY_MS = 2_500;
-    let doneTimer: ReturnType<typeof setTimeout> | null = null;
-    let doneArmedAt = 0;
-    let doneArmedDelay = 0;
-    // The done-timer carries the REASON it was armed with so it can
-    // emit "done" (regular finish) or "attention" (Action Required /
-    // Waiting / OSC 1337 RequestAttention) → different sidebar icons.
-    let doneReason: "done" | "attention" = "done";
-    const cancelDoneTimer = (reason: string) => {
-      if (!doneTimer) return;
-      clearTimeout(doneTimer);
-      doneTimer = null;
-      wdlog(`done-timer cancelled (${reason})`);
-    };
-    const armDoneTimer = (reason: string, delay: number, kind: "done" | "attention" = "done") => {
-      if (doneTimer) clearTimeout(doneTimer);
-      doneArmedAt = Date.now();
-      doneArmedDelay = delay;
-      doneReason = kind;
-      doneTimer = setTimeout(() => {
-        wdlog(`done-timer fired → markAttention("${doneReason}")`);
-        markAttention(ws.id, tab.id, doneReason);
-        doneTimer = null;
-      }, delay);
-      wdlog(`done-timer armed (${reason}, kind=${kind}) for ${delay}ms`);
-    };
-
-    // OSC 0/2 — title change. Always surface as the live tab label;
-    // additionally feed the per-CLI classifier for done detection.
-    // Edge-detect for title-driven states. Gemini re-emits "◇ Ready"
-    // on spawn AND periodically while idle — firing markAttention()
-    // every time spams the unread dot for work that never happened.
-    // Only fire "done" on a BUSY → IDLE transition (mirrors the OSC
-    // 9;4 detector). "attention" still fires on any edge → attention
-    // because "✋ Action Required" is always actionable.
+    // OSC 0/2 — title change. Always surface as the live tab label.
+    // Only used as a busy/idle source for CLIs without OSC 9;4 (gemini,
+    // codex). For claude (OSC 9;4 source) the title is a label only.
     let lastTitleState: "busy" | "idle" | "attention" | null = null;
     term.onTitleChange(t => {
-      // Strip the agent's state-glyph prefix from the displayed title.
-      // Claude prefixes with "✳ ", Gemini with "◇ " (these are also the
-      // markers classifyTitle keys off, but we keep the raw `t` for that
-      // call below). Stripping makes the sidebar / tab bar read like
-      // plain prose instead of "✳ Fix coupon text encodin...".
-      const STRIP_PREFIX: Record<string, RegExp> = {
-        claude: /^\s*✳\s+/,
-        gemini: /^\s*◇\s+/,
-      };
-      const strip = STRIP_PREFIX[tab.cli];
-      setTabLiveTitle(ws.id, tab.id, strip ? t.replace(strip, "") : t);
+      // Display the title verbatim (no prefix strip). The spinner /
+      // brand glyphs are SIGNAL: seeing "⠐ ⠂ Task" vs "✳ Task" in the
+      // tab pill tells the user "agent is working" at a glance —
+      // stripping erased that signal AND was the only displayed
+      // difference between working / idle for users who turned the
+      // bullet pref off.
+      setTabLiveTitle(ws.id, tab.id, t);
+      // Any title update is activity. Reset the stillness counters so
+      // the agent can keep repainting its title (progress, elapsed
+      // time, etc.) without us falsely demoting to "done." Note
+      // byte-quiet already updates because OSC 0 titles flow through
+      // PTY data → lastDataAtRef.
+      settledRef.current.unchangedCount = 0;
+      settledRef.current.marked = false;
+      scrollbackRef.current.stableCount = 0;
+      scrollbackRef.current.marked = false;
       const state = classifyTitle(tab.cli, t);
       wdlog(`title change [classifier=${state ?? "unknown"}, last=${lastTitleState ?? "none"}]`, t);
+      // Record the sender-classified state so the interval-based
+      // demoters below (byte-quiet, settled-hash, scrollback) can
+      // skip when the title actively says "busy" — Gemini's "✦ Working"
+      // title can sit unchanged for 30+ s while the agent thinks,
+      // beating our 4 s/6 s heuristic thresholds.
+      if (state) senderStateRef.current = state;
       if (state === "idle") {
-        // Only fire if we ACTUALLY saw busy first. Initial spawn /
-        // periodic re-emits of "Ready" without prior work are no-ops.
         if (lastTitleState === "busy" || lastTitleState === "attention") {
-          armDoneTimer(`title busy→idle`, TITLE_DONE_DELAY_MS, "done");
+          goIdle(`title busy→idle`);
         }
       } else if (state === "attention") {
-        // Always honor explicit attention — even from a cold start
-        // the user wants to see "I'm blocked on you."
-        armDoneTimer(`title attention`, 600, "attention");
+        goAttention(`title attention`);
       } else if (state === "busy") {
-        cancelDoneTimer(`title busy`);
+        goWorking(`title busy`);
       }
       if (state) lastTitleState = state;
     });
 
-    // OSC 9;4 — Claude. Same arm/cancel as the title classifier so
-    // both paths funnel through one timer.
+    // OSC 9 — Claude / VTE. Two sub-forms:
+    //   "9;<text>"       → notification (forward to OS verbatim).
+    //   "9;4;<state>..." → ConEmu progress.
+    // xterm's parser strips the leading "9;" before calling the handler,
+    // so `data` here is the rest. Empty/no-leading-"4;" = notification.
     term.parser.registerOscHandler(9, (data) => {
       const parts = data.split(";");
-      if (parts[0] !== "4") return false;
-      const state = Number(parts[1] ?? "0");
-      const nowBusy = state === 1 || state === 2 || state === 3 || state === 4;
-      wdlog(`OSC 9;4;${state} (busy=${nowBusy}, was=${busyRef.current})`);
-      if (busyRef.current && !nowBusy) {
-        armDoneTimer(`OSC 9;4;${state}`, OSC_DONE_DELAY_MS);
-      } else if (nowBusy) {
-        cancelDoneTimer(`OSC 9;4;${state}`);
-        // New work started — drop the stale "done" check (set on a
-        // previous turn) so it doesn't read as "this turn finished
-        // immediately." The next busy→idle transition arms a fresh
-        // done-mark.
-        const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id)?.unread;
-        if (cur?.reason === "done") clearAttention(ws.id, tab.id);
+      if (parts[0] === "4") {
+        // OSC 9;4;<state>[;<pct>] — ConEmu progress protocol.
+        //   state 0 = clear (idle)
+        //         1 = normal       (pct 0..100)
+        //         2 = error        (pct 0..100, red bar)
+        //         3 = indeterminate (no pct → spinner-only)
+        //         4 = warning      (pct 0..100, yellow bar)
+        const state = Number(parts[1] ?? "0");
+        const pctRaw = parts[2];
+        const pct = pctRaw === undefined || pctRaw === "" ? null : Number(pctRaw);
+        const nowBusy = state === 1 || state === 2 || state === 3 || state === 4;
+        wdlog(`OSC 9;4;${state}${pct !== null ? ";" + pct : ""} (busy=${nowBusy}, was=${localBusy})`);
+        if (nowBusy) {
+          goWorking(`OSC 9;4;${state}`);
+          // Indeterminate (state 3) keeps the spinner visible without a
+          // bar. States 1/2/4 carry a pct → render the strip tinted by kind.
+          if (state === 1 || state === 2 || state === 4) {
+            const k = state as 1 | 2 | 4;
+            setWorkProgress(ws.id, tab.id, Number.isFinite(pct as number) ? pct : null, k);
+          } else {
+            setWorkProgress(ws.id, tab.id, null, 3);
+          }
+        } else {
+          // 9;4;0 → idle. Settle to "done" after SETTLE_MS.
+          goIdle(`OSC 9;4;0`);
+        }
+        return false;
       }
-      busyRef.current = nowBusy;
+      // OSC 9;<text> — Send notification. Body is `data` itself
+      // (no leading "4;"). Empty payload = no-op.
+      //
+      // iTerm2 treats this as: forward to OS AND render the tab's
+      // work-done indicator (blue bullet). It does NOT escalate to the
+      // attention/bell — the screenshot we mirror shows a blue bullet
+      // even when the body reads "Claude is waiting for input." So
+      // we settle to `done` here and forward the body verbatim. We
+      // intentionally do NOT route through markAttention(), which
+      // would cause useAttentionNotifier to fire a SECOND OS
+      // notification on top of our verbatim forward.
+      wdlog(`OSC 9 notify`, data);
+      forwardNotification(data);
+      goIdle(`OSC 9 notify`, 0);
       return false;
     });
-    // Backwards-compat names for the rest of this effect.
-    const cancelOscDoneTimer = cancelDoneTimer;
-    const armOscDoneTimer = (reason: string) => armDoneTimer(reason, OSC_DONE_DELAY_MS);
-    void cancelOscDoneTimer; void armOscDoneTimer;
-    // Push-on-data extender is INTENTIONALLY a no-op now.
-    //
-    // Previously we extended the done-timer on every PTY output burst
-    // so a chatty agent (long tool output, streaming thoughts) didn't
-    // trigger "done" while it was still talking. Side-effect: the done
-    // timer kept rearming indefinitely while claude streamed, spamming
-    // the work-done log and sometimes never firing the actual "done"
-    // because OSC idle was always followed by another byte.
-    //
-    // Now: we trust OSC 9;4 entirely. The agent's sender-driven
-    // busy=true / busy=false transitions arm + cancel the timer; PTY
-    // bytes don't matter. Less noise, more honest "done."
+
+    // OSC 777;notify;<title>;<body> — VTE/urxvt notification dialect.
+    // Some custom agents emit this instead of OSC 9.
+    term.parser.registerOscHandler(777, (data) => {
+      const parts = data.split(";");
+      if (parts[0] !== "notify") return false;
+      const body = parts.slice(2).join(";") || parts[1] || "";
+      wdlog(`OSC 777 notify`, body);
+      forwardNotification(body);
+      goIdle(`OSC 777 notify`, 0);
+      return false;
+    });
+
+    // OSC 133 — FinalTerm semantic prompt marks. Shell-integration
+    // signal; works for any tool that emits it (claude builds with
+    // shell-integration on, shells with iTerm2's shell-integration
+    // installed, etc.). Subcommands:
+    //   A → prompt start    (idle)
+    //   B → prompt end      (idle, user-input window open)
+    //   C → command running (busy)
+    //   D[;<exit>] → command done (idle, immediate — no settle delay)
+    term.parser.registerOscHandler(133, (data) => {
+      const sub = (data.split(";")[0] || "").toUpperCase();
+      wdlog(`OSC 133;${sub}`);
+      if (sub === "C") {
+        goWorking(`OSC 133;C`);
+      } else if (sub === "D") {
+        // 133;D is a hard "command ended" — no need to wait SETTLE_MS.
+        goIdle(`OSC 133;D`, 0);
+      } else if (sub === "A" || sub === "B") {
+        // Prompt boundary — idle, but only settle if we were busy.
+        goIdle(`OSC 133;${sub}`);
+      }
+      return false;
+    });
+
+    // Push-on-data extender is INTENTIONALLY a no-op.
+    // We trust sender signals; PTY bytes between busy=true/false
+    // transitions don't matter. Keeps the timer honest.
     pushOscDoneRef.current = () => {};
+
     // OSC 1337 — iTerm proprietary. RequestAttention=yes/fireworks is
-    // an explicit "user, look at me." Treat as "done" too — both want
-    // the sidebar dot + a notification.
+    // an explicit "user, look at me." Fires attention immediately.
     term.parser.registerOscHandler(1337, (data) => {
       if (/^RequestAttention=(yes|fireworks)$/i.test(data)) {
-        markAttention(ws.id, tab.id, "attention");
+        goAttention(`OSC 1337 RequestAttention`);
       }
       return false;
     });
@@ -531,17 +701,31 @@ export function TerminalPane({ ws, tab, active }: Props) {
           term.write(u8);
           oscSniffer?.(u8);
           const now = Date.now();
+          lastDataAtRef.current = now;
           patchTab(ws.id, tab.id, { lastOutputAt: now });
           // Output activity extends the OSC 9;4 done timer — even if
           // the agent went OSC-idle, fresh bytes mean it's still
           // streaming output (thought summary, tool result text, etc.)
           // so it's not really done.
           pushOscDoneRef.current();
-          // BEL gating: only treat as attention when the user has typed since
-          // boot (otherwise startup banners ring spuriously).
           const cur = (useApp.getState().tabs[ws.id] || []).find(t => t.id === tab.id);
-          if (cur && cur.type === "terminal" && u8.indexOf(0x07) !== -1 && cur.lastInputAt) {
-            markAttention(ws.id, tab.id, "bell");
+          if (cur && cur.type === "terminal") {
+            // BEL gating: only treat as attention when the user has typed since
+            // boot (otherwise startup banners ring spuriously).
+            if (u8.indexOf(0x07) !== -1 && cur.lastInputAt) {
+              markAttention(ws.id, tab.id, "bell");
+            }
+            // Submit-anchored "working" promotion. The window opens only
+            // when the user presses Enter (see term.onData) and closes
+            // on first promotion. Splash redraws / periodic frame
+            // updates on a tab the user never submitted to → no
+            // promotion, no false-positive spinner. Sender signals
+            // (OSC 9;4 / 133 / title) bypass this entirely.
+            if (now < submitWindowUntil && cur.workState !== "working") {
+              wdlog(`→ working (submit-window data)`);
+              setWorkState(ws.id, tab.id, "working");
+              submitWindowUntil = 0; // one-shot per submit
+            }
           }
         });
         // Compose data + sandbox unlisteners into the existing ref so
@@ -588,11 +772,35 @@ export function TerminalPane({ ws, tab, active }: Props) {
         });
         unlistenExitRef.current = unlistenExit;
 
-        // Input: pipe xterm keystrokes back to PTY. Also reset settled state
-        // — the user has invalidated whatever "done" we may have decided.
+        // Input: pipe xterm keystrokes back to PTY. User input is the
+        // canonical "I've seen and addressed the done bullet" signal —
+        // clear the workState ("done"/"working" → idle) and any
+        // attention badge. iTerm2 keeps the bullet around until the
+        // user actually types; matching that means clicking the tab to
+        // check doesn't make the indicator vanish.
         term.onData(data => {
           patchTab(ws.id, tab.id, { lastInputAt: Date.now() });
           settledRef.current = { lastHash: 0, unchangedCount: 0, marked: false };
+          scrollbackRef.current = { lastLen: -1, stableCount: 0, marked: false };
+          // Demote workState to idle on input — the user is now
+          // driving, so any prior "done" is no longer interesting.
+          // Working stays working (input alone doesn't end the turn).
+          const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id);
+          if (cur?.type === "terminal" && cur.workState === "done") {
+            setWorkState(ws.id, tab.id, "idle");
+          }
+          if (cur?.unread) {
+            useApp.getState().clearAttention(ws.id, tab.id);
+          }
+          // Enter pressed → open a 5s window for the data-side heuristic
+          // to promote to "working". Only CR (0x0d) / LF (0x0a) qualifies
+          // — arrow keys, modifier-passthroughs, paste, tab completion
+          // do not. The window is short so a stray Enter on an already-
+          // idle tab doesn't catch a much later unrelated redraw.
+          if (data.indexOf("\r") !== -1 || data.indexOf("\n") !== -1) {
+            submitWindowUntil = Date.now() + 5_000;
+            wdlog(`submit detected (Enter) → 5s working window armed`);
+          }
           const bytes = new TextEncoder().encode(data);
           ipc.ptyWrite(ptyId, Array.from(bytes)).catch(() => {});
         });
@@ -710,27 +918,88 @@ export function TerminalPane({ ws, tab, active }: Props) {
 
   // Settled detection: hash the visible buffer every SAMPLE_MS. Once the hash
   // is identical across SETTLE_SAMPLES consecutive samples, the agent has
-  // stopped producing meaningful output — mark the tab unread (only if it's
-  // inactive and the user has actually interacted with it since boot).
-  //
-  // This replaces the old "lastOutputAt + 3s" heuristic which never fired for
-  // TUI agents like gemini/codex: their cursor blink + status-bar timer keep
-  // bumping lastOutputAt every second even when nothing meaningful changed.
-  // Hashing the rendered viewport ignores those redraws (same content → same
-  // hash) and only counts as activity when the user-visible screen differs.
+  // stopped producing meaningful output — promote to workState="done" only
+  // if the tab is currently "working" (so we never produce false positives
+  // out of nowhere; sender signals are authoritative). Acts as a last-resort
+  // fallback for agents that don't emit OSC 9 / 9;4 / 133 / title — and as a
+  // safety net if a sender signal got dropped.
   useEffect(() => {
+    const QUIET_MS = 4_000;
+    // 3 samples × 3s = 9s of no NEW scrollback lines before declaring
+    // done from scrollback-stability. Tolerant of slow tool output;
+    // strict enough to fire even when a status counter keeps ticking.
+    const SCROLLBACK_STABLE_SAMPLES = 3;
     const id = window.setInterval(() => {
       const t = termRef.current;
       if (!t || !ptyRef.current) return;
+      const cur = (useApp.getState().tabs[ws.id] || []).find(x => x.id === tab.id);
+      // Sender-signal gate: if the most recent title classification
+      // says "busy", trust it over every heuristic. Gemini's title
+      // ("✦ Working") can sit unchanged through a 30 s think while
+      // the agent emits nothing — without this gate, byte-quiet
+      // would falsely demote to `done`.
+      const senderBusy = senderStateRef.current === "busy";
+      // Byte-quiet fallback: if no PTY data has arrived for QUIET_MS
+      // and the tab is `working`, demote to `done`. Fires when the
+      // agent goes silent entirely. (Doesn't fire for Claude Code's
+      // "Cooking for Ns" ticker — for that we need the scrollback
+      // check below.)
+      if (!senderBusy
+          && cur && cur.type === "terminal" && cur.workState === "working"
+          && lastDataAtRef.current > 0
+          && Date.now() - lastDataAtRef.current >= QUIET_MS) {
+        useApp.getState().setWorkState(ws.id, tab.id, "done");
+        return;
+      }
+      // Scrollback-stability check — only meaningful for NORMAL
+      // buffer mode (Claude Code, plain shells). Alt-screen TUIs
+      // (Codex) keep a fixed-length buffer so this would falsely
+      // fire during real work. Also gated on senderBusy.
+      if (!senderBusy && t.buffer.active.type === "normal") {
+        const len = t.buffer.active.length;
+        const sb = scrollbackRef.current;
+        if (sb.lastLen === -1) {
+          sb.lastLen = len;
+        } else if (len === sb.lastLen) {
+          sb.stableCount++;
+          if (sb.stableCount >= SCROLLBACK_STABLE_SAMPLES && !sb.marked) {
+            if (cur && cur.type === "terminal" && cur.workState === "working") {
+              useApp.getState().setWorkState(ws.id, tab.id, "done");
+            }
+            sb.marked = true;
+          }
+        } else {
+          sb.lastLen = len;
+          sb.stableCount = 0;
+          sb.marked = false;
+        }
+      }
+      // Hard ceiling: 90s of "working" without any demoter firing —
+      // force done. Catches alt-screen TUIs whose sender signal we
+      // missed and whose status counter keeps the byte-quiet timer
+      // pumped. Long enough that real long tool calls won't trip it;
+      // short enough that a stuck spinner clears within ~1.5 min.
+      const WORKING_HARD_CEILING_MS = 90_000;
+      if (cur && cur.type === "terminal" && cur.workState === "working"
+          && workingStartedAtRef.current > 0
+          && Date.now() - workingStartedAtRef.current >= WORKING_HARD_CEILING_MS) {
+        useApp.getState().setWorkState(ws.id, tab.id, "done");
+        return;
+      }
+      // Content-hash check (kept as a third path). Fires for fully
+      // static viewports — e.g. agents that print all output in-place
+      // without ever scrolling. Rare; mostly redundant with the
+      // scrollback check but cheap to keep.
       const h = hashVisibleBuffer(t);
       const s = settledRef.current;
       if (h === s.lastHash && s.lastHash !== 0) {
         s.unchangedCount++;
         if (s.unchangedCount >= SETTLE_SAMPLES && !s.marked) {
-          const cur = (useApp.getState().tabs[ws.id] || []).find(x => x.id === tab.id);
-          if (cur && cur.type === "terminal" && cur.lastInputAt
-              && useApp.getState().activeTab[ws.id] !== tab.id) {
-            markAttention(ws.id, tab.id, "idle");
+          if (cur && cur.type === "terminal" && cur.lastInputAt && cur.workState === "working") {
+            // Promote working → done. We don't mark idle out of cold
+            // start (workState must be "working" — meaning some sender
+            // signal already saw the agent start working this turn).
+            useApp.getState().setWorkState(ws.id, tab.id, "done");
           }
           s.marked = true;  // don't re-mark until something changes again
         }
@@ -741,7 +1010,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
       }
     }, SAMPLE_MS);
     return () => window.clearInterval(id);
-  }, [ws.id, tab.id, markAttention]);
+  }, [ws.id, tab.id]);
 
   return (
     <div className="relative flex h-full w-full flex-col" data-tab-id={tab.id}>

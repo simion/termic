@@ -29,6 +29,14 @@ export function DropdownMenu({ children, align = "end", sideOffset = 4, classNam
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
         onCloseAutoFocus={onCloseAutoFocus}
+        // React portals keep their React-tree parent for SYNTHETIC events
+        // even when the DOM target is document.body. Without these stops,
+        // a click on a menu item bubbles through the React tree up to
+        // whatever wraps the trigger (e.g. a clickable workspace row that
+        // toggles collapse). Stop at the menu root so triggers can stay
+        // inside clickable containers without leaking the click.
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
         className={cn(
           "z-50 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
           "data-[state=open]:animate-in data-[state=open]:fade-in-0",

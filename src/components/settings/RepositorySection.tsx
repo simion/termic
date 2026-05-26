@@ -18,6 +18,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   const project = useApp(s => s.projects.find(p => p.id === projectId));
   const loadAll = useApp(s => s.loadAll);
   const setView = useApp(s => s.setView);
+  const agents = useApp(s => s.agents);
 
   // Local working copy. Every patch debounces a `project_update` call (500ms
   // after last keystroke) — no explicit Save button. The status indicator
@@ -340,7 +341,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           {!isMulti && (
             <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
               {([
-                { id: "yaml",     label: ".termic.yaml", hint: "committed · shared with team" },
+                { id: "yaml",     label: ".termic.yaml", hint: "committed to git repo" },
                 { id: "personal", label: "Personal",     hint: "overrides when set"           },
               ] as const).map(t => (
                 <button
@@ -463,7 +464,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 at spawn time. */}
             <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
               {([
-                { id: "yaml",     label: ".termic.yaml", hint: "committed · shared with team" },
+                { id: "yaml",     label: ".termic.yaml", hint: "committed to git repo" },
                 { id: "personal", label: "Personal",     hint: "local only · merged on top"   },
               ] as const).map(t => (
                 <button
@@ -545,7 +546,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
         <div className="flex flex-col gap-7">
           <Field
             label="Default CLI"
-            hint="Which agent to spawn for new workspaces in this repo."
+            hint="Which agent to spawn for new workspaces in this repo. Pick Terminal for a plain login shell (no agent)."
             control={
               <select
                 value={draft.default_cli}
@@ -555,10 +556,15 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                   flashRing("default_cli"),
                 )}
               >
-                <option value="claude">claude</option>
-                <option value="gemini">gemini</option>
-                <option value="codex">codex</option>
-                <option value="agy">Antigravity</option>
+                {/* Built from the editable agent registry so custom
+                    agents show up here too. Terminal (cli="shell") is
+                    always available as the no-agent fallback. */}
+                {agents
+                  .filter(a => !a.disabled)
+                  .map(a => (
+                    <option key={a.id} value={a.id}>{a.display_name}</option>
+                  ))}
+                <option value="shell">Terminal</option>
               </select>
             }
           />

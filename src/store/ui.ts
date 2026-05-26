@@ -25,6 +25,11 @@ interface UIState {
   // dialog visibility
   newProjectOpen: boolean;
   newWorkspaceProjectId: string | null;  // null = closed
+  /** Optional seed for the New worktree dialog — when set, the dialog
+   *  pre-fills the branch-from field with this value. Used by the
+   *  "Duplicate workspace" flow to branch a new worktree off an
+   *  existing one's tip. Cleared when the dialog closes. */
+  newWorkspaceSeed: { baseBranch?: string; namePrefix?: string } | null;
   welcomeOpen: boolean;
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
@@ -64,7 +69,7 @@ interface UIState {
   // actions
   openNewProject: () => void;
   closeNewProject: () => void;
-  openNewWorkspace: (projectId: string) => void;
+  openNewWorkspace: (projectId: string, seed?: { baseBranch?: string; namePrefix?: string }) => void;
   closeNewWorkspace: () => void;
   openWelcome: () => void;
   closeWelcome: () => void;
@@ -103,6 +108,15 @@ interface UIState {
    *  callback AND dismisses the toast. */
   pushToast: (msg: string, kind?: ToastKind, opts?: { action?: ToastAction; ttlMs?: number }) => string;
   dismissToast: (id: string) => void;
+  /** Most recent OS notification we forwarded — consumed by
+   *  useAttentionNotifier's focus router so clicking the banner
+   *  (which surfaces the app window) routes the user to the tab
+   *  that emitted it. Stored at module scope rather than the ref
+   *  inside useAttentionNotifier so any source (OSC 9, markAttention)
+   *  can seed it. ROUTE_WINDOW_MS gating + clearing on consumption
+   *  live inside the hook. */
+  notifyRoute: { wsId: string; tabId: string; firedAt: number } | null;
+  setNotifyRoute: (route: { wsId: string; tabId: string } | null) => void;
 }
 
 export type ToastKind = "success" | "info" | "error";
@@ -119,6 +133,7 @@ export interface Toast {
 export const useUI = create<UIState>(set => ({
   newProjectOpen: false,
   newWorkspaceProjectId: null,
+  newWorkspaceSeed: null,
   welcomeOpen: false,
   changelogOpen: false,
   reviewForWsId: null,
@@ -130,11 +145,12 @@ export const useUI = create<UIState>(set => ({
   confirm: null,
   pendingSandboxRestarts: new Set<string>(),
   toasts: [],
+  notifyRoute: null,
 
   openNewProject:    () => set({ newProjectOpen: true }),
   closeNewProject:   () => set({ newProjectOpen: false }),
-  openNewWorkspace:  (projectId) => set({ newWorkspaceProjectId: projectId }),
-  closeNewWorkspace: () => set({ newWorkspaceProjectId: null }),
+  openNewWorkspace:  (projectId, seed) => set({ newWorkspaceProjectId: projectId, newWorkspaceSeed: seed ?? null }),
+  closeNewWorkspace: () => set({ newWorkspaceProjectId: null, newWorkspaceSeed: null }),
   openWelcome:       () => set({ welcomeOpen: true }),
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),
@@ -150,6 +166,9 @@ export const useUI = create<UIState>(set => ({
   openFindInFiles:   (wsId) => set({ findInFilesWsId: wsId }),
   closeFindInFiles:  () => set({ findInFilesWsId: null }),
   setBusy:           (msg) => set({ busyMessage: msg }),
+  setNotifyRoute:    (route) => set({
+    notifyRoute: route ? { ...route, firedAt: Date.now() } : null,
+  }),
   askConfirm: (req: any) =>
     new Promise<any>(resolve => set({ confirm: { req, resolve } })),
   resolveConfirm: (ok, checked) => {
