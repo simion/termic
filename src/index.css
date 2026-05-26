@@ -260,3 +260,14 @@
 /* xterm tweaks so it fills its container cleanly */
 .xterm { padding: 8px 6px 8px 10px; }
 .xterm-viewport::-webkit-scrollbar { width: 8px; }
+
+/* Indeterminate progress strip on tab pills — slides a slug across
+   the bar while the agent is working without a known percentage
+   (OSC 9;4;3). Matches iTerm2's progress indicator behavior. */
+@keyframes termic-progress-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.termic-progress-indeterminate {
+  animation: termic-progress-indeterminate 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}

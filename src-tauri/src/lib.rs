@@ -661,6 +661,18 @@ fn pty_spawn(
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // Claim iTerm2 compatibility so agents that gate "fancy" OSC
+    // emission on a known host (Claude Code's OSC 9 / OSC 9;4
+    // progress, OSC 133 shell-integration, OSC 1337 attention)
+    // actually emit those signals. Without this they default to
+    // "dumb terminal" silence and our work-done detection in
+    // TerminalPane.tsx never receives the busy/idle edges. We DO
+    // implement the relevant subset (OSC 9, OSC 9;4, OSC 133, OSC
+    // 1337) — see TerminalPane's registerOscHandler calls — so the
+    // claim is honest. Version string is high enough to clear common
+    // feature-gate checks in agents that look for "iTerm2 ≥ 3.x".
+    cmd.env("TERM_PROGRAM", "iTerm.app");
+    cmd.env("TERM_PROGRAM_VERSION", "3.5.0");
 
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
         let s = e.to_string();

@@ -317,6 +317,18 @@ export interface TerminalTab extends BaseTab {
    *  (otherwise multi-tab parallelism collapses into "every new tab tries
    *  to resume the same session"). */
   is_default?: boolean;
+  /** iTerm2-style work-progress state. Authoritative signals: OSC 9;4
+   *  (Claude progress), OSC 133;C/D (FinalTerm semantic prompts), OSC 0
+   *  title classifier (gemini/codex). `working` → spinner; `done` →
+   *  blue bullet; cleared on next user keystroke (NOT on tab view). */
+  workState?: "idle" | "working" | "done";
+  /** Optional 0..100 progress percentage from ConEmu OSC 9;4;1|2|4;<pct>.
+   *  Null/undefined means "indeterminate" — render the spinner without
+   *  a bar. Drives the slim progress strip on the tab pill. */
+  workProgress?: number | null;
+  /** ConEmu OSC 9;4 state kind. 1=normal 2=error 3=indeterminate 4=warning.
+   *  Used to tint the progress bar (red for error, yellow for warning). */
+  workProgressKind?: 1 | 2 | 3 | 4 | null;
 }
 
 export interface DiffTab extends BaseTab {

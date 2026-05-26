@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Check, Bell, Bug, Mail, Shield, X } from "lucide-react";
+import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Loader2 } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -62,9 +62,10 @@ export function Sidebar() {
   const isWorkDone = (wsId: string) =>
     settledHighlight &&
     (tabs[wsId] || []).some(t =>
-      // `idle` (old stdout-cadence heuristic) ships too many false
-      // positives — only honor the sender-driven `done` now.
-      t.type === "terminal" && t.unread?.reason === "done",
+      // Authoritative per-tab work state (driven by OSC 9;4 / 133 / 9
+      // / title in TerminalPane). Replaces the old `unread.reason="done"`
+      // edge — see the workState state machine.
+      t.type === "terminal" && t.workState === "done",
     );
   // Distinct from work-done: the agent is explicitly blocked on the
   // user (Gemini ✋ Action Required, Codex Waiting, OSC 1337
@@ -490,15 +491,37 @@ function iconSize(compact: boolean) {
 }
 
 // Tiny status badge reused on both the workspace header (aggregated, when
-// collapsed) and on each tab child row.
-function TabBadge({ reason }: { reason: "attention" | "done" }) {
-  return reason === "attention" ? (
-    <span className="shrink-0 text-[var(--color-warn)]" title="Agent needs your input">
-      <Bell className="h-3 w-3" strokeWidth={2.5} />
-    </span>
-  ) : (
-    <span className="shrink-0 text-[var(--color-ok)]" title="Agent finished a turn">
-      <Check className="h-3.5 w-3.5" strokeWidth={3} />
+// collapsed) and on each tab child row. iTerm2 parity:
+//   working   → spinner (animated, dim — agent is actively thinking)
+//   done      → solid blue bullet (work finished, untouched until input)
+//   attention → orange bell (agent explicitly blocked on user)
+function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
+  if (reason === "attention") {
+    return (
+      <span className="shrink-0 text-[var(--color-warn)]" title="Agent needs your input">
+        <Bell className="h-3 w-3" strokeWidth={2.5} />
+      </span>
+    );
+  }
+  if (reason === "working") {
+    return (
+      <span className="shrink-0 text-[var(--color-fg-faint)]" title="Agent is working…">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
+      </span>
+    );
+  }
+  // done — solid blue bullet, iTerm2-style. Uses --color-info if defined,
+  // falls back to a literal blue. h-3.5 visually matches the bell + spinner.
+  return (
+    <span
+      className="shrink-0 flex items-center justify-center"
+      title="Agent finished a turn"
+      aria-label="Work done"
+    >
+      <span
+        className="block h-2 w-2 rounded-full"
+        style={{ backgroundColor: "var(--color-info, #4aa3ff)" }}
+      />
     </span>
   );
 }
@@ -524,6 +547,33 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
   const settledHighlight = usePrefs(s => s.settledHighlight);
 
+  // Archive icon reveals only after the cursor has been on the row
+  // for ≥ ARCHIVE_REVEAL_MS. Until then the work-state badge (bullet
+  // / spinner / bell) owns the trailing slot. Mirrors iTerm2's slow
+  // mouseEntered fade but with a discrete delay — the bullet stays
+  // readable while scanning the sidebar quickly. Cleared on mouseleave
+  // + on unmount so a pending reveal can't fire after the row is gone.
+  const ARCHIVE_REVEAL_MS = 2_000;
+  const [archiveRevealed, setArchiveRevealed] = useState(false);
+  const archiveTimerRef = useRef<number | null>(null);
+  const onRowEnter = () => {
+    if (archiveTimerRef.current) window.clearTimeout(archiveTimerRef.current);
+    archiveTimerRef.current = window.setTimeout(
+      () => setArchiveRevealed(true),
+      ARCHIVE_REVEAL_MS,
+    );
+  };
+  const onRowLeave = () => {
+    if (archiveTimerRef.current) {
+      window.clearTimeout(archiveTimerRef.current);
+      archiveTimerRef.current = null;
+    }
+    setArchiveRevealed(false);
+  };
+  useEffect(() => () => {
+    if (archiveTimerRef.current) window.clearTimeout(archiveTimerRef.current);
+  }, []);
+
   const isActive = activeWsId === w.id;
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
   const isLoaded = terminalTabs.some(t => t.ptyId);
@@ -545,9 +595,14 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
     }
   }, [terminalTabCount, w.id, setWorkspaceCollapsed]);
 
-  // Aggregated attention/done status shown on the row header when collapsed.
+  // Aggregated work status shown on the row header when collapsed.
+  // Priority: attention > done > working. Workspace shows the most
+  // urgent state across all its tabs.
   const hasAttention = settledHighlight && tabs.some(t => t.unread?.reason === "attention");
-  const hasDone = settledHighlight && !hasAttention && tabs.some(t => t.unread?.reason === "done");
+  const hasDone = settledHighlight && !hasAttention
+    && tabs.some(t => t.type === "terminal" && t.workState === "done");
+  const hasWorking = settledHighlight && !hasAttention && !hasDone
+    && tabs.some(t => t.type === "terminal" && t.workState === "working");
 
   async function commitWsRename() {
     if (wsRenaming === null) return;
@@ -607,6 +662,8 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
           e.stopPropagation();
           if (wsRenaming === null) setWsRenaming(w.name);
         }}
+        onMouseEnter={onRowEnter}
+        onMouseLeave={onRowLeave}
         className={cn(
           "group/wsrow ml-3 flex items-center gap-1 rounded-md px-1 py-1 text-[13px] cursor-pointer select-none transition-colors",
           isActive && collapsed
@@ -670,12 +727,28 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
           )}
         </div>
 
-        {collapsed && hasAttention && <TabBadge reason="attention" />}
-        {collapsed && hasDone      && <TabBadge reason="done" />}
-
-        {/* Archive — before shield so shield stays pinned at the far right.
-            Always in DOM (opacity-only toggle) so shield position never shifts.
-            Plain title avoids Radix portal repaints that flicker in WKWebView. */}
+        {/* Trailing status/archive slot. Status badge owns the slot
+            by default; archive icon takes over only after the cursor
+            has dwelled ≥ ARCHIVE_REVEAL_MS on this row (state:
+            `archiveRevealed`). Same fixed cell so the shield never
+            shifts position. Aggregate badge only renders when the
+            row is collapsed (expanded rows put per-tab badges on
+            their children). */}
+        <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+          {collapsed && (hasAttention || hasDone || hasWorking) && (
+            <span
+              className={cn(
+                "absolute inset-0 flex items-center justify-center transition-opacity",
+                archiveRevealed && "opacity-0",
+              )}
+            >
+              {hasAttention ? <TabBadge reason="attention" />
+                : hasDone ? <TabBadge reason="done" />
+                : <TabBadge reason="working" />}
+            </span>
+          )}
+        {/* Archive — sits inside the swap slot. Plain title avoids
+            Radix portal repaints that flicker in WKWebView. */}
         <button
           data-no-drag
           title="Archive workspace"
@@ -708,12 +781,14 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             finally { setBusy(null); }
           }}
           className={cn(
-            "shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 group-hover/wsrow:opacity-100 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)]",
-            wsRenaming !== null ? "pointer-events-none" : "group-hover/wsrow:pointer-events-auto pointer-events-none",
+            "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)]",
+            archiveRevealed ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
+            wsRenaming !== null && "pointer-events-none",
           )}
         >
           <Archive className="h-3.5 w-3.5" />
         </button>
+        </span>
 
         {/* Shield — always rightmost so its position is stable regardless of archive visibility */}
         <Tip content={w.sandbox_enabled ? "Sandbox settings" : "Enable sandbox"} side="bottom">
@@ -734,8 +809,9 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
       {!collapsed && terminalTabs.map(tab => {
         const isTabActive = isActive && tab.id === activeTabId;
         const title = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
-        const showBell  = settledHighlight && tab.unread?.reason === "attention";
-        const showCheck = settledHighlight && tab.unread?.reason === "done";
+        const showBell    = settledHighlight && tab.unread?.reason === "attention";
+        const showDone    = settledHighlight && !showBell && tab.workState === "done";
+        const showWorking = settledHighlight && !showBell && !showDone && tab.workState === "working";
         const isTabRenaming = tabRenaming?.id === tab.id;
 
         return (
@@ -753,12 +829,12 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
             )}
           >
-            {/* Status overrides the brand icon when there's something to report */}
-            {showBell ? <TabBadge reason="attention" /> : showCheck ? <TabBadge reason="done" /> : (
-              <span className={cn("shrink-0", CLI_BRAND_COLOR[tab.cli] || "text-[var(--color-fg-dim)]")}>
-                <CliIcon cli={tab.cli} className="h-3.5 w-3.5" />
-              </span>
-            )}
+            {/* Brand icon stays at the start; the work-state badge moves
+                to the end of the row (after the title) per iTerm2's
+                tab-bullet placement. */}
+            <span className={cn("shrink-0", CLI_BRAND_COLOR[tab.cli] || "text-[var(--color-fg-dim)]")}>
+              <CliIcon cli={tab.cli} className="h-3.5 w-3.5" />
+            </span>
 
             {isTabRenaming ? (
               <input
@@ -779,13 +855,25 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             ) : (
               <span className="min-w-0 flex-1 truncate">{title}</span>
             )}
-            <button
-              title="Close tab"
-              onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
-              className="shrink-0 rounded p-0.5 opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-            >
-              <X className="h-3 w-3" />
-            </button>
+            {/* Trailing slot — iTerm2 convention: status badge by
+                default, close × on hover. Same fixed width either way
+                so the row never jiggles. */}
+            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+              {(showBell || showDone || showWorking) && (
+                <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/tab:opacity-0">
+                  {showBell ? <TabBadge reason="attention" />
+                    : showDone ? <TabBadge reason="done" />
+                    : <TabBadge reason="working" />}
+                </span>
+              )}
+              <button
+                title="Close tab"
+                onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
+                className="absolute inset-0 flex items-center justify-center rounded p-0.5 opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
           </div>
         );
       })}

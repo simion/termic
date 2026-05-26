@@ -118,6 +118,13 @@ interface AppState {
   setTabLiveTitle: (wsId: string, tabId: string, liveTitle: string) => void;
   markAttention: (wsId: string, tabId: string, reason: "bell" | "idle" | "exit" | "done" | "attention") => void;
   clearAttention: (wsId: string, tabId: string) => void;
+  /** Per-tab work-progress state. Idempotent — writing the same value is
+   *  a no-op so we don't churn React for every OSC 9;4 the agent emits. */
+  setWorkState: (wsId: string, tabId: string, state: "idle" | "working" | "done") => void;
+  /** ConEmu OSC 9;4 progress: pct 0..100 + kind (1 normal / 2 err /
+   *  3 indeterminate / 4 warn). Null pct = indeterminate.
+   *  Idempotent (no-op on equal values). */
+  setWorkProgress: (wsId: string, tabId: string, pct: number | null, kind: 1 | 2 | 3 | 4) => void;
 }
 
 const LS_COMPACT = "compactSidebar";
@@ -241,14 +248,20 @@ export const useApp = create<AppState>((set, get) => ({
       // unread color until the user manually visited each other tab.
       // Clicking the workspace = "I've seen this" → clear all.
       const tabs = get().tabs[id] || [];
+      const activeId = get().activeTab[id];
       for (const t of tabs) {
-        // Clear bell/attention/exit (the user is now LOOKING, they've
-        // "seen" the alert). KEEP work-done — it's a passive
-        // "agent finished this turn" indicator that's useful at-a-glance
-        // even after activation; it gets overwritten by the next
-        // busy→done transition (see TerminalPane's OSC 9;4 handler).
-        if (t.type === "terminal" && t.unread && t.unread.reason !== "done") {
+        // Clear bell/attention/exit for every tab in the workspace (the
+        // user is now LOOKING at this workspace — they've seen all alerts
+        // within it).
+        if (t.type === "terminal" && t.unread) {
           get().clearAttention(id, t.id);
+        }
+        // Clear `workState === "done"` for the tab that just became
+        // active. We don't blanket-clear every tab — the user might
+        // have multiple agents and only one is focused; the others'
+        // bullets should remain.
+        if (t.type === "terminal" && t.id === activeId && t.workState === "done") {
+          get().setWorkState(id, t.id, "idle");
         }
       }
     }
@@ -456,13 +469,20 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setActiveTabId: (wsId, tabId) => set(s => {
-    // Looking at a tab = "I've seen this". Clear its unread inline so
-    // we don't carry the brown dot through tab switches inside an
-    // already-active workspace (setActiveWorkspace only clears on
-    // workspace-level activation; an intra-workspace tab click never
-    // hit that path).
+    // Looking at a tab = "I've seen this". Clear:
+    //   - unread (bell/attention/exit) — alerts the user already saw
+    //   - workState === "done" — the blue bullet's job is over; the
+    //     user is now focused on this tab so the indicator is noise
+    // workState === "working" stays (we don't want to hide an active
+    // spinner just because the user clicked over to glance at it).
     const list = s.tabs[wsId] || [];
-    const next = list.map(t => t.id === tabId && t.unread ? { ...t, unread: null } as Tab : t);
+    const next = list.map(t => {
+      if (t.id !== tabId) return t;
+      const patch: Partial<Tab> = {};
+      if (t.unread) (patch as any).unread = null;
+      if (t.type === "terminal" && t.workState === "done") (patch as any).workState = "idle";
+      return Object.keys(patch).length ? { ...t, ...patch } as Tab : t;
+    });
     return {
       activeTab: { ...s.activeTab, [wsId]: tabId },
       tabs: { ...s.tabs, [wsId]: next },
@@ -557,11 +577,12 @@ export const useApp = create<AppState>((set, get) => ({
   }),
 
   markAttention: (wsId, tabId, reason) => set(s => {
-    // Never mark the tab the user is currently looking at — they can see
-    // whatever just happened (idle / bell / exit) directly. Marking it would
-    // produce a noisy sidebar dot on the active workspace and feed a
-    // pointless OS notification through useAttentionNotifier.
-    if (s.activeWorkspaceId === wsId && s.activeTab[wsId] === tabId) return s;
+    // Always mark — iTerm2 shows the bullet/bell even on the focused
+    // tab so users have a clear "yes, this turn really finished"
+    // confirmation. OS notification suppression for the focused
+    // workspace lives in useAttentionNotifier (focus gating), not
+    // here. Indicator clears on user input (term.onData) — never on
+    // tab view.
     const list = s.tabs[wsId] || [];
     const next = list.map(t => t.id === tabId ? { ...t, unread: { reason } } as Tab : t);
     return { tabs: { ...s.tabs, [wsId]: next } };
@@ -570,6 +591,50 @@ export const useApp = create<AppState>((set, get) => ({
   clearAttention: (wsId, tabId) => set(s => {
     const list = s.tabs[wsId] || [];
     const next = list.map(t => t.id === tabId ? { ...t, unread: null } as Tab : t);
+    return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  setWorkState: (wsId, tabId, state) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const cur = list.find(t => t.id === tabId);
+    if (!cur || cur.type !== "terminal") return s;
+    // If the target state is "done" and this tab is currently focused
+    // (active workspace + active tab), skip the bullet entirely — the
+    // user is already looking, no need to flag attention. Collapse to
+    // "idle" so the spinner clears without showing the blue dot.
+    // "working" still fires on the focused tab — the spinner is the
+    // value, not the attention.
+    let effective = state;
+    if (effective === "done"
+        && s.activeWorkspaceId === wsId
+        && s.activeTab[wsId] === tabId) {
+      effective = "idle";
+    }
+    if ((cur.workState ?? "idle") === effective) return s;
+    const next = list.map(t => {
+      if (t.id !== tabId) return t;
+      // Leaving "working" → clear progress so the bar disappears on
+      // done/idle. Entering "working" keeps any prior pct that just
+      // came in via OSC 9;4 (set in the same parser turn).
+      const patch: Partial<TerminalTab> = { workState: effective };
+      if (effective !== "working") {
+        patch.workProgress = null;
+        patch.workProgressKind = null;
+      }
+      return { ...t, ...patch } as Tab;
+    });
+    return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  setWorkProgress: (wsId, tabId, pct, kind) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const cur = list.find(t => t.id === tabId);
+    if (!cur || cur.type !== "terminal") return s;
+    const clamped = pct === null ? null : Math.max(0, Math.min(100, Math.round(pct)));
+    if ((cur.workProgress ?? null) === clamped && (cur.workProgressKind ?? null) === kind) return s;
+    const next = list.map(t => t.id === tabId
+      ? { ...t, workProgress: clamped, workProgressKind: kind } as Tab
+      : t);
     return { tabs: { ...s.tabs, [wsId]: next } };
   }),
 }));
