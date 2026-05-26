@@ -1,6 +1,16 @@
 {
   "versions": [
     {
+      "version": "0.7.1",
+      "date": "2026-05-26",
+      "summary": "Signed Linux AppImage with in-app self-update.",
+      "notes": [
+        "Linux x86_64 AppImage now ships with every release, signed by the same ed25519 key as the macOS build, so the in-app Update pill lights up on Linux exactly like it does on macOS.",
+        "Download the AppImage from the Releases page, chmod +x, run. Keep it somewhere writable (~/Applications works) so the updater can replace it in place.",
+        "Sandbox is still macOS-only on Linux; everything else (worktrees, parallel tabs, find-in-files, themes, in-app diff) works the same."
+      ]
+    },
+    {
       "version": "0.7.0",
       "date": "2026-05-26",
       "summary": "Sender-driven work-done indicator, Grok support, worktree polish.",
