@@ -134,14 +134,14 @@ export function UnifiedBar() {
           const autoYolo = sandboxed && sandboxBypassPermissions;
           const dangerous = yoloMode && !sandboxed;
           const tipContent = dangerous
-            ? "⚠️ YOLO ON without a sandbox — agents auto-approve EVERY action, including writes outside the worktree, network calls, and shell commands. Click to disable or enable the workspace sandbox first."
+            ? "⚠️ YOLO ON without a sandbox. Agents auto-approve EVERY action, including writes outside the worktree, network calls, and shell commands. Click to disable, or enable the workspace sandbox first."
             : yoloMode && sandboxed
-              ? "YOLO ON — safe: this workspace is sandboxed, so auto-approval is bounded by the seatbelt profile."
+              ? "YOLO ON, safe: this workspace is sandboxed, so auto-approval is bounded by the seatbelt profile."
               : autoYolo
                 ? "YOLO OFF (but this workspace is sandboxed, so YOLO is auto-on for it anyway)."
                 : sandboxed
-                  ? "YOLO OFF — this workspace is sandboxed but bypass-permissions is off, so agents still ask for approvals."
-                  : "YOLO OFF — agents will ask for approvals. YOLO mode is automatically enabled for sandboxed agents.";
+                  ? "YOLO OFF. This workspace is sandboxed but bypass-permissions is off, so agents still ask for approvals."
+                  : "YOLO OFF. Agents will ask for approvals. YOLO mode is automatically enabled for sandboxed agents.";
           return (
             <Tip content={tipContent} side="bottom">
               <Button
@@ -172,9 +172,23 @@ export function UnifiedBar() {
             <span className={cn("flex items-center self-center", CLI_BRAND_COLOR[ws.cli])}>
               <CliIcon cli={ws.cli} className="h-4 w-4" />
             </span>
-            <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]">{ws.name}</span>
-            <span className="leading-tight text-[var(--color-fg-faint)]">on</span>
-            <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{ws.branch}</span>
+            {/* Workspace name == branch means the user never renamed it,
+                so "<branch> on <branch>" reads as noise. Mirror the
+                sidebar: render the REPO ROOT chip for the repo-root
+                pseudo-workspace; otherwise just show the branch alone. */}
+            {ws.is_repo_root && ws.name === ws.branch ? (
+              <span className="shrink-0 rounded px-1 py-px text-[10.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-dim)]">
+                REPO ROOT
+              </span>
+            ) : ws.name === ws.branch ? (
+              <span className="truncate font-mono text-[13px] leading-tight text-[var(--color-fg)]">{ws.branch}</span>
+            ) : (
+              <>
+                <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]">{ws.name}</span>
+                <span className="leading-tight text-[var(--color-fg-faint)]">on</span>
+                <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{ws.branch}</span>
+              </>
+            )}
             {/* Multi-repo: just a small chip with the member count.
                 The full per-member breakdown (which dir_name, which
                 branch, worktree vs live) lives in the right-panel
@@ -228,7 +242,7 @@ export function UnifiedBar() {
                       title: `Send "${ws.name}" to main?`,
                       message:
                         `Applies all tracked changes (committed + staged + unstaged) and copies untracked files into ${proj.root_path}. ` +
-                        `The main checkout must be clean — commit or stash there first.`,
+                        `The main checkout must be clean. Commit or stash there first.`,
                       confirmLabel: "Send to main",
                     });
                     if (!ok) return;
@@ -241,7 +255,7 @@ export function UnifiedBar() {
                       if (r.tracked_files)   parts.push(`${r.tracked_files} tracked diff${r.tracked_files === 1 ? "" : "s"} applied`);
                       if (r.untracked_files) parts.push(`${r.untracked_files} untracked file${r.untracked_files === 1 ? "" : "s"} copied`);
                       const summary = parts.length ? parts.join(", ") : "no changes to send";
-                      useUI.getState().pushToast(`Sent to main checkout — ${summary}`, "success");
+                      useUI.getState().pushToast(`Sent to main checkout: ${summary}`, "success");
                     } catch (e) {
                       await useUI.getState().askConfirm({
                         title: "Send to main failed",
@@ -266,10 +280,10 @@ export function UnifiedBar() {
                     // drops the Termic row only; the project checkout
                     // on disk is untouched and can be re-opened later.
                     message: ws.is_repo_root
-                      ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched — you can re-open it any time. Any agent running here will be terminated."
+                      ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it any time. Any agent running here will be terminated."
                       : (ws.composition?.length ?? 0) > 0
-                      ? `Branches stay in git — you can recreate the workspace later. This removes: the host worktree + every member worktree (${ws.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts (those live repos are NOT touched). Any running agent will be terminated.`
-                      : "The branch stays in git — you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent. Can't be undone from inside Termic.",
+                      ? `Branches stay in git, so you can recreate the workspace later. This removes: the host worktree + every member worktree (${ws.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts (those live repos are NOT touched). Any running agent will be terminated.`
+                      : "The branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent. Can't be undone from inside Termic.",
                     confirmLabel: ws.is_repo_root ? "Remove entry" : "Archive",
                     destructive: true,
                     checkbox: ws.is_repo_root

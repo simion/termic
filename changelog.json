@@ -13,7 +13,7 @@
       "date": "2026-05-25",
       "summary": "Save sandbox changes without restarting the agent, plus a make run alias.",
       "notes": [
-        "Sandbox dialog now has a Save without restart button — persists the new profile while leaving the running agent on its OLD profile until it next respawns",
+        "Sandbox dialog now has a Save without restart button that persists the new profile while leaving the running agent on its OLD profile until it next respawns",
         "Save & restart terminal button gets a clearer restart icon",
         "make run is now an alias for make dev"
       ]
@@ -41,7 +41,7 @@
         "Removed the one-agent-per-repo-root limit",
         "No spellcheck on rename inputs",
         "Changelog dialog now shows each version as a short headline plus a bulleted list of changes",
-        "Sidebar Update card shows just the headline — the full details live one click away in the Changelog",
+        "Sidebar Update card shows just the headline. The full details live one click away in the Changelog",
         "Reordered the built-in agents to Claude, Codex, Antigravity, Gemini across the new-tab menu, new-workspace picker, review picker, and Settings"
       ]
     },

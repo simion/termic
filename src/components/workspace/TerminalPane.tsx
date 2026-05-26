@@ -3,7 +3,7 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield, AlertTriangle, TerminalSquare } from "lucide-react";
+import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check } from "lucide-react";
 import * as Popover from "@radix-ui/react-popover";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -386,7 +386,17 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // codex). For claude (OSC 9;4 source) the title is a label only.
     let lastTitleState: "busy" | "idle" | "attention" | null = null;
     term.onTitleChange(t => {
-      setTabLiveTitle(ws.id, tab.id, t);
+      // Strip the agent's state-glyph prefix from the displayed title.
+      // Claude prefixes with "✳ ", Gemini with "◇ " (these are also the
+      // markers classifyTitle keys off, but we keep the raw `t` for that
+      // call below). Stripping makes the sidebar / tab bar read like
+      // plain prose instead of "✳ Fix coupon text encodin...".
+      const STRIP_PREFIX: Record<string, RegExp> = {
+        claude: /^\s*✳\s+/,
+        gemini: /^\s*◇\s+/,
+      };
+      const strip = STRIP_PREFIX[tab.cli];
+      setTabLiveTitle(ws.id, tab.id, strip ? t.replace(strip, "") : t);
       const state = classifyTitle(tab.cli, t);
       wdlog(`title change [classifier=${state ?? "unknown"}, last=${lastTitleState ?? "none"}]`, t);
       if (state === "idle") {
@@ -1037,7 +1047,7 @@ export function FooterBar({ ws, sandboxWarning }: {
     <>
       <Shield className="h-3 w-3 text-[var(--color-fg-faint)]" />
       <span>Unsandboxed</span>
-      <span className="ml-1 text-[var(--color-fg-faint)]">— full filesystem + network</span>
+      <span className="ml-1 text-[var(--color-fg-faint)]">(full filesystem + network)</span>
     </>
   );
 
@@ -1137,7 +1147,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
       // Drop the row locally + tell the user it needs a fresh PTY.
       setAllowed(prev => new Set(prev).add(host));
       useUI.getState().pushToast(
-        `Allowed ${host} — restart the agent/shell for it to take effect`,
+        `Allowed ${host}. Restart the agent/shell for it to take effect.`,
         "success",
       );
     } catch (e) {
@@ -1154,7 +1164,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
       // whether to revert.
       const display = path.startsWith("$HOME") ? path : path.replace(/^.*\/Users\/[^/]+/, "$HOME");
       useUI.getState().pushToast(
-        `Allowed ${display} — restart the agent/shell to apply`,
+        `Allowed ${display}. Restart the agent/shell to apply.`,
         "success",
         {
           ttlMs: 6000,
@@ -1223,6 +1233,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                     className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
                   >
                     <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={h.host}>{h.host}</span>
+                    <CopyButton value={h.host} title="Copy host" />
                     <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
                       {h.count}× · {relTime(h.last_seen_unix_ms)}
                     </span>
@@ -1248,7 +1259,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                 <span>{visiblePaths.length}</span>
               </div>
               <div className="mb-1.5 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-                Click any path segment to allow that prefix. Hover to preview which part you'll allow — green = will be allowed, dimmed = trimmed off.
+                Click any path segment to allow that prefix. Hover to preview which part you'll allow: green = will be allowed, dimmed = trimmed off.
               </div>
               <ul className="flex flex-col">
                 {visiblePaths.map(p => (
@@ -1266,8 +1277,9 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                       pending={allowing === p.path}
                       onAllow={(prefix) => allowPath(prefix)}
                     />
+                    <CopyButton value={p.path} title="Copy full path" className="ml-auto" />
                     <span
-                      className="ml-auto shrink-0 text-[11px] text-[var(--color-fg-faint)]"
+                      className="shrink-0 text-[11px] text-[var(--color-fg-faint)]"
                       title={p.last_proc ? `Process: ${p.last_proc}(${p.last_pid})` : undefined}
                     >
                       {p.last_proc && (
@@ -1286,7 +1298,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
           <div className="mt-2 max-w-[460px] px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
             Clicking adds the path or host to this workspace's allow-list.
             <br />
-            Takes effect on next agent restart — the running agent keeps its current (narrower) permissions.
+            Takes effect on next agent restart. The running agent keeps its current (narrower) permissions.
           </div>
         </Popover.Content>
       </Popover.Portal>
@@ -1308,6 +1320,29 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
  *  the prefix up to and INCLUDING that segment. The trailing segments
  *  dim to hint at the cut-off. Lets the user pick a parent dir without
  *  having to retype the path into the sandbox dialog. */
+function CopyButton({ value, title, className }: { value: string; title: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(value).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        }).catch(() => {});
+      }}
+      title={copied ? "Copied" : title}
+      className={cn(
+        "shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+        className,
+      )}
+    >
+      {copied ? <Check size={12} className="text-[var(--color-ok)]" /> : <Copy size={12} />}
+    </button>
+  );
+}
+
 function PathSegments({ display, onAllow, pending }: {
   display: string;
   onAllow: (prefix: string) => void;

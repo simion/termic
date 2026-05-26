@@ -414,8 +414,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                   : "bg-[var(--color-err)]/15 text-[var(--color-err)]",
               )}
               title={detected.found
-                ? `Found: ${detected.path || "on PATH"}${detected.version ? ` — ${detected.version}` : ""}`
-                : "Not found on PATH — hidden from the CLI pickers until it's installed (or point Command at an absolute path)"}
+                ? `Found: ${detected.path || "on PATH"}${detected.version ? ` (${detected.version})` : ""}`
+                : "Not found on PATH. Hidden from the CLI pickers until it's installed (or point Command at an absolute path)."}
             >{detected.found ? "installed" : "not found"}</span>
           )}
         </div>
@@ -428,8 +428,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             onClick={() => onPatch({ disabled: !agent.disabled })}
             className="text-[12.5px] text-[var(--color-fg-dim)] font-medium select-none cursor-pointer hover:text-[var(--color-fg)] transition-colors mr-0.5"
             title={agent.disabled
-              ? "Hidden from the CLI pickers — click to show"
-              : "Shown in the CLI pickers — click to hide"}
+              ? "Hidden from the CLI pickers. Click to show."
+              : "Shown in the CLI pickers. Click to hide."}
           >
             Enable
           </span>
@@ -443,8 +443,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               !agent.disabled ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
             )}
             title={agent.disabled
-              ? "Hidden from the CLI pickers — click to show"
-              : "Shown in the CLI pickers — click to hide"}
+              ? "Hidden from the CLI pickers. Click to show."
+              : "Shown in the CLI pickers. Click to hide."}
           >
             <span
               className={cn(
@@ -524,7 +524,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         </Field>
         <Field
           label="Sandbox allowed paths"
-          hint="One path per line. $HOME and ~ expand. Joined into every workspace sandbox that uses this agent — workspaces cannot remove them. Reset to defaults restores the shipped list."
+          hint="One path per line. $HOME and ~ expand. Joined into every workspace sandbox that uses this agent; workspaces cannot remove them. Reset to defaults restores the shipped list."
         >
           <PathsTextarea
             value={agent.sandbox_allowed_paths ?? []}

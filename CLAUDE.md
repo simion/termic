@@ -112,6 +112,7 @@ TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible vi
 - `CliIcon cli={...}` + `CLI_BRAND_COLOR[cli]` for claude/gemini/codex (orange/blue/green) — tab bar, sidebar, popovers, dialogs.
 - Tooltips default `delay: 0`. Override per-call for chrome.
 - `cn()` from `@/lib/utils` for class composition — never concatenate manually.
+- **Never enable spell check on inputs/textareas.** Always set `spellCheck={false}` (and `autoCorrect="off"` / `autoCapitalize="off"` / `autoComplete="off"` where appropriate) on every `<input>` and `<textarea>`. This is a developer tool — file names, paths, agent names, branch names, shell commands are never English words and squiggles are pure noise.
 
 ## Window chrome / drag
 
@@ -178,6 +179,16 @@ Dev process logs go to `/tmp/termic-dev.log` if started via `npm run tauri:dev >
 - **`pty_spawn` "invalid length 0"** — payload wrap forgotten.
 - **Right-click contextmenu** — `window.addEventListener("contextmenu", e => e.preventDefault())` in `main.tsx`.
 - **App icon missing in dev** — dev runs raw binary, not `.app` bundle. Custom icon appears only after `npm run tauri:build`.
+
+## Copy / typography rules
+
+- **No em dashes (—) anywhere on the website or in the app.** Applies to all
+  user-visible text: marketing copy on `termic.dev`, dialog/toast/tooltip
+  strings, button labels, JSX/HTML text content, the in-app Changelog
+  summaries and notes (`changelog.json`), error messages. Use a comma, a
+  period, parentheses, or a colon instead. Comments in source files are not
+  user-visible and are exempt, but prefer rewriting them too so the convention
+  doesn't leak into copy via copy-paste.
 
 ## What NOT to do without asking
 

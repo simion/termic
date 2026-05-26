@@ -196,7 +196,7 @@ export function NewProjectDialog() {
             plus a shared
             {" "}<code className="mono">CLAUDE.md</code> /{" "}
             <code className="mono">AGENTS.md</code> /{" "}
-            <code className="mono">.claude/</code> the agent loads at startup —
+            <code className="mono">.claude/</code> the agent loads at startup,
             persistent business knowledge that lives across every workspace.
           </p>
 
@@ -225,7 +225,7 @@ export function NewProjectDialog() {
             <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
               Where the shared <code className="mono">CLAUDE.md</code>,{" "}
               <code className="mono">AGENTS.md</code>, and{" "}
-              <code className="mono">.claude/</code> live. Leave blank — Termic
+              <code className="mono">.claude/</code> live. Leave blank and Termic
               creates one at{" "}
               <code className="mono">~/termic/projects/&lt;name&gt;/</code>.
             </span>

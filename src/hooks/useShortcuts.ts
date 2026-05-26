@@ -1,9 +1,10 @@
 // Global keyboard shortcuts:
-//   ⌘1..⌘9   → jump to the Nth active workspace
+//   ⌘1..⌘9   → switch to the Nth tab in the active workspace
 //   ⌘L       → focus the active workspace's terminal
 //   ⌘[, ⌘]   → previous / next workspace (cycles non-archived in sidebar order)
-//   ⌥⌘↑, ⌥⌘↓ → previous / next workspace (arrow-key alt for the brackets;
-//             matches the up/down sidebar visual direction)
+//   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded
+//             terminal tabs underneath) — basically "what you can see"
+//   ⌥⌘↑, ⌥⌘↓ → previous / next workspace (skip expanded tabs)
 //   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
 //             (Safari / Chrome / iTerm convention — Shift + brackets = tabs)
 //   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘];
@@ -21,14 +22,52 @@ export function useShortcuts() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const isMeta = e.metaKey || e.ctrlKey;
-      if (!isMeta) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable;
-
       const state = useApp.getState();
       const wsId = state.activeWorkspaceId;
       const tabs = wsId ? state.tabs[wsId] || [] : [];
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
+
+      // ⌥↑ / ⌥↓ → previous / next VISIBLE sidebar row. Walks the same flat
+      // list the user sees: each workspace, plus its terminal tabs when the
+      // workspace is expanded. Selecting a tab also activates its workspace.
+      // No isTyping guard for the same xterm-helper-textarea reason as ⌘T/⌘W.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
+          && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        type Row = { wsId: string; tabId?: string };
+        const rows: Row[] = [];
+        for (const p of state.projects) {
+          for (const w of state.workspaces) {
+            if (w.project_id !== p.id || w.archived) continue;
+            rows.push({ wsId: w.id });
+            const wsTabs = state.tabs[w.id] ?? [];
+            const terminalTabs = wsTabs.filter(t => t.type === "terminal");
+            const explicit = state.collapsedWorkspaces[w.id];
+            const collapsed = explicit ?? (terminalTabs.length <= 1);
+            if (!collapsed) {
+              for (const t of terminalTabs) rows.push({ wsId: w.id, tabId: t.id });
+            }
+          }
+        }
+        if (rows.length <= 1) return;
+        e.preventDefault();
+        const activeTab = wsId ? state.activeTab[wsId] : undefined;
+        // Prefer matching the active tab row when the workspace is expanded;
+        // otherwise the workspace header row.
+        let idx = rows.findIndex(r => r.wsId === wsId && r.tabId === activeTab);
+        if (idx < 0) idx = rows.findIndex(r => r.wsId === wsId && !r.tabId);
+        const dir = e.key === "ArrowDown" ? 1 : -1;
+        const nextIdx = idx < 0
+          ? (dir > 0 ? 0 : rows.length - 1)
+          : (idx + dir + rows.length) % rows.length;
+        const target = rows[nextIdx];
+        state.setActiveWorkspace(target.wsId);
+        if (target.tabId) state.setActiveTabId(target.wsId, target.tabId);
+        return;
+      }
+
+      if (!isMeta) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable;
 
       // ⌘, → open settings (macOS convention).
       if (e.key === ",") {
@@ -37,11 +76,33 @@ export function useShortcuts() {
         return;
       }
 
-      // ⌘1..⌘9 → jump to Nth workspace
+      // ⌘P → file finder (Sublime / VS Code convention). NO `isTyping`
+      // guard — xterm's hidden textarea always reports as typing, and we
+      // want ⌘P to fire from the terminal too. Scoped to having an
+      // active workspace; without one there's no file list to search.
+      if (e.key.toLowerCase() === "p" && !e.shiftKey && wsId) {
+        e.preventDefault();
+        useUI.getState().openFileFinder(wsId);
+        return;
+      }
+
+      // ⇧⌘F → find-in-files (Sublime / VS Code convention). Same
+      // no-`isTyping` rationale as ⌘P. Requires an active workspace.
+      if (e.shiftKey && e.key.toLowerCase() === "f" && wsId) {
+        e.preventDefault();
+        useUI.getState().openFindInFiles(wsId);
+        return;
+      }
+
+      // ⌘1..⌘9 → switch to Nth tab in the active workspace (Chrome /
+      // VS Code convention). Indexes the full tab list so position
+      // matches what the user sees in the TabBar.
       if (/^[1-9]$/.test(e.key)) {
-        const n = Number(e.key) - 1;
-        const w = state.workspaces.filter(w => !w.archived)[n];
-        if (w) { e.preventDefault(); state.setActiveWorkspace(w.id); }
+        if (wsId && tabs.length > 0) {
+          const n = Number(e.key) - 1;
+          const t = tabs[n];
+          if (t) { e.preventDefault(); state.setActiveTabId(wsId, t.id); }
+        }
         return;
       }
 

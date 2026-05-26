@@ -62,7 +62,7 @@ export function ReviewDialog() {
 
   return (
     <AppDialog open={!!wsId} onOpenChange={(v) => (v ? null : close())}
-      title="AI code review" description="Pick an agent — we'll feed it your diff + review guidelines.">
+      title="AI code review" description="Pick an agent. We'll feed it your diff + review guidelines.">
       <div className="mt-2 grid grid-cols-3 gap-2">
         {CLIS.filter(c => visibleClis.has(c)).map(c => (
           <button
@@ -83,7 +83,7 @@ export function ReviewDialog() {
       </div>
       {err && <p className="mt-3 text-[13.5px] text-[var(--color-err)]">{err}</p>}
       <p className="mt-3 text-[12px] text-[var(--color-fg-faint)]">
-        Spawns a new terminal tab. Press Enter is sent for you — the agent will start streaming the review.
+        Spawns a new terminal tab. Press Enter is sent for you, then the agent will start streaming the review.
       </p>
     </AppDialog>
   );

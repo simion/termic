@@ -160,7 +160,7 @@ export function GeneralSection() {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
           label="Bypass permissions in sandboxed workspaces"
-          hint="When on, agents in a sandboxed workspace skip their own permission prompts — the macOS seatbelt is the real boundary. Turn off to make sandboxed agents still ask. Applies to newly spawned terminals."
+          hint="When on, agents in a sandboxed workspace skip their own permission prompts. The macOS seatbelt is the real boundary. Turn off to make sandboxed agents still ask. Applies to newly spawned terminals."
           value={sandboxBypassPermissions}
           onChange={setSandboxBypassPermissions}
         />

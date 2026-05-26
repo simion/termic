@@ -37,6 +37,11 @@ interface UIState {
    *  Lives in UI store (not app) so flipping it doesn't churn the
    *  workspace tree on every re-render. */
   sandboxForWsId: string | null;
+  /** ⌘P file finder — workspace id to scope the search to; null = closed.
+   *  Lives here so opening doesn't churn the workspace tree. */
+  fileFinderWsId: string | null;
+  /** ⇧⌘F find-in-files dialog — workspace id, null = closed. */
+  findInFilesWsId: string | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
    *  the whole window so the user knows the freeze is intentional. Set for
    *  unavoidably-synchronous IPC calls like `workspace_archive` that take
@@ -71,6 +76,10 @@ interface UIState {
   closeBroadcast: () => void;
   openSandbox: (wsId: string) => void;
   closeSandbox: () => void;
+  openFileFinder: (wsId: string) => void;
+  closeFileFinder: () => void;
+  openFindInFiles: (wsId: string) => void;
+  closeFindInFiles: () => void;
   setBusy: (msg: string | null) => void;
   /** Open the global confirm modal. Returns a Promise that resolves
    *  to true (user confirmed) or false (cancelled / dismissed). Drop-in
@@ -115,6 +124,8 @@ export const useUI = create<UIState>(set => ({
   reviewForWsId: null,
   broadcastForWsId: null,
   sandboxForWsId: null,
+  fileFinderWsId: null,
+  findInFilesWsId: null,
   busyMessage: null,
   confirm: null,
   pendingSandboxRestarts: new Set<string>(),
@@ -134,6 +145,10 @@ export const useUI = create<UIState>(set => ({
   closeBroadcast:    () => set({ broadcastForWsId: null }),
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
   closeSandbox:      () => set({ sandboxForWsId: null }),
+  openFileFinder:    (wsId) => set({ fileFinderWsId: wsId }),
+  closeFileFinder:   () => set({ fileFinderWsId: null }),
+  openFindInFiles:   (wsId) => set({ findInFilesWsId: wsId }),
+  closeFindInFiles:  () => set({ findInFilesWsId: null }),
   setBusy:           (msg) => set({ busyMessage: msg }),
   askConfirm: (req: any) =>
     new Promise<any>(resolve => set({ confirm: { req, resolve } })),

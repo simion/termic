@@ -2942,6 +2942,30 @@ fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String>
     Ok(out)
 }
 
+/// Flat list of every git-tracked + untracked-not-ignored file in the
+/// workspace, used by the ⌘P file finder. Async + spawn_blocking because
+/// `git ls-files` walks the whole tree and we don't want to freeze the IPC
+/// thread on large repos. Re-fetched on every ⌘P open — good enough, no
+/// caching layer.
+#[tauri::command]
+async fn workspace_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let out = std::process::Command::new("git")
+            .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+            .current_dir(&w.path)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        Ok(s.lines().map(|l| l.to_string()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ───────────────────────────── helpers ─────────────────────────────
 
 fn slugify(s: &str) -> String {
@@ -3322,6 +3346,153 @@ fn workspace_stop_script(id: String, kind: String, member: Option<String>) -> Re
     let map_key = format!("{id}:{}:{kind}", member_dir.unwrap_or_default());
     if let Some(pid) = running_scripts_remove(&map_key) {
         unsafe { libc::kill(-pid, libc::SIGTERM); }
+    }
+    Ok(())
+}
+
+// ───────────────────────────── find in files ─────────────────────────────
+
+/// Per-workspace in-flight grep PID. Each new search SIGKILLs the
+/// previous one for the same workspace so typing doesn't fan out into
+/// dozens of zombie git-grep procs.
+static RUNNING_GREPS: std::sync::Mutex<Option<std::collections::HashMap<String, i32>>>
+    = std::sync::Mutex::new(None);
+
+fn running_greps_swap(ws_id: &str, new_pid: Option<i32>) -> Option<i32> {
+    let mut g = RUNNING_GREPS.lock().unwrap();
+    let map = g.get_or_insert_with(std::collections::HashMap::new);
+    let prev = map.remove(ws_id);
+    if let Some(pid) = new_pid { map.insert(ws_id.to_string(), pid); }
+    prev
+}
+
+/// Streaming `git grep`. Emits one `grep-result://<search_id>` event per
+/// match (`{ path, line, col, preview }`) and a final `grep-done://<search_id>`
+/// (`{ truncated }`). Caps results to keep the renderer responsive — past
+/// the cap the child is SIGKILLed and `truncated: true` is reported.
+/// Re-entrant safety: any previous grep for the same workspace is killed
+/// before this one starts (typing fires a new search per keystroke).
+#[tauri::command]
+fn workspace_grep_start(
+    id: String,
+    query: String,
+    search_id: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such ws")?;
+    let cwd = std::path::PathBuf::from(&w.path);
+    let emit_done = format!("grep-done://{search_id}");
+    let emit_out  = format!("grep-result://{search_id}");
+
+    // Empty query → just emit done. UI shouldn't bother calling us, but
+    // be defensive (debounce can race).
+    if query.trim().is_empty() {
+        let _ = app.emit(&emit_done, serde_json::json!({ "truncated": false }));
+        return Ok(());
+    }
+
+    // SIGKILL any prior grep for this workspace. The frontend bumps
+    // search_id each keystroke and ignores late events from stale ids,
+    // but we still want to free the CPU cycles ASAP.
+    if let Some(prev) = running_greps_swap(&id, None) {
+        unsafe { libc::kill(-prev, libc::SIGKILL); }
+    }
+
+    let app_o = app.clone();
+    let ws_id_o = id.clone();
+    let search_id_o = search_id.clone();
+
+    thread::spawn(move || {
+        // -n: line numbers, --column: column number, -I: skip binary,
+        // -F: literal (no regex surprises while typing), -i: case-insensitive,
+        // --untracked --exclude-standard: include new files, still respect
+        // .gitignore. process_group(0) so we can kill the whole tree.
+        let spawn = std::process::Command::new("git")
+            .args([
+                "grep",
+                "-n", "--column", "-I", "-F", "-i",
+                "--untracked", "--exclude-standard",
+                "--no-color",
+                "-e", &query,
+            ])
+            .current_dir(&cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn();
+        let mut child = match spawn {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = app_o.emit(&emit_done, serde_json::json!({ "truncated": false }));
+                return;
+            }
+        };
+        let pid = child.id() as i32;
+        running_greps_swap(&ws_id_o, Some(pid));
+
+        // 500 lines is enough to be useful (~10 screens of results) without
+        // overwhelming the renderer or the IPC channel. Past this we kill
+        // the child and tell the UI to show a "truncated" notice.
+        const RESULT_CAP: usize = 500;
+        let mut truncated = false;
+
+        if let Some(stdout) = child.stdout.take() {
+            let mut count = 0usize;
+            for line in BufReader::new(stdout).lines().map_while(|r| r.ok()) {
+                // git grep -n --column output: "path:LINE:COL:preview"
+                // Path may contain ':' on macOS (rare) but LINE/COL never
+                // do, so splitn from the right is safest. We just split
+                // forward 3 times — paths with colons would mis-parse but
+                // that's a rounding error.
+                let mut it = line.splitn(4, ':');
+                let path = it.next().unwrap_or("").to_string();
+                let line_no: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let col: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let preview = it.next().unwrap_or("").to_string();
+                if path.is_empty() || line_no == 0 { continue; }
+                let _ = app_o.emit(&emit_out, serde_json::json!({
+                    "path": path,
+                    "line": line_no,
+                    "col": col,
+                    "preview": preview,
+                }));
+                count += 1;
+                if count >= RESULT_CAP {
+                    truncated = true;
+                    unsafe { libc::kill(-pid, libc::SIGKILL); }
+                    break;
+                }
+            }
+        }
+        let _ = child.wait();
+        // Only clear our slot if we're still the active grep for this ws —
+        // a newer search may have overwritten the slot mid-flight.
+        {
+            let mut g = RUNNING_GREPS.lock().unwrap();
+            if let Some(map) = g.as_mut() {
+                if map.get(&ws_id_o).copied() == Some(pid) { map.remove(&ws_id_o); }
+            }
+        }
+        let _ = app_o.emit(&emit_done, serde_json::json!({ "truncated": truncated }));
+        // search_id_o is only used in the topic strings above; reference it
+        // here so the borrow checker doesn't complain about an unused move.
+        drop(search_id_o);
+    });
+    Ok(())
+}
+
+/// Cancel an in-flight grep for the given workspace. The frontend calls
+/// this on dialog close — typing-triggered cancellation happens
+/// automatically in `workspace_grep_start` (the next search kills the
+/// previous one for the same workspace).
+#[tauri::command]
+fn workspace_grep_cancel(id: String) -> Result<(), String> {
+    if let Some(prev) = running_greps_swap(&id, None) {
+        unsafe { libc::kill(-prev, libc::SIGKILL); }
     }
     Ok(())
 }
@@ -3991,7 +4162,8 @@ pub fn run() {
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
-            workspace_diff, workspace_files, workspace_send_diff_to_main,
+            workspace_grep_start, workspace_grep_cancel,
+            workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
@@ -4026,6 +4198,15 @@ fn cleanup_children(app: &tauri::AppHandle) {
     //    child to acknowledge.
     {
         let mut g = RUNNING_SCRIPTS.lock().unwrap();
+        if let Some(map) = g.as_mut() {
+            for (_, pid) in map.drain() {
+                unsafe { libc::kill(-pid, libc::SIGKILL); }
+            }
+        }
+    }
+    // Per-workspace in-flight greps — same deal, SIGKILL the pg.
+    {
+        let mut g = RUNNING_GREPS.lock().unwrap();
         if let Some(map) = g.as_mut() {
             for (_, pid) in map.drain() {
                 unsafe { libc::kill(-pid, libc::SIGKILL); }

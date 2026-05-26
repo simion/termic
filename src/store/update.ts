@@ -238,7 +238,7 @@ function makeMockUpdate(version: string): Update {
   return {
     version,
     currentVersion: "0.4.0",
-    downloadAndInstall: async () => { console.log("[updater] mock install — no-op in dev"); },
+    downloadAndInstall: async () => { console.log("[updater] mock install, no-op in dev"); },
   } as unknown as Update;
 }
 

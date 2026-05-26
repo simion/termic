@@ -31,7 +31,7 @@ export function UpdaterBanner() {
   if (import.meta.env.DEV && !update && !hideDevPill) {
     return (
       <span
-        title="Development build — not a released version."
+        title="Development build, not a released version."
         className="flex select-none items-center rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-warn)]"
       >
         DEV
