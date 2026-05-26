@@ -7,7 +7,8 @@
 [![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-d97757)](https://github.com/simion/termic/releases/latest)
-[![Linux + Windows: build from source](https://img.shields.io/badge/Linux%20%2B%20Windows-build%20from%20source-d97757)](#linux-build-once-install-use)
+[![Linux AppImage](https://img.shields.io/badge/Linux-AppImage-d97757)](#linux-appimage)
+[![Windows: build from source](https://img.shields.io/badge/Windows-build%20from%20source-d97757)](#windows-self-build-no-sandbox)
 [![termic.dev](https://img.shields.io/badge/website-termic.dev-d97757)](https://termic.dev)
 
 Free, open-source desktop app for running AI coding-agent CLIs in parallel,
@@ -51,6 +52,31 @@ the app → Open, or strip the quarantine attribute:
 xattr -dr com.apple.quarantine /Applications/Termic.app
 ```
 
+### Linux (AppImage)
+
+Download `termic_<version>_amd64.AppImage` from the
+[Releases](https://github.com/simion/termic/releases) page, make it
+executable, and run it:
+
+```sh
+chmod +x termic_*_amd64.AppImage
+./termic_*_amd64.AppImage
+```
+
+The AppImage is ed25519-signed by the same CI flow as the macOS build,
+so the in-app updater works the same way: a new release appears as the
+**Update X.Y.Z** pill in the top-right, click to download + verify +
+relaunch. Keep the AppImage somewhere writable like `~/Applications/`
+so the updater can replace it in place.
+
+The sandbox feature is macOS-only on Linux: the workspace's Shield
+toggle is disabled and agents run unsandboxed. Everything else
+(worktrees, parallel tabs, find-in-files, themes, in-app diff) works
+the same.
+
+Wayland note: if fonts render thin, force X11 with `GDK_BACKEND=x11`
+in front of the launch command (or in the `.desktop` file's `Exec=`).
+
 ### Build from source
 
 #### macOS (first-class)
@@ -65,15 +91,13 @@ make install        # build, copy to /Applications, launch
 `make dev` (vite HMR + Rust auto-rebuild) is the iteration loop — see
 [CONTRIBUTING.md](./CONTRIBUTING.md) if you plan to hack on the code.
 
-#### Linux (build once, install, use)
+#### Linux (build it yourself)
 
-No prebuilt `.deb` / `.rpm` / `.AppImage` yet, so the path is "build
-locally once, then install the resulting bundle." After that you
-launch Termic from your app menu like any other app. **The sandbox
-feature is macOS-only** — on Linux the workspace's Shield toggle is
-disabled and agents run unsandboxed. Everything else (worktrees,
-parallel tabs, themes, in-app diff, file finder, find-in-files, the
-in-process CONNECT proxy) works the same.
+The signed AppImage on the
+[Releases](https://github.com/simion/termic/releases) page is the
+recommended path for most users — see [Linux (AppImage)](#linux-appimage)
+above. Build from source if you want to hack on it, ship a `.deb` /
+`.rpm` for your own distro packaging, or run an unreleased commit.
 
 Prerequisites — Debian / Ubuntu (24.04+ has WebKitGTK 4.1):
 
@@ -132,9 +156,9 @@ chmod +x src-tauri/target/release/bundle/appimage/termic_*_amd64.AppImage
 ```
 
 After the `.deb` / `.rpm` install, "Termic" shows up in your application
-launcher. Self-update inside the app won't work on Linux yet (no signed
-update channel for Linux); to upgrade, `git pull && npm run tauri build`
-and reinstall the package, or replace the `.AppImage` in place.
+launcher. The in-app updater only knows how to replace the AppImage in
+place — `.deb` / `.rpm` users upgrade via `git pull && npm run tauri build`
++ reinstall.
 
 If the window looks slightly off — an empty gap on the left of the top
 bar, for example — that's the 84px reservation for macOS traffic-light
@@ -241,11 +265,13 @@ and the auto-restart-on-edit flow — see [CLAUDE.md](./CLAUDE.md)
 
 - **macOS:** first-class — universal binary (Apple Silicon + Intel),
   signed updater, Homebrew cask. Requires macOS 12+ (Monterey).
-- **Linux + Windows:** build-from-source works today (Tauri 2 +
-  WebKitGTK / WebView2). No prebuilt binaries yet — CI matrix entries
-  + signed installers are on the roadmap.
+- **Linux:** x86_64 AppImage shipped per release, signed by the same
+  ed25519 key as the macOS build so the in-app updater works. ARM
+  Linux + a Flathub submission are on the roadmap.
+- **Windows:** build-from-source works today (Tauri 2 + WebView2). No
+  prebuilt binaries yet — CI matrix entry is on the roadmap.
 - **Sandbox:** macOS-only (`sandbox-exec` is Apple's frontend to
-  Seatbelt). On Linux + Windows the Shield toggle is greyed out and
+  Seatbelt). On Linux + Windows the Shield toggle is disabled and
   agents run unsandboxed.
 
 ---
@@ -271,7 +297,7 @@ The honest pitch — see [termic.dev/vs/conductor](https://termic.dev/vs/conduct
 | Per-workspace macOS sandbox (filesystem + network) | ✓ — Seatbelt + in-process network allowlist | ✗ |
 | Work-done indicator from real PTY signals | ✓ — OSC 9;4 + per-CLI title classifier, no idle guessing | ✗ |
 | Side-by-side ⇄ unified diff with syntax highlighting | ✓ | varies |
-| Platforms | macOS today; Linux + Windows on the way | macOS |
+| Platforms | macOS + Linux today (signed AppImage); Windows on the way | macOS |
 
 If you already pay for a Claude Pro / Max plan, Termic spawns the same
 `claude` binary that plan covers — no separate metered usage, no

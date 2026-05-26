@@ -1,15 +1,20 @@
 name: Release
 
 # Push a tag like `v0.3.1` (driven by `make release BUMP=patch|minor|major`).
-# Two parallel Mac builds (Apple Silicon on macos-14, Intel on macos-13),
-# both ad-hoc codesigned and ed25519-signed for the updater. The release
-# job stitches both arches into one GitHub Release; downstream jobs bump:
-#   * simion/homebrew-termic     (Casks/termic.rb gets version + BOTH shas)
+# Parallel platform builds (Mac universal on macos-14, Linux AppImage on
+# ubuntu-latest), both ed25519-signed for the in-app updater. The release
+# job stitches everything into one GitHub Release; downstream jobs bump:
+#   * simion/homebrew-termic     (Casks/termic.rb gets version + mac sha)
 #   * simion/termic.dev          (public/updates/{latest,changelog}.json)
 #
-# Brew users see the new version on `brew upgrade --cask`; running
-# Termic instances on either arch see the in-app updater pill within
-# ~5 min (CF Pages cache TTL on the manifest).
+# Brew + AppImage users see the new version automatically; running
+# Termic instances on either platform see the in-app updater pill
+# within ~5 min (CF Pages cache TTL on the manifest).
+#
+# Linux scope: AppImage only. `.deb` / `.rpm` are skipped intentionally
+# because the Tauri updater can't replace package-manager-owned files,
+# so shipping them would split users into "self-update works" vs
+# "doesn't" buckets with no in-app signal.
 
 on:
   push:
@@ -122,28 +127,121 @@ jobs:
             src-tauri/target/universal-apple-darwin/release/bundle/macos/Termic.app.tar.gz
             src-tauri/target/universal-apple-darwin/release/bundle/macos/Termic.app.tar.gz.sig
 
+  # ─── Linux x86_64 AppImage ────────────────────────────────────────
+  # Single artifact: a signed AppImage. We skip .deb / .rpm on purpose
+  # (Tauri's updater can't replace package-manager-owned files, so
+  # shipping them would silently break self-update for those users).
+  # AppImage is the only format the updater can drop in place.
+  #
+  # ubuntu-latest tracks 24.04 which ships WebKitGTK 4.1 — Tauri 2's
+  # required version. If GitHub bumps the alias before 4.1 lands, pin
+  # to ubuntu-24.04 explicitly.
+  build-linux:
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      version:        ${{ steps.meta.outputs.version }}
+      appimage_name:  ${{ steps.find.outputs.appimage_name }}
+      appimage_sha:   ${{ steps.hashes.outputs.appimage_sha }}
+      sig:            ${{ steps.hashes.outputs.sig }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: System dependencies
+        # The WebKitGTK 4.1 + GTK3 + AppIndicator3 + librsvg2 quartet
+        # is exactly what tauri-runtime-wry links against. libsoup-3
+        # is required by the new webkit2gtk-4.1 (the 4.0 line used
+        # libsoup-2). libxdo-dev is for tauri's auto-typer plugin.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file git pkg-config \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libsoup-3.0-dev libxdo-dev
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Cache Rust target dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-linux-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - run: npm ci
+      - name: Build & sign (AppImage)
+        # --bundles appimage skips .deb / .rpm so we don't spend build
+        # time on artifacts we won't publish. The .AppImage.sig file
+        # is produced automatically alongside it because
+        # `createUpdaterArtifacts: true` is set in tauri.conf.json
+        # and the signing env vars are present.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --bundles appimage
+      - name: Locate AppImage
+        # Tauri lowercases productName for the AppImage filename. The
+        # exact form (`termic_<v>_amd64.AppImage`) has held across
+        # Tauri 2 releases but we glob defensively so a future rename
+        # doesn't break the upload + manifest.
+        id: find
+        run: |
+          BUNDLE_DIR=src-tauri/target/release/bundle/appimage
+          ls -la "$BUNDLE_DIR"
+          APPIMAGE=$(ls "$BUNDLE_DIR"/*.AppImage | head -n1)
+          NAME=$(basename "$APPIMAGE")
+          echo "appimage_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "appimage_path=$APPIMAGE" >> "$GITHUB_ENV"
+      - name: Compute SHA256 + read .sig
+        id: hashes
+        run: |
+          SHA=$(sha256sum "$appimage_path" | awk '{print $1}')
+          echo "appimage_sha=$SHA" >> "$GITHUB_OUTPUT"
+          SIG=$(cat "${appimage_path}.sig")
+          { echo 'sig<<EOF'; echo "$SIG"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termic-${{ steps.meta.outputs.version }}-linux-x86_64
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+
   # ─── Stitch the universal build into a Release ────────────────────
   release:
-    needs: build-mac
+    needs: [build-mac, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: termic-${{ needs.build-mac.outputs.version }}-universal
           path: mac
+      - uses: actions/download-artifact@v4
+        with:
+          name: termic-${{ needs.build-linux.outputs.version }}-linux-x86_64
+          path: linux
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.build-mac.outputs.version }}
+          LINUX_APPIMAGE: ${{ needs.build-linux.outputs.appimage_name }}
         run: |
           # Notes body is the first thing direct-download users see.
           # The recommended brew path goes first because it sidesteps
           # quarantine; the xattr command is the escape hatch for
-          # non-brew users.
+          # non-brew users. Linux gets its own block with the
+          # AppImage one-liner (chmod + run; no installer step).
           NOTES=$(cat <<EOF
           ## Install
 
-          **Universal macOS binary** — runs natively on Apple Silicon (M1+) and Intel.
+          ### macOS (universal — Apple Silicon + Intel)
 
           **Recommended — Homebrew** (handles Gatekeeper for you):
 
@@ -160,10 +258,27 @@ jobs:
           xattr -dr com.apple.quarantine /Applications/Termic.app
           \`\`\`
 
+          ### Linux (x86_64 AppImage)
+
+          Download \`${LINUX_APPIMAGE}\` below, mark executable, run:
+
+          \`\`\`sh
+          chmod +x ${LINUX_APPIMAGE}
+          ./${LINUX_APPIMAGE}
+          \`\`\`
+
+          The sandbox feature is macOS-only on Linux: the workspace's
+          Shield toggle is disabled and agents run unsandboxed.
+          Everything else (worktrees, parallel tabs, find-in-files,
+          themes, in-app diff) works the same.
+
           ## Updates
 
-          The app self-updates: future releases land via the in-app **Update** pill
-          (top-right of the toolbar). For Homebrew installs, \`brew upgrade --cask\` also works.
+          The app self-updates on both platforms: future releases land via the
+          in-app **Update** pill (top-right of the toolbar). For Homebrew installs,
+          \`brew upgrade --cask\` also works. For Linux AppImage installs, the
+          updater replaces the file in place — keep it somewhere writable
+          (\`~/Applications\` works well).
 
           ## Changelog
 
@@ -175,7 +290,8 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "v${VERSION}" \
             --notes "$NOTES" \
-            mac/dmg/*.dmg mac/macos/*
+            mac/dmg/*.dmg mac/macos/* \
+            linux/*.AppImage linux/*.AppImage.sig
 
   # ─── Bump the Homebrew cask ────────────────────────────────────────
   bump-tap:
@@ -229,7 +345,7 @@ jobs:
   #                      THIS repo (authored by scripts/release.sh); it's
   #                      copied over verbatim.
   bump-website:
-    needs: [build-mac, release]
+    needs: [build-mac, build-linux, release]
     runs-on: ubuntu-latest
     steps:
       # The termic.dev repo — where both files get committed.
@@ -243,18 +359,20 @@ jobs:
         with:
           path: app
       - name: Write update manifest + changelog
+        env:
+          MAC_SIG:   ${{ needs.build-mac.outputs.sig }}
+          LINUX_SIG: ${{ needs.build-linux.outputs.sig }}
+          LINUX_APPIMAGE: ${{ needs.build-linux.outputs.appimage_name }}
         run: |
           cd site
           VERSION="${{ needs.build-mac.outputs.version }}"
-          SIG=$(cat <<'EOF'
-          ${{ needs.build-mac.outputs.sig }}
-          EOF
-          )
           # tauri-plugin-updater dispatches on the platform key matching
-          # the running app's arch. With a universal binary both arches
-          # point at the SAME .app.tar.gz — macOS extracts the matching
-          # slice at install. Need both entries so neither arch gets
-          # stranded on an older version.
+          # the running app's arch. With a universal mac binary both
+          # arches point at the SAME .app.tar.gz — macOS extracts the
+          # matching slice at install. Linux gets one x86_64 AppImage
+          # (no aarch64 yet — add `linux-aarch64` once we have an ARM
+          # Linux runner). Each platform's signature is its OWN ed25519
+          # signature, not shared with mac.
           BASE="https://github.com/${{ github.repository }}/releases/download/v$VERSION"
           cat > "${{ env.WEBSITE_MANIFEST_PATH }}" <<JSON
           {
@@ -263,12 +381,16 @@ jobs:
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "platforms": {
               "darwin-aarch64": {
-                "signature": "$SIG",
+                "signature": "$MAC_SIG",
                 "url": "$BASE/Termic.app.tar.gz"
               },
               "darwin-x86_64": {
-                "signature": "$SIG",
+                "signature": "$MAC_SIG",
                 "url": "$BASE/Termic.app.tar.gz"
+              },
+              "linux-x86_64": {
+                "signature": "$LINUX_SIG",
+                "url": "$BASE/$LINUX_APPIMAGE"
               }
             }
           }
