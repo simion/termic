@@ -2,7 +2,7 @@
 
 # termic
 
-**Run `claude`, `gemini`, and `codex` in parallel — each in its own git worktree.**
+**Run `claude`, `codex`, `gemini`, `grok`, and `agy` in parallel, each in its own git worktree.**
 
 [![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
@@ -195,40 +195,44 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full dev guide.
 
 ## What it does
 
-Termic is a control plane for **interactive CLI coding agents** — the ones
-you type into in a terminal: `claude`, `gemini`, `codex`. It does NOT use
-their respective SDKs (which bill against a separate credit pool as of
-[June 2026](https://thenewstack.io/anthropic-agent-sdk-credits/)); it
-spawns the same binaries you'd run in iTerm and rides on your existing
-Pro / Max subscription.
+Termic spawns the real `claude` / `codex` / `gemini` / `grok` / `agy`
+(Antigravity) CLIs inside PTYs, the same binaries you run in iTerm. It
+does NOT use the vendor SDKs (which bill against a separate credit
+pool as of [June 2026](https://thenewstack.io/anthropic-agent-sdk-credits/));
+inference rides on your existing Pro / Max plan.
 
-The product surface:
-
-- **One window, many workspaces.** Each workspace is a git worktree under
-  `~/termic/workspaces/<project>/<name>/`, branched off your default.
-  Tabs per workspace let you run multiple agents against the same branch.
-  Worktree-or-repo-root toggle per workspace when you don't want a worktree.
-- **Multi-repo workspaces.** A project type that groups N member repos under
-  one wrapper directory with shared `CLAUDE.md` / `AGENTS.md` / `.claude/`,
-  per-member ports (`$TERMIC_PORT_<MEMBER>` is exported so frontends can call
-  backends without hardcoded ports), and one aggregated diff view.
-- **Real PTYs.** Agents render in xterm.js + WebGL exactly as they would
-  in your shell: animations, slash-commands, `/resume` pickers, bell, bold.
-- **Work-done indicator.** Sender-driven, no idle heuristics: Claude's
-  `OSC 9;4` busy/idle, Gemini's `◇ Ready` / `✦ Working…` / `✋ Action Required`
-  title, Codex's `Working` / `Ready` / `Waiting` title. Green ✓ on the tab
-  when a turn finishes, yellow 🔔 when the agent is blocked on your input,
-  optional desktop notification that jumps you back to that workspace + tab.
-- **Diff + edit in-app.** CodeMirror 6 editor + side-by-side ⇄ unified diff
-  viewer with full syntax highlighting via `@codemirror/merge`. "Send to
-  main" pushes the worktree's diff into the parent checkout for you to
-  commit / PR there.
-- **Per-CLI configuration.** Settings → Agents is a small editable registry:
-  override the binary path, args, YOLO flags, runtime YOLO command, resume
-  args. Claude, Gemini, Codex are built in; bring your own PTY-based CLI
-  (OpenCode, aider, ollama, custom shell scripts) in 30 seconds.
-- **Seven themes** (System / Light / Dark / VS Code / Solarized / Cobalt /
-  Matrix), each one re-themes both the app chrome AND the xterm pane.
+- **Parallel worktrees.** Each workspace is a git worktree under
+  `~/termic/workspaces/<project>/<name>/`. Run N agents against the same
+  branch across tabs; attach to repo root when you don't want a worktree;
+  duplicate a worktree to spin up a parallel attempt off the same tip.
+- **Multi-repo workspaces.** Group N repos under one wrapper with shared
+  `CLAUDE.md` / `AGENTS.md`, per-member port forwarding (`$TERMIC_PORT_<MEMBER>`),
+  and one aggregated diff.
+- **Per-workspace sandbox** (macOS). Filesystem + network cage via
+  `sandbox-exec` and an in-process HTTPS CONNECT proxy with a hostname
+  allowlist. Lets the agent run with `--dangerously-skip-permissions`
+  safely — the cage is the boundary, not the prompt.
+- **Work-done indicator** that's actually reliable. Per-CLI title classifier
+  (Claude spinner, Gemini's `◇` / `✦` / `✋`, Codex `Working` / `Ready` /
+  `Waiting`) plus OSC 9;4, gated by byte-quiet and content-hash checks so
+  static-title "thinking" doesn't false-fire done. Blue bullet on the tab
+  when a turn finishes, orange bell when the agent is blocked on input,
+  optional OS notification that drops you on the right workspace and tab.
+- **Find + edit in-app.** ⌘P fuzzy file finder, ⇧⌘F find-in-files
+  (`git grep`, .gitignore-aware, streams live). CodeMirror 6 editor and
+  side-by-side / unified diff with syntax highlighting. "Send to main"
+  lands the worktree diff in the parent checkout.
+- **Broadcast** a prompt to every agent in a workspace at once (⇧⌘B).
+  **AI review**: open the Review dialog, pick an agent, it gets the diff
+  + a review prompt and starts streaming.
+- **Bring your own agent.** Settings → Agents is an editable registry.
+  Drop in aider, opencode, ollama, a shell script — 30 seconds. Claude,
+  Codex, Antigravity, Gemini, and Grok ship as built-ins.
+- **Keyboard-first.** ⌘1..9 swaps tabs, ⌥↑/↓ walks the visible sidebar
+  tree, ⌥⌘↑/↓ hops workspace-only, ⇧⌘D opens a split shell, ⌘T spawns a
+  new tab, ⌘W closes one. Seven themes (System, Light, Claude, Dark+,
+  Solarized Dark, Cobalt, Matrix), each re-themes both chrome and the
+  terminal pane.
 
 ---
 
@@ -308,21 +312,17 @@ see in iTerm.
 
 ## Roadmap
 
-What's next, roughly in order. No dates — open an issue if you want to
-push something up the list or pick one off.
+Open an issue to push something up the list or pick one off.
 
-- **Better git support.** First-class commit / push / pull / branch
-  switch from inside the app instead of dropping to the aux terminal.
-  Currently the diff viewer is read-only and "Send to main" only moves
-  the working tree.
-- **Linear + GitHub PR integration.** Paste a Linear issue or GitHub
-  issue/PR URL → new workspace seeded with the title + body. Create
-  the PR from the app once you're done. No OAuth — uses the `gh` CLI
-  + unauthenticated public APIs so we don't need your repo scopes.
-- **Fix desktop notifications.** The "agent needs input" / "agent
-  finished" notifications miss too often (settled-detection edge
-  cases, OSC 9;4 dropped on resize, title parser regressions). Audit
-  + tighten the per-CLI signal classifier and the OS-level fan-out.
+- **First-class git surface.** Commit / push / pull / branch switch from
+  inside the app instead of dropping to the aux terminal.
+- **Linear + GitHub PR integration.** Paste an issue / PR URL, get a
+  workspace seeded with title + body. Create the PR from the app via
+  `gh`. No OAuth.
+- **Sandbox parity on Linux + Windows.** macOS Seatbelt today; bubblewrap
+  / landlock on Linux and AppContainer on Windows are the gap.
+- **Windows prebuilts.** AppImage CI is live for Linux; Windows MSI is
+  the matching CI matrix entry.
 
 ---
 
