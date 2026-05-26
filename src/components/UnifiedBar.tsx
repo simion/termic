@@ -12,7 +12,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import * as HoverCard from "@radix-ui/react-hover-card";
 import { Check } from "lucide-react";
 import {
-  PanelLeft, PanelRight, FolderOpen, Play, Archive, ShieldCheck,
+  PanelLeft, PanelRight, FolderOpen, Play, Archive, ShieldCheck, Shield,
   Sun, Moon, Monitor, Zap, ArrowUpToLine, Sunrise, Droplet, Binary, Code2,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
@@ -271,6 +271,14 @@ export function UnifiedBar() {
                 </Button>
               </Tip>
             )}
+            <Tip content={ws.sandbox_enabled ? "Sandbox settings" : "Enable sandbox"} side="bottom">
+              <Button size="icon" variant="icon"
+                onClick={() => useUI.getState().openSandbox(ws.id)}
+                className={ws.sandbox_enabled ? "text-[var(--color-ok)]" : undefined}
+              >
+                <Shield className="h-4 w-4" fill={ws.sandbox_enabled ? "currentColor" : "none"} />
+              </Button>
+            </Tip>
             <Tip content="Archive workspace" side="bottom">
               <Button size="icon" variant="icon"
                 onClick={async () => {

@@ -31,12 +31,19 @@ export function NewWorkspaceDialog() {
   const detectedClis = useApp(s => s.detectedClis);
   // CLI choices: the registry (custom agents included), or the built-in
   // list before it loads — minus any disabled / not-installed agents.
+  // Build the picker options. Always APPEND a synthetic "Terminal"
+  // (cli = "shell") entry so the user has a fallback when zero agents
+  // are installed — without it the picker would be either empty or
+  // populated with uninstalled agents that spawn-fail at create time.
+  // The TerminalPane / ensureDefaultTab paths already treat cli="shell"
+  // as a login zsh, so this is a complete workspace shape, not a stub.
+  const SHELL_CHOICE = { id: "shell", display_name: "Terminal", color: "" } as any;
   const cliChoices = (() => {
     const list = agents.length
       ? agents
       : CLIS.map(id => ({ id, display_name: id, color: "" } as any));
     const visible = visibleCliIds(list.map(a => a.id), agents, detectedClis);
-    return list.filter(a => visible.has(a.id));
+    return [...list.filter(a => visible.has(a.id)), SHELL_CHOICE];
   })();
 
   const [name, setName] = useState("");
@@ -97,7 +104,26 @@ export function NewWorkspaceDialog() {
     const p = useApp.getState().projects.find(x => x.id === projectId);
     setName(""); setBranch(""); setBranchEdited(false); setErr(null);
     setBase(p?.base_branch || "");
-    setCli(p?.default_cli || "claude");
+    // Pick a CLI that's actually present: project default if installed,
+    // else first installed agent, else fall back to "shell" so a user
+    // with NO agents installed lands on a workspace that will spawn
+    // cleanly. Previous logic kept the project default even when it
+    // wasn't installed → workspace spawned a bad command at create.
+    const detected = useApp.getState().detectedClis;
+    const list = useApp.getState().agents;
+    const detectionRan = Object.keys(detected).length > 0;
+    const isInstalled = (id: string) => detected[id]?.found === true;
+    const projectDefault = p?.default_cli || "";
+    if (!detectionRan) {
+      // Detection hasn't returned yet — trust the project default
+      // (cli="shell" itself is a valid value too).
+      setCli(projectDefault || "shell");
+    } else if (projectDefault && isInstalled(projectDefault)) {
+      setCli(projectDefault);
+    } else {
+      const firstInstalled = list.find(a => !a.disabled && isInstalled(a.id))?.id;
+      setCli(firstInstalled ?? "shell");
+    }
     setPrefix("feature");
     // Sandbox toggle defaults to project's preference OR the global
     // default (Settings → General). Either being true checks the box.

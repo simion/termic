@@ -355,10 +355,12 @@ const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 // WIP feature - the "agent has settled" heuristic produces false
 // positives often enough that the highlight is noise more than
-// Now driven by sender-emitted OSC 9;4 / RequestAttention signals
-// (see TerminalPane.tsx), not the old idle-stdout heuristic. Reliable
-// → ship default-on. Existing users who explicitly toggled it off
-// keep their setting (lsGetBool returns the stored value when present).
+// Default ON. Claude Code's title classifier (Braille spinner glyph
+// while working, "✳" brand prefix when idle — see TerminalPane.tsx
+// classifyTitle) gives us a reliable busy→idle edge for Claude;
+// Codex/Gemini have explicit "Ready"/"Working" title states. Existing
+// users who toggled it OFF keep their setting (lsGetBool returns the
+// stored value when present).
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
 const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 // ON by default — sandboxed agents bypass their own permission prompts

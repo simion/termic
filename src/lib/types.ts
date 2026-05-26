@@ -329,6 +329,12 @@ export interface TerminalTab extends BaseTab {
   /** ConEmu OSC 9;4 state kind. 1=normal 2=error 3=indeterminate 4=warning.
    *  Used to tint the progress bar (red for error, yellow for warning). */
   workProgressKind?: 1 | 2 | 3 | 4 | null;
+  /** Wall-clock when the user last manually cleared workState via
+   *  focus (clicking the tab / workspace). Setting workState to
+   *  "working" inside the grace window after this timestamp is
+   *  silenced so a stuck spinner the user just dismissed doesn't
+   *  instantly re-arm. */
+  workClearedAt?: number;
 }
 
 export interface DiffTab extends BaseTab {

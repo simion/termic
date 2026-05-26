@@ -87,6 +87,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // sender signal we missed and whose status counter keeps producing
   // bytes (so byte-quiet never fires).
   const workingStartedAtRef = useRef(0);
+  // Most recent sender-classified state from a title / OSC handler.
+  // Heuristic demoters (byte-quiet, settled-hash, scrollback) skip when
+  // this is "busy" — the sender just told us the agent is still
+  // working, so a quiet 4 s gap doesn't mean it's done. Cleared back to
+  // null/idle when a sender says so, or when the user submits.
+  const senderStateRef = useRef<"busy" | "idle" | "attention" | null>(null);
   // Respawn machinery: when the agent process exits (user typed `exit`,
   // claude crashed, etc.) we tear down the PTY but KEEP the terminal
   // mounted with its scrollback. The "Restart" overlay then bumps `gen`
@@ -355,6 +361,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
         }
         const title = `${ws.name} · ${tab.cli}`;
         ipc.notify(title, trimmed).catch(() => {});
+        // Seed the focus-edge router so the user clicking the banner
+        // (or otherwise refocusing the window within ROUTE_WINDOW_MS)
+        // lands on the tab that emitted the notification. See
+        // useAttentionNotifier.ts for the consumer.
+        useUI.getState().setNotifyRoute({ wsId: ws.id, tabId: tab.id });
         wdlog(`OS notify fired: ${title} — ${trimmed}`);
       } catch (e) {
         wdlog(`OS notify error`, e);
@@ -366,6 +377,21 @@ export function TerminalPane({ ws, tab, active }: Props) {
     const classifyTitle = (cli: string, title: string): "busy" | "idle" | "attention" | null => {
       const t = title.trim();
       if (!t) return null;
+      if (cli === "claude") {
+        // Idle/done: title starts with "✳" (Claude's brand glyph).
+        // Working: title leads with one or two spinner frames — we've
+        // seen Braille (U+2800..U+28FF) AND combinations like "⠐ ⠂".
+        // Rule: if the leading non-whitespace char is NOT ✳, it's the
+        // spinner = busy. Falsely flagging an unknown title as busy
+        // is the safer side: a momentary spurious busy gets reconciled
+        // when the title next becomes "✳" or via byte-quiet; the
+        // reverse (missing busy → premature done) is the bug we're
+        // chasing.
+        if (/^\s*✳/.test(t)) return "idle";
+        // Any leading non-✳ glyph → assume spinner = working.
+        if (/^\s*\S/.test(t) && !/^\s*[A-Za-z0-9]/.test(t)) return "busy";
+        return null;
+      }
       if (cli === "gemini") {
         if (t.startsWith("✋") || /Action Required/i.test(t)) return "attention";
         if (t.startsWith("◇") || /^\s*Ready\b/.test(t)) return "idle";
@@ -386,19 +412,30 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // codex). For claude (OSC 9;4 source) the title is a label only.
     let lastTitleState: "busy" | "idle" | "attention" | null = null;
     term.onTitleChange(t => {
-      // Strip the agent's state-glyph prefix from the displayed title.
-      // Claude prefixes with "✳ ", Gemini with "◇ " (these are also the
-      // markers classifyTitle keys off, but we keep the raw `t` for that
-      // call below). Stripping makes the sidebar / tab bar read like
-      // plain prose instead of "✳ Fix coupon text encodin...".
-      const STRIP_PREFIX: Record<string, RegExp> = {
-        claude: /^\s*✳\s+/,
-        gemini: /^\s*◇\s+/,
-      };
-      const strip = STRIP_PREFIX[tab.cli];
-      setTabLiveTitle(ws.id, tab.id, strip ? t.replace(strip, "") : t);
+      // Display the title verbatim (no prefix strip). The spinner /
+      // brand glyphs are SIGNAL: seeing "⠐ ⠂ Task" vs "✳ Task" in the
+      // tab pill tells the user "agent is working" at a glance —
+      // stripping erased that signal AND was the only displayed
+      // difference between working / idle for users who turned the
+      // bullet pref off.
+      setTabLiveTitle(ws.id, tab.id, t);
+      // Any title update is activity. Reset the stillness counters so
+      // the agent can keep repainting its title (progress, elapsed
+      // time, etc.) without us falsely demoting to "done." Note
+      // byte-quiet already updates because OSC 0 titles flow through
+      // PTY data → lastDataAtRef.
+      settledRef.current.unchangedCount = 0;
+      settledRef.current.marked = false;
+      scrollbackRef.current.stableCount = 0;
+      scrollbackRef.current.marked = false;
       const state = classifyTitle(tab.cli, t);
       wdlog(`title change [classifier=${state ?? "unknown"}, last=${lastTitleState ?? "none"}]`, t);
+      // Record the sender-classified state so the interval-based
+      // demoters below (byte-quiet, settled-hash, scrollback) can
+      // skip when the title actively says "busy" — Gemini's "✦ Working"
+      // title can sit unchanged for 30+ s while the agent thinks,
+      // beating our 4 s/6 s heuristic thresholds.
+      if (state) senderStateRef.current = state;
       if (state === "idle") {
         if (lastTitleState === "busy" || lastTitleState === "attention") {
           goIdle(`title busy→idle`);
@@ -896,12 +933,19 @@ export function TerminalPane({ ws, tab, active }: Props) {
       const t = termRef.current;
       if (!t || !ptyRef.current) return;
       const cur = (useApp.getState().tabs[ws.id] || []).find(x => x.id === tab.id);
+      // Sender-signal gate: if the most recent title classification
+      // says "busy", trust it over every heuristic. Gemini's title
+      // ("✦ Working") can sit unchanged through a 30 s think while
+      // the agent emits nothing — without this gate, byte-quiet
+      // would falsely demote to `done`.
+      const senderBusy = senderStateRef.current === "busy";
       // Byte-quiet fallback: if no PTY data has arrived for QUIET_MS
       // and the tab is `working`, demote to `done`. Fires when the
       // agent goes silent entirely. (Doesn't fire for Claude Code's
       // "Cooking for Ns" ticker — for that we need the scrollback
       // check below.)
-      if (cur && cur.type === "terminal" && cur.workState === "working"
+      if (!senderBusy
+          && cur && cur.type === "terminal" && cur.workState === "working"
           && lastDataAtRef.current > 0
           && Date.now() - lastDataAtRef.current >= QUIET_MS) {
         useApp.getState().setWorkState(ws.id, tab.id, "done");
@@ -910,8 +954,8 @@ export function TerminalPane({ ws, tab, active }: Props) {
       // Scrollback-stability check — only meaningful for NORMAL
       // buffer mode (Claude Code, plain shells). Alt-screen TUIs
       // (Codex) keep a fixed-length buffer so this would falsely
-      // fire during real work.
-      if (t.buffer.active.type === "normal") {
+      // fire during real work. Also gated on senderBusy.
+      if (!senderBusy && t.buffer.active.type === "normal") {
         const len = t.buffer.active.length;
         const sb = scrollbackRef.current;
         if (sb.lastLen === -1) {

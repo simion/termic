@@ -252,21 +252,33 @@ export const useApp = create<AppState>((set, get) => ({
       // Clicking the workspace = "I've seen this" → clear all.
       const tabs = get().tabs[id] || [];
       const activeId = get().activeTab[id];
-      for (const t of tabs) {
-        // Clear bell/attention/exit for every tab in the workspace (the
-        // user is now LOOKING at this workspace — they've seen all alerts
-        // within it).
-        if (t.type === "terminal" && t.unread) {
-          get().clearAttention(id, t.id);
-        }
-        // Clear `workState === "done"` for the tab that just became
-        // active. We don't blanket-clear every tab — the user might
-        // have multiple agents and only one is focused; the others'
-        // bullets should remain.
-        if (t.type === "terminal" && t.id === activeId && t.workState === "done") {
-          get().setWorkState(id, t.id, "idle");
-        }
-      }
+      const now = Date.now();
+      // Patch the active tab inline (clear workState + stamp
+      // workClearedAt for the grace window) and clear unread on all
+      // others via clearAttention. Doing the active-tab work via a
+      // single set() avoids two cascading patches (the setWorkState
+      // path doesn't stamp workClearedAt — only manual clears do).
+      set(s => {
+        const list = s.tabs[id] || [];
+        const next = list.map(t => {
+          if (t.type !== "terminal") return t;
+          let nt = t;
+          if (t.unread) {
+            nt = { ...nt, unread: null };
+          }
+          if (t.id === activeId && (t.workState === "done" || t.workState === "working")) {
+            nt = {
+              ...nt,
+              workState: "idle",
+              workProgress: null,
+              workProgressKind: null,
+              workClearedAt: now,
+            };
+          }
+          return nt;
+        });
+        return { tabs: { ...s.tabs, [id]: next } };
+      });
     }
   },
 
@@ -472,19 +484,38 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setActiveTabId: (wsId, tabId) => set(s => {
-    // Looking at a tab = "I've seen this". Clear:
-    //   - unread (bell/attention/exit) — alerts the user already saw
-    //   - workState === "done" — the blue bullet's job is over; the
-    //     user is now focused on this tab so the indicator is noise
-    // workState === "working" stays (we don't want to hide an active
-    // spinner just because the user clicked over to glance at it).
+    // Looking at a tab = "I've seen this / I'm dealing with it now."
+    // Clear EVERY status flag on focus:
+    //   - unread (bell/attention/exit)
+    //   - workState (done OR working) → idle
+    // Clearing "working" on focus is the manual escape hatch for
+    // stuck spinners: agents like Claude Code stream continuously
+    // (thinking dots, elapsed counter), defeating every automatic
+    // demoter — focusing the tab is now the user's "I see it, kill
+    // the spinner" gesture. The next sender signal / submit will
+    // re-arm working if work is actually still happening.
     const list = s.tabs[wsId] || [];
+    const now = Date.now();
     const next = list.map(t => {
       if (t.id !== tabId) return t;
-      const patch: Partial<Tab> = {};
-      if (t.unread) (patch as any).unread = null;
-      if (t.type === "terminal" && t.workState === "done") (patch as any).workState = "idle";
-      return Object.keys(patch).length ? { ...t, ...patch } as Tab : t;
+      // Terminal tabs carry workState — clear via a typed TerminalTab
+      // patch. Edit/diff tabs only have `unread` to clear.
+      if (t.type === "terminal") {
+        const patch: Partial<TerminalTab> = {};
+        if (t.unread) patch.unread = null;
+        if (t.workState === "done" || t.workState === "working") {
+          patch.workState = "idle";
+          patch.workProgress = null;
+          patch.workProgressKind = null;
+          patch.workClearedAt = now;
+        }
+        return Object.keys(patch).length ? { ...t, ...patch } : t;
+      }
+      if (t.unread) {
+        const patch: Partial<typeof t> = { unread: null };
+        return { ...t, ...patch };
+      }
+      return t;
     });
     return {
       activeTab: { ...s.activeTab, [wsId]: tabId },
@@ -621,17 +652,35 @@ export const useApp = create<AppState>((set, get) => ({
     const list = s.tabs[wsId] || [];
     const cur = list.find(t => t.id === tabId);
     if (!cur || cur.type !== "terminal") return s;
-    // If the target state is "done" and this tab is currently focused
-    // (active workspace + active tab), skip the bullet entirely — the
-    // user is already looking, no need to flag attention. Collapse to
-    // "idle" so the spinner clears without showing the blue dot.
-    // "working" still fires on the focused tab — the spinner is the
-    // value, not the attention.
+    // Sticky `done`: once we've marked the agent as finished, an
+    // immediate "back to working" signal from the same turn is
+    // noise (Claude oscillates ✳ ↔ spinner for a few frames right
+    // after a response). The only paths out of "done" are:
+    //   - user input (term.onData clears it to "idle")
+    //   - tab/workspace focus (setActiveTabId clears it to "idle")
+    // i.e. the user explicitly acknowledges the bullet. Agent signals
+    // can't flip "done" → "working" by themselves.
+    if (cur.workState === "done" && state === "working") return s;
+    // Focused tab gating:
+    //   - "done" on the focused tab → drop to "idle" (no bullet when
+    //     the user is already looking).
+    //   - "working" on the focused tab → drop to "idle" ONLY within a
+    //     short grace window after a manual clear (setActiveTabId /
+    //     workspace activation). The grace stops a stuck spinner from
+    //     instantly re-arming after the user clicked to dismiss it.
+    //     OUTSIDE the grace window, working applies normally — so the
+    //     spinner + progress bar show right after a fresh submit.
     let effective = state;
-    if (effective === "done"
-        && s.activeWorkspaceId === wsId
-        && s.activeTab[wsId] === tabId) {
-      effective = "idle";
+    if (s.activeWorkspaceId === wsId && s.activeTab[wsId] === tabId) {
+      if (effective === "done") {
+        effective = "idle";
+      } else if (effective === "working") {
+        const clearedAt = cur.workClearedAt ?? 0;
+        const GRACE_MS = 5_000;
+        if (clearedAt > 0 && Date.now() - clearedAt < GRACE_MS) {
+          effective = "idle";
+        }
+      }
     }
     if ((cur.workState ?? "idle") === effective) return s;
     const next = list.map(t => {

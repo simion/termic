@@ -6,8 +6,8 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Loader2 } from "lucide-react";
-import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
+import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil } from "lucide-react";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
@@ -488,22 +488,18 @@ function iconSize(compact: boolean) {
 }
 
 // Tiny status badge reused on both the workspace header (aggregated, when
-// collapsed) and on each tab child row. iTerm2 parity:
-//   working   → spinner (animated, dim — agent is actively thinking)
+// collapsed) and on each tab child row.
 //   done      → solid blue bullet (work finished, untouched until input)
 //   attention → orange bell (agent explicitly blocked on user)
-function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
+// The "working" spinner is intentionally NOT rendered — too many false
+// positives in real-world TUIs (Claude Code's continuous redraws,
+// Codex's status counter). The internal workState=="working" is still
+// tracked so the done detector can fire on busy→idle transitions.
+function TabBadge({ reason }: { reason: "attention" | "done" }) {
   if (reason === "attention") {
     return (
       <span className="shrink-0 text-[var(--color-warn)]" title="Agent needs your input">
         <Bell className="h-3 w-3" strokeWidth={2.5} />
-      </span>
-    );
-  }
-  if (reason === "working") {
-    return (
-      <span className="shrink-0 text-[var(--color-fg-faint)]" title="Agent is working…">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
       </span>
     );
   }
@@ -544,32 +540,6 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
   const settledHighlight = usePrefs(s => s.settledHighlight);
 
-  // Archive icon reveals only after the cursor has been on the row
-  // for ≥ ARCHIVE_REVEAL_MS. Until then the work-state badge (bullet
-  // / spinner / bell) owns the trailing slot. Mirrors iTerm2's slow
-  // mouseEntered fade but with a discrete delay — the bullet stays
-  // readable while scanning the sidebar quickly. Cleared on mouseleave
-  // + on unmount so a pending reveal can't fire after the row is gone.
-  const ARCHIVE_REVEAL_MS = 2_000;
-  const [archiveRevealed, setArchiveRevealed] = useState(false);
-  const archiveTimerRef = useRef<number | null>(null);
-  const onRowEnter = () => {
-    if (archiveTimerRef.current) window.clearTimeout(archiveTimerRef.current);
-    archiveTimerRef.current = window.setTimeout(
-      () => setArchiveRevealed(true),
-      ARCHIVE_REVEAL_MS,
-    );
-  };
-  const onRowLeave = () => {
-    if (archiveTimerRef.current) {
-      window.clearTimeout(archiveTimerRef.current);
-      archiveTimerRef.current = null;
-    }
-    setArchiveRevealed(false);
-  };
-  useEffect(() => () => {
-    if (archiveTimerRef.current) window.clearTimeout(archiveTimerRef.current);
-  }, []);
 
   const isActive = activeWsId === w.id;
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
@@ -593,13 +563,10 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   }, [terminalTabCount, w.id, setWorkspaceCollapsed]);
 
   // Aggregated work status shown on the row header when collapsed.
-  // Priority: attention > done > working. Workspace shows the most
-  // urgent state across all its tabs.
+  // Priority: attention > done. ("working" intentionally not surfaced.)
   const hasAttention = settledHighlight && tabs.some(t => t.unread?.reason === "attention");
   const hasDone = settledHighlight && !hasAttention
     && tabs.some(t => t.type === "terminal" && t.workState === "done");
-  const hasWorking = settledHighlight && !hasAttention && !hasDone
-    && tabs.some(t => t.type === "terminal" && t.workState === "working");
 
   async function commitWsRename() {
     if (wsRenaming === null) return;
@@ -655,12 +622,6 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             if (isActive) setWorkspaceCollapsed(w.id, !collapsed);
           }
         }}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          if (wsRenaming === null) setWsRenaming(w.name);
-        }}
-        onMouseEnter={onRowEnter}
-        onMouseLeave={onRowLeave}
         className={cn(
           "group/wsrow ml-3 flex items-center gap-1 rounded-md px-1 py-1 text-[13px] cursor-pointer select-none transition-colors",
           isActive && collapsed
@@ -724,82 +685,120 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
           )}
         </div>
 
-        {/* Trailing status/archive slot. Status badge owns the slot
-            by default; archive icon takes over only after the cursor
-            has dwelled ≥ ARCHIVE_REVEAL_MS on this row (state:
-            `archiveRevealed`). Same fixed cell so the shield never
-            shifts position. Aggregate badge only renders when the
-            row is collapsed (expanded rows put per-tab badges on
-            their children). */}
+        {/* Trailing slot: status badge by default, single Settings
+            cog dropdown on hover. Replaces the prior archive + shield
+            pair — a single icon hosts Sandbox + Archive in a Radix
+            DropdownMenu. Instant hover swap (no 2s delay): the cog is
+            unobtrusive enough that revealing it immediately doesn't
+            crowd the row. The badge only renders when collapsed
+            (expanded rows put per-tab badges on their children). */}
         <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-          {collapsed && (hasAttention || hasDone || hasWorking) && (
-            <span
-              className={cn(
-                "absolute inset-0 flex items-center justify-center transition-opacity",
-                archiveRevealed && "opacity-0",
-              )}
-            >
-              {hasAttention ? <TabBadge reason="attention" />
-                : hasDone ? <TabBadge reason="done" />
-                : <TabBadge reason="working" />}
+          {collapsed && (hasAttention || hasDone) && (
+            <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0">
+              {hasAttention ? <TabBadge reason="attention" /> : <TabBadge reason="done" />}
             </span>
           )}
-        {/* Archive — sits inside the swap slot. Plain title avoids
-            Radix portal repaints that flicker in WKWebView. */}
-        <button
-          data-no-drag
-          title="Archive workspace"
-          onClick={async (e) => {
-            e.stopPropagation();
-            if (wsRenaming !== null) return;
-            const ok = await useUI.getState().askConfirm({
-              title: `Archive "${w.name}"?`,
-              message: w.is_repo_root
-                ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it any time. Any agent running here will be terminated."
-                : (w.composition?.length ?? 0) > 0
-                ? `Branches stay in git, so you can recreate the workspace later. This removes: the host worktree + every member worktree (${w.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts. Any running agent will be terminated.`
-                : "The branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory and terminates any running agent. Can't be undone from inside Termic.",
-              confirmLabel: "Archive",
-              destructive: true,
-              checkbox: w.is_repo_root ? undefined : (w.composition?.length ?? 0) > 0
-                ? { label: "Delete the git branches", defaultValue: false }
-                : { label: "Delete the git branch:", branchName: w.branch || undefined, defaultValue: false },
-            });
-            const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
-            const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
-            if (!confirmed) return;
-            const { setBusy } = useUI.getState();
-            setBusy(`Archiving "${w.name}"…`);
-            try {
-              await workspaceArchive(w.id, deleteBranch);
-              if (isActive) setActive(null);
-              await loadAll();
-            } catch (err) { console.error(err); }
-            finally { setBusy(null); }
-          }}
-          className={cn(
-            "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)]",
-            archiveRevealed ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
-            wsRenaming !== null && "pointer-events-none",
-          )}
-        >
-          <Archive className="h-3.5 w-3.5" />
-        </button>
+          <DropdownRoot>
+            <Tip content={w.sandbox_enabled ? "Sandboxed · workspace settings" : "Workspace settings"}>
+            <DropdownTrigger asChild>
+              <button
+                data-no-drag
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  "absolute inset-0 flex items-center justify-center rounded hover:bg-[var(--color-bg-3)]",
+                  // Sandboxed: button is always visible (the green shield).
+                  // Unsandboxed: button reveals on row hover only.
+                  w.sandbox_enabled
+                    ? "opacity-100 pointer-events-auto"
+                    : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
+                  wsRenaming !== null && "pointer-events-none",
+                )}
+              >
+                {/* Sandboxed idle state: green-fill shield. Hidden on
+                    row hover so the cog underneath shows through. */}
+                {w.sandbox_enabled && (
+                  <Shield
+                    className="absolute h-3.5 w-3.5 text-[var(--color-ok)] transition-opacity group-hover/wsrow:opacity-0"
+                    fill="currentColor"
+                  />
+                )}
+                {/* Cog: always visible on hover (sandboxed or not). */}
+                <Cog
+                  className={cn(
+                    "h-3.5 w-3.5 text-[var(--color-fg-faint)] transition-opacity",
+                    w.sandbox_enabled && "opacity-0 group-hover/wsrow:opacity-100",
+                  )}
+                />
+              </button>
+            </DropdownTrigger>
+            </Tip>
+            <DropdownMenu
+              align="end"
+              // Don't return focus to the trigger on close — the user
+              // walks away from the cog after picking an item; leaving
+              // the trigger highlighted with a focus ring is just noise.
+              onCloseAutoFocus={(e) => e.preventDefault()}
+            >
+              <DropdownItem
+                // items-center + no top-nudge: these rows are single-line
+                // so the default two-line layout offsets the icon visually.
+                className="items-center [&>svg]:mt-0"
+                onSelect={() => useUI.getState().openSandbox(w.id)}
+              >
+                <Shield
+                  className={cn(
+                    "h-4 w-4",
+                    w.sandbox_enabled && "text-[var(--color-ok)]",
+                  )}
+                  fill={w.sandbox_enabled ? "currentColor" : "none"}
+                />
+                <span>{w.sandbox_enabled ? "Sandbox enabled" : "Enable sandbox"}</span>
+              </DropdownItem>
+              <DropdownSeparator />
+              <DropdownItem
+                className="items-center [&>svg]:mt-0"
+                onSelect={() => setWsRenaming(w.name)}
+              >
+                <Pencil className="h-4 w-4" />
+                <span>Rename</span>
+              </DropdownItem>
+              <DropdownSeparator />
+              <DropdownItem
+                className="items-center [&>svg]:mt-0"
+                onSelect={async () => {
+                  if (wsRenaming !== null) return;
+                  const ok = await useUI.getState().askConfirm({
+                    title: `Archive "${w.name}"?`,
+                    message: w.is_repo_root
+                      ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it any time. Any agent running here will be terminated."
+                      : (w.composition?.length ?? 0) > 0
+                      ? `Branches stay in git, so you can recreate the workspace later. This removes: the host worktree + every member worktree (${w.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts. Any running agent will be terminated.`
+                      : "The branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory and terminates any running agent. Can't be undone from inside Termic.",
+                    confirmLabel: "Archive",
+                    destructive: true,
+                    checkbox: w.is_repo_root ? undefined : (w.composition?.length ?? 0) > 0
+                      ? { label: "Delete the git branches", defaultValue: false }
+                      : { label: "Delete the git branch:", branchName: w.branch || undefined, defaultValue: false },
+                  });
+                  const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
+                  const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
+                  if (!confirmed) return;
+                  const { setBusy } = useUI.getState();
+                  setBusy(`Archiving "${w.name}"…`);
+                  try {
+                    await workspaceArchive(w.id, deleteBranch);
+                    if (isActive) setActive(null);
+                    await loadAll();
+                  } catch (err) { console.error(err); }
+                  finally { setBusy(null); }
+                }}
+              >
+                <Archive className="h-4 w-4" />
+                <span>Archive workspace</span>
+              </DropdownItem>
+            </DropdownMenu>
+          </DropdownRoot>
         </span>
-
-        {/* Shield — always rightmost so its position is stable regardless of archive visibility */}
-        <Tip content={w.sandbox_enabled ? "Sandbox settings" : "Enable sandbox"} side="bottom">
-          <button
-            data-no-drag
-            onClick={(e) => { e.stopPropagation(); useUI.getState().openSandbox(w.id); }}
-            className={cn(
-              "shrink-0 rounded p-0.5 hover:bg-[var(--color-bg-3)] transition-colors",
-              w.sandbox_enabled ? "text-[var(--color-ok)]" : "text-[var(--color-fg-faint)]",
-            )}
-          >
-            <Shield className="h-3.5 w-3.5" fill={w.sandbox_enabled ? "currentColor" : "none"} />
-          </button>
-        </Tip>
       </div>
 
       {/* Tab children — terminal tabs only; edit/diff are transient file views */}
@@ -808,7 +807,6 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         const title = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const showBell    = settledHighlight && tab.unread?.reason === "attention";
         const showDone    = settledHighlight && !showBell && tab.workState === "done";
-        const showWorking = settledHighlight && !showBell && !showDone && tab.workState === "working";
         const isTabRenaming = tabRenaming?.id === tab.id;
 
         return (
@@ -847,7 +845,12 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 onClick={e => e.stopPropagation()}
                 onDoubleClick={e => e.stopPropagation()}
                 autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-                className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-[3px] text-[12.5px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
+                // No `py-*`: the parent row already has py-[3px]; doubling
+                // pads the input up to a taller row than the static span
+                // (the row jumped a few px when entering rename mode).
+                // `leading-tight` keeps the text vertically centred against
+                // the surrounding non-renaming rows.
+                className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-0 leading-tight text-[12.5px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
               />
             ) : (
               <span className="min-w-0 flex-1 truncate">{title}</span>
@@ -856,11 +859,9 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 default, close × on hover. Same fixed width either way
                 so the row never jiggles. */}
             <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-              {(showBell || showDone || showWorking) && (
+              {(showBell || showDone) && (
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/tab:opacity-0">
-                  {showBell ? <TabBadge reason="attention" />
-                    : showDone ? <TabBadge reason="done" />
-                    : <TabBadge reason="working" />}
+                  {showBell ? <TabBadge reason="attention" /> : <TabBadge reason="done" />}
                 </span>
               )}
               <button

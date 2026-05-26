@@ -7,6 +7,7 @@ import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { AlertTriangle } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export function ConfirmDialog() {
   const confirm = useUI(s => s.confirm);
@@ -62,12 +63,20 @@ export function ConfirmDialog() {
       open
       onOpenChange={(v) => { if (!v) resolve(false, checked); }}
       title={req.title}
-      className="max-w-xl"
-      // If another dialog is already open (Sandbox dialog, Archive flow, etc.)
-      // it already painted the dim backdrop. A second 65% black on top double-dims
-      // the screen + the independent fade-in animations compose into visible flicker.
-      // Transparent overlay = clean stack. Otherwise, we show the standard overlay.
-      overlayClassName={isAnotherDialogOpen ? "bg-transparent" : undefined}
+      // Stacked confirms (popping on top of an open dialog) ALSO get a
+      // warm warning ring + soft outer glow so they don't blend into
+      // the parent dialog's chrome. The user kept missing the
+      // "Save sandbox changes" prompt because the prior transparent
+      // overlay rendered it as just another card on the page.
+      className={cn(
+        "max-w-xl",
+        isAnotherDialogOpen && "ring-2 ring-[var(--color-warn)]/70 shadow-[0_0_0_8px_rgba(245,197,66,0.12),0_25px_50px_-12px_rgba(0,0,0,0.75)]",
+      )}
+      // When stacked, the parent dialog already painted the 65% black
+      // backdrop — a second one would double-dim. Use a faint warning
+      // wash instead so the layering reads as "this is a different,
+      // more urgent prompt" rather than "another card in the same flow."
+      overlayClassName={isAnotherDialogOpen ? "bg-[var(--color-warn)]/12" : undefined}
     >
       <div className="flex flex-col gap-3.5 pt-1">
         <div className="flex items-start gap-3">
