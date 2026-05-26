@@ -1,6 +1,24 @@
 {
   "versions": [
     {
+      "version": "0.7.0",
+      "date": "2026-05-26",
+      "summary": "Sender-driven work-done indicator, Grok support, worktree polish.",
+      "notes": [
+        "Work-done indicator: per-CLI title + OSC 9;4 classifier (Claude / Gemini / Codex) with byte-quiet, scrollback, and content-hash gates so a static '✦ Working' title doesn't false-fire done. Blue bullet on the tab when a turn finishes, sticky until you focus the tab or type.",
+        "OS notifications wired through Claude's OSC 9 / OSC 777, with focus-edge routing that drops you on the right workspace and tab when you click in.",
+        "Tab pills now show the raw agent title (spinner glyphs and ✳ / ◇ included) so the brand-emitted status surfaces as real signal instead of getting stripped.",
+        "New agent: xAI Grok auto-detected. --always-approve as YOLO, --continue as resume, sandbox paths under ~/.grok.",
+        "Welcome wizard CLI rows recolored: installed agents are green, missing ones neutral gray. The old red 'not installed' read as a wall of failures when most users have one or two CLIs.",
+        "Sandbox shield button moves to the UnifiedBar next to Review. Sidebar rows for sandboxed workspaces show an always-on green shield that swaps to the cog on hover.",
+        "Workspace cog menu: new 'Copy branch name' and 'Duplicate worktree' entries. Duplicate seeds the new-workspace dialog with the source workspace's branch tip as the base.",
+        "Worktrees create branches via two-step 'git branch --no-track' + 'git worktree add', so deleting a workspace's branch no longer prompts to drop the remote ref it was branched off.",
+        "git-crypt repos now work in worktrees: --no-checkout, symlink the key dir into the per-worktree gitdir, then hard reset so the smudge filter can decrypt.",
+        "Project Settings → Default CLI always includes Terminal (plain shell) as a fallback, picked automatically when no agents are installed.",
+        "Save-sandbox-changes confirm now has a warning-tinted backdrop and yellow ring so it visually separates from the parent dialog you're saving from."
+      ]
+    },
+    {
       "version": "0.6.0",
       "date": "2026-05-25",
       "summary": "File finder, find in files, and richer sidebar navigation.",
