@@ -1,6 +1,18 @@
 {
   "versions": [
     {
+      "version": "0.7.2",
+      "date": "2026-05-27",
+      "summary": "Sidebar expand modes, no autocorrect in editor search, Run toolbar refresh.",
+      "notes": [
+        "Sidebar: pick how workspaces reveal their agents (chevron only, click name, or auto open) from a new menu in the PROJECTS header. The same menu has Expand all / Collapse all and remembers your default.",
+        "Auto open mode resets a manual chevron-collapse on wake, so a sleeping agent always comes back expanded.",
+        "Run footer: persistent Setup tab is gone. The toolbar now has Setup / Run / Open plus a one-click Copy URL; Setup output appears in a transient tab only after you invoke it. Setup button hides entirely on projects with no setup script configured.",
+        "⌥⌘↑ / ⌥⌘↓ and ⌘[ / ⌘] now cycle workspaces in sidebar order (grouped by project), not the random JSON load order.",
+        "Editor: Find / Replace inputs no longer get spellcheck or autocorrect squiggles."
+      ]
+    },
+    {
       "version": "0.7.1",
       "date": "2026-05-26",
       "summary": "Signed Linux AppImage with in-app self-update.",
