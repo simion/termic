@@ -25,6 +25,11 @@ interface UIState {
   // dialog visibility
   newProjectOpen: boolean;
   newWorkspaceProjectId: string | null;  // null = closed
+  /** Optional seed for the New worktree dialog — when set, the dialog
+   *  pre-fills the branch-from field with this value. Used by the
+   *  "Duplicate workspace" flow to branch a new worktree off an
+   *  existing one's tip. Cleared when the dialog closes. */
+  newWorkspaceSeed: { baseBranch?: string; namePrefix?: string } | null;
   welcomeOpen: boolean;
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
@@ -64,7 +69,7 @@ interface UIState {
   // actions
   openNewProject: () => void;
   closeNewProject: () => void;
-  openNewWorkspace: (projectId: string) => void;
+  openNewWorkspace: (projectId: string, seed?: { baseBranch?: string; namePrefix?: string }) => void;
   closeNewWorkspace: () => void;
   openWelcome: () => void;
   closeWelcome: () => void;
@@ -128,6 +133,7 @@ export interface Toast {
 export const useUI = create<UIState>(set => ({
   newProjectOpen: false,
   newWorkspaceProjectId: null,
+  newWorkspaceSeed: null,
   welcomeOpen: false,
   changelogOpen: false,
   reviewForWsId: null,
@@ -143,8 +149,8 @@ export const useUI = create<UIState>(set => ({
 
   openNewProject:    () => set({ newProjectOpen: true }),
   closeNewProject:   () => set({ newProjectOpen: false }),
-  openNewWorkspace:  (projectId) => set({ newWorkspaceProjectId: projectId }),
-  closeNewWorkspace: () => set({ newWorkspaceProjectId: null }),
+  openNewWorkspace:  (projectId, seed) => set({ newWorkspaceProjectId: projectId, newWorkspaceSeed: seed ?? null }),
+  closeNewWorkspace: () => set({ newWorkspaceProjectId: null, newWorkspaceSeed: null }),
   openWelcome:       () => set({ welcomeOpen: true }),
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),

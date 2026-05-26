@@ -102,23 +102,28 @@ export function NewWorkspaceDialog() {
   useEffect(() => {
     if (!projectId) return;
     const p = useApp.getState().projects.find(x => x.id === projectId);
-    setName(""); setBranch(""); setBranchEdited(false); setErr(null);
-    setBase(p?.base_branch || "");
-    // Pick a CLI that's actually present: project default if installed,
-    // else first installed agent, else fall back to "shell" so a user
-    // with NO agents installed lands on a workspace that will spawn
-    // cleanly. Previous logic kept the project default even when it
-    // wasn't installed → workspace spawned a bad command at create.
+    // Seed (from openNewWorkspace's optional 2nd arg): used by the
+    // "Duplicate workspace" flow to pre-fill `base` with the source
+    // workspace's branch tip + optionally seed a name prefix.
+    const seed = useUI.getState().newWorkspaceSeed;
+    setName(seed?.namePrefix ?? "");
+    setBranch(""); setBranchEdited(false); setErr(null);
+    setBase(seed?.baseBranch ?? p?.base_branch ?? "");
+    // Pick a CLI that's actually present and respects the project's
+    // saved default whenever usable. Order:
+    //   1. project default — IF it's "shell" (always usable), or
+    //      installed, or detection hasn't run yet (trust the saved
+    //      pick before we know better).
+    //   2. first installed agent (when project default is known-broken).
+    //   3. "shell" as the no-agent fallback.
     const detected = useApp.getState().detectedClis;
     const list = useApp.getState().agents;
     const detectionRan = Object.keys(detected).length > 0;
     const isInstalled = (id: string) => detected[id]?.found === true;
+    const isUsable = (id: string) =>
+      id === "shell" || !detectionRan || isInstalled(id);
     const projectDefault = p?.default_cli || "";
-    if (!detectionRan) {
-      // Detection hasn't returned yet — trust the project default
-      // (cli="shell" itself is a valid value too).
-      setCli(projectDefault || "shell");
-    } else if (projectDefault && isInstalled(projectDefault)) {
+    if (projectDefault && isUsable(projectDefault)) {
       setCli(projectDefault);
     } else {
       const firstInstalled = list.find(a => !a.disabled && isInstalled(a.id))?.id;
@@ -323,7 +328,7 @@ export function NewWorkspaceDialog() {
       //   - multi-repo     → 3xl (per-member row = name + Worktree/Repo
       //                      toggle + branch input — max-w-md overflows)
       //   - plain worktree → md (anything wider looks empty)
-      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : "max-w-md"}
+      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : "max-w-lg"}
     >
       {/* Phase-aware body: form on start, then progress view while creating
           + running setup. Form stays unmounted in non-form phases so its
@@ -355,11 +360,12 @@ export function NewWorkspaceDialog() {
           <Input value={name} onChange={e => setName(e.target.value)} placeholder="fix login bug" autoFocus required />
         </Field>
 
-        <Field label="CLI">
+        <Field label="Default CLI" hint="Auto-launches on first open. You can spawn other agents anytime via the workspace's + button.">
           {/* Pulled from the editable agent registry (Settings → Agent
               CLIs), not hard-coded — custom agents show up here. Disabled
-              and not-installed agents are filtered out (see cliChoices). */}
-          <div className="inline-flex flex-wrap items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+              and not-installed agents are filtered out (see cliChoices).
+              "Terminal" (cli="shell") is appended as a no-agent fallback. */}
+          <div className="inline-flex flex-wrap items-stretch gap-y-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
             {cliChoices.map(a => (
               <button
                 key={a.id} type="button" onClick={() => setCli(a.id)}
@@ -371,7 +377,12 @@ export function NewWorkspaceDialog() {
                 )}
                 style={cli === a.id ? undefined : (a.color ? { color: a.color } : undefined)}
               >
-                <CliIcon cli={a.id} className="h-3.5 w-3.5" />{a.display_name}
+                {/* Local label override: shorten Antigravity → Agy
+                    so the segmented control fits more comfortably on
+                    one row. The global display_name stays untouched
+                    (used elsewhere in the app). */}
+                <CliIcon cli={a.id} className="h-3.5 w-3.5" />
+                {a.id === "agy" ? "Agy" : a.display_name}
               </button>
             ))}
           </div>
@@ -400,7 +411,7 @@ export function NewWorkspaceDialog() {
           label="Branch name"
           hint={prefix === "__custom__"
             ? "Type the full branch name."
-            : "Auto-generated from the name + prefix. Pick “custom” to edit it."}
+            : "Auto-generated. Pick “custom” to edit."}
         >
           <Input
             value={branch}

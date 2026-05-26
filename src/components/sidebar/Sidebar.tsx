@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil } from "lucide-react";
+import { LayoutGrid, History, RefreshCw, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -754,7 +754,6 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 />
                 <span>{w.sandbox_enabled ? "Sandbox enabled" : "Enable sandbox"}</span>
               </DropdownItem>
-              <DropdownSeparator />
               <DropdownItem
                 className="items-center [&>svg]:mt-0"
                 onSelect={() => setWsRenaming(w.name)}
@@ -762,6 +761,34 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 <Pencil className="h-4 w-4" />
                 <span>Rename</span>
               </DropdownItem>
+              {w.branch && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  onSelect={() => {
+                    navigator.clipboard.writeText(w.branch).then(
+                      () => useUI.getState().pushToast(`Copied "${w.branch}"`, "success"),
+                      () => useUI.getState().pushToast("Couldn't copy branch name", "error"),
+                    );
+                  }}
+                >
+                  <Copy className="h-4 w-4" />
+                  <span>Copy branch name</span>
+                </DropdownItem>
+              )}
+              {/* Duplicate: only for worktree workspaces (the repo-root
+                  entry IS the project's checkout, can't be branched
+                  off cleanly). Pre-fills the New worktree dialog with
+                  the source branch as the `base` so the new worktree
+                  branches off this one's current tip. */}
+              {!w.is_repo_root && w.branch && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  onSelect={() => useUI.getState().openNewWorkspace(w.project_id, { baseBranch: w.branch })}
+                >
+                  <GitBranchPlus className="h-4 w-4" />
+                  <span>Duplicate worktree</span>
+                </DropdownItem>
+              )}
               <DropdownSeparator />
               <DropdownItem
                 className="items-center [&>svg]:mt-0"
