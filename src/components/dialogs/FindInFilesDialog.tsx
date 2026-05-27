@@ -7,7 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import {
@@ -19,7 +19,12 @@ import { cn } from "@/lib/utils";
 
 const MAX_FILES = 50;
 const MAX_HITS_PER_FILE = 12;
-const DEBOUNCE_MS = 250;
+// 350ms crosses the median inter-key gap of slow typing on large repos —
+// firing grep mid-word means spinning up `git grep` over the whole worktree
+// just to SIGKILL it on the next keystroke. Tuned together with MIN_QUERY:
+// a 1-2 char literal on a giant repo always truncates at the cap anyway.
+const DEBOUNCE_MS = 350;
+const MIN_QUERY = 3;
 // Progressive reveal: render this many rows up-front, then reveal another
 // chunk when the user scrolls near the bottom. Keeps the DOM small during
 // the hot path (typing) without committing to full virtualization.
@@ -98,13 +103,23 @@ export function FindInFilesDialog() {
   useEffect(() => {
     if (!wsId) return;
     const trimmed = query.trim();
-    if (!trimmed) {
+    if (trimmed.length < MIN_QUERY) {
+      // Short queries (1-2 chars) on a giant repo always blow past the
+      // 500-hit cap and are useless to scroll. Show a prompt instead of
+      // firing grep. Also clears stale groups when the user backspaces
+      // below the threshold.
       activeSearchIdRef.current = "";
       setGroups([]);
       setTruncated(false);
       setSearching(false);
       return;
     }
+
+    // Cleanup handle shared across the debounce setTimeout and the
+    // useEffect cleanup. If the effect tears down BEFORE the timer fires
+    // we just clear the timer; once the timer fires this gets reassigned
+    // to the per-search teardown so we can release Tauri listeners too.
+    let cleanupCurrent: (() => void) | null = null;
 
     const t = window.setTimeout(() => {
       const searchId = crypto.randomUUID();
@@ -133,14 +148,26 @@ export function FindInFilesDialog() {
 
       let unResult: (() => void) | null = null;
       let unDone: (() => void) | null = null;
+      // Always tear listeners down on any terminal event — superseded or
+      // not. Previously the `searchId !== current` guard returned early
+      // BEFORE the unlisten calls, leaking two Tauri listeners per
+      // keystroke. Helper centralizes the cleanup so neither branch
+      // forgets it.
+      const teardown = () => {
+        if (pendingFlush != null) { clearTimeout(pendingFlush); pendingFlush = null; }
+        unResult?.(); unResult = null;
+        unDone?.(); unDone = null;
+      };
 
-      onGrepResult(searchId, hit => {
+      onGrepResult(searchId, hits => {
         if (activeSearchIdRef.current !== searchId) return;
-        const arr = acc.get(hit.path);
-        if (arr) {
-          if (arr.length < MAX_HITS_PER_FILE) arr.push(hit);
-        } else if (acc.size < MAX_FILES) {
-          acc.set(hit.path, [hit]);
+        for (const hit of hits) {
+          const arr = acc.get(hit.path);
+          if (arr) {
+            if (arr.length < MAX_HITS_PER_FILE) arr.push(hit);
+          } else if (acc.size < MAX_FILES) {
+            acc.set(hit.path, [hit]);
+          }
         }
         if (pendingFlush == null) pendingFlush = window.setTimeout(flush, 40);
       }).then(u => {
@@ -151,25 +178,45 @@ export function FindInFilesDialog() {
       });
 
       onGrepDone(searchId, d => {
-        if (activeSearchIdRef.current !== searchId) return;
-        if (pendingFlush != null) { clearTimeout(pendingFlush); flush(); }
-        // Zero-result searches never call flush(), so the stale groups
-        // from the previous query would otherwise linger. Clear here.
-        if (acc.size === 0) setGroups([]);
-        setTruncated(d.truncated);
-        setSearching(false);
-        unResult?.(); unResult = null;
-        unDone?.(); unDone = null;
+        const isCurrent = activeSearchIdRef.current === searchId;
+        if (isCurrent) {
+          if (pendingFlush != null) { clearTimeout(pendingFlush); flush(); }
+          // Zero-result searches never call flush(), so the stale groups
+          // from the previous query would otherwise linger. Clear here.
+          if (acc.size === 0) setGroups([]);
+          setTruncated(d.truncated);
+          setSearching(false);
+        }
+        teardown();
       }).then(u => {
         if (activeSearchIdRef.current !== searchId) u();
         else unDone = u;
       });
 
       workspaceGrepStart(wsId, trimmed, searchId).catch(() => setSearching(false));
+
+      // Hand teardown to the useEffect cleanup. A fresh keystroke / dialog
+      // close supersedes this search: invalidate the ref to short-circuit
+      // late events and release listener handles even if Rust never emits
+      // done (SIGKILLed thread can exit mid-flush).
+      cleanupCurrent = () => {
+        if (activeSearchIdRef.current === searchId) activeSearchIdRef.current = "";
+        teardown();
+      };
     }, DEBOUNCE_MS);
 
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      cleanupCurrent?.();
+    };
   }, [wsId, query]);
+
+  function cancelSearch() {
+    if (!wsId) return;
+    activeSearchIdRef.current = "";
+    setSearching(false);
+    workspaceGrepCancel(wsId).catch(() => {});
+  }
 
   // Flatten groups into a single list of selectable rows (file headers +
   // hit rows) so ↑/↓ traverses everything in visual order.
@@ -262,6 +309,17 @@ export function FindInFilesDialog() {
                 {searching ? "searching…" : `${totalHits} match${totalHits === 1 ? "" : "es"} in ${groups.length} file${groups.length === 1 ? "" : "s"}${truncated ? " (truncated)" : ""}`}
               </span>
             )}
+            {searching && (
+              <button
+                type="button"
+                onClick={cancelSearch}
+                title="Cancel search (Esc)"
+                data-no-drag
+                className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
           <div
             ref={listRef}
@@ -278,7 +336,12 @@ export function FindInFilesDialog() {
                 Searching <span className="font-semibold text-[var(--color-fg)]">{projectName ?? "this workspace"}</span> via <code className="text-[12px]">git grep</code>. Respects <code className="text-[12px]">.gitignore</code>.
               </div>
             )}
-            {query && !searching && groups.length === 0 && (
+            {query && query.trim().length > 0 && query.trim().length < MIN_QUERY && (
+              <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">
+                Type at least {MIN_QUERY} characters to search.
+              </div>
+            )}
+            {query && query.trim().length >= MIN_QUERY && !searching && groups.length === 0 && (
               <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">No matches</div>
             )}
             {rows.slice(0, renderLimit).map((r, i) => {

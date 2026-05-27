@@ -56,8 +56,11 @@ export const workspaceGrepStart = (id: string, query: string, searchId: string) 
 export const workspaceGrepCancel = (id: string) =>
   invoke<void>("workspace_grep_cancel", { id });
 
-export function onGrepResult(searchId: string, cb: (h: GrepHit) => void): Promise<UnlistenFn> {
-  return listen<GrepHit>(`grep-result://${searchId}`, ev => cb(ev.payload));
+/** Rust batches hits (~30ms / 50-hit windows) before emitting to keep
+ *  the WKWebView main thread from saturating on hot searches. Payload
+ *  is `{ hits: GrepHit[] }`; the callback receives each batch as an array. */
+export function onGrepResult(searchId: string, cb: (hits: GrepHit[]) => void): Promise<UnlistenFn> {
+  return listen<{ hits: GrepHit[] }>(`grep-result://${searchId}`, ev => cb(ev.payload.hits));
 }
 export function onGrepDone(searchId: string, cb: (d: { truncated: boolean }) => void): Promise<UnlistenFn> {
   return listen<{ truncated: boolean }>(`grep-done://${searchId}`, ev => cb(ev.payload));

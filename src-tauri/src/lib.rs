@@ -3200,6 +3200,12 @@ fn run_script_streaming(
             .env("TERMIC_PORT", port.to_string())
             .env("TERMIC_WORKSPACE_NAME", &name)
             .env("TERMIC_TASK", &name)
+            // Match workspace_run_script_stream: hint line-buffered output
+            // for the languages that honor env-var unbuffering. Native
+            // binaries that block-buffer on pipe regardless will still
+            // chunk; only a PTY would fix that universally.
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "UTF-8")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
@@ -3377,6 +3383,15 @@ fn workspace_run_script_stream(
             // until users migrate their preview_url / scripts.
             .env("CONDUCTOR_PORT", port.to_string())
             .env("CONDUCTOR_WORKSPACE_NAME", &name)
+            // Encourage line-buffered output. When stdout is a pipe (which
+            // it is here), libc flips most programs to fully-buffered mode
+            // so lines stall in the child until a 4-64KB block fills. The
+            // only universal fix is to allocate a PTY; these env vars catch
+            // the most common offender (Python) without that complexity.
+            // Native binaries that ignore these will still block-buffer; in
+            // that case the user's script must opt in (e.g. `stdbuf -oL`).
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "UTF-8")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
@@ -3526,7 +3541,22 @@ fn workspace_grep_start(
         // overwhelming the renderer or the IPC channel. Past this we kill
         // the child and tell the UI to show a "truncated" notice.
         const RESULT_CAP: usize = 500;
+        // Batch hits before emitting to avoid flooding the WKWebView main
+        // thread with one event per match. On a hot search (common word in
+        // a big repo) the per-event path can saturate the JS event loop and
+        // make Cancel/Esc unresponsive. Flush whenever the batch fills OR
+        // ~30ms has passed since the first un-flushed hit.
+        const BATCH_MAX: usize = 50;
+        const BATCH_MS: u128 = 30;
         let mut truncated = false;
+        let mut batch: Vec<serde_json::Value> = Vec::with_capacity(BATCH_MAX);
+        let mut batch_started = std::time::Instant::now();
+        let flush_batch = |app: &tauri::AppHandle, topic: &str, batch: &mut Vec<serde_json::Value>| {
+            if batch.is_empty() { return; }
+            let payload = serde_json::json!({ "hits": batch.clone() });
+            let _ = app.emit(topic, payload);
+            batch.clear();
+        };
 
         if let Some(stdout) = child.stdout.take() {
             let mut count = 0usize;
@@ -3542,19 +3572,26 @@ fn workspace_grep_start(
                 let col: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
                 let preview = it.next().unwrap_or("").to_string();
                 if path.is_empty() || line_no == 0 { continue; }
-                let _ = app_o.emit(&emit_out, serde_json::json!({
+                if batch.is_empty() { batch_started = std::time::Instant::now(); }
+                batch.push(serde_json::json!({
                     "path": path,
                     "line": line_no,
                     "col": col,
                     "preview": preview,
                 }));
                 count += 1;
+                if batch.len() >= BATCH_MAX
+                    || batch_started.elapsed().as_millis() >= BATCH_MS
+                {
+                    flush_batch(&app_o, &emit_out, &mut batch);
+                }
                 if count >= RESULT_CAP {
                     truncated = true;
                     unsafe { libc::kill(-pid, libc::SIGKILL); }
                     break;
                 }
             }
+            flush_batch(&app_o, &emit_out, &mut batch);
         }
         let _ = child.wait();
         // Only clear our slot if we're still the active grep for this ws —

@@ -155,7 +155,10 @@ export function RightPanel() {
   const startScript = (kind: "setup" | "run") => {
     useScriptRuns.getState().start(ws.id, kind, footTarget);
     setFootCollapsed(false);
-    if (kind === "setup") setFootTab("setup");
+    // Snap the footer view to whichever stream we just started — otherwise
+    // hitting Run while still on the Setup tab leaves the user staring at
+    // an empty Setup log while output streams into the hidden Run tab.
+    setFootTab(kind);
     workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
       console.error("workspace_run_script_stream failed:", err));
   };
