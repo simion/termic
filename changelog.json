@@ -1,6 +1,18 @@
 {
   "versions": [
     {
+      "version": "0.7.3",
+      "date": "2026-05-27",
+      "summary": "Find in files is responsive on huge repos; Run focuses its own tab.",
+      "notes": [
+        "Find in files: results from git grep are batched in Rust before they cross IPC, so a hot search on a giant repo no longer floods the WebView main thread and freezes Cancel / Esc.",
+        "Find in files: visible Cancel (X) button while a search is running, and stale Tauri listeners from superseded searches are now released.",
+        "Find in files: 350ms debounce and a 3-character minimum so slow typing on a big repo does not fire git grep mid-word.",
+        "Run footer: clicking Run focuses the Run tab even when Setup was active (was asymmetric).",
+        "Setup / Run scripts: PYTHONUNBUFFERED so Python output streams line by line instead of pausing in 4-64 KB blocks. Native binaries that block-buffer on pipe still need stdbuf -oL in the script."
+      ]
+    },
+    {
       "version": "0.7.2",
       "date": "2026-05-27",
       "summary": "Sidebar expand modes, no autocorrect in editor search, Run toolbar refresh.",
