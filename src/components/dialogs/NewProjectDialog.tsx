@@ -300,6 +300,20 @@ export function NewProjectDialog() {
                 <AvailableMembersPicker
                   candidates={memberCandidates.filter(c => !memberRows.some(r => r.project_id === c.id))}
                   onAdd={(id) => toggleMember(id)}
+                  onQuickAdd={async (path) => {
+                    try {
+                      const p = await projectAdd(path);
+                      await useApp.getState().loadAll();
+                      toggleMember(p.id);
+                    } catch (e) {
+                      const msg = String(e);
+                      if (!/already added/i.test(msg)) { setErr(msg); return; }
+                      await useApp.getState().loadAll();
+                      const all = useApp.getState().projects;
+                      const found = all.find(p => p.root_path === path || p.root_path.endsWith(path));
+                      if (found) toggleMember(found.id);
+                    }
+                  }}
                 />
               </>
             )}
@@ -425,14 +439,20 @@ function ScriptInput({ label, value, onChange, placeholder }: {
 /** Collapsible "+ Add member" picker — same pattern as the
  *  RepositorySection editor. Default = single dashed button;
  *  click → list of available candidates; clicking a row adds + stays
- *  open if more remain, otherwise collapses. */
-function AvailableMembersPicker({ candidates, onAdd }: {
+ *  open if more remain, otherwise collapses. `onQuickAdd` (optional)
+ *  wires a "Add repo from disk" row that registers a new standalone
+ *  project + adds it as a member in one click. */
+function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
   candidates: Project[];
   onAdd: (id: string) => void;
+  onQuickAdd?: (path: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  useEffect(() => { if (candidates.length === 0) setOpen(false); }, [candidates.length]);
-  if (candidates.length === 0 && !open) {
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (candidates.length === 0 && !onQuickAdd) setOpen(false);
+  }, [candidates.length, onQuickAdd]);
+  if (candidates.length === 0 && !onQuickAdd && !open) {
     return (
       <div className="mt-3 text-[11.5px] text-[var(--color-fg-faint)]">
         Every other repository is already a member.
@@ -450,6 +470,13 @@ function AvailableMembersPicker({ candidates, onAdd }: {
       </button>
     );
   }
+  const pickFolder = async () => {
+    if (!onQuickAdd || busy) return;
+    const sel = await openDialog({ directory: true, multiple: false });
+    if (!sel || typeof sel !== "string") return;
+    setBusy(true);
+    try { await onQuickAdd(sel); } finally { setBusy(false); }
+  };
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border-soft)]">
       <div className="flex items-center justify-between px-3 py-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
@@ -462,6 +489,11 @@ function AvailableMembersPicker({ candidates, onAdd }: {
         >
           <X className="h-3 w-3" />
         </button>
+      </div>
+      <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
+        Members come from your existing projects. Pick one below, or use “Add
+        repo from disk” to register a new project and wire it in here in one
+        step. Each member carries its own scripts and sandbox allow-lists.
       </div>
       {candidates.map(c => (
         <button
@@ -477,6 +509,19 @@ function AvailableMembersPicker({ candidates, onAdd }: {
           <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Add</span>
         </button>
       ))}
+      {onQuickAdd && (
+        <button
+          type="button"
+          onClick={pickFolder}
+          disabled={busy}
+          className="flex w-full items-center gap-3 border-t border-[var(--color-border-soft)] px-3 py-2 text-left text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-60"
+        >
+          <span className="text-[13.5px]">{busy ? "Adding…" : "+ Add repo from disk…"}</span>
+          <span className="ml-auto truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">
+            registers a new project + adds it as a member
+          </span>
+        </button>
+      )}
     </div>
   );
 }

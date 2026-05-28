@@ -19,6 +19,27 @@ import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, op
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Workspace, TerminalTab } from "@/lib/types";
 
+/** Pick a default name for a freshly-created repo-root workspace.
+ *  Format: "<agent>-N" where N is the next unused index for that CLI
+ *  among the project's existing repo-root rows. "shell" → "terminal".
+ *  The user can edit before pressing Enter. */
+function defaultRepoRootName(cli: string, wsList: Workspace[]): string {
+  const slug = cli === "shell" ? "terminal" : cli.toLowerCase();
+  const prefix = `${slug}-`;
+  const used = new Set<number>();
+  for (const w of wsList) {
+    if (!w.is_repo_root) continue;
+    if (w.name === slug) { used.add(1); continue; }
+    if (!w.name.startsWith(prefix)) continue;
+    const tail = w.name.slice(prefix.length);
+    const n = Number(tail);
+    if (Number.isInteger(n) && n > 0) used.add(n);
+  }
+  let n = 1;
+  while (used.has(n)) n += 1;
+  return `${slug}-${n}`;
+}
+
 export function Sidebar() {
   const compact = useApp(s => s.compactSidebar);
   const openSettings = useApp(s => s.openSettings);
@@ -88,6 +109,13 @@ export function Sidebar() {
   // visually "hovered" (bg + Cog visible) while the menu is open;
   // otherwise the menu trigger looks like it un-selected its parent.
   const [menuOpenProjectId, setMenuOpenProjectId] = useState<string | null>(null);
+  // Inline name-prompt state for repo-root workspace creation. When the
+  // user picks an agent from the project's `+` menu, we stash the choice
+  // here and render a focused input row under the project — Enter creates
+  // the workspace with the typed name, Esc cancels. This is the
+  // low-friction alternative to a modal dialog.
+  const [pendingRepoRoot, setPendingRepoRoot] =
+    useState<{ projectId: string; cli: string; value: string } | null>(null);
   // Drag-to-reorder PROJECTS. Pointer-event based (WKWebView's HTML5
   // DnD is unreliable in Tauri). The row physically moves during the
   // drag — we mutate the live `projects` order in the app store on
@@ -403,7 +431,14 @@ export function Sidebar() {
                               </DropdownTrigger>
                             </Tip>
                             <DropdownMenu align="end" sideOffset={4} className="max-w-[220px]">
-                              <ProjectActionsMenuItems projectId={p.id} />
+                              <ProjectActionsMenuItems
+                                projectId={p.id}
+                                onPickRepoCli={(cli) => setPendingRepoRoot({
+                                  projectId: p.id,
+                                  cli,
+                                  value: defaultRepoRootName(cli, wsList),
+                                })}
+                              />
                             </DropdownMenu>
                           </DropdownRoot>
                         </div>
@@ -418,7 +453,7 @@ export function Sidebar() {
                     New worktree action). One affordance instead of two
                     cramped side-by-side buttons that had to ellipsis at
                     narrow widths. */}
-                {!collapsed && wsList.length === 0 && !compact && (
+                {!collapsed && wsList.length === 0 && !compact && pendingRepoRoot?.projectId !== p.id && (
                   <div
                     className="ml-5 mr-1 mb-1 mt-0.5"
                     onClick={e => e.stopPropagation()}
@@ -433,7 +468,14 @@ export function Sidebar() {
                         </button>
                       </DropdownTrigger>
                       <DropdownMenu align="start" sideOffset={4} className="max-w-[220px]">
-                        <ProjectActionsMenuItems projectId={p.id} />
+                        <ProjectActionsMenuItems
+                                projectId={p.id}
+                                onPickRepoCli={(cli) => setPendingRepoRoot({
+                                  projectId: p.id,
+                                  cli,
+                                  value: defaultRepoRootName(cli, wsList),
+                                })}
+                              />
                       </DropdownMenu>
                     </DropdownRoot>
                   </div>
@@ -442,6 +484,31 @@ export function Sidebar() {
                 {!collapsed && [...wsList].sort((a, b) => Number(!!b.is_repo_root) - Number(!!a.is_repo_root)).map(w => (
                   <WorkspaceRow key={w.id} w={w} compact={compact} />
                 ))}
+                {/* Inline name prompt renders at the BOTTOM — that's
+                    where a newly-created repo-root workspace lands in
+                    the sort order, so the row physically appears in
+                    the spot it'll occupy after Enter. */}
+                {!collapsed && pendingRepoRoot?.projectId === p.id && (
+                  <PendingRepoRootRow
+                    cli={pendingRepoRoot.cli}
+                    value={pendingRepoRoot.value}
+                    onChange={(v) => setPendingRepoRoot(prev => prev && { ...prev, value: v })}
+                    onCancel={() => setPendingRepoRoot(null)}
+                    onCommit={async () => {
+                      const name = pendingRepoRoot.value.trim();
+                      if (!name) { setPendingRepoRoot(null); return; }
+                      try {
+                        const w = await workspaceOpenRepo(p.id, pendingRepoRoot.cli, name);
+                        await loadAll();
+                        setActive(w.id);
+                      } catch (err) {
+                        console.error("workspace_open_repo failed:", err);
+                      } finally {
+                        setPendingRepoRoot(null);
+                      }
+                    }}
+                  />
+                )}
               </div>
             );
           })}
@@ -605,6 +672,26 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
 
   // Workspace rename
   const [wsRenaming, setWsRenaming] = useState<string | null>(null);
+  const wsRenameInputRef = useRef<HTMLInputElement | null>(null);
+  // Radix DropdownMenu closes AFTER onSelect fires and asynchronously
+  // restores focus; autoFocus on the freshly-mounted input loses the race.
+  // Re-focus on the next two frames to land after Radix's restore tick.
+  useEffect(() => {
+    if (wsRenaming === null) return;
+    let cancelled = false;
+    const r1 = requestAnimationFrame(() => {
+      const r2 = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const el = wsRenameInputRef.current;
+        if (el && document.activeElement !== el) {
+          el.focus();
+          el.select();
+        }
+      });
+      if (cancelled) cancelAnimationFrame(r2);
+    });
+    return () => { cancelled = true; cancelAnimationFrame(r1); };
+  }, [wsRenaming !== null]);
   // Tab rename — per-tab id + draft value
   const [tabRenaming, setTabRenaming] = useState<{ id: string; value: string } | null>(null);
 
@@ -722,6 +809,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           {wsRenaming !== null ? (
             <input
+              ref={wsRenameInputRef}
               autoFocus
               value={wsRenaming}
               onChange={e => setWsRenaming(e.target.value)}
@@ -1008,4 +1096,55 @@ function NavItem({ icon, label, active, compact, onClick }: {
     </button>
   );
   return compact ? <Tip content={label}>{btn}</Tip> : btn;
+}
+
+/** Inline name-prompt row rendered above the workspace list while the
+ *  user is creating a new repo-root workspace. Mirrors the geometry of
+ *  the rename input (py-[3px], no border, accent ring) so the row
+ *  doesn't jump vertically when the input mounts. Auto-focused +
+ *  pre-selected so the user can hit Enter to accept the default
+ *  ("claude-1") or just start typing to replace. */
+function PendingRepoRootRow({ cli, value, onChange, onCommit, onCancel }: {
+  cli: string;
+  value: string;
+  onChange: (v: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    // Two-frame focus matches the Radix dropdown close timing — same
+    // workaround used by the workspace rename input. autoFocus alone
+    // races the menu's focus restoration.
+    let cancelled = false;
+    const r1 = requestAnimationFrame(() => {
+      const r2 = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const el = ref.current;
+        if (el) { el.focus(); el.select(); }
+      });
+      if (cancelled) cancelAnimationFrame(r2);
+    });
+    return () => { cancelled = true; cancelAnimationFrame(r1); };
+  }, []);
+  return (
+    <div className="ml-5 mr-1 flex items-center gap-1.5 rounded-md px-1.5 py-1">
+      <span className={cn("shrink-0", CLI_BRAND_COLOR[cli] || "text-[var(--color-fg-dim)]")}>
+        <CliIcon cli={cli} className="h-4 w-4" />
+      </span>
+      <input
+        ref={ref}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onBlur={onCancel}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); onCommit(); }
+          else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+          e.stopPropagation();
+        }}
+        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+        className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-[3px] text-[13px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
+      />
+    </div>
+  );
 }

@@ -34,7 +34,16 @@ function SectionHeader({ title, hint, tone = "dim" }: {
 import { GitBranchPlus, TerminalSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
+/** Optional override for the "Run in repo with <agent>" rows. When
+ *  provided, picking an agent calls this instead of the immediate
+ *  `workspace_open_repo` IPC — the caller (sidebar) uses this to
+ *  surface an inline name-prompt row before creating the workspace,
+ *  so multiple repo-root sessions get unique, user-chosen names. The
+ *  "Terminal" row uses the shell sentinel "shell" if you pass it in. */
+export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
+  projectId: string;
+  onPickRepoCli?: (cli: string) => void;
+}) {
   const agents = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const setActive = useApp(s => s.setActiveWorkspace);
@@ -58,6 +67,7 @@ export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
       />
       {agents.filter(a => visibleClis.has(a.id)).map(a => (
         <DropdownItem key={a.id} onSelect={async () => {
+          if (onPickRepoCli) { onPickRepoCli(a.id); return; }
           try {
             const w = await workspaceOpenRepo(projectId, a.id);
             await loadAll();
@@ -78,6 +88,10 @@ export function ProjectActionsMenuItems({ projectId }: { projectId: string }) {
           the TabBar uses for its "+ New terminal" option, and
           TerminalPane.tsx switches on it to skip agent argv resolution. */}
       <DropdownItem onSelect={async () => {
+        // Shells don't have sessions to resume → no reason to prompt
+        // for a name in the sidebar inline-row UX (that exists so
+        // agent workspaces get a unique session uuid). Always take
+        // the immediate-create path; Rust auto-names to the branch.
         try {
           const w = await workspaceOpenRepo(projectId, "shell");
           await loadAll();

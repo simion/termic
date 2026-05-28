@@ -15,7 +15,7 @@ import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession } from "@/lib/agents";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 
@@ -158,20 +158,40 @@ export function TerminalPane({ ws, tab, active }: Props) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    // Links: underline on hover (addon default), but only OPEN on
-    // Cmd/Ctrl+click. A plain click in a terminal means "move cursor /
-    // select" — opening a browser on every stray click is jarring, and
-    // TUIs (gemini/claude) print URLs constantly. Matches the editor's
-    // Cmd-click convention. Route through `open_path` so the link hits
-    // the system browser, not the WKWebView (window.open would navigate
-    // or silently no-op inside the webview).
-    term.loadAddon(
-      new WebLinksAddon((event, uri) => {
-        if (event.metaKey || event.ctrlKey) {
-          ipc.openPath(uri).catch(() => {});
-        }
-      }),
-    );
+    // Links — iTerm2 convention: affordance (underline + pointer) and
+    // open-on-click are BOTH gated on Cmd. Plain hover/click is normal
+    // terminal behavior (cursor goes through, selection works as usual).
+    // Implementation: the WebLinksAddon owns the underline decoration,
+    // so to hide it under-Cmd we keep the addon dormant and register
+    // it only while Meta/Ctrl is held. Releasing the key disposes the
+    // provider, removing the underline + pointer immediately. Open
+    // routes through `open_path` so the system browser opens, not the
+    // WKWebView (window.open would silently no-op).
+    let linkAddon: WebLinksAddon | null = null;
+    const enableLinks = () => {
+      if (linkAddon) return;
+      linkAddon = new WebLinksAddon((_event, uri) => {
+        ipc.openPath(uri).catch(() => {});
+      });
+      term.loadAddon(linkAddon);
+    };
+    const disableLinks = () => {
+      if (!linkAddon) return;
+      linkAddon.dispose();
+      linkAddon = null;
+    };
+    const isModKey = (e: KeyboardEvent) =>
+      e.key === "Meta" || e.key === "Control" || e.metaKey || e.ctrlKey;
+    const onKeyDown = (e: KeyboardEvent) => { if (isModKey(e)) enableLinks(); };
+    const onKeyUp   = (e: KeyboardEvent) => {
+      // Only disable when BOTH modifiers are released, so Cmd-then-Ctrl
+      // releases don't yank the affordance underfoot.
+      if (!e.metaKey && !e.ctrlKey) disableLinks();
+    };
+    const onBlur = () => disableLinks();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
@@ -571,33 +591,44 @@ export function TerminalPane({ ws, tab, active }: Props) {
       const rows = Math.max(10, term.rows || 30);
 
       try {
-        // Resume iff the worktree has a persisted history flag AND we
-        // haven't already proven this session that the flag is stale —
-        // AND it isn't a repo-root workspace. The repo-root shares the
-        // project's actual checkout directory, so `claude --continue` /
-        // `codex resume --last` would pick up sessions the user had in
-        // that dir BEFORE installing termic (or via plain `claude`
-        // outside termic). Forcing fresh on is_repo_root prevents that
-        // surprise; user can still use the agent's resume command
-        // manually if they actually want to continue an external session.
-        // Only the AUTO-CREATED default tab (one per workspace) may
-        // resume the agent's prior conversation. User-added tabs
-        // always start fresh - otherwise opening a second claude tab
-        // inside the same workspace tries to resume the same session,
-        // and N tabs end up fighting over one conversation. `is_default`
-        // is set by `ensureDefaultTab` in the app store and never
-        // again by the "+" tab-add path.
-        const shouldResume = !!ws.has_resumable_history
-          && !failedResumeRef.current
+        // Two resume modes, picked by workspace shape:
+        //   REPO-ROOT + id-capable CLI → termic-owned uuid (the shared
+        //     cwd would let --continue lasso external sessions).
+        //   WORKTREE (any CLI) → resume_args, every CLI's CWD-based
+        //     `--continue` / `resume --last` Just Works because the
+        //     worktree has its own dir. Untouched from before this
+        //     id-resume work — worktree auto-resume keeps its prior
+        //     behavior (has_resumable_history gate + fast-fail retry).
+        // Only the AUTO-CREATED default tab resumes; user-added tabs
+        // always start fresh. `cli: "shell"` is a plain login shell,
+        // never an agent, so it's gated out of both resume modes.
+        const isShell = tab.cli === "shell";
+        const idCapable = !isShell && cliSupportsIdSession(tab.cli);
+        const useIdResume = idCapable && !!ws.is_repo_root && !!tab.is_default;
+        const storedUuid = ws.agent_session_ids?.[tab.cli];
+        let sessionUuid: string | undefined;
+        let resumeKnown = false;
+        if (useIdResume) {
+          // After an in-session fast-exit resume failure we cleared the
+          // stored uuid on disk but the prop hasn't refreshed yet —
+          // failedResumeRef makes the immediate retry skip the stale
+          // storedUuid and mint a brand-new one.
+          const useStored = !!storedUuid && !failedResumeRef.current;
+          sessionUuid = useStored ? storedUuid : crypto.randomUUID();
+          resumeKnown = useStored;
+        }
+        // CWD-resume path: worktrees only. Repo-root never falls here —
+        // its agents either id-resume (above) or start fresh. Same
+        // gating as the original code: history flag set, no in-session
+        // failure, default tab, NOT repo-root.
+        const shouldResume = !useIdResume
           && !ws.is_repo_root
+          && !!ws.has_resumable_history
+          && !failedResumeRef.current
           && !!tab.is_default;
         spawnStartedAtRef.current = Date.now();
-        lastSpawnWasResumeRef.current = shouldResume;
+        lastSpawnWasResumeRef.current = shouldResume || (useIdResume && resumeKnown);
         hasHistoryLocalRef.current = false;
-        // `cli: "shell"` → a plain login shell (the "+" → New terminal
-        // menu), not an agent. It carries its own sandbox choice in
-        // `tab.sandboxed`; agent tabs leave that unset.
-        const isShell = tab.cli === "shell";
         const spawn = await ipc.ptySpawn({
           cwd: ws.path,
           // Agent: resolve the executable through the registry (users
@@ -613,6 +644,8 @@ export function TerminalPane({ ws, tab, active }: Props) {
             // nobody is surprised.
             yolo: usePrefs.getState().yoloMode || !!ws.sandbox_enabled,
             resume: shouldResume,
+            sessionUuid,
+            resumeKnown,
             ws,
           }),
           // Order matters: base TERMIC_*/COLORFGBG block first, then
@@ -665,11 +698,17 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // spawn means we have a usable session regardless of whether
           // this one was a resume or a fallback fresh.
           failedResumeRef.current = false;
-          // Skip persisting `has_resumable_history` for repo-root
-          // workspaces — they share the project's actual checkout dir
-          // with whatever the user does outside termic, and we never
-          // want to auto-resume in that shared space.
-          if (!ws.has_resumable_history && !ws.is_repo_root) {
+          // Repo-root + id-capable: persist the freshly-minted uuid so
+          // the next spawn (this session or after a restart) uses
+          // --resume <uuid> instead of --session-id <uuid>.
+          if (useIdResume && sessionUuid && !resumeKnown) {
+            ipc.workspaceSetAgentSessionId(ws.id, tab.cli, sessionUuid).catch(() => {});
+          }
+          // Worktree: keep the original has_resumable_history flag flow
+          // so the next worktree spawn (this session or after a restart)
+          // appends resume_args. Repo-root never touches this — it lives
+          // exclusively on the id-resume path above.
+          if (!useIdResume && !ws.is_repo_root && !ws.has_resumable_history) {
             ipc.workspaceSetHasHistory(ws.id, true).catch(() => {});
           }
         }, RESUME_FAILURE_MS);
@@ -736,14 +775,24 @@ export function TerminalPane({ ws, tab, active }: Props) {
           ptyRef.current = null;
           const fastExit = Date.now() - spawnStartedAtRef.current < RESUME_FAILURE_MS;
           if (fastExit && lastSpawnWasResumeRef.current) {
-            // Rapid exit during a resume attempt = "no conversation
-            // found to continue" or similar. Flip the in-component
-            // failure flag AND persist false on the workspace so
-            // future spawns (this session AND across restarts) skip
-            // resume until proven otherwise. Then bump gen → respawn
-            // fresh. No overlay flicker because we never set exited=true.
+            // Rapid exit during a resume attempt = the stored session
+            // doesn't resolve anymore (id-CLI: log rotated / deleted;
+            // legacy: "no conversation to continue"). Drop the bad
+            // state + bump gen → respawn fresh. No overlay flicker —
+            // we never set exited=true. The in-component failure flag
+            // makes the immediate retry skip resume even before the
+            // workspace prop refreshes.
             failedResumeRef.current = true;
-            ipc.workspaceSetHasHistory(ws.id, false).catch(() => {});
+            if (useIdResume && resumeKnown) {
+              // Stored uuid no longer resolves to a live session
+              // (deleted, rotated, …). Drop it; the immediate retry
+              // mints a fresh one.
+              ipc.workspaceSetAgentSessionId(ws.id, tab.cli, "").catch(() => {});
+            } else if (!useIdResume) {
+              // Worktree rapid-exit on `--continue` = "no conversation"
+              // — flip the persistent flag so future spawns skip resume.
+              ipc.workspaceSetHasHistory(ws.id, false).catch(() => {});
+            }
             setGen(g => g + 1);
             return;
           }
@@ -832,6 +881,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
     return () => {
       cancelled = true;
       ro.disconnect();
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      disableLinks();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});

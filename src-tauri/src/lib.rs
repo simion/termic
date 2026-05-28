@@ -178,6 +178,14 @@ pub struct Workspace {
     /// the next spawn doesn't waste a roundtrip retrying.
     #[serde(default)]
     pub has_resumable_history: bool,
+    /// Per-CLI session UUIDs we own. Lazily minted on first spawn for
+    /// an id-capable CLI (claude / gemini today). Reused on every
+    /// subsequent spawn via the agent's `resume_id_args`. Keyed by
+    /// agent id ("claude", "gemini"). Survives termic restarts; lets
+    /// repo-root workspaces auto-resume without cross-pollinating with
+    /// the user's external sessions in the same cwd.
+    #[serde(default)]
+    pub agent_session_ids: std::collections::HashMap<String, String>,
     /// PINNED at workspace creation. The sandbox decision can't change
     /// afterwards — otherwise an agent could talk the user into
     /// loosening its own cage. To run the same project unsandboxed,
@@ -1137,7 +1145,7 @@ fn workspaces_list() -> Vec<Workspace> { load_workspaces() }
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Workspace, String> {
+fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<String>) -> Result<Workspace, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     // CLI is now explicit — frontend's "+ Open repo with <agent>" passes the
@@ -1214,13 +1222,18 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
         let _ = ensure_multirepo_gitignore(host_dir, &dir_names);
     }
 
+    let ws_name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| branch.clone());
     let ws = Workspace {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
-        // Branch name as default — frontend shows "REPO ROOT" chip when
-        // name == branch, so this keeps the chip visible until the user
-        // explicitly renames the workspace.
-        name: branch.clone(),
+        // Caller-supplied name (preferred — the sidebar prompts for one
+        // so multiple repo-root sessions don't collide). Falls back to
+        // the branch name; the "REPO ROOT" chip in the sidebar shows
+        // iff name == branch, so legacy callers still see the chip.
+        name: ws_name,
         branch: branch.clone(),
         base_branch: branch,
         path: proj.root_path.clone(),
@@ -1231,6 +1244,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>) -> Result<Worksp
         is_repo_root: true,
         spawn_count: 0,
         has_resumable_history: false,
+        agent_session_ids: std::collections::HashMap::new(),
         // Repo-root workspaces start unsandboxed - the user is
         // opting into one-off work in their main checkout, and a
         // surprise cage at first launch would obscure that. They
@@ -1458,6 +1472,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         is_repo_root: false,
         spawn_count: 0,
         has_resumable_history: false,
+        agent_session_ids: std::collections::HashMap::new(),
         sandbox_enabled,
         sandbox_rw_paths,
         sandbox_allowed_hosts,
@@ -1792,6 +1807,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         is_repo_root: false,
         spawn_count: 0,
         has_resumable_history: false,
+        agent_session_ids: std::collections::HashMap::new(),
         sandbox_enabled,
         sandbox_rw_paths,
         sandbox_allowed_hosts,
@@ -2399,6 +2415,32 @@ fn workspace_set_has_history(id: String, value: bool) -> Result<(), String> {
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
     if w.has_resumable_history == value { return Ok(()); }
     w.has_resumable_history = value;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pin a termic-owned session UUID for a (workspace, agent CLI) pair.
+/// Called by the frontend after the first spawn for an id-capable CLI
+/// (claude, gemini) has survived past the rapid-failure window — at
+/// that point the agent has materialized a session file for that uuid,
+/// so every subsequent spawn can resume it. Idempotent: re-setting the
+/// same uuid is a cheap no-op (no disk write).
+#[tauri::command]
+fn workspace_set_agent_session_id(id: String, cli: String, uuid: String) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    // Empty uuid = clear the slot. Used when a resume attempt died fast,
+    // signalling the stored uuid no longer resolves to a live session
+    // (agent log rotated out, user ran `claude --delete-session`, ...).
+    // Next spawn will mint a fresh one.
+    if uuid.is_empty() {
+        if w.agent_session_ids.remove(&cli).is_none() { return Ok(()); }
+    } else {
+        if w.agent_session_ids.get(&cli).map(|v| v.as_str()) == Some(uuid.as_str()) {
+            return Ok(());
+        }
+        w.agent_session_ids.insert(cli, uuid);
+    }
     save_workspace(w).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -3761,6 +3803,23 @@ pub struct AgentCapabilities {
     /// per-directory history file. Empty → no auto-resume for this agent.
     #[serde(default)]
     pub resume_args: Vec<String>,
+    /// FIRST-spawn args for an id-capable CLI (claude, gemini). Must
+    /// contain `{UUID}` which expands to a freshly-minted uuid that the
+    /// frontend then persists on the workspace. Subsequent spawns use
+    /// `resume_id_args` with the same uuid. Empty → CLI doesn't support
+    /// deterministic sessions; the legacy `resume_args` path is used.
+    #[serde(default)]
+    pub session_id_args: Vec<String>,
+    /// Subsequent-spawn args for an id-capable CLI. Must contain
+    /// `{UUID}` which expands to the previously-minted uuid.
+    #[serde(default)]
+    pub resume_id_args: Vec<String>,
+    /// Always-applied args (every spawn). Useful for things like
+    /// `--name {WORKSPACE_SLUG}` so claude's /resume picker shows
+    /// termic's workspace name. Placeholders: {WORKSPACE_SLUG},
+    /// {WORKSPACE_NAME}, {WORKSPACE_ID}, {BRANCH}, {PORT}.
+    #[serde(default)]
+    pub name_args: Vec<String>,
 }
 
 fn default_agents() -> Vec<Agent> {
@@ -3784,12 +3843,19 @@ fn default_agents() -> Vec<Agent> {
                 yolo_args: vec!["--dangerously-skip-permissions".into()],
                 runtime_yolo_command: String::new(),
                 runtime_default_command: String::new(),
-                // `--continue` picks up the most-recent session in CWD
-                // without an interactive picker. Trade-off: if you've
-                // run claude in this dir outside termic, it'll resume
-                // *that* session — less deterministic than a named
-                // scheme but doesn't dead-end.
+                // Legacy `--continue` fallback. Active only when this
+                // workspace has no termic-owned uuid stored yet (old
+                // workspaces created before id-based resume landed).
                 resume_args: vec!["--continue".into()],
+                // Termic owns the session uuid → deterministic resume
+                // that survives across restarts AND is safe inside the
+                // repo root (won't grab the user's external sessions
+                // sharing that cwd).
+                session_id_args: vec!["--session-id".into(), "{UUID}".into()],
+                resume_id_args:  vec!["--resume".into(),     "{UUID}".into()],
+                // Surface termic's workspace name in claude's /resume
+                // picker + prompt box + terminal title.
+                name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -3825,6 +3891,9 @@ fn default_agents() -> Vec<Agent> {
                 // (most-recent session in CWD). Composes correctly with
                 // global flags placed before: `codex --yolo resume --last`.
                 resume_args: vec!["resume".into(), "--last".into()],
+                session_id_args: vec![],
+                resume_id_args: vec![],
+                name_args: vec![],
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -3860,6 +3929,9 @@ fn default_agents() -> Vec<Agent> {
                 // `--continue` (`-c`) continues the most recent
                 // conversation in CWD with no interactive picker.
                 resume_args: vec!["--continue".into()],
+                session_id_args: vec![],
+                resume_id_args: vec![],
+                name_args: vec![],
             },
             env: std::collections::HashMap::new(),
             // Antigravity is a Gemini-family CLI and actually keeps its
@@ -3895,10 +3967,13 @@ fn default_agents() -> Vec<Agent> {
                 // direction (the form exposes both as separate fields).
                 runtime_yolo_command: "/approval-mode yolo".into(),
                 runtime_default_command: "/approval-mode default".into(),
-                // gemini supports `--resume latest` to pick up the most
-                // recent session in CWD. Less deterministic than claude's
-                // named-session scheme but the best gemini offers today.
+                // Legacy fallback for workspaces with no stored uuid.
                 resume_args: vec!["--resume".into(), "latest".into()],
+                // Gemini matches claude here — `--session-id <uuid>` to
+                // mint, `--resume <uuid>` to pick it up later.
+                session_id_args: vec!["--session-id".into(), "{UUID}".into()],
+                resume_id_args:  vec!["--resume".into(),     "{UUID}".into()],
+                name_args: vec![],
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -3928,6 +4003,9 @@ fn default_agents() -> Vec<Agent> {
                 runtime_yolo_command: String::new(),
                 runtime_default_command: String::new(),
                 resume_args: vec!["--continue".into()],
+                session_id_args: vec![],
+                resume_id_args: vec![],
+                name_args: vec![],
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -4005,6 +4083,31 @@ pub(crate) fn load_settings_inner() -> Settings {
         if c.runtime_default_command.is_empty() && c.runtime_yolo_command.contains("{mode}") {
             c.runtime_default_command = c.runtime_yolo_command.replace("{mode}", "default");
             c.runtime_yolo_command = c.runtime_yolo_command.replace("{mode}", "yolo");
+            migrated = true;
+        }
+    }
+    // Migration: id-based session resume (session_id_args / resume_id_args
+    // / name_args). Settings files predating this release have the
+    // fields default-deserialized to empty vecs; seed them from the
+    // shipped defaults for the built-in agents that support id-resume
+    // so existing users get the feature on next launch without having
+    // to click Reset. Custom agents + agents the user has customized
+    // are left alone (only acts when the destination field is empty).
+    let defaults = default_agents();
+    for a in s.agents.iter_mut().filter(|a| a.builtin) {
+        let Some(def) = defaults.iter().find(|d| d.id == a.id) else { continue; };
+        let c = &mut a.capabilities;
+        let d = &def.capabilities;
+        if c.session_id_args.is_empty() && !d.session_id_args.is_empty() {
+            c.session_id_args = d.session_id_args.clone();
+            migrated = true;
+        }
+        if c.resume_id_args.is_empty() && !d.resume_id_args.is_empty() {
+            c.resume_id_args = d.resume_id_args.clone();
+            migrated = true;
+        }
+        if c.name_args.is_empty() && !d.name_args.is_empty() {
+            c.name_args = d.name_args.clone();
             migrated = true;
         }
     }
@@ -4315,7 +4418,7 @@ pub fn run() {
             workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
-            workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history,
+            workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_grep_start, workspace_grep_cancel,
             workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,

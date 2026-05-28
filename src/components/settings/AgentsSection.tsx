@@ -356,6 +356,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   const argsText       = (agent.args || []).join(" ");
   const yoloArgsText   = (agent.capabilities?.yolo_args   || []).join(" ");
   const resumeArgsText = (agent.capabilities?.resume_args || []).join(" ");
+  const sessionIdArgsText = (agent.capabilities?.session_id_args || []).join(" ");
+  const resumeIdArgsText  = (agent.capabilities?.resume_id_args  || []).join(" ");
+  const nameArgsText      = (agent.capabilities?.name_args       || []).join(" ");
   const cardRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -507,10 +510,30 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             />
           </Field>
         </div>
-        <Field label="Resume args" hint="Appended after the worktree's first spawn so the CLI resumes its own session for that directory. Empty = no auto-resume.">
+        <Field label="Resume last (worktrees)" hint="CWD-based resume. Used on every spawn after the first inside a worktree workspace — each worktree has its own dir, so the agent's most-recent CWD session IS this workspace's session. Not used in repo-root workspaces (the shared dir would lasso external sessions; repo-root uses Session/Resume ID args instead).">
           <Input value={resumeArgsText}
             onChange={e => onPatchCaps({ resume_args: e.target.value.split(/\s+/).filter(Boolean) })}
             className="font-mono" placeholder="--continue"
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Session ID args (repo-root)" hint="First spawn in a repo-root workspace, mints a termic-owned uuid. Use {UUID}. Empty = no auto-resume in repo-root for this agent.">
+            <Input value={sessionIdArgsText}
+              onChange={e => onPatchCaps({ session_id_args: e.target.value.split(/\s+/).filter(Boolean) })}
+              className="font-mono" placeholder="--session-id {UUID}"
+            />
+          </Field>
+          <Field label="Resume ID args (repo-root)" hint="Every spawn after the first in a repo-root workspace. Resumes the termic-owned uuid (isolates us from external sessions in the same cwd). Use {UUID}.">
+            <Input value={resumeIdArgsText}
+              onChange={e => onPatchCaps({ resume_id_args: e.target.value.split(/\s+/).filter(Boolean) })}
+              className="font-mono" placeholder="--resume {UUID}"
+            />
+          </Field>
+        </div>
+        <Field label="Name args" hint="Applied on every spawn. Pins a display name for the session (claude shows it in /resume and the prompt box). Placeholders supported: {WORKSPACE_SLUG}, {WORKSPACE_NAME}, {BRANCH}.">
+          <Input value={nameArgsText}
+            onChange={e => onPatchCaps({ name_args: e.target.value.split(/\s+/).filter(Boolean) })}
+            className="font-mono" placeholder="--name {WORKSPACE_SLUG}"
           />
         </Field>
         <Field

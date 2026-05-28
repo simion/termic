@@ -10,27 +10,51 @@ import { ptyWrite } from "@/lib/ipc";
 import { slugify } from "@/lib/utils";
 
 /** Variables that can be referenced in any agent arg via `{name}` placeholders.
- *  Lets the user write things like `--name {workspace_slug}` in Settings →
- *  Agents and have it expand per-worktree at spawn time. Supported keys:
- *    {workspace_slug}  → slugified workspace name (e.g. "improve-tests")
- *    {workspace_name}  → raw workspace name
- *    {workspace_id}    → UUID
- *    {branch}          → git branch
- *    {port}            → assigned dev port
+ *  Lets the user write things like `--name {WORKSPACE_SLUG}` in Settings →
+ *  Agents and have it expand per-worktree at spawn time. Supported keys
+ *  (case-insensitive — `{UUID}` and `{uuid}` both work):
+ *    {UUID}            → termic-minted agent session uuid (only present
+ *                        when buildArgs was given a sessionUuid)
+ *    {WORKSPACE_SLUG}  → slugified workspace name (e.g. "improve-tests")
+ *    {WORKSPACE_NAME}  → raw workspace name
+ *    {WORKSPACE_ID}    → workspace's own uuid
+ *    {BRANCH}          → git branch
+ *    {PORT}            → assigned dev port
  *  Unknown placeholders pass through unchanged so weird arg shapes don't
  *  silently mangle. */
 function expandArg(arg: string, vars: Record<string, string>): string {
-  return arg.replace(/\{([a-zA-Z_]+)\}/g, (m, k) => vars[k] ?? m);
+  return arg.replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (m, k) => {
+    const v = vars[k] ?? vars[k.toLowerCase()] ?? vars[k.toUpperCase()];
+    return v ?? m;
+  });
 }
-function workspaceVars(ws: Workspace | undefined): Record<string, string> {
-  if (!ws) return {};
-  return {
+function workspaceVars(ws: Workspace | undefined, sessionUuid?: string): Record<string, string> {
+  const base: Record<string, string> = ws ? {
+    WORKSPACE_SLUG: slugify(ws.name),
+    WORKSPACE_NAME: ws.name,
+    WORKSPACE_ID: ws.id,
+    BRANCH: ws.branch,
+    PORT: String(ws.port),
+    // Lowercase aliases — legacy, the original placeholder set.
     workspace_slug: slugify(ws.name),
     workspace_name: ws.name,
     workspace_id: ws.id,
     branch: ws.branch,
     port: String(ws.port),
-  };
+  } : {};
+  if (sessionUuid) {
+    base.UUID = sessionUuid;
+    base.uuid = sessionUuid;
+  }
+  return base;
+}
+
+/** True iff the agent supports termic-owned deterministic sessions
+ *  (both session_id_args + resume_id_args configured). */
+export function cliSupportsIdSession(cli: string): boolean {
+  const { caps } = findAgent(cli);
+  return (caps.session_id_args?.length ?? 0) > 0
+      && (caps.resume_id_args?.length ?? 0) > 0;
 }
 
 /** Hard-coded fallback for the four built-ins. Used only when the
@@ -44,11 +68,21 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
     capabilities: {
       yolo_args: ["--dangerously-skip-permissions"],
       runtime_yolo_command: "",
-      // Reverted from `--resume {workspace_slug}` (named-session scheme):
-      // claude was dropping into its interactive picker when the named
-      // session didn't exist yet, leaving the user stuck. `--continue`
-      // takes the most-recent session in CWD with no picker.
+      // Legacy: takes most-recent session in CWD. Still seeded so
+      // workspaces created before id-based resume keep working — but
+      // the id-based path (session_id_args + resume_id_args) wins
+      // whenever a uuid is stored on the workspace.
       resume_args: ["--continue"],
+      // Termic-owned deterministic sessions. First spawn mints a
+      // uuid via --session-id; subsequent spawns --resume that uuid.
+      // Lets repo-root workspaces auto-resume without grabbing
+      // unrelated sessions from the same cwd.
+      session_id_args: ["--session-id", "{UUID}"],
+      resume_id_args:  ["--resume",     "{UUID}"],
+      // Display name surfaces in claude's prompt box, /resume picker,
+      // and terminal title — pin it to the workspace slug so the
+      // picker is human-readable when the user falls back to it.
+      name_args: ["--name", "{WORKSPACE_SLUG}"],
     },
   },
   gemini: {
@@ -57,8 +91,10 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
       yolo_args: ["--yolo"],
       runtime_yolo_command: "/approval-mode yolo",
       runtime_default_command: "/approval-mode default",
-      // `gemini --resume latest` — most-recent session in CWD.
+      // Legacy fallback for workspaces without a stored uuid yet.
       resume_args: ["--resume", "latest"],
+      session_id_args: ["--session-id", "{UUID}"],
+      resume_id_args:  ["--resume",     "{UUID}"],
     },
   },
   codex: {
@@ -114,6 +150,9 @@ function findAgent(cli: string): {
         runtime_yolo_command: a.capabilities?.runtime_yolo_command ?? "",
         runtime_default_command: a.capabilities?.runtime_default_command ?? "",
         resume_args: a.capabilities?.resume_args ?? [],
+        session_id_args: a.capabilities?.session_id_args ?? [],
+        resume_id_args: a.capabilities?.resume_id_args ?? [],
+        name_args: a.capabilities?.name_args ?? [],
       },
       env: { ...(a.env ?? {}) },
     };
@@ -123,7 +162,7 @@ function findAgent(cli: string): {
   // Unknown custom agent that's been deleted — best effort: use the cli id
   // as the command so the user at least sees "command not found" instead of
   // a silent black terminal.
-  return { command: cli, args: [], caps: { yolo_args: [], runtime_yolo_command: "", resume_args: [] }, env: {} };
+  return { command: cli, args: [], caps: { yolo_args: [], runtime_yolo_command: "", resume_args: [], session_id_args: [], resume_id_args: [], name_args: [] }, env: {} };
 }
 
 /** Resolved spawn command for an agent. The command is whatever the user
@@ -133,27 +172,62 @@ export function spawnCommandForCli(cli: string): string {
   return findAgent(cli).command;
 }
 
-/** Compose the full args list for a spawn. Order: agent's base args,
- *  then yolo flags (if mode on + agent supports), then resume flags
- *  (if not first spawn for this worktree + agent supports). Any `{var}`
- *  placeholders in any arg are expanded against the workspace context
- *  (e.g. `--name {workspace_slug}` → `--name improve-tests`). */
+/** Compose the full args list for a spawn. Two resume modes, picked by
+ *  the workspace shape (worktree vs repo-root) — the caller decides
+ *  which mode applies and passes the right inputs:
+ *
+ *    A. id-based resume (REPO-ROOT id-capable CLIs):
+ *       The shared cwd would let `--continue` lasso external sessions,
+ *       so termic owns a UUID per (workspace, cli) pair.
+ *       - `sessionUuid` provided AND `resumeKnown` → `resume_id_args`
+ *         (subsequent spawn).
+ *       - `sessionUuid` provided AND NOT `resumeKnown` → `session_id_args`
+ *         (first spawn — mint + tell the agent to use this id).
+ *
+ *    B. cwd-based resume (WORKTREE workspaces):
+ *       Each worktree has its own directory, so the agent's most-recent
+ *       CWD session IS this workspace's session — `--continue` / equivalent
+ *       just works.
+ *       - `opts.resume` true → append `resume_args`.
+ *
+ *    C. always-applied:
+ *       - `name_args` appended regardless of resume mode.
+ *       - `yolo_args` appended LAST so a subcommand-style resume
+ *         (`codex resume --last <yolo>`) attaches its global flag to
+ *         the subcommand instead of the root binary.
+ */
 export function spawnArgsForCli(
   cli: string,
-  opts: { yolo: boolean; resume: boolean; ws?: Workspace },
+  opts: {
+    yolo: boolean;
+    resume: boolean;
+    ws?: Workspace;
+    /** Termic-minted uuid for this (workspace, cli) pair. Presence
+     *  switches the resume path from (B) to (A). */
+    sessionUuid?: string;
+    /** True iff the uuid was already used in a prior spawn (so the
+     *  agent has a session file for it). False = first spawn, mint it. */
+    resumeKnown?: boolean;
+  },
 ): string[] {
   const { args, caps } = findAgent(cli);
-  const vars = workspaceVars(opts.ws);
-  // Order matters: resume_args FIRST, yolo_args LAST. Reason: codex's
-  // resume is a subcommand (`codex resume --last`), and global flags like
-  // `--dangerously-bypass-approvals-and-sandbox` must attach to the
-  // subcommand (`codex resume --last --dangerously-bypass-approvals-and-sandbox`)
-  // — putting them BEFORE the subcommand makes clap-style parsers reject
-  // the flag as unknown. claude / gemini take all their flags at root
-  // level, so the trailing-yolo position is harmless for them.
+  const vars = workspaceVars(opts.ws, opts.sessionUuid);
+
+  const hasIdResume = (caps.session_id_args?.length ?? 0) > 0
+                   && (caps.resume_id_args?.length ?? 0) > 0;
+  let resumeBlock: string[] = [];
+  if (hasIdResume && opts.sessionUuid) {
+    resumeBlock = opts.resumeKnown
+      ? (caps.resume_id_args ?? [])
+      : (caps.session_id_args ?? []);
+  } else if (opts.resume) {
+    resumeBlock = caps.resume_args ?? [];
+  }
+
   const composed = [
     ...args,
-    ...(opts.resume ? (caps.resume_args ?? []) : []),
+    ...resumeBlock,
+    ...(caps.name_args ?? []),
     ...(opts.yolo ? (caps.yolo_args ?? []) : []),
   ];
   return composed.map(a => expandArg(a, vars));

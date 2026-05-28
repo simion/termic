@@ -140,13 +140,124 @@ export function editorSurfaceTheme(
         "color-mix(in srgb, var(--color-accent) 28%, transparent)",
       outline: "none",
     },
-    // Search panel — sit it on the elevated surface, not the theme's.
+    // Search panel — sit it on the elevated surface, not the theme's,
+    // and re-skin the browser-default buttons/inputs/checkboxes that
+    // CodeMirror leaves un-styled. WKWebView's defaults are the bevelled
+    // gray buttons + bright green :focus ring on inputs.
     ".cm-panels": {
       backgroundColor: "var(--color-bg-2)",
       color: "var(--color-fg)",
       borderColor: "var(--color-border)",
     },
-    ".cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label":
-      { fontFamily: "inherit", fontSize: "12px" },
+    ".cm-panels.cm-panels-top": {
+      borderBottom: "1px solid var(--color-border)",
+    },
+    ".cm-panel.cm-search": {
+      padding: "6px 8px",
+      fontFamily: "inherit",
+      fontSize: "12px",
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "6px",
+    },
+    ".cm-panel.cm-search br": { display: "none" },
+    ".cm-panel.cm-search label": {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px",
+      fontSize: "12px",
+      color: "var(--color-fg-dim)",
+      cursor: "pointer",
+      userSelect: "none",
+    },
+    ".cm-panel.cm-search input[type=checkbox], .cm-panel.cm-search input[name=case], .cm-panel.cm-search input[name=re], .cm-panel.cm-search input[name=word]": {
+      appearance: "none",
+      WebkitAppearance: "none",
+      width: "12px",
+      height: "12px",
+      borderRadius: "3px",
+      border: "1px solid var(--color-border)",
+      backgroundColor: "var(--color-bg)",
+      margin: "0 2px 0 0",
+      cursor: "pointer",
+      position: "relative",
+      verticalAlign: "middle",
+    },
+    ".cm-panel.cm-search input[type=checkbox]:checked, .cm-panel.cm-search input[name=case]:checked, .cm-panel.cm-search input[name=re]:checked, .cm-panel.cm-search input[name=word]:checked": {
+      backgroundColor: "var(--color-accent)",
+      borderColor: "var(--color-accent)",
+    },
+    ".cm-panel.cm-search input[type=checkbox]:checked::after, .cm-panel.cm-search input[name=case]:checked::after, .cm-panel.cm-search input[name=re]:checked::after, .cm-panel.cm-search input[name=word]:checked::after": {
+      content: '""',
+      position: "absolute",
+      left: "3px",
+      top: "0px",
+      width: "4px",
+      height: "8px",
+      border: "solid white",
+      borderWidth: "0 1.5px 1.5px 0",
+      transform: "rotate(45deg)",
+    },
+    ".cm-panel.cm-search input.cm-textfield, .cm-panel.cm-search input[name=search], .cm-panel.cm-search input[name=replace]": {
+      appearance: "none",
+      WebkitAppearance: "none",
+      height: "22px",
+      padding: "0 6px",
+      borderRadius: "4px",
+      border: "1px solid var(--color-border)",
+      backgroundColor: "var(--color-bg)",
+      color: "var(--color-fg)",
+      fontFamily: "inherit",
+      fontSize: "12px",
+      outline: "none",
+      minWidth: "140px",
+    },
+    ".cm-panel.cm-search input.cm-textfield:focus, .cm-panel.cm-search input[name=search]:focus, .cm-panel.cm-search input[name=replace]:focus": {
+      borderColor: "var(--color-accent)",
+      boxShadow:
+        "0 0 0 2px color-mix(in srgb, var(--color-accent) 25%, transparent)",
+    },
+    ".cm-panel.cm-search button.cm-button, .cm-panel.cm-search button, .cm-panel.cm-search [name=close]": {
+      appearance: "none",
+      WebkitAppearance: "none",
+      height: "22px",
+      padding: "0 8px",
+      borderRadius: "4px",
+      border: "1px solid var(--color-border) !important",
+      backgroundColor: "var(--color-bg) !important",
+      backgroundImage: "none !important",
+      color: "var(--color-fg)",
+      fontFamily: "inherit",
+      fontSize: "12px",
+      cursor: "pointer",
+      lineHeight: "1",
+      textTransform: "none",
+      margin: "0",
+    },
+    ".cm-panel.cm-search button.cm-button:hover, .cm-panel.cm-search button:hover": {
+      backgroundColor:
+        "color-mix(in srgb, var(--color-fg) 6%, var(--color-bg)) !important",
+      backgroundImage: "none !important",
+      borderColor:
+        "color-mix(in srgb, var(--color-fg) 20%, var(--color-border)) !important",
+    },
+    ".cm-panel.cm-search button.cm-button:active, .cm-panel.cm-search button:active": {
+      backgroundColor:
+        "color-mix(in srgb, var(--color-fg) 10%, var(--color-bg)) !important",
+      backgroundImage: "none !important",
+    },
+    ".cm-panel.cm-search [name=close]": {
+      position: "absolute",
+      top: "4px",
+      right: "4px",
+      width: "20px",
+      height: "20px",
+      padding: "0",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "var(--color-fg-dim)",
+    },
   });
 }

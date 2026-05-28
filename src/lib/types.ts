@@ -99,6 +99,13 @@ export interface Workspace {
    *  worktrees with no real conversation don't waste spawns on a
    *  doomed resume attempt. Flipped false on a confirmed failure. */
   has_resumable_history?: boolean;
+  /** Per-CLI session UUIDs we own. Lazily minted on first spawn for an
+   *  id-capable CLI (claude / gemini today). Reused on every subsequent
+   *  spawn via `resume_id_args`. Keyed by agent id ("claude", "gemini").
+   *  Survives across termic restarts; lets us auto-resume in repo-root
+   *  workspaces too without cross-pollinating with the user's external
+   *  sessions in the same cwd. */
+  agent_session_ids?: Record<string, string>;
   /** PINNED at creation. Driven by NewWorkspaceDialog (defaulting to
    *  the project's `default_sandbox`). There is no setter - to flip
    *  it, archive the workspace and recreate. The UI shows a lock
@@ -194,6 +201,20 @@ export interface Agent {
     /** Args appended after the worktree's first spawn (so the CLI resumes
      *  its own per-directory session). Empty/missing → no auto-resume. */
     resume_args?: string[];
+    /** Args used on the FIRST spawn of an id-capable CLI to mint a
+     *  termic-owned session. Must contain `{UUID}`, which expands to a
+     *  freshly-minted uuid that's then persisted on the workspace.
+     *  Empty/missing → CLI doesn't support deterministic sessions →
+     *  fall back to legacy `resume_args` behavior. */
+    session_id_args?: string[];
+    /** Args used on every subsequent spawn of an id-capable CLI to
+     *  resume the termic-owned session. Must contain `{UUID}`, which
+     *  expands to the previously-minted uuid. */
+    resume_id_args?: string[];
+    /** Always-applied args (every spawn). Useful for things like
+     *  `--name {WORKSPACE_SLUG}` so claude's /resume picker shows
+     *  termic's workspace name. */
+    name_args?: string[];
   };
   /** Per-agent environment variables merged into the spawn env. Useful
    *  for things like `CLAUDE_CODE_NO_FLICKER=1` without wrapping the CLI
