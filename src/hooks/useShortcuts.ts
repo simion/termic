@@ -171,7 +171,29 @@ export function useShortcuts() {
       // ⌘[ / ⌘]   → workspace nav across AWAKE workspaces (no shift).
       if (e.key === "[" || e.key === "]") {
         if (e.shiftKey) {
-          if (wsId && tabs.length > 1) {
+          if (!wsId) return;
+          // Focus-aware tab nav: when the bottom-split shell owns focus,
+          // ⇧⌘[/] cycles the BOTTOM tabs; otherwise the main-area tabs.
+          // Same `[data-bottom-split]` ancestor check as ⌘T / ⌘W / ⌘K.
+          const inBottom = !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
+          if (inBottom) {
+            const bottomTabs = state.bottomTabs[wsId] || [];
+            if (bottomTabs.length > 1) {
+              e.preventDefault();
+              const idx = bottomTabs.findIndex(t => t.id === state.activeBottomTab[wsId]);
+              // No active bottom tab yet (or a stale pointer) → findIndex
+              // returns -1; fall to the first/last instead of letting the
+              // wrap math silently skip the last tab.
+              const nextIdx = idx < 0
+                ? (e.key === "]" ? 0 : bottomTabs.length - 1)
+                : e.key === "]"
+                  ? (idx + 1) % bottomTabs.length
+                  : (idx - 1 + bottomTabs.length) % bottomTabs.length;
+              state.setActiveBottomTab(wsId, bottomTabs[nextIdx].id);
+            }
+            return;
+          }
+          if (tabs.length > 1) {
             e.preventDefault();
             const idx = tabs.findIndex(t => t.id === activeTabId);
             const nextIdx = e.key === "]"

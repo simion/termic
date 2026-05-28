@@ -77,11 +77,12 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
       // uuid via --session-id; subsequent spawns --resume that uuid.
       // Lets repo-root workspaces auto-resume without grabbing
       // unrelated sessions from the same cwd.
+      // First (mint) spawn uses --session-id to create the session with
+      // termic's uuid; later spawns --resume that same uuid.
       session_id_args: ["--session-id", "{UUID}"],
       resume_id_args:  ["--resume",     "{UUID}"],
-      // Display name surfaces in claude's prompt box, /resume picker,
-      // and terminal title — pin it to the workspace slug so the
-      // picker is human-readable when the user falls back to it.
+      // Display name surfaces in claude's prompt box, /resume picker, and
+      // terminal title. Stamped on the mint spawn only (gated below).
       name_args: ["--name", "{WORKSPACE_SLUG}"],
     },
   },
@@ -190,8 +191,16 @@ export function spawnCommandForCli(cli: string): string {
  *       just works.
  *       - `opts.resume` true → append `resume_args`.
  *
- *    C. always-applied:
- *       - `name_args` appended regardless of resume mode.
+ *    C. name_args (claude `--name`):
+ *       - Appended ONLY on the FIRST id-based spawn — the one that MINTS
+ *         the session via session_id_args (`--session-id <uuid>`).
+ *       - NEVER on a resume (`--resume <uuid>`), NEVER on secondary /
+ *         ad-hoc tabs (no sessionUuid), NEVER on cwd-based `--continue`.
+ *         The name only needs to be stamped once, when the session is
+ *         created; re-stamping it on resume can knock claude into its
+ *         interactive picker.
+ *
+ *    D. always-applied:
  *       - `yolo_args` appended LAST so a subcommand-style resume
  *         (`codex resume --last <yolo>`) attaches its global flag to
  *         the subcommand instead of the root binary.
@@ -216,10 +225,17 @@ export function spawnArgsForCli(
   const hasIdResume = (caps.session_id_args?.length ?? 0) > 0
                    && (caps.resume_id_args?.length ?? 0) > 0;
   let resumeBlock: string[] = [];
+  // True ONLY on the spawn that mints the session (session_id_args:
+  // sessionUuid present and not yet known to the agent). This is the
+  // single spawn that carries name_args.
+  let isFirstIdSpawn = false;
   if (hasIdResume && opts.sessionUuid) {
-    resumeBlock = opts.resumeKnown
-      ? (caps.resume_id_args ?? [])
-      : (caps.session_id_args ?? []);
+    if (opts.resumeKnown) {
+      resumeBlock = caps.resume_id_args ?? [];
+    } else {
+      resumeBlock = caps.session_id_args ?? [];
+      isFirstIdSpawn = true;
+    }
   } else if (opts.resume) {
     resumeBlock = caps.resume_args ?? [];
   }
@@ -227,7 +243,10 @@ export function spawnArgsForCli(
   const composed = [
     ...args,
     ...resumeBlock,
-    ...(caps.name_args ?? []),
+    // name_args ONLY when minting the session id for the first time.
+    // Never on --resume, never on secondary/ad-hoc tabs (no sessionUuid),
+    // never on cwd-based --continue resumes.
+    ...(isFirstIdSpawn ? (caps.name_args ?? []) : []),
     ...(opts.yolo ? (caps.yolo_args ?? []) : []),
   ];
   return composed.map(a => expandArg(a, vars));

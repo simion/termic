@@ -490,7 +490,6 @@ export function Sidebar() {
                     the spot it'll occupy after Enter. */}
                 {!collapsed && pendingRepoRoot?.projectId === p.id && (
                   <PendingRepoRootRow
-                    cli={pendingRepoRoot.cli}
                     value={pendingRepoRoot.value}
                     onChange={(v) => setPendingRepoRoot(prev => prev && { ...prev, value: v })}
                     onCancel={() => setPendingRepoRoot(null)}
@@ -1104,8 +1103,7 @@ function NavItem({ icon, label, active, compact, onClick }: {
  *  doesn't jump vertically when the input mounts. Auto-focused +
  *  pre-selected so the user can hit Enter to accept the default
  *  ("claude-1") or just start typing to replace. */
-function PendingRepoRootRow({ cli, value, onChange, onCommit, onCancel }: {
-  cli: string;
+function PendingRepoRootRow({ value, onChange, onCommit, onCancel }: {
   value: string;
   onChange: (v: string) => void;
   onCommit: () => void;
@@ -1128,10 +1126,8 @@ function PendingRepoRootRow({ cli, value, onChange, onCommit, onCancel }: {
     return () => { cancelled = true; cancelAnimationFrame(r1); };
   }, []);
   return (
-    <div className="ml-5 mr-1 flex items-center gap-1.5 rounded-md px-1.5 py-1">
-      <span className={cn("shrink-0", CLI_BRAND_COLOR[cli] || "text-[var(--color-fg-dim)]")}>
-        <CliIcon cli={cli} className="h-4 w-4" />
-      </span>
+    <div className="ml-3 mr-1 flex items-center gap-1 rounded-md px-1 py-1">
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 mx-0.5 text-[var(--color-fg-faint)]" />
       <input
         ref={ref}
         value={value}

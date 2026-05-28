@@ -581,6 +581,24 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // Renderer addon — WebGL by default; localStorage override for A/B.
     const rendererAddon = loadTerminalRenderer(term);
 
+    // Decide synchronously — BEFORE the rAF await in the spawn IIFE below —
+    // whether this is the workspace's "primary" agent tab (the one allowed to
+    // auto-resume). Reading the tab list after the async gap can see a stale
+    // snapshot: two same-cli tabs mounting in the same frame could each miss
+    // the other and both claim primary, racing two resumes onto one uuid.
+    // We can't lean on tab.is_default alone — a workspace woken from sleep
+    // re-creates its agent tab without that flag — so treat the FIRST terminal
+    // tab of this cli as primary too (a "+" tab is never first → still starts
+    // fresh). `tabs` deliberately stays OUT of the effect deps: respawning the
+    // PTY on every tab add/remove would be far worse than this one snapshot.
+    const isShell = tab.cli === "shell";
+    const idCapable = !isShell && cliSupportsIdSession(tab.cli);
+    const wsTabsNow = useApp.getState().tabs[ws.id] || [];
+    const firstAgentOfCli = wsTabsNow.find(
+      t => t.type === "terminal" && (t as TerminalTab).cli === tab.cli,
+    );
+    const isPrimaryTab = !!tab.is_default || firstAgentOfCli?.id === tab.id;
+
     // PTY spawn flow needs the webview to have laid the container out first,
     // otherwise fit.fit() returns 0×0 and we spawn a PTY with garbage dims.
     (async () => {
@@ -602,9 +620,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // Only the AUTO-CREATED default tab resumes; user-added tabs
         // always start fresh. `cli: "shell"` is a plain login shell,
         // never an agent, so it's gated out of both resume modes.
-        const isShell = tab.cli === "shell";
-        const idCapable = !isShell && cliSupportsIdSession(tab.cli);
-        const useIdResume = idCapable && !!ws.is_repo_root && !!tab.is_default;
+        // isShell / idCapable / isPrimaryTab were resolved synchronously
+        // above (before the rAF await) to avoid a stale-snapshot race.
+        const useIdResume = idCapable && !!ws.is_repo_root && isPrimaryTab;
         const storedUuid = ws.agent_session_ids?.[tab.cli];
         let sessionUuid: string | undefined;
         let resumeKnown = false;
@@ -625,29 +643,30 @@ export function TerminalPane({ ws, tab, active }: Props) {
           && !ws.is_repo_root
           && !!ws.has_resumable_history
           && !failedResumeRef.current
-          && !!tab.is_default;
+          && isPrimaryTab;
         spawnStartedAtRef.current = Date.now();
         lastSpawnWasResumeRef.current = shouldResume || (useIdResume && resumeKnown);
         hasHistoryLocalRef.current = false;
+        // Agent: resolve the executable through the registry (users can
+        // repoint `claude` etc. in Settings → Agent CLIs). Shell: a login
+        // zsh, mirroring the AuxTerminal scratch shell.
+        const spawnCmd = isShell ? "zsh" : spawnCommandForCli(tab.cli);
+        const spawnArgs = isShell ? ["-l"] : spawnArgsForCli(tab.cli, {
+          // YOLO auto-on whenever the workspace is sandboxed: the seatbelt
+          // cage is the real security boundary, so the agent's own
+          // permission-prompt scaffolding is just friction. The user pref
+          // still wins when sandbox is off, and the wizard / sandbox dialog
+          // spell this out so nobody is surprised.
+          yolo: usePrefs.getState().yoloMode || !!ws.sandbox_enabled,
+          resume: shouldResume,
+          sessionUuid,
+          resumeKnown,
+          ws,
+        });
         const spawn = await ipc.ptySpawn({
           cwd: ws.path,
-          // Agent: resolve the executable through the registry (users
-          // can repoint `claude` etc. in Settings → Agent CLIs). Shell:
-          // a login zsh, mirroring the AuxTerminal scratch shell.
-          cmd: isShell ? "zsh" : spawnCommandForCli(tab.cli),
-          args: isShell ? ["-l"] : spawnArgsForCli(tab.cli, {
-            // YOLO auto-on whenever the workspace is sandboxed: the
-            // seatbelt cage is the real security boundary, so the
-            // agent's own permission-prompt scaffolding is just
-            // friction. The user pref still wins when sandbox is off,
-            // and the wizard / sandbox dialog spell this out so
-            // nobody is surprised.
-            yolo: usePrefs.getState().yoloMode || !!ws.sandbox_enabled,
-            resume: shouldResume,
-            sessionUuid,
-            resumeKnown,
-            ws,
-          }),
+          cmd: spawnCmd,
+          args: spawnArgs,
           // Order matters: base TERMIC_*/COLORFGBG block first, then
           // the user's per-agent env block (Settings → Agents). The
           // per-agent values win on key collision so a power user can
@@ -703,6 +722,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // --resume <uuid> instead of --session-id <uuid>.
           if (useIdResume && sessionUuid && !resumeKnown) {
             ipc.workspaceSetAgentSessionId(ws.id, tab.cli, sessionUuid).catch(() => {});
+            // Mirror into the in-memory workspace so a sleep→resume in THIS
+            // same app session sees the uuid (disk write alone won't refresh
+            // the loaded workspace → resume would re-mint every time).
+            useApp.getState().setWorkspaceSessionId(ws.id, tab.cli, sessionUuid);
           }
           // Worktree: keep the original has_resumable_history flag flow
           // so the next worktree spawn (this session or after a restart)
@@ -788,6 +811,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
               // (deleted, rotated, …). Drop it; the immediate retry
               // mints a fresh one.
               ipc.workspaceSetAgentSessionId(ws.id, tab.cli, "").catch(() => {});
+              useApp.getState().setWorkspaceSessionId(ws.id, tab.cli, "");
             } else if (!useIdResume) {
               // Worktree rapid-exit on `--continue` = "no conversation"
               // — flip the persistent flag so future spawns skip resume.

@@ -4420,6 +4420,8 @@ dependencies = [
  "dirs 5.0.1",
  "font-kit",
  "libc",
+ "objc2",
+ "objc2-foundation",
  "parking_lot",
  "portable-pty",
  "regex",

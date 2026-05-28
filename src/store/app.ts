@@ -108,6 +108,11 @@ interface AppState {
   setActiveBottomTab: (wsId: string, tabId: string) => void;
 
   ensureDefaultTab: (wsId: string, cli: string) => void;
+  /** Mirror a just-persisted agent session uuid into the in-memory
+   *  workspace so the NEXT spawn in this same app session can resume it
+   *  (the disk write alone doesn't refresh the loaded workspace). Pass
+   *  "" to clear. */
+  setWorkspaceSessionId: (wsId: string, cli: string, uuid: string) => void;
   addTab: (wsId: string, tab: Tab) => void;
   closeTab: (wsId: string, tabId: string) => void;
   setActiveTabId: (wsId: string, tabId: string) => void;
@@ -442,6 +447,15 @@ export const useApp = create<AppState>((set, get) => ({
       activeTab: { ...s.activeTab, [wsId]: tab.id },
     };
   }),
+
+  setWorkspaceSessionId: (wsId, cli, uuid) => set(s => ({
+    workspaces: s.workspaces.map(w => {
+      if (w.id !== wsId) return w;
+      const ids = { ...(w.agent_session_ids || {}) };
+      if (uuid) ids[cli] = uuid; else delete ids[cli];
+      return { ...w, agent_session_ids: ids };
+    }),
+  })),
 
   addTab: (wsId, tab) => {
     set(s => {
