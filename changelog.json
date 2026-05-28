@@ -1,6 +1,20 @@
 {
   "versions": [
     {
+      "version": "0.7.4",
+      "date": "2026-05-28",
+      "summary": "Repo-root workspaces auto-resume claude / gemini sessions, multiple per project. Editor search panel re-skinned, terminal links match iTerm.",
+      "notes": [
+        "Repo-root workspaces now auto-resume claude and gemini sessions. Termic mints a session UUID on first spawn and resumes it on every spawn after, so the shared repo dir does not pull in sessions you ran outside termic.",
+        "Create multiple repo-root workspaces per project. The sidebar prompts inline for a name (defaults to claude-1, gemini-1, etc.) so each one has its own session. Terminal rows skip the prompt because shells have no session to resume.",
+        "Worktree auto-resume is unchanged. Every CLI's directory-based resume keeps working because each worktree has its own dir.",
+        "Multi-repo member picker has a new Add repo from disk option that opens a folder picker, registers the path as a standalone project, and adds it as a member in one click. Available in both New Project and the project's Repository edit panel.",
+        "Editor Find / Replace panel re-skinned. The bevelled WebKit gradient buttons and bright green focus ring are gone; flat controls in termic's palette with the accent ring on the active input.",
+        "Terminal links match iTerm and Ghostty. Underline and pointer appear only while Cmd or Ctrl is held; Cmd-click opens in the system browser.",
+        "Workspace rename input is properly focused on open (was racing the dropdown close)."
+      ]
+    },
+    {
       "version": "0.7.3",
       "date": "2026-05-27",
       "summary": "Find in files is responsive on huge repos; Run focuses its own tab.",
