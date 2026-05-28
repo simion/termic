@@ -1,6 +1,6 @@
 [package]
 name = "termic"
-version = "0.7.4"
+version = "0.7.5"
 description = "Run claude, gemini, and codex in parallel — each in its own git worktree."
 authors = ["Simion Agavriloaei"]
 edition = "2021"

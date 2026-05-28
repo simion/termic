@@ -1,6 +1,18 @@
 {
   "versions": [
     {
+      "version": "0.7.5",
+      "date": "2026-05-28",
+      "summary": "macOS Tahoe window corners and traffic lights, maximized state restores, steadier agent resume.",
+      "notes": [
+        "macOS Tahoe (26): window corners now match the system's larger rounded frame, so the dark background no longer pokes out as black notches. The clip re-applies after fullscreen and zoom transitions.",
+        "macOS Tahoe (26): the traffic-light buttons sit lower so they line up with the toolbar icons again.",
+        "The window restores its maximized state on relaunch if you quit while maximized.",
+        "Repo-root agent tabs resume reliably after a workspace sleeps and wakes, instead of occasionally starting a fresh session.",
+        "⇧⌘[ and ⇧⌘] cycle the bottom-split shell's tabs when it has focus, and no longer skip the last tab."
+      ]
+    },
+    {
       "version": "0.7.4",
       "date": "2026-05-28",
       "summary": "Repo-root workspaces auto-resume claude / gemini sessions, multiple per project. Editor search panel re-skinned, terminal links match iTerm.",
