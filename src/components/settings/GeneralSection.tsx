@@ -37,6 +37,8 @@ export function GeneralSection() {
   const setSandboxBypassPermissions = usePrefs(s => s.setSandboxBypassPermissions);
   const workspaceExpandMode = usePrefs(s => s.workspaceExpandMode);
   const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
+  const contextAtTrigger = usePrefs(s => s.contextAtTrigger);
+  const setContextAtTrigger = usePrefs(s => s.setContextAtTrigger);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -148,6 +150,15 @@ export function GeneralSection() {
           hint="Notify when an inactive agent finishes or rings the bell. Clicking back in jumps to that tab."
           value={desktopNotifications}
           onChange={setDesktopNotifications}
+        />
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Open the context picker when you type @"
+          hint="In an agent terminal, typing @ at the start of a word opens the file context picker. The ⌘I shortcut always works regardless of this setting."
+          value={contextAtTrigger}
+          onChange={setContextAtTrigger}
         />
       </div>
 

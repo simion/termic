@@ -41,6 +41,17 @@ export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("work
 export const workspaceListFilesForFinder = (id: string) =>
   invoke<string[]>("workspace_list_files_for_finder", { id });
 
+/** One entry from `workspace_context_files`: a file or a synthesized
+ *  directory, with its modification time for the context picker's recency
+ *  ranking. Mirrors the Rust `ContextFile` struct. */
+export interface ContextFile { path: string; mtime_ms: number; is_dir: boolean }
+
+/** Like `workspaceListFilesForFinder` but enriched with mtime + synthesized
+ *  directory entries — the data the ⌘I context picker ranks on. Same
+ *  `git ls-files` underneath, so ignore rules match the finder exactly. */
+export const workspaceContextFiles = (id: string) =>
+  invoke<ContextFile[]>("workspace_context_files", { id });
+
 // ───────────────────────────── find in files ─────────────────────────────
 
 export interface GrepHit { path: string; line: number; col: number; preview: string }

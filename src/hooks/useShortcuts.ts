@@ -17,6 +17,7 @@ import { useEffect } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
+import { resolveTargetPty } from "@/lib/activeTerminal";
 
 export function useShortcuts() {
   useEffect(() => {
@@ -91,6 +92,22 @@ export function useShortcuts() {
       if (e.shiftKey && e.key.toLowerCase() === "f" && wsId) {
         e.preventDefault();
         useUI.getState().openFindInFiles(wsId);
+        return;
+      }
+
+      // ⌘I → context picker: insert @path tokens into the active agent
+      // terminal. Cmd ONLY (e.metaKey), never Ctrl — Ctrl+I is Tab (0x09)
+      // and must reach the terminal untouched. No `isTyping` guard (same
+      // xterm hidden-textarea reason as ⌘P). Resolves the target PTY; with
+      // no spawned terminal in the workspace it toasts instead of opening.
+      if (e.metaKey && e.key.toLowerCase() === "i" && !e.shiftKey && wsId) {
+        e.preventDefault();
+        const pty = resolveTargetPty(tabs, activeTabId);
+        if (!pty) {
+          useUI.getState().pushToast("No terminal to insert into", "info");
+          return;
+        }
+        useUI.getState().openContextPicker(wsId, pty);
         return;
       }
 

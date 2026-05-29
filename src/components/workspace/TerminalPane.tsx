@@ -12,6 +12,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
+import { isAtWordBoundary } from "@/lib/atTrigger";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
@@ -828,6 +829,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // user actually types; matching that means clicking the tab to
         // check doesn't make the indicator vanish.
         term.onData(data => {
+          // Context picker (opt-in): typing '@' at a word boundary opens the
+          // picker and SWALLOWS the '@' (no ptyWrite). The picker re-emits the
+          // literal '@' on cancel via the atOrigin flag, or starts its first
+          // token with it on confirm — so the keystroke is never lost. ⌘I is
+          // the always-on alternative. Mid-word '@' (e.g. an email) passes
+          // through untouched.
+          if (data === "@" && usePrefs.getState().contextAtTrigger) {
+            const buf = term.buffer.active;
+            const before = buf.getLine(buf.cursorY)?.getCell(Math.max(0, buf.cursorX - 1))?.getChars() ?? "";
+            if (isAtWordBoundary(buf.cursorX, before)) {
+              useUI.getState().openContextPicker(ws.id, ptyId, true);
+              return;
+            }
+          }
           patchTab(ws.id, tab.id, { lastInputAt: Date.now() });
           settledRef.current = { lastHash: 0, unchangedCount: 0, marked: false };
           scrollbackRef.current = { lastLen: -1, stableCount: 0, marked: false };

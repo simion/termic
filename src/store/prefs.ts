@@ -19,6 +19,7 @@ const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
+const LS_CONTEXT_AT_TRIGGER = "contextAtTrigger";
 
 export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
@@ -306,6 +307,10 @@ interface PrefsState {
    *  - "always":  workspaces are always expanded by default. The chevron
    *               still collapses, and that collapsed-state sticks. */
   workspaceExpandMode: "chevron" | "click" | "always";
+  /** When on, typing `@` at a word boundary inside an agent terminal opens
+   *  the context picker (and swallows the `@`). Default off — the ⌘I
+   *  shortcut is always available; this is the opt-in inline trigger. */
+  contextAtTrigger: boolean;
 
   setEditorFontId:    (id: string) => void;
   setEditorThemeId:   (id: string) => void;
@@ -327,6 +332,7 @@ interface PrefsState {
   setGlobalDefaultSandbox: (v: boolean) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setWorkspaceExpandMode: (m: "chevron" | "click" | "always") => void;
+  setContextAtTrigger: (v: boolean) => void;
 }
 
 const lsGet = (k: string, fallback: string) => {
@@ -380,6 +386,7 @@ const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
   const raw = lsGet(LS_WS_EXPAND_MODE, "chevron");
   return raw === "click" || raw === "always" ? raw : "chevron";
 })();
+const initialContextAtTrigger = lsGetBool(LS_CONTEXT_AT_TRIGGER, false);
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
@@ -396,6 +403,7 @@ export const usePrefs = create<PrefsState>(set => ({
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
   workspaceExpandMode: initialWsExpandMode,
+  contextAtTrigger: initialContextAtTrigger,
 
   setEditorFontId: (id) => {
     try { localStorage.setItem(LS_EDITOR_FONT, id); } catch {}
@@ -471,6 +479,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setWorkspaceExpandMode: (m) => {
     try { localStorage.setItem(LS_WS_EXPAND_MODE, m); } catch {}
     set({ workspaceExpandMode: m });
+  },
+  setContextAtTrigger: (v) => {
+    try { localStorage.setItem(LS_CONTEXT_AT_TRIGGER, v ? "1" : "0"); } catch {}
+    set({ contextAtTrigger: v });
   },
   cycleThemeMode: () => {
     // Cycle only the original three for the keyboard shortcut - explicit

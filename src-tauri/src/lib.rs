@@ -3096,6 +3096,83 @@ async fn workspace_list_files_for_finder(id: String) -> Result<Vec<String>, Stri
     .map_err(|e| e.to_string())?
 }
 
+/// One entry returned by `workspace_context_files`: a file or a synthesized
+/// directory, with its modification time for recency ranking in the context
+/// picker (⌘I). Directories carry the max mtime of their descendants.
+#[derive(serde::Serialize, Clone)]
+pub struct ContextFile {
+    pub path: String,
+    pub mtime_ms: i64,
+    pub is_dir: bool,
+}
+
+/// Synthesize directory entries from a list of file entries. Every unique
+/// ancestor directory prefix ("a/b/c.ts" → "a/b" and "a") becomes one
+/// `ContextFile { is_dir: true }` whose `mtime_ms` is the max mtime of its
+/// descendant files. Pure (no filesystem access) so it is unit-testable.
+fn context_dir_entries(files: &[ContextFile]) -> Vec<ContextFile> {
+    use std::collections::HashMap;
+    let mut dirs: HashMap<String, i64> = HashMap::new();
+    for f in files {
+        let mut idx = f.path.rfind('/');
+        while let Some(i) = idx {
+            let dir = &f.path[..i];
+            if dir.is_empty() {
+                break;
+            }
+            let e = dirs.entry(dir.to_string()).or_insert(i64::MIN);
+            if f.mtime_ms > *e {
+                *e = f.mtime_ms;
+            }
+            idx = dir.rfind('/');
+        }
+    }
+    dirs.into_iter()
+        .map(|(path, mtime_ms)| ContextFile { path, mtime_ms, is_dir: true })
+        .collect()
+}
+
+/// Like `workspace_list_files_for_finder` but enriched with per-path
+/// modification time and synthesized directory entries — the data the
+/// context picker needs for recency ranking and folder selection. Reuses the
+/// same `git ls-files` so ignore rules stay identical to the finder.
+#[tauri::command]
+async fn workspace_context_files(id: String) -> Result<Vec<ContextFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let out = std::process::Command::new("git")
+            .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+            .current_dir(&w.path)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        let base = Path::new(&w.path);
+        let mut files: Vec<ContextFile> = Vec::new();
+        for line in s.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            // Best-effort mtime; a stat failure (e.g. a dangling symlink)
+            // just sinks the file to the bottom of the recency sort.
+            let mtime_ms = fs::metadata(base.join(line))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            files.push(ContextFile { path: line.to_string(), mtime_ms, is_dir: false });
+        }
+        let mut all = context_dir_entries(&files);
+        all.extend(files);
+        Ok(all)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ───────────────────────────── helpers ─────────────────────────────
 
 fn slugify(s: &str) -> String {
@@ -4420,7 +4497,7 @@ pub fn run() {
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_grep_start, workspace_grep_cancel,
-            workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
+            workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_context_files, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
@@ -4587,5 +4664,32 @@ mod tests {
         assert!(s.contains("secrets.env"));
         assert!(s.contains("/y"));
         assert!(!s.contains("/x"));
+    }
+
+    fn cf(path: &str, mtime_ms: i64) -> ContextFile {
+        ContextFile { path: path.into(), mtime_ms, is_dir: false }
+    }
+
+    #[test]
+    fn context_dirs_synthesizes_unique_ancestors_with_max_mtime() {
+        let files = vec![cf("a/b/c.ts", 10), cf("a/d.ts", 20)];
+        let mut dirs = context_dir_entries(&files);
+        dirs.sort_by(|x, y| x.path.cmp(&y.path));
+        let paths: Vec<&str> = dirs.iter().map(|d| d.path.as_str()).collect();
+        assert_eq!(paths, vec!["a", "a/b"]); // each ancestor once
+        assert!(dirs.iter().all(|d| d.is_dir));
+        // "a" sees both files → max(10, 20); "a/b" sees only c.ts → 10
+        assert_eq!(dirs.iter().find(|d| d.path == "a").unwrap().mtime_ms, 20);
+        assert_eq!(dirs.iter().find(|d| d.path == "a/b").unwrap().mtime_ms, 10);
+    }
+
+    #[test]
+    fn context_dirs_flat_list_yields_none() {
+        assert!(context_dir_entries(&[cf("a.ts", 1)]).is_empty());
+    }
+
+    #[test]
+    fn context_dirs_empty_input_yields_none() {
+        assert!(context_dir_entries(&[]).is_empty());
     }
 }

@@ -47,6 +47,11 @@ interface UIState {
   fileFinderWsId: string | null;
   /** ⇧⌘F find-in-files dialog — workspace id, null = closed. */
   findInFilesWsId: string | null;
+  /** ⌘I context picker — the workspace + the PTY id to insert @path tokens
+   *  into on confirm. null = closed. `atOrigin` is true when the picker was
+   *  opened by swallowing a typed `@` (so cancel re-emits the literal `@`).
+   *  Lives in the UI store so opening doesn't churn the workspace tree. */
+  contextPicker: { wsId: string; ptyId: string; atOrigin: boolean } | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
    *  the whole window so the user knows the freeze is intentional. Set for
    *  unavoidably-synchronous IPC calls like `workspace_archive` that take
@@ -85,6 +90,8 @@ interface UIState {
   closeFileFinder: () => void;
   openFindInFiles: (wsId: string) => void;
   closeFindInFiles: () => void;
+  openContextPicker: (wsId: string, ptyId: string, atOrigin?: boolean) => void;
+  closeContextPicker: () => void;
   setBusy: (msg: string | null) => void;
   /** Open the global confirm modal. Returns a Promise that resolves
    *  to true (user confirmed) or false (cancelled / dismissed). Drop-in
@@ -141,6 +148,7 @@ export const useUI = create<UIState>(set => ({
   sandboxForWsId: null,
   fileFinderWsId: null,
   findInFilesWsId: null,
+  contextPicker: null,
   busyMessage: null,
   confirm: null,
   pendingSandboxRestarts: new Set<string>(),
@@ -165,6 +173,8 @@ export const useUI = create<UIState>(set => ({
   closeFileFinder:   () => set({ fileFinderWsId: null }),
   openFindInFiles:   (wsId) => set({ findInFilesWsId: wsId }),
   closeFindInFiles:  () => set({ findInFilesWsId: null }),
+  openContextPicker: (wsId, ptyId, atOrigin = false) => set({ contextPicker: { wsId, ptyId, atOrigin } }),
+  closeContextPicker: () => set({ contextPicker: null }),
   setBusy:           (msg) => set({ busyMessage: msg }),
   setNotifyRoute:    (route) => set({
     notifyRoute: route ? { ...route, firedAt: Date.now() } : null,
