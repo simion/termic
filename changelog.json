@@ -2,7 +2,7 @@
   "versions": [
     {
       "version": "0.7.6",
-      "date": "",
+      "date": "2026-05-29",
       "summary": "Fix white corners on macOS Tahoe.",
       "notes": [
         "macOS Tahoe: fixed white corners appearing at the window edges. The content-view clip now sets the window background to transparent so clipped corner pixels show the desktop instead of a white notch."
