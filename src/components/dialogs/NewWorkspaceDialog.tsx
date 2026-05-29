@@ -321,7 +321,7 @@ export function NewWorkspaceDialog() {
       // for several seconds on big repos.
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={isMulti ? "New multi-repo workspace" : "New worktree"}
+      title={isMulti ? "New multi-repo workspace" : "New workspace via worktree"}
       description={project ? `in ${project.name}` : undefined}
       // Widen the dialog based on what's actually inside:
       //   - sandbox ON     → 4xl (the sandbox form needs a 2nd column)

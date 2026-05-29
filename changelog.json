@@ -1,6 +1,36 @@
 {
   "versions": [
     {
+      "version": "0.7.7",
+      "date": "2026-05-29",
+      "summary": "Launch workspaces with a custom command, plus sidebar polish.",
+      "notes": [
+        "New \"Custom command\" option in the project menu: open the repo's current branch and launch your own command (ssh, a dev server, a REPL) in a terminal instead of an agent. The command runs in a login shell and drops back to a usable shell when it exits.",
+        "Sidebar: a workspace now stays highlighted as active while an open file or git diff is showing, not just when a terminal tab is focused.",
+        "Multi-repo: member tabs in the footer collapse into a \"+N\" menu when they don't all fit, so the Run and Open buttons are never clipped."
+      ]
+    },
+    {
+      "version": "0.7.6",
+      "date": "2026-05-29",
+      "summary": "Fix white corners on macOS Tahoe.",
+      "notes": [
+        "macOS Tahoe: fixed white corners appearing at the window edges. The content-view clip now sets the window background to transparent so clipped corner pixels show the desktop instead of a white notch."
+      ]
+    },
+    {
+      "version": "0.7.5",
+      "date": "2026-05-28",
+      "summary": "macOS Tahoe window corners and traffic lights, maximized state restores, steadier agent resume.",
+      "notes": [
+        "macOS Tahoe (26): window corners now match the system's larger rounded frame, so the dark background no longer pokes out as black notches. The clip re-applies after fullscreen and zoom transitions.",
+        "macOS Tahoe (26): the traffic-light buttons sit lower so they line up with the toolbar icons again.",
+        "The window restores its maximized state on relaunch if you quit while maximized.",
+        "Repo-root agent tabs resume reliably after a workspace sleeps and wakes, instead of occasionally starting a fresh session.",
+        "⇧⌘[ and ⇧⌘] cycle the bottom-split shell's tabs when it has focus, and no longer skip the last tab."
+      ]
+    },
+    {
       "version": "0.7.4",
       "date": "2026-05-28",
       "summary": "Repo-root workspaces auto-resume claude / gemini sessions, multiple per project. Editor search panel re-skinned, terminal links match iTerm.",

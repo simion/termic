@@ -108,6 +108,11 @@ interface AppState {
   setActiveBottomTab: (wsId: string, tabId: string) => void;
 
   ensureDefaultTab: (wsId: string, cli: string) => void;
+  /** Mirror a just-persisted agent session uuid into the in-memory
+   *  workspace so the NEXT spawn in this same app session can resume it
+   *  (the disk write alone doesn't refresh the loaded workspace). Pass
+   *  "" to clear. */
+  setWorkspaceSessionId: (wsId: string, cli: string, uuid: string) => void;
   addTab: (wsId: string, tab: Tab) => void;
   closeTab: (wsId: string, tabId: string) => void;
   setActiveTabId: (wsId: string, tabId: string) => void;
@@ -435,13 +440,31 @@ export const useApp = create<AppState>((set, get) => ({
     // tabs (via the "+" button → `addTab`) leave it unset so they
     // start fresh - otherwise every new tab tries to resume the
     // same conversation and we get N copies fighting.
-    const title = agentDisplayName(cli, s.agents);
-    const tab: TerminalTab = { id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true };
+    // Custom-command workspaces run a user-supplied launch command in a
+    // login shell. Seed the tab's `command` from the workspace so the
+    // PTY spawn (and every respawn) re-runs it, and title the tab with
+    // the workspace name rather than a generic "Command".
+    const ws = s.workspaces.find(w => w.id === wsId);
+    const isCustom = cli === "custom";
+    const title = isCustom ? (ws?.name || "Command") : agentDisplayName(cli, s.agents);
+    const tab: TerminalTab = {
+      id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true,
+      ...(isCustom && ws?.custom_command ? { command: ws.custom_command } : {}),
+    };
     return {
       tabs: { ...s.tabs, [wsId]: [tab] },
       activeTab: { ...s.activeTab, [wsId]: tab.id },
     };
   }),
+
+  setWorkspaceSessionId: (wsId, cli, uuid) => set(s => ({
+    workspaces: s.workspaces.map(w => {
+      if (w.id !== wsId) return w;
+      const ids = { ...(w.agent_session_ids || {}) };
+      if (uuid) ids[cli] = uuid; else delete ids[cli];
+      return { ...w, agent_session_ids: ids };
+    }),
+  })),
 
   addTab: (wsId, tab) => {
     set(s => {

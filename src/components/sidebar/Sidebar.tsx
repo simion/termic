@@ -490,7 +490,6 @@ export function Sidebar() {
                     the spot it'll occupy after Enter. */}
                 {!collapsed && pendingRepoRoot?.projectId === p.id && (
                   <PendingRepoRootRow
-                    cli={pendingRepoRoot.cli}
                     value={pendingRepoRoot.value}
                     onChange={(v) => setPendingRepoRoot(prev => prev && { ...prev, value: v })}
                     onCancel={() => setPendingRepoRoot(null)}
@@ -669,6 +668,12 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const isActive = activeWsId === w.id;
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
   const isLoaded = terminalTabs.some(t => t.ptyId);
+  // The sidebar only renders terminal tabs as child rows; edit/diff tabs
+  // are transient file views with no row. When the active tab is one of
+  // those (or there's no active tab), no child row carries the selection,
+  // so the workspace HEADER must show it instead — otherwise an open file
+  // or git diff leaves the workspace looking inactive in the tree.
+  const activeTabIsTerminalChild = terminalTabs.some(t => t.id === activeTabId);
 
   // Workspace rename
   const [wsRenaming, setWsRenaming] = useState<string | null>(null);
@@ -772,7 +777,14 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
           if (terminalTabs.length === 0) {
             // No terminals yet — launch the default agent; stays collapsed (1 terminal = collapsed by default).
             const cli = w.cli || "claude";
-            addTab(w.id, { id: crypto.randomUUID(), type: "terminal", title: agentDisplayName(cli, registry), cli });
+            // Custom-command workspaces re-run their launch command and
+            // title the tab with the workspace name (mirrors ensureDefaultTab).
+            const isCustom = cli === "custom";
+            addTab(w.id, {
+              id: crypto.randomUUID(), type: "terminal", cli, is_default: true,
+              title: isCustom ? w.name : agentDisplayName(cli, registry),
+              ...(isCustom && w.custom_command ? { command: w.custom_command } : {}),
+            });
           } else {
             if (activeTabId) setActiveTabId(w.id, activeTabId);
             // Only the "click" mode treats a row click on the already
@@ -784,7 +796,11 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         }}
         className={cn(
           "group/wsrow ml-3 flex items-center gap-1 rounded-md px-1 py-1 text-[13px] cursor-pointer select-none transition-colors",
-          isActive && collapsed
+          // Strong selection on the header when active AND no child row
+          // carries it: collapsed (children hidden) OR the active tab is an
+          // edit/diff view (no row). Expanded with an active terminal tab
+          // delegates the highlight to that child row instead.
+          isActive && (collapsed || !activeTabIsTerminalChild)
             ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
             : isActive
             ? "text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
@@ -1104,8 +1120,7 @@ function NavItem({ icon, label, active, compact, onClick }: {
  *  doesn't jump vertically when the input mounts. Auto-focused +
  *  pre-selected so the user can hit Enter to accept the default
  *  ("claude-1") or just start typing to replace. */
-function PendingRepoRootRow({ cli, value, onChange, onCommit, onCancel }: {
-  cli: string;
+function PendingRepoRootRow({ value, onChange, onCommit, onCancel }: {
   value: string;
   onChange: (v: string) => void;
   onCommit: () => void;
@@ -1128,10 +1143,8 @@ function PendingRepoRootRow({ cli, value, onChange, onCommit, onCancel }: {
     return () => { cancelled = true; cancelAnimationFrame(r1); };
   }, []);
   return (
-    <div className="ml-5 mr-1 flex items-center gap-1.5 rounded-md px-1.5 py-1">
-      <span className={cn("shrink-0", CLI_BRAND_COLOR[cli] || "text-[var(--color-fg-dim)]")}>
-        <CliIcon cli={cli} className="h-4 w-4" />
-      </span>
+    <div className="ml-3 mr-1 flex items-center gap-1 rounded-md px-1 py-1">
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 mx-0.5 text-[var(--color-fg-faint)]" />
       <input
         ref={ref}
         value={value}

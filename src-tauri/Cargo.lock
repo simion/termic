@@ -4413,13 +4413,15 @@ dependencies = [
 
 [[package]]
 name = "termic"
-version = "0.7.4"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "chrono",
  "dirs 5.0.1",
  "font-kit",
  "libc",
+ "objc2",
+ "objc2-foundation",
  "parking_lot",
  "portable-pty",
  "regex",

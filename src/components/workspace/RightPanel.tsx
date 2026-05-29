@@ -7,7 +7,7 @@ import { useApp, useActiveWorkspace } from "@/store/app";
 import {
   workspaceChanges, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad,
 } from "@/lib/ipc";
-import type { Changes, Workspace, Project } from "@/lib/types";
+import type { Changes, Workspace, WorkspaceMember, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2, Wrench, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -15,7 +15,8 @@ import { Tip } from "@/components/ui/Tooltip";
 import { AuxTerminal } from "./AuxTerminal";
 import { FileTree } from "./FileTree";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
-import { useScriptRuns, useRunState } from "@/store/scriptRuns";
+import { useScriptRuns, useRunState, type RunStatus } from "@/store/scriptRuns";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
 
 const STATUS_LABEL: Record<string, string> = { M: "modified", A: "added", D: "deleted", R: "renamed", "??": "untracked", "!!": "ignored", U: "conflict" };
 const STATUS_COLOR: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", "??": "var(--color-ok)", U: "var(--color-err)" };
@@ -255,18 +256,21 @@ export function RightPanel() {
               <button
                 onClick={() => setFootCollapsed(c => !c)}
                 title={footCollapsed ? "Expand" : "Collapse"}
-                className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
               >
                 {footCollapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
               </button>
-              {ws.composition!.map(m => (
-                <FTab
-                  key={m.dir_name}
-                  label={m.dir_name}
-                  active={footTab !== "term" && footTarget === m.dir_name}
-                  onClick={() => { setFootTab(footTab === "term" ? "run" : footTab); setFootTarget(m.dir_name); setFootCollapsed(false); }}
-                />
-              ))}
+              {/* Member targets. Tabs that fit render inline; the rest
+                  collapse into a "+N" overflow menu so the strip never
+                  spills and the Run-all / Open-all toolbar is never
+                  clipped off the right edge. The active member is always
+                  kept inline. */}
+              <MemberTabStrip
+                members={ws.composition!}
+                wsId={ws.id}
+                activeDir={footTab !== "term" ? footTarget : null}
+                onSelect={(dir) => { setFootTab(footTab === "term" ? "run" : footTab); setFootTarget(dir); setFootCollapsed(false); }}
+              />
               {footerTerm && (
                 <FTab
                   label="Terminal"
@@ -439,6 +443,178 @@ function FTab({ label, active, onClick, onClose }: {
           className="ml-0.5 mr-0.5 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
           title="Close tab"
         ><X className="h-3 w-3" /></button>
+      )}
+    </div>
+  );
+}
+
+// Width reserved for the "+N" overflow trigger when some members don't
+// fit. Slightly generous so a two-digit count never re-spills the strip.
+const OVERFLOW_BTN_W = 50;
+// gap-0.5 between strip children = 2px. Folded into each tab's effective
+// width so the fit math accounts for inter-tab spacing.
+const STRIP_GAP = 2;
+
+/** Live run/setup status for a composition member, collapsed to one
+ *  value for the status dot. Running and error are the only states worth
+ *  surfacing; done/idle read as quiet. */
+function memberRunStatus(runs: Record<string, { status: RunStatus }>, wsId: string, dir: string): RunStatus {
+  const r = runs[`${wsId}:${dir}:run`]?.status;
+  const s = runs[`${wsId}:${dir}:setup`]?.status;
+  if (r === "running" || s === "running") return "running";
+  if (r === "error" || s === "error") return "error";
+  if (r === "done" || s === "done") return "done";
+  return "idle";
+}
+
+/** Fixed-width status dot. Always occupies the same box (transparent when
+ *  idle/done) so a tab's measured width never changes as scripts start or
+ *  stop — keeps the overflow math from churning on every status change. */
+function StatusDot({ status }: { status: RunStatus }) {
+  const color = status === "running" ? "var(--color-ok)"
+    : status === "error" ? "var(--color-err)"
+    : "transparent";
+  return (
+    <span
+      className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status === "running" && "animate-pulse")}
+      style={{ background: color }}
+    />
+  );
+}
+
+/** A single member target tab with a leading status dot. */
+function MemberTab({ label, status, active, onClick }: {
+  label: string; status: RunStatus; active: boolean; onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-b-2 px-1.5 py-1 text-[12.5px] transition-colors",
+        active ? "text-[var(--color-fg)] border-[var(--color-accent)]" : "text-[var(--color-fg-dim)] border-transparent hover:text-[var(--color-fg)]",
+      )}
+      style={active ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : undefined}
+    >
+      <StatusDot status={status} />
+      {label}
+    </button>
+  );
+}
+
+/** Member target strip with overflow handling.
+ *
+ *  Measures each member tab's natural width from an invisible layer, then
+ *  greedily fills the strip's available width left-to-right. Members that
+ *  don't fit drop into a "+N" dropdown. The active member is always kept
+ *  inline (forced into the visible set first) so the user never loses
+ *  sight of what they're targeting. Recomputes on panel resize via a
+ *  ResizeObserver and re-measures when the member set or fonts change. */
+function MemberTabStrip({ members, wsId, activeDir, onSelect }: {
+  members: WorkspaceMember[];
+  wsId: string;
+  activeDir: string | null;
+  onSelect: (dir: string) => void;
+}) {
+  const runs = useScriptRuns(s => s.runs);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
+  const [availW, setAvailW] = useState(0);
+  const [tabWidths, setTabWidths] = useState<number[]>([]);
+
+  // Track the strip's available width (already excludes the chevron,
+  // Terminal tab, and Run-all toolbar — they're flex siblings, this is
+  // flex-1 with min-w-0 so it gets exactly the leftover space).
+  useEffect(() => {
+    const el = stripRef.current; if (!el) return;
+    setAvailW(el.clientWidth);
+    const ro = new ResizeObserver(() => setAvailW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Measure each tab's natural width from the hidden layer. The dot slot
+  // is fixed-width so status changes never alter these — re-measure only
+  // when the member set changes (or once fonts settle, since glyph widths
+  // shift between the fallback and Inter).
+  const memberKey = members.map(m => m.dir_name).join("|");
+  useEffect(() => {
+    const measure = () => {
+      const layer = measureRef.current; if (!layer) return;
+      setTabWidths(Array.from(layer.children).map(c => (c as HTMLElement).offsetWidth));
+    };
+    measure();
+    document.fonts?.ready.then(measure).catch(() => {});
+  }, [memberKey]);
+
+  const n = members.length;
+  const activeIdx = activeDir ? members.findIndex(m => m.dir_name === activeDir) : -1;
+  const ready = tabWidths.length === n && availW > 0;
+
+  let visibleIdx = members.map((_, i) => i);
+  let overflowIdx: number[] = [];
+  if (ready) {
+    const eff = tabWidths.map(w => w + STRIP_GAP);
+    const total = eff.reduce((a, b) => a + b, 0);
+    if (total > availW) {
+      const budget = availW - OVERFLOW_BTN_W;
+      const chosen = new Set<number>();
+      let used = 0;
+      // Reserve the active tab first so it always stays inline.
+      if (activeIdx >= 0) { chosen.add(activeIdx); used += eff[activeIdx]; }
+      for (let i = 0; i < n; i++) {
+        if (chosen.has(i)) continue;
+        if (used + eff[i] <= budget) { chosen.add(i); used += eff[i]; }
+        else break; // keep the visible run contiguous from the left
+      }
+      visibleIdx = [...chosen].sort((a, b) => a - b);
+      overflowIdx = members.map((_, i) => i).filter(i => !chosen.has(i));
+    }
+  }
+
+  return (
+    <div ref={stripRef} className="relative flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
+      {/* Hidden measurement layer — identical markup to the real tabs so
+          offsetWidth matches. h-0 + invisible keeps it out of layout and
+          paint; the strip's overflow-hidden clips it. */}
+      <div ref={measureRef} aria-hidden className="pointer-events-none invisible absolute left-0 top-0 flex h-0 items-center gap-0.5 whitespace-nowrap">
+        {members.map(m => (
+          <MemberTab key={m.dir_name} label={m.dir_name} status="idle" active={false} onClick={() => {}} />
+        ))}
+      </div>
+      {visibleIdx.map(i => {
+        const m = members[i];
+        return (
+          <MemberTab
+            key={m.dir_name}
+            label={m.dir_name}
+            status={memberRunStatus(runs, wsId, m.dir_name)}
+            active={activeIdx === i}
+            onClick={() => onSelect(m.dir_name)}
+          />
+        );
+      })}
+      {overflowIdx.length > 0 && (
+        <DropdownRoot>
+          <DropdownTrigger asChild>
+            <button
+              title={`${overflowIdx.length} more`}
+              className="flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-[12.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+            >
+              +{overflowIdx.length}<ChevronDown className="h-3 w-3" />
+            </button>
+          </DropdownTrigger>
+          <DropdownMenu align="start">
+            {overflowIdx.map(i => {
+              const m = members[i];
+              return (
+                <DropdownItem key={m.dir_name} onSelect={() => onSelect(m.dir_name)} className="items-center gap-2">
+                  <StatusDot status={memberRunStatus(runs, wsId, m.dir_name)} />
+                  <span className="font-mono text-[12.5px]">{m.dir_name}</span>
+                </DropdownItem>
+              );
+            })}
+          </DropdownMenu>
+        </DropdownRoot>
       )}
     </div>
   );

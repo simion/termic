@@ -1,6 +1,6 @@
 [package]
 name = "termic"
-version = "0.7.4"
+version = "0.7.7"
 description = "Run claude, gemini, and codex in parallel — each in its own git worktree."
 authors = ["Simion Agavriloaei"]
 edition = "2021"
@@ -41,6 +41,15 @@ regex = "1.12.3"
 # YAML parse/serialize for the repo-root `.termic.yaml`. serde_yml is the
 # maintained fork of the now-unmaintained serde_yaml.
 serde_yml = "0.0.12"
+
+# macOS-only: raw Objective-C bridge used to round the window's content
+# layer on macOS Tahoe (26+) so the WKWebView corners match the system's
+# enlarged window radius (see round_window_corners_for_tahoe in lib.rs).
+# Both crates are already in the dependency tree via tauri/wry, so pinning
+# them here doesn't change resolution.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
 
 [dev-dependencies]
 tempfile = "3"

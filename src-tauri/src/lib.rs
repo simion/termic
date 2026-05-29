@@ -209,6 +209,13 @@ pub struct Workspace {
     /// + sandbox profile generator iterate this list when populated.
     #[serde(default)]
     pub composition: Vec<WorkspaceMember>,
+    /// Pre-set launch command for `cli == "custom"` repo-root workspaces.
+    /// The default tab runs this through a login shell instead of an
+    /// agent binary (e.g. `ssh box`, `npm run dev`, `python`). None for
+    /// every agent / shell workspace. Persisted so the command re-runs
+    /// on every respawn / app restart.
+    #[serde(default)]
+    pub custom_command: Option<String>,
 }
 
 /// One entry in a multi-repo workspace's composition. The host repo
@@ -1145,7 +1152,7 @@ fn workspaces_list() -> Vec<Workspace> { load_workspaces() }
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<String>) -> Result<Workspace, String> {
+fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<String>, command: Option<String>) -> Result<Workspace, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     // CLI is now explicit — frontend's "+ Open repo with <agent>" passes the
@@ -1226,6 +1233,13 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| branch.clone());
+    // Only "custom" workspaces carry a launch command; agent/shell
+    // workspaces resolve their command from the registry at spawn.
+    let custom_command = if cli == "custom" {
+        command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty())
+    } else {
+        None
+    };
     let ws = Workspace {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
@@ -1255,6 +1269,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         composition,
+        custom_command,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1481,6 +1496,9 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         // (workspace_create_multi) that populates this and re-uses
         // the same Workspace + sandbox plumbing.
         composition: Vec::new(),
+        // Worktree workspaces always run an agent / shell, never a
+        // pre-set custom command (that path is repo-root only).
+        custom_command: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -1812,6 +1830,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         composition,
+        custom_command: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -3928,10 +3947,14 @@ fn default_agents() -> Vec<Agent> {
                 // that survives across restarts AND is safe inside the
                 // repo root (won't grab the user's external sessions
                 // sharing that cwd).
+                // First (mint) spawn: `--session-id <uuid>` creates the
+                // session with termic's id. Later spawns: `--resume <uuid>`
+                // resumes that same id.
                 session_id_args: vec!["--session-id".into(), "{UUID}".into()],
                 resume_id_args:  vec!["--resume".into(),     "{UUID}".into()],
                 // Surface termic's workspace name in claude's /resume
-                // picker + prompt box + terminal title.
+                // picker + prompt box + terminal title. Stamped on the mint
+                // spawn only (gated to the first id spawn in spawnArgsForCli).
                 name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
             },
             env: std::collections::HashMap::new(),
@@ -4368,67 +4391,80 @@ async fn detect_clis() -> Vec<CliInfo> {
 fn detect_clis_blocking() -> Vec<CliInfo> {
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let agents = load_settings_inner().agents;
-    agents.iter().map(|agent| {
-        let bin = agent.command.trim();
-        let mut found = false;
-        let mut path = String::new();
+    // Probe agents concurrently — each agent costs a login-shell spawn
+    // (`sh -lc`, which sources the user's profile and can take hundreds
+    // of ms) plus a `--version` probe. Serially across 5+ agents that
+    // ran 2-5s at startup, long enough that the first popover opened
+    // before detection resolved and fell back to showing every agent.
+    // One thread per agent collapses the wall-clock to a single probe.
+    let handles: Vec<_> = agents.iter().map(|agent| {
+        let id = agent.id.clone();
+        let bin = agent.command.trim().to_string();
+        let home = home.clone();
+        thread::spawn(move || {
+            let bin = bin.as_str();
+            let mut found = false;
+            let mut path = String::new();
 
-        if bin.is_empty() {
-            // No command configured — nothing to probe.
-        } else if bin.starts_with('/') {
-            // Absolute path (e.g. set via the welcome wizard's binary
-            // picker) — just check existence, no PATH lookup.
-            if Path::new(bin).exists() {
-                found = true;
-                path = bin.to_string();
-            }
-        } else {
-            // PATH lookup via login shell — the common case.
-            if let Ok(o) = Command::new("/usr/bin/env")
-                .args(["sh", "-lc", &format!("command -v {} 2>/dev/null", bin)])
-                .output()
-            {
-                if o.status.success() {
-                    let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    // Reject shell-function body lookalikes.
-                    if !p.is_empty() && (p.starts_with('/') || p.starts_with('~')) {
-                        found = true;
-                        path = p;
+            if bin.is_empty() {
+                // No command configured — nothing to probe.
+            } else if bin.starts_with('/') {
+                // Absolute path (e.g. set via the welcome wizard's binary
+                // picker) — just check existence, no PATH lookup.
+                if Path::new(bin).exists() {
+                    found = true;
+                    path = bin.to_string();
+                }
+            } else {
+                // PATH lookup via login shell — the common case.
+                if let Ok(o) = Command::new("/usr/bin/env")
+                    .args(["sh", "-lc", &format!("command -v {} 2>/dev/null", bin)])
+                    .output()
+                {
+                    if o.status.success() {
+                        let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        // Reject shell-function body lookalikes.
+                        if !p.is_empty() && (p.starts_with('/') || p.starts_with('~')) {
+                            found = true;
+                            path = p;
+                        }
+                    }
+                }
+                // Fallback: probe common macOS install locations directly.
+                if !found {
+                    for c in [
+                        format!("{home}/.local/bin/{bin}"),
+                        format!("/opt/homebrew/bin/{bin}"),
+                        format!("/usr/local/bin/{bin}"),
+                        format!("{home}/.bun/bin/{bin}"),
+                        format!("{home}/.cargo/bin/{bin}"),
+                    ] {
+                        if Path::new(&c).exists() {
+                            found = true;
+                            path = c;
+                            break;
+                        }
                     }
                 }
             }
-            // Fallback: probe common macOS install locations directly.
-            if !found {
-                for c in [
-                    format!("{home}/.local/bin/{bin}"),
-                    format!("/opt/homebrew/bin/{bin}"),
-                    format!("/usr/local/bin/{bin}"),
-                    format!("{home}/.bun/bin/{bin}"),
-                    format!("{home}/.cargo/bin/{bin}"),
-                ] {
-                    if Path::new(&c).exists() {
-                        found = true;
-                        path = c;
-                        break;
-                    }
-                }
-            }
-        }
 
-        // Best-effort version probe. Use the resolved path when we have
-        // it (avoids PATH ambiguity); fall back to the bare command.
-        let version = if found {
-            let cmd = if path.is_empty() { bin.to_string() } else { path.clone() };
-            Command::new(&cmd)
-                .arg("--version")
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
-                .unwrap_or_default()
-        } else { String::new() };
+            // Best-effort version probe. Use the resolved path when we have
+            // it (avoids PATH ambiguity); fall back to the bare command.
+            let version = if found {
+                let cmd = if path.is_empty() { bin.to_string() } else { path.clone() };
+                Command::new(&cmd)
+                    .arg("--version")
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
+                    .unwrap_or_default()
+            } else { String::new() };
 
-        CliInfo { name: agent.id.clone(), found, path, version }
-    }).collect()
+            CliInfo { name: id, found, path, version }
+        })
+    }).collect();
+
+    handles.into_iter().filter_map(|h| h.join().ok()).collect()
 }
 
 // ───────────────────────────── bootstrap ─────────────────────────────
@@ -4436,7 +4472,13 @@ fn detect_clis_blocking() -> Vec<CliInfo> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // skip_initial_state("main"): we now create the main window
+        // programmatically in `setup` (to pick the macOS traffic-light
+        // inset per-OS), so we restore its saved bounds OURSELVES in a
+        // deterministic order (restore → clamp-up → position → show)
+        // instead of letting the plugin's on_window_ready hook race the
+        // setup code. The plugin still SAVES bounds on move/resize/close.
+        .plugin(tauri_plugin_window_state::Builder::default().skip_initial_state("main").build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -4456,20 +4498,74 @@ pub fn run() {
             // Resolve the user's login-shell PATH off the main thread
             // so the first PTY spawn doesn't wait on shell startup.
             shell_env::warm();
-            // Window is created hidden (tauri.conf.json: visible=false). We
-            // position it on the cursor's monitor BEFORE showing it, so macOS
-            // never sees a window on the primary Space and never triggers a
-            // Space switch that would yank the user away from their
-            // fullscreen app on another display.
-            use tauri::Manager;
-            if let Some(win) = app.get_webview_window("main") {
+            // The main window is created HERE (not in tauri.conf.json) so the
+            // macOS traffic-light inset can be chosen per-OS. macOS Tahoe (26+)
+            // stopped vertically centering the window controls in an overlay
+            // title bar, so they need to sit ~8px lower than on earlier macOS.
+            // Setting the inset through the builder means tao's own
+            // re-apply-on-redraw keeps the lights positioned (a runtime objc
+            // nudge gets clobbered on every draw, and Tauri exposes no public
+            // runtime setter). Created hidden, then positioned on the cursor's
+            // monitor BEFORE showing so macOS never sees the window on the
+            // primary Space (which would yank the user off a fullscreen app on
+            // another display).
+
+            // Pre-Tahoe centers the lights at y=16. Tahoe renders them higher
+            // for the same inset, so they need to sit lower. Dialed in by eye:
+            // y=18 was still a touch high, y=24 overshot low, so 21 (the
+            // midpoint) centers them against the toolbar icons.
+            #[cfg(target_os = "macos")]
+            let traffic_y: f64 = if is_macos_tahoe() { 21.0 } else { 16.0 };
+
+            #[allow(unused_mut)]
+            let mut builder = tauri::WebviewWindowBuilder::new(
+                app.handle(), "main", tauri::WebviewUrl::default(),
+            )
+            .title("Termic")
+            .inner_size(1500.0, 1000.0)
+            .min_inner_size(900.0, 600.0)
+            .visible(false);
+
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true)
+                    .traffic_light_position(tauri::LogicalPosition::new(16.0, traffic_y));
+            }
+
+            let win = builder.build()?;
+
+            // Restore saved bounds ourselves (the plugin skips "main" via
+            // skip_initial_state) so the ordering is deterministic. SIZE +
+            // POSITION + MAXIMIZED — but NOT VISIBLE (restore_state would
+            // `show()` the window immediately, defeating the
+            // position-before-show dance below and risking a flash on the
+            // wrong monitor) and NOT FULLSCREEN (would re-enter fullscreen on
+            // whatever Space it was saved on — the exact yank we avoid).
+            // MAXIMIZED is safe to restore: a zoomed window stays on the
+            // current Space, so there's no Space-yank, and a user who quit
+            // maximized expects to relaunch maximized.
+            {
+                use tauri_plugin_window_state::{StateFlags, WindowExt};
+                let _ = win.restore_state(
+                    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+                );
+            }
+
+            // A restored-maximized ("zoomed") window already fills one
+            // monitor: its inner_size never trips the minimum, and nudging it
+            // to the cursor's monitor would un-zoom it. So the clamp-up and
+            // cursor-monitor reposition below apply only to normally-sized
+            // windows. position_on_cursor_monitor itself no-ops when the
+            // restored position is already on the cursor's monitor, so it
+            // cooperates with this restore.
+            if !win.is_maximized().unwrap_or(false) {
                 // tauri-plugin-window-state restores prior bounds verbatim — it
-                // does NOT enforce the minWidth / minHeight from tauri.conf.json.
-                // If a previous session somehow saved a sub-minimum size (seen
-                // after some updates and after first-launch races with the
-                // shown=true → shown=false transition), the window comes back
-                // as a postage stamp. Clamp UP here before showing so the user
-                // never sees the tiny window. Doing it on physical pixels via
+                // does NOT enforce minWidth / minHeight. If a previous session
+                // saved a sub-minimum size (seen after some updates and after
+                // first-launch races), the window comes back as a postage
+                // stamp. Clamp UP here before showing. Physical pixels via
                 // inner_size + scale_factor keeps the math correct on retina.
                 if let (Ok(sz), scale) = (win.inner_size(), win.scale_factor().unwrap_or(1.0)) {
                     let logical_w = (sz.width  as f64) / scale;
@@ -4477,16 +4573,32 @@ pub fn run() {
                     const MIN_W: f64 = 900.0;
                     const MIN_H: f64 = 600.0;
                     if logical_w < MIN_W || logical_h < MIN_H {
-                        // Snap back to a comfortable default instead of the bare
-                        // min — a 900x600 box is still cramped for the app's
-                        // 3-column layout. 1400x900 matches our intended launch
-                        // size on fresh installs.
+                        // Snap back to a comfortable default instead of the
+                        // bare min — a 900x600 box is still cramped for the
+                        // app's 3-column layout. 1400x900 matches our intended
+                        // launch size on fresh installs.
                         let _ = win.set_size(tauri::LogicalSize::new(1400.0_f64, 900.0));
                     }
                 }
                 let _ = position_on_cursor_monitor(&win);
-                let _ = win.show();
-                let _ = win.set_focus();
+            }
+            let _ = win.show();
+            let _ = win.set_focus();
+            #[cfg(target_os = "macos")]
+            {
+                round_window_corners_for_tahoe(&win);
+                // AppKit can rebuild the content view's backing layer on
+                // fullscreen enter/exit and zoom transitions, dropping the
+                // corner clip we just set. Re-apply on resize (which all those
+                // transitions trigger). Cheap + idempotent, no-ops on
+                // pre-Tahoe, and window-event callbacks run on the main thread
+                // so the AppKit access stays valid.
+                let win_for_corners = win.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Resized(_) = event {
+                        round_window_corners_for_tahoe(&win_for_corners);
+                    }
+                });
             }
             Ok(())
         })
@@ -4555,6 +4667,108 @@ fn cleanup_children(app: &tauri::AppHandle) {
             if let Some(pid) = slot.child_pid {
                 unsafe { libc::kill(pid as i32, libc::SIGKILL); }
             }
+        }
+    }
+}
+
+/// True on macOS Tahoe (26) and later. Gates the Tahoe-specific window
+/// chrome: the enlarged corner radius AND the lowered traffic-light inset
+/// (Tahoe stopped vertically centering the window controls in an overlay
+/// title bar). Earlier macOS returns false → classic chrome, untouched.
+#[cfg(target_os = "macos")]
+fn is_macos_tahoe() -> bool {
+    // Cached: the OS version can't change while the app runs, and this is now
+    // hit on every resize event (corner re-apply) as well as at startup.
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        objc2_foundation::NSProcessInfo::processInfo()
+            .operatingSystemVersion()
+            .majorVersion
+            >= 26
+    })
+}
+
+/// Round the window's content layer to match macOS Tahoe's enlarged
+/// window corner radius.
+///
+/// Tahoe (macOS 26) widened the system window corner radius to ~16pt for
+/// plain title-bar windows (toolbar windows get 26pt; we have neither an
+/// NSToolbar nor a title bar — our top chrome is HTML under an Overlay
+/// title bar — so 16pt is the title-bar value). wry's WKWebView runs with
+/// `drawsBackground = false` over our opaque window, and the app paints a
+/// dark (`#0a0a0a`) background edge-to-edge with SQUARE layer corners.
+/// Pre-Tahoe the system radius was small enough that the square corners
+/// hid under the frame; Tahoe's larger radius leaves the square corners
+/// poking out as black notches past the rounded window frame.
+///
+/// Fix: clip the content view's layer to a matching continuous ("squircle")
+/// radius (TAHOE_CORNER_RADIUS) so the WKWebView sublayer is masked to the
+/// same shape as the window frame. Gated to macOS 26+ so older systems keep
+/// their classic corners untouched (they already clip cleanly).
+///
+/// Deliberately does NOT touch the private `_cornerMask` API — overriding
+/// it is exactly what tanked Electron's performance on Tahoe (forces
+/// WindowServer to recompute the window shadow on every paint).
+#[cfg(target_os = "macos")]
+fn round_window_corners_for_tahoe(win: &tauri::WebviewWindow) {
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{class, msg_send};
+
+    // ~16pt is the nominal Tahoe title-bar radius (toolbar windows get 26,
+    // we have no toolbar); 18 tracks the actual frame curve on-device a hair
+    // better, so the clip lands flush instead of leaving a sliver.
+    const TAHOE_CORNER_RADIUS: f64 = 18.0;
+
+    if !is_macos_tahoe() {
+        return;
+    }
+
+    let Ok(ns_window) = win.ns_window() else { return };
+    let ns_window = ns_window as *mut AnyObject;
+    if ns_window.is_null() {
+        return;
+    }
+
+    // SAFETY: setup and window-event callbacks both run on the main thread
+    // (AppKit requirement). The pointer is the live NSWindow owned by tao;
+    // and this re-fetches contentView + layer on every call, so a layer
+    // AppKit rebuilt after a fullscreen/zoom transition gets re-clipped. We
+    // only read its content view and set public CALayer properties (corner
+    // radius / curve / masksToBounds), all of which are valid on any
+    // thread-confined AppKit object accessed from the main thread.
+    unsafe {
+        // The content view is clipped to a rounded rect below, so the pixel
+        // corners outside that clip are exposed. By default those corners
+        // show the NSWindow background (white), producing a white notch in
+        // the corner. Setting the window non-opaque with a clear background
+        // makes those corner pixels transparent — the standard macOS pattern
+        // for custom-shaped windows.
+        let clear_color: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+        if !clear_color.is_null() {
+            let _: () = msg_send![ns_window, setOpaque: Bool::new(false)];
+            let _: () = msg_send![ns_window, setBackgroundColor: clear_color];
+        }
+
+        let content_view: *mut AnyObject = msg_send![ns_window, contentView];
+        if content_view.is_null() {
+            return;
+        }
+        let _: () = msg_send![content_view, setWantsLayer: Bool::new(true)];
+        let layer: *mut AnyObject = msg_send![content_view, layer];
+        if layer.is_null() {
+            return;
+        }
+        let _: () = msg_send![layer, setCornerRadius: TAHOE_CORNER_RADIUS];
+        let _: () = msg_send![layer, setMasksToBounds: Bool::new(true)];
+        // CALayerCornerCurve `kCACornerCurveContinuous` is documented as the
+        // NSString @"continuous"; build it directly so we don't have to link
+        // the QuartzCore constant. Circular (the default) reads subtly wrong
+        // against AppKit's continuous window corners.
+        let curve: *mut AnyObject =
+            msg_send![class!(NSString), stringWithUTF8String: c"continuous".as_ptr()];
+        if !curve.is_null() {
+            let _: () = msg_send![layer, setCornerCurve: curve];
         }
     }
 }
