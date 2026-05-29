@@ -668,6 +668,12 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const isActive = activeWsId === w.id;
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
   const isLoaded = terminalTabs.some(t => t.ptyId);
+  // The sidebar only renders terminal tabs as child rows; edit/diff tabs
+  // are transient file views with no row. When the active tab is one of
+  // those (or there's no active tab), no child row carries the selection,
+  // so the workspace HEADER must show it instead — otherwise an open file
+  // or git diff leaves the workspace looking inactive in the tree.
+  const activeTabIsTerminalChild = terminalTabs.some(t => t.id === activeTabId);
 
   // Workspace rename
   const [wsRenaming, setWsRenaming] = useState<string | null>(null);
@@ -771,7 +777,14 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
           if (terminalTabs.length === 0) {
             // No terminals yet — launch the default agent; stays collapsed (1 terminal = collapsed by default).
             const cli = w.cli || "claude";
-            addTab(w.id, { id: crypto.randomUUID(), type: "terminal", title: agentDisplayName(cli, registry), cli });
+            // Custom-command workspaces re-run their launch command and
+            // title the tab with the workspace name (mirrors ensureDefaultTab).
+            const isCustom = cli === "custom";
+            addTab(w.id, {
+              id: crypto.randomUUID(), type: "terminal", cli, is_default: true,
+              title: isCustom ? w.name : agentDisplayName(cli, registry),
+              ...(isCustom && w.custom_command ? { command: w.custom_command } : {}),
+            });
           } else {
             if (activeTabId) setActiveTabId(w.id, activeTabId);
             // Only the "click" mode treats a row click on the already
@@ -783,7 +796,11 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         }}
         className={cn(
           "group/wsrow ml-3 flex items-center gap-1 rounded-md px-1 py-1 text-[13px] cursor-pointer select-none transition-colors",
-          isActive && collapsed
+          // Strong selection on the header when active AND no child row
+          // carries it: collapsed (children hidden) OR the active tab is an
+          // edit/diff view (no row). Expanded with an active terminal tab
+          // delegates the highlight to that child row instead.
+          isActive && (collapsed || !activeTabIsTerminalChild)
             ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
             : isActive
             ? "text-[var(--color-fg)] hover:bg-[var(--color-hover)]"

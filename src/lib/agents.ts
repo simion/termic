@@ -131,6 +131,7 @@ export function agentDisplayName(cli: string, agents: Agent[] = useApp.getState(
     case "codex":  return "Codex";
     case "agy":    return "Antigravity";
     case "shell":  return "Terminal";
+    case "custom": return "Command";
     default:       return cli;
   }
 }

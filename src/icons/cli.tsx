@@ -68,6 +68,20 @@ export function ShellIcon({ className }: Props) {
   );
 }
 
+// Custom-command workspaces (cli: "custom"). A "play inside a terminal"
+// glyph — distinguishes a pre-set launch command (ssh, dev server, repl)
+// from the plain login shell of `ShellIcon`.
+export function CustomCommandIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="m9 8 3 4-3 4" />
+      <path d="M14 16h2" />
+    </svg>
+  );
+}
+
 /** Pick the right icon for a CLI name; falls back to a generic terminal glyph. */
 export function CliIcon({ cli, className }: { cli: string; className?: string }) {
   switch (cli) {
@@ -77,6 +91,7 @@ export function CliIcon({ cli, className }: { cli: string; className?: string })
     case "agy":    return <AntigravityIcon className={className} />;
     case "grok":   return <GrokIcon className={className} />;
     case "shell":  return <ShellIcon className={className} />;
+    case "custom": return <CustomCommandIcon className={className} />;
     default: return (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
         strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>

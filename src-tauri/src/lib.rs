@@ -209,6 +209,13 @@ pub struct Workspace {
     /// + sandbox profile generator iterate this list when populated.
     #[serde(default)]
     pub composition: Vec<WorkspaceMember>,
+    /// Pre-set launch command for `cli == "custom"` repo-root workspaces.
+    /// The default tab runs this through a login shell instead of an
+    /// agent binary (e.g. `ssh box`, `npm run dev`, `python`). None for
+    /// every agent / shell workspace. Persisted so the command re-runs
+    /// on every respawn / app restart.
+    #[serde(default)]
+    pub custom_command: Option<String>,
 }
 
 /// One entry in a multi-repo workspace's composition. The host repo
@@ -1145,7 +1152,7 @@ fn workspaces_list() -> Vec<Workspace> { load_workspaces() }
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<String>) -> Result<Workspace, String> {
+fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<String>, command: Option<String>) -> Result<Workspace, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     // CLI is now explicit — frontend's "+ Open repo with <agent>" passes the
@@ -1226,6 +1233,13 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| branch.clone());
+    // Only "custom" workspaces carry a launch command; agent/shell
+    // workspaces resolve their command from the registry at spawn.
+    let custom_command = if cli == "custom" {
+        command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty())
+    } else {
+        None
+    };
     let ws = Workspace {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
@@ -1255,6 +1269,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         composition,
+        custom_command,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1481,6 +1496,9 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         // (workspace_create_multi) that populates this and re-uses
         // the same Workspace + sandbox plumbing.
         composition: Vec::new(),
+        // Worktree workspaces always run an agent / shell, never a
+        // pre-set custom command (that path is repo-root only).
+        custom_command: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -1812,6 +1830,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         composition,
+        custom_command: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 

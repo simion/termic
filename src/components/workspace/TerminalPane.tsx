@@ -592,7 +592,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // fresh). `tabs` deliberately stays OUT of the effect deps: respawning the
     // PTY on every tab add/remove would be far worse than this one snapshot.
     const isShell = tab.cli === "shell";
-    const idCapable = !isShell && cliSupportsIdSession(tab.cli);
+    // Custom-command workspaces run a user-supplied launch command in a
+    // login shell — never an agent. They share the shell's "no resume,
+    // no agent_id, no per-agent env" treatment; only the spawned argv
+    // differs (see spawnArgs below).
+    const isCustom = tab.cli === "custom";
+    const isAgent = !isShell && !isCustom;
+    const idCapable = isAgent && cliSupportsIdSession(tab.cli);
     const wsTabsNow = useApp.getState().tabs[ws.id] || [];
     const firstAgentOfCli = wsTabsNow.find(
       t => t.type === "terminal" && (t as TerminalTab).cli === tab.cli,
@@ -620,8 +626,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // Only the AUTO-CREATED default tab resumes; user-added tabs
         // always start fresh. `cli: "shell"` is a plain login shell,
         // never an agent, so it's gated out of both resume modes.
-        // isShell / idCapable / isPrimaryTab were resolved synchronously
-        // above (before the rAF await) to avoid a stale-snapshot race.
+        // isShell / isCustom / isAgent / idCapable / isPrimaryTab were
+        // resolved synchronously above (before the rAF await) to avoid a
+        // stale-snapshot race.
         const useIdResume = idCapable && !!ws.is_repo_root && isPrimaryTab;
         const storedUuid = ws.agent_session_ids?.[tab.cli];
         let sessionUuid: string | undefined;
@@ -648,10 +655,21 @@ export function TerminalPane({ ws, tab, active }: Props) {
         lastSpawnWasResumeRef.current = shouldResume || (useIdResume && resumeKnown);
         hasHistoryLocalRef.current = false;
         // Agent: resolve the executable through the registry (users can
-        // repoint `claude` etc. in Settings → Agent CLIs). Shell: a login
-        // zsh, mirroring the AuxTerminal scratch shell.
-        const spawnCmd = isShell ? "zsh" : spawnCommandForCli(tab.cli);
-        const spawnArgs = isShell ? ["-l"] : spawnArgsForCli(tab.cli, {
+        // repoint `claude` etc. in Settings → Agent CLIs). Shell / custom:
+        // a login zsh, mirroring the AuxTerminal scratch shell.
+        const spawnCmd = isAgent ? spawnCommandForCli(tab.cli) : "zsh";
+        // Custom: run the launch command, then drop into an interactive
+        // login shell so the terminal stays usable after it exits (an ssh
+        // disconnect / Ctrl-C'd dev server leaves a live shell in the repo
+        // dir rather than a dead tab). `-i` so the command sees the same
+        // env as a real terminal — many users set PATH (nvm, etc.) in
+        // .zshrc, which a non-interactive shell skips. Shell: plain login
+        // shell. Agent: registry-resolved argv.
+        const spawnArgs = !isAgent
+          ? (isCustom && tab.command
+              ? ["-l", "-i", "-c", `${tab.command}; exec zsh -l`]
+              : ["-l"])
+          : spawnArgsForCli(tab.cli, {
           // YOLO auto-on whenever the workspace is sandboxed: the seatbelt
           // cage is the real security boundary, so the agent's own
           // permission-prompt scaffolding is just friction. The user pref
@@ -677,7 +695,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
             TERMIC_PORT: String(ws.port),
             TERMIC_WORKSPACE_NAME: ws.name,
             COLORFGBG: currentColorFgBg(),
-            ...(isShell ? {} : envForCli(tab.cli)),
+            ...(isAgent ? envForCli(tab.cli) : {}),
           },
           // Sandbox gating: a shell tab created "no sandbox"
           // (`sandboxed === false`) omits workspace_id → Rust spawns it
@@ -690,7 +708,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // agent's allowed paths + host allowlist, not the workspace
           // default. A shell tab has no agent id → Rust falls back to
           // the workspace's primary CLI for the profile.
-          agent_id: isShell ? undefined : tab.cli,
+          agent_id: isAgent ? tab.cli : undefined,
           rows, cols,
         });
         const ptyId = spawn.id;

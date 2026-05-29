@@ -440,8 +440,17 @@ export const useApp = create<AppState>((set, get) => ({
     // tabs (via the "+" button → `addTab`) leave it unset so they
     // start fresh - otherwise every new tab tries to resume the
     // same conversation and we get N copies fighting.
-    const title = agentDisplayName(cli, s.agents);
-    const tab: TerminalTab = { id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true };
+    // Custom-command workspaces run a user-supplied launch command in a
+    // login shell. Seed the tab's `command` from the workspace so the
+    // PTY spawn (and every respawn) re-runs it, and title the tab with
+    // the workspace name rather than a generic "Command".
+    const ws = s.workspaces.find(w => w.id === wsId);
+    const isCustom = cli === "custom";
+    const title = isCustom ? (ws?.name || "Command") : agentDisplayName(cli, s.agents);
+    const tab: TerminalTab = {
+      id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true,
+      ...(isCustom && ws?.custom_command ? { command: ws.custom_command } : {}),
+    };
     return {
       tabs: { ...s.tabs, [wsId]: [tab] },
       activeTab: { ...s.activeTab, [wsId]: tab.id },

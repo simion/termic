@@ -31,7 +31,7 @@ function SectionHeader({ title, hint, tone = "dim" }: {
     </div>
   );
 }
-import { GitBranchPlus, TerminalSquare } from "lucide-react";
+import { GitBranchPlus, TerminalSquare, SquareChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** Optional override for the "Run in repo with <agent>" rows. When
@@ -49,6 +49,7 @@ export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
   const setActive = useApp(s => s.setActiveWorkspace);
   const loadAll = useApp(s => s.loadAll);
   const openNewWorkspace = useUI(s => s.openNewWorkspace);
+  const openCustomCommand = useUI(s => s.openCustomCommand);
   // Multi-repo projects need different copy: "New worktree" means
   // branched copies of EVERY member, and "Open repo" means the host
   // dir with live symlinks to each member checkout — same actions,
@@ -102,6 +103,19 @@ export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
       }}>
         <TerminalSquare className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
         <span className="truncate">Terminal</span>
+      </DropdownItem>
+      {/* Custom launch command — same repo-root workspace shape as
+          Terminal, but the default tab runs a user-supplied command
+          (ssh, dev server, repl) in a login shell. Needs both a name
+          and a command, so it opens a dialog instead of inline-creating. */}
+      <DropdownItem onSelect={() => openCustomCommand(projectId)}>
+        <SquareChevronRight className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate">Custom command</span>
+          <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+            Launch with your own command (ssh, dev server, …)
+          </span>
+        </div>
       </DropdownItem>
       <DropdownSeparator />
       <DropdownItem onSelect={() => openNewWorkspace(projectId)}>

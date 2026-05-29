@@ -30,6 +30,10 @@ interface UIState {
    *  "Duplicate workspace" flow to branch a new worktree off an
    *  existing one's tip. Cleared when the dialog closes. */
   newWorkspaceSeed: { baseBranch?: string; namePrefix?: string } | null;
+  /** "Run a command in repo" dialog — project id to open it for, null =
+   *  closed. Creates a repo-root workspace whose default tab runs a
+   *  user-supplied launch command instead of an agent. */
+  customCommandProjectId: string | null;
   welcomeOpen: boolean;
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
@@ -71,6 +75,8 @@ interface UIState {
   closeNewProject: () => void;
   openNewWorkspace: (projectId: string, seed?: { baseBranch?: string; namePrefix?: string }) => void;
   closeNewWorkspace: () => void;
+  openCustomCommand: (projectId: string) => void;
+  closeCustomCommand: () => void;
   openWelcome: () => void;
   closeWelcome: () => void;
   openChangelog: () => void;
@@ -134,6 +140,7 @@ export const useUI = create<UIState>(set => ({
   newProjectOpen: false,
   newWorkspaceProjectId: null,
   newWorkspaceSeed: null,
+  customCommandProjectId: null,
   welcomeOpen: false,
   changelogOpen: false,
   reviewForWsId: null,
@@ -151,6 +158,8 @@ export const useUI = create<UIState>(set => ({
   closeNewProject:   () => set({ newProjectOpen: false }),
   openNewWorkspace:  (projectId, seed) => set({ newWorkspaceProjectId: projectId, newWorkspaceSeed: seed ?? null }),
   closeNewWorkspace: () => set({ newWorkspaceProjectId: null, newWorkspaceSeed: null }),
+  openCustomCommand:  (projectId) => set({ customCommandProjectId: projectId }),
+  closeCustomCommand: () => set({ customCommandProjectId: null }),
   openWelcome:       () => set({ welcomeOpen: true }),
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),

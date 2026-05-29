@@ -120,6 +120,11 @@ export interface Workspace {
   sandbox_allowed_hosts?: string[];
   /** Multi-repo composition. Empty for single-repo workspaces. */
   composition?: WorkspaceMember[];
+  /** Pre-set launch command for `cli === "custom"` repo-root workspaces.
+   *  The default tab runs this through a login shell instead of an agent
+   *  binary (e.g. `ssh box`, `npm run dev`). Null/undefined for every
+   *  agent / shell workspace. */
+  custom_command?: string | null;
 }
 
 /** Per-member input for `workspace_create_multi`. */
@@ -319,10 +324,14 @@ export interface BaseTab {
 
 export interface TerminalTab extends BaseTab {
   type: "terminal";
-  /** Agent id (claude / gemini / codex / agy / custom) the tab runs —
-   *  OR the sentinel `"shell"` for a plain login-shell tab spawned from
-   *  the "+" → New terminal menu. */
+  /** Agent id (claude / gemini / codex / agy) the tab runs, OR the
+   *  sentinel `"shell"` for a plain login-shell tab, OR `"custom"` for a
+   *  workspace launched with a user-supplied command (see `command`). */
   cli: string;
+  /** Launch command for `cli === "custom"` tabs — run through a login
+   *  shell (`zsh -lc`). Seeded from the workspace's `custom_command`
+   *  when the default tab is created. Unset for agent / shell tabs. */
+  command?: string;
   /** Plain shell tabs (`cli: "shell"`) carry an explicit sandbox choice:
    *  `true` → spawn inside the workspace's seatbelt cage, `false` →
    *  uncaged. Agent tabs leave this unset — they always pass through
