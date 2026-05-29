@@ -4638,11 +4638,22 @@ fn round_window_corners_for_tahoe(win: &tauri::WebviewWindow) {
     // (AppKit requirement). The pointer is the live NSWindow owned by tao;
     // and this re-fetches contentView + layer on every call, so a layer
     // AppKit rebuilt after a fullscreen/zoom transition gets re-clipped. We
-    // only read its content
-    // view and set public CALayer properties (corner radius / curve /
-    // masksToBounds), all of which are valid on any thread-confined
-    // AppKit object accessed from the main thread.
+    // only read its content view and set public CALayer properties (corner
+    // radius / curve / masksToBounds), all of which are valid on any
+    // thread-confined AppKit object accessed from the main thread.
     unsafe {
+        // The content view is clipped to a rounded rect below, so the pixel
+        // corners outside that clip are exposed. By default those corners
+        // show the NSWindow background (white), producing a white notch in
+        // the corner. Setting the window non-opaque with a clear background
+        // makes those corner pixels transparent — the standard macOS pattern
+        // for custom-shaped windows.
+        let clear_color: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+        if !clear_color.is_null() {
+            let _: () = msg_send![ns_window, setOpaque: Bool::new(false)];
+            let _: () = msg_send![ns_window, setBackgroundColor: clear_color];
+        }
+
         let content_view: *mut AnyObject = msg_send![ns_window, contentView];
         if content_view.is_null() {
             return;
