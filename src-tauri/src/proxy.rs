@@ -486,3 +486,95 @@ fn pipe_bidirectional(client: TcpStream, upstream: TcpStream) -> Result<()> {
     let _ = t.join();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn re(pattern: &str) -> Regex {
+        Regex::new(pattern).expect("valid regex")
+    }
+
+    // ── find_double_crlf ─────────────────────────────────────────────
+
+    #[test]
+    fn double_crlf_at_start() {
+        let buf = b"\r\n\r\nsome body";
+        assert_eq!(find_double_crlf(buf), Some(0));
+    }
+
+    #[test]
+    fn double_crlf_after_headers() {
+        let buf = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let pos = find_double_crlf(buf).expect("should find double CRLF");
+        assert_eq!(&buf[pos..pos + 4], b"\r\n\r\n");
+    }
+
+    #[test]
+    fn double_crlf_none_when_absent() {
+        let buf = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n";
+        assert_eq!(find_double_crlf(buf), None);
+    }
+
+    #[test]
+    fn double_crlf_none_on_single_crlf() {
+        let buf = b"line1\r\nline2";
+        assert_eq!(find_double_crlf(buf), None);
+    }
+
+    #[test]
+    fn double_crlf_empty_buf() {
+        assert_eq!(find_double_crlf(b""), None);
+    }
+
+    // ── host_allowed ─────────────────────────────────────────────────
+
+    #[test]
+    fn host_allowed_exact_match() {
+        let regexes = vec![re(r"^api\.anthropic\.com$")];
+        assert!(host_allowed("api.anthropic.com", &regexes));
+    }
+
+    #[test]
+    fn host_allowed_wildcard_subdomain() {
+        let regexes = vec![re(r"^.*\.anthropic\.com$")];
+        assert!(host_allowed("statsig.anthropic.com", &regexes));
+        assert!(!host_allowed("anthropic.com", &regexes));
+    }
+
+    #[test]
+    fn host_allowed_denied_when_no_match() {
+        let regexes = vec![re(r"^api\.anthropic\.com$")];
+        assert!(!host_allowed("evil.com", &regexes));
+    }
+
+    #[test]
+    fn host_allowed_empty_allowlist_denies_all() {
+        assert!(!host_allowed("api.anthropic.com", &[]));
+    }
+
+    #[test]
+    fn host_allowed_strips_ipv6_brackets() {
+        // [::1] should match a regex for ::1.
+        let regexes = vec![re(r"^::1$")];
+        assert!(host_allowed("[::1]", &regexes));
+    }
+
+    #[test]
+    fn host_allowed_no_partial_match() {
+        // Anchored regex must not match api.anthropic.com.evil.com.
+        let regexes = vec![re(r"^api\.anthropic\.com$")];
+        assert!(!host_allowed("api.anthropic.com.evil.com", &regexes));
+    }
+
+    #[test]
+    fn host_allowed_multiple_patterns_first_wins() {
+        let regexes = vec![
+            re(r"^github\.com$"),
+            re(r"^api\.github\.com$"),
+        ];
+        assert!(host_allowed("github.com", &regexes));
+        assert!(host_allowed("api.github.com", &regexes));
+        assert!(!host_allowed("raw.githubusercontent.com", &regexes));
+    }
+}
