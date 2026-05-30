@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
+import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 
@@ -31,6 +32,10 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
 
   useEffect(() => {
     if (!hostRef.current) return;
+    const host = hostRef.current;
+    // Drop target: dragging a file onto the scratch shell inserts its
+    // escaped path at the prompt — same affordance as the agent terminals.
+    const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current);
     setExited(false);
     let cancelled = false;
     let unlistenData: (() => void) | null = null;
@@ -117,6 +122,7 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     return () => {
       cancelled = true;
       ro.disconnect();
+      unregisterDrop();
       unlistenData?.(); unlistenExit?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose the renderer addon FIRST so its render loop can't fire

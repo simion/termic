@@ -12,6 +12,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
+import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
@@ -195,6 +196,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+
+    // Drop target: dragging a file (screenshot, etc.) onto this terminal
+    // inserts the file's escaped path at the prompt — like macOS Terminal.
+    // The getter reads ptyRef lazily so a Restart (fresh pty id) still works.
+    const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current);
 
     // Shift+Enter → newline-without-submit.
     //
@@ -923,6 +929,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
     return () => {
       cancelled = true;
       ro.disconnect();
+      unregisterDrop();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
