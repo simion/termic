@@ -1577,3 +1577,204 @@ fn sbpl_escape(s: &str) -> String {
 fn sbpl_regex_escape(s: &str) -> String {
     s.replace('"', "\\\"")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── wildcard_to_regex ─────────────────────────────────────────────
+
+    #[test]
+    fn wildcard_exact_domain() {
+        assert_eq!(wildcard_to_regex("example.com"), r"^example\.com$");
+    }
+
+    #[test]
+    fn wildcard_star_subdomain() {
+        assert_eq!(wildcard_to_regex("*.example.com"), r"^.*\.example\.com$");
+    }
+
+    #[test]
+    fn wildcard_trailing_star() {
+        assert_eq!(wildcard_to_regex("example*"), r"^example.*$");
+    }
+
+    #[test]
+    fn wildcard_multiple_stars() {
+        assert_eq!(wildcard_to_regex("*example*"), r"^.*example.*$");
+    }
+
+    #[test]
+    fn wildcard_passthrough_raw_regex() {
+        // A pattern already starting with ^ passes through unchanged.
+        let raw = r"^api\.anthropic\.com$";
+        assert_eq!(wildcard_to_regex(raw), raw);
+    }
+
+    #[test]
+    fn wildcard_escapes_special_chars() {
+        // + ? ( ) are escaped; . is escaped; | is escaped
+        assert_eq!(wildcard_to_regex("foo+bar.baz?qux"), r"^foo\+bar\.baz\?qux$");
+    }
+
+    #[test]
+    fn wildcard_trims_whitespace() {
+        assert_eq!(wildcard_to_regex("  example.com  "), r"^example\.com$");
+    }
+
+    // ── extract_deny_pid ─────────────────────────────────────────────
+
+    #[test]
+    fn deny_pid_standard_format() {
+        let line = "2026-05-18 12:00:00 kernel Sandbox: openssl(12345) deny(1) file-read-data /etc/passwd";
+        assert_eq!(extract_deny_pid(line), Some(12345));
+    }
+
+    #[test]
+    fn deny_pid_claude_version_format() {
+        // claude logs itself as "claude 2.1.144(48523) deny(1) ..."
+        let line = "... Sandbox: claude 2.1.144(48523) deny(1) file-read-data /Users/x/.ssh/id_rsa";
+        assert_eq!(extract_deny_pid(line), Some(48523));
+    }
+
+    #[test]
+    fn deny_pid_kernel_prefix() {
+        let line = "... kernel[0]: (Sandbox) Sandbox: env(81203) deny(1) file-write-create /tmp/x";
+        assert_eq!(extract_deny_pid(line), Some(81203));
+    }
+
+    #[test]
+    fn deny_pid_none_when_no_deny() {
+        let line = "just a normal log line with no deny keyword";
+        assert_eq!(extract_deny_pid(line), None);
+    }
+
+    // ── extract_deny_proc ────────────────────────────────────────────
+
+    #[test]
+    fn deny_proc_simple() {
+        let line = "... Sandbox: openssl(12345) deny(1) file-read-data /etc/passwd";
+        assert_eq!(extract_deny_proc(line), Some("openssl".into()));
+    }
+
+    #[test]
+    fn deny_proc_with_version_in_name() {
+        // Claude's own format: proc name includes a version string
+        let line = "... Sandbox: claude 2.1.144(48523) deny(1) file-read-data /Users/x/.ssh/id_rsa";
+        assert_eq!(extract_deny_proc(line), Some("claude 2.1.144".into()));
+    }
+
+    #[test]
+    fn deny_proc_none_when_no_deny() {
+        let line = "this line has no deny token";
+        assert_eq!(extract_deny_proc(line), None);
+    }
+
+    // ── extract_deny_path ────────────────────────────────────────────
+
+    #[test]
+    fn deny_path_file_read_data() {
+        let line = "... Sandbox: curl(999) deny(1) file-read-data /Users/alice/.aws/credentials";
+        assert_eq!(
+            extract_deny_path(line),
+            Some("/Users/alice/.aws/credentials".into())
+        );
+    }
+
+    #[test]
+    fn deny_path_file_write_create() {
+        let line = "... deny(1) file-write-create /Users/x/Pictures/photo.jpg";
+        assert_eq!(
+            extract_deny_path(line),
+            Some("/Users/x/Pictures/photo.jpg".into())
+        );
+    }
+
+    #[test]
+    fn deny_path_space_in_path() {
+        // Paths with spaces (Application Support) must be captured to EOL.
+        let line = "... deny(1) file-read-data /Users/x/Library/Application Support/Chrome/cookies";
+        assert_eq!(
+            extract_deny_path(line),
+            Some("/Users/x/Library/Application Support/Chrome/cookies".into())
+        );
+    }
+
+    #[test]
+    fn deny_path_fallback_users_prefix() {
+        // Line without a known op token — fallback to first /Users/ prefix.
+        let line = "... deny(1) unknown-op /Users/bob/secret.txt";
+        assert_eq!(
+            extract_deny_path(line),
+            Some("/Users/bob/secret.txt".into())
+        );
+    }
+
+    #[test]
+    fn deny_path_none_when_no_path() {
+        let line = "... Sandbox: curl(999) deny(1) network-outbound some-host 443";
+        // network-outbound is not in the path matcher; should return None
+        // unless there's a fallback /Users/ etc. path.
+        let result = extract_deny_path(line);
+        // No absolute path prefix matching our starters → None.
+        assert_eq!(result, None);
+    }
+
+    // ── extract_deny_op ──────────────────────────────────────────────
+
+    #[test]
+    fn deny_op_file_read_data() {
+        let line = "... deny(1) file-read-data /Users/x/.ssh/id_rsa";
+        assert_eq!(extract_deny_op(line), Some("file-read-data".into()));
+    }
+
+    #[test]
+    fn deny_op_file_write_create() {
+        let line = "... deny(1) file-write-create /tmp/foo";
+        assert_eq!(extract_deny_op(line), Some("file-write-create".into()));
+    }
+
+    #[test]
+    fn deny_op_network_outbound() {
+        let line = "... deny(1) network-outbound api.example.com 443";
+        assert_eq!(extract_deny_op(line), Some("network-outbound".into()));
+    }
+
+    #[test]
+    fn deny_op_none_when_no_op() {
+        let line = "... deny(1) some-other-thing /path";
+        assert_eq!(extract_deny_op(line), None);
+    }
+
+    // ── builtin_deny_paths ───────────────────────────────────────────
+
+    #[test]
+    fn deny_paths_contain_ssh() {
+        let home = "/Users/test";
+        let paths = builtin_deny_paths(home);
+        assert!(paths.contains(&format!("{home}/.ssh")));
+    }
+
+    #[test]
+    fn deny_paths_contain_aws() {
+        let home = "/Users/test";
+        let paths = builtin_deny_paths(home);
+        assert!(paths.contains(&format!("{home}/.aws")));
+    }
+
+    #[test]
+    fn deny_paths_contain_browsers() {
+        let home = "/Users/test";
+        let paths = builtin_deny_paths(home);
+        assert!(paths.contains(&format!("{home}/Library/Application Support/Google/Chrome")));
+        assert!(paths.contains(&format!("{home}/Library/Application Support/Arc")));
+    }
+
+    #[test]
+    fn deny_paths_no_keychains() {
+        // Keychains is intentionally NOT denied (encrypted DB, securityd gate).
+        let home = "/Users/test";
+        let paths = builtin_deny_paths(home);
+        assert!(!paths.contains(&format!("{home}/Library/Keychains")));
+    }
+}
