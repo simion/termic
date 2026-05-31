@@ -98,7 +98,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
 
       <DropdownRoot open={open} onOpenChange={setOpen}>
         <DropdownTrigger asChild>
-          <Button size="icon" variant="icon" className="ml-1"><Plus className="h-4 w-4" /></Button>
+          <Button size="icon" variant="icon" className="ml-1 h-8 w-8 shrink-0"><Plus className="h-4 w-4" /></Button>
         </DropdownTrigger>
         <DropdownMenu
           align="start"
@@ -135,16 +135,18 @@ export function TabBar({ ws }: { ws: Workspace }) {
         </DropdownMenu>
       </DropdownRoot>
 
-      <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
-        <Button
-          size="icon" variant="icon" className="ml-auto"
-          onClick={() => openBroadcast(ws.id)}
-        >
-          <Megaphone className="h-4 w-4" />
-        </Button>
-      </Tip>
+      <div className="ml-auto flex items-center gap-1">
+        <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
+          <Button
+            size="icon" variant="icon" className="h-8 w-8"
+            onClick={() => openBroadcast(ws.id)}
+          >
+            <Megaphone className="h-4 w-4" />
+          </Button>
+        </Tip>
 
-      <SplitToggle wsId={ws.id} />
+        <SplitToggle wsId={ws.id} />
+      </div>
     </div>
   );
 }
@@ -158,7 +160,7 @@ function SplitToggle({ wsId }: { wsId: string }) {
   return (
     <Tip content={split ? "Close split terminal" : "Split: open shell below"} side="bottom">
       <Button
-        size="icon" variant="icon"
+        size="icon" variant="icon" className="h-8 w-8"
         onClick={() => toggleSplit(wsId)}
       >
         <SquareSplitVertical className={cn("h-4 w-4", split && "text-[var(--color-accent)]")} />

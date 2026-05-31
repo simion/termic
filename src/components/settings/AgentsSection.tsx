@@ -555,6 +555,33 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             placeholder={"$HOME/.claude\n$HOME/.config/claude\n~/work"}
           />
         </Field>
+        <Field
+          label="Work-done detection"
+          hint="When off, the done badge, bell, and OS notification are never shown for this agent. Disable for custom CLIs that emit signals in ways that cause false positives."
+        >
+          <div className="flex items-center gap-2 pt-0.5">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={agent.work_done !== false}
+              onClick={() => onPatch({ work_done: agent.work_done === false ? true : false })}
+              className={cn(
+                "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center",
+                agent.work_done !== false ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
+              )}
+            >
+              <span
+                className={cn(
+                  "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                  agent.work_done !== false ? "translate-x-4" : "translate-x-0"
+                )}
+              />
+            </button>
+            <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
+              {agent.work_done !== false ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+        </Field>
       </div>
     </div>
   );

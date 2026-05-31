@@ -284,10 +284,74 @@ export const listMonospaceFonts = () => invoke<string[]>("list_monospace_fonts")
 
 // ───────────────────────────── misc ─────────────────────────────
 
-export const notify    = (title: string, body: string) => invoke<void>("notify", { title, body });
+import {
+  isPermissionGranted as notifIsGranted,
+  requestPermission as notifRequest,
+  sendNotification as notifSend,
+  onAction as notifOnAction,
+} from "@tauri-apps/plugin-notification";
+
+// Cached permission state so we don't hit the IPC bridge on every notify.
+let notifPermission: "granted" | "denied" | "default" | null = null;
+
+/** Route target carried on a notification's `extra` payload so a click
+ *  can jump straight to the originating (workspace, tab). */
+export interface NotifyRoute { wsId: string; tabId: string; }
+
+/** Register a handler for notification clicks. NOTE: tauri-plugin-notification
+ *  fires `onAction` ONLY on mobile — the desktop (macOS/Win/Linux) backend has
+ *  no click handler at all. So on macOS this never fires; click routing falls
+ *  back entirely to the focus-edge heuristic in useAttentionNotifier (app
+ *  activation on click). Kept for mobile/future-plugin support; harmless no-op
+ *  on desktop. Receives the {wsId, tabId} we stamped into `extra` at send time. */
+export async function onNotifyClick(cb: (route: NotifyRoute) => void): Promise<() => void> {
+  try {
+    const listener = await notifOnAction((n) => {
+      const extra = (n as { extra?: Record<string, unknown> }).extra;
+      const wsId = extra?.wsId, tabId = extra?.tabId;
+      if (typeof wsId === "string" && typeof tabId === "string") cb({ wsId, tabId });
+    });
+    return () => { try { listener.unregister(); } catch {} };
+  } catch {
+    return () => {};
+  }
+}
+
+/** Ask macOS for notification permission. Safe to call repeatedly — once
+ *  granted/denied the OS won't re-prompt. Call from a sensible moment
+ *  (e.g. when the user enables Desktop notifications in Settings) so the
+ *  system dialog appears in context rather than mid-task. */
+export async function ensureNotifyPermission(): Promise<boolean> {
+  try {
+    if (notifPermission === "granted") return true;
+    if (await notifIsGranted()) { notifPermission = "granted"; return true; }
+    const res = await notifRequest();
+    notifPermission = res;
+    return res === "granted";
+  } catch {
+    return false;
+  }
+}
+
+/** Post an OS notification via tauri-plugin-notification (NOT osascript —
+ *  that attributes to "Script Editor" and is silently dropped on modern
+ *  macOS). Requests permission on first use. No-op if denied. Pass `route`
+ *  so a click jumps to the originating (workspace, tab) via onNotifyClick. */
+export async function notify(title: string, body: string, route?: NotifyRoute): Promise<void> {
+  try {
+    if (!(await ensureNotifyPermission())) return;
+    notifSend({ title, body, extra: route ? { wsId: route.wsId, tabId: route.tabId } : undefined });
+  } catch {
+    // Plugin unavailable (e.g. headless) — silently skip.
+  }
+}
 export const openPath  = (path: string) => invoke<void>("open_path", { path });
 export const homeDir   = () => invoke<string>("home_dir");
 export const pathExists= (path: string) => invoke<boolean>("path_exists", { path });
 export const logLine   = (msg: string) => invoke<void>("log_line", { msg });
+/** Append a line to a named file in the OS temp dir. Used by the ptyDebug
+ *  logger in TerminalPane when `localStorage.ptyDebug = "1"`. */
+export const ptyDebugAppend = (file: string, line: string) =>
+  invoke<void>("pty_debug_append", { file, line });
 
 export type { ChangeFile };

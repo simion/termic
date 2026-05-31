@@ -3688,6 +3688,24 @@ fn workspace_grep_cancel(id: String) -> Result<(), String> {
 #[tauri::command]
 fn log_line(msg: String) { dlog(&msg); }
 
+/// Append a single line to a per-PTY debug log in the OS temp dir.
+/// Called from JS when `localStorage.ptyDebug = "1"` to record raw
+/// terminal output + OSC signals + state transitions per agent session.
+/// Safe to call at high frequency — just an append open + write + close.
+#[tauri::command]
+fn pty_debug_append(file: String, line: String) {
+    use std::io::Write;
+    // Restrict to temp dir only — no path traversal.
+    let name = std::path::Path::new(&file)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "termic-pty-debug.log".into());
+    let p = std::env::temp_dir().join(name);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
 /// Rust-side log append. Mirror of `log_line` IPC but callable from
 /// anywhere in the crate (proxy.rs / sandbox.rs / spawn paths).
 /// Persistent file lets us debug post-mortem; eprintln stderr only
@@ -3801,7 +3819,15 @@ pub struct Agent {
     /// to this set. `$HOME` substitution happens at sandbox provision time.
     #[serde(default)]
     pub sandbox_allowed_paths: Vec<String>,
+    /// Whether the work-done badge/bell is active for this agent.
+    /// Defaults to true. Set to false for custom CLIs that emit signals
+    /// in ways that cause too many false positives (e.g. continuous OSC
+    /// output, unusual title patterns, never-quiet PTYs).
+    #[serde(default = "default_true")]
+    pub work_done: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -3896,6 +3922,7 @@ fn default_agents() -> Vec<Agent> {
                 // ~/.agents (the skills convention) is universal — see
                 // builtin_runtime_paths in sandbox.rs; not duplicated here.
             ],
+            work_done: true,
         },
         Agent {
             id: "codex".into(),
@@ -3926,6 +3953,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/codex".into(),
                 "$HOME/Library/Application Support/Codex".into(),
             ],
+            work_done: true,
         },
         Agent {
             // Google Antigravity CLI (`agy`), launched 2025-11-18 — a
@@ -3974,6 +4002,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/antigravity".into(),
                 "$HOME/Library/Application Support/Antigravity".into(),
             ],
+            work_done: true,
         },
         Agent {
             id: "gemini".into(),
@@ -4006,6 +4035,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/gemini".into(),
                 "$HOME/Library/Application Support/Gemini".into(),
             ],
+            work_done: true,
         },
         Agent {
             // xAI's Grok Build TUI. Help text confirmed:
@@ -4038,6 +4068,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/grok".into(),
                 "$HOME/Library/Application Support/Grok".into(),
             ],
+            work_done: true,
         },
     ]
 }
@@ -4536,7 +4567,7 @@ pub fn run() {
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, home_dir, path_exists, log_line,
+            notify, open_path, home_dir, path_exists, log_line, pty_debug_append,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             list_monospace_fonts,
         ])

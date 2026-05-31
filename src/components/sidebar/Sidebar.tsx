@@ -1061,19 +1061,26 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             ) : (
               <span className="min-w-0 flex-1 truncate">{title}</span>
             )}
-            {/* Trailing slot — iTerm2 convention: status badge by
-                default, close × on hover. Same fixed width either way
-                so the row never jiggles. */}
-            <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+            {/* Trailing slot — status badge by default. Close × only
+                appears when hovering the badge itself, not the whole
+                row — row hover keeps the badge visible. */}
+            <span className="group/badge relative flex h-4 w-4 shrink-0 items-center justify-center">
               {(showBell || showDone) && (
-                <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/tab:opacity-0">
+                <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/badge:opacity-0">
                   {showBell ? <TabBadge reason="attention" /> : <TabBadge reason="done" />}
                 </span>
               )}
               <button
                 title="Close tab"
                 onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
-                className="absolute inset-0 flex items-center justify-center rounded p-0.5 opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+                className={cn(
+                  "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
+                  (showBell || showDone)
+                    // Badge visible: X only on badge-slot hover
+                    ? "opacity-0 group-hover/badge:opacity-100 pointer-events-none group-hover/badge:pointer-events-auto"
+                    // No badge: X on row hover (original behaviour)
+                    : "opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto",
+                )}
               >
                 <X className="h-3 w-3" />
               </button>

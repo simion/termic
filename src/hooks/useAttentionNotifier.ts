@@ -13,7 +13,7 @@ import { useEffect, useRef } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
-import { notify } from "@/lib/ipc";
+import { notify, onNotifyClick } from "@/lib/ipc";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const DEBOUNCE_MS = 8000;
@@ -55,12 +55,40 @@ export function useAttentionNotifier() {
             : t.unread.reason === "done" ? "finished"
             : t.unread.reason === "attention" ? "needs your input"
             : "is idle";
-          notify(`${w?.name || "workspace"} · ${t.type === "terminal" ? t.cli : t.type}`, `agent ${reason}`).catch(() => {});
+          notify(
+            `${w?.name || "workspace"} · ${t.type === "terminal" ? t.cli : t.type}`,
+            `agent ${reason}`,
+            { wsId, tabId: t.id },
+          ).catch(() => {});
           lastRouteRef.current = { wsId, tabId: t.id, firedAt: now };
         }
       }
     });
     return unsub;
+  }, []);
+
+  // Direct click router: the notification plugin fires onAction when the
+  // user clicks a banner, carrying the {wsId, tabId} we stamped into its
+  // extra payload. This is the reliable path — it works even when the app
+  // window was already foregrounded (the focus-edge heuristic below only
+  // fires on a background→foreground transition, so it misses clicks while
+  // termic is already visible on another workspace). Brings the window
+  // forward and routes to the originating tab.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      unlisten = await onNotifyClick(({ wsId, tabId }) => {
+        const state = useApp.getState();
+        const ws = state.workspaces.find(w => w.id === wsId);
+        if (!ws) return;
+        const t = (state.tabs[wsId] || []).find(x => x.id === tabId);
+        if (!t) return;
+        state.setActiveWorkspace(wsId);
+        state.setActiveTabId(wsId, tabId);
+        try { getCurrentWindow().setFocus(); } catch {}
+      });
+    })();
+    return () => { try { unlisten?.(); } catch {} };
   }, []);
 
   // Focus-driven router: when the window regains focus shortly after a

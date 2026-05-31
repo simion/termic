@@ -22,6 +22,7 @@ export function BroadcastDialog() {
   const close = useUI(s => s.closeBroadcast);
   const pushToast = useUI(s => s.pushToast);
   const tabsForWs = useApp(s => (wsId ? s.tabs[wsId] : undefined));
+  const patchTab = useApp(s => s.patchTab);
 
   // Targets = live terminal tabs (have a spawned PTY). Plain shells are
   // offered too but default to unchecked — broadcasts are usually for
@@ -76,10 +77,16 @@ export function BroadcastDialog() {
     // later, makes every agent register it as a real Enter.
     const textBytes = Array.from(new TextEncoder().encode(msg));
     const CR = [0x0d];
+    const now = Date.now();
     for (const t of picked) ptyWrite(t.ptyId!, textBytes).catch(() => {});
     window.setTimeout(() => {
       for (const t of picked) ptyWrite(t.ptyId!, CR).catch(() => {});
     }, 90);
+    // Stamp lastInputAt so TerminalPane's submittedSinceSpawn ref is armed.
+    // Broadcast bypasses term.onData (it writes directly to the PTY), so
+    // without this the title-based working detector stays suppressed and
+    // agents like Gemini never get a working→done transition for broadcast work.
+    if (wsId) for (const t of picked) patchTab(wsId, t.id, { lastInputAt: now });
     close();
     pushToast(`Broadcast to ${picked.length} agent${picked.length === 1 ? "" : "s"}`);
   }
@@ -109,7 +116,7 @@ export function BroadcastDialog() {
                   key={t.id}
                   onClick={() => toggle(t)}
                   className={cn(
-                    "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors",
+                    "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors",
                     on ? "bg-[var(--color-bg-2)]" : "hover:bg-[var(--color-hover)]",
                   )}
                 >

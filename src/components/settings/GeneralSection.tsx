@@ -4,7 +4,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TextareaHTMLAttributes } from "react";
-import { settingsLoad, settingsSave } from "@/lib/ipc";
+import { settingsLoad, settingsSave, ensureNotifyPermission } from "@/lib/ipc";
 import type { Settings } from "@/lib/types";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
@@ -147,7 +147,12 @@ export function GeneralSection() {
           label="Desktop notifications"
           hint="Notify when an inactive agent finishes or rings the bell. Clicking back in jumps to that tab."
           value={desktopNotifications}
-          onChange={setDesktopNotifications}
+          onChange={(v) => {
+            setDesktopNotifications(v);
+            // Trigger the macOS permission prompt the moment the user opts
+            // in, so the dialog appears in context instead of mid-task.
+            if (v) ensureNotifyPermission();
+          }}
         />
       </div>
 

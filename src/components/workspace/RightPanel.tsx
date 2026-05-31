@@ -9,7 +9,7 @@ import {
 } from "@/lib/ipc";
 import type { Changes, Workspace, WorkspaceMember, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2, Wrench, Copy, Check } from "lucide-react";
+import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2, Wrench, Copy, Check, Settings } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { AuxTerminal } from "./AuxTerminal";
@@ -388,17 +388,32 @@ export function RightPanel() {
 
         {!footCollapsed && (
           <div className="relative min-h-0 flex-1 overflow-hidden">
-            {footTab !== "term" && (
-              <ScriptStream
-                wsId={ws.id} kind={footTab as "setup" | "run"} run={footRun}
-                onStart={() => {
-                  const kind = footTab as "setup" | "run";
-                  useScriptRuns.getState().start(ws.id, kind, footTarget);
-                  workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
-                    console.error("workspace_run_script_stream failed:", err));
-                }}
-              />
-            )}
+            {footTab !== "term" && (() => {
+              const activeMember = ws.composition?.find(m => m.dir_name === footTarget);
+              const activeProjectId = activeMember?.project_id ?? ws.project_id;
+              const hasRunScript = !!(activeMember
+                ? activeMember.run_script?.trim()
+                : project?.run_script?.trim());
+              return (
+                <ScriptStream
+                  wsId={ws.id} kind={footTab as "setup" | "run"} run={footRun}
+                  hasScript={footTab === "run"
+                    ? hasRunScript
+                    : !!(project?.setup_script?.trim() || yamlSetupScripts[ws.project_id]?.trim())}
+                  dismissKey={footTab === "run" ? `hideRunPrompt:${activeProjectId}` : undefined}
+                  onStart={() => {
+                    const kind = footTab as "setup" | "run";
+                    useScriptRuns.getState().start(ws.id, kind, footTarget);
+                    workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
+                      console.error("workspace_run_script_stream failed:", err));
+                  }}
+                  onConfigure={footTab === "run"
+                    ? () => useApp.getState().openSettings("repositories", activeProjectId)
+                    : undefined}
+                  onDismiss={footTab === "run" ? () => setFootCollapsed(true) : undefined}
+                />
+              );
+            })()}
             {/* Keep the AuxTerminal mounted whenever the user has enabled
                 it for this workspace, regardless of which tab is currently
                 visible — switching to Setup/Run should NOT respawn the
@@ -759,14 +774,22 @@ function stripAnsi(s: string): string {
  *  unless the user has scrolled up (then we pause to respect their position).
  *  Idle state shows the original empty hint so the panel doesn't look broken
  *  before the first run. */
-function ScriptStream({ wsId, kind, run, onStart }: {
+function ScriptStream({ wsId, kind, run, hasScript, dismissKey, onStart, onConfigure, onDismiss }: {
   wsId: string; kind: "setup" | "run";
   run: { status: "idle" | "running" | "done" | "error"; lines: string[]; exitCode: number | null };
+  hasScript: boolean;
+  dismissKey?: string;
   onStart: () => void;
+  onConfigure?: () => void;
+  onDismiss?: () => void;
 }) {
   void wsId;
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const [dismissed, setDismissed] = useState(() => {
+    if (!dismissKey) return false;
+    try { return localStorage.getItem(dismissKey) === "1"; } catch { return false; }
+  });
 
   // Track whether the user is pinned to the bottom. If they scroll up, stop
   // auto-following; resume the moment they scroll back to within 8px of the
@@ -780,10 +803,35 @@ function ScriptStream({ wsId, kind, run, onStart }: {
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [run.lines]);
 
+  function handleDismiss() {
+    if (dismissKey) { try { localStorage.setItem(dismissKey, "1"); } catch {} }
+    setDismissed(true);
+    onDismiss?.();
+  }
+
   if (run.status === "idle") {
+    if (!hasScript && kind === "run" && !dismissed) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+          <Settings className="h-8 w-8 text-[var(--color-fg-faint)] opacity-40" />
+          <div className="text-[13.5px] font-medium text-[var(--color-fg)]">No run script configured</div>
+          <p className="text-[12px] text-[var(--color-fg-faint)]">
+            Add a run script in project settings to start your dev server here.
+          </p>
+          <div className="flex flex-col items-center gap-1.5">
+            {onConfigure && (
+              <Button size="sm" variant="secondary" onClick={onConfigure} className="gap-1.5">
+                <Settings className="h-3 w-3" /> Configure project
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={handleDismiss} className="text-[var(--color-fg-faint)]">
+              No thanks
+            </Button>
+          </div>
+        </div>
+      );
+    }
     // Empty-state — big Play icon, heading, primary action with ⌘R hint.
-    // Matches the Termic mockup exactly so users don't have to hunt the
-    // small toolbar Run button on a fresh workspace.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <Play className="h-10 w-10 text-[var(--color-fg-faint)] opacity-40" />

@@ -60,7 +60,7 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
               // members, etc.) never pushes the action buttons below
               // the fold. Dialogs that manage their own scrolling can
               // override these via className.
-              "max-h-[calc(100vh-2rem)] overflow-y-auto",
+              "max-h-[calc(100vh-2rem)] overflow-x-hidden overflow-y-auto",
               // Promote to its own compositing layer with an explicit
               // integer-offset transform — WebKit snaps a layer with
               // `translate3d(0,0,0)` to whole pixels, which keeps text

@@ -368,13 +368,18 @@ export function NewProjectDialog() {
                 No repos match "{filter}".
               </div>
             ) : filtered.map(r => (
-              <button key={r.path} onClick={() => add(r.path)} disabled={busy}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[14px] hover:bg-[var(--color-hover)] disabled:opacity-50"
+              <button key={r.path} onClick={() => setPath(r.path)} disabled={busy}
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[14px] hover:bg-[var(--color-hover)] disabled:opacity-50",
+                  path === r.path && "bg-[var(--color-accent-deep)]/10",
+                )}
                 title={r.path}
               >
-                <Folder className="h-4 w-4 text-[var(--color-fg-faint)]" />
+                <Folder className={cn("h-4 w-4", path === r.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
                 <span className="flex-1 truncate">{r.name}</span>
-                <span className="text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Add</span>
+                {path === r.path && (
+                  <span className="text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Selected</span>
+                )}
               </button>
             ))}
           </div>

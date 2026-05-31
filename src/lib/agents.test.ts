@@ -141,8 +141,8 @@ describe("visibleCliIds", () => {
   it("hides disabled agents regardless of detection", () => {
     const agents = [makeAgent("claude", true), makeAgent("gemini")];
     const detected: Record<string, CliInfo> = {
-      claude: { found: true, version: "1.0" },
-      gemini: { found: true, version: "1.0" },
+      claude: { name: "claude", found: true, path: "/usr/local/bin/claude", version: "1.0" },
+      gemini: { name: "gemini", found: true, path: "/usr/local/bin/gemini", version: "1.0" },
     };
     const result = visibleCliIds(["claude", "gemini"], agents, detected);
     expect(result.has("claude")).toBe(false);
@@ -152,8 +152,8 @@ describe("visibleCliIds", () => {
   it("hides uninstalled agents when detection resolves", () => {
     const agents = [makeAgent("claude"), makeAgent("gemini")];
     const detected: Record<string, CliInfo> = {
-      claude: { found: true, version: "1.0" },
-      gemini: { found: false, version: "" },
+      claude: { name: "claude", found: true, path: "/usr/local/bin/claude", version: "1.0" },
+      gemini: { name: "gemini", found: false, path: "", version: "" },
     };
     const result = visibleCliIds(["claude", "gemini"], agents, detected);
     expect(result.has("gemini")).toBe(false);
@@ -164,8 +164,8 @@ describe("visibleCliIds", () => {
     // All agents not-found: rather than empty picker, show all enabled ones.
     const agents = [makeAgent("claude"), makeAgent("gemini")];
     const detected: Record<string, CliInfo> = {
-      claude: { found: false, version: "" },
-      gemini: { found: false, version: "" },
+      claude: { name: "claude", found: false, path: "", version: "" },
+      gemini: { name: "gemini", found: false, path: "", version: "" },
     };
     const result = visibleCliIds(["claude", "gemini"], agents, detected);
     expect(result.size).toBeGreaterThan(0);
@@ -174,7 +174,7 @@ describe("visibleCliIds", () => {
   it("agents not in detected map default to visible", () => {
     const agents = [makeAgent("claude"), makeAgent("custom-agent")];
     const detected: Record<string, CliInfo> = {
-      claude: { found: true, version: "1.0" },
+      claude: { name: "claude", found: true, path: "/usr/local/bin/claude", version: "1.0" },
       // custom-agent is absent → defaults to visible
     };
     const result = visibleCliIds(["claude", "custom-agent"], agents, detected);

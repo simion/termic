@@ -230,6 +230,11 @@ export interface Agent {
    *  agent in Settings → Agents (affects every workspace using it).
    *  `$HOME` substitution happens at the Rust side. */
   sandbox_allowed_paths?: string[];
+  /** Whether work-done detection is active for this agent. Defaults to
+   *  true. Flip to false for custom CLIs that emit signals in ways that
+   *  cause false positives — disables the entire state machine (no badge,
+   *  no bell, no OS notification) for terminals running this agent. */
+  work_done?: boolean;
 }
 
 export interface Settings {

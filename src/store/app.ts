@@ -697,9 +697,16 @@ export const useApp = create<AppState>((set, get) => ({
     // i.e. the user explicitly acknowledges the bullet. Agent signals
     // can't flip "done" → "working" by themselves.
     if (cur.workState === "done" && state === "working") return s;
+    // A second "done" signal on an already-done tab is a no-op — skip
+    // the focused-tab downgrade logic that would turn it into "idle" and
+    // wipe the bullet. The only exits from "done" are user-driven
+    // (keypress in term.onData, focus in setActiveWorkspace).
+    if (cur.workState === "done" && state === "done") return s;
     // Focused tab gating:
-    //   - "done" on the focused tab → drop to "idle" (no bullet when
-    //     the user is already looking).
+    //   - "done" on the tab the user is actively looking at (active
+    //     workspace AND active tab) → drop to "idle". They can see the
+    //     agent finished; no badge needed on what's in front of them.
+    //     The badge is for tabs the user has navigated AWAY from.
     //   - "working" on the focused tab → drop to "idle" ONLY within a
     //     short grace window after a manual clear (setActiveTabId /
     //     workspace activation). The grace stops a stuck spinner from
