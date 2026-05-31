@@ -1,6 +1,17 @@
 {
   "versions": [
     {
+      "version": "0.7.8",
+      "date": "2026-05-31",
+      "summary": "Reliable work-done badges and working desktop notifications.",
+      "notes": [
+        "Work-done badges are now reliable across Claude, Gemini, and Codex. The blue dot appears when an agent finishes, and the tab you are actively watching never shows a false badge.",
+        "Desktop notifications finally work. The old approach was silently dropped by macOS. Turn them on in Settings, General. They fire only for agents in workspaces you are not currently viewing.",
+        "New per-agent Work-done detection toggle in Settings, Agents, for custom CLIs whose output causes false positives.",
+        "Agents that emit no status signals (custom CLIs) show an attention bell instead of a done dot, since finished and waiting for input cannot be told apart."
+      ]
+    },
+    {
       "version": "0.7.7",
       "date": "2026-05-29",
       "summary": "Launch workspaces with a custom command, plus sidebar polish.",
