@@ -40,8 +40,13 @@ function defaultRepoRootName(cli: string, wsList: Workspace[]): string {
   return `${slug}-${n}`;
 }
 
-export function Sidebar() {
-  const compact = useApp(s => s.compactSidebar);
+// `compact` is normally read from the store, but the Arc-style hover reveal
+// (App.tsx) renders TWO instances at once: the 56px icon rail (`compact`)
+// plus a full-width overlay (`compact={false}`) that slides in on hover. The
+// optional prop lets that overlay force full mode regardless of the store.
+export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
+  const compactStore = useApp(s => s.compactSidebar);
+  const compact = compactProp ?? compactStore;
   const openSettings = useApp(s => s.openSettings);
   const projects = useApp(s => s.projects);
   const sidebarWidth = useApp(s => s.sidebarWidth);
@@ -292,6 +297,11 @@ export function Sidebar() {
             // wins; undefined falls back to emptiness-based default.
             const explicit = collapsedProjects[p.id];
             const collapsed = explicit !== undefined ? explicit : wsList.length === 0;
+            // Compact + collapsed: surface aggregated activity on the
+            // project monogram so a collapsed project still signals that
+            // something underneath wants attention (attention > done).
+            const projAttention = compact && collapsed && wsList.some(w => needsAttention(w.id));
+            const projDone = compact && collapsed && !projAttention && wsList.some(w => isWorkDone(w.id));
             return (
               <div
                 key={p.id}
@@ -308,6 +318,10 @@ export function Sidebar() {
                     // a single header's height to trigger a swap,
                     // matching what the user sees.
                     data-project-id={p.id}
+                    // Compact mode has no drag-to-reorder (the pointer
+                    // handler below bails), so a plain click handles the
+                    // collapse toggle the monogram represents.
+                    onClick={compact ? () => setProjectCollapsed(p.id, !collapsed) : undefined}
                     // Project header is the drag handle. Pointer-down
                     // arms it (doesn't commit to "we're dragging" yet);
                     // a pointer-move past the threshold flips into
@@ -347,20 +361,36 @@ export function Sidebar() {
                       document.addEventListener("pointercancel", onUp);
                     }}
                     className={cn(
-                      "group flex items-center justify-between rounded-md text-[12px] font-semibold uppercase tracking-[0.06em] hover:bg-[var(--color-hover)] cursor-pointer transition-colors",
+                      "group flex items-center justify-between rounded-md text-[12px] font-semibold uppercase tracking-[0.06em] cursor-pointer transition-colors",
+                      // Full mode highlights the whole row on hover; compact
+                      // mode hovers the centered monogram tile instead.
+                      !compact && "hover:bg-[var(--color-hover)]",
                       wsList.length === 0 ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg)]",
                       menuOpenProjectId === p.id && "bg-[var(--color-hover)]",
-                      compact ? "px-0 py-1 justify-center" : "pl-2 pr-0 py-1.5",
+                      compact ? "px-0 py-0.5 justify-center" : "pl-2 pr-0 py-1.5",
                       dragProjectId === p.id && "bg-[var(--color-accent)]/15 text-[var(--color-accent)]",
                     )}
                   >
                     {compact ? (
-                      // Compact mode: chevron alone, rotates 90° when expanded
-                      // so the user can still tell the project's state at
-                      // a glance even without the workspaces row underneath.
-                      collapsed
-                        ? <ChevronRight className="h-4 w-4 text-[var(--color-fg-dim)]" />
-                        : <ChevronDown  className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                      // Compact mode: a project monogram tile (initials) —
+                      // distinguishable at a glance, unlike a stack of
+                      // identical chevrons. Dimmed when collapsed; carries
+                      // an aggregated activity dot so collapsed projects
+                      // still signal work underneath.
+                      <div
+                        className={cn(
+                          "relative mx-auto flex h-8 w-8 items-center justify-center rounded-md text-[10.5px] font-semibold leading-none transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                          collapsed ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg-dim)]",
+                        )}
+                      >
+                        {projectMonogram(p.name)}
+                        {(projAttention || projDone) && (
+                          <span
+                            className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]"
+                            style={{ backgroundColor: projAttention ? "var(--color-warn)" : "var(--color-info, #4aa3ff)" }}
+                          />
+                        )}
+                      </div>
                     ) : (
                       <>
                         <div className="flex min-w-0 items-center gap-1.5">
@@ -591,6 +621,14 @@ export function Sidebar() {
 /** Tailwind size class for sidebar icons, beefier in compact mode where the
  *  56px column has the budget for it (and the icons need to be readable
  *  without text labels). */
+/** Two-character monogram for the compact-rail project tile — just the
+ *  first two letters of the name (`termic` → TE, `my-app` → MY). The
+ *  tooltip still carries the full name. */
+function projectMonogram(name: string): string {
+  const cleaned = name.trim();
+  return cleaned ? cleaned.slice(0, 2).toUpperCase() : "?";
+}
+
 function iconSize(compact: boolean) {
   // Bumped one step in both modes. h-4 (16px) felt undersized next to
   // 14px body text; h-[18px] reads as deliberate without taking over.
@@ -755,7 +793,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         <div
           onClick={() => setActive(w.id)}
           className={cn(
-            "mx-auto flex h-8 w-8 items-center justify-center rounded-md cursor-pointer transition-colors",
+            "relative mx-auto flex h-8 w-8 items-center justify-center rounded-md cursor-pointer transition-colors",
             isActive
               ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
               : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
@@ -763,6 +801,16 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
           )}
         >
           <CliIcon cli={w.cli} className="h-4 w-4" />
+          {/* Activity dot in the corner — the compact rail has no room
+              for the full bell/check badge, so color carries meaning:
+              warm = needs you, blue = work done. The ring lifts it off
+              the icon regardless of the tile's background. */}
+          {(hasAttention || hasDone) && (
+            <span
+              className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]"
+              style={{ backgroundColor: hasAttention ? "var(--color-warn)" : "var(--color-info, #4aa3ff)" }}
+            />
+          )}
         </div>
       </Tip>
     );

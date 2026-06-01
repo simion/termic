@@ -5,8 +5,9 @@
 //   │ sidebr │ main (tabs + content)    │ right panel        │
 //   └────────┴──────────────────────────┴────────────────────┘
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/store/app";
+import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
 import { MainArea } from "@/components/workspace/MainArea";
@@ -88,7 +89,7 @@ export function App() {
         <UnifiedBar />
         {/* grid-template-columns transition animates sidebar/right-panel show/hide. */}
         <div
-          className="grid min-h-0 flex-1"
+          className="grid min-h-0 flex-1 overflow-hidden"
           style={{
             gridTemplateColumns: cols,
             gridTemplateRows: "minmax(0, 1fr)",
@@ -99,7 +100,7 @@ export function App() {
             transition: "var(--cols-transition, grid-template-columns 220ms cubic-bezier(0.4, 0, 0.2, 1))",
           }}
         >
-          <ErrorBoundary label="Sidebar"><Sidebar /></ErrorBoundary>
+          <SidebarSlot />
           <main className="flex min-w-0 flex-col bg-[var(--color-bg)]">
             <ErrorBoundary label="MainArea"><MainArea /></ErrorBoundary>
           </main>
@@ -119,5 +120,80 @@ export function App() {
       <Dialogs />
       <Toaster />
     </>
+  );
+}
+
+/** Sidebar grid cell. In full mode it's just the sidebar. In compact mode
+ *  it's the 56px icon rail PLUS an Arc-style hover reveal that slides the
+ *  full sidebar in over the main content. */
+function SidebarSlot() {
+  const compact = useApp(s => s.compactSidebar);
+  if (!compact) return <ErrorBoundary label="Sidebar"><Sidebar /></ErrorBoundary>;
+  return <CompactSidebarReveal />;
+}
+
+/** Arc-style peek for the collapsed sidebar. The 56px icon rail holds the
+ *  grid column; hovering it slides the full sidebar in from the left as a
+ *  floating overlay (it covers part of the main area, never reflows it),
+ *  then retracts off the left edge when the cursor leaves. */
+function CompactSidebarReveal() {
+  const sidebarWidth = useApp(s => s.sidebarWidth);
+  const [open, setOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
+
+  const cancelClose = () => {
+    if (closeTimer.current !== undefined) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = undefined;
+    }
+  };
+  // Retract after a short grace period — but stay pinned while a Radix
+  // menu/popover spawned from inside the panel is open (those portal to
+  // <body>, so moving the cursor onto one fires mouseleave on the panel)
+  // OR while focus lives inside the panel (an inline rename/create input).
+  // Closing in either case would yank the surface out from under the user.
+  const tryClose = () => {
+    if (
+      document.querySelector("[data-radix-popper-content-wrapper]") ||
+      panelRef.current?.contains(document.activeElement)
+    ) {
+      closeTimer.current = window.setTimeout(tryClose, 120);
+      return;
+    }
+    setOpen(false);
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(tryClose, 120);
+  };
+  useEffect(() => () => cancelClose(), []);
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => { cancelClose(); setOpen(true); }}
+      onMouseLeave={scheduleClose}
+    >
+      {/* 56px icon rail — always present, owns the grid column width. */}
+      <ErrorBoundary label="Sidebar"><Sidebar compact /></ErrorBoundary>
+      {/* Full sidebar overlay. Kept mounted so the slide animates both
+          ways; pointer-events are dropped while retracted so it never
+          eats clicks over the content beneath it. */}
+      <div
+        ref={panelRef}
+        aria-hidden={!open}
+        className={cn(
+          "absolute inset-y-0 left-0 z-30 transition-transform duration-200 ease-out",
+          open ? "shadow-2xl shadow-black/40" : "pointer-events-none",
+        )}
+        style={{
+          width: `clamp(160px, ${sidebarWidth}px, 33vw)`,
+          transform: open ? "translateX(0)" : "translateX(-100%)",
+        }}
+      >
+        <ErrorBoundary label="Sidebar"><Sidebar compact={false} /></ErrorBoundary>
+      </div>
+    </div>
   );
 }

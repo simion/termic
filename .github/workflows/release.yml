@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag like `v0.3.1` (driven by `make release BUMP=patch|minor|major`).
-# Parallel platform builds (Mac universal on macos-14, Linux AppImage on
+# Parallel platform builds (Mac universal on macos-26, Linux AppImage on
 # ubuntu-latest), both ed25519-signed for the in-app updater. The release
 # job stitches everything into one GitHub Release; downstream jobs bump:
 #   * simion/homebrew-termic     (Casks/termic.rb gets version + mac sha)
@@ -51,14 +51,23 @@ jobs:
 
   # ─── Apple Silicon (arm64) ─────────────────────────────────────────
   # ─── Universal macOS build (arm64 + x86_64 fused) ─────────────────
-  # Single job on macos-14 (arm runner): installs both rust targets,
+  # Single job on macos-26 (arm runner): installs both rust targets,
   # passes --target universal-apple-darwin to tauri, which builds
   # both arches in-house and lipo's them into one fat Mach-O. Output
   # is a single Termic_<v>_universal.dmg + Termic.app.tar.gz that
   # runs natively on both arch families. macOS auto-selects the
   # right slice at exec time.
   #
-  # Why this instead of two separate jobs:
+  # MUST be macos-26 (Tahoe), not macos-14: the window-control (traffic
+  # light) layout follows the SDK the binary was LINKED against. An older
+  # runner links a pre-Tahoe SDK, so macOS renders the release in
+  # compatibility mode (smaller, pre-Tahoe-positioned traffic lights) on a
+  # Tahoe machine, misaligned vs. a locally-built dev binary linked against
+  # the Tahoe SDK. Building on macos-26 links the Tahoe SDK → native chrome
+  # that matches local. minimumSystemVersion (tauri.conf.json) stays 12.0,
+  # so backward compat is unaffected. See tauri-apps/tauri#14477.
+  #
+  # Why universal-in-one-job instead of two:
   #   - No dependency on macos-13 (Intel) runners which were queue-
   #     stuck routinely on the free tier.
   #   - One artifact to publish + one sha in the cask + one updater
@@ -69,7 +78,7 @@ jobs:
   #     than waiting for an Intel runner to come available.
   build-mac:
     needs: validate
-    runs-on: macos-14
+    runs-on: macos-26
     outputs:
       version:   ${{ steps.meta.outputs.version }}
       dmg_name:  ${{ steps.meta.outputs.dmg_name }}
