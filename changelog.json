@@ -1,14 +1,15 @@
 {
   "versions": [
     {
-      "version": "0.7.8",
-      "date": "2026-05-31",
-      "summary": "Reliable work-done badges and working desktop notifications.",
+      "version": "0.7.9",
+      "date": "2026-06-01",
+      "summary": "Reliable work-done badges, working desktop notifications, and a macOS Tahoe alignment fix.",
       "notes": [
         "Work-done badges are now reliable across Claude, Gemini, and Codex. The blue dot appears when an agent finishes, and the tab you are actively watching never shows a false badge.",
         "Desktop notifications finally work. The old approach was silently dropped by macOS. Turn them on in Settings, General. They fire only for agents in workspaces you are not currently viewing.",
         "New per-agent Work-done detection toggle in Settings, Agents, for custom CLIs whose output causes false positives.",
-        "Agents that emit no status signals (custom CLIs) show an attention bell instead of a done dot, since finished and waiting for input cannot be told apart."
+        "Agents that emit no status signals (custom CLIs) show an attention bell instead of a done dot, since finished and waiting for input cannot be told apart.",
+        "macOS Tahoe: the window traffic lights now line up with the toolbar in installed builds, not just in local dev builds."
       ]
     },
     {
