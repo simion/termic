@@ -4464,17 +4464,17 @@ pub fn run() {
             // primary Space (which would yank the user off a fullscreen app on
             // another display).
 
-            // Pre-Tahoe centers the lights at y=16. Tahoe renders them higher
-            // for the same inset, so they need to sit lower. Dialed in by eye:
-            // y=18 was still a touch high, y=24 overshot low, so 21 (the
-            // midpoint) centers them against the toolbar icons. Overridable at
-            // runtime via TERMIC_TRAFFIC_Y so the exact value can be swept
-            // without a recompile (set it, relaunch the process, eyeball).
+            // Pre-Tahoe centers the lights at y=16. The Tahoe title-bar layout
+            // renders them higher for the same inset, so they need to sit lower
+            // (y=21, dialed in by eye). Which layout applies depends on the
+            // LINKED SDK, not the running OS — see traffic_light_layout_is_tahoe.
+            // Overridable at runtime via TERMIC_TRAFFIC_Y so the exact value can
+            // be swept without a recompile (set it, relaunch the process, eyeball).
             #[cfg(target_os = "macos")]
             let traffic_y: f64 = std::env::var("TERMIC_TRAFFIC_Y")
                 .ok()
                 .and_then(|v| v.trim().parse::<f64>().ok())
-                .unwrap_or_else(|| if is_macos_tahoe() { 21.0 } else { 16.0 });
+                .unwrap_or_else(|| if traffic_light_layout_is_tahoe() { 21.0 } else { 16.0 });
 
             #[allow(unused_mut)]
             let mut builder = tauri::WebviewWindowBuilder::new(
@@ -4655,14 +4655,41 @@ fn is_macos_tahoe() -> bool {
     })
 }
 
+/// Whether the window-control (traffic-light) layout follows macOS Tahoe's
+/// rules. CRITICAL: this keys off the SDK-CAPPED product version
+/// (`kern.osproductversion`, same cap as NSProcessInfo), NOT the running
+/// kernel. The Overlay title bar positions its traffic lights per the SDK
+/// the binary was LINKED against, not the OS it runs on — the exact
+/// compatibility cap `is_macos_tahoe()` deliberately avoids. So a CI build
+/// linked against the macOS 14 SDK gets the pre-Tahoe centered layout
+/// (y=16) even on a Tahoe kernel, while a dev / Tahoe-SDK build gets the
+/// real Tahoe layout (y=21). Keying this off the kernel made every build
+/// apply y=21, dropping the lights too low in production. (The corner clip
+/// is the opposite case — it follows the real OS, so it stays on the
+/// kernel-based `is_macos_tahoe()`.)
+#[cfg(target_os = "macos")]
+fn traffic_light_layout_is_tahoe() -> bool {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| sysctl_major_version("kern.osproductversion").map_or(false, |m| m >= 26))
+}
+
 /// True macOS kernel major version from `kern.osrelease`, e.g. 25 on Tahoe.
 /// Unlike NSProcessInfo / `kern.osproductversion`, this sysctl is not subject
 /// to the SDK-linked product-version compatibility cap, so it stays accurate
 /// in a binary built against an older SDK. Returns None if the sysctl fails.
 #[cfg(target_os = "macos")]
 fn darwin_major_version() -> Option<u32> {
+    sysctl_major_version("kern.osrelease")
+}
+
+/// Read a dotted-version sysctl string (e.g. "25.5.0") and parse its leading
+/// integer. Backs both `darwin_major_version` (kern.osrelease, real kernel)
+/// and `traffic_light_layout_is_tahoe` (kern.osproductversion, SDK-capped).
+#[cfg(target_os = "macos")]
+fn sysctl_major_version(key: &str) -> Option<u32> {
     use std::ffi::CString;
-    let name = CString::new("kern.osrelease").ok()?;
+    let name = CString::new(key).ok()?;
     // First call sizes the buffer, second fills it with a NUL-terminated
     // string like "25.5.0".
     let mut len: libc::size_t = 0;
