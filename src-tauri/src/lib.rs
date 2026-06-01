@@ -4467,9 +4467,14 @@ pub fn run() {
             // Pre-Tahoe centers the lights at y=16. Tahoe renders them higher
             // for the same inset, so they need to sit lower. Dialed in by eye:
             // y=18 was still a touch high, y=24 overshot low, so 21 (the
-            // midpoint) centers them against the toolbar icons.
+            // midpoint) centers them against the toolbar icons. Overridable at
+            // runtime via TERMIC_TRAFFIC_Y so the exact value can be swept
+            // without a recompile (set it, relaunch the process, eyeball).
             #[cfg(target_os = "macos")]
-            let traffic_y: f64 = if is_macos_tahoe() { 21.0 } else { 16.0 };
+            let traffic_y: f64 = std::env::var("TERMIC_TRAFFIC_Y")
+                .ok()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .unwrap_or_else(|| if is_macos_tahoe() { 21.0 } else { 16.0 });
 
             #[allow(unused_mut)]
             let mut builder = tauri::WebviewWindowBuilder::new(
@@ -4636,11 +4641,56 @@ fn is_macos_tahoe() -> bool {
     use std::sync::OnceLock;
     static CACHE: OnceLock<bool> = OnceLock::new();
     *CACHE.get_or_init(|| {
-        objc2_foundation::NSProcessInfo::processInfo()
-            .operatingSystemVersion()
-            .majorVersion
-            >= 26
+        // Detect via the Darwin KERNEL version (kern.osrelease), NOT
+        // NSProcessInfo.operatingSystemVersion. The latter is compatibility-
+        // CAPPED by the SDK the binary was linked against (the same mechanism
+        // that made pre-Big-Sur apps report "10.16" instead of "11.0"). Our
+        // release binary is built on the macos-14 CI runner against the macOS
+        // 14 SDK, so on a real Tahoe machine NSProcessInfo reports ~14 and
+        // every Tahoe-specific tweak (traffic-light inset, corner clip) silently
+        // turns off in production while working fine in a locally-built dev
+        // binary. kern.osrelease reports the true running kernel regardless of
+        // link SDK. macOS 26 (Tahoe) ships the Darwin 25 kernel.
+        darwin_major_version().map_or(false, |major| major >= 25)
     })
+}
+
+/// True macOS kernel major version from `kern.osrelease`, e.g. 25 on Tahoe.
+/// Unlike NSProcessInfo / `kern.osproductversion`, this sysctl is not subject
+/// to the SDK-linked product-version compatibility cap, so it stays accurate
+/// in a binary built against an older SDK. Returns None if the sysctl fails.
+#[cfg(target_os = "macos")]
+fn darwin_major_version() -> Option<u32> {
+    use std::ffi::CString;
+    let name = CString::new("kern.osrelease").ok()?;
+    // First call sizes the buffer, second fills it with a NUL-terminated
+    // string like "25.5.0".
+    let mut len: libc::size_t = 0;
+    // SAFETY: standard two-call sysctlbyname; null value pointer just queries
+    // the required length into `len`.
+    if unsafe {
+        libc::sysctlbyname(name.as_ptr(), std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0)
+    } != 0
+        || len == 0
+    {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    // SAFETY: `buf` is `len` bytes, matching the size reported above.
+    if unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&buf);
+    s.trim_end_matches('\0').split('.').next()?.parse::<u32>().ok()
 }
 
 /// Round the window's content layer to match macOS Tahoe's enlarged
