@@ -91,7 +91,7 @@ fn probe_login_shell() -> Option<String> {
 /// well-known dev-tool locations. Misses dynamic shims (nvm picks
 /// a node version per shell), but covers the common static
 /// installers so at least `claude`, `codex`, `gemini` resolve.
-fn fallback_path(current: &str) -> String {
+pub(crate) fn fallback_path(current: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let extras: Vec<String> = vec![
         "/opt/homebrew/bin".into(),
@@ -119,4 +119,54 @@ fn fallback_path(current: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_path_adds_homebrew_when_missing() {
+        let result = fallback_path("/usr/bin:/bin");
+        assert!(result.contains("/opt/homebrew/bin"), "must add homebrew bin");
+    }
+
+    #[test]
+    fn fallback_path_does_not_duplicate_existing_entry() {
+        let result = fallback_path("/usr/bin:/opt/homebrew/bin:/bin");
+        let count = result.split(':').filter(|s| *s == "/opt/homebrew/bin").count();
+        assert_eq!(count, 1, "homebrew bin must appear exactly once");
+    }
+
+    #[test]
+    fn fallback_path_preserves_original_entries_first() {
+        let result = fallback_path("/usr/bin:/bin");
+        assert!(result.starts_with("/usr/bin:/bin"), "original path must be at the start");
+    }
+
+    #[test]
+    fn fallback_path_empty_current_path() {
+        let result = fallback_path("");
+        assert!(result.contains("/opt/homebrew/bin"), "must add extras even for empty path");
+        assert!(!result.starts_with(':'), "must not start with colon");
+    }
+
+    #[test]
+    fn fallback_path_adds_private_tmp_equiv_via_cargo_bin() {
+        // ~/.cargo/bin is always added (for rustup installs).
+        let home = std::env::var("HOME").unwrap_or_default();
+        let result = fallback_path("/usr/bin");
+        if !home.is_empty() {
+            assert!(result.contains(&format!("{home}/.cargo/bin")),
+                "must add cargo bin dir");
+        }
+    }
+
+    #[test]
+    fn fallback_path_all_entries_nonempty() {
+        let result = fallback_path("/usr/bin:/bin");
+        for entry in result.split(':') {
+            assert!(!entry.is_empty(), "no empty PATH entries allowed, got: {:?}", result);
+        }
+    }
 }

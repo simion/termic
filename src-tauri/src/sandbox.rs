@@ -1777,4 +1777,186 @@ mod tests {
         let paths = builtin_deny_paths(home);
         assert!(!paths.contains(&format!("{home}/Library/Keychains")));
     }
+
+    // ── sbpl_escape ───────────────────────────────────────────────────
+
+    #[test]
+    fn sbpl_escape_noop_on_plain_path() {
+        assert_eq!(sbpl_escape("/usr/local/bin"), "/usr/local/bin");
+    }
+
+    #[test]
+    fn sbpl_escape_doubles_backslash() {
+        assert_eq!(sbpl_escape("/path\\to"), "/path\\\\to");
+    }
+
+    #[test]
+    fn sbpl_escape_escapes_double_quote() {
+        assert_eq!(sbpl_escape("/path/with\"quote"), "/path/with\\\"quote");
+    }
+
+    #[test]
+    fn sbpl_escape_both_backslash_and_quote() {
+        // input: /a\"b  → output: /a\\\"b
+        assert_eq!(sbpl_escape("/a\\\"b"), "/a\\\\\\\"b");
+    }
+
+    // ── sbpl_regex_escape ─────────────────────────────────────────────
+
+    #[test]
+    fn sbpl_regex_escape_preserves_backslash_dot() {
+        // Regex metachar `\.` must survive — only `"` is escaped.
+        assert_eq!(sbpl_regex_escape(r"^api\.anthropic\.com$"), r"^api\.anthropic\.com$");
+    }
+
+    #[test]
+    fn sbpl_regex_escape_escapes_double_quote() {
+        assert_eq!(sbpl_regex_escape("^foo\"bar$"), "^foo\\\"bar$");
+    }
+
+    #[test]
+    fn sbpl_regex_escape_noop_on_plain_pattern() {
+        assert_eq!(sbpl_regex_escape(r"^example\.com$"), r"^example\.com$");
+    }
+
+    // ── builtin_runtime_paths ─────────────────────────────────────────
+
+    #[test]
+    fn builtin_runtime_paths_contains_workspace() {
+        let paths = builtin_runtime_paths("/Users/test", "/Users/test/projects/myapp");
+        assert!(paths.contains(&"/Users/test/projects/myapp".to_string()));
+    }
+
+    #[test]
+    fn builtin_runtime_paths_contains_npm_cache() {
+        let paths = builtin_runtime_paths("/Users/test", "/tmp/ws");
+        assert!(paths.contains(&"/Users/test/.npm".to_string()));
+    }
+
+    #[test]
+    fn builtin_runtime_paths_contains_private_tmp() {
+        let paths = builtin_runtime_paths("/Users/test", "/tmp/ws");
+        assert!(paths.contains(&"/private/tmp".to_string()));
+    }
+
+    #[test]
+    fn builtin_runtime_paths_contains_local_bin() {
+        let paths = builtin_runtime_paths("/Users/test", "/tmp/ws");
+        assert!(paths.contains(&"/Users/test/.local/bin".to_string()));
+    }
+
+    // ── clear_path_denies_under ───────────────────────────────────────
+
+    #[test]
+    fn clear_path_denies_removes_exact_prefix() {
+        let ws = "test-clear-exact";
+        incr_path_deny(ws, "/home/user/secrets", 1, "proc");
+        clear_path_denies_under(ws, "/home/user/secrets");
+        assert_eq!(path_deny_count(ws), 0);
+    }
+
+    #[test]
+    fn clear_path_denies_removes_children() {
+        let ws = "test-clear-children";
+        incr_path_deny(ws, "/home/user/dir/file.txt", 1, "proc");
+        incr_path_deny(ws, "/home/user/dir/sub/other.txt", 1, "proc");
+        clear_path_denies_under(ws, "/home/user/dir");
+        assert_eq!(path_deny_count(ws), 0);
+    }
+
+    #[test]
+    fn clear_path_denies_preserves_sibling() {
+        let ws = "test-clear-sibling";
+        incr_path_deny(ws, "/home/user/keep/file.txt", 1, "proc");
+        incr_path_deny(ws, "/home/user/remove/file.txt", 1, "proc");
+        clear_path_denies_under(ws, "/home/user/remove");
+        assert_eq!(path_deny_count(ws), 1);
+    }
+
+    #[test]
+    fn clear_path_denies_noop_on_empty_prefix() {
+        let ws = "test-clear-empty-prefix";
+        incr_path_deny(ws, "/some/path", 1, "proc");
+        let before = path_deny_count(ws);
+        clear_path_denies_under(ws, "");
+        assert_eq!(path_deny_count(ws), before);
+        // cleanup
+        clear_path_denies_under(ws, "/some/path");
+    }
+
+    // ── render_filter_for ─────────────────────────────────────────────
+
+    #[test]
+    fn render_filter_claude_contains_anthropic() {
+        use crate::Workspace;
+        let ws = Workspace { cli: "claude".into(), ..Default::default() };
+        let filter = render_filter_for(&ws, None);
+        assert!(filter.contains("anthropic"), "claude filter must include anthropic entries");
+    }
+
+    #[test]
+    fn render_filter_gemini_contains_googleapis() {
+        use crate::Workspace;
+        let ws = Workspace { cli: "gemini".into(), ..Default::default() };
+        let filter = render_filter_for(&ws, None);
+        assert!(filter.contains("googleapis"), "gemini filter must include googleapis");
+    }
+
+    #[test]
+    fn render_filter_codex_contains_openai() {
+        use crate::Workspace;
+        let ws = Workspace { cli: "codex".into(), ..Default::default() };
+        let filter = render_filter_for(&ws, None);
+        assert!(filter.contains("openai"), "codex filter must include openai");
+    }
+
+    #[test]
+    fn render_filter_agent_override_wins_over_workspace_cli() {
+        use crate::Workspace;
+        let ws = Workspace { cli: "codex".into(), ..Default::default() };
+        let filter = render_filter_for(&ws, Some("gemini"));
+        assert!(filter.contains("googleapis"), "override to gemini must add googleapis");
+        assert!(!filter.contains("openai"), "override must drop codex openai entries");
+    }
+
+    #[test]
+    fn render_filter_includes_common_hosts() {
+        use crate::Workspace;
+        let ws = Workspace { cli: "claude".into(), ..Default::default() };
+        let filter = render_filter_for(&ws, None);
+        assert!(filter.contains("github"), "filter must include github");
+        assert!(filter.contains("npmjs"), "filter must include npmjs");
+    }
+
+    #[test]
+    fn render_filter_custom_allowed_hosts_included() {
+        use crate::Workspace;
+        let ws = Workspace {
+            cli: "claude".into(),
+            sandbox_allowed_hosts: vec!["my-custom-api.example.com".into()],
+            ..Default::default()
+        };
+        let filter = render_filter_for(&ws, None);
+        assert!(filter.contains("my-custom-api"), "custom allowed hosts must be in filter");
+    }
+
+    #[test]
+    fn render_filter_unknown_cli_has_common_hosts_only() {
+        use crate::Workspace;
+        let ws = Workspace { cli: "custom".into(), ..Default::default() };
+        let filter = render_filter_for(&ws, None);
+        assert!(!filter.contains("anthropic"), "custom cli must not add anthropic");
+        assert!(!filter.contains("openai"), "custom cli must not add openai");
+        assert!(filter.contains("github"), "common hosts still present");
+    }
+
+    #[test]
+    fn render_filter_dot_in_host_is_regex_escaped() {
+        use crate::Workspace;
+        let ws = Workspace { cli: "claude".into(), ..Default::default() };
+        let filter = render_filter_for(&ws, None);
+        // Dots in hostnames must be regex-escaped as \. not bare .
+        assert!(filter.contains(r"anthropic\.com"),
+            "dots in hostnames must be regex-escaped as \\.");
+    }
 }
