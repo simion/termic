@@ -21,7 +21,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession } from "@/lib/agents";
+import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 
 // ── spawnArgsForCli ───────────────────────────────────────────────────
@@ -201,5 +201,33 @@ describe("cliSupportsIdSession", () => {
 
   it("unknown agent does NOT support id sessions", () => {
     expect(cliSupportsIdSession("some-random-cli")).toBe(false);
+  });
+});
+
+// ── agentDisplayName ──────────────────────────────────────────────────
+
+describe("agentDisplayName", () => {
+  beforeEach(() => { mockAgents.length = 0; });
+
+  it("returns display_name from registry when agent is present", () => {
+    mockAgents.push({
+      id: "my-agent", display_name: "My Agent", command: "myagent",
+      args: [], icon_id: "lucide:star", color: "#000", builtin: false,
+    });
+    expect(agentDisplayName("my-agent")).toBe("My Agent");
+  });
+
+  it("returns built-in name for known CLIs when registry is empty", () => {
+    const cases: [string, string][] = [
+      ["claude", "Claude"], ["gemini", "Gemini"], ["codex", "Codex"],
+      ["agy", "Antigravity"], ["shell", "Terminal"], ["custom", "Command"],
+    ];
+    for (const [cli, name] of cases) {
+      expect(agentDisplayName(cli, [])).toBe(name);
+    }
+  });
+
+  it("returns the id for an unknown CLI not in registry", () => {
+    expect(agentDisplayName("unknown-cli", [])).toBe("unknown-cli");
   });
 });
