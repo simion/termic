@@ -297,7 +297,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // Drop target: dragging a file (screenshot, etc.) onto this terminal
     // inserts the file's escaped path at the prompt — like macOS Terminal.
     // The getter reads ptyRef lazily so a Restart (fresh pty id) still works.
-    const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current);
+    // wsId + sandboxed let the drop handler stage the file into TMPDIR (or
+    // prompt) when this agent runs under the seatbelt, so a dropped path the
+    // sandbox would deny is still readable. ws.sandbox_enabled is read lazily.
+    const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current, {
+      wsId: ws.id,
+      sandboxed: () => !!ws.sandbox_enabled,
+    });
 
     // Shift+Enter → newline-without-submit.
     //

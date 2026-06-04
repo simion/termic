@@ -4212,6 +4212,35 @@ fn pty_debug_append(file: String, line: String) {
     }
 }
 
+/// Stage a dropped file into TMPDIR so a sandboxed agent can read it.
+///
+/// Files dropped onto a terminal from `~/Desktop`, `~/Downloads`, etc. are
+/// hard-denied by the seatbelt profile (see `builtin_deny_paths`), so the
+/// agent can't open them by their original path. We copy the file into
+/// `$TMPDIR/termic-attachments/<ws_id>/<uuid>-<name>` and hand back THAT path
+/// — `$TMPDIR` is already in the sandbox's runtime allow set, so the agent
+/// reads it with no profile change. The uuid prefix avoids collisions when the
+/// same filename is dropped twice.
+#[tauri::command]
+fn terminal_stage_file(ws_id: String, src: String) -> Result<String, String> {
+    let src_path = PathBuf::from(&src);
+    if !src_path.is_file() {
+        return Err(format!("not a file: {src}"));
+    }
+    let name = src_path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    // Sanitize ws_id for a path component (it's a uuid, but be defensive).
+    let safe_ws: String = ws_id.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    let dir = std::env::temp_dir().join("termic-attachments").join(&safe_ws);
+    fs::create_dir_all(&dir).map_err(|e| format!("mkdir staging: {e}"))?;
+    let dest = dir.join(format!("{}-{}", Uuid::new_v4(), name));
+    fs::copy(&src_path, &dest).map_err(|e| format!("copy to staging: {e}"))?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
 /// Rust-side log append. Mirror of `log_line` IPC but callable from
 /// anywhere in the crate (proxy.rs / sandbox.rs / spawn paths).
 /// Persistent file lets us debug post-mortem; eprintln stderr only
@@ -5082,7 +5111,7 @@ pub fn run() {
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, home_dir, path_exists, log_line, pty_debug_append,
+            notify, open_path, home_dir, path_exists, log_line, pty_debug_append, terminal_stage_file,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             list_monospace_fonts,
         ])

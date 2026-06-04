@@ -21,6 +21,20 @@ export interface ConfirmRequest {
   checkbox?: ConfirmCheckbox;
 }
 
+/** How the user chose to share a file dropped onto a sandboxed terminal. */
+export type TerminalDropChoice =
+  | { kind: "temp" }          // copy into TMPDIR, insert the staged path
+  | { kind: "allow-folder" }  // add the file's folder to the sandbox allow-list
+  | { kind: "allow-file" }    // add the exact file path to the allow-list
+  | { kind: "cancel" };       // do nothing
+
+export interface TerminalDropRequest {
+  /** Absolute paths the user dropped. */
+  paths: string[];
+  /** Owning workspace id (for staging + allow-list mutations). */
+  wsId: string;
+}
+
 interface UIState {
   // dialog visibility
   newProjectOpen: boolean;
@@ -60,6 +74,9 @@ interface UIState {
    *  resolve callback fires with the user's choice when the modal
    *  closes; the ConfirmDialog component reads this and renders. */
   confirm: { req: ConfirmRequest; resolve: (res: any) => void } | null;
+  /** Active sandboxed-terminal drop prompt, if any. The resolve callback
+   *  fires with the user's choice when the modal closes. */
+  terminalDrop: { req: TerminalDropRequest; resolve: (c: TerminalDropChoice) => void } | null;
   /** Workspaces whose PTYs are about to be SIGKILL'd because the user
    *  explicitly hit "Save & restart" on the Sandbox dialog. The next
    *  pty-exit for any PTY belonging to one of these workspaces will
@@ -101,6 +118,10 @@ interface UIState {
     (req: ConfirmRequest): Promise<boolean | { confirmed: boolean; checked: boolean }>;
   };
   resolveConfirm: (ok: boolean, checked?: boolean) => void;
+  /** Open the sandboxed-terminal drop prompt. Resolves with the chosen
+   *  sharing strategy (or {kind:"cancel"} on dismiss). */
+  askTerminalDrop: (req: TerminalDropRequest) => Promise<TerminalDropChoice>;
+  resolveTerminalDrop: (choice: TerminalDropChoice) => void;
   /** Mark a workspace for auto-restart on the next PTY exit. Called
    *  by the Sandbox dialog right before `workspace_set_sandbox` (the
    *  IPC that SIGKILL's the live agents). */
@@ -150,6 +171,7 @@ export const useUI = create<UIState>(set => ({
   findInFilesWsId: null,
   busyMessage: null,
   confirm: null,
+  terminalDrop: null,
   pendingSandboxRestarts: new Set<string>(),
   toasts: [],
   notifyRoute: null,
@@ -190,6 +212,13 @@ export const useUI = create<UIState>(set => ({
       }
     }
     set({ confirm: null });
+  },
+  askTerminalDrop: (req) =>
+    new Promise<TerminalDropChoice>(resolve => set({ terminalDrop: { req, resolve } })),
+  resolveTerminalDrop: (choice) => {
+    const d = useUI.getState().terminalDrop;
+    d?.resolve(choice);
+    set({ terminalDrop: null });
   },
   markPendingSandboxRestart: (wsId) => set(s => {
     const next = new Set(s.pendingSandboxRestarts);

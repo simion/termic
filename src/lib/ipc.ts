@@ -206,6 +206,11 @@ export const workspaceSpotlightStart   = (id: string) => invoke<void>("workspace
 export const workspaceSpotlightStop    = (id: string) => invoke<void>("workspace_spotlight_stop",    { id });
 export const workspaceSpotlightResync  = (id: string) => invoke<void>("workspace_spotlight_resync",  { id });
 export const workspaceSpotlightStatus  = ()           => invoke<Record<string, string>>("workspace_spotlight_status");
+
+/** Copy a dropped file into TMPDIR (sandbox-readable) and return the staged
+ *  path. Used when dropping a file onto a sandboxed agent terminal. */
+export const terminalStageFile = (wsId: string, src: string) =>
+  invoke<string>("terminal_stage_file", { wsId, src });
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
 export const workspaceFileDiffSides = (id: string, path: string) =>
   invoke<{ original: string; modified: string }>("workspace_file_diff_sides", { id, path });
