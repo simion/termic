@@ -66,22 +66,37 @@ describe("spawnArgsForCli", () => {
     expect(args).toContain("abc-123");
   });
 
-  it("includes name_args only on first id-based spawn (mint)", () => {
+  it("includes name_args on every primary-tab spawn (mint and resume)", () => {
     const fakeWs = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
+    // Mint (first id-based spawn): name is present.
     const first = spawnArgsForCli("claude", {
-      yolo: false, resume: false,
+      yolo: false, resume: false, isPrimary: true,
       sessionUuid: "abc-123", resumeKnown: false,
       ws: fakeWs,
     });
     expect(first).toContain("--name");
     expect(first).toContain("improve-tests");
 
+    // Resume (subsequent id-based spawn): name is STILL present — claude
+    // should show the workspace name in its prompt header on resume too.
     const second = spawnArgsForCli("claude", {
-      yolo: false, resume: false,
+      yolo: false, resume: false, isPrimary: true,
       sessionUuid: "abc-123", resumeKnown: true,
       ws: fakeWs,
     });
-    expect(second).not.toContain("--name");
+    expect(second).toContain("--name");
+    expect(second).toContain("improve-tests");
+  });
+
+  it("omits name_args for secondary (+) tabs", () => {
+    const fakeWs = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
+    // Secondary tabs (isPrimary falsy) start fresh and never carry --name.
+    const args = spawnArgsForCli("claude", {
+      yolo: false, resume: false, isPrimary: false,
+      sessionUuid: "abc-123", resumeKnown: false,
+      ws: fakeWs,
+    });
+    expect(args).not.toContain("--name");
   });
 
   it("expands {UUID} placeholder in args", () => {

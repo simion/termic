@@ -1,6 +1,28 @@
 {
   "versions": [
     {
+      "version": "0.8.0",
+      "date": "",
+      "summary": "Spotlight: run any workspace from your repo root, safely. Plus big terminal upgrades.",
+      "notes": [
+        "New: Spotlight. Sync one workspace's changes into your repository root so you can run and test your whole dev stack against it, instead of from the isolated worktree. Enable it per project in Settings, Repository, under \"Scripts & run\" (off by default). Start or stop it from a workspace's menu in the sidebar, or from the new Spotlight tab in the right panel.",
+        "Spotlight syncs three layers automatically: committed changes on the branch, uncommitted edits in the working tree, and untracked files (honoring .gitignore). A background watcher re-syncs within a couple of seconds whenever files change in the spotlighted workspace, so the repo root always mirrors what the agent is doing.",
+        "How Spotlight differs from Conductor's, and why it is safer: Termic never writes a commit onto your branch. It checks out the workspace's commit at the repo root as a detached HEAD, so your branch ref never moves. Conductor creates a checkpoint commit on your currently checked-out branch; if its cleanup does not run (a crash, a force quit, a power loss) your branch is left permanently advanced with a leftover commit you have to find and undo. Termic's approach leaves zero commits behind, and a hard crash leaves only a harmless detached HEAD that a single git checkout recovers. If the repo root is ever found detached on start, Spotlight refuses and tells you exactly how to clean up.",
+        "The Spotlight tab shows a live sync log that names exactly which files moved on every pass (committed, uncommitted, and untracked). You always know the precise state of your repo root, instead of being dropped into a bare terminal with no record of what changed.",
+        "Run while spotlighted is a first-class feature, executed at the repo root in its own tab as a real Run button (not a raw shell). Conductor hides Run entirely when spotlight is on and just drops you into a terminal at the repo root; Termic keeps your configured run script and launches it for you. Your dev server sees the synced files and reloads through your own watch flag. And when you switch Spotlight to a different workspace, Termic stops the old run and automatically restarts it against the new target, so the server you are testing always tracks the spotlighted workspace. Conductor leaves you to restart it by hand.",
+        "Spotlight guardrails: only one workspace per project can be spotlighted at a time, the repo root must be on a clean branch to start, and stopping fully restores the repo root (re-attaches your branch and removes copied untracked files). Reverts also run on quit, archive, and delete. Single-repo projects only for now.",
+        "New: drag and drop a file onto a terminal to insert its path at the prompt, matching macOS Terminal and iTerm2. Drag a screenshot straight onto an agent and the escaped path lands where you are typing, ready to hand off. Thanks to KickingTheTV for the contribution.",
+        "Drag and drop is sandbox-aware: when you drop a file onto a sandboxed agent, Termic asks how to share it, since the seatbelt blocks reads from Desktop, Downloads, and similar. Choose to copy it into a temp folder the sandbox already allows (works instantly, no restart), or add its folder or the exact file to the workspace's allow-list.",
+        "Terminals now support the OSC 52 clipboard sequence, so copy and paste work inside Docker containers and over SSH sessions.",
+        "Inline image rendering in terminals: both the iTerm2 inline image protocol and Sixel.",
+        "Unicode 11 wide-character support, so CJK text and emoji take the correct width and no longer smear the cursor.",
+        "Find in terminal with Cmd+F: live highlighting as you type, with Enter and Shift+Enter to cycle forward and backward through matches.",
+        "Text selection contrast bumped significantly across every theme, so highlighted text is legible everywhere.",
+        "Claude always shows the workspace name in its prompt header, including after a session resume.",
+        "Configurable terminal scrollback in Appearance settings (default 5000 lines; the scratch shell keeps half to stay light)."
+      ]
+    },
+    {
       "version": "0.7.11",
       "date": "2026-06-01",
       "summary": "Reliable work-done badges, working desktop notifications, and a macOS Tahoe alignment fix.",

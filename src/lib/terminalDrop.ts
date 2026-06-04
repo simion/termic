@@ -19,19 +19,33 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import * as ipc from "@/lib/ipc";
+import { useUI } from "@/store/ui";
 
-// host element → getter for that terminal's CURRENT pty id (or null when the
-// PTY has exited). Each TerminalPane / AuxTerminal registers its xterm host on
-// mount and removes it on unmount. We store a getter rather than a bare string
-// so a Restart that mints a fresh pty id is picked up at drop time without the
-// component having to re-register.
-const targets = new Map<HTMLElement, () => string | null>();
+// Per-terminal drop metadata. We store getters (not bare values) so a Restart
+// that mints a fresh pty id — or a sandbox toggle that flips mid-session — is
+// picked up at drop time without the component having to re-register.
+//   ptyId     — the terminal's CURRENT pty id, or null when the PTY has exited.
+//   wsId      — owning workspace (used to stage files into a per-ws temp dir).
+//   sandboxed — whether THIS terminal's process runs under the seatbelt. Only
+//               the agent PTY is sandboxed; the scratch shell never is, so it
+//               always inserts the raw path with no prompt.
+interface DropTarget {
+  ptyId: () => string | null;
+  wsId: string;
+  sandboxed: () => boolean;
+}
+const targets = new Map<HTMLElement, DropTarget>();
 
 export function registerTerminalDropTarget(
   host: HTMLElement,
   ptyId: () => string | null,
+  opts?: { wsId?: string; sandboxed?: () => boolean },
 ): () => void {
-  targets.set(host, ptyId);
+  targets.set(host, {
+    ptyId,
+    wsId: opts?.wsId ?? "",
+    sandboxed: opts?.sandboxed ?? (() => false),
+  });
   return () => { targets.delete(host); };
 }
 
@@ -42,6 +56,17 @@ export function registerTerminalDropTarget(
 // (or into a plain shell, where the escaping is also correct).
 function shellEscapePath(p: string): string {
   return p.replace(/[^A-Za-z0-9._/-]/g, "\\$&");
+}
+
+function parentDir(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i > 0 ? p.slice(0, i) : p;
+}
+
+// Write space-joined escaped paths into the PTY, as if typed at the prompt.
+function writePaths(ptyId: string, paths: string[]): void {
+  const text = paths.map(shellEscapePath).join(" ") + " ";
+  ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(text))).catch(() => {});
 }
 
 // Walk up from the drop point to the nearest registered terminal host. Returns
@@ -98,9 +123,60 @@ export async function initTerminalDropHandler(): Promise<void> {
     if (!p.paths || p.paths.length === 0) return;
     const host = hostForPoint(p.position.x / dpr, p.position.y / dpr);
     if (!host) return;                       // dropped outside any terminal
-    const ptyId = targets.get(host)?.() ?? null;
-    if (!ptyId) return;                      // terminal present but PTY exited
-    const text = p.paths.map(shellEscapePath).join(" ") + " ";
-    ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(text))).catch(() => {});
+    const target = targets.get(host);
+    const ptyId = target?.ptyId() ?? null;
+    if (!target || !ptyId) return;           // terminal present but PTY exited
+    const paths = p.paths.slice();
+
+    // Unsandboxed terminals (scratch shell, non-sandboxed agents): insert the
+    // raw path immediately, exactly like macOS Terminal. No prompt.
+    if (!target.sandboxed()) {
+      writePaths(ptyId, paths);
+      return;
+    }
+
+    // Sandboxed agent: the seatbelt denies common drop sources (Desktop,
+    // Downloads, …), so ask the user how to share the file. Async — the
+    // listener callback can't await, so we kick off a promise.
+    void handleSandboxedDrop(ptyId, target.wsId, paths);
   });
+}
+
+/** Prompt the user, then act on their choice for a drop onto a sandboxed
+ *  agent. Kept out of the listener so the event callback stays sync. */
+async function handleSandboxedDrop(ptyId: string, wsId: string, paths: string[]): Promise<void> {
+  const ui = useUI.getState();
+  const choice = await ui.askTerminalDrop({ paths, wsId });
+
+  if (choice.kind === "cancel") return;
+
+  if (choice.kind === "temp") {
+    // Stage each file into TMPDIR (sandbox-readable) and insert those paths.
+    const staged: string[] = [];
+    for (const src of paths) {
+      try { staged.push(await ipc.terminalStageFile(wsId, src)); }
+      catch (e) { useUI.getState().pushToast(`Couldn't stage ${src}: ${e}`, "error"); }
+    }
+    if (staged.length > 0) writePaths(ptyId, staged);
+    return;
+  }
+
+  // allow-folder / allow-file: add to the sandbox allow-list, insert the REAL
+  // path, and tell the user it needs an agent restart to take effect (the
+  // running process still holds the old profile).
+  const toAllow = choice.kind === "allow-folder"
+    ? Array.from(new Set(paths.map(parentDir)))
+    : paths.slice();
+  let added = 0;
+  for (const path of toAllow) {
+    try { await ipc.workspaceSandboxAddAllowedPath(wsId, path); added++; }
+    catch (e) { useUI.getState().pushToast(`Couldn't allow ${path}: ${e}`, "error"); }
+  }
+  writePaths(ptyId, paths);
+  if (added > 0) {
+    useUI.getState().pushToast(
+      "Path allowed. Restart the agent for the sandbox to pick it up.",
+      "success",
+    );
+  }
 }

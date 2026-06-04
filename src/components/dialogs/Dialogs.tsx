@@ -13,6 +13,7 @@ import { ReviewDialog } from "./ReviewDialog";
 import { BroadcastDialog } from "./BroadcastDialog";
 import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { TerminalDropDialog } from "./TerminalDropDialog";
 import { FileFinderDialog } from "./FileFinderDialog";
 import { FindInFilesDialog } from "./FindInFilesDialog";
 import { Loader2 } from "lucide-react";
@@ -37,6 +38,7 @@ export function Dialogs() {
       <BroadcastDialog />
       <WorkspaceSandboxDialog />
       <ConfirmDialog />
+      <TerminalDropDialog />
       <FileFinderDialog />
       <FindInFilesDialog />
       {/* Blocking work overlay: shown while a slow IPC call is in flight
