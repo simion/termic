@@ -16,6 +16,7 @@ import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
+import { IS_MAC } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
@@ -320,7 +321,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // first but recent claude builds no longer recognize it — they
     // require the explicit backslash-Enter pair.
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type === "keydown" && e.metaKey && e.key === "f") {
+      // Open the in-terminal search overlay. ⌘F on macOS; Ctrl+Shift+F
+      // elsewhere — plain Ctrl+F is readline's forward-char, so hijacking it
+      // would break the shell on Linux/Windows.
+      const searchOpenCombo = IS_MAC
+        ? e.metaKey && e.key.toLowerCase() === "f"
+        : e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f";
+      if (e.type === "keydown" && searchOpenCombo) {
         setSearchOpen(true);
         e.preventDefault();
         e.stopPropagation();

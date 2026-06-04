@@ -4,6 +4,12 @@
 
 import { create } from "zustand";
 import { listMonospaceFonts } from "@/lib/ipc";
+import {
+  DEFAULT_BINDINGS,
+  type Binding,
+  type BindingMap,
+  type ShortcutId,
+} from "@/lib/shortcuts";
 
 const LS_EDITOR_FONT   = "editorFont";
 const LS_EDITOR_THEME  = "editorThemeId";
@@ -20,6 +26,7 @@ const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
+const LS_SHORTCUTS     = "shortcutBindings";
 
 export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
@@ -309,6 +316,10 @@ interface PrefsState {
    *  - "always":  workspaces are always expanded by default. The chevron
    *               still collapses, and that collapsed-state sticks. */
   workspaceExpandMode: "chevron" | "click" | "always";
+  /** Resolved keyboard shortcut bindings (defaults merged with the user's
+   *  overrides). Read live by `useShortcuts`; edited from the Shortcuts
+   *  settings page. */
+  shortcuts: BindingMap;
 
   setEditorFontId:    (id: string) => void;
   setEditorThemeId:   (id: string) => void;
@@ -331,6 +342,12 @@ interface PrefsState {
   setGlobalDefaultSandbox: (v: boolean) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setWorkspaceExpandMode: (m: "chevron" | "click" | "always") => void;
+  /** Rebind a single shortcut. */
+  setShortcut: (id: ShortcutId, binding: Binding) => void;
+  /** Restore one shortcut to its factory binding. */
+  resetShortcut: (id: ShortcutId) => void;
+  /** Restore every shortcut to its factory binding. */
+  resetAllShortcuts: () => void;
 }
 
 const lsGet = (k: string, fallback: string) => {
@@ -341,6 +358,32 @@ const lsGetNum = (k: string, fallback: number) => {
   return Number.isFinite(v) ? v : fallback;
 };
 const lsGetBool = (k: string, fallback: boolean) => lsGet(k, fallback ? "1" : "0") === "1";
+
+/** Resolve the stored keybinding overrides onto the defaults. Merging onto
+ *  defaults (rather than trusting the stored blob) means commands added in a
+ *  later version always have a binding even if the saved JSON predates them,
+ *  and a malformed entry just falls back to its default. */
+function loadShortcuts(): BindingMap {
+  const merged: BindingMap = { ...DEFAULT_BINDINGS };
+  try {
+    const raw = localStorage.getItem(LS_SHORTCUTS);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, Partial<Binding>>;
+      for (const id of Object.keys(merged) as ShortcutId[]) {
+        const b = parsed[id];
+        if (b && typeof b.key === "string"
+            && typeof b.cmd === "boolean" && typeof b.shift === "boolean" && typeof b.alt === "boolean") {
+          merged[id] = { cmd: b.cmd, shift: b.shift, alt: b.alt, key: b.key };
+        }
+      }
+    }
+  } catch {}
+  return merged;
+}
+
+function persistShortcuts(map: BindingMap) {
+  try { localStorage.setItem(LS_SHORTCUTS, JSON.stringify(map)); } catch {}
+}
 
 /** Factory defaults for the Appearance section — single source of
  *  truth for both first-launch fallbacks and the "Reset to defaults"
@@ -403,6 +446,7 @@ export const usePrefs = create<PrefsState>(set => ({
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
   workspaceExpandMode: initialWsExpandMode,
+  shortcuts: loadShortcuts(),
 
   setEditorFontId: (id) => {
     try { localStorage.setItem(LS_EDITOR_FONT, id); } catch {}
@@ -484,6 +528,21 @@ export const usePrefs = create<PrefsState>(set => ({
   setWorkspaceExpandMode: (m) => {
     try { localStorage.setItem(LS_WS_EXPAND_MODE, m); } catch {}
     set({ workspaceExpandMode: m });
+  },
+  setShortcut: (id, binding) => {
+    const next = { ...usePrefs.getState().shortcuts, [id]: binding };
+    persistShortcuts(next);
+    set({ shortcuts: next });
+  },
+  resetShortcut: (id) => {
+    const next = { ...usePrefs.getState().shortcuts, [id]: DEFAULT_BINDINGS[id] };
+    persistShortcuts(next);
+    set({ shortcuts: next });
+  },
+  resetAllShortcuts: () => {
+    const next: BindingMap = { ...DEFAULT_BINDINGS };
+    persistShortcuts(next);
+    set({ shortcuts: next });
   },
   cycleThemeMode: () => {
     // Cycle only the original three for the keyboard shortcut - explicit
