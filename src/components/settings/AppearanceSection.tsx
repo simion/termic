@@ -24,6 +24,8 @@ export function AppearanceSection() {
   const setTerminalFontSize = usePrefs(s => s.setTerminalFontSize);
   const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
   const setTerminalLetterSpacing = usePrefs(s => s.setTerminalLetterSpacing);
+  const terminalScrollback = usePrefs(s => s.terminalScrollback);
+  const setTerminalScrollback = usePrefs(s => s.setTerminalScrollback);
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const setEditorFontSize = usePrefs(s => s.setEditorFontSize);
   const codeLigatures = usePrefs(s => s.codeLigatures);
@@ -42,6 +44,7 @@ export function AppearanceSection() {
     terminalFontId        === APPEARANCE_DEFAULTS.terminalFontId &&
     terminalFontSize      === APPEARANCE_DEFAULTS.terminalFontSize &&
     terminalLetterSpacing === APPEARANCE_DEFAULTS.terminalLetterSpacing &&
+    terminalScrollback    === APPEARANCE_DEFAULTS.terminalScrollback &&
     editorFontSize        === APPEARANCE_DEFAULTS.editorFontSize &&
     codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures;
 
@@ -116,6 +119,14 @@ export function AppearanceSection() {
         hint={`${terminalLetterSpacing}px added per cell. xterm packs glyphs snug; bump 1–2px to match iTerm / Terminal.app spacing.`}
         control={
           <LetterSpacingPicker value={terminalLetterSpacing} onChange={setTerminalLetterSpacing} />
+        }
+      />
+
+      <Field
+        label="Terminal scrollback"
+        hint={`${terminalScrollback.toLocaleString()} lines. Agent terminals keep this many lines; the scratch shell keeps half.`}
+        control={
+          <NumberInput value={terminalScrollback} onChange={setTerminalScrollback} min={1000} max={100000} step={1000} />
         }
       />
 
@@ -198,11 +209,11 @@ function ThemeSelect({ value, onChange }: { value: string; onChange: (id: string
 // Compact integer stepper. Replaces the previous range slider — direct
 // keyboard entry + step buttons is faster than dragging a slider to hit
 // a specific px value, especially for the small 10..20 range we expose.
-function NumberInput({ value, onChange, min, max }: { value: number; onChange: (n: number) => void; min: number; max: number }) {
+function NumberInput({ value, onChange, min, max, step = 1 }: { value: number; onChange: (n: number) => void; min: number; max: number; step?: number }) {
   const clamp = (n: number) => Math.max(min, Math.min(max, Math.round(n)));
   return (
     <input
-      type="number" min={min} max={max} step={1} value={value}
+      type="number" min={min} max={max} step={step} value={value}
       onChange={(e) => {
         const n = Number(e.target.value);
         if (Number.isFinite(n)) onChange(clamp(n));

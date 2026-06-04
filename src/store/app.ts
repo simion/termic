@@ -76,6 +76,12 @@ interface AppState {
    *  pickers are never stranded before/without detection. Drives the
    *  install badge in Settings and the hide-uninstalled picker filter. */
   detectedClis: Record<string, import("@/lib/types").CliInfo>;
+  /** Per-project spotlight: project_id → ws_id of the currently spotlighted
+   *  workspace, or absent if none. Updated by spotlight://status events and
+   *  hydrated from the Rust side on app start. Session-only (not persisted). */
+  spotlightWsId: Record<string, string>;
+  /** Set or clear the spotlighted workspace for a project. */
+  setSpotlight: (projectId: string, wsId: string | null) => void;
 
   // ── actions ──
   loadAll: () => Promise<void>;
@@ -189,6 +195,14 @@ export const useApp = create<AppState>((set, get) => ({
   collapsedWorkspaces: initialCollapsedWs as Record<string, boolean>,
   agents: [],
   detectedClis: {},
+  spotlightWsId: {},
+
+  setSpotlight: (projectId, wsId) =>
+    set(s => ({
+      spotlightWsId: wsId
+        ? { ...s.spotlightWsId, [projectId]: wsId }
+        : Object.fromEntries(Object.entries(s.spotlightWsId).filter(([k]) => k !== projectId)),
+    })),
 
   loadAll: async () => {
     // Pull projects + workspaces + settings (for the agent registry).

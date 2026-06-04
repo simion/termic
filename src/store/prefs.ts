@@ -18,6 +18,7 @@ const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
+const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
 
 export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
@@ -46,7 +47,7 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     foreground: "#eceef1",
     cursor: "#d97757",
     cursorAccent: "#0b0b0d",
-    selectionBackground: "rgba(217,119,87,0.30)",
+    selectionBackground: "rgba(51,117,240,0.75)",
     black: "#1a1a1d", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
     blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#eceef1",
     brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
@@ -58,7 +59,7 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     foreground: "#f5f4ee",
     cursor: "#d97757",
     cursorAccent: "#1f1e1d",
-    selectionBackground: "rgba(217,119,87,0.30)",
+    selectionBackground: "rgba(51,117,240,0.75)",
     black: "#1a1918", red: "#ef5350", green: "#4caf50", yellow: "#f0b13a",
     blue: "#4c8bf5", magenta: "#c084fc", cyan: "#22d3ee", white: "#f5f4ee",
     brightBlack: "#6e747e", brightRed: "#ff6b66", brightGreen: "#7cd57e", brightYellow: "#ffd166",
@@ -69,7 +70,7 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     foreground: "#1c1b1a",
     cursor: "#c25e3d",
     cursorAccent: "#faf9f6",
-    selectionBackground: "rgba(194,94,61,0.22)",
+    selectionBackground: "rgba(51,117,240,0.40)",
     black: "#2b2926", red: "#b3322a", green: "#3f8a3f", yellow: "#a17415",
     blue: "#2c5fb3", magenta: "#7a3aa5", cyan: "#1c7c8e", white: "#3f3d3a",
     brightBlack: "#55534f", brightRed: "#d9453d", brightGreen: "#52a352", brightYellow: "#b88a26",
@@ -81,7 +82,7 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     foreground: "#93a1a1",       // base1
     cursor: "#cb4b16",           // orange (canonical solarized cursor)
     cursorAccent: "#002b36",
-    selectionBackground: "rgba(7,54,66,0.85)",  // base02
+    selectionBackground: "rgba(30,138,204,0.75)",
     black:   "#073642", red:     "#dc322f", green:   "#859900", yellow:  "#b58900",
     blue:    "#268bd2", magenta: "#d33682", cyan:    "#2aa198", white:   "#eee8d5",
     brightBlack:   "#586e75", brightRed:     "#cb4b16", brightGreen:   "#586e75", brightYellow:  "#657b83",
@@ -94,7 +95,7 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     foreground: "#e1efff",
     cursor: "#ffc600",
     cursorAccent: "#193549",
-    selectionBackground: "rgba(255,198,0,0.22)",
+    selectionBackground: "rgba(255,198,0,0.45)",
     black: "#234a6a", red:     "#ff628c", green:   "#3ad900", yellow:  "#ffc600",
     blue:  "#9effff", magenta: "#fb94ff", cyan:    "#80ffbb", white:   "#e1efff",
     brightBlack: "#5a91b1", brightRed:     "#ff7da3", brightGreen:   "#5eea2e", brightYellow:  "#ffd54a",
@@ -110,7 +111,7 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     foreground: "#c8e1c0",
     cursor: "#3fb950",
     cursorAccent: "#050905",
-    selectionBackground: "rgba(63,185,80,0.22)",
+    selectionBackground: "rgba(63,185,80,0.45)",
     black:   "#0d130d", red:     "#e07070", green:   "#3fb950", yellow:  "#d4c750",
     blue:    "#5a9fd6", magenta: "#c075c0", cyan:    "#50b0a8", white:   "#c8e1c0",
     brightBlack:   "#5a6058", brightRed:     "#e88a8a", brightGreen:   "#5fd06e", brightYellow:  "#e0d670",
@@ -295,6 +296,8 @@ interface PrefsState {
    *  to 1 or 2 px adds the cushion. Integer only — fractional values
    *  misalign the WebGL atlas. */
   terminalLetterSpacing: number;
+  /** Lines of scrollback kept in agent terminals. Aux terminal uses half this value. */
+  terminalScrollback: number;
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
@@ -312,6 +315,7 @@ interface PrefsState {
   setTerminalFontId:  (id: string) => void;
   setTerminalFontSize:(px: number) => void;
   setTerminalLetterSpacing:(px: number) => void;
+  setTerminalScrollback:  (n: number) => void;
   setEditorFontSize:  (px: number) => void;
   setCodeLigatures:   (v: boolean) => void;
   /** Restore every Appearance-section pref (fonts, sizes, weight,
@@ -349,6 +353,7 @@ export const APPEARANCE_DEFAULTS = {
   terminalFontId:        "jetbrains",
   terminalFontSize:      13,
   terminalLetterSpacing: 1,
+  terminalScrollback:    5000,
   editorFontSize:        13,
   codeLigatures:         true,
 } as const;
@@ -358,6 +363,7 @@ const initialEditorTheme  = lsGet(LS_EDITOR_THEME, "atomone");
 const initialTerminalFont = lsGet(LS_TERMINAL_FONT, APPEARANCE_DEFAULTS.terminalFontId);
 const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, APPEARANCE_DEFAULTS.terminalFontSize);
 const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));
+const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(lsGetNum(LS_TERMINAL_SCROLLBACK, APPEARANCE_DEFAULTS.terminalScrollback))));
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
@@ -393,6 +399,7 @@ export const usePrefs = create<PrefsState>(set => ({
   terminalFontId: initialTerminalFont,
   terminalFontSize: initialTerminalSize,
   terminalLetterSpacing: initialTerminalLetterSpacing,
+  terminalScrollback: initialTerminalScrollback,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
   workspaceExpandMode: initialWsExpandMode,
@@ -423,6 +430,11 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_TERMINAL_LETTERSPACING, String(clamped)); } catch {}
     set({ terminalLetterSpacing: clamped });
   },
+  setTerminalScrollback: (n) => {
+    const clamped = Math.max(1000, Math.min(100000, Math.round(n)));
+    try { localStorage.setItem(LS_TERMINAL_SCROLLBACK, String(clamped)); } catch {}
+    set({ terminalScrollback: clamped });
+  },
   setEditorFontSize: (px) => {
     try { localStorage.setItem(LS_EDITOR_SIZE, String(px)); } catch {}
     set({ editorFontSize: px });
@@ -440,6 +452,7 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setTerminalFontId(d.terminalFontId);
     s.setTerminalFontSize(d.terminalFontSize);
     s.setTerminalLetterSpacing(d.terminalLetterSpacing);
+    s.setTerminalScrollback(d.terminalScrollback);
     s.setEditorFontSize(d.editorFontSize);
     s.setCodeLigatures(d.codeLigatures);
   },

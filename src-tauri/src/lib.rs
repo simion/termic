@@ -93,6 +93,12 @@ pub struct Project {
     /// of the same repo. Empty / ignored when `project_type == Single`.
     #[serde(default, deserialize_with = "deserialize_members")]
     pub members: Vec<ProjectMember>,
+
+    /// Whether Spotlight is enabled for this project. Disabled by default —
+    /// all spotlight code paths are gated on this flag so the feature is
+    /// an explicit opt-in and won't affect existing projects.
+    #[serde(default)]
+    pub spotlight_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -914,6 +920,7 @@ fn project_add(root_path: String) -> Result<Project, String> {
         // point for multi-repo projects (it sets type + members).
         project_type: ProjectType::Single,
         members: Vec::new(),
+        spotlight_enabled: false,
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -1048,6 +1055,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         sandbox_allowed_hosts: Vec::new(),
         project_type: ProjectType::Multi,
         members,
+        spotlight_enabled: false,
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -2481,6 +2489,10 @@ async fn workspace_archive(id: String, delete_branch: Option<bool>) -> Result<()
 }
 
 fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
+    // Stop spotlight for this workspace before tearing down — otherwise the
+    // polling thread will keep trying to sync a worktree that no longer exists.
+    spotlight_stop_for_ws(&id);
+
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("workspace not found")?;
     let proj = load_projects().into_iter().find(|p| p.id == w.project_id);
@@ -3325,6 +3337,487 @@ fn running_scripts_remove(key: &str) -> Option<i32> {
     g.as_mut().and_then(|m| m.remove(key))
 }
 
+// ─────────────────────────── spotlight ───────────────────────────
+
+/// Per-project spotlight session. At most one workspace per project
+/// can be spotlighted at a time. The key in SPOTLIGHT is project_id.
+struct SpotlightState {
+    ws_id: String,
+    /// The ref the repo root was on before spotlight started — a branch
+    /// name (e.g. "main") when attached, or a bare SHA when the repo root
+    /// was already in detached HEAD. Restored verbatim on stop/revert.
+    original_ref: String,
+    /// Untracked files we copied into the repo root (worktree-relative
+    /// paths). Tracked so we can remove them on stop/revert.
+    applied_untracked: Vec<String>,
+    /// Dropping this sender signals the polling thread to exit on its
+    /// next wake-up — no explicit join needed.
+    _stop_tx: std::sync::mpsc::SyncSender<()>,
+}
+
+static SPOTLIGHT: std::sync::Mutex<Option<HashMap<String, SpotlightState>>>
+    = std::sync::Mutex::new(None);
+
+fn spotlight_get(project_id: &str) -> Option<String> {
+    let g = SPOTLIGHT.lock().unwrap();
+    g.as_ref()?.get(project_id).map(|s| s.ws_id.clone())
+}
+
+fn spotlight_insert(project_id: String, state: SpotlightState) {
+    let mut g = SPOTLIGHT.lock().unwrap();
+    g.get_or_insert_with(HashMap::new).insert(project_id, state);
+}
+
+fn spotlight_remove(project_id: &str) -> Option<SpotlightState> {
+    let mut g = SPOTLIGHT.lock().unwrap();
+    g.as_mut()?.remove(project_id)
+}
+
+/// Update the applied_untracked list in the active session for a project.
+fn spotlight_update_untracked(project_id: &str, untracked: Vec<String>) {
+    let mut g = SPOTLIGHT.lock().unwrap();
+    if let Some(m) = g.as_mut() {
+        if let Some(s) = m.get_mut(project_id) {
+            s.applied_untracked = untracked;
+        }
+    }
+}
+
+/// Compute a string that changes whenever the worktree's git state
+/// changes (committed or uncommitted). Used by the polling thread to
+/// detect when a re-sync is needed.
+fn spotlight_state_hash(worktree: &Path) -> String {
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(worktree)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(worktree)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    format!("{head}||{status}")
+}
+
+/// Apply a worktree's full state into the repo root WITHOUT advancing any
+/// branch. This is the core of spotlight:
+///   1. Check out the worktree's HEAD commit as a DETACHED HEAD in the repo
+///      root. Worktrees share the object DB, so the commit is reachable.
+///      The repo root's branch (main/master) ref is never moved — so even
+///      if the app crashes before revert, the user's branch is untouched.
+///   2. Uncommitted diff (HEAD..) → applied as working-tree changes.
+///   3. Untracked files → copied in (honoring .gitignore).
+struct SpotlightApplyResult {
+    applied_untracked: Vec<String>,
+    /// File paths in the committed diff (base..worktree HEAD), for the log.
+    committed_files: Vec<String>,
+    /// File paths in the uncommitted diff (working tree vs HEAD).
+    uncommitted_files: Vec<String>,
+}
+
+fn spotlight_apply(
+    worktree: &Path,
+    main: &Path,
+    base: &str,
+    _ws_name: &str,
+) -> Result<SpotlightApplyResult, String> {
+    use std::io::Write as _;
+
+    // The worktree's HEAD commit — the committed state we check out at root.
+    let wt_head = git(&["rev-parse", "HEAD"], worktree)
+        .map_err(|e| format!("git rev-parse worktree HEAD: {e}"))?
+        .trim()
+        .to_string();
+
+    // Names of files that differ vs the base branch (for the log only).
+    let name_list = |args: &[&str], cwd: &Path| -> Vec<String> {
+        std::process::Command::new("git").args(args).current_dir(cwd).output().ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout)
+                .lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default()
+    };
+    let committed_files = name_list(
+        &["--no-pager", "diff", "--name-only", &format!("{base}..HEAD")], worktree);
+
+    // Uncommitted diff (staged + unstaged on top of HEAD) — binary-safe patch.
+    let uncommitted = std::process::Command::new("git")
+        .args(["--no-pager", "diff", "--binary", "HEAD"])
+        .current_dir(worktree)
+        .output()
+        .map_err(|e| format!("git diff uncommitted: {e}"))?;
+    if !uncommitted.status.success() {
+        return Err(format!("git diff uncommitted failed: {}",
+            String::from_utf8_lossy(&uncommitted.stderr)));
+    }
+    let has_uncommitted = !uncommitted.stdout.is_empty();
+    let uncommitted_files = String::from_utf8_lossy(&uncommitted.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("diff --git "))
+        .filter_map(|rest| rest.split(" b/").nth(1).map(|s| s.to_string()))
+        .collect();
+
+    // 1. Detached checkout of the worktree's commit. --force is safe: the
+    //    caller guarantees the repo root is clean before the first apply,
+    //    and re-syncs always revert to the original ref first.
+    let out = std::process::Command::new("git")
+        .args(["checkout", "--detach", "--force", &wt_head])
+        .current_dir(main)
+        .output()
+        .map_err(|e| format!("git checkout --detach spawn: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git checkout --detach failed: {}",
+            String::from_utf8_lossy(&out.stderr)));
+    }
+
+    // 2. Apply uncommitted diff as working-tree changes (not staged, no --3way:
+    //    HEAD now matches the worktree's committed state so it applies cleanly).
+    if has_uncommitted {
+        let mut child = std::process::Command::new("git")
+            .args(["apply", "--whitespace=nowarn", "-"])
+            .current_dir(main)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("git apply uncommitted spawn: {e}"))?;
+        {
+            let stdin = child.stdin.as_mut().ok_or("apply uncommitted: no stdin")?;
+            stdin.write_all(&uncommitted.stdout).map_err(|e| format!("apply uncommitted stdin: {e}"))?;
+        }
+        let out = child.wait_with_output().map_err(|e| format!("apply uncommitted wait: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("git apply uncommitted failed: {}",
+                String::from_utf8_lossy(&out.stderr)));
+        }
+    }
+
+    // 3. Copy untracked files (honoring .gitignore).
+    let untracked_raw = git(
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        worktree,
+    ).map_err(|e| e.to_string())?;
+    let mut applied_untracked = Vec::new();
+    for rel in untracked_raw.split('\0').filter(|s| !s.is_empty()) {
+        let src = safe_workspace_path(worktree, rel)
+            .map_err(|e| format!("untracked path rejected: {e}"))?;
+        let dst = main.join(rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+        }
+        fs::copy(&src, &dst).map_err(|e| format!("copy {rel}: {e}"))?;
+        applied_untracked.push(rel.to_string());
+    }
+
+    Ok(SpotlightApplyResult {
+        applied_untracked,
+        committed_files,
+        uncommitted_files,
+    })
+}
+
+/// Revert the repo root to its pre-spotlight state: force-checkout the
+/// original ref (re-attaching the branch / leaving detached HEAD as it was)
+/// and remove any untracked files we copied in. Because spotlight never
+/// moved a branch, this just moves HEAD back — no history is rewritten.
+fn spotlight_revert(main: &Path, original_ref: &str, applied_untracked: &[String]) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["checkout", "--force", original_ref])
+        .current_dir(main)
+        .output()
+        .map_err(|e| format!("git checkout spawn: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git checkout {original_ref} failed: {}",
+            String::from_utf8_lossy(&out.stderr)));
+    }
+    for rel in applied_untracked {
+        let path = main.join(rel);
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// SIGTERM a workspace's host run-script process group, if one is running.
+/// The run script started while spotlighted executes at the repo root, so
+/// when spotlight stops or switches away we must tear it down — otherwise a
+/// stale dev server keeps serving the repo root after the sync target changed.
+fn spotlight_kill_run(ws_id: &str) {
+    // Host run scripts use map key "{ws_id}::run" (empty member component).
+    let key = format!("{ws_id}::run");
+    if let Some(pid) = running_scripts_remove(&key) {
+        unsafe { libc::kill(-pid, libc::SIGTERM); }
+    }
+}
+
+/// Stop spotlight for a workspace without requiring an AppHandle (called
+/// from workspace_archive_sync). Caller emits the status event if needed.
+fn spotlight_stop_for_ws(ws_id: &str) {
+    let workspaces = load_workspaces();
+    let Some(w) = workspaces.iter().find(|w| w.id == ws_id) else { return };
+    let projects = load_projects();
+    let Some(p) = projects.iter().find(|p| p.id == w.project_id) else { return };
+    let main = PathBuf::from(&p.root_path);
+    if let Some(state) = spotlight_remove(&p.id) {
+        spotlight_kill_run(&state.ws_id);
+        let _ = spotlight_revert(&main, &state.original_ref, &state.applied_untracked);
+    }
+}
+
+#[tauri::command]
+fn workspace_spotlight_status() -> HashMap<String, String> {
+    let g = SPOTLIGHT.lock().unwrap();
+    match g.as_ref() {
+        None => HashMap::new(),
+        Some(m) => m.iter().map(|(pid, s)| (pid.clone(), s.ws_id.clone())).collect(),
+    }
+}
+
+
+#[tauri::command]
+async fn workspace_spotlight_start(id: String, app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || spotlight_start_sync(id, app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn spotlight_start_sync(ws_id: String, app: AppHandle) -> Result<(), String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == ws_id)
+        .ok_or("no such workspace")?;
+    let p = load_projects().into_iter().find(|p| p.id == w.project_id)
+        .ok_or("project missing")?;
+
+    if !p.spotlight_enabled {
+        return Err("Spotlight is not enabled for this project. Enable it in Repository Settings.".into());
+    }
+    if w.is_repo_root {
+        return Err("This workspace IS the main checkout — nothing to spotlight.".into());
+    }
+    if p.project_type == ProjectType::Multi {
+        return Err("Spotlight is not supported for multi-repo projects.".into());
+    }
+
+    let worktree    = PathBuf::from(&w.path);
+    let main        = PathBuf::from(&p.root_path);
+    let project_id  = p.id.clone();
+    let base        = w.base_branch.clone();
+
+    if !main.is_dir() {
+        return Err(format!("Main checkout missing: {}", main.display()));
+    }
+
+    // If another workspace in this project is already spotlighted, revert main
+    // first — otherwise the clean check below would always fail because main
+    // has the previous spotlight's changes applied.
+    if let Some(existing) = spotlight_remove(&project_id) {
+        // Stop the previous workspace's repo-root run (it was serving the old
+        // spotlight target) before reverting main + applying the new one.
+        spotlight_kill_run(&existing.ws_id);
+        spotlight_revert(&main, &existing.original_ref, &existing.applied_untracked)?;
+        let _ = app.emit("spotlight://status", serde_json::json!({
+            "project_id": &project_id,
+            "ws_id": serde_json::Value::Null,
+        }));
+    }
+
+    // Refuse to start from a detached HEAD. The repo root is normally on a
+    // branch; detached almost always means a previous spotlight session was
+    // left over by a hard crash (the app couldn't revert on the way out).
+    // Spotlight also detaches HEAD while running, so we need a clean branch
+    // to return to — refuse and tell the user to clean up first.
+    let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"], &main)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(original_ref) = branch else {
+        return Err("The repo root is in a detached HEAD (likely a leftover spotlight from a previous crash). Run `git checkout <your branch>` in the repo root, then retry.".into());
+    };
+
+    // Now check main is clean. Any remaining dirt is user-owned (not spotlight's).
+    let main_status = git(&["status", "--porcelain"], &main).map_err(|e| e.to_string())?;
+    if !main_status.trim().is_empty() {
+        return Err("Main checkout has uncommitted changes. Commit or stash them first, then retry.".into());
+    }
+
+    // Initial apply.
+    let r = spotlight_apply(&worktree, &main, &base, &w.name)?;
+    let applied_untracked = r.applied_untracked.clone();
+
+    // Polling thread: checks git state every 1.5s and re-syncs on change.
+    let (stop_tx, stop_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    {
+        let poll_worktree    = worktree.clone();
+        let poll_main        = main.clone();
+        let poll_base        = base.clone();
+        let poll_ws_name     = w.name.clone();
+        let poll_orig        = original_ref.clone();
+        let poll_project_id  = project_id.clone();
+        let poll_ws_id       = ws_id.clone();
+        let poll_app         = app.clone();
+
+        thread::spawn(move || {
+            let mut last_hash = spotlight_state_hash(&poll_worktree);
+            loop {
+                match stop_rx.recv_timeout(std::time::Duration::from_millis(1500)) {
+                    Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+
+                let current_hash = spotlight_state_hash(&poll_worktree);
+                if current_hash == last_hash {
+                    continue;
+                }
+                last_hash = current_hash;
+
+                // Get the latest applied_untracked from the session so the
+                // revert removes the right files even if a prior sync added new ones.
+                let current_untracked = {
+                    let g = SPOTLIGHT.lock().unwrap();
+                    g.as_ref()
+                        .and_then(|m| m.get(&poll_project_id))
+                        .filter(|s| s.ws_id == poll_ws_id)
+                        .map(|s| s.applied_untracked.clone())
+                        .unwrap_or_default()
+                };
+                // If the session is gone (stopped while we were sleeping), exit.
+                {
+                    let g = SPOTLIGHT.lock().unwrap();
+                    if g.as_ref().and_then(|m| m.get(&poll_project_id))
+                        .map(|s| s.ws_id.as_str()) != Some(&poll_ws_id)
+                    {
+                        break;
+                    }
+                }
+
+                if let Err(e) = spotlight_revert(&poll_main, &poll_orig, &current_untracked) {
+                    let _ = poll_app.emit("spotlight://error", serde_json::json!({
+                        "project_id": &poll_project_id,
+                        "ws_id": &poll_ws_id,
+                        "message": e,
+                    }));
+                    continue;
+                }
+
+                match spotlight_apply(&poll_worktree, &poll_main, &poll_base, &poll_ws_name) {
+                    Ok(r) => {
+                        spotlight_update_untracked(&poll_project_id, r.applied_untracked.clone());
+                        let _ = poll_app.emit("spotlight://synced", serde_json::json!({
+                            "project_id": &poll_project_id,
+                            "ws_id": &poll_ws_id,
+                            "committed_files":   r.committed_files,
+                            "uncommitted_files": r.uncommitted_files,
+                            "untracked_files":   r.applied_untracked,
+                        }));
+                    }
+                    Err(e) => {
+                        let _ = poll_app.emit("spotlight://error", serde_json::json!({
+                            "project_id": &poll_project_id,
+                            "ws_id": &poll_ws_id,
+                            "message": e,
+                        }));
+                    }
+                }
+            }
+        });
+    }
+
+    spotlight_insert(project_id.clone(), SpotlightState {
+        ws_id: ws_id.clone(),
+        original_ref,
+        applied_untracked: r.applied_untracked,
+        _stop_tx: stop_tx,
+    });
+
+    // Emit status FIRST so the frontend clears the log, THEN emit synced
+    // so the initial sync detail arrives into the freshly-cleared log.
+    let _ = app.emit("spotlight://status", serde_json::json!({
+        "project_id": &project_id,
+        "ws_id": &ws_id,
+    }));
+    let _ = app.emit("spotlight://synced", serde_json::json!({
+        "project_id": &project_id,
+        "ws_id": &ws_id,
+        "committed_files":   r.committed_files,
+        "uncommitted_files": r.uncommitted_files,
+        "untracked_files":   &applied_untracked,
+    }));
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn workspace_spotlight_stop(id: String, app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || spotlight_stop_sync(id, app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn spotlight_stop_sync(ws_id: String, app: AppHandle) -> Result<(), String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == ws_id)
+        .ok_or("no such workspace")?;
+    let p = load_projects().into_iter().find(|p| p.id == w.project_id)
+        .ok_or("project missing")?;
+    let main = PathBuf::from(&p.root_path);
+
+    if let Some(state) = spotlight_remove(&p.id) {
+        // Stop the repo-root run, then signal the polling thread to exit
+        // (dropping _stop_tx), then revert main.
+        spotlight_kill_run(&state.ws_id);
+        drop(state._stop_tx);
+        spotlight_revert(&main, &state.original_ref, &state.applied_untracked)?;
+    }
+
+    let _ = app.emit("spotlight://status", serde_json::json!({
+        "project_id": &p.id,
+        "ws_id": serde_json::Value::Null,
+    }));
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn workspace_spotlight_resync(id: String, app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id)
+            .ok_or("no such workspace")?;
+        let p = load_projects().into_iter().find(|p| p.id == w.project_id)
+            .ok_or("project missing")?;
+        let worktree = PathBuf::from(&w.path);
+        let main     = PathBuf::from(&p.root_path);
+
+        let (original_ref, current_untracked) = {
+            let g = SPOTLIGHT.lock().unwrap();
+            let state = g.as_ref()
+                .and_then(|m| m.get(&p.id))
+                .ok_or("spotlight not active for this workspace")?;
+            if state.ws_id != id {
+                return Err("A different workspace is spotlighted for this project.".into());
+            }
+            (state.original_ref.clone(), state.applied_untracked.clone())
+        };
+
+        spotlight_revert(&main, &original_ref, &current_untracked)?;
+        let r = spotlight_apply(&worktree, &main, &w.base_branch, &w.name)?;
+        spotlight_update_untracked(&p.id, r.applied_untracked.clone());
+
+        let _ = app.emit("spotlight://synced", serde_json::json!({
+            "project_id": &p.id,
+            "ws_id": &id,
+            "committed_files":   r.committed_files,
+            "uncommitted_files": r.uncommitted_files,
+            "untracked_files":   r.applied_untracked,
+        }));
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+
 /// Kick off either the project's setup or run script for a workspace with
 /// live stdout/stderr streaming. Emits:
 ///   script-output://<ws_id>:<kind>  { line: string }
@@ -3386,6 +3879,19 @@ fn workspace_run_script_stream(
             let p = if m.port == 0 { w.port.saturating_add(idx as u16 + 1) } else { m.port };
             (s, std::path::PathBuf::from(&m.path), p)
         }
+    };
+
+    // Spotlight override: when this workspace is spotlighted and we're
+    // running the "run" script (not setup, not a member), execute at the
+    // main checkout so the server sees the synced files. The user starts
+    // and stops the run manually from the Spotlight tab.
+    let cwd = if kind == "run" && member_dir.is_none() {
+        match spotlight_get(&p.id) {
+            Some(active_id) if active_id == id => PathBuf::from(&p.root_path),
+            _ => cwd,
+        }
+    } else {
+        cwd
     };
 
     // Event-channel topic + RUNNING_SCRIPTS key include the member
@@ -4571,6 +5077,7 @@ pub fn run() {
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_grep_start, workspace_grep_cancel,
+            workspace_spotlight_start, workspace_spotlight_stop, workspace_spotlight_resync, workspace_spotlight_status,
             workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
             workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
@@ -4597,9 +5104,30 @@ pub fn run() {
 
 /// SIGKILL every child process we spawned (script process groups +
 /// PTY children) so quitting the app doesn't leave dev servers or
-/// agent processes running.
+/// agent processes running. Also reverts any active spotlight sessions
+/// so main is left clean.
 fn cleanup_children(app: &tauri::AppHandle) {
     use tauri::Manager;
+    // 0. Spotlight sessions — revert main for every active session so the
+    //    user's repo is left in a clean state after the app exits.
+    //    Drop each session (which stops its polling thread) and revert.
+    {
+        let sessions: Vec<SpotlightState> = {
+            let mut g = SPOTLIGHT.lock().unwrap();
+            g.as_mut().map(|m| m.drain().map(|(_, v)| v).collect()).unwrap_or_default()
+        };
+        for state in sessions {
+            let projects = load_projects();
+            // Find the project that owns this session by matching ws_id.
+            let workspaces = load_workspaces();
+            if let Some(w) = workspaces.iter().find(|w| w.id == state.ws_id) {
+                if let Some(p) = projects.iter().find(|p| p.id == w.project_id) {
+                    let main = PathBuf::from(&p.root_path);
+                    let _ = spotlight_revert(&main, &state.original_ref, &state.applied_untracked);
+                }
+            }
+        }
+    }
     // 1. Script process groups (streaming Run/Setup invocations).
     //    Drain RUNNING_SCRIPTS and SIGKILL each pg leader. Use
     //    SIGKILL (not SIGTERM) because we're not waiting for the
@@ -4885,5 +5413,220 @@ mod tests {
         assert!(s.contains("secrets.env"));
         assert!(s.contains("/y"));
         assert!(!s.contains("/x"));
+    }
+
+    // ──────────────── spotlight git mechanics ────────────────
+
+    /// Initialize a bare git repo at `path` with one commit so HEAD and
+    /// base branch exist. Returns the committed file path.
+    fn git_init_with_commit(path: &Path) -> PathBuf {
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(path).output().unwrap();
+            assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        run(&["init", "-b", "main"]);
+        run(&["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init"]);
+        let f = path.join("base.txt");
+        fs::write(&f, "base content\n").unwrap();
+        run(&["add", "."]);
+        run(&["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "-m", "base"]);
+        f
+    }
+
+    /// Add a real git worktree of `repo` at `wt` on a new branch `branch`.
+    /// Worktrees share the object DB — exactly what spotlight's detached
+    /// checkout relies on. Returns nothing; `wt` is checked out on `branch`.
+    fn git_worktree_add(repo: &Path, wt: &Path, branch: &str) {
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", &wt.to_string_lossy(), "-b", branch])
+            .current_dir(repo)
+            .output().unwrap();
+        assert!(out.status.success(), "worktree add failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn git_head(repo: &Path) -> String {
+        String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo)
+                .output().unwrap().stdout,
+        ).trim().to_string()
+    }
+
+    /// Resolve a ref (e.g. a branch name) to a SHA in `repo`.
+    fn git_rev(repo: &Path, refname: &str) -> String {
+        String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .args(["rev-parse", refname])
+                .current_dir(repo)
+                .output().unwrap().stdout,
+        ).trim().to_string()
+    }
+
+    /// Current branch name, or empty when in detached HEAD.
+    fn git_branch(repo: &Path) -> String {
+        String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .current_dir(repo)
+                .output().unwrap().stdout,
+        ).trim().to_string()
+    }
+
+    fn git_is_clean(repo: &Path) -> bool {
+        let out = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(repo)
+            .output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().is_empty()
+    }
+
+    #[test]
+    fn spotlight_apply_checks_out_worktree_commit_without_moving_branch() {
+        let main_dir  = tempdir().unwrap();
+        let wt_parent = tempdir().unwrap();
+        let main      = main_dir.path();
+        let wt        = wt_parent.path().join("wt");
+
+        git_init_with_commit(main);
+        let main_ref_before = git_rev(main, "main");
+        git_worktree_add(main, &wt, "feature");
+
+        // Commit a change on the worktree branch.
+        fs::write(wt.join("feature.txt"), "new feature\n").unwrap();
+        let run_wt = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(&wt).output().unwrap();
+            assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        run_wt(&["add", "."]);
+        run_wt(&["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "feature"]);
+        let wt_head = git_head(&wt);
+
+        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        assert!(!r.committed_files.is_empty(), "should have detected committed diff");
+        assert!(r.applied_untracked.is_empty(), "no untracked files");
+
+        // Repo root HEAD is now the worktree's commit (detached) ...
+        assert_eq!(git_head(main), wt_head, "repo root checked out the worktree commit");
+        assert_eq!(git_branch(main), "", "repo root is in detached HEAD");
+        // ... but the `main` BRANCH ref never moved — the key safety property.
+        assert_eq!(git_rev(main, "main"), main_ref_before, "main branch ref must not move");
+        assert!(main.join("feature.txt").exists(), "feature file present at repo root");
+    }
+
+    #[test]
+    fn spotlight_apply_uncommitted_lands_as_working_tree_changes() {
+        let main_dir  = tempdir().unwrap();
+        let wt_parent = tempdir().unwrap();
+        let main      = main_dir.path();
+        let wt        = wt_parent.path().join("wt");
+
+        git_init_with_commit(main);
+        let main_ref_before = git_rev(main, "main");
+        git_worktree_add(main, &wt, "feature");
+
+        // Unstaged change in worktree (no commit).
+        fs::write(wt.join("base.txt"), "modified content\n").unwrap();
+
+        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        assert!(r.committed_files.is_empty(), "no committed diff");
+        assert!(!r.uncommitted_files.is_empty(), "should have uncommitted files");
+        assert!(r.applied_untracked.is_empty());
+
+        // main branch ref unchanged; working tree carries the change.
+        assert_eq!(git_rev(main, "main"), main_ref_before, "main branch ref must not move");
+        assert!(!git_is_clean(main), "repo root working tree should be dirty");
+    }
+
+    #[test]
+    fn spotlight_apply_untracked_files_are_copied() {
+        let main_dir  = tempdir().unwrap();
+        let wt_parent = tempdir().unwrap();
+        let main      = main_dir.path();
+        let wt        = wt_parent.path().join("wt");
+
+        git_init_with_commit(main);
+        git_worktree_add(main, &wt, "feature");
+
+        // Untracked file in worktree (not in .gitignore).
+        fs::write(wt.join("env.local"), "SECRET=test\n").unwrap();
+
+        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        assert_eq!(r.applied_untracked, vec!["env.local"]);
+        assert!(main.join("env.local").exists(), "untracked file copied to repo root");
+    }
+
+    #[test]
+    fn spotlight_revert_reattaches_branch_and_cleans() {
+        let main_dir  = tempdir().unwrap();
+        let wt_parent = tempdir().unwrap();
+        let main      = main_dir.path();
+        let wt        = wt_parent.path().join("wt");
+
+        git_init_with_commit(main);
+        let main_ref_before = git_rev(main, "main");
+        git_worktree_add(main, &wt, "feature");
+
+        // Committed change + untracked file in the worktree.
+        fs::write(wt.join("tmp.txt"), "temp\n").unwrap();
+        let run_wt = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(&wt).output().unwrap();
+        };
+        run_wt(&["add", "."]);
+        run_wt(&["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "tmp"]);
+        fs::write(wt.join("untracked.txt"), "data\n").unwrap();
+
+        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        assert!(main.join("tmp.txt").exists());
+        assert!(main.join("untracked.txt").exists());
+        assert_eq!(git_branch(main), "", "detached while spotlighted");
+
+        // Revert back to the original branch ref ("main").
+        spotlight_revert(main, "main", &r.applied_untracked).unwrap();
+
+        assert_eq!(git_branch(main), "main", "branch re-attached after revert");
+        assert_eq!(git_rev(main, "main"), main_ref_before, "main ref still at original");
+        assert!(git_is_clean(main), "repo root clean after revert");
+        assert!(!main.join("tmp.txt").exists(), "committed file gone");
+        assert!(!main.join("untracked.txt").exists(), "untracked file removed");
+    }
+
+    #[test]
+    fn spotlight_resync_reflects_new_commits() {
+        let main_dir  = tempdir().unwrap();
+        let wt_parent = tempdir().unwrap();
+        let main      = main_dir.path();
+        let wt        = wt_parent.path().join("wt");
+
+        git_init_with_commit(main);
+        let main_ref_before = git_rev(main, "main");
+        git_worktree_add(main, &wt, "feature");
+
+        let run_wt = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(&wt).output().unwrap();
+        };
+
+        // First apply: one committed file.
+        fs::write(wt.join("v1.txt"), "version 1\n").unwrap();
+        run_wt(&["add", "."]);
+        run_wt(&["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "v1"]);
+        let r1 = spotlight_apply(&wt, main, "main", "ws").unwrap();
+        assert!(main.join("v1.txt").exists());
+
+        // Worktree gets a second commit. Re-sync = revert then re-apply.
+        fs::write(wt.join("v2.txt"), "version 2\n").unwrap();
+        run_wt(&["add", "."]);
+        run_wt(&["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "v2"]);
+
+        spotlight_revert(main, "main", &r1.applied_untracked).unwrap();
+        assert!(!main.join("v1.txt").exists(), "v1 removed on revert");
+
+        let r2 = spotlight_apply(&wt, main, "main", "ws").unwrap();
+        assert!(main.join("v1.txt").exists(), "v1 re-applied");
+        assert!(main.join("v2.txt").exists(), "v2 applied");
+        assert!(r2.applied_untracked.is_empty(), "no untracked");
+        // The branch ref STILL hasn't moved through all of this.
+        assert_eq!(git_rev(main, "main"), main_ref_before, "main ref never moved");
+        assert_eq!(git_head(main), git_head(&wt), "repo root HEAD == worktree HEAD");
     }
 }

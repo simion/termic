@@ -193,13 +193,10 @@ export function spawnCommandForCli(cli: string): string {
  *       - `opts.resume` true → append `resume_args`.
  *
  *    C. name_args (claude `--name`):
- *       - Appended ONLY on the FIRST id-based spawn — the one that MINTS
- *         the session via session_id_args (`--session-id <uuid>`).
- *       - NEVER on a resume (`--resume <uuid>`), NEVER on secondary /
- *         ad-hoc tabs (no sessionUuid), NEVER on cwd-based `--continue`.
- *         The name only needs to be stamped once, when the session is
- *         created; re-stamping it on resume can knock claude into its
- *         interactive picker.
+ *       - Appended on every primary-tab spawn (worktree or repo-root,
+ *         mint or resume) so the workspace name is always visible.
+ *       - Skipped for secondary "+" tabs (`isPrimary=false`) and
+ *         no-workspace spawns (`ws` absent).
  *
  *    D. always-applied:
  *       - `yolo_args` appended LAST so a subcommand-style resume
@@ -212,6 +209,9 @@ export function spawnArgsForCli(
     yolo: boolean;
     resume: boolean;
     ws?: Workspace;
+    /** True for the auto-created default tab; false for user-added "+" tabs.
+     *  Gates name_args — secondary tabs start fresh and shouldn't get --name. */
+    isPrimary?: boolean;
     /** Termic-minted uuid for this (workspace, cli) pair. Presence
      *  switches the resume path from (B) to (A). */
     sessionUuid?: string;
@@ -244,10 +244,10 @@ export function spawnArgsForCli(
   const composed = [
     ...args,
     ...resumeBlock,
-    // name_args ONLY when minting the session id for the first time.
-    // Never on --resume, never on secondary/ad-hoc tabs (no sessionUuid),
-    // never on cwd-based --continue resumes.
-    ...(isFirstIdSpawn ? (caps.name_args ?? []) : []),
+    // name_args on every primary-tab spawn (worktree or repo-root, mint or
+    // resume) so claude always shows the workspace name. Skipped for
+    // secondary "+" tabs (isPrimary=false) and no-workspace spawns.
+    ...(opts.isPrimary && opts.ws ? (caps.name_args ?? []) : []),
     ...(opts.yolo ? (caps.yolo_args ?? []) : []),
   ];
   return composed.map(a => expandArg(a, vars));

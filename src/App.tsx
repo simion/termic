@@ -6,7 +6,9 @@
 //   └────────┴──────────────────────────┴────────────────────┘
 
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
+import { workspaceSpotlightStatus } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
@@ -44,9 +46,24 @@ export function App() {
     useApp.getState().refreshClis();
     // Kick off the update check + changelog fetch (idempotent).
     useUpdate.getState().init();
+
+    // Hydrate spotlight state from Rust (survives hot-reloads).
+    workspaceSpotlightStatus().then(map => {
+      const { setSpotlight } = useApp.getState();
+      for (const [projectId, wsId] of Object.entries(map)) setSpotlight(projectId, wsId);
+    }).catch(() => {});
+
+    // Keep spotlight store in sync with Rust events.
+    const unlistenStatus = listen<{ project_id: string; ws_id: string | null }>(
+      "spotlight://status",
+      ev => useApp.getState().setSpotlight(ev.payload.project_id, ev.payload.ws_id),
+    );
     const onFocus = () => loadAll();
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      unlistenStatus.then(u => u());
+    };
   }, [loadAll]);
 
   // Column widths come from the store so the resize handles can mutate them.

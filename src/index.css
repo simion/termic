@@ -265,6 +265,15 @@
 .xterm { padding: 8px 6px 8px 10px; }
 .xterm-viewport::-webkit-scrollbar { width: 8px; }
 
+/* Spotlight active indicator — gentle breathing opacity on the wave icon. */
+@keyframes termic-spotlight-wave {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+.termic-spotlight-wave {
+  animation: termic-spotlight-wave 2s ease-in-out infinite;
+}
+
 /* Indeterminate progress strip on tab pills — slides a slug across
    the bar while the agent is working without a known percentage
    (OSC 9;4;3). Matches iTerm2's progress indicator behavior. */
