@@ -1,194 +1,179 @@
-// Global keyboard shortcuts:
+// Global keyboard shortcuts. The actual key combos are CONFIGURABLE — the
+// source of truth for which command exists + its default combo lives in
+// `src/lib/shortcuts.ts`, and the user's overrides live in the prefs store
+// (`usePrefs().shortcuts`). This handler reads the resolved bindings live and
+// dispatches the matching command. The default combos (for reference):
 //   ⌘1..⌘9   → switch to the Nth tab in the active workspace
 //   ⌘L       → focus the active workspace's terminal
-//   ⌘[, ⌘]   → previous / next workspace (cycles non-archived in sidebar order)
-//   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded
-//             terminal tabs underneath) — basically "what you can see"
+//   ⌘[, ⌘]   → previous / next workspace (cycles AWAKE ones in sidebar order)
+//   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded tabs)
 //   ⌥⌘↑, ⌥⌘↓ → previous / next workspace (skip expanded tabs)
 //   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
-//             (Safari / Chrome / iTerm convention — Shift + brackets = tabs)
-//   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘];
-//             pairs with ⌥⌘↑/↓ — up/down = workspaces, left/right = tabs)
+//   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘])
 //   ⌘W       → close the active tab
 //   ⇧⌘D      → open a new bottom-split terminal in the active workspace
-//             (opens the split if it's not already open) — matches the
-//             iTerm / Terminal.app convention for "horizontal split".
+//   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
+//   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings
 import { useEffect } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { usePrefs } from "@/store/prefs";
 import { requestCloseTab } from "@/lib/closeTab";
+import { bindingMatches, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 
 export function useShortcuts() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const isMeta = e.metaKey || e.ctrlKey;
+      const binds = usePrefs.getState().shortcuts;
+      // First binding (in registry order) whose combo the event satisfies.
+      // Exact modifier matching makes commands mutually exclusive unless the
+      // user has created a conflict (the settings page warns about those);
+      // first-match-wins resolves a conflict deterministically.
+      let cmd: ShortcutId | null = null;
+      for (const def of SHORTCUT_DEFS) {
+        if (bindingMatches(e, binds[def.id])) { cmd = def.id; break; }
+      }
+      if (!cmd) return;
+
       const state = useApp.getState();
       const wsId = state.activeWorkspaceId;
       const tabs = wsId ? state.tabs[wsId] || [] : [];
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
-
-      // ⌥↑ / ⌥↓ → previous / next VISIBLE sidebar row. Walks the same flat
-      // list the user sees: each workspace, plus its terminal tabs when the
-      // workspace is expanded. Selecting a tab also activates its workspace.
-      // No isTyping guard for the same xterm-helper-textarea reason as ⌘T/⌘W.
-      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
-          && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-        type Row = { wsId: string; tabId?: string };
-        const rows: Row[] = [];
-        for (const p of state.projects) {
-          for (const w of state.workspaces) {
-            if (w.project_id !== p.id || w.archived) continue;
-            rows.push({ wsId: w.id });
-            const wsTabs = state.tabs[w.id] ?? [];
-            const terminalTabs = wsTabs.filter(t => t.type === "terminal");
-            const explicit = state.collapsedWorkspaces[w.id];
-            const collapsed = explicit ?? (terminalTabs.length <= 1);
-            if (!collapsed) {
-              for (const t of terminalTabs) rows.push({ wsId: w.id, tabId: t.id });
-            }
-          }
-        }
-        if (rows.length <= 1) return;
-        e.preventDefault();
-        const activeTab = wsId ? state.activeTab[wsId] : undefined;
-        // Prefer matching the active tab row when the workspace is expanded;
-        // otherwise the workspace header row.
-        let idx = rows.findIndex(r => r.wsId === wsId && r.tabId === activeTab);
-        if (idx < 0) idx = rows.findIndex(r => r.wsId === wsId && !r.tabId);
-        const dir = e.key === "ArrowDown" ? 1 : -1;
-        const nextIdx = idx < 0
-          ? (dir > 0 ? 0 : rows.length - 1)
-          : (idx + dir + rows.length) % rows.length;
-        const target = rows[nextIdx];
-        state.setActiveWorkspace(target.wsId);
-        if (target.tabId) state.setActiveTabId(target.wsId, target.tabId);
-        return;
-      }
-
-      if (!isMeta) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable;
+      const inBottom = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
 
-      // ⌘, → open settings (macOS convention).
-      if (e.key === ",") {
-        e.preventDefault();
-        state.openSettings();
-        return;
-      }
-
-      // ⌘P → file finder (Sublime / VS Code convention). NO `isTyping`
-      // guard — xterm's hidden textarea always reports as typing, and we
-      // want ⌘P to fire from the terminal too. Scoped to having an
-      // active workspace; without one there's no file list to search.
-      if (e.key.toLowerCase() === "p" && !e.shiftKey && wsId) {
-        e.preventDefault();
-        useUI.getState().openFileFinder(wsId);
-        return;
-      }
-
-      // ⇧⌘F → find-in-files (Sublime / VS Code convention). Same
-      // no-`isTyping` rationale as ⌘P. Requires an active workspace.
-      if (e.shiftKey && e.key.toLowerCase() === "f" && wsId) {
-        e.preventDefault();
-        useUI.getState().openFindInFiles(wsId);
-        return;
-      }
-
-      // ⌘1..⌘9 → switch to Nth tab in the active workspace (Chrome /
-      // VS Code convention). Indexes the full tab list so position
-      // matches what the user sees in the TabBar.
-      if (/^[1-9]$/.test(e.key)) {
-        if (wsId && tabs.length > 0) {
-          const n = Number(e.key) - 1;
-          const t = tabs[n];
-          if (t) { e.preventDefault(); state.setActiveTabId(wsId, t.id); }
-        }
-        return;
-      }
-
-      if (e.key.toLowerCase() === "l" && wsId) {
-        if (isTyping) return;
-        e.preventDefault();
-        // Focus the active terminal via the xterm DOM (no global ref needed).
-        const el = document.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-        el?.focus();
-        return;
-      }
-
-      // Workspace nav cycles only AWAKE workspaces — ones the user
-      // has opened at least once + still has tabs in. The sleep
-      // state (no tabs / no PTYs) is the same one closeTab arrives
-      // at when the user X's out the last tab. Cycling through
-      // asleep ones would silently respawn PTYs the user already
-      // killed, which is surprising.
-      //
-      // Order MUST match the sidebar's visual order: project1 → its
-      // workspaces → project2 → its workspaces → ... Otherwise ⌥⌘↑/↓
-      // (and ⌘[/⌘]) jump around "randomly" because raw `workspaces`
-      // is in JSON load order, not sidebar grouping. Match the same
-      // grouping the sidebar uses in Sidebar.tsx#projects.map.
-      const awakeWorkspaces = state.projects.flatMap(p =>
+      // Workspace nav cycles only AWAKE workspaces — ones the user has opened
+      // at least once + still has tabs in. Order MUST match the sidebar's
+      // visual grouping (project → its workspaces → next project …) or the
+      // jumps feel random. Computed lazily; only some commands need it.
+      const awakeWorkspaces = () => state.projects.flatMap(p =>
         state.workspaces.filter(w =>
           w.project_id === p.id && !w.archived && (state.tabs[w.id]?.length ?? 0) > 0,
         ),
       );
 
-      // ⌥⌘↑ / ⌥⌘↓ → previous / next AWAKE workspace (arrow-key alt
-      //              for ⌘[/⌘]). Picked Option+Cmd to avoid clashing
-      //              with macOS' default Mission Control bindings on
-      //              ⌃↑ / ⌃↓.
-      if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-        if (awakeWorkspaces.length <= 1) return;
-        e.preventDefault();
-        const idx = awakeWorkspaces.findIndex(w => w.id === wsId);
-        const nextIdx = idx < 0
-          ? (e.key === "ArrowDown" ? 0 : awakeWorkspaces.length - 1)
-          : e.key === "ArrowDown"
-            ? (idx + 1) % awakeWorkspaces.length
-            : (idx - 1 + awakeWorkspaces.length) % awakeWorkspaces.length;
-        state.setActiveWorkspace(awakeWorkspaces[nextIdx].id);
-        return;
-      }
-
-      // ⌥⌘← / ⌥⌘→ → previous / next tab within the active workspace.
-      //              Arrow-key alt for ⇧⌘[/⇧⌘] (matches Chrome's
-      //              ⌥⌘←/→ tab switch). Pairs with ⌥⌘↑/↓ above:
-      //              up/down = workspaces, left/right = tabs.
-      if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-        if (wsId && tabs.length > 1) {
+      switch (cmd) {
+        // ⌥↑ / ⌥↓ → previous / next VISIBLE sidebar row. Walks the same flat
+        // list the user sees: each workspace, plus its terminal tabs when the
+        // workspace is expanded. Selecting a tab also activates its workspace.
+        case "sidebar-prev":
+        case "sidebar-next": {
+          type Row = { wsId: string; tabId?: string };
+          const rows: Row[] = [];
+          for (const p of state.projects) {
+            for (const w of state.workspaces) {
+              if (w.project_id !== p.id || w.archived) continue;
+              rows.push({ wsId: w.id });
+              const wsTabs = state.tabs[w.id] ?? [];
+              const terminalTabs = wsTabs.filter(t => t.type === "terminal");
+              const explicit = state.collapsedWorkspaces[w.id];
+              const collapsed = explicit ?? (terminalTabs.length <= 1);
+              if (!collapsed) {
+                for (const t of terminalTabs) rows.push({ wsId: w.id, tabId: t.id });
+              }
+            }
+          }
+          if (rows.length <= 1) return;
           e.preventDefault();
-          const idx = tabs.findIndex(t => t.id === activeTabId);
-          const nextIdx = e.key === "ArrowRight"
-            ? (idx + 1) % tabs.length
-            : (idx - 1 + tabs.length) % tabs.length;
-          state.setActiveTabId(wsId, tabs[nextIdx].id);
+          const activeTab = wsId ? state.activeTab[wsId] : undefined;
+          let idx = rows.findIndex(r => r.wsId === wsId && r.tabId === activeTab);
+          if (idx < 0) idx = rows.findIndex(r => r.wsId === wsId && !r.tabId);
+          const dir = cmd === "sidebar-next" ? 1 : -1;
+          const nextIdx = idx < 0
+            ? (dir > 0 ? 0 : rows.length - 1)
+            : (idx + dir + rows.length) % rows.length;
+          const target = rows[nextIdx];
+          state.setActiveWorkspace(target.wsId);
+          if (target.tabId) state.setActiveTabId(target.wsId, target.tabId);
+          return;
         }
-        return;
-      }
 
-      // ⇧⌘[ / ⇧⌘] → tab nav within active workspace (Safari / Chrome /
-      //              iTerm convention — Shift + brackets always = tabs).
-      // ⌘[ / ⌘]   → workspace nav across AWAKE workspaces (no shift).
-      if (e.key === "[" || e.key === "]") {
-        if (e.shiftKey) {
+        // ⌘, → open settings (macOS convention).
+        case "open-settings":
+          e.preventDefault();
+          state.openSettings();
+          return;
+
+        // ⌘P → file finder. NO `isTyping` guard — xterm's hidden textarea
+        // always reports as typing, and we want it to fire from the terminal
+        // too. Scoped to having an active workspace.
+        case "file-finder":
           if (!wsId) return;
-          // Focus-aware tab nav: when the bottom-split shell owns focus,
-          // ⇧⌘[/] cycles the BOTTOM tabs; otherwise the main-area tabs.
-          // Same `[data-bottom-split]` ancestor check as ⌘T / ⌘W / ⌘K.
-          const inBottom = !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
-          if (inBottom) {
+          e.preventDefault();
+          useUI.getState().openFileFinder(wsId);
+          return;
+
+        // ⇧⌘F → find-in-files. Same no-`isTyping` rationale as the finder.
+        case "find-in-files":
+          if (!wsId) return;
+          e.preventDefault();
+          useUI.getState().openFindInFiles(wsId);
+          return;
+
+        // ⌘1..⌘9 → switch to Nth tab in the active workspace. Indexes the
+        // full tab list so position matches the TabBar.
+        case "jump-to-tab": {
+          if (wsId && tabs.length > 0) {
+            const n = Number(e.key) - 1;
+            const t = tabs[n];
+            if (t) { e.preventDefault(); state.setActiveTabId(wsId, t.id); }
+          }
+          return;
+        }
+
+        // ⌘L → focus the active terminal. The one command WITH an isTyping
+        // guard: it must not steal focus while the user types in a form field.
+        case "focus-terminal": {
+          if (!wsId || isTyping) return;
+          e.preventDefault();
+          const el = document.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+          el?.focus();
+          return;
+        }
+
+        // ⌥⌘↑ / ⌥⌘↓ → previous / next AWAKE workspace (arrow-key alt for ⌘[/]).
+        case "workspace-prev-arrow":
+        case "workspace-next-arrow": {
+          const ws = awakeWorkspaces();
+          if (ws.length <= 1) return;
+          e.preventDefault();
+          const fwd = cmd === "workspace-next-arrow";
+          const idx = ws.findIndex(w => w.id === wsId);
+          const nextIdx = idx < 0
+            ? (fwd ? 0 : ws.length - 1)
+            : fwd ? (idx + 1) % ws.length : (idx - 1 + ws.length) % ws.length;
+          state.setActiveWorkspace(ws[nextIdx].id);
+          return;
+        }
+
+        // ⌥⌘← / ⌥⌘→ → previous / next tab within the active workspace.
+        case "tab-prev-arrow":
+        case "tab-next-arrow": {
+          if (wsId && tabs.length > 1) {
+            e.preventDefault();
+            const fwd = cmd === "tab-next-arrow";
+            const idx = tabs.findIndex(t => t.id === activeTabId);
+            const nextIdx = fwd ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
+            state.setActiveTabId(wsId, tabs[nextIdx].id);
+          }
+          return;
+        }
+
+        // ⇧⌘[ / ⇧⌘] → tab nav within active workspace. Focus-aware: when the
+        // bottom-split shell owns focus, cycles the BOTTOM tabs instead.
+        case "tab-prev":
+        case "tab-next": {
+          if (!wsId) return;
+          const fwd = cmd === "tab-next";
+          if (inBottom()) {
             const bottomTabs = state.bottomTabs[wsId] || [];
             if (bottomTabs.length > 1) {
               e.preventDefault();
               const idx = bottomTabs.findIndex(t => t.id === state.activeBottomTab[wsId]);
-              // No active bottom tab yet (or a stale pointer) → findIndex
-              // returns -1; fall to the first/last instead of letting the
-              // wrap math silently skip the last tab.
               const nextIdx = idx < 0
-                ? (e.key === "]" ? 0 : bottomTabs.length - 1)
-                : e.key === "]"
-                  ? (idx + 1) % bottomTabs.length
-                  : (idx - 1 + bottomTabs.length) % bottomTabs.length;
+                ? (fwd ? 0 : bottomTabs.length - 1)
+                : fwd ? (idx + 1) % bottomTabs.length : (idx - 1 + bottomTabs.length) % bottomTabs.length;
               state.setActiveBottomTab(wsId, bottomTabs[nextIdx].id);
             }
             return;
@@ -196,122 +181,100 @@ export function useShortcuts() {
           if (tabs.length > 1) {
             e.preventDefault();
             const idx = tabs.findIndex(t => t.id === activeTabId);
-            const nextIdx = e.key === "]"
-              ? (idx + 1) % tabs.length
-              : (idx - 1 + tabs.length) % tabs.length;
+            const nextIdx = fwd ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
             state.setActiveTabId(wsId, tabs[nextIdx].id);
           }
           return;
         }
-        if (awakeWorkspaces.length <= 1) return;
-        e.preventDefault();
-        const idx = awakeWorkspaces.findIndex(w => w.id === wsId);
-        const nextIdx = idx < 0
-          ? (e.key === "]" ? 0 : awakeWorkspaces.length - 1)
-          : e.key === "]"
-            ? (idx + 1) % awakeWorkspaces.length
-            : (idx - 1 + awakeWorkspaces.length) % awakeWorkspaces.length;
-        state.setActiveWorkspace(awakeWorkspaces[nextIdx].id);
-        return;
-      }
 
-      // ⇧⌘D → new bottom-split terminal tab. Opens the split first
-      // if closed. Matches iTerm / Terminal.app's "horizontal split"
-      // binding. ⌘T was a Tauri-window-new shortcut surprise — moved
-      // off it so menu-bar items don't conflict.
-      //
-      // NO `isTyping` guard here: xterm uses a hidden TEXTAREA
-      // (`.xterm-helper-textarea`) to capture input, so when the
-      // terminal is focused isTyping is true and the shortcut
-      // wouldn't fire. Shift+Cmd combos aren't valid typing
-      // shortcuts anyway, so we skip the gate.
-      if (e.shiftKey && e.key.toLowerCase() === "d" && wsId) {
-        e.preventDefault();
-        const splitOpen = !!state.terminalSplit[wsId];
-        const hasTabs = (state.bottomTabs[wsId]?.length ?? 0) > 0;
-        if (!splitOpen) state.toggleTerminalSplit(wsId);
-        if (!hasTabs) state.addBottomTab(wsId);
-        // Always move focus into the bottom split — that's the whole
-        // point of the shortcut. Poll briefly because the freshly-
-        // opened split / freshly-spawned shell needs a few frames
-        // before its xterm helper-textarea is in the DOM.
-        const tryFocus = (tries = 20) => {
-          const split = document.querySelector("[data-bottom-split]");
-          const active = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-          if (active) { active.focus(); return; }
-          if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
-        };
-        tryFocus();
-        return;
-      }
-
-      // ⇧⌘B → open the Broadcast dialog for the active workspace (send
-      // one message to several open agents at once). NO `isTyping` guard
-      // — same xterm hidden-textarea reason as ⇧⌘D.
-      if (e.shiftKey && e.key.toLowerCase() === "b" && wsId) {
-        e.preventDefault();
-        useUI.getState().openBroadcast(wsId);
-        return;
-      }
-
-      // ⌘T → new tab, behaviour depends on which pane has focus
-      // (mirrors macOS Terminal.app's "new tab" binding for whichever
-      // pane is active). NO `isTyping` guard for the same reason as
-      // ⇧⌘D — xterm's hidden textarea always reports as typing.
-      if (e.key.toLowerCase() === "t" && !e.shiftKey && wsId) {
-        e.preventDefault();
-        const inBottom = !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
-        if (inBottom) {
-          // Bottom split: spawn a plain shell straight away — there's
-          // no agent choice to make. addBottomTab self-focuses it.
-          state.addBottomTab(wsId);
-        } else {
-          // Main pane: open the "+" tab menu so the user can pick an
-          // agent / terminal with the keyboard and hit Enter. The
-          // active workspace's TabBar listens for this event.
-          window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { wsId } }));
-        }
-        return;
-      }
-
-      // ⌘K → clear the focused terminal (xterm `clear()`). Dispatched
-      // as a window CustomEvent; each Terminal instance listens and
-      // self-checks `document.activeElement` against its own host
-      // before clearing. NO `isTyping` guard — same xterm hidden-
-      // textarea reason as ⇧⌘D / ⌘T.
-      if (e.key.toLowerCase() === "k" && !e.shiftKey) {
-        const inTerm = !!(document.activeElement as HTMLElement | null)?.closest?.(".xterm");
-        if (inTerm) {
+        // ⌘[ / ⌘] → workspace nav across AWAKE workspaces.
+        case "workspace-prev":
+        case "workspace-next": {
+          const ws = awakeWorkspaces();
+          if (ws.length <= 1) return;
           e.preventDefault();
-          window.dispatchEvent(new CustomEvent("termic-clear-focused"));
+          const fwd = cmd === "workspace-next";
+          const idx = ws.findIndex(w => w.id === wsId);
+          const nextIdx = idx < 0
+            ? (fwd ? 0 : ws.length - 1)
+            : fwd ? (idx + 1) % ws.length : (idx - 1 + ws.length) % ws.length;
+          state.setActiveWorkspace(ws[nextIdx].id);
           return;
         }
-      }
 
-      if (e.key.toLowerCase() === "w" && !e.shiftKey) {
-        // NO `isTyping` guard — xterm reports as typing because its
-        // hidden textarea is always focused. We want ⌘W to close the
-        // current tab even when the terminal owns focus, same as
-        // clicking the X on the tab.
-        // ALWAYS preventDefault so the OS doesn't interpret ⌘W as
-        // "close window" and quit the app.
-        e.preventDefault();
-        // Focus-aware: if the bottom-split shell owns focus, ⌘W closes
-        // the active BOTTOM tab — not the main-area tab. (Same
-        // `[data-bottom-split]` ancestor check as ⌘T / ⌘K above.)
-        const inBottom = !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
-        if (inBottom && wsId) {
-          const bottomId = state.activeBottomTab[wsId];
-          if (bottomId) state.closeBottomTab(wsId, bottomId);
+        // ⇧⌘D → new bottom-split terminal tab. Opens the split first if
+        // closed. NO `isTyping` guard (xterm's hidden textarea).
+        case "new-split-terminal": {
+          if (!wsId) return;
+          e.preventDefault();
+          const splitOpen = !!state.terminalSplit[wsId];
+          const hasTabs = (state.bottomTabs[wsId]?.length ?? 0) > 0;
+          if (!splitOpen) state.toggleTerminalSplit(wsId);
+          if (!hasTabs) state.addBottomTab(wsId);
+          // Poll briefly — the freshly-opened split needs a few frames before
+          // its xterm helper-textarea is in the DOM.
+          const tryFocus = (tries = 20) => {
+            const split = document.querySelector("[data-bottom-split]");
+            const active = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+            if (active) { active.focus(); return; }
+            if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
+          };
+          tryFocus();
           return;
         }
-        // requestCloseTab confirms first if it's a dirty edit tab —
-        // ⌘W must never silently discard unsaved changes.
-        if (wsId && activeTabId) requestCloseTab(wsId, activeTabId);
-        return;
+
+        // ⇧⌘B → open the Broadcast dialog for the active workspace.
+        case "broadcast":
+          if (!wsId) return;
+          e.preventDefault();
+          useUI.getState().openBroadcast(wsId);
+          return;
+
+        // ⌘T → new tab, behaviour depends on which pane has focus. NO
+        // `isTyping` guard (xterm's hidden textarea).
+        case "new-tab": {
+          if (!wsId) return;
+          e.preventDefault();
+          if (inBottom()) {
+            state.addBottomTab(wsId);
+          } else {
+            // Main pane: open the "+" tab menu so the user can pick an agent
+            // with the keyboard. The active workspace's TabBar listens.
+            window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { wsId } }));
+          }
+          return;
+        }
+
+        // ⌘K → clear the focused terminal. Only acts when a terminal owns
+        // focus; otherwise let the keystroke pass through.
+        case "clear-terminal":
+          if (inTermFocused()) {
+            e.preventDefault();
+            window.dispatchEvent(new CustomEvent("termic-clear-focused"));
+          }
+          return;
+
+        // ⌘W → close the active tab. ALWAYS preventDefault so the OS doesn't
+        // read it as "close window" and quit. Focus-aware for the bottom
+        // split. NO `isTyping` guard (xterm's hidden textarea).
+        case "close-tab": {
+          e.preventDefault();
+          if (inBottom() && wsId) {
+            const bottomId = state.activeBottomTab[wsId];
+            if (bottomId) state.closeBottomTab(wsId, bottomId);
+            return;
+          }
+          // requestCloseTab confirms first if it's a dirty edit tab.
+          if (wsId && activeTabId) requestCloseTab(wsId, activeTabId);
+          return;
+        }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+}
+
+function inTermFocused() {
+  return !!(document.activeElement as HTMLElement | null)?.closest?.(".xterm");
 }
