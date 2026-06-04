@@ -1,6 +1,17 @@
 {
   "versions": [
     {
+      "version": "0.8.1",
+      "date": "2026-06-04",
+      "summary": "Queue messages for an agent to auto-run, and edit a workspace's launch command.",
+      "notes": [
+        "New: queue messages for an agent. When work-done detection is on, each time the agent finishes a turn the next queued message is sent automatically, so you can set up a self-running loop. Open it from the new icon in the workspace tab bar, next to Broadcast.",
+        "Set a repeat count on a queued message to send it several times in a row (each send waits for the agent to finish a turn). The tab bar shows a live count of how many messages are still queued, and ticks down as they run.",
+        "Queues are per-agent and run independently, so agents in a split can each work through their own list at the same time. Only agents with work-done detection enabled can host a queue.",
+        "Custom-command workspaces: edit the launch command after creation from the workspace's menu in the sidebar, and write it as a multiline shell script instead of a single line."
+      ]
+    },
+    {
       "version": "0.8.0",
       "date": "2026-06-04",
       "summary": "Spotlight: run any workspace from your repo root, safely. Plus big terminal upgrades.",
