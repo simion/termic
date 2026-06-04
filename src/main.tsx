@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./App";
 import { logLine } from "@/lib/ipc";
+import { initTerminalDropHandler } from "@/lib/terminalDrop";
 
 // StrictMode disabled: it double-mounts effects in dev, which races our async
 // PTY spawn flow (first spawn gets killed by the strict teardown before its
@@ -32,3 +33,9 @@ window.addEventListener("unhandledrejection", (e) => {
 });
 
 createRoot(document.getElementById("root")!).render(<App />);
+
+// App-wide terminal drag-and-drop: dropping a file onto a terminal inserts
+// its path at the prompt (like macOS Terminal). One native Tauri listener for
+// the whole app — see src/lib/terminalDrop.ts for why the browser DnD API
+// can't be used here. Fire-and-forget; failure just means no drop support.
+initTerminalDropHandler().catch(() => {});
