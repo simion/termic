@@ -54,15 +54,16 @@ describe("cmpVersion", () => {
 
 describe("entryFor", () => {
   const log: ChangelogEntry[] = [
-    { version: "1.0.0", notes: "Initial release" },
-    { version: "1.1.0", notes: "New features" },
-    { version: "2.0.0", notes: "Breaking changes" },
+    { version: "1.0.0", date: "2026-01-01", summary: "Initial release", notes: ["Initial release"] },
+    { version: "1.1.0", date: "2026-02-01", summary: "New features", notes: ["New features"] },
+    { version: "2.0.0", date: "2026-03-01", summary: "Breaking changes", notes: ["Breaking changes"] },
   ];
 
   it("finds an existing entry by version", () => {
     const entry = entryFor(log, "1.1.0");
     expect(entry).not.toBeNull();
-    expect(entry!.notes).toBe("New features");
+    expect(entry!.summary).toBe("New features");
+    expect(entry!.notes).toEqual(["New features"]);
   });
 
   it("returns null for a version not in the changelog", () => {
