@@ -2,7 +2,7 @@
   "versions": [
     {
       "version": "0.8.0",
-      "date": "",
+      "date": "2026-06-04",
       "summary": "Spotlight: run any workspace from your repo root, safely. Plus big terminal upgrades.",
       "notes": [
         "New: Spotlight. Sync one workspace's changes into your repository root so you can run and test your whole dev stack against it, instead of from the isolated worktree. Enable it per project in Settings, Repository, under \"Scripts & run\" (off by default). Start or stop it from a workspace's menu in the sidebar, or from the new Spotlight tab in the right panel.",
