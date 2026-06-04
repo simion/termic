@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -1021,6 +1021,18 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 <Pencil className="h-4 w-4" />
                 <span>Rename</span>
               </DropdownItem>
+              {/* Custom-command workspaces carry an editable launch
+                  script (agent / shell workspaces resolve their command
+                  from the registry, so there's nothing to edit). */}
+              {w.cli === "custom" && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  onSelect={() => useUI.getState().openEditCommand(w.id)}
+                >
+                  <SquareChevronRight className="h-4 w-4" />
+                  <span>Edit command</span>
+                </DropdownItem>
+              )}
               {w.branch && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"

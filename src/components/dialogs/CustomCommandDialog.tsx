@@ -25,7 +25,7 @@ export function CustomCommandDialog() {
   const [command, setCommand] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const cmdRef = useRef<HTMLInputElement | null>(null);
+  const cmdRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -81,18 +81,24 @@ export function CustomCommandDialog() {
 
       <label className="mt-4 block text-[13.5px]">
         Command
-        <Input
+        <textarea
           ref={cmdRef}
           value={command}
           onChange={e => setCommand(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
-          placeholder="npm run dev"
-          className="mt-1.5 font-mono"
+          onKeyDown={e => {
+            // ⌘/Ctrl+Enter launches; a bare Enter inserts a newline so a
+            // multiline bash script stays freely editable.
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+          }}
+          placeholder={"npm run dev\n# or any multiline bash script"}
+          rows={5}
+          className="mt-1.5 box-border min-h-[120px] w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] leading-snug text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         />
         <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
           Runs in the repo root, e.g. <code className="mono">ssh box</code>,{" "}
           <code className="mono">npm run dev</code>, <code className="mono">python</code>.
+          A multiline bash script is fine. Press <kbd className="font-mono">⌘↵</kbd> to launch.
         </span>
       </label>
 

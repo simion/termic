@@ -18,6 +18,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import { IS_MAC } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
+import { sendMessageToPty } from "@/lib/agentSend";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
@@ -195,6 +196,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // user already saw the answer.
   const doneFiredSinceSubmitRef = useRef(false);
 
+  // Holds the latest sendNextQueued so fireDone (defined first) can call it.
+  // fireDone is the single completion funnel; draining the message queue from
+  // there means a focused agent's loop still advances (the store downgrades
+  // a focused tab's "done" to "idle", so we can't watch workState for this).
+  const sendNextQueuedRef = useRef<(() => boolean) | null>(null);
+
   // Single funnel for every "work done" transition. Enforces one-done-per-
   // submit (blocks oscillation / late-OSC re-fires) and suppresses the
   // sidebar bell + OS notification when the user is actively looking at
@@ -210,6 +217,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
       return;
     }
     doneFiredSinceSubmitRef.current = true;
+    // If a message queue is draining, send the next message now and suppress
+    // this turn's badge/bell — the user is running an automated loop and
+    // doesn't want a notification between every iteration. Runs before the
+    // focus-gating below so a loop the user is watching keeps advancing.
+    if (sendNextQueuedRef.current?.()) return;
     const app = useApp.getState();
     const isActive = app.activeWorkspaceId === ws.id && app.activeTab[ws.id] === tab.id;
     if (seen || isActive) {
@@ -223,10 +235,58 @@ export function TerminalPane({ ws, tab, active }: Props) {
     app.markAttention(ws.id, tab.id, attn);
   }, [ws.id, tab.id]);
 
+  // Drain one message from the tab's queue (the ralph loop). Returns true if
+  // a message was sent (so fireDone can suppress the badge), false when the
+  // queue is inactive or empty. Sending mirrors the broadcast path: type the
+  // text, submit the CR a beat later (sendMessageToPty), and stamp lastInputAt
+  // so the watcher below re-arms work-done detection for the next turn.
+  const sendNextQueued = useCallback((): boolean => {
+    const ptyId = ptyRef.current;
+    if (!ptyId) return false;
+    const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+    if (!cur || cur.type !== "terminal" || !cur.queueActive) return false;
+    const q = cur.queue ?? [];
+    if (!q.length) {
+      // Loop finished — stop and let fireDone show the final done badge.
+      patchTab(ws.id, tab.id, { queueActive: false });
+      useUI.getState().pushToast("Message queue finished");
+      return false;
+    }
+    const head = q[0];
+    sendMessageToPty(ptyId, head.text);
+    patchTab(ws.id, tab.id, { lastInputAt: Date.now() });
+    const remaining = head.remaining - 1;
+    const nextQueue = remaining <= 0
+      ? q.slice(1)
+      : [{ ...head, remaining }, ...q.slice(1)];
+    patchTab(ws.id, tab.id, { queue: nextQueue });
+    debugLogRef.current?.("queue-send", `"${head.text.slice(0, 40)}" remaining=${remaining} left=${nextQueue.length}`);
+    return true;
+  }, [ws.id, tab.id, patchTab]);
+  sendNextQueuedRef.current = sendNextQueued;
+
+  // Kick the queue off when the user hits Start (queueActive flips true). Only
+  // send immediately if the agent isn't mid-turn; if it's already working, the
+  // in-flight turn's eventual done advances the queue via fireDone instead.
+  const queueActive = tab.type === "terminal" ? tab.queueActive : undefined;
+  useEffect(() => {
+    if (!queueActive) return;
+    const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+    if (cur?.workState === "working") return;
+    sendNextQueuedRef.current?.();
+  }, [queueActive, ws.id, tab.id]);
+
   useEffect(() => {
     let cancelled = false;
     const host = hostRef.current;
     if (!host) return;
+
+    // A (re)spawn (incl. a manual Restart via `gen`) stops any running
+    // message queue — otherwise the loop would keep firing prompts into a
+    // brand-new process the user didn't queue them for.
+    if ((useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id) as TerminalTab | undefined)?.queueActive) {
+      patchTab(ws.id, tab.id, { queueActive: false });
+    }
 
     const term = new Terminal({
       cursorBlink: true,

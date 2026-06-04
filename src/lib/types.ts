@@ -374,6 +374,26 @@ export interface TerminalTab extends BaseTab {
    *  silenced so a stuck spinner the user just dismissed doesn't
    *  instantly re-arm. */
   workClearedAt?: number;
+  /** Per-agent message queue (the "ralph loop"). The head item is sent
+   *  next; on every work-done the next message is auto-submitted. Only
+   *  meaningful for work-done-capable agent tabs. Edited via the message
+   *  queue dialog; drained in TerminalPane. */
+  queue?: QueueItem[];
+  /** Whether the queue is actively draining — true between Start and the
+   *  queue emptying (or the user hitting Stop). Reset on PTY (re)spawn so
+   *  a manual Restart doesn't keep firing into a fresh process. */
+  queueActive?: boolean;
+}
+
+/** One entry in a terminal tab's message queue. `repeat` is the total
+ *  number of times to send `text` (each send waits for its own work-done);
+ *  `remaining` counts down as it drains. A classic ralph loop is a single
+ *  item with a high repeat. */
+export interface QueueItem {
+  id: string;
+  text: string;
+  repeat: number;
+  remaining: number;
 }
 
 export interface DiffTab extends BaseTab {

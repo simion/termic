@@ -136,6 +136,16 @@ export function agentDisplayName(cli: string, agents: Agent[] = useApp.getState(
   }
 }
 
+/** Whether work-done detection runs for a terminal tab's agent. Mirrors
+ *  the runtime gate in TerminalPane (`tab.cli !== "shell" && (work_done ?? true)`):
+ *  plain shells never qualify, and any agent whose registry entry has
+ *  `work_done === false` is opted out. Unknown / custom clis default on. */
+export function workDoneCapable(cli: string, agents: Agent[] = useApp.getState().agents): boolean {
+  if (cli === "shell") return false;
+  const a = agents.find(x => x.id === cli);
+  return a?.work_done !== false;
+}
+
 function findAgent(cli: string): {
   command: string; args: string[];
   caps: NonNullable<Agent["capabilities"]>;
