@@ -3,7 +3,7 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check } from "lucide-react";
+import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, X } from "lucide-react";
 import * as Popover from "@radix-ui/react-popover";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -11,6 +11,10 @@ import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
+import { ImageAddon } from "@xterm/addon-image";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import type { TerminalTab, Workspace } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
@@ -87,6 +91,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const unlistenDataRef = useRef<(() => void) | null>(null);
   const unlistenExitRef = useRef<(() => void) | null>(null);
   const ptyRef = useRef<string | null>(null);
@@ -235,10 +243,18 @@ export function TerminalPane({ ws, tab, active }: Props) {
       lineHeight: 1.0,
       theme: currentTerminalTheme() as any,
       allowProposedApi: true,
-      scrollback: 5000,
+      scrollback: usePrefs.getState().terminalScrollback,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new ClipboardAddon());
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
+    term.loadAddon(new ImageAddon());
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
     // Links — iTerm2 convention: affordance (underline + pointer) and
     // open-on-click are BOTH gated on Cmd. Plain hover/click is normal
     // terminal behavior (cursor goes through, selection works as usual).
@@ -292,6 +308,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // first but recent claude builds no longer recognize it — they
     // require the explicit backslash-Enter pair.
     term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && e.metaKey && e.key === "f") {
+        setSearchOpen(true);
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
       const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter";
       if (e.type === "keydown" && e.shiftKey && isEnter && !e.altKey && !e.ctrlKey && !e.metaKey) {
         const pid = ptyRef.current;
@@ -837,6 +859,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // spell this out so nobody is surprised.
           yolo: usePrefs.getState().yoloMode || !!ws.sandbox_enabled,
           resume: shouldResume,
+          isPrimary: isPrimaryTab,
           sessionUuid,
           resumeKnown,
           ws,
@@ -1183,6 +1206,19 @@ export function TerminalPane({ ws, tab, active }: Props) {
     }
   }, [tab.lastInputAt]);
 
+  useEffect(() => {
+    if (searchOpen) {
+      requestAnimationFrame(() => {
+        const el = searchInputRef.current;
+        if (!el) return;
+        el.focus();
+        el.select();
+      });
+    } else {
+      termRef.current?.focus();
+    }
+  }, [searchOpen]);
+
   // Live-react to font / size preference changes: rewrite the options and
   // ⌘K clear handler — see AuxTerminal for context.
   useEffect(() => {
@@ -1357,6 +1393,32 @@ export function TerminalPane({ ws, tab, active }: Props) {
   return (
     <div className="relative flex h-full w-full flex-col" data-tab-id={tab.id}>
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
+      {searchOpen && (
+        <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 shadow-lg">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            placeholder="Find in terminal"
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            autoComplete="off"
+            onChange={e => {
+              setSearchQuery(e.target.value);
+              if (e.target.value) searchAddonRef.current?.findNext(e.target.value, { incremental: true });
+            }}
+            onKeyDown={e => {
+              if (e.key === "Escape") { e.preventDefault(); setSearchOpen(false); }
+              else if (e.key === "Enter") { e.preventDefault(); e.shiftKey ? searchAddonRef.current?.findPrevious(searchQuery) : searchAddonRef.current?.findNext(searchQuery); }
+            }}
+            className="w-44 bg-transparent text-[12px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
+          />
+          <button type="button" title="Previous match (Shift+Enter)" onClick={() => searchAddonRef.current?.findPrevious(searchQuery)} className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"><ChevronUp className="h-3.5 w-3.5" /></button>
+          <button type="button" title="Next match (Enter)" onClick={() => searchAddonRef.current?.findNext(searchQuery)} className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"><ChevronDown className="h-3.5 w-3.5" /></button>
+          <button type="button" title="Close (Esc)" onClick={() => setSearchOpen(false)} className="ml-0.5 rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"><X className="h-3.5 w-3.5" /></button>
+        </div>
+      )}
       {/* Sandbox status footer was here — moved up to WorkspaceView
           so it sits BELOW the bottom-split (when open) and stays the
           visual bottom of the workspace, not the agent tab. The

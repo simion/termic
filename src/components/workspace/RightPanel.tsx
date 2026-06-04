@@ -1,15 +1,18 @@
 // Right panel: tab between All Files (filesystem list) and Changes (git status).
 // Click a file → opens an Editor tab in the main area. Click a change → diff tab.
 
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useApp, useActiveWorkspace } from "@/store/app";
+import { useUI } from "@/store/ui";
 import {
   workspaceChanges, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad,
+  workspaceSpotlightStop, workspaceSpotlightResync,
 } from "@/lib/ipc";
+import { startSpotlight } from "@/lib/spotlight";
 import type { Changes, Workspace, WorkspaceMember, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2, Wrench, Copy, Check, Settings } from "lucide-react";
+import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2, Wrench, Copy, Check, Settings, AudioWaveform, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { AuxTerminal } from "./AuxTerminal";
@@ -22,7 +25,7 @@ const STATUS_LABEL: Record<string, string> = { M: "modified", A: "added", D: "de
 const STATUS_COLOR: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", "??": "var(--color-ok)", U: "var(--color-err)" };
 const STATUS_CHAR: Record<string, string> = { M: "M", A: "+", "??": "+", D: "D", R: "R", U: "U", "!!": "!" };
 
-type FootTab = "setup" | "run" | "term";
+type FootTab = "setup" | "run" | "term" | "spotlight";
 
 // Footer collapse persists across launches. Component-local (no other
 // component reads it) so it's localStorage-backed directly rather than
@@ -140,26 +143,112 @@ export function RightPanel() {
   // invoked for this (workspace, target). Closing it resets the run
   // state back to idle and the tab disappears again.
   const showSetupTab = setupRunState.status !== "idle";
-  const footRun = useRunState(ws?.id, footTab === "term" ? "run" : footTab, footTarget);
+  const footRun = useRunState(ws?.id, footTab === "term" ? "run" : (footTab === "spotlight" ? "run" : footTab), footTarget);
 
-  // If the Setup tab vanishes (close button or workspace switch) while
-  // the user is currently viewing it, fall back to Run so the footer
-  // doesn't render an empty stream.
+  // ── spotlight ──────────────────────────────────────────────────
+  // Available for single-repo, non-root, spotlight-enabled workspaces.
+  const isSpotlighted = useApp(s => ws ? s.spotlightWsId[ws.project_id] === ws.id : false);
+  const spotlightAvailable = !!ws && !ws.is_repo_root
+    && !!project?.spotlight_enabled
+    && project?.type !== "multi";
+
+  // Sync log: array of timestamped entries shown in the Spotlight tab.
+  const [spotlightLog, setSpotlightLog] = useState<Array<{ time: Date; msg: string; error?: boolean }>>([]);
+  const addSpotlightLog = (msg: string, error = false) =>
+    setSpotlightLog(prev => [...prev.slice(-199), { time: new Date(), msg, error }]);
+
+  // Listen to spotlight events for this workspace.
   useEffect(() => {
-    if (!showSetupTab && footTab === "setup") setFootTab("run");
-  }, [showSetupTab, footTab]);
+    if (!ws) return;
+    const projectId = ws.project_id;
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    (async () => {
+      const u1 = await listen<{
+        project_id: string; ws_id: string;
+        committed_files: string[]; uncommitted_files: string[]; untracked_files: string[];
+      }>(
+        "spotlight://synced",
+        ev => {
+          if (cancelled || ev.payload.project_id !== projectId || ev.payload.ws_id !== ws.id) return;
+          const { committed_files, uncommitted_files, untracked_files } = ev.payload;
+          // Union of all synced paths (a file can be in committed AND uncommitted).
+          const all = Array.from(new Set([...committed_files, ...uncommitted_files, ...untracked_files]));
+          if (all.length === 0) {
+            addSpotlightLog("Synced · no changes");
+            return;
+          }
+          const shown = all.slice(0, 12);
+          const lines = [
+            `Synced ${all.length} file${all.length !== 1 ? "s" : ""}:`,
+            ...shown.map(f => `  ${f}`),
+            ...(all.length > shown.length ? [`  +${all.length - shown.length} more`] : []),
+          ];
+          addSpotlightLog(lines.join("\n"));
+        },
+      );
+      const u2 = await listen<{ project_id: string; ws_id: string; message: string }>(
+        "spotlight://error",
+        ev => {
+          if (cancelled || ev.payload.project_id !== projectId || ev.payload.ws_id !== ws.id) return;
+          addSpotlightLog(ev.payload.message, true);
+        },
+      );
+      unlisteners.push(u1, u2);
+    })();
+    return () => { cancelled = true; unlisteners.forEach(u => u()); };
+  }, [ws?.id, ws?.project_id]);
+
+  // Run tab visibility:
+  //   - non-spotlight projects: always (normal worktree run).
+  //   - spotlight projects: ONLY while spotlight is active (run executes at
+  //     repo root). When not spotlighted, there's no Run tab.
+  const showRunTab = !spotlightAvailable || isSpotlighted;
+
+  // When spotlight starts: clear stale log, jump to Spotlight tab, expand.
+  // When it stops: if we were on the (now-gone) Run tab, fall back.
+  const prevSpotlightedRef = useRef(false);
+  useEffect(() => {
+    if (isSpotlighted && !prevSpotlightedRef.current) {
+      setSpotlightLog([]);          // fresh log — events after this point fill it
+      setFootTab("spotlight");
+      setFootCollapsed(false);
+    } else if (!isSpotlighted && prevSpotlightedRef.current && footTab === "run") {
+      // Run tab disappears when spotlight stops — go back to Spotlight.
+      setFootTab("spotlight");
+    }
+    prevSpotlightedRef.current = isSpotlighted;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSpotlighted]);
+
+  // When spotlight is available, the Run tab is hidden. If footTab is still
+  // "run" (the initial default), redirect to "spotlight" immediately.
+  useEffect(() => {
+    if (spotlightAvailable && footTab === "run") setFootTab("spotlight");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotlightAvailable]);
+
+  // If the Setup tab vanishes, fall back to Spotlight (if available) or Run.
+  useEffect(() => {
+    if (!showSetupTab && footTab === "setup") {
+      setFootTab(spotlightAvailable ? "spotlight" : "run");
+    }
+  }, [showSetupTab, footTab, spotlightAvailable]);
 
   if (!ws) return null;
 
   // Shared start/stop. Setup auto-switches the footer view to the Setup
   // tab (which the user can close once they're done reading the log).
+  // When spotlight is active and kind="run", the Rust side runs the script
+  // at project.root_path instead of the worktree path.
   const startScript = (kind: "setup" | "run") => {
     useScriptRuns.getState().start(ws.id, kind, footTarget);
     setFootCollapsed(false);
-    // Snap the footer view to whichever stream we just started — otherwise
-    // hitting Run while still on the Setup tab leaves the user staring at
-    // an empty Setup log while output streams into the hidden Run tab.
-    setFootTab(kind);
+    // Spotlight: stay on the spotlight tab when starting run so the user
+    // sees the synced-run output there. For setup, snap to setup tab.
+    if (kind === "setup") setFootTab("setup");
+    else if (!isSpotlighted) setFootTab("run");
+    // (when spotlighted + kind=run: stay on spotlight tab)
     workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
       console.error("workspace_run_script_stream failed:", err));
   };
@@ -167,6 +256,34 @@ export function RightPanel() {
     useScriptRuns.getState().finish(ws.id, kind, null, false, footTarget);
     workspaceStopScript(ws.id, kind, footTarget || undefined).catch(err =>
       console.error("workspace_stop_script failed:", err));
+  };
+
+  const handleSpotlightStart = () => {
+    // Log clearing happens in the isSpotlighted useEffect above, which fires
+    // when the store confirms spotlight is active. startSpotlight also hands
+    // off a running dev server from a previously-spotlighted workspace.
+    startSpotlight(ws.project_id, ws.id).catch(err =>
+      useUI.getState().pushToast(String(err), "error")
+    );
+  };
+  const handleSpotlightStop = () => {
+    if (runRunState.status === "running") stopScript("run");
+    workspaceSpotlightStop(ws.id)
+      .then(() => addSpotlightLog("Spotlight stopped"))
+      .catch(err => {
+        const msg = String(err);
+        addSpotlightLog(msg, true);
+        useUI.getState().pushToast(msg, "error");
+      });
+  };
+  const handleSpotlightResync = () => {
+    workspaceSpotlightResync(ws.id)
+      .then(() => {})
+      .catch(err => {
+        const msg = String(err);
+        addSpotlightLog(msg, true);
+        useUI.getState().pushToast(msg, "error");
+      });
   };
 
   return (
@@ -348,7 +465,22 @@ export function RightPanel() {
           >
             {footCollapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
-          <FTab label="Run"   active={footTab === "run"}   onClick={() => { setFootTab("run");   setFootCollapsed(false); }} />
+          {/* Spotlight tab: always present for spotlight-enabled worktrees.
+              Shows idle (start) or active (logs + run) state based on isSpotlighted. */}
+          {spotlightAvailable && (
+            <FTab
+              label="Spotlight"
+              icon={isSpotlighted
+                ? <AudioWaveform className="termic-spotlight-wave h-3 w-3 text-[var(--color-accent)]" />
+                : undefined}
+              active={footTab === "spotlight"}
+              onClick={() => { setFootTab("spotlight"); setFootCollapsed(false); }}
+            />
+          )}
+          {/* Run tab: only for non-spotlight projects and repo-root workspaces. */}
+          {showRunTab && (
+            <FTab label="Run" active={footTab === "run"} onClick={() => { setFootTab("run"); setFootCollapsed(false); }} />
+          )}
           {showSetupTab && (
             <FTab
               label="Setup"
@@ -356,7 +488,7 @@ export function RightPanel() {
               onClick={() => { setFootTab("setup"); setFootCollapsed(false); }}
               onClose={() => {
                 useScriptRuns.getState().reset(ws.id, "setup", footTarget);
-                setFootTab("run");
+                setFootTab(isSpotlighted ? "spotlight" : "run");
               }}
             />
           )}
@@ -367,11 +499,41 @@ export function RightPanel() {
               onClick={() => { setFootTab("term"); setFootCollapsed(false); }}
               onClose={() => {
                 useApp.getState().disableFooterTerm(ws.id);
-                setFootTab("run");
+                setFootTab(isSpotlighted ? "spotlight" : "run");
               }}
             />
           )}
-          {footTab !== "term" && (
+          {/* Right-side controls depend on tab + spotlight state */}
+          {footTab === "spotlight" && isSpotlighted ? (
+            // Active: Resync + Stop
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              <button
+                onClick={handleSpotlightResync}
+                title="Resync spotlight"
+                className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={handleSpotlightStop}
+                className="flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium bg-[var(--color-bg-3)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
+              >
+                <Square className="h-3 w-3" fill="currentColor" />
+                Stop
+              </button>
+            </div>
+          ) : footTab === "spotlight" && !isSpotlighted ? (
+            // Idle: CTA Start button on the right
+            <div className="ml-auto flex shrink-0 items-center">
+              <button
+                onClick={handleSpotlightStart}
+                className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-[12px] font-medium text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:border-[var(--color-accent)]"
+              >
+                <AudioWaveform className="h-3 w-3" />
+                Spotlight
+              </button>
+            </div>
+          ) : footTab !== "term" && showRunTab ? (
             <RunToolbar
               ws={ws} project={project} yamlPreviewUrl={yamlPreviewUrls[ws.project_id]}
               hasSetup={!!(project?.setup_script?.trim() || yamlSetupScripts[ws.project_id]?.trim())}
@@ -382,13 +544,21 @@ export function RightPanel() {
               onRunStart={()   => startScript("run")}
               onRunStop={()    => stopScript("run")}
             />
-          )}
+          ) : null}
         </div>
         )}
 
         {!footCollapsed && (
           <div className="relative min-h-0 flex-1 overflow-hidden">
-            {footTab !== "term" && (() => {
+            {/* Spotlight content — idle (start button) or active (log + run) */}
+            {footTab === "spotlight" && (
+              <SpotlightContent
+                isSpotlighted={isSpotlighted}
+                log={spotlightLog}
+                onStart={handleSpotlightStart}
+              />
+            )}
+            {footTab !== "term" && footTab !== "spotlight" && showRunTab && (() => {
               const activeMember = ws.composition?.find(m => m.dir_name === footTarget);
               const activeProjectId = activeMember?.project_id ?? ws.project_id;
               const hasRunScript = !!(activeMember
@@ -437,8 +607,8 @@ export function RightPanel() {
   );
 }
 
-function FTab({ label, active, onClick, onClose }: {
-  label: string; active: boolean; onClick: () => void; onClose?: () => void;
+function FTab({ label, icon, active, onClick, onClose }: {
+  label: string; icon?: React.ReactNode; active: boolean; onClick: () => void; onClose?: () => void;
 }) {
   return (
     <div
@@ -451,7 +621,9 @@ function FTab({ label, active, onClick, onClose }: {
       )}
       style={active ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : undefined}
     >
-      <button onClick={onClick} className="px-1.5 py-1">{label}</button>
+      <button onClick={onClick} className="flex items-center gap-1 px-1.5 py-1">
+        {icon}{label}
+      </button>
       {onClose && (
         <button
           onClick={(e) => { e.stopPropagation(); onClose(); }}
@@ -641,7 +813,10 @@ function MemberTabStrip({ members, wsId, activeDir, onSelect }: {
  *  toolbar can hide the Open button. */
 function expandPreviewUrl(project: Project | null, ws: Workspace, yamlUrl = ""): string | null {
   const tmpl = project?.preview_url?.trim() || yamlUrl.trim();
-  if (!tmpl) return `http://localhost:${ws.port}`;
+  // No preview URL configured → no Open/Copy buttons. We deliberately don't
+  // guess `http://localhost:<port>`: many projects have no web server, and a
+  // dead Open button is worse than none.
+  if (!tmpl) return null;
   // Expand `$VAR` and `${VAR}` for the variables we set in run_script env.
   // Includes legacy `$CONDUCTOR_*` aliases so preview_url templates saved
   // under the old name keep working after the rename.
@@ -1149,6 +1324,68 @@ function AllMembersToolbar({ ws, project, yamlPreviewUrls, onExpand }: {
           </button>
         </Tip>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────── spotlight content ───────────────────────────
+
+/** Content for the Spotlight footer tab.
+ *
+ *  Not spotlighted: lamp icon + "Start spotlight" centered call-to-action.
+ *  Spotlighted: scrollable sync log. (Run lives in its own tab, which only
+ *  appears while spotlight is active.)
+ */
+function SpotlightContent({
+  isSpotlighted, log, onStart,
+}: {
+  isSpotlighted: boolean;
+  log: Array<{ time: Date; msg: string; error?: boolean }>;
+  onStart: () => void;
+}) {
+  const logRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll log to bottom on new entries.
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [log.length]);
+
+  if (!isSpotlighted) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <AudioWaveform className="h-10 w-10 text-[var(--color-fg-faint)] opacity-30" />
+        <button
+          onClick={onStart}
+          className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 py-2 text-[13.5px] font-medium text-[var(--color-fg)] hover:border-[var(--color-accent)] hover:bg-[var(--color-hover)] transition-colors"
+        >
+          Start spotlight
+        </button>
+        <p className="text-[12px] text-[var(--color-fg-faint)]">
+          Sync your changes to the repository root.
+        </p>
+      </div>
+    );
+  }
+
+  // Active: sync log.
+  const fmt = (d: Date) =>
+    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  return (
+    <div
+      ref={logRef}
+      className="h-full overflow-auto px-3 py-2 font-mono text-[11.5px] leading-snug text-[var(--color-fg-dim)]"
+    >
+      {log.length === 0 && (
+        <div className="text-[var(--color-fg-faint)]">Spotlight started. Waiting for changes…</div>
+      )}
+      {log.map((entry, i) => (
+        <div key={i} className={cn("whitespace-pre-wrap", entry.error && "text-[var(--color-err)]")}>
+          <span className="mr-2 text-[var(--color-fg-faint)]">{fmt(entry.time)}</span>
+          {entry.msg}
+        </div>
+      ))}
     </div>
   );
 }

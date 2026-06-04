@@ -28,6 +28,10 @@ export interface Project {
    *  per-CLI defaults the proxy enforces. Format mirrors tinyproxy. */
   sandbox_allowed_hosts?: string[];
 
+  /** Whether Spotlight is enabled for this project. Disabled by default.
+   *  All spotlight UI + commands are gated on this flag. */
+  spotlight_enabled?: boolean;
+
   /** "single" (default) = one git repo, worktrees branched off it.
    *  "multi" = host repo for shared CLAUDE.md / AGENTS.md / .claude/
    *  + a list of member project ids. Workspaces under a multi project

@@ -9,6 +9,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { ClipboardAddon } from "@xterm/addon-clipboard";
+import { ImageAddon } from "@xterm/addon-image";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
@@ -47,10 +50,16 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
       letterSpacing: usePrefs.getState().terminalLetterSpacing,
       lineHeight: 1.0,
       theme: currentTerminalTheme() as any,
-      scrollback: 2000,
+      allowProposedApi: true,
+      scrollback: Math.round(usePrefs.getState().terminalScrollback / 2),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new ClipboardAddon());
+    term.loadAddon(new ImageAddon());
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
     term.open(hostRef.current);
     termRef.current = term;
     // Hold a ref to the WebGL addon so the cleanup path can dispose it BEFORE

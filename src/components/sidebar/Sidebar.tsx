@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -15,7 +15,8 @@ import { agentDisplayName } from "@/lib/agents";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
-import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, openPath, projectReorder } from "@/lib/ipc";
+import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop } from "@/lib/ipc";
+import { startSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Workspace, TerminalTab } from "@/lib/types";
 
@@ -702,6 +703,11 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
   const settledHighlight = usePrefs(s => s.settledHighlight);
 
+  const project = useApp(s => s.projects.find(p => p.id === w.project_id) ?? null);
+  const spotlightWsId = useApp(s => s.spotlightWsId[w.project_id] ?? null);
+  const isSpotlighted = spotlightWsId === w.id;
+  // Spotlight is available for: non-repo-root, single-repo, spotlight_enabled projects.
+  const spotlightAvailable = !w.is_repo_root && !!project?.spotlight_enabled && project?.type !== "multi";
 
   const isActive = activeWsId === w.id;
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
@@ -902,13 +908,21 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               )}
             </>
           )}
-          {/* Terminal count — only shown when >1. Was fg-faint which
-              vanished on warm-dark surfaces; bump to fg-dim + tabular
-              nums so the digit stays legible at small sizes. */}
-          {!wsRenaming && terminalTabs.length > 1 && (
-            <span className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-fg-dim)]">
-              ({terminalTabs.length})
-            </span>
+          {/* Spotlight active indicator: just the animated wave icon.
+              No branch text — avoids any truncation of the workspace name. */}
+          {!wsRenaming && isSpotlighted ? (
+            <Tip content={`Spotlight: changes are synced with ${project?.base_branch?.replace(/^[^/]+\//, "") ?? "main"}`} delay={0}>
+              <AudioWaveform className="termic-spotlight-wave h-3 w-3 shrink-0 text-[var(--color-accent)]" />
+            </Tip>
+          ) : (
+            /* Terminal count — only shown when >1. Was fg-faint which
+               vanished on warm-dark surfaces; bump to fg-dim + tabular
+               nums so the digit stays legible at small sizes. */
+            !wsRenaming && terminalTabs.length > 1 && (
+              <span className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-fg-dim)]">
+                ({terminalTabs.length})
+              </span>
+            )
           )}
         </div>
 
@@ -966,6 +980,25 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               // the trigger highlighted with a focus ring is just noise.
               onCloseAutoFocus={(e) => e.preventDefault()}
             >
+              {spotlightAvailable && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  onSelect={async () => {
+                    if (isSpotlighted) {
+                      try { await workspaceSpotlightStop(w.id); }
+                      catch (e) { useUI.getState().pushToast(String(e), "error"); }
+                    } else {
+                      try {
+                        await startSpotlight(w.project_id, w.id);
+                        setActive(w.id);
+                      } catch (e) { useUI.getState().pushToast(String(e), "error"); }
+                    }
+                  }}
+                >
+                  <AudioWaveform className={cn("h-4 w-4", isSpotlighted && "text-[var(--color-accent)]")} />
+                  <span>{isSpotlighted ? "Stop spotlight" : "Start spotlight"}</span>
+                </DropdownItem>
+              )}
               <DropdownItem
                 // items-center + no top-nudge: these rows are single-line
                 // so the default two-line layout offsets the icon visually.

@@ -6,13 +6,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { projectUpdate, projectRemove, projectSetMembers, projectAdd, repoConfigLoad, repoConfigSave } from "@/lib/ipc";
+import { projectUpdate, projectRemove, projectSetMembers, projectAdd, repoConfigLoad, repoConfigSave, workspaceSpotlightStop } from "@/lib/ipc";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Project, RepoConfig } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { Trash2, Check, Layers, X } from "lucide-react";
+import { Trash2, Check, Layers, X, AudioWaveform } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function RepositorySection({ projectId }: { projectId: string }) {
@@ -86,6 +86,9 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // Load raw `.termic.yaml` into rc. rc is the yaml content exactly —
   // draft (projects.json) is shown separately on the Personal tab.
   // Neither view merges the other; the user picks where to edit.
+  // When no `.termic.yaml` exists yet, default the storage target to
+  // Personal — there's nothing committed to edit, so the user almost
+  // always wants their local override first.
   useEffect(() => {
     let cancelled = false;
     const empty: RepoConfig = {
@@ -94,11 +97,18 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       sandbox: { enabled_by_default: false, allowed_hosts: [], allowed_paths: [] },
     };
     repoConfigLoad(projectId)
-      .then(loaded => { if (!cancelled) setRc(loaded ?? empty); })
+      .then(loaded => {
+        if (cancelled) return;
+        setRc(loaded ?? empty);
+        // No committed config → auto-focus Personal. When it exists, the
+        // project-switch reset already left the target on "yaml".
+        if (!loaded) { setScriptTarget("personal"); setSandboxTarget("personal"); }
+      })
       .catch(e => {
         if (cancelled) return;
         setErr(`Couldn't read .termic.yaml: ${e}`);
         setRc(empty);
+        setScriptTarget("personal"); setSandboxTarget("personal");
       });
     return () => { cancelled = true; };
   }, [projectId]);
@@ -106,6 +116,15 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // Flush a pending `.termic.yaml` save if Settings closes mid-edit so
   // a sub-debounce-window edit isn't silently dropped.
   useEffect(() => () => flushRcRef.current(), []);
+
+  // Spotlight selectors — MUST live above the early-return so the hook
+  // call count stays stable across renders (see CLAUDE.md hooks rule).
+  const spotlightWsId = useApp(s => s.spotlightWsId[projectId] ?? null);
+  const spotlightWsName = useApp(s => {
+    const id = s.spotlightWsId[projectId];
+    if (!id) return null;
+    return s.workspaces.find(w => w.id === id)?.name ?? null;
+  });
 
   if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">Project not found.</div>;
 
@@ -271,7 +290,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   //   More last      → set-once metadata (paths, branch, remote)
   //                    + irreversible Remove action at the bottom
   const tabs: { id: SubTab; label: string }[] = [
-    { id: "scripts",  label: isMulti ? "Members & scripts" : "Scripts & Setup" },
+    { id: "scripts",  label: isMulti ? "Members & scripts" : "Scripts & run" },
     { id: "sandbox",  label: "Sandbox" },
     { id: "advanced", label: "More" },
   ];
@@ -342,8 +361,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           {!isMulti && (
             <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
               {([
+                { id: "personal", label: "Personal",     hint: "overrides when set"   },
                 { id: "yaml",     label: ".termic.yaml", hint: "committed to git repo" },
-                { id: "personal", label: "Personal",     hint: "overrides when set"           },
               ] as const).map(t => (
                 <button
                   key={t.id} type="button"
@@ -439,6 +458,70 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               )}
             />
           </div>
+
+          {/* Spotlight — lives in Scripts & run because it controls
+              how the run command is executed (root path vs worktree). */}
+          <div className="border-t border-[var(--color-border-soft)] pt-6">
+            <div className="mb-3 flex items-center gap-2 text-[14px] font-medium text-[var(--color-fg)]">
+              <AudioWaveform className="h-4 w-4 text-[var(--color-accent)]" />
+              Spotlight
+            </div>
+
+            {isMulti ? (
+              <p className="text-[13px] text-[var(--color-fg-faint)]">
+                Spotlight is not supported for multi-repo projects.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-4">
+                <label className="flex cursor-pointer items-start gap-3 select-none">
+                  <Checkbox
+                    checked={!!draft.spotlight_enabled}
+                    onChange={(v) => patch("spotlight_enabled", v as any)}
+                  />
+                  <div>
+                    <span className="text-[13.5px] font-medium text-[var(--color-fg)]">
+                      Enable spotlight for this project
+                    </span>
+                    <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
+                      When enabled, you can spotlight a workspace from its settings menu.
+                      Spotlight syncs that workspace's changes to your main checkout automatically
+                      so you can run and test from there. Committed changes appear as a checkpoint
+                      commit on main; uncommitted edits sync as working-tree changes; untracked
+                      files are copied (.gitignore respected). Main must be clean to start.
+                      Stopping spotlight removes the checkpoint commit and restores main.
+                      While spotlight is active, the run script executes at the repo root.
+                    </p>
+                  </div>
+                </label>
+
+                {draft.spotlight_enabled && (
+                  <div className="ml-7">
+                    {spotlightWsName ? (
+                      <div className="flex items-center gap-3 rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-3 py-2">
+                        <AudioWaveform className="termic-spotlight-wave h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
+                        <span className="flex-1 text-[13px] text-[var(--color-fg)]">
+                          <strong>{spotlightWsName}</strong> is spotlighted right now
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => workspaceSpotlightStop(spotlightWsId!).catch(e =>
+                            useUI.getState().pushToast(String(e), "error")
+                          )}
+                          className="rounded px-2.5 py-1 text-[12px] font-medium bg-[var(--color-bg-3)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
+                        >
+                          Stop
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-[12.5px] text-[var(--color-fg-faint)]">
+                        No workspace is spotlighted right now.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -465,8 +548,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 at spawn time. */}
             <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
               {([
+                { id: "personal", label: "Personal",     hint: "local only · merged on top" },
                 { id: "yaml",     label: ".termic.yaml", hint: "committed to git repo" },
-                { id: "personal", label: "Personal",     hint: "local only · merged on top"   },
               ] as const).map(t => (
                 <button
                   key={t.id} type="button"

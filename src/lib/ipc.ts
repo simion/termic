@@ -199,6 +199,13 @@ export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agent
 export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
 export const workspaceSendDiffToMain = (id: string) =>
   invoke<{ tracked_files: number; untracked_files: number }>("workspace_send_diff_to_main", { id });
+
+// ───────────────────────────── spotlight ─────────────────────────────
+
+export const workspaceSpotlightStart   = (id: string) => invoke<void>("workspace_spotlight_start",   { id });
+export const workspaceSpotlightStop    = (id: string) => invoke<void>("workspace_spotlight_stop",    { id });
+export const workspaceSpotlightResync  = (id: string) => invoke<void>("workspace_spotlight_resync",  { id });
+export const workspaceSpotlightStatus  = ()           => invoke<Record<string, string>>("workspace_spotlight_status");
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
 export const workspaceFileDiffSides = (id: string, path: string) =>
   invoke<{ original: string; modified: string }>("workspace_file_diff_sides", { id, path });
