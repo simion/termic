@@ -8,7 +8,7 @@ import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
-import { ptyWrite } from "@/lib/ipc";
+import { sendMessageToPty } from "@/lib/agentSend";
 import { cn } from "@/lib/utils";
 import { Check, Megaphone } from "lucide-react";
 import type { TerminalTab } from "@/lib/types";
@@ -70,18 +70,11 @@ export function BroadcastDialog() {
   function send() {
     const picked = targets.filter(t => isSelected(t) && t.ptyId);
     if (!picked.length || !msg.trim()) return;
-    // Send the text and the Enter as TWO separate writes. Agent TUIs
-    // (claude especially) treat a `\r` that arrives in the same input
-    // burst as the message text as a literal newline — paste
-    // continuation — not a submit. Writing the CR on its own, a beat
-    // later, makes every agent register it as a real Enter.
-    const textBytes = Array.from(new TextEncoder().encode(msg));
-    const CR = [0x0d];
+    // sendMessageToPty writes the text then the Enter (CR) on its own a beat
+    // later — agent TUIs (claude especially) treat a `\r` in the same burst
+    // as the text as a literal newline, not a submit.
     const now = Date.now();
-    for (const t of picked) ptyWrite(t.ptyId!, textBytes).catch(() => {});
-    window.setTimeout(() => {
-      for (const t of picked) ptyWrite(t.ptyId!, CR).catch(() => {});
-    }, 90);
+    for (const t of picked) sendMessageToPty(t.ptyId!, msg);
     // Stamp lastInputAt so TerminalPane's submittedSinceSpawn ref is armed.
     // Broadcast bypasses term.onData (it writes directly to the PTY), so
     // without this the title-based working detector stays suppressed and

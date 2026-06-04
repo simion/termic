@@ -32,6 +32,12 @@ export const workspaceOpenRepo = (projectId: string, cli?: string, name?: string
 export const workspaceArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("workspace_archive", { id, deleteBranch });
 export const workspaceDelete   = (id: string) => invoke<void>("workspace_delete", { id });
 export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("workspace_set_cli", { id, cli });
+/** Update a custom-command workspace's launch command (multiline bash
+ *  script). Only valid for cli==="custom" workspaces. Persists and
+ *  returns the updated workspace; live PTYs keep running until the user
+ *  restarts the agent tab. */
+export const workspaceSetCustomCommand = (id: string, command: string) =>
+  invoke<Workspace>("workspace_set_custom_command", { id, command });
 /** Update the workspace's sandbox config. The Rust side SIGKILLs every
  *  live PTY for this workspace so the next mount picks up the new
  *  profile; the returned number is the count that was terminated -

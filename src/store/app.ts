@@ -119,6 +119,10 @@ interface AppState {
    *  (the disk write alone doesn't refresh the loaded workspace). Pass
    *  "" to clear. */
   setWorkspaceSessionId: (wsId: string, cli: string, uuid: string) => void;
+  /** Mirror a just-persisted custom launch command into the in-memory
+   *  workspace AND any open custom-command tabs so the next PTY respawn
+   *  runs the new script (the disk write alone doesn't refresh either). */
+  setWorkspaceCustomCommand: (wsId: string, command: string) => void;
   addTab: (wsId: string, tab: Tab) => void;
   closeTab: (wsId: string, tabId: string) => void;
   setActiveTabId: (wsId: string, tabId: string) => void;
@@ -479,6 +483,26 @@ export const useApp = create<AppState>((set, get) => ({
       return { ...w, agent_session_ids: ids };
     }),
   })),
+
+  setWorkspaceCustomCommand: (wsId, command) => set(s => {
+    const tabs = s.tabs[wsId];
+    // Re-seed any custom-command tab so a future respawn re-runs the
+    // edited script. The running PTY isn't restarted here — the user
+    // restarts the agent tab to apply it live.
+    const nextTabs = tabs
+      ? tabs.map(t =>
+          t.type === "terminal" && (t as TerminalTab).cli === "custom"
+            ? { ...t, command } as Tab
+            : t,
+        )
+      : tabs;
+    return {
+      workspaces: s.workspaces.map(w =>
+        w.id === wsId ? { ...w, custom_command: command } : w,
+      ),
+      ...(nextTabs ? { tabs: { ...s.tabs, [wsId]: nextTabs } } : {}),
+    };
+  }),
 
   addTab: (wsId, tab) => {
     set(s => {

@@ -2020,6 +2020,27 @@ fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
     Ok(w.clone())
 }
 
+/// Update the launch command of a custom-command workspace. Only valid
+/// for `cli == "custom"` workspaces — agent / shell workspaces resolve
+/// their command from the registry at spawn and have no editable command.
+/// Persisted so the new command re-runs on every respawn / app restart;
+/// any live PTY keeps running until the user restarts the agent tab.
+#[tauri::command]
+fn workspace_set_custom_command(id: String, command: String) -> Result<Workspace, String> {
+    let cmd = command.trim().to_string();
+    if cmd.is_empty() {
+        return Err("command is empty".into());
+    }
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    if w.cli != "custom" {
+        return Err("not a custom-command workspace".into());
+    }
+    w.custom_command = Some(cmd);
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(w.clone())
+}
+
 /// Newest-first list of macOS Sandbox denials touching the workspace
 /// in the last `minutes` minutes. Used by the WorkspaceSandboxDialog
 /// to surface why `npm install` or whatever silently failed. Returns
@@ -5101,7 +5122,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
-            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_sandbox,
+            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_sandbox,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,

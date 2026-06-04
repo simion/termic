@@ -7,10 +7,12 @@ import { settingsLoad } from "@/lib/ipc";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { CustomCommandDialog } from "./CustomCommandDialog";
+import { EditCommandDialog } from "./EditCommandDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
 import { ChangelogDialog } from "./ChangelogDialog";
 import { ReviewDialog } from "./ReviewDialog";
 import { BroadcastDialog } from "./BroadcastDialog";
+import { MessageQueueDialog } from "./MessageQueueDialog";
 import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { TerminalDropDialog } from "./TerminalDropDialog";
@@ -32,10 +34,12 @@ export function Dialogs() {
       <NewProjectDialog />
       <NewWorkspaceDialog />
       <CustomCommandDialog />
+      <EditCommandDialog />
       <WelcomeDialog />
       <ChangelogDialog />
       <ReviewDialog />
       <BroadcastDialog />
+      <MessageQueueDialog />
       <WorkspaceSandboxDialog />
       <ConfirmDialog />
       <TerminalDropDialog />

@@ -48,6 +48,11 @@ interface UIState {
    *  closed. Creates a repo-root workspace whose default tab runs a
    *  user-supplied launch command instead of an agent. */
   customCommandProjectId: string | null;
+  /** "Edit launch command" dialog — workspace id to edit the custom
+   *  launch command for, null = closed. Only opened for cli==="custom"
+   *  workspaces. Lives in UI store so opening doesn't churn the
+   *  workspace tree. */
+  editCommandWsId: string | null;
   welcomeOpen: boolean;
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
@@ -56,6 +61,11 @@ interface UIState {
    *  workspace at once. null = closed. UI-store (not app) so opening it
    *  doesn't churn the workspace tree. */
   broadcastForWsId: string | null;
+  /** Message queue dialog — workspace id whose agents' queues are being
+   *  edited, null = closed. The dialog picks a target agent tab within
+   *  the workspace. UI-store (not app) so opening it doesn't churn the
+   *  workspace tree. */
+  queueForWsId: string | null;
   /** Open the Edit Sandbox dialog for a specific workspace. null = closed.
    *  Lives in UI store (not app) so flipping it doesn't churn the
    *  workspace tree on every re-render. */
@@ -94,6 +104,8 @@ interface UIState {
   closeNewWorkspace: () => void;
   openCustomCommand: (projectId: string) => void;
   closeCustomCommand: () => void;
+  openEditCommand: (wsId: string) => void;
+  closeEditCommand: () => void;
   openWelcome: () => void;
   closeWelcome: () => void;
   openChangelog: () => void;
@@ -102,6 +114,8 @@ interface UIState {
   closeReview: () => void;
   openBroadcast: (wsId: string) => void;
   closeBroadcast: () => void;
+  openQueue: (wsId: string) => void;
+  closeQueue: () => void;
   openSandbox: (wsId: string) => void;
   closeSandbox: () => void;
   openFileFinder: (wsId: string) => void;
@@ -162,10 +176,12 @@ export const useUI = create<UIState>(set => ({
   newWorkspaceProjectId: null,
   newWorkspaceSeed: null,
   customCommandProjectId: null,
+  editCommandWsId: null,
   welcomeOpen: false,
   changelogOpen: false,
   reviewForWsId: null,
   broadcastForWsId: null,
+  queueForWsId: null,
   sandboxForWsId: null,
   fileFinderWsId: null,
   findInFilesWsId: null,
@@ -182,6 +198,8 @@ export const useUI = create<UIState>(set => ({
   closeNewWorkspace: () => set({ newWorkspaceProjectId: null, newWorkspaceSeed: null }),
   openCustomCommand:  (projectId) => set({ customCommandProjectId: projectId }),
   closeCustomCommand: () => set({ customCommandProjectId: null }),
+  openEditCommand:    (wsId) => set({ editCommandWsId: wsId }),
+  closeEditCommand:   () => set({ editCommandWsId: null }),
   openWelcome:       () => set({ welcomeOpen: true }),
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),
@@ -190,6 +208,8 @@ export const useUI = create<UIState>(set => ({
   closeReview:       () => set({ reviewForWsId: null }),
   openBroadcast:     (wsId) => set({ broadcastForWsId: wsId }),
   closeBroadcast:    () => set({ broadcastForWsId: null }),
+  openQueue:         (wsId) => set({ queueForWsId: wsId }),
+  closeQueue:        () => set({ queueForWsId: null }),
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
   closeSandbox:      () => set({ sandboxForWsId: null }),
   openFileFinder:    (wsId) => set({ fileFinderWsId: wsId }),
