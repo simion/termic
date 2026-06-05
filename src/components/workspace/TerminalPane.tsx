@@ -620,7 +620,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
           wdlog(`OS notify suppressed (focused workspace): ${trimmed}`);
           return;
         }
-        const title = `${ws.name} · ${tab.cli}`;
+        // Title = "project · workspace" (terminal/cli name dropped — it
+        // was noise; the body carries the agent's message).
+        const proj = app.projects.find(p => p.id === ws.project_id);
+        const title = proj?.name ? `${proj.name} · ${ws.name}` : ws.name;
         ipc.notify(title, trimmed, { wsId: ws.id, tabId: tab.id }).catch(() => {});
         // Seed the focus-edge router so the user clicking the banner
         // (or otherwise refocusing the window within ROUTE_WINDOW_MS)

@@ -43,7 +43,7 @@ interface UIState {
    *  pre-fills the branch-from field with this value. Used by the
    *  "Duplicate workspace" flow to branch a new worktree off an
    *  existing one's tip. Cleared when the dialog closes. */
-  newWorkspaceSeed: { baseBranch?: string; namePrefix?: string } | null;
+  newWorkspaceSeed: { baseBranch?: string; namePrefix?: string; importMode?: boolean } | null;
   /** "Run a command in repo" dialog — project id to open it for, null =
    *  closed. Creates a repo-root workspace whose default tab runs a
    *  user-supplied launch command instead of an agent. */
@@ -53,6 +53,9 @@ interface UIState {
    *  workspaces. Lives in UI store so opening doesn't churn the
    *  workspace tree. */
   editCommandWsId: string | null;
+  /** Read-only "Keyboard shortcuts" cheat-sheet modal (⌘/). Distinct
+   *  from Settings → Shortcuts (which edits them). */
+  shortcutsHelpOpen: boolean;
   welcomeOpen: boolean;
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
@@ -100,12 +103,14 @@ interface UIState {
   // actions
   openNewProject: () => void;
   closeNewProject: () => void;
-  openNewWorkspace: (projectId: string, seed?: { baseBranch?: string; namePrefix?: string }) => void;
+  openNewWorkspace: (projectId: string, seed?: { baseBranch?: string; namePrefix?: string; importMode?: boolean }) => void;
   closeNewWorkspace: () => void;
   openCustomCommand: (projectId: string) => void;
   closeCustomCommand: () => void;
   openEditCommand: (wsId: string) => void;
   closeEditCommand: () => void;
+  openShortcutsHelp: () => void;
+  closeShortcutsHelp: () => void;
   openWelcome: () => void;
   closeWelcome: () => void;
   openChangelog: () => void;
@@ -177,6 +182,7 @@ export const useUI = create<UIState>(set => ({
   newWorkspaceSeed: null,
   customCommandProjectId: null,
   editCommandWsId: null,
+  shortcutsHelpOpen: false,
   welcomeOpen: false,
   changelogOpen: false,
   reviewForWsId: null,
@@ -200,6 +206,8 @@ export const useUI = create<UIState>(set => ({
   closeCustomCommand: () => set({ customCommandProjectId: null }),
   openEditCommand:    (wsId) => set({ editCommandWsId: wsId }),
   closeEditCommand:   () => set({ editCommandWsId: null }),
+  openShortcutsHelp:  () => set({ shortcutsHelpOpen: true }),
+  closeShortcutsHelp: () => set({ shortcutsHelpOpen: false }),
   openWelcome:       () => set({ welcomeOpen: true }),
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),

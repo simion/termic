@@ -6,15 +6,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Workspace, CreateWorkspaceArgs, CreateMultiArgs, Settings, DiscoveredRepo,
-  CliInfo, ChangeFile, Changes, FileEntry, Agent, RepoConfig,
+  ImportableWorktree, CliInfo, ChangeFile, Changes, FileEntry, Agent, RepoConfig,
 } from "./types";
 
 // ───────────────────────────── projects ─────────────────────────────
 
 export const projectsList   = () => invoke<Project[]>("projects_list");
-export const projectAdd     = (rootPath: string) => invoke<Project>("project_add", { rootPath });
-export const projectAddMulti = (rootPath: string, name: string, members: ProjectMember[]) =>
-  invoke<Project>("project_add_multi", { rootPath, name, members });
+/** `nonGit` adds a plain folder (not a git repo) — issue #4. */
+export const projectAdd     = (rootPath: string, nonGit?: boolean) => invoke<Project>("project_add", { rootPath, nonGit });
+export const projectAddMulti = (rootPath: string, name: string, members: ProjectMember[], nonGit?: boolean) =>
+  invoke<Project>("project_add_multi", { rootPath, name, members, nonGit });
 export const projectSetMembers = (id: string, members: ProjectMember[]) =>
   invoke<void>("project_set_members", { id, members });
 export const projectUpdate  = (p: Project) => invoke<void>("project_update", { p });
@@ -29,6 +30,25 @@ export const workspaceCreate   = (args: CreateWorkspaceArgs) => invoke<Workspace
 export const workspaceCreateMulti = (args: CreateMultiArgs) => invoke<Workspace>("workspace_create_multi", { args });
 export const workspaceOpenRepo = (projectId: string, cli?: string, name?: string, command?: string) =>
   invoke<Workspace>("workspace_open_repo", { projectId, cli, name, command });
+/** List a project's git worktrees not yet open as workspaces (issue #5). */
+export const workspaceImportableWorktrees = (projectId: string) =>
+  invoke<ImportableWorktree[]>("workspace_importable_worktrees", { projectId });
+/** Import an existing worktree as a workspace (issue #5). Sandbox args
+ *  mirror workspace_create: when omitted, Rust falls back to the
+ *  project default + merged default lists. */
+export const workspaceImportWorktree = (
+  projectId: string,
+  path: string,
+  name?: string,
+  cli?: string,
+  sandbox?: { enabled: boolean; rwPaths: string[]; allowedHosts: string[] },
+) =>
+  invoke<Workspace>("workspace_import_worktree", {
+    projectId, path, name, cli,
+    sandboxEnabled: sandbox?.enabled,
+    sandboxRwPaths: sandbox?.rwPaths,
+    sandboxAllowedHosts: sandbox?.allowedHosts,
+  });
 export const workspaceArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("workspace_archive", { id, deleteBranch });
 export const workspaceDelete   = (id: string) => invoke<void>("workspace_delete", { id });
 export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("workspace_set_cli", { id, cli });

@@ -251,3 +251,44 @@ describe("openPreviewTab", () => {
     expect(tab.revealAt).toEqual({ line: 42, col: 5 });
   });
 });
+
+// ── reorderTab (issue #6: drag-to-reorder) ────────────────────────────
+
+describe("reorderTab", () => {
+  function ids(wsId: string) {
+    return useApp.getState().tabs[wsId].map(t => t.id);
+  }
+  function seed(wsId: string, n: number) {
+    for (let i = 0; i < n; i++) addTab(wsId, makeTermTab({ id: `t${i}` }));
+  }
+
+  it("moves a tab to the end (toIndex === others.length)", () => {
+    const wsId = "ws1";
+    seed(wsId, 3); // t0 t1 t2
+    useApp.getState().reorderTab(wsId, "t0", 2);
+    expect(ids(wsId)).toEqual(["t1", "t2", "t0"]);
+  });
+
+  it("moves a later tab before an earlier one", () => {
+    const wsId = "ws1";
+    seed(wsId, 3); // t0 t1 t2
+    useApp.getState().reorderTab(wsId, "t2", 0);
+    expect(ids(wsId)).toEqual(["t2", "t0", "t1"]);
+  });
+
+  it("moving a tab to its own index is a no-op", () => {
+    const wsId = "ws1";
+    seed(wsId, 3); // t0 t1 t2
+    const before = ids(wsId);
+    useApp.getState().reorderTab(wsId, "t1", 1);
+    expect(ids(wsId)).toEqual(before);
+  });
+
+  it("ignores an unknown tab id", () => {
+    const wsId = "ws1";
+    seed(wsId, 2);
+    const before = ids(wsId);
+    useApp.getState().reorderTab(wsId, "nope", 0);
+    expect(ids(wsId)).toEqual(before);
+  });
+});

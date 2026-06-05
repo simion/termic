@@ -39,6 +39,7 @@ export type ShortcutId =
   | "clear-terminal"
   | "new-split-terminal"
   | "open-settings"
+  | "open-shortcuts"
   | "file-finder"
   | "find-in-files"
   | "broadcast";
@@ -104,6 +105,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // General
   { id: "open-settings", group: "General", label: "Open settings",
     defaultBinding: B(",", { cmd: true }) },
+  { id: "open-shortcuts", group: "General", label: "Open keyboard shortcuts",
+    hint: "Jump straight to this list", defaultBinding: B("/", { cmd: true }) },
   { id: "file-finder", group: "General", label: "Open file finder",
     defaultBinding: B("p", { cmd: true }) },
   { id: "find-in-files", group: "General", label: "Find in files",

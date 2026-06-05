@@ -7,10 +7,14 @@
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { agentDisplayName } from "@/lib/agents";
 
-/** Close a tab, but if it's an `edit` tab with unsaved changes, ask
- *  for confirmation first. Resolves once the tab is closed or the
- *  user backs out. */
+/** Close a tab, asking first when closing it is destructive:
+ *   - an `edit` tab with unsaved changes (discards the buffer), or
+ *   - a terminal tab running an agent / custom command (kills the live
+ *     session). Plain shell tabs close instantly — nothing to lose.
+ *  Both close paths — the "×" button and ⌘W — route through here.
+ *  Resolves once the tab is closed or the user backs out. */
 export async function requestCloseTab(wsId: string, tabId: string) {
   const tab = useApp.getState().tabs[wsId]?.find(t => t.id === tabId);
   if (tab?.type === "edit" && tab.dirty) {
@@ -19,6 +23,21 @@ export async function requestCloseTab(wsId: string, tabId: string) {
       title: "Close without saving?",
       message: `"${name}" has unsaved changes. Closing the tab will discard them. ⌘S to save first.`,
       confirmLabel: "Discard & close",
+      destructive: true,
+    });
+    if (!ok) return;
+  }
+  // Closing an agent (or custom-command) terminal kills its running
+  // session — confirm so an accidental ⌘W doesn't drop the conversation.
+  // Plain shells (cli === "shell") close instantly; there's nothing to lose.
+  if (tab?.type === "terminal" && tab.cli !== "shell") {
+    const label = tab.cli === "custom"
+      ? (tab.title || "this command")
+      : agentDisplayName(tab.cli, useApp.getState().agents);
+    const ok = await useUI.getState().askConfirm({
+      title: `Close ${label}?`,
+      message: "Closing this tab ends the running session.",
+      confirmLabel: "Close tab",
       destructive: true,
     });
     if (!ok) return;

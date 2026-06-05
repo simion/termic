@@ -99,6 +99,14 @@ pub struct Project {
     /// an explicit opt-in and won't affect existing projects.
     #[serde(default)]
     pub spotlight_enabled: bool,
+
+    /// True when `root_path` is NOT a git repo — e.g. a parent folder
+    /// that contains several independent git repos (issue #4). Such a
+    /// project can only spawn repo-root workspaces (the agent runs at
+    /// the folder, no worktree / branch / diff). Defaults false so every
+    /// existing project + the `Default` impl stay git-backed.
+    #[serde(default)]
+    pub non_git: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -851,13 +859,14 @@ fn pty_kill(state: State<'_, PtyManager>, pty_id: String) -> Result<(), String> 
 fn projects_list() -> Vec<Project> { load_projects() }
 
 #[tauri::command]
-fn project_add(root_path: String) -> Result<Project, String> {
+fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, String> {
     // Trim whitespace + expand a leading `~` — users paste paths with
     // both routinely. The naive `pb.join(".git").exists()` check we used
     // to do here missed: worktrees (`.git` is a FILE not a dir),
     // bare repos (no `.git` at all), and paths with a stray newline.
     // `git -C <path> rev-parse --git-dir` is the canonical "am I in a
     // git repo?" question and handles all three cases.
+    let non_git = non_git.unwrap_or(false);
     let trimmed = root_path.trim();
     let expanded: String = if let Some(rest) = trimmed.strip_prefix("~/") {
         dirs::home_dir().map(|h| h.join(rest).to_string_lossy().into_owned())
@@ -867,8 +876,16 @@ fn project_add(root_path: String) -> Result<Project, String> {
     if !pb.exists() {
         return Err(format!("{} does not exist", expanded));
     }
-    if git(&["rev-parse", "--git-dir"], &pb).is_err() {
-        return Err(format!("{} is not a git repo", expanded));
+    // Non-git projects (issue #4) skip the repo check entirely — they're
+    // a plain folder grouping several repos, and the only workspaces they
+    // spawn run an agent at the folder root (no worktree). A directory is
+    // the only requirement.
+    if non_git {
+        if !pb.is_dir() {
+            return Err(format!("{} is not a directory", expanded));
+        }
+    } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
+        return Err(format!("{} is not a git repo. Tick \"Not a git repository\" to add it as a folder.", expanded));
     }
     let mut list = load_projects();
     let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
@@ -876,8 +893,9 @@ fn project_add(root_path: String) -> Result<Project, String> {
         return Err("project already added".into());
     }
     let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
-    let base = detect_base_branch(&canon).unwrap_or_else(|_| "main".into());
-    let remote = detect_default_remote(&canon);
+    // Non-git folders have no branches / remotes — leave those empty.
+    let base = if non_git { String::new() } else { detect_base_branch(&canon).unwrap_or_else(|_| "main".into()) };
+    let remote = if non_git { String::new() } else { detect_default_remote(&canon) };
     let ws_path = worktrees_base().map_err(|e| e.to_string())?
         .join(&name).to_string_lossy().into_owned();
     let p = Project {
@@ -885,7 +903,9 @@ fn project_add(root_path: String) -> Result<Project, String> {
         name,
         root_path: canon.to_string_lossy().into_owned(),
         workspaces_path: ws_path,
-        base_branch: format!("{remote}/{base}"),
+        // Non-git folders have no remote-tracking base ref; leave it
+        // empty so nothing downstream tries to branch off "/".
+        base_branch: if non_git { String::new() } else { format!("{remote}/{base}") },
         remote,
         preview_url: String::new(),
         // Seeded with the patterns 99% of repos benefit from. The user can
@@ -899,11 +919,12 @@ fn project_add(root_path: String) -> Result<Project, String> {
         //   node_modules  — npm deps. Saves multi-minute npm install. Caveat:
         //                   can be 500MB+; users with mono-repos may want to
         //                   strip this and run `npm ci` in the setup script.
-        files_to_copy: vec![
+        // Non-git folders copy nothing — there's no worktree to seed.
+        files_to_copy: if non_git { Vec::new() } else { vec![
             ".env*".into(),
             ".venv".into(),
             "node_modules".into(),
-        ],
+        ] },
         setup_script: String::new(),
         run_script: String::new(),
         archive_script: String::new(),
@@ -921,6 +942,7 @@ fn project_add(root_path: String) -> Result<Project, String> {
         project_type: ProjectType::Single,
         members: Vec::new(),
         spotlight_enabled: false,
+        non_git,
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -941,7 +963,8 @@ fn project_add(root_path: String) -> Result<Project, String> {
 /// auto-create case + the project's display label). `member_ids`
 /// reference already-added Termic projects.
 #[tauri::command]
-fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember>) -> Result<Project, String> {
+fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember>, non_git: Option<bool>) -> Result<Project, String> {
+    let non_git = non_git.unwrap_or(false);
     let trimmed_path = root_path.trim();
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
@@ -954,9 +977,11 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
 
     // Resolve the host path. Two branches:
     //   - user-supplied: expand ~, require existing git repo (same
-    //     validation as project_add).
-    //   - empty: Termic auto-creates ~/termic/projects/<slug>/ and
-    //     git-init's it. We pick the slug-derived path and refuse if
+    //     validation as project_add) — unless non_git, where any
+    //     existing directory is accepted (issue #4 + multi-repo).
+    //   - empty: Termic auto-creates ~/termic/projects/<slug>/. For a
+    //     git host it git-init's + seeds a CLAUDE.md commit; for a
+    //     non-git host it just mkdir's + drops a CLAUDE.md. Refuse if
     //     it already exists (avoid clobbering a previous attempt).
     let pb: PathBuf = if trimmed_path.is_empty() {
         let projects_root = dirs::home_dir()
@@ -971,31 +996,32 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
             ));
         }
         fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-        // git init + an initial empty commit so worktrees can branch
-        // off something. A bare init has no HEAD ref, which breaks
-        // `git worktree add -b <branch>` later.
-        git(&["init", "-q"], &target).map_err(|e| format!("git init failed: {e}"))?;
-        // Configure a default branch name we can rely on.
-        let _ = git(&["symbolic-ref", "HEAD", "refs/heads/main"], &target);
-        // Seed a stub CLAUDE.md so the host has something to commit.
-        // Also gives the user an obvious place to start writing.
+        // Seed a stub CLAUDE.md so the host has shared knowledge the
+        // agent loads. Gives the user an obvious place to start writing.
         let claude_md = format!(
             "# {}\n\nShared knowledge for the {} multi-repo project.\nThis file is loaded by every workspace under it.\n",
             trimmed_name, trimmed_name,
         );
         fs::write(target.join("CLAUDE.md"), claude_md).map_err(|e| e.to_string())?;
-        // Allow commits without configured user.* for the initial
-        // bootstrap commit; -c sets the value just for this command.
-        git(
-            &["-c", "user.email=termic@local", "-c", "user.name=Termic",
-              "add", "CLAUDE.md"],
-            &target,
-        ).ok();
-        git(
-            &["-c", "user.email=termic@local", "-c", "user.name=Termic",
-              "commit", "-q", "-m", "init: termic multi-repo host"],
-            &target,
-        ).map_err(|e| format!("git commit failed: {e}"))?;
+        if !non_git {
+            // git init + an initial commit so worktrees can branch off
+            // something. A bare init has no HEAD ref, which breaks
+            // `git worktree add -b <branch>` later.
+            git(&["init", "-q"], &target).map_err(|e| format!("git init failed: {e}"))?;
+            let _ = git(&["symbolic-ref", "HEAD", "refs/heads/main"], &target);
+            // Allow commits without configured user.* for the initial
+            // bootstrap commit; -c sets the value just for this command.
+            git(
+                &["-c", "user.email=termic@local", "-c", "user.name=Termic",
+                  "add", "CLAUDE.md"],
+                &target,
+            ).ok();
+            git(
+                &["-c", "user.email=termic@local", "-c", "user.name=Termic",
+                  "commit", "-q", "-m", "init: termic multi-repo host"],
+                &target,
+            ).map_err(|e| format!("git commit failed: {e}"))?;
+        }
         target
     } else {
         let expanded: String = if let Some(rest) = trimmed_path.strip_prefix("~/") {
@@ -1006,8 +1032,12 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         if !pb.exists() {
             return Err(format!("{} does not exist", expanded));
         }
-        if git(&["rev-parse", "--git-dir"], &pb).is_err() {
-            return Err(format!("{} is not a git repo", expanded));
+        if non_git {
+            if !pb.is_dir() {
+                return Err(format!("{} is not a directory", expanded));
+            }
+        } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
+            return Err(format!("{} is not a git repo. Tick \"Host is not a git repo\" to use it as a plain folder.", expanded));
         }
         pb
     };
@@ -1029,8 +1059,8 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         }
     }
 
-    let base = detect_base_branch(&canon).unwrap_or_else(|_| "main".into());
-    let remote = detect_default_remote(&canon);
+    let base = if non_git { String::new() } else { detect_base_branch(&canon).unwrap_or_else(|_| "main".into()) };
+    let remote = if non_git { String::new() } else { detect_default_remote(&canon) };
     let ws_path = worktrees_base().map_err(|e| e.to_string())?
         .join(&slug).to_string_lossy().into_owned();
     let name = trimmed_name.to_string();
@@ -1039,7 +1069,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         name,
         root_path: canon.to_string_lossy().into_owned(),
         workspaces_path: ws_path,
-        base_branch: format!("{remote}/{base}"),
+        base_branch: if non_git { String::new() } else { format!("{remote}/{base}") },
         remote,
         preview_url: String::new(),
         // No file-copy defaults for multi-repo: each member already has
@@ -1056,6 +1086,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         project_type: ProjectType::Multi,
         members,
         spotlight_enabled: false,
+        non_git,
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -1169,10 +1200,15 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
     let repo = PathBuf::from(&proj.root_path);
     // ALWAYS re-read current HEAD so a stale cached `branch` doesn't lie
     // (user may have `git checkout`'d a different branch outside termic
-    // since the workspace was first opened).
-    let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"], &repo)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "HEAD".to_string());
+    // since the workspace was first opened). Non-git folders (issue #4)
+    // have no branch — leave it empty, the sidebar just shows the name.
+    let branch = if proj.non_git {
+        String::new()
+    } else {
+        git(&["symbolic-ref", "--quiet", "--short", "HEAD"], &repo)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "HEAD".to_string())
+    };
     let port = 18100 + (load_workspaces().len() as u16);
 
     // Multi-repo project opened in REPO mode: drop a symlink for
@@ -1240,7 +1276,9 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
     let ws_name = name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| branch.clone());
+        // Branch is the natural fallback for a git repo; non-git folders
+        // have no branch, so fall back to the project name there.
+        .unwrap_or_else(|| if branch.is_empty() { proj.name.clone() } else { branch.clone() });
     // Only "custom" workspaces carry a launch command; agent/shell
     // workspaces resolve their command from the registry at spawn.
     let custom_command = if cli == "custom" {
@@ -1278,6 +1316,180 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         sandbox_allowed_hosts: Vec::new(),
         composition,
         custom_command,
+    };
+    save_workspace(&ws).map_err(|e| e.to_string())?;
+    Ok(ws)
+}
+
+// ───────────────────────── import existing worktree (issue #5) ─────────────────────────
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ImportableWorktree {
+    /// Absolute path git reports for the worktree.
+    pub path: String,
+    /// Short branch name, or empty for a detached HEAD.
+    pub branch: String,
+    /// Abbreviated HEAD commit (for display only).
+    pub head: String,
+    /// git has the worktree locked (e.g. on a removed external drive).
+    pub locked: bool,
+}
+
+/// Canonicalize for set-membership comparison, falling back to the raw
+/// string when the path can't be resolved (e.g. it was deleted).
+fn canon_str(p: &str) -> String {
+    fs::canonicalize(p)
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| p.to_string())
+}
+
+/// List the git worktrees of a project's repo that aren't yet tracked as
+/// termic workspaces (issue #5). Excludes the main checkout (that's the
+/// "Run in repo" path), bare entries, and any worktree already imported.
+/// Empty for non-git projects.
+#[tauri::command]
+fn workspace_importable_worktrees(project_id: String) -> Result<Vec<ImportableWorktree>, String> {
+    let proj = load_projects().into_iter().find(|p| p.id == project_id)
+        .ok_or("project not found")?;
+    if proj.non_git { return Ok(Vec::new()); }
+    let repo = PathBuf::from(&proj.root_path);
+    // Drop stale registrations so we don't offer worktrees the user
+    // already removed by hand.
+    let _ = git(&["worktree", "prune"], &repo);
+    let listed = git(&["worktree", "list", "--porcelain"], &repo).map_err(|e| e.to_string())?;
+
+    let main_canon = canon_str(&proj.root_path);
+    let existing: HashSet<String> = load_workspaces().iter()
+        .filter(|w| w.project_id == proj.id)
+        .map(|w| canon_str(&w.path))
+        .collect();
+
+    let mut out = Vec::new();
+    // Porcelain blocks are separated by a blank line. Each starts with
+    // `worktree <path>` and may carry `HEAD`, `branch`, `detached`,
+    // `bare`, `locked` lines.
+    for block in listed.split("\n\n") {
+        let mut path: Option<String> = None;
+        let mut head = String::new();
+        let mut branch = String::new();
+        let mut bare = false;
+        let mut locked = false;
+        for line in block.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = Some(p.to_string());
+            } else if let Some(h) = line.strip_prefix("HEAD ") {
+                head = h.chars().take(8).collect();
+            } else if let Some(b) = line.strip_prefix("branch ") {
+                branch = b.strip_prefix("refs/heads/").unwrap_or(b).to_string();
+            } else if line == "bare" {
+                bare = true;
+            } else if line.starts_with("locked") {
+                locked = true;
+            }
+        }
+        let Some(path) = path else { continue };
+        if bare { continue; }
+        let canon = canon_str(&path);
+        // Skip the main checkout + anything already imported.
+        if canon == main_canon || existing.contains(&canon) { continue; }
+        out.push(ImportableWorktree { path, branch, head, locked });
+    }
+    Ok(out)
+}
+
+/// Import an existing git worktree as a termic workspace (issue #5).
+/// Unlike `workspace_create` this does NOT run `git worktree add` /
+/// copy files / run setup — the worktree already exists on disk. We
+/// just register a Workspace pointing at it. Archiving one later runs
+/// the normal `git worktree remove` path (it IS a real worktree).
+#[tauri::command]
+fn workspace_import_worktree(
+    project_id: String, path: String, name: Option<String>, cli: Option<String>,
+    sandbox_enabled: Option<bool>,
+    sandbox_rw_paths: Option<Vec<String>>,
+    sandbox_allowed_hosts: Option<Vec<String>>,
+) -> Result<Workspace, String> {
+    let proj = load_projects().into_iter().find(|p| p.id == project_id)
+        .ok_or("project not found")?;
+    if proj.non_git { return Err("project is not a git repo".into()); }
+    let repo = PathBuf::from(&proj.root_path);
+    let wt = PathBuf::from(path.trim());
+    if !wt.exists() { return Err(format!("{} does not exist", wt.display())); }
+    let _ = git(&["worktree", "prune"], &repo);
+
+    // Confirm the path is genuinely a registered worktree of THIS repo —
+    // never let the user point at an arbitrary directory.
+    let listed = git(&["worktree", "list", "--porcelain"], &repo).map_err(|e| e.to_string())?;
+    let wt_canon = canon_str(&wt.to_string_lossy());
+    let registered = listed.lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|p| canon_str(p) == wt_canon);
+    if !registered {
+        return Err("that path is not a worktree of this repo".into());
+    }
+    // The main checkout is reachable via "Run in repo", not import.
+    if wt_canon == canon_str(&proj.root_path) {
+        return Err("that's the repo's main checkout — use \"Run in repo\" instead".into());
+    }
+    if load_workspaces().iter().any(|w| canon_str(&w.path) == wt_canon) {
+        return Err("this worktree is already open as a workspace".into());
+    }
+
+    let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"], &wt)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let cli = cli.unwrap_or_else(|| proj.default_cli.clone());
+    let port = 18100 + (load_workspaces().len() as u16);
+    let ws_name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| if branch.is_empty() {
+            wt.file_name().and_then(|s| s.to_str()).unwrap_or("worktree").to_string()
+        } else { branch.clone() });
+
+    // Sandbox: honor the dialog's explicit choice when provided, else
+    // fall back to the project default + the merged default lists (same
+    // shape as workspace_create).
+    let globals = load_settings_inner();
+    let merge = |g: &[String], p: &[String]| -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for v in g.iter().chain(p.iter()) {
+            if seen.insert(v.clone()) { out.push(v.clone()); }
+        }
+        out
+    };
+    let sandbox_enabled = sandbox_enabled.unwrap_or(
+        proj.default_sandbox || repo_config_for(&proj).sandbox.enabled_by_default,
+    );
+    let sandbox_rw_paths = sandbox_rw_paths
+        .unwrap_or_else(|| merge(&globals.sandbox_default_rw_paths, &proj.sandbox_rw_paths));
+    let sandbox_allowed_hosts = sandbox_allowed_hosts
+        .unwrap_or_else(|| merge(&globals.sandbox_default_allowed_hosts, &proj.sandbox_allowed_hosts));
+
+    let ws = Workspace {
+        id: Uuid::new_v4().to_string(),
+        project_id: proj.id.clone(),
+        name: ws_name,
+        branch: branch.clone(),
+        // We don't know the original base ref; the branch itself is a
+        // sane stand-in (only used to seed "branch from" + display).
+        base_branch: branch,
+        path: wt_canon,
+        cli,
+        port,
+        created: chrono::Utc::now().to_rfc3339(),
+        archived: false,
+        // A real worktree — NOT repo-root, so archive removes it properly.
+        is_repo_root: false,
+        spawn_count: 0,
+        has_resumable_history: false,
+        agent_session_ids: std::collections::HashMap::new(),
+        sandbox_enabled,
+        sandbox_rw_paths,
+        sandbox_allowed_hosts,
+        composition: Vec::new(),
+        custom_command: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1640,23 +1852,42 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     }
 
     let host_repo = PathBuf::from(&host.root_path);
-    // Create the host worktree first. Branch reuse logic mirrors the
-    // single-repo create: if branch exists locally, just check out;
-    // else create from base.
-    // --no-track when creating from a remote ref so the new branch
-    // isn't tied to origin/main as its upstream. See the single-repo
-    // create site for the rationale.
-    let branch_exists = git(&["rev-parse", "--verify", &branch], &host_repo).is_ok();
-    let create_result = if branch_exists {
-        git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo)
-    } else {
-        match git(&["branch", "--no-track", &branch, &base_branch], &host_repo) {
-            Ok(_) => git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo),
-            Err(e) => Err(e),
+    if host.non_git {
+        // Non-git host (issue #4): there's no worktree to add. Make the
+        // wrapper dir ourselves, then symlink the host's shared knowledge
+        // files (CLAUDE.md / AGENTS.md / .claude / …) into it so the
+        // agent running at the wrapper loads them, exactly as it would
+        // from a git host worktree. Members get worktree'd / symlinked
+        // into the wrapper below, same as the git path.
+        fs::create_dir_all(&wrapper).map_err(|e| format!("create wrapper dir failed: {e}"))?;
+        for shared in &["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude", ".gemini", ".codex"] {
+            let src = host_repo.join(shared);
+            if src.exists() {
+                let dst = wrapper.join(shared);
+                if !dst.exists() {
+                    let _ = std::os::unix::fs::symlink(&src, &dst);
+                }
+            }
         }
-    };
-    if let Err(e) = create_result {
-        return Err(format!("host worktree add failed: {e}"));
+    } else {
+        // Create the host worktree first. Branch reuse logic mirrors the
+        // single-repo create: if branch exists locally, just check out;
+        // else create from base.
+        // --no-track when creating from a remote ref so the new branch
+        // isn't tied to origin/main as its upstream. See the single-repo
+        // create site for the rationale.
+        let branch_exists = git(&["rev-parse", "--verify", &branch], &host_repo).is_ok();
+        let create_result = if branch_exists {
+            git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo)
+        } else {
+            match git(&["branch", "--no-track", &branch, &base_branch], &host_repo) {
+                Ok(_) => git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo),
+                Err(e) => Err(e),
+            }
+        };
+        if let Err(e) = create_result {
+            return Err(format!("host worktree add failed: {e}"));
+        }
     }
 
     // Helper that tears down everything we've created so far on
@@ -1674,7 +1905,10 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                 }
             }
         }
-        let _ = git(&["worktree", "remove", "--force", wrapper.to_str().unwrap()], &host_repo);
+        // Non-git host has no host worktree to unregister — just drop the dir.
+        if !host.non_git {
+            let _ = git(&["worktree", "remove", "--force", wrapper.to_str().unwrap()], &host_repo);
+        }
         let _ = fs::remove_dir_all(&wrapper);
     };
 
@@ -1762,10 +1996,13 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
 
     // Manage the wrapper's .gitignore so the host repo doesn't try
     // to track the member dirs. Leading-slash entries anchor to the
-    // wrapper root only.
+    // wrapper root only. Skipped for a non-git host — the wrapper isn't
+    // a git repo, so there's nothing to ignore (and no commit to make).
     let dir_names: Vec<String> = composition.iter().map(|m| m.dir_name.clone()).collect();
-    if let Err(e) = ensure_multirepo_gitignore(&wrapper, &dir_names) {
-        eprintln!("multi-repo gitignore write failed (non-fatal): {e}");
+    if !host.non_git {
+        if let Err(e) = ensure_multirepo_gitignore(&wrapper, &dir_names) {
+            eprintln!("multi-repo gitignore write failed (non-fatal): {e}");
+        }
     }
 
     // Auto-commit the wrapper's bookkeeping files (CLAUDE.md /
@@ -1775,7 +2012,8 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     // Best-effort — non-fatal if `git add` finds nothing to add or
     // the commit fails (e.g. no user.email globally configured;
     // -c overrides handle that path).
-    {
+    // Non-git host wrapper is not a git repo — nothing to commit.
+    if !host.non_git {
         let bookkeeping = ["CLAUDE.md", "AGENTS.md", ".gitignore", ".claude", ".gemini", ".codex"];
         let mut to_add: Vec<&str> = Vec::new();
         for f in &bookkeeping {
@@ -2625,13 +2863,18 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
         }
     }
 
+    // Non-git host (issue #4): the wrapper is a plain dir we mkdir'd, not
+    // a git worktree, so skip the git teardown — `fs::remove_dir_all`
+    // below cleans it up. (Member worktrees were already removed above.)
     if let Some(p) = &proj {
-        if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
-            errs.push(format!("worktree remove: {e}"));
-        }
-        if delete_branch && !w.branch.is_empty() {
-            if let Err(e) = git(&["branch", "-D", &w.branch], Path::new(&p.root_path)) {
-                errs.push(format!("branch delete failed: {e}"));
+        if !p.non_git {
+            if let Err(e) = git(&["worktree", "remove", "--force", &w.path], Path::new(&p.root_path)) {
+                errs.push(format!("worktree remove: {e}"));
+            }
+            if delete_branch && !w.branch.is_empty() {
+                if let Err(e) = git(&["branch", "-D", &w.branch], Path::new(&p.root_path)) {
+                    errs.push(format!("branch delete failed: {e}"));
+                }
             }
         }
     }
@@ -5122,7 +5365,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
-            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_sandbox,
+            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_sandbox,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,

@@ -25,6 +25,10 @@ export function NewProjectDialog() {
   // member-multi-select form. Both flows reuse the same Add button.
   const [mode, setMode] = useState<"repo" | "multi">("repo");
   const [path, setPath] = useState("");
+  // Issue #4: add a plain folder (not a git repo). In repo mode the
+  // folder becomes a repo-root-only project (agent runs at the folder).
+  // In multi mode it becomes a non-git HOST for the member repos.
+  const [nonGit, setNonGit] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredRepo[]>([]);
   const [reposDir, setReposDir] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,6 +50,7 @@ export function NewProjectDialog() {
     if (!open) return;
     setMode("repo");
     setPath(""); setErr(null); setFilter("");
+    setNonGit(false);
     setMemberRows([]);
     setMultiName("");
     (async () => {
@@ -63,7 +68,7 @@ export function NewProjectDialog() {
   async function add(p: string) {
     setBusy(true); setErr(null);
     try {
-      const proj = await projectAdd(p);
+      const proj = await projectAdd(p, nonGit);
       // Newly-added projects start expanded so the "+ Get started"
       // CTA is visible without an extra click — the empty-defaults-
       // to-collapsed fallback in Sidebar would otherwise hide it.
@@ -97,7 +102,7 @@ export function NewProjectDialog() {
     try {
       // Empty path tells Rust to auto-create + git-init the host
       // under ~/termic/projects/<slug>/. Name is required either way.
-      const proj = await projectAddMulti(path.trim(), multiName.trim(), memberRows);
+      const proj = await projectAddMulti(path.trim(), multiName.trim(), memberRows, nonGit);
       setProjectCollapsed(proj.id, false);
       await loadAll();
       pushToast(`Added multi-repo project “${proj.name}” (${memberRows.length} members)`, "success");
@@ -228,6 +233,19 @@ export function NewProjectDialog() {
               <code className="mono">.claude/</code> live. Leave blank and Termic
               creates one at{" "}
               <code className="mono">~/termic/projects/&lt;name&gt;/</code>.
+            </span>
+          </label>
+
+          {/* Issue #4: the host can be a plain folder of repos instead of
+              a git repo. Members still get their own worktrees; the host's
+              shared files are symlinked into each workspace. */}
+          <label className="mt-3 flex cursor-pointer items-start gap-2 text-[13px]">
+            <Checkbox checked={nonGit} onChange={setNonGit} className="mt-0.5" />
+            <span>
+              <span className="text-[var(--color-fg)]">Host is not a git repo</span>
+              <span className="mt-0.5 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
+                Use a plain folder for the shared knowledge files. Member repos still get their own worktrees per workspace.
+              </span>
             </span>
           </label>
 
@@ -392,14 +410,27 @@ export function NewProjectDialog() {
       })()}
 
       <label className="block text-[13.5px]">
-        Repository root
+        {nonGit ? "Folder" : "Repository root"}
         <div className="mt-1.5 flex gap-2">
-          <Input value={path} onChange={e => setPath(e.target.value)} placeholder="/path/to/repo" />
+          <Input value={path} onChange={e => setPath(e.target.value)} placeholder={nonGit ? "/path/to/folder" : "/path/to/repo"} />
           <Button variant="secondary" size="lg" onClick={browse}>Browse…</Button>
         </div>
       </label>
 
-      {err && <p className="text-[13.5px] text-[var(--color-err)]">{err}</p>}
+      {/* Issue #4: opt out of git. A plain folder (e.g. a parent dir of
+          several repos) becomes a repo-root-only project — the agent
+          runs at the folder and can see everything under it. */}
+      <label className="mt-3 flex cursor-pointer items-start gap-2 text-[13px]">
+        <Checkbox checked={nonGit} onChange={setNonGit} className="mt-0.5" />
+        <span>
+          <span className="text-[var(--color-fg)]">Not a git repository</span>
+          <span className="mt-0.5 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
+            Add a plain folder (e.g. a parent dir containing several repos). Agents run at the folder; no worktrees or branches.
+          </span>
+        </span>
+      </label>
+
+      {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
 
       <div className="mt-2 flex justify-end gap-2">
         <Button variant="ghost" onClick={close}>Cancel</Button>

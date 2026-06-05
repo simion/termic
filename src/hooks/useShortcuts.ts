@@ -95,6 +95,14 @@ export function useShortcuts() {
           state.openSettings();
           return;
 
+        // ⌘/ → open the read-only shortcuts cheat-sheet modal (issue #7).
+        // It has its own search + an Edit button that jumps to Settings →
+        // Shortcuts for rebinding.
+        case "open-shortcuts":
+          e.preventDefault();
+          useUI.getState().openShortcutsHelp();
+          return;
+
         // ⌘P → file finder. NO `isTyping` guard — xterm's hidden textarea
         // always reports as typing, and we want it to fire from the terminal
         // too. Scoped to having an active workspace.

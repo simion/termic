@@ -124,6 +124,10 @@ interface AppState {
    *  runs the new script (the disk write alone doesn't refresh either). */
   setWorkspaceCustomCommand: (wsId: string, command: string) => void;
   addTab: (wsId: string, tab: Tab) => void;
+  /** Move `tabId` to `toIndex` — its final position in the list AFTER the
+   *  tab is pulled out (i.e. an index into the other tabs, 0..length-1).
+   *  No-op if the order is unchanged. */
+  reorderTab: (wsId: string, tabId: string, toIndex: number) => void;
   closeTab: (wsId: string, tabId: string) => void;
   setActiveTabId: (wsId: string, tabId: string) => void;
   persistTab: (wsId: string, tabId: string) => void;
@@ -513,6 +517,19 @@ export const useApp = create<AppState>((set, get) => ({
     // (edit/diff tabs manage their own focus — no terminal to target.)
     if (tab.type === "terminal") focusTerminalTab(tab.id);
   },
+
+  reorderTab: (wsId, tabId, toIndex) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const from = list.findIndex(t => t.id === tabId);
+    if (from < 0) return s;
+    const without = list.filter(t => t.id !== tabId);
+    const dest = Math.max(0, Math.min(toIndex, without.length));
+    without.splice(dest, 0, list[from]);
+    // Bail if the order is unchanged — avoids a needless render + the
+    // tabs identity churn that would defeat tight selectors.
+    if (without.every((t, i) => t.id === list[i].id)) return s;
+    return { tabs: { ...s.tabs, [wsId]: without } };
+  }),
 
   closeTab: (wsId, tabId) => {
    let focusId = "";

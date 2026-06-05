@@ -56,14 +56,20 @@ export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
   // very different mental model, hints should reflect that.
   const project = useApp(s => s.projects.find(p => p.id === projectId));
   const isMulti = (project?.type ?? "single") === "multi";
+  // Non-git projects (issue #4) have no branches / worktrees — the only
+  // way in is "Run in repo" (agent at the folder). Hide the worktree +
+  // import actions and reword the section hint for them.
+  const isNonGit = !!project?.non_git;
   // Hide disabled / not-installed agents from the Open-repo list.
   const visibleClis = visibleCliIds(agents.map(a => a.id), agents, detectedClis);
 
   return (
     <>
       <SectionHeader
-        title="RUN IN REPO"
-        hint="No worktree, launch the agent in the repo's current branch."
+        title={isNonGit ? "RUN IN FOLDER" : "RUN IN REPO"}
+        hint={isNonGit
+          ? "Launch the agent at the folder root (no git)."
+          : "No worktree, launch the agent in the repo's current branch."}
         tone={isMulti ? "warn" : "dim"}
       />
       {agents.filter(a => visibleClis.has(a.id)).map(a => (
@@ -117,16 +123,25 @@ export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
           </span>
         </div>
       </DropdownItem>
-      <DropdownSeparator />
-      <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
-        <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate">New git worktree</span>
-          <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-            {isMulti ? "Separate working directory per member, run agents in parallel" : "Separate working directory, run agents in parallel"}
-          </span>
-        </div>
-      </DropdownItem>
+      {/* Worktree actions only make sense for git projects. A non-git
+          folder has no branches to worktree off (issue #4). */}
+      {!isNonGit && (
+        <>
+          <DropdownSeparator />
+          <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
+            <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate">New git worktree</span>
+              <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+                {isMulti ? "Separate working directory per member, run agents in parallel" : "Separate working directory, run agents in parallel"}
+              </span>
+            </div>
+          </DropdownItem>
+          {/* "Import existing worktree" now lives inside the New Workspace
+              dialog itself (the "Import an existing worktree instead"
+              link), so it's not duplicated here. */}
+        </>
+      )}
     </>
   );
 }

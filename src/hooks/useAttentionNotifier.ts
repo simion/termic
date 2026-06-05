@@ -49,14 +49,20 @@ export function useAttentionNotifier() {
           if ((lastFiredRef.current[key] || 0) + DEBOUNCE_MS > now) continue;
           lastFiredRef.current[key] = now;
           const w = state.workspaces.find(w => w.id === wsId);
+          const proj = w ? state.projects.find(p => p.id === w.project_id) : undefined;
           const reason =
             t.unread.reason === "bell" ? "wants input"
             : t.unread.reason === "exit" ? "exited"
             : t.unread.reason === "done" ? "finished"
             : t.unread.reason === "attention" ? "needs your input"
             : "is idle";
+          // Title = "project · workspace". The terminal/cli name was
+          // noise — the body already says what happened.
+          const title = proj?.name
+            ? `${proj.name} · ${w?.name || "workspace"}`
+            : (w?.name || "workspace");
           notify(
-            `${w?.name || "workspace"} · ${t.type === "terminal" ? t.cli : t.type}`,
+            title,
             `agent ${reason}`,
             { wsId, tabId: t.id },
           ).catch(() => {});

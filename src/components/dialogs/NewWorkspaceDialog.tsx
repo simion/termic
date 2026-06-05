@@ -12,11 +12,11 @@ import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
-import { workspaceCreate, workspaceCreateMulti, settingsLoad } from "@/lib/ipc";
+import { workspaceCreate, workspaceCreateMulti, settingsLoad, workspaceImportableWorktrees, workspaceImportWorktree } from "@/lib/ipc";
 import { slugify, cn } from "@/lib/utils";
-import { Check, Loader2, AlertTriangle, Shield, Layers, GitBranch, Link2 } from "lucide-react";
+import { Check, Loader2, AlertTriangle, Shield, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
-import type { MemberMode } from "@/lib/types";
+import type { MemberMode, ImportableWorktree } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
 const PREFIXES = ["feature", "hotfix", "__custom__"] as const;
@@ -75,6 +75,16 @@ export function NewWorkspaceDialog() {
   };
   const [members, setMembers] = useState<MemberSpec[]>([]);
   const isMulti = (project?.type ?? "single") === "multi";
+  // Import mode (issue #5): instead of branching a fresh worktree, adopt
+  // one that already exists on disk. Only offered for single-repo git
+  // projects (multi composition / non-git folders don't apply). When on,
+  // the git fields (prefix / branch / branch-from) are hidden and the
+  // user picks from `importList` instead.
+  const canImport = !isMulti && !project?.non_git;
+  const [importMode, setImportMode] = useState(false);
+  const [importList, setImportList] = useState<ImportableWorktree[]>([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importSelected, setImportSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Ref guard against double-submit. React batches setBusy(true) so the
   // button's `disabled` only updates on the next render — but during a
@@ -196,6 +206,14 @@ export function NewWorkspaceDialog() {
         setSbHosts(merge(s.sandbox_default_allowed_hosts, p?.sandbox_allowed_hosts));
       }
     }).catch(() => {});
+    // Import mode: off by default. We eager-load the project's existing
+    // unopened worktrees so the "Import an existing worktree instead"
+    // affordance only appears when there's actually something to import.
+    const canImp = (p?.type ?? "single") !== "multi" && !p?.non_git;
+    const wantImport = !!seed?.importMode && canImp;
+    setImportSelected(null); setImportList([]); setImportLoading(false);
+    setImportMode(wantImport);
+    if (canImp) loadImportable(projectId);
     setPhase("form"); setSetupLog([]); setCreatedWsId(null);
     // CRITICAL: also reset `busy`. On a successful prior creation we
     // intentionally leave busy=true (so the form can't be re-submitted
@@ -230,7 +248,59 @@ export function NewWorkspaceDialog() {
   }, [name, prefix]);
   useEffect(() => { if (!branchEdited) setBranch(derived); }, [derived, branchEdited]);
 
+  // Load the project's importable (existing, unopened) worktrees.
+  // Declared as a hoisted function so the open-effect can call it.
+  function loadImportable(pid: string) {
+    setImportLoading(true);
+    workspaceImportableWorktrees(pid)
+      .then(list => setImportList(list))
+      .catch(e => setErr(String(e)))
+      .finally(() => setImportLoading(false));
+  }
+
+  // Flip into import mode from the in-form affordance, lazy-loading the
+  // worktree list the first time.
+  function enterImport() {
+    if (!projectId) return;
+    setImportMode(true);
+    setErr(null);
+    if (importList.length === 0 && !importLoading) loadImportable(projectId);
+  }
+
+  // Pick an existing worktree to import. Seed the name from its branch
+  // (or the dir basename for a detached HEAD) so it's a one-step adopt.
+  function pickImport(wt: ImportableWorktree) {
+    setImportSelected(wt.path);
+    const baseName = wt.path.split("/").pop() || "worktree";
+    setName(wt.branch || baseName);
+  }
+
+  // Adopt an existing worktree. No worktree-add / file-copy / setup
+  // script, so this skips the streaming phases entirely.
+  async function submitImport() {
+    if (!projectId || !importSelected || !name.trim()) return;
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setBusy(true); setErr(null);
+    try {
+      const splitLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
+      const w = await workspaceImportWorktree(
+        projectId, importSelected, name.trim(), cli,
+        { enabled: sandbox, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
+      );
+      await loadAll();
+      setActive(w.id);
+      close();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+      submittingRef.current = false;
+    }
+  }
+
   async function submit() {
+    if (importMode) { submitImport(); return; }
     if (!projectId || !name.trim() || !branch.trim()) return;
     if (submittingRef.current) return;
     submittingRef.current = true;
@@ -321,14 +391,16 @@ export function NewWorkspaceDialog() {
       // for several seconds on big repos.
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={isMulti ? "New multi-repo workspace" : "New workspace via worktree"}
+      title={isMulti ? "New multi-repo workspace" : importMode ? "Import existing worktree" : "New workspace via worktree"}
       description={project ? `in ${project.name}` : undefined}
       // Widen the dialog based on what's actually inside:
       //   - sandbox ON     → 4xl (the sandbox form needs a 2nd column)
       //   - multi-repo     → 3xl (per-member row = name + Worktree/Repo
       //                      toggle + branch input — max-w-md overflows)
       //   - plain worktree → md (anything wider looks empty)
-      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : "max-w-lg"}
+      // Import mode lists full worktree paths, which overflow max-w-lg —
+      // give it more room (still narrower than the sandbox 2-column form).
+      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : importMode ? "max-w-2xl" : "max-w-lg"}
     >
       {/* Phase-aware body: form on start, then progress view while creating
           + running setup. Form stays unmounted in non-form phases so its
@@ -356,6 +428,71 @@ export function NewWorkspaceDialog() {
             the segmented controls next to the label and put hints on the same
             line as the label — both caused the spacing weirdness + wrapped
             hint text. */}
+        {/* Import affordance (issue #5). Single-repo git projects only.
+            A subtle link that flips the dialog into "adopt an existing
+            worktree" mode, hiding the branch fields. */}
+        {canImport && !importMode && importList.length > 0 && (
+          <button
+            type="button"
+            onClick={enterImport}
+            className="-mb-1 inline-flex items-center gap-1.5 self-start text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)]"
+          >
+            <FolderGit2 className="h-3.5 w-3.5" />
+            Import an existing worktree instead
+            <span className="text-[var(--color-fg-faint)]">({importList.length})</span>
+          </button>
+        )}
+        {canImport && importMode && (
+          <button
+            type="button"
+            onClick={() => { setImportMode(false); setImportSelected(null); setErr(null); }}
+            className="-mb-1 inline-flex items-center gap-1.5 self-start text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)]"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Create a new worktree instead
+          </button>
+        )}
+
+        {/* Worktree picker — replaces the branch fields in import mode. */}
+        {importMode && (
+          <Field label="Existing worktree" hint="Worktrees of this repo that aren't already open as workspaces.">
+            {importLoading ? (
+              <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> Scanning worktrees…
+              </div>
+            ) : importList.length === 0 ? (
+              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
+                No unopened worktrees found. Create one with{" "}
+                <code className="mono">git worktree add</code>, or switch back to make a new one.
+              </div>
+            ) : (
+              <div className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
+                {importList.map(wt => (
+                  <button
+                    key={wt.path}
+                    type="button"
+                    onClick={() => pickImport(wt)}
+                    title={wt.path}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 border-b border-[var(--color-border-soft)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--color-hover)]",
+                      importSelected === wt.path && "bg-[var(--color-accent-deep)]/10",
+                    )}
+                  >
+                    <FolderGit2 className={cn("h-4 w-4 shrink-0", importSelected === wt.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] text-[var(--color-fg)]">
+                        {wt.branch || <span className="italic text-[var(--color-fg-dim)]">detached {wt.head}</span>}
+                      </div>
+                      <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{wt.path}</div>
+                    </div>
+                    {importSelected === wt.path && <Check className="h-4 w-4 shrink-0 text-[var(--color-accent)]" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </Field>
+        )}
+
         <Field label="Name">
           <Input value={name} onChange={e => setName(e.target.value)} placeholder="fix login bug" autoFocus required />
         </Field>
@@ -388,6 +525,7 @@ export function NewWorkspaceDialog() {
           </div>
         </Field>
 
+        {!importMode && (<>
         <Field label="Branch prefix">
           <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
             {PREFIXES.map(pf => (
@@ -426,6 +564,7 @@ export function NewWorkspaceDialog() {
         <Field label={isMulti ? "Host branch from" : "Branch from"} hint={isMulti ? "Blank = host repo default. Members fall back to their own defaults below." : "Blank = repo default."}>
           <Input value={base} onChange={e => setBase(e.target.value)} placeholder="origin/master" />
         </Field>
+        </>)}
 
         {/* Multi-repo: per-member mode + branch picker. Each member
             row renders a small toggle (Worktree | Repo root) and, when
@@ -601,7 +740,13 @@ export function NewWorkspaceDialog() {
         {err && <p className="mb-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" type="button" onClick={close}>Cancel</Button>
-          <Button variant="primary" type="submit" disabled={busy || !name.trim() || !branch.trim()}>Create</Button>
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={busy || !name.trim() || (importMode ? !importSelected : !branch.trim())}
+          >
+            {importMode ? "Import" : "Create"}
+          </Button>
         </div>
       </div>
       </form>

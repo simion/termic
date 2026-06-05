@@ -1,6 +1,6 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Workspace, Tab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
@@ -21,7 +21,121 @@ export function TabBar({ ws }: { ws: Workspace }) {
   const activeId = useActiveTabId(ws.id);
   const setActive = useApp(s => s.setActiveTabId);
   const addTab = useApp(s => s.addTab);
+  const reorderTab = useApp(s => s.reorderTab);
   const renameTab = useApp(s => s.renameTab);
+  // Drag-to-reorder (issue #6) — pointer-based, NOT HTML5 DnD (WKWebView's
+  // native drag is unreliable + Tauri intercepts it for file drops). The
+  // dragged pill follows the cursor via a transform; tabs reorder live as
+  // its center crosses a neighbour's. `dragId` triggers styling; the live
+  // transform lives in `dragTx` (state, so a re-render after a reorder can
+  // re-derive it before paint).
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragTx, setDragTx] = useState(0);
+  // Mutable drag bookkeeping that must not trigger re-renders. `appliedTx`
+  // is the transform currently on the dragged element — tracked so we can
+  // recover its untranslated layout position from a live getBoundingClientRect.
+  const dragRef = useRef<{
+    id: string; grabOffset: number; startX: number; pointerX: number; started: boolean; appliedTx: number;
+  } | null>(null);
+  // Set briefly on drop so the click that ends a drag doesn't also select
+  // the tab (pointerup → click both fire).
+  const suppressClickRef = useRef(false);
+
+  // Translate that keeps the dragged pill's left edge at (cursor − grab
+  // offset). Self-correcting: it reads the pill's live rect and subtracts
+  // the transform already applied to recover the untranslated layout slot,
+  // so it stays right even after a live reorder shuffles the DOM. Updates
+  // `appliedTx` so the next call has the correct baseline.
+  function computeTx(clientX: number): number {
+    const strip = stripRef.current;
+    const d = dragRef.current;
+    if (!strip || !d) return 0;
+    const pill = strip.querySelector(`[data-tab-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
+    if (!pill) return 0;
+    const layoutLeft = pill.getBoundingClientRect().left - d.appliedTx;
+    const tx = (clientX - d.grabOffset) - layoutLeft;
+    d.appliedTx = tx;
+    return tx;
+  }
+
+  // Reorder when the dragged pill's center passes a neighbour's center.
+  function maybeReorder(clientX: number) {
+    const strip = stripRef.current;
+    const d = dragRef.current;
+    if (!strip || !d) return;
+    const pill = strip.querySelector(`[data-tab-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
+    if (!pill) return;
+    const draggedCenter = (clientX - d.grabOffset) + pill.offsetWidth / 2;
+    const pills = Array.from(strip.querySelectorAll<HTMLElement>("[data-tab-id]"));
+    // Target index = how many OTHER pills sit left of the dragged center.
+    let target = 0;
+    for (const p of pills) {
+      if (p.dataset.tabId === d.id) continue;
+      const r = p.getBoundingClientRect();
+      if (r.left + r.width / 2 < draggedCenter) target++;
+    }
+    const cur = tabs.findIndex(t => t.id === d.id);
+    if (target !== cur) reorderTab(ws.id, d.id, target);
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    const d = dragRef.current;
+    if (!d) return;
+    d.pointerX = e.clientX;
+    if (!d.started) {
+      if (Math.abs(e.clientX - d.startX) < 5) return; // below the drag threshold
+      d.started = true;
+      setDragId(d.id);
+    }
+    setDragTx(computeTx(e.clientX));
+    maybeReorder(e.clientX);
+  }
+  function onPointerUp() {
+    const d = dragRef.current;
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    if (d?.started) {
+      suppressClickRef.current = true;
+      setTimeout(() => { suppressClickRef.current = false; }, 0);
+    }
+    dragRef.current = null;
+    setDragId(null);
+    setDragTx(0);
+  }
+  function startDrag(tabId: string, e: React.PointerEvent) {
+    // Left button only; ignore drags that begin on the close button /
+    // rename input (those have their own jobs).
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button, input, [data-no-drag]")) return;
+    const pill = e.currentTarget as HTMLElement;
+    dragRef.current = {
+      id: tabId,
+      grabOffset: e.clientX - pill.getBoundingClientRect().left,
+      startX: e.clientX,
+      pointerX: e.clientX,
+      started: false,
+      appliedTx: 0,
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  }
+
+  // After a live reorder re-renders the strip, the dragged pill sits in a
+  // new slot — re-derive its transform from the new layout BEFORE paint so
+  // it doesn't jump for a frame.
+  useLayoutEffect(() => {
+    const d = dragRef.current;
+    if (d?.started) setDragTx(computeTx(d.pointerX));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs]);
+
+  // Tear down window listeners if the component unmounts mid-drag.
+  useEffect(() => () => {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Hide disabled / not-installed agents from the + (new agent) menu.
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
@@ -70,6 +184,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
     setRenaming(null);
   }
 
+
   // Add a freshly-built terminal tab. `addTab` self-focuses the new
   // terminal (see store) — all we do here is close the dropdown and
   // suppress Radix's focus-return so the closing menu doesn't yank
@@ -99,16 +214,20 @@ export function TabBar({ ws }: { ws: Workspace }) {
   }
 
   return (
-    <div className="termic-tabstrip flex h-9 shrink-0 items-center gap-0 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2 pr-2 overflow-x-auto overflow-y-hidden">
+    <div ref={stripRef} className="termic-tabstrip flex h-9 shrink-0 items-center gap-0 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2 pr-2 overflow-x-auto overflow-y-hidden">
       {tabs.map(t => (
         <TabPill
           key={t.id} ws={ws} tab={t} active={t.id === activeId}
-          onSelect={() => setActive(ws.id, t.id)} onClose={() => requestCloseTab(ws.id, t.id)}
+          onSelect={() => { if (suppressClickRef.current) return; setActive(ws.id, t.id); }}
+          onClose={() => requestCloseTab(ws.id, t.id)}
           renaming={renaming?.id === t.id ? renaming.value : null}
           onStartRename={() => setRenaming({ id: t.id, value: t.title })}
           onChangeRename={(v) => setRenaming(r => r ? { ...r, value: v } : r)}
           onCommitRename={commitRename}
           onCancelRename={() => setRenaming(null)}
+          dragging={dragId === t.id}
+          dragTx={dragId === t.id ? dragTx : 0}
+          onStartDrag={(e) => startDrag(t.id, e)}
         />
       ))}
 
@@ -219,13 +338,17 @@ function SplitToggle({ wsId }: { wsId: string }) {
   );
 }
 
-function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename }: {
+function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename, dragging, dragTx, onStartDrag }: {
   ws: Workspace; tab: Tab; active: boolean; onSelect: () => void; onClose: () => void;
   renaming: string | null;  // current draft value while renaming, else null
   onStartRename: () => void;
   onChangeRename: (v: string) => void;
   onCommitRename: () => void;
   onCancelRename: () => void;
+  // Drag-to-reorder wiring (issue #6) — pointer-based.
+  dragging: boolean;        // this pill is the one being dragged
+  dragTx: number;           // live translateX (px) while dragging, else 0
+  onStartDrag: (e: React.PointerEvent) => void;
 }) {
   const isUnread = !!tab.unread;
   // iTerm2-parity status indicator on the tab.
@@ -250,6 +373,10 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
 
   return (
     <div
+      data-tab-id={tab.id}
+      // Start a pointer-drag for reordering, except while renaming (so the
+      // inline input handles text selection / caret normally).
+      onPointerDown={(e) => { if (!isRenaming) onStartDrag(e); }}
       onClick={() => { if (!isRenaming) onSelect(); }}
       onDoubleClick={(e) => {
         e.stopPropagation();
@@ -271,13 +398,21 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
       // set down toward min-w before the strip scrolls. Net: the bar is
       // always sized to comfortably fit 3 tabs; min-w floors
       // readability, max-w caps a lone tab on a very wide bar.
-      style={{ flex: "0 1 calc((100% - 5rem) / 3)" }}
+      style={{
+        flex: "0 1 calc((100% - 5rem) / 3)",
+        // While dragging this pill rides the cursor via translateX and
+        // floats above its neighbours. z-index needs the inline value so
+        // it beats sibling stacking contexts.
+        ...(dragging ? { transform: `translateX(${dragTx}px)`, zIndex: 30 } : null),
+      }}
       className={cn(
         "group flex h-full self-stretch cursor-pointer items-center gap-1.5 px-3.5 text-[12.5px] transition-colors relative select-none border-r border-[var(--color-border-soft)]",
         "min-w-[140px] max-w-[260px]",
-        active
-          ? "bg-[var(--color-bg)] text-[var(--color-fg)]"
-          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+        dragging
+          ? "cursor-grabbing !transition-none bg-[var(--color-bg)] text-[var(--color-fg)] shadow-lg"
+          : active
+            ? "bg-[var(--color-bg)] text-[var(--color-fg)]"
+            : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       {/* Work-state badge moved to the trailing slot — see below. */}

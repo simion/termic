@@ -38,6 +38,12 @@ export interface Project {
    *  are worktrees of the host with each member worktree'd or
    *  symlinked inside named subdirs. */
   type?: "single" | "multi";
+  /** True when `root_path` is NOT a git repo — a plain folder that may
+   *  group several independent repos (issue #4). Such a project only
+   *  spawns repo-root workspaces (agent runs at the folder; no worktree,
+   *  branch, or diff). For `type === "multi"` it means the HOST is a
+   *  plain folder. Missing/false = normal git-backed project. */
+  non_git?: boolean;
   /** Multi-repo members with their per-project script overrides.
    *  Each entry pins a member-project id + the scripts to run for
    *  that member when used INSIDE this multi-repo project. Empty
@@ -256,6 +262,17 @@ export interface DiscoveredRepo {
   path: string;
   name: string;
   already_added: boolean;
+}
+
+/** A git worktree of a project's repo that isn't yet tracked as a
+ *  termic workspace — offered for import (issue #5). */
+export interface ImportableWorktree {
+  path: string;
+  /** Short branch name, or "" for a detached HEAD. */
+  branch: string;
+  /** Abbreviated HEAD commit, display only. */
+  head: string;
+  locked: boolean;
 }
 
 export interface CliInfo {

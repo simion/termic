@@ -8,6 +8,7 @@ import { NewProjectDialog } from "./NewProjectDialog";
 import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
 import { CustomCommandDialog } from "./CustomCommandDialog";
 import { EditCommandDialog } from "./EditCommandDialog";
+import { ShortcutsHelpDialog } from "./ShortcutsHelpDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
 import { ChangelogDialog } from "./ChangelogDialog";
 import { ReviewDialog } from "./ReviewDialog";
@@ -35,6 +36,7 @@ export function Dialogs() {
       <NewWorkspaceDialog />
       <CustomCommandDialog />
       <EditCommandDialog />
+      <ShortcutsHelpDialog />
       <WelcomeDialog />
       <ChangelogDialog />
       <ReviewDialog />

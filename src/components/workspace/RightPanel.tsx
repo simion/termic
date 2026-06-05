@@ -1104,9 +1104,14 @@ function ChangesView({ ws, changes, onOpenDiff, onDoubleClickDiff }: {
   }, [ws.id]);
 
   if (changes.count === 0) {
+    // Non-git folders (issue #4) have no working tree to diff — say so
+    // instead of implying a clean git status that doesn't exist.
+    const nonGit = useApp.getState().projects.find(p => p.id === ws.project_id)?.non_git;
     return (
       <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
-        No changes — working tree is clean.
+        {nonGit
+          ? "Not a git repository — changes aren't tracked here."
+          : "No changes — working tree is clean."}
       </div>
     );
   }
