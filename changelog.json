@@ -1,6 +1,19 @@
 {
   "versions": [
     {
+      "version": "0.8.2",
+      "date": "2026-06-05",
+      "summary": "Non-git projects, import existing worktrees, drag to reorder tabs, and a shortcuts cheat sheet.",
+      "notes": [
+        "New: non-git projects. Add a plain folder that is not a git repo (for example a parent directory holding several repos) and run agents at the folder root so one agent can see every repo under it. Works for multi-repo projects too: the shared knowledge host can now be a plain folder while each member repo still gets its own worktree.",
+        "New: import an existing worktree. The New workspace dialog now offers to adopt a git worktree that already exists on disk (created outside Termic, or whose entry was lost) instead of always branching a fresh one. It only appears when there is actually a worktree to import.",
+        "New: drag to reorder tabs. Grab a tab in the top strip and drag it; the tab follows your cursor and the others rearrange live.",
+        "New: a searchable keyboard shortcuts cheat sheet. Press Cmd+/ to open a read-only list of every shortcut, with an Edit button that jumps to Settings to rebind them.",
+        "Closing an agent tab now asks for confirmation first, so an accidental Cmd+W no longer ends a running session instantly. Plain terminal tabs still close immediately.",
+        "Desktop notifications now show the project and workspace name instead of the terminal name."
+      ]
+    },
+    {
       "version": "0.8.1",
       "date": "2026-06-04",
       "summary": "Spotlight: run any workspace from your repo root, safely. Plus big terminal upgrades.",
