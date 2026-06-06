@@ -21,8 +21,8 @@ type Mode = "side" | "unified";
 const LS_DIFF_MODE = "diffMode";
 
 function readMode(): Mode {
-  try { return (localStorage.getItem(LS_DIFF_MODE) as Mode) === "unified" ? "unified" : "side"; }
-  catch { return "side"; }
+  try { return (localStorage.getItem(LS_DIFF_MODE) as Mode) === "side" ? "side" : "unified"; }
+  catch { return "unified"; }
 }
 function writeMode(m: Mode) {
   try { localStorage.setItem(LS_DIFF_MODE, m); } catch {}

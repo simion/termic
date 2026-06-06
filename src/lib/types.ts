@@ -305,6 +305,38 @@ export interface Changes {
   groups?: ChangeGroup[];
 }
 
+// ── Fork-style staging (workspace_git_status) ──
+// Unlike ChangeFile, these keep the index column and worktree column
+// separate so the UI can render Staged vs Unstaged panes. Paths are
+// relative to their own repo (the frontend re-prefixes member paths with
+// `dir_name` only when opening a diff).
+export interface GitFile {
+  /** Single-char status for this side: M/A/D/R/C (staged), M/D
+   *  (unstaged), or "?" (untracked). */
+  status: string;
+  path: string;
+}
+
+export interface GitRepo {
+  name: string;
+  branch: string;
+  kind: "host" | "worktree" | "repo_root";
+  /** "" for the host repo, the member's dir_name otherwise. */
+  dir_name: string;
+  staged: GitFile[];
+  unstaged: GitFile[];
+  /** Unique changed-path count across both lists. */
+  changed: number;
+  /** `git log -1 --pretty=%B`, for Amend prefill. */
+  last_commit_message: string;
+}
+
+export interface GitStatus {
+  repos: GitRepo[];
+  total_changed: number;
+  repos_changed: number;
+}
+
 export interface FileEntry {
   name: string;
   is_dir: boolean;

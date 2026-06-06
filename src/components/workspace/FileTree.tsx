@@ -4,7 +4,7 @@
 // - Clicking a file opens/selects an edit tab in the workspace.
 // - Indentation reflects depth; chevrons rotate to indicate expansion state.
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { ChevronRight } from "lucide-react";
 import type { FileEntry } from "@/lib/types";
 import { workspaceDirList } from "@/lib/ipc";
@@ -12,9 +12,15 @@ import { useApp } from "@/store/app";
 import { cn } from "@/lib/utils";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
-interface Props { wsId: string; }
+interface Props {
+  wsId: string;
+  /** Bump to force a re-read from disk (e.g. the header refresh button).
+   *  Preserves the expanded folder set: root + every open dir is
+   *  re-fetched, the rest of the cache is dropped. */
+  reloadToken?: number;
+}
 
-export function FileTree({ wsId }: Props) {
+export function FileTree({ wsId, reloadToken = 0 }: Props) {
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   // Per-dir cache of children, keyed by rel-path ("" = root).
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
@@ -24,6 +30,12 @@ export function FileTree({ wsId }: Props) {
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
   const [err, setErr] = useState<string | null>(null);
 
+  // Mirror the expanded set in a ref so the reload effect can re-fetch
+  // currently-open dirs without depending on `expanded` (which would
+  // make it re-run on every expand/collapse).
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+
   // Load root on mount / wsId change. Reset everything else — different
   // workspace has a different file tree.
   useEffect(() => {
@@ -32,6 +44,26 @@ export function FileTree({ wsId }: Props) {
       .then(list => { setRootEntries(list); setChildren({ "": list }); })
       .catch(e => setErr(String(e)));
   }, [wsId]);
+
+  // Manual refresh: re-read root + every expanded dir from disk, keeping
+  // the expansion state. Skips the initial render (token starts at 0).
+  const firstRef = useRef(true);
+  useEffect(() => {
+    if (firstRef.current) { firstRef.current = false; return; }
+    let alive = true;
+    const toLoad = ["", ...Array.from(expandedRef.current)];
+    Promise.all(toLoad.map(rel =>
+      workspaceDirList(wsId, rel).then(list => [rel, list] as const).catch(() => [rel, null] as const),
+    )).then(results => {
+      if (!alive) return;
+      const next: Record<string, FileEntry[]> = {};
+      for (const [rel, list] of results) if (list) next[rel] = list;
+      setChildren(next);
+      setRootEntries(next[""] ?? []);
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
 
   const ensureLoaded = useCallback(async (rel: string) => {
     if (children[rel] || loading.has(rel)) return;

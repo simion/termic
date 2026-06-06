@@ -126,6 +126,15 @@ Interactive containers opt out with both `data-tauri-drag-region="false"` and `W
 
 `startDragging()` silently fails without `core:window:allow-start-dragging` in capabilities. Don't put `user-select: none` on the drag region (breaks WKWebView's drag detection); put it on inner text spans.
 
+## Keyboard shortcuts (configurable)
+
+Shortcuts are **user-rebindable**. `src/lib/shortcuts.ts` is the single source of truth: a `ShortcutId` union + `SHORTCUT_DEFS` (each has `id`, `label`, `group`, optional `hint`, `defaultBinding`). A `Binding` is `{ cmd, shift, alt, key }` where `cmd` folds **Cmd≡Ctrl** (the app fires the same command on every platform), `shift`/`alt` are their own flags, and `key` is a normalized token (lowercase letter, punctuation, `ArrowUp`…, or the `"1-9"` sentinel). **Adding a shortcut = a `ShortcutId` + a `SHORTCUT_DEFS` entry** (+ a `case` in `useShortcuts` for global ones); the help modal and settings editor are fully data-driven from `SHORTCUT_DEFS`, so they update automatically.
+
+- **Resolved bindings** live in the prefs store (`usePrefs(s => s.shortcuts)`): `DEFAULT_BINDINGS` merged with the user's localStorage overrides (merge-onto-defaults so new commands always have a binding). Mutate via `setShortcut` / `resetShortcut` / `resetAllShortcuts`.
+- **Global handler** (`src/hooks/useShortcuts.ts`): one window keydown listener matching events against the resolved bindings via `bindingMatches(e, binding)`. **Contextual** shortcuts (ones that need component state, e.g. acting on a panel's selection) are instead handled inside their component with a capture-phase listener that reads the resolved binding from prefs and `stopPropagation`s only when it actually claims the key — so a shared chord can mean different things by context (the settings "conflict" note on such a pair is expected, not a bug).
+- **Help modal** (`ShortcutsHelpDialog`, ⌘/ = `open-shortcuts`): read-only searchable cheat sheet grouped by `GROUP_ORDER`. Its **Edit** button closes it and jumps to Settings → Shortcuts (`ShortcutsSection`), which records a new combo per row via a capture-phase recorder, flags clashes (`bindingSignature`), and resets to factory.
+- **Glyph styling**: `bindingGlyphs(b)` returns ordered chips `["⌥","⇧","⌘", key]`; `keyGlyph` renders the key (`1…9`, arrows, uppercase letters, punctuation). The **help modal** shows the raw mac glyphs (⌘ ⌥ ⇧ ↑) for the compact look; the **settings editor** spells them out platform-aware via `glyphLabel` (Cmd/Ctrl, Option/Alt) since the bare symbols read like hieroglyphs. `IS_MAC` / `CMD_LABEL` / `ALT_LABEL` drive the labels. `isValidBinding` requires Cmd/Ctrl or Option so a binding can't swallow ordinary typing.
+
 ## React/Zustand bear traps
 
 1. Don't return new objects/arrays from selectors without memo. Use frozen constants for defaults; `find` results are stable while the array is.

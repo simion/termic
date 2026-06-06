@@ -3178,6 +3178,250 @@ fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
     Ok(WorkspaceChanges { count, files: host_files, groups })
 }
 
+// ─────────────────────────── git staging ───────────────────────────
+//
+// Fork-style staged/unstaged split + stage / unstage / commit. Unlike
+// `workspace_changes` (which collapses the two porcelain status columns
+// into one and prefixes member paths with `<dir_name>/`), these keep the
+// index column and the worktree column separate and return paths
+// *relative to their own repo* — staging needs the repo-relative path and
+// the repo's own cwd. The frontend re-prefixes with `dir_name` only when
+// it opens a member diff.
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GitFile {
+    /// Single-character status for this side: index status for staged
+    /// entries (M/A/D/R/C), worktree status for unstaged (M/D), or "?"
+    /// for untracked.
+    pub status: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GitRepo {
+    /// Display name: host = project name, member = its dir_name.
+    pub name: String,
+    pub branch: String,
+    /// "host" | "worktree" | "repo_root".
+    pub kind: String,
+    /// "" for the host repo, the member's dir_name otherwise. Routes
+    /// stage/unstage/commit to the right git cwd.
+    pub dir_name: String,
+    pub staged: Vec<GitFile>,
+    pub unstaged: Vec<GitFile>,
+    /// Unique changed-path count across both lists (a file that is both
+    /// staged and unstaged counts once). Drives the sub-tab pill badge.
+    pub changed: usize,
+    /// `git log -1 --pretty=%B` for the repo, so the frontend can
+    /// prefill the commit form when the user ticks Amend. Empty on an
+    /// unborn branch (no commits yet).
+    pub last_commit_message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Default)]
+pub struct GitStatus {
+    pub repos: Vec<GitRepo>,
+    /// Sum of every repo's `changed`. Drives the Git tab's total badge.
+    pub total_changed: usize,
+    /// Number of repos with at least one change. Drives the Git tab's
+    /// repos badge (only shown when > 1).
+    pub repos_changed: usize,
+}
+
+/// Split a `git status --porcelain` line into (optional staged, optional
+/// unstaged) entries. Porcelain format is `XY <path>` where X is the
+/// index column and Y the worktree column.
+fn parse_porcelain_line(line: &str) -> (Option<GitFile>, Option<GitFile>) {
+    if line.len() < 4 {
+        return (None, None);
+    }
+    let x = &line[0..1];
+    let y = &line[1..2];
+    let raw = &line[3..];
+    // Renames/copies render as "old -> new"; keep the new path (what's
+    // on disk + what `git add` expects).
+    let path = raw.rsplit(" -> ").next().unwrap_or(raw).to_string();
+
+    // Untracked: both columns are "?". Treat as a single unstaged add.
+    if x == "?" {
+        return (None, Some(GitFile { status: "?".into(), path }));
+    }
+
+    let staged = if x != " " {
+        Some(GitFile { status: x.into(), path: path.clone() })
+    } else {
+        None
+    };
+    let unstaged = if y != " " {
+        Some(GitFile { status: y.into(), path })
+    } else {
+        None
+    };
+    (staged, unstaged)
+}
+
+#[tauri::command]
+async fn workspace_git_status(id: String) -> Result<GitStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+
+        let branch_of = |p: &Path| -> String {
+            git(&["branch", "--show-current"], p).map(|s| s.trim().to_string()).unwrap_or_default()
+        };
+        let last_msg = |p: &Path| -> String {
+            git(&["log", "-1", "--pretty=%B"], p).map(|s| s.trim_end().to_string()).unwrap_or_default()
+        };
+        let build = |name: String, dir_name: String, kind: &str, p: &Path| -> GitRepo {
+            let out = git(&["status", "--porcelain"], p).unwrap_or_default();
+            let mut staged = Vec::new();
+            let mut unstaged = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for line in out.lines() {
+                let (s, u) = parse_porcelain_line(line);
+                if let Some(f) = &s { seen.insert(f.path.clone()); }
+                if let Some(f) = &u { seen.insert(f.path.clone()); }
+                if let Some(f) = s { staged.push(f); }
+                if let Some(f) = u { unstaged.push(f); }
+            }
+            GitRepo {
+                name, branch: branch_of(p), kind: kind.to_string(), dir_name,
+                changed: seen.len(),
+                last_commit_message: last_msg(p),
+                staged, unstaged,
+            }
+        };
+
+        let host_name = load_projects().into_iter()
+            .find(|p| p.id == w.project_id)
+            .map(|p| p.name)
+            .unwrap_or_else(|| w.name.clone());
+        let mut repos = vec![build(host_name, String::new(), "host", Path::new(&w.path))];
+
+        for m in &w.composition {
+            let member_path = Path::new(&m.path);
+            if !member_path.exists() { continue; }
+            let kind = match m.mode {
+                MemberMode::Worktree => "worktree",
+                MemberMode::RepoRoot => "repo_root",
+            };
+            repos.push(build(m.dir_name.clone(), m.dir_name.clone(), kind, member_path));
+        }
+
+        let total_changed = repos.iter().map(|r| r.changed).sum();
+        let repos_changed = repos.iter().filter(|r| r.changed > 0).count();
+        Ok(GitStatus { repos, total_changed, repos_changed })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Resolve the git cwd for a stage/commit op: the host workspace path
+/// when `dir_name` is empty, otherwise the matching composition member.
+fn repo_cwd(w: &Workspace, dir_name: &str) -> Result<PathBuf, String> {
+    if dir_name.is_empty() {
+        return Ok(PathBuf::from(&w.path));
+    }
+    w.composition.iter()
+        .find(|m| m.dir_name == dir_name)
+        .map(|m| PathBuf::from(&m.path))
+        .ok_or_else(|| format!("no member repo '{dir_name}'"))
+}
+
+#[tauri::command]
+async fn workspace_stage(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        if paths.is_empty() { return Ok(()); }
+        let mut args: Vec<&str> = vec!["add", "--"];
+        args.extend(paths.iter().map(|s| s.as_str()));
+        git(&args, &cwd).map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn workspace_unstage(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        if paths.is_empty() { return Ok(()); }
+        let mut args: Vec<&str> = vec!["reset", "-q", "HEAD", "--"];
+        args.extend(paths.iter().map(|s| s.as_str()));
+        git(&args, &cwd).map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn workspace_commit(
+    id: String, dir_name: String, subject: String, body: String, amend: bool, push: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+
+        let subject = subject.trim().to_string();
+        if subject.is_empty() {
+            return Err("commit subject is required".to_string());
+        }
+        let body = body.trim().to_string();
+
+        let mut args: Vec<&str> = vec!["commit"];
+        if amend { args.push("--amend"); }
+        args.push("-m"); args.push(&subject);
+        if !body.is_empty() { args.push("-m"); args.push(&body); }
+        git(&args, &cwd).map_err(|e| e.to_string())?;
+
+        if push {
+            // Try a plain push first (upstream already set). If it fails
+            // (most commonly: no upstream for a fresh worktree branch),
+            // fall back to `-u <remote> <branch>` to set it.
+            if git(&["push"], &cwd).is_err() {
+                let remote = detect_default_remote(&cwd);
+                let branch = git(&["branch", "--show-current"], &cwd)
+                    .map_err(|e| e.to_string())?.trim().to_string();
+                if branch.is_empty() {
+                    return Err("cannot push: detached HEAD".to_string());
+                }
+                git(&["push", "-u", &remote, &branch], &cwd).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Discard working-tree changes for the given paths in a repo. Tracked
+/// files are restored to HEAD (`git checkout HEAD -- <path>`, wiping both
+/// staged and unstaged edits); untracked files are deleted from disk.
+/// Destructive + irreversible — the frontend gates it behind a confirm.
+#[tauri::command]
+async fn workspace_discard(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        for p in &paths {
+            // `git ls-files --error-unmatch` exits non-zero for untracked
+            // (and ignored) paths — use it to branch restore vs delete.
+            let tracked = git(&["ls-files", "--error-unmatch", "--", p], &cwd).is_ok();
+            if tracked {
+                git(&["checkout", "HEAD", "--", p], &cwd).map_err(|e| e.to_string())?;
+            } else {
+                let abs = cwd.join(p);
+                if abs.is_dir() { let _ = fs::remove_dir_all(&abs); }
+                else { let _ = fs::remove_file(&abs); }
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Resolve a renderer-supplied path against a workspace root and verify the
 /// result is contained within it. Rejects absolute paths and `..` segments
 /// up front so attempts like `/etc/passwd` or `../../foo` fail loudly
@@ -5372,7 +5616,8 @@ pub fn run() {
             workspace_grep_start, workspace_grep_cancel,
             workspace_spotlight_start, workspace_spotlight_stop, workspace_spotlight_resync, workspace_spotlight_status,
             workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
-            workspace_changes, workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
+            workspace_changes, workspace_git_status, workspace_stage, workspace_unstage, workspace_commit, workspace_discard,
+            workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, home_dir, path_exists, log_line, pty_debug_append, terminal_stage_file,
