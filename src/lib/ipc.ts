@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Workspace, CreateWorkspaceArgs, CreateMultiArgs, Settings, DiscoveredRepo,
-  ImportableWorktree, CliInfo, ChangeFile, Changes, FileEntry, Agent, RepoConfig,
+  ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, FileEntry, Agent, RepoConfig,
 } from "./types";
 
 // ───────────────────────────── projects ─────────────────────────────
@@ -246,6 +246,16 @@ export const workspaceFileWrite = (id: string, path: string, content: string) =>
 export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
 export const workspaceDirList  = (id: string, rel: string) => invoke<FileEntry[]>("workspace_dir_list", { id, rel });
 export const workspaceChanges  = (id: string) => invoke<Changes>("workspace_changes", { id });
+// Fork-style staging: staged/unstaged split per repo + stage/unstage/commit.
+export const workspaceGitStatus = (id: string) => invoke<GitStatus>("workspace_git_status", { id });
+export const workspaceStage   = (id: string, dirName: string, paths: string[]) =>
+  invoke<void>("workspace_stage", { id, dirName, paths });
+export const workspaceUnstage = (id: string, dirName: string, paths: string[]) =>
+  invoke<void>("workspace_unstage", { id, dirName, paths });
+export const workspaceCommit  = (id: string, dirName: string, subject: string, body: string, amend: boolean, push: boolean) =>
+  invoke<void>("workspace_commit", { id, dirName, subject, body, amend, push });
+export const workspaceDiscard = (id: string, dirName: string, paths: string[]) =>
+  invoke<void>("workspace_discard", { id, dirName, paths });
 export const workspaceRunScript= (id: string, which: "setup" | "run" = "run") =>
   invoke<string>("workspace_run_script", { id, which });
 /** Kick off a streaming run. Subscribe to:

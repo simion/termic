@@ -42,9 +42,11 @@ export type ShortcutId =
   | "open-shortcuts"
   | "file-finder"
   | "find-in-files"
-  | "broadcast";
+  | "broadcast"
+  | "stage-file"
+  | "discard-file";
 
-export type ShortcutGroup = "Navigation" | "Tabs" | "Terminal" | "General";
+export type ShortcutGroup = "Navigation" | "Tabs" | "Terminal" | "Git" | "General";
 
 export interface ShortcutDef {
   id: ShortcutId;
@@ -113,9 +115,21 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("f", { cmd: true, shift: true }) },
   { id: "broadcast", group: "General", label: "Broadcast to agents",
     defaultBinding: B("b", { cmd: true, shift: true }) },
+
+  // Git — contextual: these act on the file selected in the Git panel and
+  // are handled there (GitPanel), not the global handler. The discard
+  // binding deliberately shares ⇧⌘D with the bottom-split terminal; the
+  // Git panel only claims it while a file is selected, so the settings
+  // "conflict" note is expected.
+  { id: "stage-file", group: "Git", label: "Stage / unstage selected file",
+    hint: "Toggles the Git panel's selected file in or out of staging",
+    defaultBinding: B("s", { cmd: true }) },
+  { id: "discard-file", group: "Git", label: "Discard selected file",
+    hint: "Restores the selected file to HEAD after a confirm",
+    defaultBinding: B("d", { cmd: true, shift: true }) },
 ];
 
-export const GROUP_ORDER: ShortcutGroup[] = ["Navigation", "Tabs", "Terminal", "General"];
+export const GROUP_ORDER: ShortcutGroup[] = ["Navigation", "Tabs", "Terminal", "Git", "General"];
 
 export type BindingMap = Record<ShortcutId, Binding>;
 

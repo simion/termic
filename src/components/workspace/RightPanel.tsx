@@ -1,29 +1,27 @@
-// Right panel: tab between All Files (filesystem list) and Changes (git status).
-// Click a file → opens an Editor tab in the main area. Click a change → diff tab.
+// Right panel: tab between All Files (filesystem list) and Git (Fork-style
+// staging). Click a file → opens an Editor tab in the main area. Click a
+// change → diff tab.
 
 import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useApp, useActiveWorkspace } from "@/store/app";
 import { useUI } from "@/store/ui";
 import {
-  workspaceChanges, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad,
+  workspaceGitStatus, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad,
   workspaceSpotlightStop, workspaceSpotlightResync,
 } from "@/lib/ipc";
 import { startSpotlight } from "@/lib/spotlight";
-import type { Changes, Workspace, WorkspaceMember, Project } from "@/lib/types";
+import type { GitStatus, Workspace, WorkspaceMember, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Play, ChevronDown, ChevronUp, ChevronRight, TerminalSquare, Square, Globe, X, Plus, GitBranch, Link2, Wrench, Copy, Check, Settings, AudioWaveform, RefreshCw } from "lucide-react";
+import { Play, ChevronDown, ChevronUp, Square, Globe, X, AudioWaveform, RefreshCw, Wrench, Copy, Check, Settings } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { AuxTerminal } from "./AuxTerminal";
 import { FileTree } from "./FileTree";
+import { GitPanel } from "./GitPanel";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useScriptRuns, useRunState, type RunStatus } from "@/store/scriptRuns";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
-
-const STATUS_LABEL: Record<string, string> = { M: "modified", A: "added", D: "deleted", R: "renamed", "??": "untracked", "!!": "ignored", U: "conflict" };
-const STATUS_COLOR: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", "??": "var(--color-ok)", U: "var(--color-err)" };
-const STATUS_CHAR: Record<string, string> = { M: "M", A: "+", "??": "+", D: "D", R: "R", U: "U", "!!": "!" };
 
 type FootTab = "setup" | "run" | "term" | "spotlight";
 
@@ -38,7 +36,11 @@ export function RightPanel() {
   const split = useApp(s => !!s.terminalSplit[ws?.id ?? ""]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
   const [view, setView] = useState<"files" | "changes">("files");
-  const [changes, setChanges] = useState<Changes>({ files: [], count: 0 });
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  // Bumped by the header refresh button to force the FileTree to re-read
+  // from disk. The Git side re-fetches via refreshGit() in the same click.
+  const [fileTreeReload, setFileTreeReload] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   // Multi-repo workspaces add a Target selector to the footer so
   // Setup/Run can target a composition member. Stored as the
   // member's dir_name. Single-repo workspaces keep this empty
@@ -70,14 +72,32 @@ export function RightPanel() {
   const setFootHeight     = useApp(s => s.setRightFooterHeight);
   const asideRef = useRef<HTMLElement>(null);
 
-  useEffect(() => {
+  // Poll git status (staged/unstaged split) for the Git tab badges + panel.
+  // The fetch is reused by GitPanel via the `refreshGit` callback so a
+  // stage/unstage/commit reflects immediately instead of waiting for the
+  // 4s tick.
+  const refreshGit = React.useCallback(() => {
     if (!ws) return;
-    workspaceChanges(ws.id).then(setChanges).catch(() => setChanges({ files: [], count: 0 }));
+    workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
+  }, [ws?.id]);
+  useEffect(() => {
+    if (!ws) { setGitStatus(null); return; }
+    setGitStatus(null);
+    workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
     const id = window.setInterval(() => {
-      workspaceChanges(ws.id).then(setChanges).catch(() => {});
+      workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
     }, 4000);
     return () => window.clearInterval(id);
   }, [ws]);
+
+  // Header refresh button: re-read both the file tree and git status. The
+  // brief `refreshing` flag spins the icon for feedback.
+  const doRefresh = () => {
+    refreshGit();
+    setFileTreeReload(n => n + 1);
+    setRefreshing(true);
+    window.setTimeout(() => setRefreshing(false), 600);
+  };
 
   // Subscribe to streaming output for BOTH setup and run kinds on the active
   // workspace. We want output to keep flowing even when the user switches
@@ -308,18 +328,32 @@ export function RightPanel() {
       />
       <header className="flex h-10 shrink-0 items-center gap-1 px-2.5">
         <RTab label="All files" active={view === "files"} onClick={() => setView("files")} />
-        <RTab label="Changes" active={view === "changes"} onClick={() => setView("changes")}
-          badge={changes.count > 0 ? changes.count : undefined} />
+        <RTab label="Git" active={view === "changes"} onClick={() => setView("changes")}
+          badge={(gitStatus?.total_changed ?? 0) > 0 ? gitStatus!.total_changed : undefined}
+          repoBadge={(gitStatus?.repos_changed ?? 0) > 1 ? gitStatus!.repos_changed : undefined} />
+        <Tip content="Refresh files and git status" side="bottom">
+          <button
+            onClick={doRefresh}
+            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+          </button>
+        </Tip>
       </header>
 
-      {/* Files / Changes — flexible, takes whatever's left after the footer */}
-      <div className="min-h-0 flex-1 overflow-auto py-1">
-        {view === "files" && <FileTree wsId={ws.id} />}
-
-        {view === "changes" && (
-          <ChangesView
+      {/* Files / Git — flexible, takes whatever's left after the footer.
+          Files scrolls inside this wrapper; Git manages its own panes +
+          scrolling so it gets the bare flex-1 height with no overflow. */}
+      {view === "files" ? (
+        <div className="min-h-0 flex-1 overflow-auto py-1">
+          <FileTree wsId={ws.id} reloadToken={fileTreeReload} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1">
+          <GitPanel
             ws={ws}
-            changes={changes}
+            status={gitStatus}
+            refresh={refreshGit}
             onOpenDiff={(path) => useApp.getState().openPreviewTab(ws.id, { type: "diff", path, title: `Δ ${path.split("/").pop()}` })}
             onDoubleClickDiff={(path) => {
               const currentTabs = useApp.getState().tabs[ws.id] || [];
@@ -329,8 +363,8 @@ export function RightPanel() {
               }
             }}
           />
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Footer: Setup / Run / Terminal tabs + Run action. Collapsible.
           Height is store-backed + drag-resizable from the top edge. */}
@@ -1048,7 +1082,7 @@ function ScriptStream({ wsId, kind, run, hasScript, dismissKey, onStart, onConfi
 // = plain dim text, hover = soft hover. Count appears as plain faint
 // text alongside the label (no accent-colored badge pill) so a "0"
 // reads as informational rather than urgent.
-function RTab({ label, active, badge, onClick }: { label: string; active: boolean; badge?: number; onClick: () => void }) {
+function RTab({ label, active, badge, repoBadge, onClick }: { label: string; active: boolean; badge?: number; repoBadge?: number; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -1060,155 +1094,25 @@ function RTab({ label, active, badge, onClick }: { label: string; active: boolea
       )}
     >
       {label}
+      {/* Repos-changed badge (green) — only when more than one repo has
+          changes. Sits before the total so it reads "N repos, M files". */}
+      {repoBadge !== undefined && (
+        <span
+          title={`${repoBadge} repos changed`}
+          className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-ok)] px-1.5 text-[11px] font-semibold leading-none text-black tabular-nums"
+        >
+          {repoBadge}
+        </span>
+      )}
+      {/* Total changed files (accent). */}
       {badge !== undefined && (
-        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-accent)] px-1.5 text-[11px] font-semibold leading-none text-white tabular-nums">
+        <span
+          title={`${badge} files changed`}
+          className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-accent)] px-1.5 text-[11px] font-semibold leading-none text-white tabular-nums"
+        >
           {badge}
         </span>
       )}
-    </button>
-  );
-}
-
-/** Changes view. For single-repo workspaces the file list is flat
- *  (one host group). For multi-repo workspaces it splits into
- *  collapsible per-repo sections — host first, then each composition
- *  member with the branch shown next to the dir name. Files inside a
- *  repo_root group are non-clickable (their canonical path resolves
- *  outside the wrapper and the safe_workspace_path check rejects
- *  them, so opening would fail with a confusing error). */
-function ChangesView({ ws, changes, onOpenDiff, onDoubleClickDiff }: {
-  ws: Workspace;
-  changes: Changes;
-  onOpenDiff: (path: string) => void;
-  onDoubleClickDiff: (path: string) => void;
-}) {
-  const groups = changes.groups ?? [];
-  // Single-repo workspaces look exactly like before: flat list, no
-  // section header. We detect that by group count + the single group
-  // being the host, and fall back to the legacy renderer.
-  const isMulti = groups.length > 1;
-
-  // Per-group collapse state — host expanded by default, members
-  // expanded only when they have changes. Re-derives on changes object
-  // identity so a workspace switch starts fresh.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  useEffect(() => {
-    const next: Record<string, boolean> = {};
-    for (const g of groups) {
-      // Collapse empty-by-default for tidy first impression; expand
-      // groups with changes so the user lands looking at actual files.
-      next[g.name] = g.files.length === 0;
-    }
-    setCollapsed(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws.id]);
-
-  if (changes.count === 0) {
-    // Non-git folders (issue #4) have no working tree to diff — say so
-    // instead of implying a clean git status that doesn't exist.
-    const nonGit = useApp.getState().projects.find(p => p.id === ws.project_id)?.non_git;
-    return (
-      <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
-        {nonGit
-          ? "Not a git repository — changes aren't tracked here."
-          : "No changes — working tree is clean."}
-      </div>
-    );
-  }
-
-  if (!isMulti) {
-    // Legacy flat list path (single-repo, repo-root, or empty
-    // composition). Files are top-level since `groups` may be missing
-    // from older backends; fall back to `changes.files` if so.
-    const flat = groups[0]?.files ?? changes.files;
-    return (
-      <div className="flex flex-col">
-        {flat.map(f => <ChangeRow key={f.path} file={f} onOpen={onOpenDiff} onDoubleClick={onDoubleClickDiff} clickable />)}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col">
-      {groups.map(g => {
-        const isCollapsed = collapsed[g.name] ?? false;
-        // Members in repo_root mode point at the live checkout. Their
-        // files canonicalize outside the wrapper, so we disable the
-        // diff click (it would fail safe_workspace_path) and add a
-        // "live" badge so the user knows.
-        const clickable = g.kind !== "repo_root";
-        const KindIcon = g.kind === "repo_root" ? Link2 : GitBranch;
-        return (
-          <div key={g.name} className="flex flex-col">
-            <button
-              type="button"
-              onClick={() => setCollapsed(prev => ({ ...prev, [g.name]: !prev[g.name] }))}
-              className="flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-medium uppercase tracking-[0.06em] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-            >
-              {isCollapsed
-                ? <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
-                : <ChevronDown  className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />}
-              <span className="flex-1 truncate">{g.name}</span>
-              {g.branch && (
-                <span className="flex items-center gap-1 font-mono text-[11px] normal-case text-[var(--color-fg-faint)]">
-                  <KindIcon className="h-3 w-3" /> {g.branch}
-                </span>
-              )}
-              {g.kind === "repo_root" && (
-                <span className="rounded bg-[var(--color-warn)]/15 px-1.5 text-[10px] uppercase tracking-wider text-[var(--color-warn)]">live</span>
-              )}
-              <span className="tabular-nums text-[11px] text-[var(--color-fg-faint)]">{g.files.length}</span>
-            </button>
-            {!isCollapsed && g.files.length > 0 && (
-              <div className="flex flex-col pb-1">
-                {g.files.map(f => (
-                  <ChangeRow
-                    key={f.path}
-                    file={f}
-                    onOpen={onOpenDiff}
-                    onDoubleClick={onDoubleClickDiff}
-                    clickable={clickable}
-                  />
-                ))}
-              </div>
-            )}
-            {!isCollapsed && g.files.length === 0 && (
-              <div className="px-8 pb-1 text-[12px] text-[var(--color-fg-faint)]">clean</div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ChangeRow({ file, onOpen, onDoubleClick, clickable }: {
-  file: { status: string; path: string };
-  onOpen: (p: string) => void;
-  onDoubleClick: (p: string) => void;
-  clickable: boolean;
-}) {
-  const key = file.status.length > 1 ? file.status : file.status.trim() || "M";
-  return (
-    <button
-      type="button"
-      disabled={!clickable}
-      className={cn(
-        "flex items-center gap-2 px-3 py-1 text-left text-[13.5px] text-[var(--color-fg-dim)]",
-        clickable
-          ? "hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] cursor-pointer"
-          : "cursor-default opacity-75",
-      )}
-      title={clickable
-        ? `${STATUS_LABEL[key] || key}: ${file.path}`
-        : `${STATUS_LABEL[key] || key}: ${file.path} — open via terminal (live checkout, no in-app diff)`
-      }
-      onClick={() => clickable && onOpen(file.path)}
-      onDoubleClick={() => clickable && onDoubleClick(file.path)}
-    >
-      <span className="inline-flex h-4 min-w-[18px] items-center justify-center rounded px-1 text-[11.5px] font-semibold text-black"
-            style={{ background: STATUS_COLOR[key] || "var(--color-fg-dim)" }}>{STATUS_CHAR[key] || key}</span>
-      <span className="truncate font-mono text-[12.5px]">{file.path}</span>
     </button>
   );
 }
