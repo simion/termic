@@ -1,6 +1,22 @@
 {
   "versions": [
     {
+      "version": "0.9.0",
+      "date": "2026-06-06",
+      "summary": "A Fork-style Git panel: stage, unstage, and commit without leaving Termic.",
+      "notes": [
+        "New: the right panel's Changes tab is now a full Git staging area. It splits into resizable Unstaged and Staged panes so you can stage exactly what you want and commit it, without dropping to a terminal or a separate Git client.",
+        "Stage or unstage a file by clicking the arrow on its row, double-clicking it, or using Stage all / Unstage all in each pane's header. In tree view, hovering a folder stages or unstages everything under it at once. After staging a single file it stays selected in its new pane, so you keep your place.",
+        "Three ways to view the file lists: a collapsible Tree (the default), a Combined list grouped by directory, and a flat List of full paths. There's a filter box and a Hide untracked files toggle.",
+        "Click a file to select it: the row stays highlighted and its diff against HEAD opens in the main area, so selecting and reviewing are one gesture.",
+        "Commit form at the bottom: a subject, an optional description, and a split button that does Commit or Commit and Push (it remembers your choice). The first push of a new worktree branch sets its upstream for you.",
+        "Discard a file's changes with Shift+Cmd+D (it asks first): tracked files are restored to HEAD, untracked files are removed.",
+        "Multi-repo workspaces get a row of wrapping sub-tab pills, one per repository with changes, each badged with its own file count. Selecting a pill switches the whole staging area, including the commit form, to that repo.",
+        "New shortcuts, both rebindable in Settings, Shortcuts: Cmd+S stages or unstages the selected file, Shift+Cmd+D discards it. A header refresh button reloads the file tree and Git status on demand.",
+        "The diff viewer now opens in unified layout by default; side-by-side is still one click away and your choice sticks."
+      ]
+    },
+    {
       "version": "0.8.2",
       "date": "2026-06-05",
       "summary": "Non-git projects, import existing worktrees, drag to reorder tabs, and a shortcuts cheat sheet.",
