@@ -1681,6 +1681,11 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
   const allowScope = usePrefs(s => s.allowScope);
   const setAllowScope = usePrefs(s => s.setAllowScope);
   const scopeChosen = allowScope !== null;
+  // Once a scope is set, the 3-row radio collapses to a single row to save
+  // space; click it to expand and change. Until one is chosen it stays open
+  // (the choice is mandatory before any Allow button works).
+  const [scopeEditing, setScopeEditing] = useState(false);
+  const scopeExpanded = !scopeChosen || scopeEditing;
   // Workspace dirs to optionally hide from the activity log — the agent
   // touches them constantly and they're always allowed anyway, so they're
   // pure noise. Default ON. Primitive selectors keep the snapshot stable.
@@ -1857,41 +1862,58 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
             "mb-2 rounded-md border px-2 py-1.5",
             scopeChosen ? "border-[var(--color-border-soft)]" : "border-[var(--color-warn)]/60",
           )}>
-            <div className={cn(
-              "mb-1 flex items-center gap-1.5 text-[11px]",
-              scopeChosen ? "text-[var(--color-fg-faint)]" : "font-medium text-[var(--color-warn)]",
-            )}>
-              <span>{scopeChosen ? "Save allowed paths + domains to:" : "Pick where to save allowed paths + domains:"}</span>
-            </div>
-            {/* Radio list — one per line with a short explanation.
-                Clickable any time to switch the (persisted) default. */}
-            <div className="flex flex-col gap-0.5">
-              {SCOPES.map(s => {
-                const active = allowScope === s.id;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => setAllowScope(s.id)}
-                    className={cn(
-                      "flex items-center gap-2 rounded px-1.5 py-1 text-left transition-colors",
-                      active ? "bg-[var(--color-accent)]/10" : "hover:bg-[var(--color-hover)]",
-                    )}
-                  >
-                    <span className={cn(
-                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
-                      active ? "border-[var(--color-accent)]" : "border-[var(--color-border)]",
-                    )}>
-                      {active && <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />}
-                    </span>
-                    <span className="flex min-w-0 items-baseline gap-1.5">
-                      <span className={cn("shrink-0 text-[12px] font-medium", active ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]")}>{s.label}</span>
-                      <span className="truncate text-[11px] text-[var(--color-fg-faint)]">{s.hint}</span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            {scopeExpanded ? (<>
+              <div className={cn(
+                "mb-1 flex items-center gap-1.5 text-[11px]",
+                scopeChosen ? "text-[var(--color-fg-faint)]" : "font-medium text-[var(--color-warn)]",
+              )}>
+                <span>{scopeChosen ? "Save allowed paths + domains to:" : "Pick where to save allowed paths + domains:"}</span>
+              </div>
+              {/* Radio list — one per line with a short explanation.
+                  Picking a scope collapses this back to the summary row. */}
+              <div className="flex flex-col gap-0.5">
+                {SCOPES.map(s => {
+                  const active = allowScope === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => { setAllowScope(s.id); setScopeEditing(false); }}
+                      className={cn(
+                        "flex items-center gap-2 rounded px-1.5 py-1 text-left transition-colors",
+                        active ? "bg-[var(--color-accent)]/10" : "hover:bg-[var(--color-hover)]",
+                      )}
+                    >
+                      <span className={cn(
+                        "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
+                        active ? "border-[var(--color-accent)]" : "border-[var(--color-border)]",
+                      )}>
+                        {active && <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />}
+                      </span>
+                      <span className="flex min-w-0 items-baseline gap-1.5">
+                        <span className={cn("shrink-0 text-[12px] font-medium", active ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]")}>{s.label}</span>
+                        <span className="truncate text-[11px] text-[var(--color-fg-faint)]">{s.hint}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>) : (
+              /* Collapsed summary: one row with the chosen scope; click to change. */
+              <button
+                type="button"
+                onClick={() => setScopeEditing(true)}
+                className="flex w-full items-center gap-1.5 rounded text-left text-[11px] text-[var(--color-fg-faint)] transition-colors hover:text-[var(--color-fg-dim)]"
+                title="Change where allowed paths and domains are saved"
+              >
+                <span>Saving to</span>
+                <span className="font-medium text-[var(--color-fg-dim)]">{SCOPES.find(s => s.id === allowScope)?.label}</span>
+                <span className="ml-auto inline-flex items-center gap-0.5 text-[var(--color-fg-faint)]">
+                  Change
+                  <ChevronDown className="h-3 w-3" />
+                </span>
+              </button>
+            )}
           </div>
           {monitor && (
             <MonitorActivity
