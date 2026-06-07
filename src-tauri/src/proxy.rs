@@ -133,6 +133,74 @@ pub fn clear_network_denies(ws_id: &str) {
     }
 }
 
+// ─── Monitoring mode: record EVERY network request (allowed + would-be-
+//     blocked) and forward it anyway. Backs the sandbox activity popover
+//     for workspaces in MONITORING mode. Separate tracker from the deny
+//     one so ENFORCING workspaces keep their existing "blocked only"
+//     surface untouched.
+#[derive(Clone)]
+pub struct NetAccessEntry {
+    pub host: String,
+    pub port: u16,
+    pub count: u64,
+    pub last_seen_unix_ms: u128,
+    /// True iff this host would have been blocked under ENFORCING mode
+    /// (i.e. it's not on the allowlist). Lets the popover flag which
+    /// requests the user should whitelist before flipping to enforce.
+    pub would_block: bool,
+}
+
+static ACCESS_TRACKER: OnceLock<Mutex<HashMap<String, HashMap<String, NetAccessEntry>>>> = OnceLock::new();
+
+fn access_tracker() -> &'static Mutex<HashMap<String, HashMap<String, NetAccessEntry>>> {
+    ACCESS_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn incr_network_access(ws_id: &str, host: &str, port: u16, would_block: bool) {
+    if ws_id.is_empty() || host.is_empty() { return; }
+    if let Ok(mut g) = access_tracker().lock() {
+        let per_ws = g.entry(ws_id.to_string()).or_insert_with(HashMap::new);
+        // Key by host:port so the same host on different ports (e.g. 443
+        // allowed vs 8080 would-block) stays as distinct rows instead of
+        // collapsing into one whose port/would_block is last-write-wins.
+        let key = format!("{host}:{port}");
+        let entry = per_ws.entry(key).or_insert(NetAccessEntry {
+            host: host.to_string(),
+            port,
+            count: 0,
+            last_seen_unix_ms: 0,
+            would_block,
+        });
+        entry.count += 1;
+        entry.port = port;
+        entry.last_seen_unix_ms = now_unix_ms();
+        entry.would_block = would_block;
+    }
+}
+
+pub fn network_access_count(ws_id: &str) -> u64 {
+    access_tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().map(|e| e.count).sum()))
+        .unwrap_or(0)
+}
+
+pub fn network_access_list(ws_id: &str) -> Vec<NetAccessEntry> {
+    let mut out: Vec<NetAccessEntry> = access_tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().cloned().collect()))
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
+    out
+}
+
+pub fn clear_network_access(ws_id: &str) {
+    if ws_id.is_empty() { return; }
+    if let Ok(mut g) = access_tracker().lock() {
+        if let Some(per_ws) = g.get_mut(ws_id) {
+            per_ws.clear();
+        }
+    }
+}
+
 impl Drop for ProxyHandle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
@@ -150,7 +218,7 @@ impl Drop for ProxyHandle {
 /// allowed_hosts config); patterns are tried in order, first match wins.
 /// `ws_id` is stored so denies can be attributed to the owning
 /// workspace (drives the footer-chip counter via `network_deny_count`).
-pub fn start(allowed_patterns: Vec<String>, ws_id: String) -> Result<ProxyHandle> {
+pub fn start(allowed_patterns: Vec<String>, ws_id: String, monitor: bool) -> Result<ProxyHandle> {
     // Compile up front so a bad regex fails the workspace spawn cleanly
     // rather than silently 403-ing every request.
     let regexes: Vec<Regex> = allowed_patterns
@@ -189,7 +257,7 @@ pub fn start(allowed_patterns: Vec<String>, ws_id: String) -> Result<ProxyHandle
                     // wasteful but keeps the code obvious and the
                     // per-PTY connection count low.
                     thread::spawn(move || {
-                        if let Err(e) = handle_connection(stream, &regexes, &ws_id) {
+                        if let Err(e) = handle_connection(stream, &regexes, &ws_id, monitor) {
                             // Log only - we never want a malformed
                             // request to take down the proxy.
                             eprintln!("[proxy] connection error: {e}");
@@ -214,7 +282,7 @@ pub fn start(allowed_patterns: Vec<String>, ws_id: String) -> Result<ProxyHandle
 
 // ─── connection handler ──────────────────────────────────────────────
 
-fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str) -> Result<()> {
+fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str, monitor: bool) -> Result<()> {
     // Bound how long we wait for the client's request headers so a
     // half-open connection can't pin a thread forever.
     stream.set_read_timeout(Some(Duration::from_millis(READ_HEADER_TIMEOUT_MS)))?;
@@ -227,9 +295,9 @@ fn handle_connection(mut stream: TcpStream, regexes: &[Regex], ws_id: &str) -> R
     let _version = parts.next().unwrap_or("");
 
     if method == "CONNECT" {
-        handle_connect(stream, target, regexes, ws_id)
+        handle_connect(stream, target, regexes, ws_id, monitor)
     } else {
-        handle_plain_http(stream, &method, target, &headers, &leftover, regexes, ws_id)
+        handle_plain_http(stream, &method, target, &headers, &leftover, regexes, ws_id, monitor)
     }
 }
 
@@ -267,7 +335,7 @@ fn find_double_crlf(buf: &[u8]) -> Option<usize> {
 
 // ─── CONNECT (HTTPS tunneling) ───────────────────────────────────────
 
-fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id: &str) -> Result<()> {
+fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id: &str, monitor: bool) -> Result<()> {
     // CONNECT target is "host:port".
     let (host, port_str) = match target.rsplit_once(':') {
         Some(t) => t,
@@ -284,7 +352,16 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
         }
     };
 
-    if !host_allowed(host, regexes) {
+    let allowed = host_allowed(host, regexes);
+    // MONITORING mode: record every request (with a would-block flag)
+    // and forward it regardless. Never 403 — the whole point is to
+    // observe what the agent reaches without breaking it.
+    if monitor {
+        incr_network_access(ws_id, host, port, !allowed);
+        if !allowed {
+            dlog(&format!("[proxy] CONNECT {host}:{port} → MONITOR (would-block, forwarded) ws={ws_id}"));
+        }
+    } else if !allowed {
         incr_network_deny(ws_id, host);
         dlog(&format!("[proxy] CONNECT {host}:{port} → 403 (not on allowlist) ws={ws_id}"));
         // 403 with a self-identifying reason phrase + body + custom
@@ -371,6 +448,7 @@ fn handle_plain_http(
     leftover: &[u8],
     regexes: &[Regex],
     ws_id: &str,
+    monitor: bool,
 ) -> Result<()> {
     // Plain HTTP target is "http://host[:port]/path?query".
     if !target.to_ascii_lowercase().starts_with("http://") {
@@ -387,7 +465,14 @@ fn handle_plain_http(
         None => (host_port, 80),
     };
 
-    if !host_allowed(host, regexes) {
+    let allowed = host_allowed(host, regexes);
+    if monitor {
+        // MONITORING: log + forward, never block (see handle_connect).
+        incr_network_access(ws_id, host, port, !allowed);
+        if !allowed {
+            dlog(&format!("[proxy] HTTP {method} {host}:{port} → MONITOR (would-block, forwarded) ws={ws_id}"));
+        }
+    } else if !allowed {
         // Same self-identifying 403 as the CONNECT path so plain-HTTP
         // clients (older code, agents that haven't moved to HTTPS for
         // a given target) see the Termic-specific signal too.

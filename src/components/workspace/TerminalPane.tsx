@@ -3,7 +3,7 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, X } from "lucide-react";
+import { RotateCcw, Shield, Eye, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X } from "lucide-react";
 import * as Popover from "@radix-ui/react-popover";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -16,10 +16,11 @@ import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
-import { IS_MAC } from "@/lib/shortcuts";
+import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { sendMessageToPty } from "@/lib/agentSend";
-import type { TerminalTab, Workspace } from "@/lib/types";
+import type { TerminalTab, Workspace, SandboxMode } from "@/lib/types";
+import { effectiveSandboxMode } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession } from "@/lib/agents";
@@ -363,7 +364,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // sandbox would deny is still readable. ws.sandbox_enabled is read lazily.
     const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current, {
       wsId: ws.id,
-      sandboxed: () => !!ws.sandbox_enabled,
+      // Only ENFORCING actually denies reads; MONITORING allows
+      // everything (just logs), so no need to stage dropped files there.
+      sandboxed: () => effectiveSandboxMode(ws) === "enforce",
     });
 
     // Shift+Enter → newline-without-submit.
@@ -380,13 +383,29 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // ESC+CR (`\x1b\r`, the old Option+Enter convention) was tried
     // first but recent claude builds no longer recognize it — they
     // require the explicit backslash-Enter pair.
+    // Global app shortcuts that must still work while the terminal has
+    // focus. xterm would otherwise swallow the keys (send them to the PTY
+    // and preventDefault), so the window-level handler never fires. We
+    // return false for these → xterm ignores the event → it bubbles up to
+    // useShortcuts, which dispatches the command. Read from resolved prefs
+    // so user rebinds are honored.
+    const PASS_TO_APP: ShortcutId[] = [
+      "file-finder", "find-in-files", "broadcast", "open-shortcuts", "open-settings",
+    ];
     term.attachCustomKeyEventHandler((e) => {
-      // Open the in-terminal search overlay. ⌘F on macOS; Ctrl+Shift+F
+      if (e.type === "keydown") {
+        const binds = usePrefs.getState().shortcuts;
+        if (PASS_TO_APP.some(id => bindingMatches(e, binds[id]))) {
+          return false; // let the global handler take it (file finder, find-in-files, …)
+        }
+      }
+      // Open the in-terminal search overlay. ⌘F on macOS (EXACTLY ⌘F — no
+      // Shift, so ⇧⌘F stays the app's find-in-files); Ctrl+Shift+F
       // elsewhere — plain Ctrl+F is readline's forward-char, so hijacking it
       // would break the shell on Linux/Windows.
       const searchOpenCombo = IS_MAC
-        ? e.metaKey && e.key.toLowerCase() === "f"
-        : e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f";
+        ? e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === "f"
+        : e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "f";
       if (e.type === "keydown" && searchOpenCombo) {
         setSearchOpen(true);
         e.preventDefault();
@@ -939,7 +958,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // permission-prompt scaffolding is just friction. The user pref
           // still wins when sandbox is off, and the wizard / sandbox dialog
           // spell this out so nobody is surprised.
-          yolo: usePrefs.getState().yoloMode || !!ws.sandbox_enabled,
+          // Per-workspace YOLO flag, OR auto-on when ENFORCING (there the
+          // seatbelt is the real boundary, so the agent's own prompts are
+          // friction). In Off/Monitoring it's purely the saved per-
+          // workspace flag — no silent auto-approve in an uncaged ws.
+          yolo: effectiveSandboxMode(ws) === "enforce" || !!ws.yolo,
           resume: shouldResume,
           isPrimary: isPrimaryTab,
           sessionUuid,
@@ -1349,13 +1372,32 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // YOLO live toggle — for agents that support runtime mode switching (only
   // gemini today), send the appropriate slash command. For claude/codex this
   // is a no-op; the next spawn picks up the new flag.
-  const yoloMode = usePrefs(s => s.yoloMode);
+  const effYolo = effectiveSandboxMode(ws) === "enforce" || !!ws.yolo;
+  const enforced = effectiveSandboxMode(ws) === "enforce";
   const firstYoloRun = useRef(true);
   useEffect(() => {
     if (firstYoloRun.current) { firstYoloRun.current = false; return; }
-    if (!ptyRef.current) return;
-    tryToggleYoloLive(tab.cli, ptyRef.current, yoloMode);
-  }, [yoloMode, tab.cli]);
+    const ptyId = ptyRef.current;
+    if (!ptyId) return;
+    let cancelled = false;
+    (async () => {
+      // Agents that support runtime mode-switching (gemini) flip live.
+      const applied = await tryToggleYoloLive(tab.cli, ptyId, effYolo);
+      if (applied || cancelled) return;
+      // Enforce transitions already restart the PTY (Sandbox dialog), so
+      // only prompt for a genuine per-workspace YOLO toggle on a running
+      // agent that can't switch mid-session (claude / codex).
+      if (enforced) return;
+      const ok = await useUI.getState().askConfirm({
+        title: `Restart ${agentDisplayName(tab.cli)} to ${effYolo ? "enable" : "disable"} YOLO?`,
+        message: `${agentDisplayName(tab.cli)} applies YOLO only on a fresh launch. Restart now (the session auto-resumes), or pick Later and it takes effect on the next restart.`,
+        confirmLabel: "Restart now",
+        cancelLabel: "Later",
+      });
+      if (ok && !cancelled) { setExited(false); setGen(g => g + 1); }
+    })();
+    return () => { cancelled = true; };
+  }, [effYolo, enforced, tab.cli]);
 
   // Settled detection: hash the visible buffer every SAMPLE_MS. Once the hash
   // is identical across SETTLE_SAMPLES consecutive samples, the agent has
@@ -1528,36 +1570,32 @@ export function TerminalPane({ ws, tab, active }: Props) {
 }
 
 export function FooterBar({ ws, sandboxWarning }: {
-  ws: { id: string; sandbox_enabled?: boolean; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[] };
+  ws: { id: string; cli?: string; sandbox_enabled?: boolean; sandbox_mode?: SandboxMode; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[] };
   sandboxWarning: string | null;
 }) {
   const splitOpen = useApp(s => !!s.terminalSplit[ws.id]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
+  const mode = effectiveSandboxMode(ws);
 
-  // Live deny counter. Polls the Rust-side counter every 2s while
-  // the workspace is sandboxed; cheap (one mutex lookup). Replaces
-  // the old "Recent denies" panel that needed `log show` shellouts.
-  const [totalDenies, setTotalDenies] = useState(0);
+  // Live counter. ENFORCING polls the deny counter ("N blocked");
+  // MONITORING polls the access counter ("N accesses"). Cheap (one
+  // mutex lookup); 2s cadence.
+  const [total, setTotal] = useState(0);
   useEffect(() => {
-    if (!ws.sandbox_enabled) { setTotalDenies(0); return; }
+    if (mode === "off") { setTotal(0); return; }
     let cancelled = false;
+    const fetchCounts = mode === "monitor" ? ipc.sandboxAccessCounts : ipc.sandboxDenyCounts;
     const tick = () => {
-      ipc.sandboxDenyCounts(ws.id)
-        // network + path: footer chip wants the COMBINED total so the
-        // number matches "rows visible in the popover." Previously
-        // showed network-only which under-counted (popover had paths
-        // too). Both come from the same IPC payload.
-        .then(c => { if (!cancelled) setTotalDenies(c.network + c.path); })
+      fetchCounts(ws.id)
+        .then(c => { if (!cancelled) setTotal(c.network + c.path); })
         .catch(() => {});
     };
     tick();
     const id = window.setInterval(tick, 2000);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [ws.id, ws.sandbox_enabled]);
+  }, [ws.id, mode]);
 
-  // Sandbox half — three visual states (warning > on > off). Off
-  // state is muted but still clickable so users discover the cage
-  // exists.
+  // Sandbox half — four visual states (warning > monitor > enforce > off).
   const sandboxNode = sandboxWarning ? (
     <>
       <AlertTriangle className="h-3 w-3 text-[var(--color-warn)]" />
@@ -1565,14 +1603,20 @@ export function FooterBar({ ws, sandboxWarning }: {
       <span className="text-[var(--color-fg-faint)]">·</span>
       <span className="truncate">{sandboxWarning}</span>
     </>
-  ) : ws.sandbox_enabled ? (
+  ) : mode === "enforce" ? (
     <>
       <Shield className="h-3 w-3 text-[var(--color-ok)]" fill="currentColor" />
-      <span>Sandboxed</span>
+      <span>Enforcing</span>
       <span className="text-[var(--color-fg-faint)]">·</span>
       <span>{(ws.sandbox_allowed_hosts?.length ?? 0)} extra host{(ws.sandbox_allowed_hosts?.length ?? 0) === 1 ? "" : "s"}</span>
       <span className="text-[var(--color-fg-faint)]">·</span>
       <span>{(ws.sandbox_rw_paths?.length ?? 0)} extra path{(ws.sandbox_rw_paths?.length ?? 0) === 1 ? "" : "s"}</span>
+    </>
+  ) : mode === "monitor" ? (
+    <>
+      <Eye className="h-3 w-3 text-[var(--color-warn)]" />
+      <span>Monitoring</span>
+      <span className="ml-1 text-[var(--color-fg-faint)]">(logging all access, not blocking)</span>
     </>
   ) : (
     <>
@@ -1603,8 +1647,8 @@ export function FooterBar({ ws, sandboxWarning }: {
           blocked. Sibling of the edit button so its click doesn't
           bubble to "open Edit dialog." Only shown when sandboxed +
           we've actually seen denies. */}
-      {ws.sandbox_enabled && totalDenies > 0 && (
-        <DeniedHostsPopover wsId={ws.id} count={totalDenies} />
+      {mode !== "off" && total > 0 && (
+        <DeniedHostsPopover wsId={ws.id} cli={ws.cli ?? "claude"} count={total} mode={mode} />
       )}
       {/* +Terminal opens the bottom split. Hidden when split is
           already open — no point offering to add what's there.
@@ -1630,10 +1674,48 @@ export function FooterBar({ ws, sandboxWarning }: {
 // sorted most-recently-seen first. Each row has an "Allow" button
 // that adds the host to the workspace's allowed list + respawns the
 // agent under the new profile. Polls every 1.5s while open.
-function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
+function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: string; count: number; mode: SandboxMode }) {
+  const monitor = mode === "monitor";
+  // Scope for the Allow buttons — persisted app-wide, mandatory on first
+  // use (radio starts unchosen). See prefs.allowScope.
+  const allowScope = usePrefs(s => s.allowScope);
+  const setAllowScope = usePrefs(s => s.setAllowScope);
+  const scopeChosen = allowScope !== null;
+  // Workspace dirs to optionally hide from the activity log — the agent
+  // touches them constantly and they're always allowed anyway, so they're
+  // pure noise. Default ON. Primitive selectors keep the snapshot stable.
+  // .find() returns a stable reference (no snapshot churn) unless the
+  // workspace object is replaced; compute the dir list from it directly.
+  const wsObj = useApp(s => s.workspaces.find(w => w.id === wsId));
+  const wsDirs = wsObj ? [wsObj.path, ...(wsObj.composition ?? []).map(m => m.path)].filter(Boolean) : [];
+  const [excludeWs, setExcludeWs] = useState(true);
+  // "Only would-block" collapses the log to just the actionable rows
+  // (everything the cage WOULD deny) — the set you actually need to
+  // allow-list. Default ON: that's the point of monitoring. Uncheck to
+  // see the full access log.
+  const [wbOnly, setWbOnly] = useState(true);
+  // Push the filters to the backend so they gate RECORDING (not just
+  // display): excluded/non-would-block accesses are never stored, saving
+  // CPU + memory. Fires on mount + whenever a checkbox flips.
+  useEffect(() => {
+    if (!monitor) return;
+    ipc.sandboxSetMonitorFilters(wsId, excludeWs, wbOnly).catch(() => {});
+  }, [monitor, wsId, excludeWs, wbOnly]);
+  const SCOPES: { id: "agent" | "project" | "repo"; label: string; hint: string }[] = [
+    { id: "agent",   label: "Per agent",        hint: `Every workspace that runs ${cli}, in any project.` },
+    { id: "project", label: "Per project (me)", hint: "Only this project, only on your machine." },
+    { id: "repo",    label: ".termic.yaml",     hint: "Committed to the repo — shared with your team." },
+  ];
+  const scopeLabel = (s: "agent" | "project" | "repo") =>
+    s === "agent" ? `${cli} (agent)` : s === "repo" ? ".termic.yaml" : "this project";
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<"aggregate" | "detailed">("aggregate");
+  // ENFORCING data (blocked-only).
   const [hosts, setHosts] = useState<ipc.DenyHost[]>([]);
   const [paths, setPaths] = useState<ipc.DenyPath[]>([]);
+  // MONITORING data (every access, with would_block flag).
+  const [accHosts, setAccHosts] = useState<ipc.AccessHost[]>([]);
+  const [accPaths, setAccPaths] = useState<ipc.AccessPath[]>([]);
   const [allowing, setAllowing] = useState<string | null>(null);
   // Hosts/paths allowed during this popover session. `sandbox_recent_
   // denied_*` is a log query, so an already-allowed entry keeps showing
@@ -1655,30 +1737,42 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
     if (!open) return;
     let cancelled = false;
     const tick = () => {
-      Promise.all([
-        ipc.sandboxRecentDeniedHosts(wsId).catch(() => [] as ipc.DenyHost[]),
-        ipc.sandboxRecentDeniedPaths(wsId).catch(() => [] as ipc.DenyPath[]),
-      ]).then(([h, p]) => {
-        if (cancelled) return;
-        setHosts(h); setPaths(p);
-      });
+      if (monitor) {
+        Promise.all([
+          ipc.sandboxRecentAccessHosts(wsId).catch(() => [] as ipc.AccessHost[]),
+          ipc.sandboxRecentAccessPaths(wsId).catch(() => [] as ipc.AccessPath[]),
+        ]).then(([h, p]) => {
+          if (cancelled) return;
+          setAccHosts(h); setAccPaths(p);
+        });
+      } else {
+        Promise.all([
+          ipc.sandboxRecentDeniedHosts(wsId).catch(() => [] as ipc.DenyHost[]),
+          ipc.sandboxRecentDeniedPaths(wsId).catch(() => [] as ipc.DenyPath[]),
+        ]).then(([h, p]) => {
+          if (cancelled) return;
+          setHosts(h); setPaths(p);
+        });
+      }
     };
     tick();
     const id = window.setInterval(tick, 1500);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [open, wsId]);
+  }, [open, wsId, monitor]);
 
   async function allow(host: string) {
+    if (!allowScope) return; // radio is mandatory; buttons disabled until chosen
     setAllowing(host);
     try {
-      // Persist only — the Rust handler doesn't kill the live PTY. The
-      // new entry is additive, so the running agent's existing (narrower)
-      // profile stays safe; the rule takes effect on the next spawn.
-      await ipc.workspaceSandboxAddAllowedHost(wsId, host);
-      // Drop the row locally + tell the user it needs a fresh PTY.
+      // Persist only — none of these kill the live PTY. The new entry is
+      // additive, so the running agent's (narrower) profile stays safe;
+      // it takes effect on the next spawn.
+      if (allowScope === "agent")      await ipc.agentSandboxAddAllowedHost(cli, host);
+      else if (allowScope === "repo")  await ipc.repoConfigAddAllowedHost(wsId, host);
+      else                             await ipc.workspaceSandboxAddAllowedHost(wsId, host);
       setAllowed(prev => new Set(prev).add(host));
       useUI.getState().pushToast(
-        `Allowed ${host}. Restart the agent/shell for it to take effect.`,
+        `Allowed ${host} for ${scopeLabel(allowScope)}. Restart the agent for it to take effect.`,
         "success",
       );
     } catch (e) {
@@ -1686,20 +1780,24 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
     } finally { setAllowing(null); }
   }
   async function allowPath(path: string) {
+    if (!allowScope) return;
     setAllowing(path);
     try {
-      await ipc.workspaceSandboxAddAllowedPath(wsId, path);
+      if (allowScope === "agent")      await ipc.agentSandboxAddAllowedPath(cli, path);
+      else if (allowScope === "repo")  await ipc.repoConfigAddAllowedPath(wsId, path);
+      else                             await ipc.workspaceSandboxAddAllowedPath(wsId, path);
       setAllowed(prev => new Set(prev).add(path));
-      // Confirmation + undo. The toast TTL is bumped to 6s (vs default
-      // 3.2s) so the user actually has time to read the path and decide
-      // whether to revert.
       const display = path.startsWith("$HOME") ? path : path.replace(/^.*\/Users\/[^/]+/, "$HOME");
+      // Undo is only wired for the per-project (workspace) scope — that's
+      // the one with a remove command. Agent/repo edits are removed in
+      // their own surfaces (Settings → Agents / the .termic.yaml file).
+      const undoable = allowScope === "project";
       useUI.getState().pushToast(
-        `Allowed ${display}. Restart the agent/shell to apply.`,
+        `Allowed ${display} for ${scopeLabel(allowScope)}. Restart the agent to apply.`,
         "success",
         {
           ttlMs: 6000,
-          action: {
+          action: undoable ? {
             label: "Undo",
             onClick: async () => {
               try {
@@ -1710,7 +1808,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                 useUI.getState().pushToast(`Undo failed: ${e}`, "error");
               }
             },
-          },
+          } : undefined,
         },
       );
     } catch (e) {
@@ -1729,9 +1827,11 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
           type="button"
           onClick={(e) => e.stopPropagation()}
           className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/10"
-          title={`${count} request${count === 1 ? "" : "s"} blocked by the sandbox. Click to see details.`}
+          title={monitor
+            ? `${count} access${count === 1 ? "" : "es"} logged (files + network). Click for the detailed activity log.`
+            : `${count} request${count === 1 ? "" : "s"} blocked by the sandbox. Click to see details.`}
         >
-          {count} blocked
+          {monitor ? `${count} access${count === 1 ? "" : "es"}` : `${count} blocked`}
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -1745,8 +1845,67 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
           // their natural width drives the container's intrinsic
           // size; truncation only kicks in when we hit the ceiling.
           style={{ width: "max-content" }}
-          className="z-50 min-w-[440px] max-w-[calc(100vw-2rem)] max-h-[400px] overflow-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-2 shadow-2xl text-[12px]"
+          className={cn(
+            "z-50 max-w-[calc(100vw-2rem)] overflow-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-2 shadow-2xl text-[12px]",
+            monitor ? "min-w-[580px] max-h-[520px]" : "min-w-[440px] max-h-[400px]",
+          )}
         >
+          {/* Scope selector — where "Allow" writes. Mandatory on first
+              use (no preselection); the choice becomes the app-wide
+              default and is remembered. */}
+          <div className={cn(
+            "mb-2 rounded-md border px-2 py-1.5",
+            scopeChosen ? "border-[var(--color-border-soft)]" : "border-[var(--color-warn)]/60",
+          )}>
+            <div className={cn(
+              "mb-1 flex items-center gap-1.5 text-[11px]",
+              scopeChosen ? "text-[var(--color-fg-faint)]" : "font-medium text-[var(--color-warn)]",
+            )}>
+              <span>{scopeChosen ? "Save allowed paths + domains to:" : "Pick where to save allowed paths + domains:"}</span>
+            </div>
+            {/* Radio list — one per line with a short explanation.
+                Clickable any time to switch the (persisted) default. */}
+            <div className="flex flex-col gap-0.5">
+              {SCOPES.map(s => {
+                const active = allowScope === s.id;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setAllowScope(s.id)}
+                    className={cn(
+                      "flex items-center gap-2 rounded px-1.5 py-1 text-left transition-colors",
+                      active ? "bg-[var(--color-accent)]/10" : "hover:bg-[var(--color-hover)]",
+                    )}
+                  >
+                    <span className={cn(
+                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
+                      active ? "border-[var(--color-accent)]" : "border-[var(--color-border)]",
+                    )}>
+                      {active && <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />}
+                    </span>
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      <span className={cn("shrink-0 text-[12px] font-medium", active ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]")}>{s.label}</span>
+                      <span className="truncate text-[11px] text-[var(--color-fg-faint)]">{s.hint}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {monitor && (
+            <MonitorActivity
+              hosts={accHosts} paths={accPaths}
+              tab={tab} setTab={setTab}
+              scopeChosen={scopeChosen}
+              wsDirs={wsDirs} excludeWs={excludeWs} setExcludeWs={setExcludeWs}
+              wbOnly={wbOnly} setWbOnly={setWbOnly}
+              allowed={allowed} allowing={allowing}
+              onAllowHost={allow} onAllowPath={allowPath}
+              shortenPath={shortenPath}
+            />
+          )}
+          {!monitor && (<>
           {hosts.length === 0 && paths.length === 0 && (
             <div className="px-1 py-1 text-[var(--color-fg-faint)]">Loading…</div>
           )}
@@ -1771,7 +1930,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                     <button
                       type="button"
                       onClick={() => allow(h.host)}
-                      disabled={allowing === h.host}
+                      disabled={allowing === h.host || !scopeChosen}
                       className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
                       title={`Add ${h.host} to allowed hosts. Takes effect on next agent restart.`}
                     >
@@ -1805,7 +1964,7 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
                         forced to allow each leaf separately. */}
                     <PathSegments
                       display={shortenPath(p.path)}
-                      pending={allowing === p.path}
+                      pending={allowing === p.path || !scopeChosen}
                       onAllow={(prefix) => allowPath(prefix)}
                     />
                     <CopyButton value={p.path} title="Copy full path" className="ml-auto" />
@@ -1831,9 +1990,272 @@ function DeniedHostsPopover({ wsId, count }: { wsId: string; count: number }) {
             <br />
             Takes effect on next agent restart. The running agent keeps its current (narrower) permissions.
           </div>
+          </>)}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+// ── MONITORING activity view ─────────────────────────────────────────
+// Two tabs inside the same footer popover:
+//   Aggregate — network hosts + filesystem grouped by FOLDER, each
+//               folder expandable to its files; counts + op breakdown +
+//               would-block rollup. Click any path segment to whitelist.
+//   Detailed  — the raw log: every (path, op) and every host:port with
+//               counts, process, mode, and would-block flag.
+type MonOp = ipc.AccessPath;
+type MonHost = ipc.AccessHost;
+
+function opTone(op: string): string {
+  if (op.includes("write") || op.includes("create") || op.includes("unlink")) return "var(--color-warn)";
+  if (op.includes("ioctl") || op.includes("exec")) return "var(--color-accent)";
+  return "var(--color-fg-faint)";
+}
+function OpBadge({ op }: { op: string }) {
+  return (
+    <span
+      className="shrink-0 rounded px-1 py-[1px] font-mono text-[10px] text-[var(--color-fg-dim)]"
+      style={{ borderLeft: `2px solid ${opTone(op)}`, background: "var(--color-bg-2)" }}
+      title={op}
+    >
+      {op.replace(/^file-/, "")}
+    </span>
+  );
+}
+function WouldBlockTag({ on }: { on: boolean }) {
+  if (on) return (
+    <span className="shrink-0 rounded px-1 py-[1px] text-[10px] text-[var(--color-warn)]"
+      style={{ background: "color-mix(in srgb, var(--color-warn) 15%, transparent)" }}
+      title="ENFORCING mode would block this. Click the path/host to whitelist it.">would block</span>
+  );
+  return (
+    <span className="shrink-0 rounded px-1 py-[1px] text-[10px] text-[var(--color-ok)]"
+      style={{ background: "color-mix(in srgb, var(--color-ok) 12%, transparent)" }}
+      title="Allowed under ENFORCING too.">ok</span>
+  );
+}
+
+function MonitorActivity({
+  hosts, paths, tab, setTab, scopeChosen, wsDirs, excludeWs, setExcludeWs, wbOnly, setWbOnly, allowed, allowing, onAllowHost, onAllowPath, shortenPath,
+}: {
+  hosts: MonHost[];
+  paths: MonOp[];
+  tab: "aggregate" | "detailed";
+  setTab: (t: "aggregate" | "detailed") => void;
+  scopeChosen: boolean;
+  wsDirs: string[];
+  excludeWs: boolean;
+  setExcludeWs: (v: boolean) => void;
+  wbOnly: boolean;
+  setWbOnly: (v: boolean) => void;
+  allowed: Set<string>;
+  allowing: string | null;
+  onAllowHost: (h: string) => void;
+  onAllowPath: (p: string) => void;
+  shortenPath: (p: string) => string;
+}) {
+  // Hide accesses inside the workspace (+ member) dirs when toggled — the
+  // agent hammers them constantly and they're always allowed, so pure noise.
+  const inWs = (p: string) => wsDirs.some(d => p === d || p.startsWith(d + "/"));
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (f: string) => setExpanded(prev => {
+    const n = new Set(prev); n.has(f) ? n.delete(f) : n.add(f); return n;
+  });
+
+  // "would block" rows are the actionable ones (need whitelisting before
+  // Enforcing), so they sort to the TOP — then by most-recent.
+  const byBlockPath = (a: MonOp, b: MonOp) =>
+    Number(b.would_block) - Number(a.would_block) || b.last_seen_unix_ms - a.last_seen_unix_ms;
+  const byBlockHost = (a: MonHost, b: MonHost) =>
+    Number(b.would_block) - Number(a.would_block) || b.last_seen_unix_ms - a.last_seen_unix_ms;
+  // Display filters mirror the backend recording filters (for instant
+  // feedback before the next 1.5s poll catches up).
+  const vHosts = hosts.filter(h => !allowed.has(h.host) && (!wbOnly || h.would_block)).sort(byBlockHost);
+  const vPaths = paths.filter(p => !allowed.has(p.path)
+    && !(excludeWs && inWs(p.path))
+    && (!wbOnly || p.would_block));
+  const hiddenWs = excludeWs ? paths.filter(p => !allowed.has(p.path) && inWs(p.path)).length : 0;
+
+  const fileCount  = vPaths.reduce((s, p) => s + p.count, 0);
+  const netCount   = vHosts.reduce((s, h) => s + h.count, 0);
+  const wbFiles    = vPaths.filter(p => p.would_block).length;
+  const wbHosts    = vHosts.filter(h => h.would_block).length;
+
+  // Group filesystem rows by parent folder for the Aggregate tab.
+  type Folder = { folder: string; entries: MonOp[]; count: number; wouldBlock: number; lastSeen: number; ops: Set<string> };
+  const folders: Folder[] = (() => {
+    const map = new Map<string, Folder>();
+    for (const p of vPaths) {
+      const idx = p.path.lastIndexOf("/");
+      const folder = idx > 0 ? p.path.slice(0, idx) : "/";
+      let g = map.get(folder);
+      if (!g) { g = { folder, entries: [], count: 0, wouldBlock: 0, lastSeen: 0, ops: new Set() }; map.set(folder, g); }
+      g.entries.push(p);
+      g.count += p.count;
+      if (p.would_block) g.wouldBlock += 1;
+      g.lastSeen = Math.max(g.lastSeen, p.last_seen_unix_ms);
+      g.ops.add(p.op.replace(/^file-/, ""));
+    }
+    // Folders with would-block entries float to the top, then by recency.
+    return [...map.values()].sort((a, b) =>
+      Number(b.wouldBlock > 0) - Number(a.wouldBlock > 0) || b.lastSeen - a.lastSeen);
+  })();
+
+  const fileName = (p: string) => { const i = p.lastIndexOf("/"); return i >= 0 ? p.slice(i + 1) : p; };
+
+  return (
+    <div className="flex flex-col">
+      {/* Tab strip (Settings-style button group). */}
+      <div className="mb-2 flex items-center gap-1">
+        {(["aggregate", "detailed"] as const).map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={cn(
+              "rounded px-2 py-0.5 text-[11.5px] font-medium capitalize",
+              tab === t
+                ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
+                : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
+            )}
+          >
+            {t}
+          </button>
+        ))}
+        <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
+          title="Only record accesses the cage WOULD block — the rows you need to allow-list. Drops always-allowed noise (not stored).">
+          <input type="checkbox" checked={wbOnly} onChange={e => setWbOnly(e.target.checked)} className="h-3 w-3 accent-[var(--color-warn)]" />
+          <span>Only would-block</span>
+        </label>
+        <label className="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
+          title="Don't record accesses inside this workspace's own dir — always allowed, pure noise.">
+          <input type="checkbox" checked={excludeWs} onChange={e => setExcludeWs(e.target.checked)} className="h-3 w-3 accent-[var(--color-accent)]" />
+          <span>Exclude workspace dir{hiddenWs > 0 ? ` (${hiddenWs})` : ""}</span>
+        </label>
+        <span className="text-[11px] text-[var(--color-fg-faint)]">
+          {fileCount + netCount} access{fileCount + netCount === 1 ? "" : "es"}
+          {(wbFiles + wbHosts) > 0 && (
+            <span className="ml-1 text-[var(--color-warn)]">· {wbFiles + wbHosts} would block</span>
+          )}
+        </span>
+      </div>
+
+      {vHosts.length === 0 && vPaths.length === 0 && (
+        <div className="px-1 py-2 text-[var(--color-fg-faint)]">Waiting for activity… the agent hasn't touched anything yet.</div>
+      )}
+
+      {/* ── NETWORK (same in both tabs) ── */}
+      {vHosts.length > 0 && (
+        <>
+          <div className="mb-1 mt-0.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+            <span>Network</span><span>{vHosts.length} host{vHosts.length === 1 ? "" : "s"}</span>
+          </div>
+          <ul className="mb-2 flex flex-col">
+            {vHosts.map(h => (
+              <li key={h.host} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]">
+                <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={`${h.host}:${h.port}`}>{h.host}<span className="text-[var(--color-fg-faint)]">:{h.port}</span></span>
+                <WouldBlockTag on={h.would_block} />
+                <CopyButton value={h.host} title="Copy host" />
+                <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{h.count}× · {relTime(h.last_seen_unix_ms)}</span>
+                <button
+                  type="button"
+                  onClick={() => onAllowHost(h.host)}
+                  disabled={allowing === h.host || !scopeChosen}
+                  className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
+                  title={`Add ${h.host} to allowed hosts.`}
+                >{allowing === h.host ? "…" : "Allow"}</button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {/* ── FILESYSTEM ── */}
+      {vPaths.length > 0 && (
+        <div className="mb-1 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+          <span>Filesystem</span>
+          <span>{tab === "aggregate" ? `${folders.length} folder${folders.length === 1 ? "" : "s"}` : `${vPaths.length} entr${vPaths.length === 1 ? "y" : "ies"}`}</span>
+        </div>
+      )}
+
+      {/* AGGREGATE: folder rows, expandable. */}
+      {tab === "aggregate" && folders.map(g => {
+        const isOpen = expanded.has(g.folder);
+        return (
+          <div key={g.folder} className="rounded">
+            <div className="flex items-center gap-1.5 rounded px-1 py-1 hover:bg-[var(--color-hover)]">
+              <button type="button" onClick={() => toggle(g.folder)} className="shrink-0 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]" title={isOpen ? "Collapse" : "Expand"}>
+                {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </button>
+              <span className="min-w-0 flex-1">
+                <PathSegments display={shortenPath(g.folder)} pending={allowing === g.folder || !scopeChosen} onAllow={onAllowPath} />
+              </span>
+              {g.wouldBlock > 0 && <WouldBlockTag on />}
+              <span className="shrink-0 font-mono text-[10px] text-[var(--color-fg-faint)]" title="operation kinds in this folder">{[...g.ops].join(" ")}</span>
+              <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{g.entries.length} file{g.entries.length === 1 ? "" : "s"} · {g.count}×</span>
+            </div>
+            {isOpen && (
+              <ul className="ml-5 flex flex-col border-l border-[var(--color-border-soft)] pl-2">
+                {[...g.entries].sort(byBlockPath).map(p => (
+                  <li key={p.path + p.op} className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-[var(--color-hover)]">
+                    <OpBadge op={p.op} />
+                    <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[12px] text-[var(--color-fg)]" title={p.path}>{fileName(p.path)}</span>
+                    {p.would_block && <WouldBlockTag on />}
+                    <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{p.count}×</span>
+                    <button
+                      type="button"
+                      onClick={() => onAllowPath(p.path)}
+                      disabled={allowing === p.path || !scopeChosen}
+                      className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
+                      title={`Allow ${p.path}`}
+                    >{allowing === p.path ? "…" : "Allow"}</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+
+      {/* DETAILED: the raw access log (capped for perf). */}
+      {tab === "detailed" && (() => {
+        const CAP = 400;
+        const rows = [...vPaths].sort(byBlockPath);
+        const shown = rows.slice(0, CAP);
+        return (
+          <>
+            <ul className="flex flex-col">
+              {shown.map(p => (
+                <li key={p.path + p.op} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]">
+                  <OpBadge op={p.op} />
+                  <span className="min-w-0 flex-1">
+                    <PathSegments display={shortenPath(p.path)} pending={allowing === p.path || !scopeChosen} onAllow={onAllowPath} />
+                  </span>
+                  {p.would_block && <WouldBlockTag on />}
+                  <CopyButton value={p.path} title="Copy full path" />
+                  <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]" title={p.last_proc ? `${p.last_proc}(${p.last_pid})` : undefined}>
+                    {p.last_proc && <span className="mr-2 font-mono text-[var(--color-fg-dim)]">{p.last_proc}({p.last_pid})</span>}
+                    {p.count}× · {relTime(p.last_seen_unix_ms)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {rows.length > CAP && (
+              <div className="px-1 py-1 text-[11px] text-[var(--color-fg-faint)]">
+                Showing newest {CAP} of {rows.length} filesystem entries. Use Aggregate to see all, grouped by folder.
+              </div>
+            )}
+          </>
+        );
+      })()}
+
+      <div className="mt-2 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
+        Monitoring logs access; it does not block. Items tagged{" "}
+        <span className="text-[var(--color-warn)]">would block</span> are the ones to whitelist
+        (click the path/host or its Allow button) before switching to Enforcing.
+      </div>
+    </div>
   );
 }
 

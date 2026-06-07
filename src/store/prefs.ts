@@ -18,11 +18,11 @@ const LS_TERMINAL_SIZE = "terminalFontSize";
 const LS_EDITOR_SIZE   = "editorFontSize";
 const LS_LIGATURES     = "codeLigatures";
 const LS_THEME         = "themeMode";
-const LS_YOLO          = "yoloMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
+const LS_ALLOW_SCOPE     = "sandboxAllowScope";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
@@ -258,12 +258,6 @@ function stackFor(id: string) {
 }
 
 interface PrefsState {
-  /** YOLO mode — appends each agent's "auto-approve everything" flag to its
-   *  spawn args. Toggleable from the unified bar. For agents that support
-   *  runtime mode-switching (gemini), live PTYs receive a slash command on
-   *  toggle; for the rest (claude/codex), new tabs pick it up but existing
-   *  PTYs need a respawn. */
-  yoloMode: boolean;
   /** Send OS notifications when an inactive tab's agent settles (output
    *  stopped changing). OFF by default — too noisy for many users. */
   desktopNotifications: boolean;
@@ -283,6 +277,13 @@ interface PrefsState {
    *  the agent's own permission prompts are just friction. Users who
    *  still want the agent to ask inside a sandbox can turn this off. */
   sandboxBypassPermissions: boolean;
+  /** Where the "Allow" button in the sandbox activity/blocked popover
+   *  writes. `null` until the user picks once (the radio is mandatory
+   *  on first use); their choice then becomes the app-wide default.
+   *  - "agent"   → the agent registry (every workspace using that CLI)
+   *  - "project" → this project's personal defaults (projects.json)
+   *  - "repo"    → the committed `.termic.yaml` (team-shared) */
+  allowScope: "agent" | "project" | "repo" | null;
   /** Color scheme: explicit dark/light, or auto = follow system. */
   themeMode: ThemeMode;
   /** Font for the CodeMirror editor + diff viewer. */
@@ -336,11 +337,11 @@ interface PrefsState {
   setThemeMode:       (m: ThemeMode) => void;
   /** Convenience: cycle auto → light → dark → auto. */
   cycleThemeMode:     () => void;
-  setYoloMode:        (v: boolean) => void;
   setDesktopNotifications: (v: boolean) => void;
   setSettledHighlight: (v: boolean) => void;
   setGlobalDefaultSandbox: (v: boolean) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
+  setAllowScope: (s: "agent" | "project" | "repo") => void;
   setWorkspaceExpandMode: (m: "chevron" | "click" | "always") => void;
   /** Rebind a single shortcut. */
   setShortcut: (id: ShortcutId, binding: Binding) => void;
@@ -410,7 +411,6 @@ const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
-const initialYolo         = lsGetBool(LS_YOLO, false);
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 // WIP feature - the "agent has settled" heuristic produces false
 // positives often enough that the highlight is noise more than
@@ -425,6 +425,10 @@ const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 // ON by default — sandboxed agents bypass their own permission prompts
 // because the seatbelt is the real boundary. Users can opt out.
 const initialSandboxBypass = lsGetBool(LS_SANDBOX_BYPASS, true);
+const initialAllowScope: "agent" | "project" | "repo" | null = (() => {
+  const raw = lsGet(LS_ALLOW_SCOPE, "");
+  return raw === "agent" || raw === "project" || raw === "repo" ? raw : null;
+})();
 const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
   const raw = lsGet(LS_WS_EXPAND_MODE, "chevron");
   return raw === "click" || raw === "always" ? raw : "chevron";
@@ -432,11 +436,11 @@ const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
-  yoloMode: initialYolo,
   desktopNotifications: initialDesktopNotif,
   settledHighlight: initialSettledHighlight,
   globalDefaultSandbox: initialDefaultSandbox,
   sandboxBypassPermissions: initialSandboxBypass,
+  allowScope: initialAllowScope,
   editorFontId: initialEditorFont,
   editorThemeId: initialEditorTheme,
   terminalFontId: initialTerminalFont,
@@ -505,10 +509,6 @@ export const usePrefs = create<PrefsState>(set => ({
     applyTheme(m);
     set({ themeMode: m });
   },
-  setYoloMode: (v) => {
-    try { localStorage.setItem(LS_YOLO, v ? "1" : "0"); } catch {}
-    set({ yoloMode: v });
-  },
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}
     set({ desktopNotifications: v });
@@ -524,6 +524,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setSandboxBypassPermissions: (v) => {
     try { localStorage.setItem(LS_SANDBOX_BYPASS, v ? "1" : "0"); } catch {}
     set({ sandboxBypassPermissions: v });
+  },
+  setAllowScope: (s) => {
+    try { localStorage.setItem(LS_ALLOW_SCOPE, s); } catch {}
+    set({ allowScope: s });
   },
   setWorkspaceExpandMode: (m) => {
     try { localStorage.setItem(LS_WS_EXPAND_MODE, m); } catch {}

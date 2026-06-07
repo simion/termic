@@ -42,6 +42,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 use crate::Workspace;
+use crate::SandboxMode;
 use crate::proxy;
 use crate::dlog;
 
@@ -158,6 +159,284 @@ pub fn clear_path_denies(ws_id: &str) {
     }
 }
 
+// ─── Per-workspace path-ACCESS tracker (MONITORING mode) ──────────────
+// In monitoring mode the seatbelt profile is `(allow default (with
+// report))`, so the kernel logs EVERY file operation (allowed) instead
+// of denies. We capture all of them here, keyed by (path, op) so the
+// activity popover can show "what the agent touched, how, and how
+// often" — plus a would_block flag computed against what ENFORCING
+// mode WOULD have allowed, so the user knows what to whitelist before
+// flipping to enforce.
+#[derive(Clone)]
+pub struct PathAccessEntry {
+    pub path: String,
+    /// Operation token, e.g. file-read-data / file-write-create.
+    pub op: String,
+    pub count: u64,
+    pub last_seen_unix_ms: u128,
+    pub last_pid: u32,
+    pub last_proc: String,
+    /// True iff ENFORCING mode would have denied this op on this path.
+    pub would_block: bool,
+}
+
+static PATH_ACCESS_TRACKER: OnceLock<Mutex<HashMap<String, HashMap<String, PathAccessEntry>>>> = OnceLock::new();
+
+fn path_access_tracker() -> &'static Mutex<HashMap<String, HashMap<String, PathAccessEntry>>> {
+    PATH_ACCESS_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Hard cap on distinct (path, op) rows tracked per workspace in
+/// MONITORING. The agent's allow firehose touches a unique path per file;
+/// without a cap a big `npm install` / `cargo build` could accumulate
+/// 100k+ entries. At the cap we stop recording NEW paths (existing rows
+/// still bump their counts), so memory is bounded (~a few MB) and nothing
+/// grows unboundedly. Cleared entirely on the next spawn.
+const PATH_ACCESS_CAP: usize = 20_000;
+
+fn incr_path_access(ws_id: &str, path: &str, op: &str, pid: u32, proc: &str, would_block: bool, add: u64) {
+    if ws_id.is_empty() || path.is_empty() { return; }
+    // Key by path + op so a read and a write to the same path are
+    // tracked as distinct rows (the user cares which kind of access).
+    let key = format!("{path}\u{0}{op}");
+    if let Ok(mut g) = path_access_tracker().lock() {
+        let per_ws = g.entry(ws_id.to_string()).or_insert_with(HashMap::new);
+        // Bound memory: once at the cap, keep counting paths we already
+        // know but don't add new distinct ones.
+        if per_ws.len() >= PATH_ACCESS_CAP && !per_ws.contains_key(&key) {
+            return;
+        }
+        let entry = per_ws.entry(key).or_insert(PathAccessEntry {
+            path: path.to_string(),
+            op: op.to_string(),
+            count: 0,
+            last_seen_unix_ms: 0,
+            last_pid: 0,
+            last_proc: String::new(),
+            would_block,
+        });
+        entry.count += add.max(1);
+        entry.last_seen_unix_ms = now_unix_ms();
+        entry.last_pid = pid;
+        entry.last_proc = proc.to_string();
+        entry.would_block = would_block;
+    }
+}
+
+pub fn path_access_count(ws_id: &str) -> u64 {
+    path_access_tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().map(|e| e.count).sum()))
+        .unwrap_or(0)
+}
+
+pub fn path_access_list(ws_id: &str) -> Vec<PathAccessEntry> {
+    let mut out: Vec<PathAccessEntry> = path_access_tracker().lock().ok()
+        .and_then(|g| g.get(ws_id).map(|m| m.values().cloned().collect()))
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
+    out
+}
+
+pub fn clear_path_access(ws_id: &str) {
+    if ws_id.is_empty() { return; }
+    if let Ok(mut g) = path_access_tracker().lock() {
+        if let Some(per_ws) = g.get_mut(ws_id) {
+            per_ws.clear();
+        }
+    }
+}
+
+// ─── Monitor recording filters ───────────────────────────────────────
+// The activity view exists so users can pre-build an agent's allow-list
+// with low friction — the actionable rows are the would-block ones. So
+// the filters gate RECORDING, not just display: with them on we never
+// store the always-allowed spam (the agent's own config churn, the
+// workspace dir), which saves CPU + memory. Per-workspace, runtime-
+// settable from the popover. Defaults: exclude the workspace dir (true),
+// show everything else (wb_only=false).
+#[derive(Clone, Copy)]
+struct MonitorFilters { exclude_ws: bool, wb_only: bool }
+impl Default for MonitorFilters {
+    // Default to the allow-list-building posture: record only would-block
+    // accesses, and never the workspace dir. Minimal recording out of the
+    // box; the user can widen via the popover checkboxes.
+    fn default() -> Self { MonitorFilters { exclude_ws: true, wb_only: true } }
+}
+static MONITOR_FILTERS: OnceLock<Mutex<HashMap<String, MonitorFilters>>> = OnceLock::new();
+fn monitor_filters_map() -> &'static Mutex<HashMap<String, MonitorFilters>> {
+    MONITOR_FILTERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn monitor_filters(ws_id: &str) -> MonitorFilters {
+    monitor_filters_map().lock().ok()
+        .and_then(|g| g.get(ws_id).copied())
+        .unwrap_or_default()
+}
+pub fn set_monitor_filters(ws_id: &str, exclude_ws: bool, wb_only: bool) {
+    if let Ok(mut g) = monitor_filters_map().lock() {
+        g.insert(ws_id.to_string(), MonitorFilters { exclude_ws, wb_only });
+    }
+}
+
+/// Canonical dirs that "exclude workspace dir" hides: the workspace path
+/// plus each multi-repo member's resolved path.
+pub fn workspace_exclude_dirs(workspace: &Workspace) -> Vec<String> {
+    let mut v = vec![canonicalize_or_keep(&workspace.path)];
+    for m in &workspace.composition {
+        let c = canonicalize_or_keep(&m.path);
+        if !c.is_empty() { v.push(c); }
+    }
+    v.retain(|s| !s.is_empty());
+    v
+}
+
+/// Drop already-recorded entries that the (now-enabled) filters would
+/// exclude, so toggling a filter on immediately reclaims memory + clears
+/// the view rather than waiting for them to age out.
+pub fn prune_path_access(ws_id: &str, exclude_ws: bool, wb_only: bool, ws_dirs: &[String]) {
+    if let Ok(mut g) = path_access_tracker().lock() {
+        if let Some(per_ws) = g.get_mut(ws_id) {
+            per_ws.retain(|_, e| {
+                if exclude_ws && ws_dirs.iter().any(|d| under(&e.path, d)) { return false; }
+                if wb_only && !e.would_block { return false; }
+                true
+            });
+        }
+    }
+}
+
+// ─── Monitor policy: replicate ENFORCING's allow/deny decision so we
+//     can flag, per observed access, whether the cage WOULD have
+//     blocked it. Computed once at provision time and moved into the
+//     log-watcher thread. Mirrors render_profile's path-set logic.
+#[derive(Clone, Default)]
+pub struct MonitorPolicy {
+    /// Read + write allowed (workspace, user, agent, runtime dirs).
+    rw_subpaths: Vec<String>,
+    /// Read-only system roots (binaries, linker, etc.).
+    read_roots: Vec<String>,
+    /// Read + write allowed via `regex:` allow entries (e.g. claude's
+    /// `^$HOME/\.claude(\.[^/]*|/.*)?$` covering .claude.json / .lock /
+    /// .tmp.*). Without these, monitor falsely flags regex-allowed paths
+    /// as "would block".
+    rw_regexes: Vec<regex::Regex>,
+}
+
+fn under(path: &str, base: &str) -> bool {
+    path == base || (path.len() > base.len() && path.starts_with(base) && path.as_bytes()[base.len()] == b'/')
+}
+
+impl MonitorPolicy {
+    /// Would ENFORCING mode have blocked `op` on `path`? Pure allow-list:
+    /// nothing is reachable unless it's under an allowed path. Metadata /
+    /// existence are NOT globally allowed anymore — they follow the read
+    /// rules (allowed where `file-read*` is: rw paths + read roots).
+    pub fn would_block(&self, path: &str, op: &str) -> bool {
+        // Globally-allowed ops in ENFORCING: metadata/existence (needed
+        // for symlink traversal + stat) and map-executable/issue-extension.
+        if op.contains("metadata") || op.contains("test-existence")
+            || op.contains("map-executable") || op.contains("issue-extension") {
+            return false;
+        }
+        // SBPL_HEADER globally allows write + ioctl on CHARACTER-DEVICEs
+        // (/dev/null, /dev/tty, PTYs, /dev/dtracehelper, …). Mirror that so
+        // monitor doesn't over-report device ops as "would block". ioctl is
+        // only ever issued on devices/ttys here, so treat it as allowed.
+        if op.contains("ioctl") { return false; }
+        if op.contains("write") && (path == "/dev" || path.starts_with("/dev/")) { return false; }
+        // rw allow-list grants read + write + metadata within it.
+        if self.rw_subpaths.iter().any(|a| under(path, a)) { return false; }
+        // rw regex allows (e.g. claude's ~/.claude family).
+        if self.rw_regexes.iter().any(|r| r.is_match(path)) { return false; }
+        // Reads (incl. metadata / existence) are additionally allowed on
+        // the read-only system roots + the "/" entry.
+        let is_write = op.contains("write") || op.contains("create")
+            || op.contains("unlink") || op.contains("ioctl") || op.contains("mount");
+        if !is_write {
+            if path == "/" { return false; }
+            if self.read_roots.iter().any(|r| under(path, r)) { return false; }
+        }
+        // Anything else: enforce would deny.
+        true
+    }
+}
+
+/// System roots that ENFORCING allows for reads only. Extracted so both
+/// `render_profile` and `compute_monitor_policy` share one source of
+/// truth.
+fn system_read_roots() -> &'static [&'static str] {
+    &[
+        "/usr", "/opt", "/bin", "/sbin",
+        "/dev", "/private/etc", "/etc",
+        "/System/Library", "/System/Volumes/Preboot/Cryptexes", "/private/var/db",
+        "/lib", "/lib32", "/lib64", "/libx32",
+        "/proc", "/sys", "/run",
+    ]
+}
+
+/// Build the would-block classifier for a workspace, mirroring the path
+/// sets that `render_profile` emits for ENFORCING mode.
+pub fn compute_monitor_policy(workspace: &Workspace, agent_override: Option<&str>) -> MonitorPolicy {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let workspace_path = canonicalize_or_keep(&workspace.path);
+    let subst = |p: &str| subst_path(p, &home, &workspace_path);
+
+    let mut rw_subpaths: Vec<String> = vec![workspace_path.clone()];
+    for m in &workspace.composition {
+        let resolved = canonicalize_or_keep(&m.path);
+        if !resolved.is_empty() { rw_subpaths.push(resolved); }
+    }
+    for ws_root in std::iter::once(workspace_path.as_str())
+        .chain(workspace.composition.iter().map(|m| m.path.as_str()))
+    {
+        if let Some(parent_git) = parent_git_dir_for_worktree(ws_root) {
+            rw_subpaths.push(parent_git);
+        }
+    }
+    // `regex:` allow entries (e.g. claude's ~/.claude family) — compiled
+    // so would_block honors them. $HOME / $WORKSPACE are regex-escaped,
+    // matching render_profile's emit so the classifier agrees with the cage.
+    let home_esc = regex::escape(&home);
+    let ws_esc = regex::escape(&workspace_path);
+    let mut rw_regexes: Vec<regex::Regex> = Vec::new();
+    let collect = |raw: &str, subs: &mut Vec<String>, regs: &mut Vec<regex::Regex>| {
+        let raw = raw.trim();
+        if let Some(rest) = raw.strip_prefix("regex:") {
+            let pat = rest.trim().replace("$HOME", &home_esc).replace("$WORKSPACE", &ws_esc);
+            if !pat.is_empty() {
+                if let Ok(re) = regex::Regex::new(&pat) { regs.push(re); }
+            }
+        } else {
+            let s = subst(raw);
+            if !s.is_empty() { subs.push(s); }
+        }
+    };
+    // User allowed paths.
+    for p in &workspace.sandbox_rw_paths {
+        collect(p, &mut rw_subpaths, &mut rw_regexes);
+    }
+    // Per-agent allowed paths from the registry.
+    let settings = crate::load_settings_inner();
+    let effective_cli = agent_override.unwrap_or(&workspace.cli);
+    if let Some(a) = settings.agents.iter().find(|a| a.id == effective_cli) {
+        for p in &a.sandbox_allowed_paths {
+            collect(p, &mut rw_subpaths, &mut rw_regexes);
+        }
+    }
+    // Runtime dirs (also canonicalized symlink targets).
+    for p in builtin_runtime_paths(&home, &workspace_path) {
+        let canon = canonicalize_or_keep(&p);
+        rw_subpaths.push(p);
+        if !canon.is_empty() { rw_subpaths.push(canon); }
+    }
+    dedupe(&mut rw_subpaths);
+
+    // Read roots = system read-only roots + read-only runtime paths
+    // (e.g. ~/.ssh/known_hosts). Reads here don't block; writes do.
+    let mut read_roots: Vec<String> = system_read_roots().iter().map(|s| s.to_string()).collect();
+    read_roots.extend(builtin_runtime_readonly_paths(&home));
+    MonitorPolicy { rw_subpaths, read_roots, rw_regexes }
+}
+
 /// Drop every path-deny entry for this workspace whose path is at or
 /// under `prefix`. Called after the user clicks "Allow" on a path so
 /// the historical deny rows actually disappear from the popover —
@@ -268,15 +547,23 @@ pub fn clear_path_denies_under(ws_id: &str, prefix: &str) {
 /// Parses stdout line-by-line, increments the per-path deny tracker.
 /// Returns None if the child couldn't start - non-fatal, just means
 /// no path counter for this workspace.
-fn start_path_watcher(workspace_id: &str, workspace_path: &str) -> Option<PathWatcher> {
+fn start_path_watcher(workspace_id: &str, workspace_path: &str, ws_dirs: Vec<String>, monitor: bool, policy: MonitorPolicy) -> Option<PathWatcher> {
     use std::io::{BufRead, BufReader};
     use std::thread;
 
-    // Predicate kept loose - some macOS versions tag seatbelt denies
+    // ENFORCING: tail seatbelt DENY events. MONITORING: the profile is
+    // `(allow default (with report))`, so the kernel logs every ALLOWED
+    // file op instead — tail those (scoped to file ops to keep the
+    // firehose down; the PID-ancestry + /Users path filters do the rest).
+    // Predicate kept loose - some macOS versions tag seatbelt events
     // under kernel/sandboxd, others under com.apple.libsandbox, others
-    // don't tag at all. We match on "Sandbox:" in the message which is
+    // don't tag at all. We match on "Sandbox" in the message which is
     // present in every form, then filter further in the parser.
-    let predicate = "eventMessage CONTAINS \"Sandbox:\" AND eventMessage CONTAINS \"deny\"";
+    let predicate = if monitor {
+        "eventMessage CONTAINS \"Sandbox\" AND eventMessage CONTAINS \" allow \" AND eventMessage CONTAINS \"file-\""
+    } else {
+        "eventMessage CONTAINS \"Sandbox:\" AND eventMessage CONTAINS \"deny\""
+    };
     let mut child = Command::new("/usr/bin/log")
         .args(["stream", "--predicate", predicate, "--style", "compact"])
         .stdin(Stdio::null())
@@ -291,7 +578,20 @@ fn start_path_watcher(workspace_id: &str, workspace_path: &str) -> Option<PathWa
     let ws_id_dbg = ws_id.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
+        // Per-pid caches. MONITORING's `(allow default (with report))` is a
+        // system-wide firehose; without caching, every line would shell out
+        // to /bin/ps up to 20× (ancestry) + once (comm). A pid's ancestry
+        // and name are fixed for its lifetime, so we look them up once. (pid
+        // reuse within a monitoring session is negligible.)
+        let mut ours_cache: HashMap<u32, bool> = HashMap::new();
+        let mut comm_cache: HashMap<u32, String> = HashMap::new();
         for line in reader.lines().flatten() {
+            // MONITORING: parse ALLOW lines into the access tracker and
+            // skip the deny parsing below entirely.
+            if monitor {
+                handle_monitor_line(&line, &ws_id, &ws_id_dbg, &ws_path, &ws_dirs, &policy, &mut ours_cache, &mut comm_cache);
+                continue;
+            }
             // Sample deny line on macOS 15 (Sequoia):
             //   2026-05-18 ...  Sandbox: openssl(12345) deny(1) file-write-create /Users/x/Pictures/ccc.txt
             //
@@ -448,43 +748,147 @@ fn extract_deny_path(line: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
+// ─── MONITORING-mode log parsing ─────────────────────────────────────
+// Allow lines look like (compact style):
+//   ... Sandbox: cat(14104) allow file-read-data /private/etc/hosts
+//   ... 1 duplicate report for Sandbox: cat(14104) allow file-read-data /bin/cat
+// We anchor on " allow " (vs deny's "deny(") and pull pid / proc / op /
+// path the same way the deny parser does.
+
+/// PID + duplicate-count from a monitor allow line. The kernel coalesces
+/// rapid repeats into "N duplicate report for ..." lines; N is the extra
+/// occurrence count for those.
+fn monitor_pid_and_dup(line: &str) -> Option<(u32, u64)> {
+    let dup = if let Some(at) = line.find("duplicate report") {
+        line[..at].split_whitespace().last().and_then(|t| t.parse::<u64>().ok()).unwrap_or(1)
+    } else { 1 };
+    let allow_at = line.find(" allow ")?;
+    let head = &line[..allow_at];
+    let close = head.rfind(')')?;
+    let open  = head[..close].rfind('(')?;
+    let pid = head[open + 1..close].trim().parse::<u32>().ok()?;
+    Some((pid, dup))
+}
+
+fn extract_allow_proc(line: &str) -> Option<String> {
+    let allow_at = line.find(" allow ")?;
+    let head = &line[..allow_at];
+    let close = head.rfind(')')?;
+    let open  = head[..close].rfind('(')?;
+    let before = head[..open].trim_end();
+    let start = before.rfind("Sandbox:").map(|i| i + "Sandbox:".len())
+        .or_else(|| before.rfind(':').map(|i| i + 1))
+        .unwrap_or(0);
+    let name = before[start..].trim();
+    if name.is_empty() { None } else { Some(name.to_string()) }
+}
+
+fn extract_allow_op(line: &str) -> Option<String> {
+    let allow_at = line.find(" allow ")?;
+    let after = line[allow_at + 7..].trim_start();
+    let tok = after.split_whitespace().next()?;
+    // Only file ops surface in the FS activity view (network is the
+    // proxy's job; sysctl/process-exec/etc. are noise).
+    if tok.starts_with("file-") { Some(tok.to_string()) } else { None }
+}
+
+fn extract_allow_path(line: &str, op: &str) -> Option<String> {
+    let i = line.find(op)?;
+    let after = line[i + op.len()..].trim_start();
+    if after.starts_with('/') {
+        return Some(after.trim_end_matches(|c: char|
+            c == '\n' || c == '\r' || c == '\t' || c == ' ').to_string());
+    }
+    // file-ioctl logs as `path:/dev/foo ioctl-command:(...)`.
+    if let Some(rest) = after.strip_prefix("path:") {
+        if rest.starts_with('/') {
+            let end = rest.find(" ioctl-command").unwrap_or(rest.len());
+            return Some(rest[..end].trim_end().to_string());
+        }
+    }
+    None
+}
+
+fn handle_monitor_line(
+    line: &str, ws_id: &str, ws_id_dbg: &str, ws_path: &str, ws_dirs: &[String], policy: &MonitorPolicy,
+    ours_cache: &mut HashMap<u32, bool>,
+    comm_cache: &mut HashMap<u32, String>,
+) {
+    let Some((pid, dup)) = monitor_pid_and_dup(line) else { return; };
+    // Bound the caches: a long session spawning many short-lived pids
+    // would otherwise grow them unboundedly. Clearing is cheap (rebuilt
+    // lazily) and pids are small.
+    if ours_cache.len() >= 8192 { ours_cache.clear(); }
+    if comm_cache.len() >= 8192 { comm_cache.clear(); }
+    // Cached ancestry check — avoids the up-to-20 /bin/ps spawns per line.
+    let is_ours = *ours_cache.entry(pid).or_insert_with(|| is_our_sandboxed_pid(ws_id, pid));
+    if !is_ours { return; }
+    let Some(op) = extract_allow_op(line) else { return; };
+    let Some(path) = extract_allow_path(line, &op) else { return; };
+    // Same belt-and-suspenders filter the deny parser uses: ignore
+    // system caches etc. outside the workspace + /Users.
+    if !path.starts_with(ws_path) && !path.starts_with("/Users/") { return; }
+    // Recording filters — applied BEFORE the (cached) proc lookup so the
+    // common spam path short-circuits cheaply, and so excluded accesses
+    // never even enter the tracker (saves CPU + memory). The whole point
+    // is letting users pre-build the allow-list from the would-block rows
+    // without drowning in always-allowed churn.
+    let filters = monitor_filters(ws_id);
+    if filters.exclude_ws && ws_dirs.iter().any(|d| under(&path, d)) { return; }
+    let would_block = policy.would_block(&path, &op);
+    if filters.wb_only && !would_block { return; }
+    let parsed = extract_allow_proc(line).unwrap_or_default();
+    let looks_versionlike = !parsed.is_empty()
+        && parsed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-');
+    let proc = if parsed.is_empty() || looks_versionlike {
+        // Cached comm lookup — avoids a /bin/ps spawn per line.
+        let comm = comm_cache.entry(pid).or_insert_with(|| comm_of(pid).unwrap_or_default()).clone();
+        if !comm.is_empty() { comm } else if !parsed.is_empty() { parsed } else { "?".into() }
+    } else { parsed };
+    let _ = ws_id_dbg;
+    incr_path_access(ws_id, &path, &op, pid, &proc, would_block, dup);
+}
+
 /// Build a fully-rendered SBPL profile for one workspace. Substitutes
 /// $HOME / $WORKSPACE in any user-supplied paths, dedupes against the
 /// built-in RW list, applies built-in deny rules AFTER the broad
 /// `file-read*` allow so they take precedence. Reads extras from the
 /// workspace's own frozen-at-creation arrays - project edits don't
 /// reach back into already-created workspaces.
-pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Option<&str>) -> Result<String> {
+/// Expand `~`, `$HOME`, `$WORKSPACE` in a user-supplied path and strip
+/// trailing slashes (SBPL `(subpath ...)` matches by string prefix).
+/// Shared by `render_profile` and `compute_monitor_policy` so the two
+/// never disagree on how a configured path resolves (the previous
+/// duplicated closures were a drift risk for the would-block classifier).
+fn subst_path(raw: &str, home: &str, workspace_path: &str) -> String {
+    let p = raw.trim();
+    let mut s = if p == "~" {
+        home.to_string()
+    } else if let Some(rest) = p.strip_prefix("~/") {
+        format!("{home}/{rest}")
+    } else {
+        p.to_string()
+    };
+    s = s.replace("$HOME", home);
+    s = s.replace("$WORKSPACE", workspace_path);
+    while s.len() > 1 && s.ends_with('/') { s.pop(); }
+    s
+}
+
+pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Option<&str>, mode: SandboxMode) -> Result<String> {
+    // MONITORING: allow everything but ask the kernel to REPORT every
+    // operation (so the path watcher can log it), while still forcing
+    // all network through the logging proxy. The would-block decision is
+    // computed app-side (MonitorPolicy), not by the kernel.
+    if mode == SandboxMode::Monitor {
+        return Ok(render_monitor_profile(proxy_port, agent_override.unwrap_or(&workspace.cli)));
+    }
     let home = dirs::home_dir()
         .ok_or_else(|| anyhow!("no home dir"))?
         .to_string_lossy()
         .into_owned();
     let workspace_path = canonicalize_or_keep(&workspace.path);
-    let subst = |p: &str| -> String {
-        let p = p.trim();
-        // Leading tilde expansion. ~/foo and ~ both reach the user's
-        // home dir; ~user/foo (another user's home) is not supported
-        // - too niche, treat as literal. Only the LEADING tilde is
-        // touched so paths like `/somewhere/~bak` stay literal.
-        let mut s = if p == "~" {
-            home.clone()
-        } else if let Some(rest) = p.strip_prefix("~/") {
-            format!("{home}/{rest}")
-        } else {
-            p.to_string()
-        };
-        s = s.replace("$HOME", &home);
-        s = s.replace("$WORKSPACE", &workspace_path);
-        // Strip trailing slashes - SBPL's (subpath "...") matches by
-        // string prefix, and "/Users/x/Downloads/" vs "/Users/x/Downloads"
-        // produce different rule strings even though they resolve to
-        // the same dir. Normalize to no-trailing-slash so users get
-        // the same cage whether they typed it with or without.
-        while s.len() > 1 && s.ends_with('/') {
-            s.pop();
-        }
-        s
-    };
+    let subst = |p: &str| subst_path(p, &home, &workspace_path);
 
     // The user's "Allowed paths" list - what they explicitly want
     // exposed to the agent. Workspace path is always implicitly here.
@@ -596,69 +1000,36 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     //    /private/var/db                        → dyld cache (macOS 12)
     //    /System/Volumes/Preboot/Cryptexes      → dyld cache (macOS 13+)
     //    /System/Library                        → system frameworks
-    let system_read_roots: &[&str] = &[
-        // ── Binaries (macOS + Linux overlap) ──────────────────────────
-        "/usr",
-        "/opt",
-        "/bin",
-        "/sbin",
-        // ── Devices + syscall config ──────────────────────────────────
-        "/dev",
-        "/private/etc",  // macOS: /etc is a symlink to /private/etc
-        "/etc",          // Linux: /etc lives at the real path
-        // ── Dynamic linker / loader ───────────────────────────────────
-        // macOS dyld:
-        "/System/Library",
-        "/System/Volumes/Preboot/Cryptexes",  // macOS 13+ cryptex cache
-        "/private/var/db",                    // macOS 12 dyld cache
-        // Linux ld.so / glibc / musl:
-        "/lib",
-        "/lib32",
-        "/lib64",
-        "/libx32",
-        // ── Linux runtime/state pseudo-filesystems ────────────────────
-        // Required for `/proc/self/...`, `/sys/devices/...`,
-        // `/run/systemd/resolve/...` etc. that tools read at startup.
-        // No-op on macOS (paths don't exist); kept here so the same
-        // constant is right when the Linux sandbox impl lands.
-        "/proc",
-        "/sys",
-        "/run",
-        // Windows is intentionally absent — its sandbox model is
-        // AppContainer / Job Objects / integrity levels, not SBPL.
-        // When that backend ships, it'll use its own allow-list.
-    ];
+    // Shared with compute_monitor_policy so both agree on what reads
+    // ENFORCING permits. (Windows intentionally absent — its model is
+    // AppContainer / Job Objects, not SBPL.)
+    let system_read_roots = system_read_roots();
 
     // Hardcoded secret denies (~/.ssh family). Default-on, always
     // applied LAST so allow-list entries can't accidentally re-expose
-    // them. The user CAN explicitly override by listing the exact
-    // secret path in their workspace allowed-paths list; parent
-    // allow-list entries DON'T count — typing `$HOME` doesn't
-    // re-expose ~/.ssh by mistake. Combined set of workspace + agent
-    // allows is checked for the override.
-    let all_allowed: HashSet<&String> = user_allowed.iter().chain(agent_allowed.iter()).collect();
-    let secret_deny: Vec<String> = builtin_deny_paths(&home)
-        .into_iter()
-        .filter(|p| !all_allowed.contains(p))
-        .collect();
-
     let mut out = String::with_capacity(4096);
     out.push_str(SBPL_HEADER);
 
-    // ── File ops base: ALLOWLIST.
+    // ── File ops base: allow-list for CONTENTS, open metadata.
     //
     // SBPL_HEADER ships with `(deny default)` and no broad `(allow
-    // file-read*)`. We then carve out only the paths the agent
-    // actually needs. Reads and writes are both default-deny outside
-    // the listed paths. Last-match-wins, so the secret denies at the
-    // bottom override any allow-list entry under a sensitive parent.
+    // file-read*)`. We carve out only the paths the agent needs for
+    // read/WRITE of file CONTENTS. There is NO deny-list.
     //
-    // `file-read-metadata` + `file-test-existence` are broadly allowed
-    // because `ls`, `stat`, `realpath`, and shell completion all rely
-    // on them; denying makes paths look "missing" rather than denied,
-    // which produces terrible UX without adding meaningful protection
-    // (metadata leaks dir structure, not contents).
-    out.push_str("\n;; --- File ops base (allowlist) ---\n");
+    // `file-read-metadata` + `file-test-existence` ARE allowed globally.
+    // This is load-bearing, not a UX nicety: macOS resolves the firmlink
+    // symlinks /tmp → /private/tmp, /var → /private/var, /etc →
+    // /private/etc by readlink()ing the symlink node, which is a
+    // file-read-metadata op on /tmp, /var, /etc. Without a global
+    // metadata allow, `mkdir /tmp/claude-NNN` (and any access through a
+    // top-level symlink) fails with EPERM and the agent can't even
+    // launch. Globally allowing metadata also means stat/ls/realpath and
+    // shell completion work, and a denied path reads as "missing" rather
+    // than a hard EPERM at dyld. Trade-off: an agent can SEE the names /
+    // existence of paths outside the allow-list (incl. ~/.ssh), but their
+    // CONTENTS stay default-denied (no broad file-read-data). Metadata
+    // leaks structure, not secrets.
+    out.push_str("\n;; --- File ops base (allow-list for contents; metadata open) ---\n");
     out.push_str("(allow file-read-metadata)\n");
     out.push_str("(allow file-test-existence)\n");
     out.push_str("(allow file-map-executable)\n");
@@ -739,43 +1110,24 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
         }
     }
 
-    // ── Secret + personal-data denies — hardcoded, LAST so they
-    //    win even when an allow-list entry would cover them. The
-    //    .ssh/.aws/.gnupg/etc. set + Documents/Desktop/Downloads/
-    //    Pictures/Music/Movies — never reachable regardless of
-    //    allow-list config (unless the user typed the EXACT secret
-    //    path into their workspace allow-list, in which case
-    //    secret_deny excluded it above).
-    out.push_str("\n;; --- Hardcoded secret denies (allowlist backstop) ---\n");
-    for p in &secret_deny {
-        out.push_str(&format!("(deny file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
-        out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
-    }
-
-    // ── Allow-list re-open under hard-deny parents. Same logic as
-    //    before: clicking Allow on `$HOME/Library/Application
-    //    Support/Arc/User Data` re-opens just that leaf so the rest
-    //    of `.../Arc` (the deny parent) stays denied.
-    let mut reopens: Vec<&String> = Vec::new();
-    for u in user_allowed.iter().chain(agent_allowed.iter()) {
-        for d in builtin_deny_paths(&home).iter() {
-            if u.len() > d.len()
-                && u.starts_with(d)
-                && u.as_bytes().get(d.len()) == Some(&b'/')
-            {
-                reopens.push(u);
-                break;
-            }
+    // ── Read-only runtime paths (read, NEVER write). e.g.
+    //    ~/.ssh/known_hosts: needed by git/gh fetch, but write access would
+    //    let the agent forge host keys. No write rule is emitted for these.
+    out.push_str("\n;; --- Read-only runtime paths ---\n");
+    for p in builtin_runtime_readonly_paths(&home) {
+        if emitted.insert(p.clone()) {
+            out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(&p)));
         }
-    }
-    if !reopens.is_empty() {
-        out.push_str("\n;; --- Allow-list re-opens (under hard-deny parents) ---\n");
-        for u in &reopens {
-            out.push_str(&format!("(allow file-read*  (subpath \"{}\"))\n", sbpl_escape(u)));
-            out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(u)));
+        let canon = canonicalize_or_keep(&p);
+        if canon != p && !canon.is_empty() && emitted.insert(canon.clone()) {
+            out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(&canon)));
         }
     }
 
+    // NO secret deny-list and NO re-open machinery: this is a pure
+    // allow-list. Anything not carved out above is denied by the
+    // header's `(deny default)` — including metadata/existence — so
+    // there is nothing to "re-open" and nothing to back-stop.
 
     out.push_str("\n;; --- Network: only loopback to our in-process proxy ---\n");
     out.push_str("(deny network*)\n");
@@ -794,6 +1146,34 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     }
 
     Ok(out)
+}
+
+/// MONITORING-mode profile: allow ALL filesystem ops but tag them with
+/// `(with report)` so the kernel logs each one (the path watcher tails
+/// these). Network is still pinned to the loopback proxy so every
+/// request is observable + classified — direct connections are denied
+/// last-match-wins, then loopback is re-allowed. Nothing is actually
+/// blocked from the agent's perspective except direct (proxy-bypassing)
+/// network, which well-behaved CLIs don't attempt (they honor
+/// http_proxy). The agent sees a fully permissive cage; we see
+/// everything it does.
+fn render_monitor_profile(_proxy_port: u16, _agent: &str) -> String {
+    // MONITORING observes, it does NOT block. Filesystem AND network are
+    // fully allowed (`allow default`), and every operation is reported to
+    // the unified log (the path watcher tails it). We deliberately do
+    // NOT re-deny network to force it through the proxy: that would break
+    // non-HTTP traffic the agent legitimately uses (git-over-SSH, raw
+    // sockets, gRPC). HTTP/HTTPS still routes through the loopback proxy
+    // via the injected http_proxy env, so it's logged + classified;
+    // everything else goes direct and just works. Net effect: Monitoring
+    // can't break what an unsandboxed agent could do.
+    let mut out = String::with_capacity(256);
+    out.push_str("(version 1)\n");
+    out.push_str(";; Termic MONITORING mode — allow + report every operation.\n");
+    out.push_str(";; Observes only; never blocks. HTTP/HTTPS are logged via the\n");
+    out.push_str(";; loopback proxy (http_proxy env); other traffic goes direct.\n");
+    out.push_str("(allow default (with report))\n");
+    out
 }
 
 /// Runtime paths every sandboxed agent NEEDS access to or it can't
@@ -845,14 +1225,14 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         // Most agents shell out to tools that end up here.
         format!("{home}/.local/bin"),
         // XDG_DATA_HOME. Modern cross-platform tools drop runtimes,
-        // interpreters, and package stores here: uv (Python interps
-        // — venv shims symlink in, so denying breaks dyld with
-        // "file system sandbox blocked open()" on libpython load),
-        // pipx, pnpm store, mise/asdf/rtx shims, fnm, JetBrains
-        // configs, etc. Per-tool allowlisting is endless. On macOS
-        // this dir is essentially unused by the OS, and the real
-        // secret stores (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc,
-        // ~/Library/Keychains) live elsewhere + are hard-denied.
+        // interpreters, and package stores here: uv (Python interps —
+        // venv shims symlink in, so denying breaks dyld on libpython
+        // load), pipx, pnpm store, mise/asdf/rtx shims, fnm, gem, coursier,
+        // JetBrains, etc. Per-tool allow-listing is endless and a miss now
+        // fails hard (EPERM at dyld) rather than soft, since there's no
+        // global metadata allow — so we keep the whole dir readable. The
+        // real secret stores (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc) live
+        // elsewhere and are simply not on the allow-list.
         format!("{home}/.local/share"),
         // gh CLI's non-secret state (device-id, cache). The credentials
         // file (~/.config/gh/hosts.yml) is hard-denied separately.
@@ -899,63 +1279,34 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         format!("{home}/.bash_logout"),
         format!("{home}/.inputrc"),
         format!("{home}/.profile"),
-        // ssh known_hosts is read by every git/gh fetch. Not a secret
-        // (just trust fingerprints); the secret keys are in ~/.ssh/
-        // which stays hard-denied. We allow JUST the file, not the dir.
+        // NOTE: ~/.ssh/known_hosts is NOT here — it's read-only (see
+        // builtin_runtime_readonly_paths). Putting it in this list would
+        // grant file-write* on a file under ~/.ssh, letting the agent
+        // forge/wipe host keys; with the deny-list gone, nothing else
+        // would stop that.
+    ]
+}
+
+/// Runtime paths the agent may READ but never WRITE. Kept separate from
+/// `builtin_runtime_paths` (which grants read+write) so we don't hand out
+/// write access to sensitive-adjacent files. ~/.ssh/known_hosts is read by
+/// every git/gh fetch (trust fingerprints), but write access would let a
+/// sandboxed agent inject a forged host key.
+fn builtin_runtime_readonly_paths(home: &str) -> Vec<String> {
+    vec![
         format!("{home}/.ssh/known_hosts"),
     ]
 }
 
-/// Hard-deny set for secret material. These ALWAYS apply, even if the
-/// user listed them in `sandbox_rw_paths` - last-write-wins in SBPL
-/// means the deny rules below cancel any prior allow.
-fn builtin_deny_paths(home: &str) -> Vec<String> {
-    vec![
-        // ── Credentials / secrets at rest (plaintext on disk) ──────
-        format!("{home}/.ssh"),
-        format!("{home}/.aws"),
-        format!("{home}/.gnupg"),
-        format!("{home}/.netrc"),
-        format!("{home}/.docker/config.json"),
-        format!("{home}/.kube"),
-        format!("{home}/.config/gh/hosts.yml"),
-        // ── Personal data the agent has NO business touching ───────
-        // Writes were broadly allowed because the Bun TUI in claude
-        // hangs when ANY write target EPERMs (months-long bisect
-        // notes in render_profile above). Compensating: explicit
-        // deny on the high-value targets the user actually cares
-        // about. Both read AND write get blocked - "the agent can't
-        // see my ~/Downloads, let alone overwrite it."
-        format!("{home}/Documents"),
-        format!("{home}/Desktop"),
-        format!("{home}/Downloads"),
-        format!("{home}/Movies"),
-        format!("{home}/Pictures"),
-        format!("{home}/Music"),
-        // ── Communications app data (Mail, Messages, Calendars) ────
-        format!("{home}/Library/Mail"),
-        format!("{home}/Library/Messages"),
-        format!("{home}/Library/Calendars"),
-        format!("{home}/Library/Containers/com.apple.mail"),
-        format!("{home}/Library/Containers/com.apple.iCal"),
-        // ── Browser data (cookies, history, saved passwords) ───────
-        format!("{home}/Library/Safari"),
-        format!("{home}/Library/Cookies"),
-        format!("{home}/Library/Application Support/Firefox"),
-        format!("{home}/Library/Application Support/Google/Chrome"),
-        format!("{home}/Library/Application Support/BraveSoftware"),
-        format!("{home}/Library/Application Support/Arc"),
-        // ── Shell histories often contain secrets (export X=y, etc) ─
-        format!("{home}/.zsh_history"),
-        format!("{home}/.bash_history"),
-        format!("{home}/.local/share/fish"),
-        // NOTE: ~/Library/Keychains is NOT in this list. The Keychain
-        // DB is encrypted at rest; the gatekeeper is securityd over
-        // Mach. Denying the file did nothing useful and broke claude's
-        // OAuth read path. Real Keychain protection would require
-        // denying mach-lookup on com.apple.securityd, which kills TLS.
-    ]
-}
+// NOTE: the old `builtin_deny_paths` hard-deny set (~/.ssh, ~/.aws,
+// browser data, shell histories, ~/Documents, …) was REMOVED when the
+// sandbox became a pure allow-list. Those paths are protected now by
+// simply not being on the allow-list — `(deny default)` blocks their
+// contents AND their metadata/enumeration. Trade-off: ~/.local/share is
+// allowed broadly (tool data stores), so anything a tool keeps there
+// (e.g. ~/.local/share/fish history) is readable; the genuinely secret
+// stores live elsewhere and stay off the allow-list. Keychains stay
+// reachable (encrypted; gated by securityd) exactly as before.
 
 /// True iff this OS supports the sandbox at all. macOS-only because
 /// the implementation uses sandbox-exec (Apple's Seatbelt frontend).
@@ -1072,6 +1423,15 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
     // sees a uniform format.
     hosts.extend(workspace.sandbox_allowed_hosts.iter().map(|w| wildcard_to_regex(w)));
 
+    // Per-agent allowed hosts from the registry (Settings → Agents),
+    // the network counterpart to the agent's sandbox_allowed_paths.
+    // "Allow · per agent" persists here so every workspace running this
+    // CLI inherits the host without re-clicking.
+    let settings = crate::load_settings_inner();
+    if let Some(a) = settings.agents.iter().find(|a| a.id == effective_cli) {
+        hosts.extend(a.sandbox_allowed_hosts.iter().map(|w| wildcard_to_regex(w)));
+    }
+
     dedupe(&mut hosts);
     let mut out = String::from("# Generated by termic sandbox for workspace ");
     out.push_str(&workspace.id);
@@ -1108,7 +1468,8 @@ pub fn host_patterns_for(workspace: &Workspace, agent_override: Option<&str>) ->
 ///
 /// Profile/filter files live in tempdir under predictable names so the
 /// user can inspect them when something denies surprisingly.
-pub fn provision(workspace: &Workspace, agent_override: Option<&str>) -> Result<SandboxBundle> {
+pub fn provision(workspace: &Workspace, agent_override: Option<&str>, mode: SandboxMode) -> Result<SandboxBundle> {
+    let monitor = mode == SandboxMode::Monitor;
     // Hard-fail early on platforms where Seatbelt doesn't exist.
     // The frontend should be gating on sandbox_available(), but
     // defense in depth - missing this check would crash the agent
@@ -1127,7 +1488,9 @@ pub fn provision(workspace: &Workspace, agent_override: Option<&str>) -> Result<
     // blocked, the kernel + proxy will refill the trackers within
     // milliseconds of the agent retrying.
     clear_path_denies(&workspace.id);
+    clear_path_access(&workspace.id);
     crate::proxy::clear_network_denies(&workspace.id);
+    crate::proxy::clear_network_access(&workspace.id);
     let tmp = std::env::temp_dir();
     let profile_path = tmp.join(format!("termic-sandbox-{}.sb", workspace.id));
     let filter_path  = tmp.join(format!("termic-proxy-{}.filter", workspace.id));
@@ -1137,12 +1500,15 @@ pub fn provision(workspace: &Workspace, agent_override: Option<&str>) -> Result<
     let _ = fs::write(&filter_path, render_filter_for(workspace, agent_override));
 
     let patterns = host_patterns_for(workspace, agent_override);
-    dlog(&format!("[sandbox/{}] provisioning, {} host patterns", workspace.id, patterns.len()));
-    let path_watcher = start_path_watcher(&workspace.id, &canonicalize_or_keep(&workspace.path));
+    dlog(&format!("[sandbox/{}] provisioning ({}), {} host patterns",
+        workspace.id, if monitor { "monitor" } else { "enforce" }, patterns.len()));
+    let policy = if monitor { compute_monitor_policy(workspace, agent_override) } else { MonitorPolicy::default() };
+    let ws_dirs = if monitor { workspace_exclude_dirs(workspace) } else { Vec::new() };
+    let path_watcher = start_path_watcher(&workspace.id, &canonicalize_or_keep(&workspace.path), ws_dirs, monitor, policy);
     if path_watcher.is_some() {
-        dlog(&format!("[sandbox/{}] path-deny watcher started", workspace.id));
+        dlog(&format!("[sandbox/{}] path {} watcher started", workspace.id, if monitor { "access" } else { "deny" }));
     }
-    let proxy = match proxy::start(patterns, workspace.id.clone()) {
+    let proxy = match proxy::start(patterns, workspace.id.clone(), monitor) {
         Ok(p) => {
             dlog(&format!("[sandbox/{}] proxy up on port {}", workspace.id, p.port));
             Some(p)
@@ -1154,7 +1520,7 @@ pub fn provision(workspace: &Workspace, agent_override: Option<&str>) -> Result<
     };
     let port = proxy.as_ref().map(|p| p.port).unwrap_or(0);
 
-    let profile = render_profile(workspace, port, agent_override)?;
+    let profile = render_profile(workspace, port, agent_override, mode)?;
     fs::write(&profile_path, &profile)
         .with_context(|| format!("write {}", profile_path.display()))?;
     dlog(&format!("[sandbox/{}] profile written: {}", workspace.id, profile_path.display()));
@@ -1204,123 +1570,6 @@ pub fn wrap_command(
     new_args.push(original_cmd.into());
     new_args.extend(original_args.iter().cloned());
     ("sandbox-exec".into(), new_args)
-}
-
-/// Result of one curl probe inside the workspace's sandbox.
-#[derive(serde::Serialize, Clone)]
-pub struct ProbeResult {
-    pub host: String,
-    pub expected: &'static str,   // "allow" | "deny"
-    pub ok: bool,                 // did the actual outcome match `expected`?
-    pub http_code: Option<u16>,
-    pub note: String,             // human-readable summary
-}
-
-/// End-to-end self-test for a workspace's sandbox: runs `curl` inside
-/// the cage against one host we expect to succeed (vendor API) and one
-/// we expect to fail (a non-listed host). Confirms both the seatbelt
-/// profile AND host allowlist are doing their jobs. Use from the
-/// WorkspaceSandboxDialog "Test" button so users don't have to take
-/// the cage on faith.
-pub fn run_self_test(workspace: &Workspace) -> Vec<ProbeResult> {
-    // Provision a fresh ephemeral bundle just for the test. We can't
-    // reuse the live agent's bundle (race), and this way the user
-    // can run the test even with no agent running. Bundle's Drop
-    // tears down the proxy thread when this function returns.
-    let bundle = match provision(workspace, None) {
-        Ok(b) => b,
-        Err(e) => return vec![
-            ProbeResult {
-                host: "—".into(), expected: "allow", ok: false,
-                http_code: None, note: format!("could not provision sandbox: {e}"),
-            },
-        ],
-    };
-
-    // Pick an allowed host that's in the per-CLI baseline so the test
-    // matches what the actual agent would experience. github.com is
-    // in the baseline for every CLI.
-    let allowed = "https://api.github.com";
-    // A host that nothing in our baseline allows. example.com is a
-    // standards-blessed reserved domain - safe to ping, won't match
-    // any of our regexes.
-    let denied  = "https://example.com";
-
-    vec![
-        probe(&bundle, allowed, "allow"),
-        probe(&bundle, denied,  "deny"),
-    ]
-}
-
-fn probe(bundle: &SandboxBundle, url: &str, expected: &'static str) -> ProbeResult {
-    let proxy_url = bundle.proxy.as_ref().map(|p| format!("http://127.0.0.1:{}", p.port));
-    // Run via sandbox-exec so the seatbelt + proxy combo is what we're
-    // actually testing. 5s timeout - curl with a denied host should
-    // hang on the proxy's 403 (instant) or get killed quickly anyway.
-    let mut cmd = Command::new("sandbox-exec");
-    cmd.arg("-f").arg(&bundle.profile_path).arg("env");
-    if let Some(ref pu) = proxy_url {
-        cmd.arg(format!("http_proxy={pu}"));
-        cmd.arg(format!("https_proxy={pu}"));
-        cmd.arg(format!("HTTP_PROXY={pu}"));
-        cmd.arg(format!("HTTPS_PROXY={pu}"));
-    }
-    cmd.arg("curl")
-        .arg("-sS")                       // silent except errors
-        .arg("--max-time").arg("5")
-        .arg("-o").arg("/dev/null")
-        .arg("-w").arg("%{http_code}\n")
-        .arg(url);
-
-    let out = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return ProbeResult {
-            host: url.into(), expected, ok: false, http_code: None,
-            note: format!("spawn failed: {e}"),
-        },
-    };
-    // curl writes "000" to %{http_code} when it never got any response
-    // (connection refused / TLS handshake aborted / DNS denied). Treat
-    // both a parse failure AND Some(0) as "no response" - earlier code
-    // happily reported `Some(0)` as a "denied host got through" because
-    // 0 parses fine but isn't a real HTTP code.
-    let parsed: Option<u16> = String::from_utf8_lossy(&out.stdout)
-        .trim().parse().ok();
-    let code: Option<u16> = match parsed { Some(0) => None, x => x };
-    let denied_by_proxy = code == Some(403);
-    let succeeded = matches!(code, Some(200..=399));
-
-    // curl's actual error text (Connection refused, Could not resolve,
-    // TLS handshake failure, ...) - the most useful diagnostic when
-    // the cage is misconfigured. -sS makes curl silent EXCEPT on
-    // errors, which land here.
-    let stderr_msg = String::from_utf8_lossy(&out.stderr)
-        .trim().lines().last().unwrap_or("").to_string();
-    let with_stderr = |base: String| -> String {
-        if stderr_msg.is_empty() { base } else { format!("{base}  ⟵ {stderr_msg}") }
-    };
-
-    let (ok, note) = match expected {
-        "allow" => {
-            if succeeded { (true, format!("HTTP {} (OK)", code.unwrap_or(0))) }
-            else {
-                let what = code.map(|c| format!("HTTP {c}"))
-                    .unwrap_or_else(|| "no response".into());
-                (false, with_stderr(format!("{what} — expected 2xx/3xx")))
-            }
-        }
-        _ /* deny */ => {
-            if denied_by_proxy { (true, "HTTP 403 (proxy blocked, as expected)".into()) }
-            // No response at all: kernel deny or proxy killed the
-            // connection. Either way the host was blocked - this is
-            // the success case for a deny probe, not a failure.
-            else if code.is_none() {
-                (true, "no response (blocked at proxy or kernel layer)".into())
-            }
-            else { (false, format!("HTTP {} — denied host got through! check allowlist", code.unwrap())) }
-        }
-    };
-    ProbeResult { host: url.into(), expected, ok, http_code: code, note }
 }
 
 /// Query macOS `log` for recent sandbox denials touching a workspace.
@@ -1582,6 +1831,72 @@ fn sbpl_regex_escape(s: &str) -> String {
 mod tests {
     use super::*;
 
+    // ── MONITORING allow-line parsing (mirrors the spike output) ──────
+
+    const ALLOW_LINE: &str =
+        "2026-06-07 20:39:36.008 Df kernel[0:19eeb8] (Sandbox) Sandbox: cat(14104) allow file-read-data /private/etc/hosts";
+    const DUP_LINE: &str =
+        "2026-06-07 20:39:36.008 Df kernel[0:19eeb8] (Sandbox) 3 duplicate report for Sandbox: cat(14104) allow file-read-data /bin/cat";
+    const IOCTL_LINE: &str =
+        "2026-06-07 20:39:36.008 Df kernel[0] (Sandbox) Sandbox: node(900) allow file-ioctl path:/dev/dtracehelper ioctl-command:(_IO \"h\" 4)";
+
+    #[test]
+    fn monitor_parses_pid_op_path() {
+        assert_eq!(monitor_pid_and_dup(ALLOW_LINE), Some((14104, 1)));
+        assert_eq!(extract_allow_op(ALLOW_LINE).as_deref(), Some("file-read-data"));
+        assert_eq!(extract_allow_proc(ALLOW_LINE).as_deref(), Some("cat"));
+        let op = extract_allow_op(ALLOW_LINE).unwrap();
+        assert_eq!(extract_allow_path(ALLOW_LINE, &op).as_deref(), Some("/private/etc/hosts"));
+    }
+
+    #[test]
+    fn monitor_counts_duplicate_reports() {
+        // "3 duplicate report for ..." → add 3 occurrences, pid still parsed.
+        assert_eq!(monitor_pid_and_dup(DUP_LINE), Some((14104, 3)));
+    }
+
+    #[test]
+    fn monitor_parses_ioctl_path_prefix() {
+        let op = extract_allow_op(IOCTL_LINE).unwrap();
+        assert_eq!(op, "file-ioctl");
+        assert_eq!(extract_allow_path(IOCTL_LINE, &op).as_deref(), Some("/dev/dtracehelper"));
+    }
+
+    #[test]
+    fn monitor_ignores_non_file_ops() {
+        let line = "... (Sandbox) Sandbox: cat(1) allow sysctl-read kern.bootargs";
+        assert_eq!(extract_allow_op(line), None);
+    }
+
+    // ── MonitorPolicy.would_block ─────────────────────────────────────
+
+    #[test]
+    fn would_block_classifies_pure_allowlist() {
+        let policy = MonitorPolicy {
+            rw_subpaths: vec!["/Users/x/proj".into()],
+            read_roots: vec!["/usr".into()],
+            rw_regexes: vec![regex::Regex::new(r"^/Users/x/\.claude(\.[^/]*|/.*)?$").unwrap()],
+        };
+        // regex allow (claude family): reads + writes never block.
+        assert!(!policy.would_block("/Users/x/.claude.json", "file-read-data"));
+        assert!(!policy.would_block("/Users/x/.claude.json.lock", "file-write-create"));
+        assert!(policy.would_block("/Users/x/.clauderc-other", "file-read-data"));
+        // Inside the workspace: never blocked (read or write).
+        assert!(!policy.would_block("/Users/x/proj/src/main.rs", "file-write-create"));
+        assert!(!policy.would_block("/Users/x/proj/src/main.rs", "file-read-data"));
+        // System root: reads allowed, writes denied.
+        assert!(!policy.would_block("/usr/lib/foo", "file-read-data"));
+        assert!(policy.would_block("/usr/lib/foo", "file-write-data"));
+        // Outside everything: content reads + writes denied.
+        assert!(policy.would_block("/Users/x/other/secret", "file-read-data"));
+        assert!(policy.would_block("/Users/x/.ssh/id_rsa", "file-read-data"));
+        // Metadata + existence are globally allowed in ENFORCING (needed
+        // for symlink traversal + stat), so they never count as would-block.
+        assert!(!policy.would_block("/Users/x/other/secret", "file-read-metadata"));
+        assert!(!policy.would_block("/Users/x/.ssh", "file-test-existence"));
+        assert!(!policy.would_block("/tmp", "file-read-metadata"));
+    }
+
     // ── wildcard_to_regex ─────────────────────────────────────────────
 
     #[test]
@@ -1746,36 +2061,18 @@ mod tests {
         assert_eq!(extract_deny_op(line), None);
     }
 
-    // ── builtin_deny_paths ───────────────────────────────────────────
+    // ── pure allow-list: no deny-list ─────────────────────────────────
 
     #[test]
-    fn deny_paths_contain_ssh() {
+    fn runtime_paths_include_xdg_data_home() {
         let home = "/Users/test";
-        let paths = builtin_deny_paths(home);
-        assert!(paths.contains(&format!("{home}/.ssh")));
-    }
-
-    #[test]
-    fn deny_paths_contain_aws() {
-        let home = "/Users/test";
-        let paths = builtin_deny_paths(home);
-        assert!(paths.contains(&format!("{home}/.aws")));
-    }
-
-    #[test]
-    fn deny_paths_contain_browsers() {
-        let home = "/Users/test";
-        let paths = builtin_deny_paths(home);
-        assert!(paths.contains(&format!("{home}/Library/Application Support/Google/Chrome")));
-        assert!(paths.contains(&format!("{home}/Library/Application Support/Arc")));
-    }
-
-    #[test]
-    fn deny_paths_no_keychains() {
-        // Keychains is intentionally NOT denied (encrypted DB, securityd gate).
-        let home = "/Users/test";
-        let paths = builtin_deny_paths(home);
-        assert!(!paths.contains(&format!("{home}/Library/Keychains")));
+        let rt = builtin_runtime_paths(home, "/Users/test/ws");
+        // XDG_DATA_HOME is allowed broadly so the many tool data stores
+        // under it (uv/pnpm/pipx/gem/…) work without per-tool allow-clicks.
+        assert!(rt.contains(&format!("{home}/.local/share")));
+        // Real secret stores are NOT runtime paths.
+        assert!(!rt.contains(&format!("{home}/.ssh")));
+        assert!(!rt.contains(&format!("{home}/.aws")));
     }
 
     // ── sbpl_escape ───────────────────────────────────────────────────

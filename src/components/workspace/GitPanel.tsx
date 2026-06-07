@@ -100,8 +100,11 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     if (cur && cur.changed > 0) return;
     const next = changedRepos[0] ?? repos[0];
     if (next && next.dir_name !== activeRepoDir) setActiveRepoDir(next.dir_name);
+    // activeRepoDir in deps so an empty selection (fresh Git-tab open /
+    // workspace switch) immediately snaps to the first changed repo. The
+    // pills only list changed repos, so this never overrides a real pick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [status, activeRepoDir]);
 
   // Reset transient form state on workspace switch.
   useEffect(() => {
@@ -114,7 +117,11 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const toggleHide = () => setHideUntracked(h => { const n = !h; persist(LS_HIDE, n ? "1" : "0"); return n; });
 
   const repo: GitRepo | undefined = repos.find(r => r.dir_name === activeRepoDir) ?? repos[0];
-  const clickable = repo?.kind !== "repo_root";
+  // Every group is diffable: the backend's resolve_workspace_git_path runs
+  // git in the group's OWN repo cwd (member.path), so repo_root members
+  // (live checkouts that live outside the wrapper subtree) resolve fine —
+  // safe_workspace_path is checked against that member cwd, not the wrapper.
+  const clickable = !!repo;
 
   const filt = (files: GitFile[]) => {
     let out = files;
@@ -242,8 +249,9 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const commitLabel = `Commit ${stagedCount} ${fileWord}${pushDefault ? " and Push" : ""}`;
 
   // Single click: select the row (keeps it highlighted + shows its stage
-  // button, Fork-style) and open the diff preview. Selection happens even
-  // for repo_root rows (no diff there, but the highlight is still useful).
+  // button, Fork-style) and open the diff preview. Works for every group
+  // including repo_root members — the backend diffs in the member's own
+  // repo cwd, so the file resolves even though it's outside the wrapper.
   void onDoubleClickDiff;
   const activate = (pane: "unstaged" | "staged", p: string) => {
     setSelected(`${pane} ${p}`);
@@ -258,7 +266,17 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           {changedRepos.map(r => (
             <button
               key={r.dir_name}
-              onClick={() => setActiveRepoDir(r.dir_name)}
+              onClick={() => {
+                if (r.dir_name === activeRepoDir) return;
+                setActiveRepoDir(r.dir_name);
+                // The open diff belongs to the previous repo — drop the
+                // selection and close the preview diff tab so we don't show
+                // a stale file from another repo.
+                setSelected(null);
+                const st = useApp.getState();
+                const diff = (st.tabs[ws.id] || []).find(t => t.preview && t.type === "diff");
+                if (diff) st.closeTab(ws.id, diff.id);
+              }}
               title={`${r.name} (${r.branch})`}
               className={cn(
                 "flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[12px] transition-colors",

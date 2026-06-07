@@ -2,6 +2,22 @@
 
 export type CLI = "claude" | "codex" | "agy" | "gemini" | "grok";
 
+/** Sandbox enforcement level. Mirrors Rust's `SandboxMode` (serialized
+ *  lowercase). `off` = no cage; `monitor` = allow everything but log
+ *  every file/network access; `enforce` = the real seatbelt cage. */
+export type SandboxMode = "off" | "monitor" | "enforce";
+
+/** Resolve a workspace's effective sandbox mode, bridging the legacy
+ *  `sandbox_enabled` bool for records written before monitoring shipped.
+ *  `sandbox_mode` wins when present. */
+export function effectiveSandboxMode(
+  ws: { sandbox_mode?: SandboxMode; sandbox_enabled?: boolean } | null | undefined,
+): SandboxMode {
+  if (!ws) return "off";
+  if (ws.sandbox_mode) return ws.sandbox_mode;
+  return ws.sandbox_enabled ? "enforce" : "off";
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -20,6 +36,10 @@ export interface Project {
    *  Existing workspaces aren't re-evaluated - their sandbox pin is
    *  captured at creation and immutable thereafter. */
   default_sandbox?: boolean;
+  /** Default sandbox MODE for new workspaces (off / monitor / enforce).
+   *  Additive over `default_sandbox`; when undefined the dialog derives
+   *  the default from `default_sandbox` (true → enforce). */
+  default_sandbox_mode?: SandboxMode;
   /** Extra writable subpaths added to the seatbelt profile, on top of
    *  the workspace path + agent config dirs + TMPDIR baked into the
    *  default. `$HOME` and `$WORKSPACE` are substituted at render time. */
@@ -121,6 +141,17 @@ export interface Workspace {
    *  it, archive the workspace and recreate. The UI shows a lock
    *  badge on sandboxed rows. */
   sandbox_enabled?: boolean;
+  /** Sandbox enforcement mode (off / monitor / enforce). Additive third
+   *  state over `sandbox_enabled`; when undefined (records written before
+   *  monitoring shipped) derive via `effectiveSandboxMode`. Unlike the
+   *  original immutability promise, the mode IS editable post-create via
+   *  the Sandbox dialog (a forced PTY restart applies it). */
+  sandbox_mode?: SandboxMode;
+  /** Per-workspace YOLO (auto-approve) flag, applied to every agent
+   *  launched here. Only meaningful when NOT enforce-sandboxed (Enforcing
+   *  auto-enables YOLO since the cage is the boundary). Replaces the old
+   *  global toggle. */
+  yolo?: boolean;
   /** Frozen-at-creation copies of the sandbox lists. The dialog seeds
    *  these from the project's defaults, the user adds/removes before
    *  Create, and from then on the workspace owns them. Editing the
@@ -155,6 +186,7 @@ export interface CreateMultiArgs {
   members: CreateMultiMember[];
   id?: string;
   sandbox_enabled?: boolean;
+  sandbox_mode?: SandboxMode;
   sandbox_rw_paths?: string[];
   sandbox_allowed_hosts?: string[];
 }
@@ -174,6 +206,9 @@ export interface CreateWorkspaceArgs {
    *  falls back to the project's `default_sandbox`. The pin is
    *  permanent - flip via archive + recreate, never via mutation. */
   sandbox_enabled?: boolean;
+  /** Sandbox mode pin (off / monitor / enforce). Additive over
+   *  `sandbox_enabled`; when present it wins. */
+  sandbox_mode?: SandboxMode;
   /** Per-workspace sandbox lists. The dialog seeds from the project's
    *  defaults, the user edits, the final shape lands here. Unset =
    *  Rust falls back to the project's defaults verbatim. */
@@ -240,6 +275,10 @@ export interface Agent {
    *  agent in Settings → Agents (affects every workspace using it).
    *  `$HOME` substitution happens at the Rust side. */
   sandbox_allowed_paths?: string[];
+  /** Per-agent allowed hosts (network counterpart to the paths above).
+   *  "Allow · per agent" appends here so every workspace using this CLI
+   *  inherits the host. */
+  sandbox_allowed_hosts?: string[];
   /** Whether work-done detection is active for this agent. Defaults to
    *  true. Flip to false for custom CLIs that emit signals in ways that
    *  cause false positives — disables the entire state machine (no badge,

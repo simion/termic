@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Workspace, CreateWorkspaceArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, FileEntry, Agent, RepoConfig,
+  SandboxMode,
 } from "./types";
 
 // ───────────────────────────── projects ─────────────────────────────
@@ -41,11 +42,12 @@ export const workspaceImportWorktree = (
   path: string,
   name?: string,
   cli?: string,
-  sandbox?: { enabled: boolean; rwPaths: string[]; allowedHosts: string[] },
+  sandbox?: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[] },
 ) =>
   invoke<Workspace>("workspace_import_worktree", {
     projectId, path, name, cli,
     sandboxEnabled: sandbox?.enabled,
+    sandboxMode: sandbox?.mode,
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
   });
@@ -58,6 +60,11 @@ export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("work
  *  restarts the agent tab. */
 export const workspaceSetCustomCommand = (id: string, command: string) =>
   invoke<Workspace>("workspace_set_custom_command", { id, command });
+/** Persist the per-workspace YOLO flag. Applied to every agent launched
+ *  in this workspace (next launch; live agents are flipped separately via
+ *  the agent's runtime YOLO command where supported). */
+export const workspaceSetYolo = (id: string, yolo: boolean) =>
+  invoke<void>("workspace_set_yolo", { id, yolo });
 /** Update the workspace's sandbox config. The Rust side SIGKILLs every
  *  live PTY for this workspace so the next mount picks up the new
  *  profile; the returned number is the count that was terminated -
@@ -94,7 +101,7 @@ export function onGrepDone(searchId: string, cb: (d: { truncated: boolean }) => 
 
 export const workspaceSetSandbox = (
   id: string,
-  enabled: boolean,
+  mode: SandboxMode,
   rwPaths: string[],
   allowedHosts: string[],
   /** SIGKILL live PTYs so they relaunch under the new profile.
@@ -103,7 +110,7 @@ export const workspaceSetSandbox = (
    *  next respawns. The dialog warns the user about this. */
   killLive: boolean = true,
 ) => invoke<number>("workspace_set_sandbox", {
-  id, enabled,
+  id, mode,
   rwPaths, allowedHosts,
   killLive,
 });
@@ -133,6 +140,40 @@ export interface DenyPath { path: string; count: number; last_seen_unix_ms: numb
 export const sandboxRecentDeniedPaths = (id: string) =>
   invoke<DenyPath[]>("sandbox_recent_denied_paths", { id });
 
+// ── MONITORING activity: every observed file op + network request,
+//    each with a `would_block` flag (= ENFORCING would have denied it).
+//    Backs the two-tab (Aggregate / Detailed) activity popover. ──
+
+/** Combined access totals (footer chip in MONITORING mode). */
+export const sandboxAccessCounts = (id: string) =>
+  invoke<SandboxDenyCounts>("sandbox_access_counts", { id });
+
+/** Set the MONITORING recording filters. These gate RECORDING (not just
+ *  display): excludeWs drops workspace-dir accesses; wbOnly records only
+ *  would-block ones. Prunes already-recorded entries the filters exclude. */
+export const sandboxSetMonitorFilters = (id: string, excludeWs: boolean, wbOnly: boolean) =>
+  invoke<void>("sandbox_set_monitor_filters", { id, excludeWs, wbOnly });
+
+/** One observed network request. `would_block` true = host not on the
+ *  allowlist (would be 403'd under ENFORCING). */
+export interface AccessHost {
+  host: string; port: number; count: number;
+  last_seen_unix_ms: number; would_block: boolean;
+}
+export const sandboxRecentAccessHosts = (id: string) =>
+  invoke<AccessHost[]>("sandbox_recent_access_hosts", { id });
+
+/** One observed filesystem access, keyed by (path, op). `op` is the
+ *  seatbelt operation token (file-read-data, file-write-create, …) —
+ *  the "mode" of access. `would_block` true = ENFORCING would deny it. */
+export interface AccessPath {
+  path: string; op: string; count: number;
+  last_seen_unix_ms: number; last_pid: number; last_proc: string;
+  would_block: boolean;
+}
+export const sandboxRecentAccessPaths = (id: string) =>
+  invoke<AccessPath[]>("sandbox_recent_access_paths", { id });
+
 /** Append a host to the workspace's allowed-hosts list AND respawn
  *  any live PTYs so the new profile takes effect. Returns the number
  *  of agents that were killed. Backs the "Allow" button next to each
@@ -149,6 +190,14 @@ export const workspaceSandboxAddAllowedPath = (id: string, path: string) =>
  *  sandbox_rw_paths list (matches both raw and $HOME-tokenized form). */
 export const workspaceSandboxRemoveAllowedPath = (id: string, path: string) =>
   invoke<void>("workspace_sandbox_remove_allowed_path", { id, path });
+
+/** "Allow · per agent" — append a path/host to the AGENT registry so
+ *  every workspace running that CLI (across all projects) inherits it.
+ *  Picked up at the next agent restart. */
+export const agentSandboxAddAllowedPath = (agentId: string, path: string) =>
+  invoke<void>("agent_sandbox_add_allowed_path", { agentId, path });
+export const agentSandboxAddAllowedHost = (agentId: string, host: string) =>
+  invoke<void>("agent_sandbox_add_allowed_host", { agentId, host });
 
 /** "Allow for this repo" — append a host to the repo's committed
  *  `.termic.yaml` (shared with the team, read by the termic CLI).
@@ -184,32 +233,6 @@ export const repoConfigScaffold = (projectId: string) =>
  *  sandboxed workspace. */
 export const workspaceRecentDenials = (id: string, minutes?: number) =>
   invoke<string[]>("workspace_recent_denials", { id, minutes });
-
-/** One probe result from `workspace_test_sandbox`. */
-export interface ProbeResult {
-  host: string;
-  expected: "allow" | "deny";
-  ok: boolean;
-  http_code: number | null;
-  note: string;
-}
-/** End-to-end sandbox self-test: runs curls inside an ephemeral
- *  sandbox bundle of this workspace; one to an allowed host, one to a
- *  denied host. Returns both outcomes so the user can verify the cage
- *  is actually closed. */
-/** Self-test the workspace's sandbox. Optional list args override
- *  the saved workspace config so the dialog can test PENDING edits
- *  (textarea contents) instead of last-saved state. Omit them to
- *  test what's on disk. */
-export const workspaceTestSandbox = (
-  id: string,
-  candidate?: { rwPaths: string[]; allowedHosts: string[] },
-) =>
-  invoke<ProbeResult[]>("workspace_test_sandbox", {
-    id,
-    rwPaths: candidate?.rwPaths,
-    allowedHosts: candidate?.allowedHosts,
-  });
 
 // Sandbox status is now returned synchronously by `ptySpawn` (see
 // SpawnResult above). The old `sandbox-status://<id>` event was dropped

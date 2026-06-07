@@ -9,14 +9,14 @@ import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Checkbox } from "@/components/ui/Checkbox";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
-import { workspaceCreate, workspaceCreateMulti, settingsLoad, workspaceImportableWorktrees, workspaceImportWorktree } from "@/lib/ipc";
+import { workspaceCreate, workspaceCreateMulti, settingsLoad, workspaceImportableWorktrees, workspaceImportWorktree, sandboxAvailable } from "@/lib/ipc";
 import { slugify, cn } from "@/lib/utils";
-import { Check, Loader2, AlertTriangle, Shield, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
+import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
+import { SandboxModeSelector } from "@/components/SandboxModeSelector";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
-import type { MemberMode, ImportableWorktree } from "@/lib/types";
+import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
 const PREFIXES = ["feature", "hotfix", "__custom__"] as const;
@@ -54,7 +54,17 @@ export function NewWorkspaceDialog() {
   const [base, setBase] = useState("");
   // Sandbox pin captured at creation. Defaults from project, can be
   // overridden for this one workspace, then is permanent post-create.
-  const [sandbox, setSandbox] = useState(false);
+  const [sandboxMode, setSandboxMode] = useState<SandboxMode>("off");
+  // Sandbox is macOS-only. On unsupported platforms, disable monitor/
+  // enforce in the selector and force the pin to "off" so we never save
+  // an unsupported mode that would only fail later at spawn.
+  const [osSandboxOk, setOsSandboxOk] = useState<boolean | null>(null);
+  useEffect(() => { sandboxAvailable().then(setOsSandboxOk).catch(() => setOsSandboxOk(false)); }, []);
+  useEffect(() => {
+    if (osSandboxOk === false && sandboxMode !== "off") setSandboxMode("off");
+  }, [osSandboxOk, sandboxMode]);
+  // Derived: any cage on. Drives the 2-column layout + "send lists" gating.
+  const sandbox = sandboxMode !== "off";
   // The sandbox lists. Initialized from the
   // project's defaults whenever projectId changes; the user edits
   // freely until Create. Stored as multi-line text - we convert to
@@ -148,7 +158,7 @@ export function NewWorkspaceDialog() {
     // edits in this dialog land on the workspace ONLY, never on
     // the project.
     const globalDefault = usePrefs.getState().globalDefaultSandbox;
-    setSandbox(!!p?.default_sandbox || globalDefault);
+    setSandboxMode(p?.default_sandbox_mode ?? ((!!p?.default_sandbox || globalDefault) ? "enforce" : "off"));
     // Seed with project's lists immediately; once Settings loads,
     // merge global defaults on top (dedupe-preserving order).
     setSbRw((p?.sandbox_rw_paths ?? []).join("\n"));
@@ -286,7 +296,7 @@ export function NewWorkspaceDialog() {
       const splitLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
       const w = await workspaceImportWorktree(
         projectId, importSelected, name.trim(), cli,
-        { enabled: sandbox, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
+        { enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
       );
       await loadAll();
       setActive(w.id);
@@ -356,6 +366,7 @@ export function NewWorkspaceDialog() {
             base_branch: m.mode === "worktree" ? (m.base_branch.trim() || undefined) : undefined,
           })),
           sandbox_enabled: sandbox,
+          sandbox_mode: sandboxMode,
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
         });
@@ -368,6 +379,7 @@ export function NewWorkspaceDialog() {
           base_branch: base.trim() || null,
           branch: branch.trim(),
           sandbox_enabled: sandbox,
+          sandbox_mode: sandboxMode,
           // Only send lists when sandbox is on - keeps the JSON tidy
           // for unsandboxed workspaces (they don't need these saved).
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
@@ -662,32 +674,7 @@ export function NewWorkspaceDialog() {
             a verb flip on the button. Pinned at creation - lists
             below freeze onto the workspace and can't be edited after
             (archive + recreate to change). */}
-        <button
-          type="button"
-          onClick={() => setSandbox(!sandbox)}
-          className={cn(
-            "flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left transition-colors",
-            sandbox
-              ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 hover:bg-[var(--color-ok)]/15"
-              : "border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-accent-soft)]",
-          )}
-        >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <Shield
-              className={cn("h-4 w-4 shrink-0", sandbox ? "text-[var(--color-ok)]" : "text-[var(--color-fg-faint)]")}
-              fill={sandbox ? "currentColor" : "none"}
-            />
-            <div className="flex flex-col min-w-0">
-              <span className="text-[13.5px] font-medium text-[var(--color-fg)]">Enable sandbox</span>
-              <span className="text-[12px] text-[var(--color-fg-dim)] truncate">
-                {sandbox
-                  ? "Agent runs caged + traffic through allowlist proxy. Pinned at creation."
-                  : "Restrict filesystem + network. Pinned at creation."}
-              </span>
-            </div>
-          </div>
-          <Checkbox checked={sandbox} onChange={setSandbox} />
-        </button>
+        <SandboxModeSelector value={sandboxMode} onChange={setSandboxMode} osUnavailable={osSandboxOk === false} compact />
       </div>
 
       {/* Right column: sandbox config form, only when enabled.

@@ -556,6 +556,16 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           />
         </Field>
         <Field
+          label="Sandbox allowed hosts"
+          hint="One host per line; * is a wildcard (e.g. *.mycompany.com). Joined into every workspace sandbox that uses this agent. This is where 'Allow · per agent' in the activity popover saves hosts."
+        >
+          <PathsTextarea
+            value={agent.sandbox_allowed_hosts ?? []}
+            onChange={(sandbox_allowed_hosts) => onPatch({ sandbox_allowed_hosts })}
+            placeholder={"*.mycompany.com\nbitbucket.org"}
+          />
+        </Field>
+        <Field
           label="Work-done detection"
           hint="When off, the done badge, bell, and OS notification are never shown for this agent. Disable for custom CLIs that emit signals in ways that cause false positives."
         >

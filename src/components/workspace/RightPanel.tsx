@@ -168,9 +168,12 @@ export function RightPanel() {
   // ── spotlight ──────────────────────────────────────────────────
   // Available for single-repo, non-root, spotlight-enabled workspaces.
   const isSpotlighted = useApp(s => ws ? s.spotlightWsId[ws.project_id] === ws.id : false);
+  // Spotlight syncs a worktree's changes back to the repo root, so it's
+  // worktree-only: never for repo-root, multi-repo, or non-git workspaces.
   const spotlightAvailable = !!ws && !ws.is_repo_root
     && !!project?.spotlight_enabled
-    && project?.type !== "multi";
+    && project?.type !== "multi"
+    && !project?.non_git;
 
   // Sync log: array of timestamped entries shown in the Spotlight tab.
   const [spotlightLog, setSpotlightLog] = useState<Array<{ time: Date; msg: string; error?: boolean }>>([]);
@@ -245,6 +248,14 @@ export function RightPanel() {
   // "run" (the initial default), redirect to "spotlight" immediately.
   useEffect(() => {
     if (spotlightAvailable && footTab === "run") setFootTab("spotlight");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotlightAvailable]);
+  // Inverse: spotlight is worktree-only. If a "spotlight" tab carried over
+  // from a worktree workspace and we land on one where it's NOT available
+  // (repo-root, multi-repo, non-git), snap back to Run so the spotlight
+  // panel can't leak onto a workspace it makes no sense for.
+  useEffect(() => {
+    if (!spotlightAvailable && footTab === "spotlight") setFootTab("run");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spotlightAvailable]);
 
@@ -538,7 +549,7 @@ export function RightPanel() {
             />
           )}
           {/* Right-side controls depend on tab + spotlight state */}
-          {footTab === "spotlight" && isSpotlighted ? (
+          {spotlightAvailable && footTab === "spotlight" && isSpotlighted ? (
             // Active: Resync + Stop
             <div className="ml-auto flex shrink-0 items-center gap-1">
               <button
@@ -556,7 +567,7 @@ export function RightPanel() {
                 Stop
               </button>
             </div>
-          ) : footTab === "spotlight" && !isSpotlighted ? (
+          ) : spotlightAvailable && footTab === "spotlight" && !isSpotlighted ? (
             // Idle: CTA Start button on the right
             <div className="ml-auto flex shrink-0 items-center">
               <button
@@ -585,14 +596,14 @@ export function RightPanel() {
         {!footCollapsed && (
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {/* Spotlight content — idle (start button) or active (log + run) */}
-            {footTab === "spotlight" && (
+            {spotlightAvailable && footTab === "spotlight" && (
               <SpotlightContent
                 isSpotlighted={isSpotlighted}
                 log={spotlightLog}
                 onStart={handleSpotlightStart}
               />
             )}
-            {footTab !== "term" && footTab !== "spotlight" && showRunTab && (() => {
+            {footTab !== "term" && !(spotlightAvailable && footTab === "spotlight") && showRunTab && (() => {
               const activeMember = ws.composition?.find(m => m.dir_name === footTarget);
               const activeProjectId = activeMember?.project_id ?? ws.project_id;
               const hasRunScript = !!(activeMember

@@ -123,6 +123,9 @@ interface AppState {
    *  workspace AND any open custom-command tabs so the next PTY respawn
    *  runs the new script (the disk write alone doesn't refresh either). */
   setWorkspaceCustomCommand: (wsId: string, command: string) => void;
+  /** Optimistically set a workspace's YOLO flag in the store. The caller
+   *  persists via ipc.workspaceSetYolo. */
+  setWorkspaceYolo: (wsId: string, yolo: boolean) => void;
   addTab: (wsId: string, tab: Tab) => void;
   /** Move `tabId` to `toIndex` — its final position in the list AFTER the
    *  tab is pulled out (i.e. an index into the other tabs, 0..length-1).
@@ -488,6 +491,9 @@ export const useApp = create<AppState>((set, get) => ({
     }),
   })),
 
+  setWorkspaceYolo: (wsId, yolo) => set(s => ({
+    workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, yolo } : w),
+  })),
   setWorkspaceCustomCommand: (wsId, command) => set(s => {
     const tabs = s.tabs[wsId];
     // Re-seed any custom-command tab so a future respawn re-runs the

@@ -67,6 +67,12 @@ pub struct Project {
     /// later only affects FUTURE workspaces.
     #[serde(default)]
     pub default_sandbox: bool,
+    /// Default sandbox MODE for new workspaces (additive over
+    /// `default_sandbox`). When `None`, falls back to
+    /// `default_sandbox` (true → Enforce). Lets a project default new
+    /// workspaces to Monitoring.
+    #[serde(default)]
+    pub default_sandbox_mode: Option<SandboxMode>,
     /// Extra writable subpaths beyond the bake-in defaults (workspace
     /// path, agent config dirs, /private/tmp). Absolute paths; `$HOME`
     /// and `$WORKSPACE` are substituted at render time. List, not a
@@ -155,6 +161,22 @@ pub enum ProjectType {
     Multi,
 }
 
+/// Sandbox enforcement level for a workspace's agent PTY. The third
+/// value (`Monitor`) is additive — `Off` and `Enforce` keep their exact
+/// prior behavior; legacy records that only have the `sandbox_enabled`
+/// bool map to `Off`/`Enforce` via `Workspace::effective_sandbox_mode`.
+///   Off     — no cage (full filesystem + network).
+///   Monitor — allow everything but LOG every file op + network request.
+///   Enforce — the real cage (seatbelt deny-by-default + host allowlist).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxMode {
+    #[default]
+    Off,
+    Monitor,
+    Enforce,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Workspace {
@@ -206,6 +228,21 @@ pub struct Workspace {
     /// archive and recreate with the toggle off (or vice versa).
     #[serde(default)]
     pub sandbox_enabled: bool,
+    /// Sandbox enforcement level. Additive third state on top of the
+    /// legacy `sandbox_enabled` bool. `None` on records written before
+    /// monitoring shipped — `effective_sandbox_mode()` derives the mode
+    /// from `sandbox_enabled` in that case. Written on every create /
+    /// edit going forward; `sandbox_enabled` is kept in sync (= mode !=
+    /// Off) so all the existing "is there a cage" checks still work.
+    #[serde(default)]
+    pub sandbox_mode: Option<SandboxMode>,
+    /// Per-workspace YOLO (auto-approve / bypass-permissions) flag.
+    /// Applied to EVERY agent launched in this workspace. Only meaningful
+    /// when the workspace is NOT enforce-sandboxed — under Enforcing the
+    /// seatbelt is the boundary and YOLO is auto-on regardless. Replaces
+    /// the old global YOLO toggle so the choice is saved per workspace.
+    #[serde(default)]
+    pub yolo: bool,
     /// Frozen-at-creation copies of the sandbox lists. Seeded from the
     /// project's defaults in `workspace_create`, but the workspace owns
     /// them from then on - editing the project later doesn't reach back
@@ -230,6 +267,17 @@ pub struct Workspace {
     /// on every respawn / app restart.
     #[serde(default)]
     pub custom_command: Option<String>,
+}
+
+impl Workspace {
+    /// Resolve the effective sandbox mode, bridging the legacy
+    /// `sandbox_enabled` bool for records written before monitoring
+    /// shipped. `sandbox_mode` wins when present.
+    pub fn effective_sandbox_mode(&self) -> SandboxMode {
+        self.sandbox_mode.unwrap_or(
+            if self.sandbox_enabled { SandboxMode::Enforce } else { SandboxMode::Off }
+        )
+    }
 }
 
 /// One entry in a multi-repo workspace's composition. The host repo
@@ -303,6 +351,11 @@ pub struct CreateWorkspaceArgs {
     /// (`Project.default_sandbox`) wins.
     #[serde(default)]
     pub sandbox_enabled: Option<bool>,
+    /// Sandbox MODE pin (off / monitor / enforce). Additive over
+    /// `sandbox_enabled`; when present it wins. Unset → derive from
+    /// `sandbox_enabled` / project default.
+    #[serde(default)]
+    pub sandbox_mode: Option<SandboxMode>,
     /// Optional overrides for the per-workspace sandbox lists. The
     /// dialog seeds them from the project's defaults, lets the user
     /// add/remove, then sends the final shape here. Unset → fall
@@ -619,7 +672,7 @@ fn pty_spawn(
         .workspace_id
         .as_deref()
         .and_then(|wid| load_workspaces().into_iter().find(|w| w.id == wid))
-        .filter(|w| w.sandbox_enabled)
+        .filter(|w| w.effective_sandbox_mode() != SandboxMode::Off)
         // Re-render the allow-lists each spawn so committed
         // `.termic.yaml` edits are picked up live, unioned with the
         // personal (workspace/project/global) layers. See
@@ -631,13 +684,13 @@ fn pty_spawn(
             ws
         })
     {
-        Some(ws) => match sandbox::provision(&ws, args.agent_id.as_deref()) {
+        Some(ws) => match sandbox::provision(&ws, args.agent_id.as_deref(), ws.effective_sandbox_mode()) {
             Ok(bundle) => {
                 let port = bundle.proxy.as_ref().map(|p| p.port).unwrap_or(0);
                 let effective_cli = args.agent_id.as_deref().unwrap_or(&ws.cli);
                 dlog(&format!(
-                    "[pty_spawn] sandbox=ON ws={} cli={} proxy_port={} profile={}",
-                    ws.id, effective_cli, port, bundle.profile_path.display(),
+                    "[pty_spawn] sandbox={:?} ws={} cli={} proxy_port={} profile={}",
+                    ws.effective_sandbox_mode(), ws.id, effective_cli, port, bundle.profile_path.display(),
                 ));
                 let (c, a) = sandbox::wrap_command(&bundle, &args.cmd, &args.args);
                 dlog(&format!("[pty_spawn] wrapped: {c} {a:?}"));
@@ -935,6 +988,7 @@ fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, Stri
         // sets in sandbox.rs already cover the common cases; the per-
         // project Vec fields are for project-specific extras.
         default_sandbox: false,
+        default_sandbox_mode: None,
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         // Default to single-repo. project_add_multi is the entry
@@ -1030,16 +1084,39 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         } else { trimmed_path.to_string() };
         let pb = PathBuf::from(&expanded);
         if !pb.exists() {
-            return Err(format!("{} does not exist", expanded));
-        }
-        if non_git {
-            if !pb.is_dir() {
-                return Err(format!("{} is not a directory", expanded));
+            // Target dir doesn't exist yet: create it on submit instead of
+            // erroring. Mirrors the empty-path auto-create — mkdir, and for
+            // a git host, git init + seed a CLAUDE.md + an initial commit
+            // so worktrees can branch off a real HEAD later.
+            fs::create_dir_all(&pb).map_err(|e| format!("create {expanded} failed: {e}"))?;
+            let claude = pb.join("CLAUDE.md");
+            if !claude.exists() {
+                let body = format!(
+                    "# {}\n\nShared knowledge for the {} multi-repo project.\nThis file is loaded by every workspace under it.\n",
+                    trimmed_name, trimmed_name,
+                );
+                fs::write(&claude, body).map_err(|e| e.to_string())?;
             }
-        } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
-            return Err(format!("{} is not a git repo. Tick \"Host is not a git repo\" to use it as a plain folder.", expanded));
+            if !non_git {
+                git(&["init", "-q"], &pb).map_err(|e| format!("git init failed: {e}"))?;
+                let _ = git(&["symbolic-ref", "HEAD", "refs/heads/main"], &pb);
+                git(&["-c", "user.email=termic@local", "-c", "user.name=Termic",
+                      "add", "CLAUDE.md"], &pb).ok();
+                git(&["-c", "user.email=termic@local", "-c", "user.name=Termic",
+                      "commit", "-q", "-m", "init: termic multi-repo host"], &pb)
+                    .map_err(|e| format!("git commit failed: {e}"))?;
+            }
+            pb
+        } else {
+            if non_git {
+                if !pb.is_dir() {
+                    return Err(format!("{} is not a directory", expanded));
+                }
+            } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
+                return Err(format!("{} is not a git repo. Tick \"Host is not a git repo\" to use it as a plain folder.", expanded));
+            }
+            pb
         }
-        pb
     };
 
     let mut list = load_projects();
@@ -1081,6 +1158,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         default_cli: "claude".into(),
         created: chrono::Utc::now().to_rfc3339(),
         default_sandbox: false,
+        default_sandbox_mode: None,
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         project_type: ProjectType::Multi,
@@ -1312,6 +1390,8 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         // button) - the seatbelt + proxy work identically against
         // the main checkout as against a worktree.
         sandbox_enabled: false,
+        sandbox_mode: Some(SandboxMode::Off),
+        yolo: false,
         sandbox_rw_paths: Vec::new(),
         sandbox_allowed_hosts: Vec::new(),
         composition,
@@ -1406,6 +1486,7 @@ fn workspace_importable_worktrees(project_id: String) -> Result<Vec<ImportableWo
 fn workspace_import_worktree(
     project_id: String, path: String, name: Option<String>, cli: Option<String>,
     sandbox_enabled: Option<bool>,
+    sandbox_mode: Option<SandboxMode>,
     sandbox_rw_paths: Option<Vec<String>>,
     sandbox_allowed_hosts: Option<Vec<String>>,
 ) -> Result<Workspace, String> {
@@ -1462,6 +1543,9 @@ fn workspace_import_worktree(
     let sandbox_enabled = sandbox_enabled.unwrap_or(
         proj.default_sandbox || repo_config_for(&proj).sandbox.enabled_by_default,
     );
+    let sandbox_mode = sandbox_mode.or(proj.default_sandbox_mode)
+        .unwrap_or(if sandbox_enabled { SandboxMode::Enforce } else { SandboxMode::Off });
+    let sandbox_enabled = sandbox_mode != SandboxMode::Off;
     let sandbox_rw_paths = sandbox_rw_paths
         .unwrap_or_else(|| merge(&globals.sandbox_default_rw_paths, &proj.sandbox_rw_paths));
     let sandbox_allowed_hosts = sandbox_allowed_hosts
@@ -1486,6 +1570,8 @@ fn workspace_import_worktree(
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
         sandbox_enabled,
+        sandbox_mode: Some(sandbox_mode),
+        yolo: false,
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         composition: Vec::new(),
@@ -1670,6 +1756,9 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     let sandbox_enabled = args.sandbox_enabled.unwrap_or(
         proj.default_sandbox || repo_config_for(&proj).sandbox.enabled_by_default,
     );
+    let sandbox_mode = args.sandbox_mode.or(proj.default_sandbox_mode)
+        .unwrap_or(if sandbox_enabled { SandboxMode::Enforce } else { SandboxMode::Off });
+    let sandbox_enabled = sandbox_mode != SandboxMode::Off;
     // Sandbox lists are frozen at creation. The dialog seeds them
     // from the project's defaults (the user may have added/removed
     // before clicking Create); whatever it sends is what we store.
@@ -1709,6 +1798,8 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
         sandbox_enabled,
+        sandbox_mode: Some(sandbox_mode),
+        yolo: false,
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         // Single-project workspaces leave composition empty. Multi-
@@ -1768,6 +1859,8 @@ pub struct CreateMultiArgs {
     pub id: Option<String>,
     #[serde(default)]
     pub sandbox_enabled: Option<bool>,
+    #[serde(default)]
+    pub sandbox_mode: Option<SandboxMode>,
     #[serde(default)]
     pub sandbox_rw_paths: Option<Vec<String>>,
     #[serde(default)]
@@ -2035,6 +2128,9 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     // base set unions across every member project too.
     let globals = load_settings_inner();
     let sandbox_enabled = args.sandbox_enabled.unwrap_or(host.default_sandbox);
+    let sandbox_mode = args.sandbox_mode.or(host.default_sandbox_mode)
+        .unwrap_or(if sandbox_enabled { SandboxMode::Enforce } else { SandboxMode::Off });
+    let sandbox_enabled = sandbox_mode != SandboxMode::Off;
     let mut base_rw: Vec<String> = Vec::new();
     let mut base_hosts: Vec<String> = Vec::new();
     let extend_unique = |target: &mut Vec<String>, src: &[String]| {
@@ -2073,6 +2169,8 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
         sandbox_enabled,
+        sandbox_mode: Some(sandbox_mode),
+        yolo: false,
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         composition,
@@ -2359,6 +2457,116 @@ fn sandbox_recent_denied_paths(id: String) -> Vec<DenyPath> {
     }).collect()
 }
 
+// ─── MONITORING activity (allow-everything-but-log mode) ──────────────
+// Parallel to the deny counters/lists above, but these surface EVERY
+// observed file op + network request (not just blocked ones), each with
+// a `would_block` flag = "ENFORCING mode would have denied this." Backs
+// the two-tab (Aggregate / Detailed) activity popover.
+
+/// Set the MONITORING recording filters for a workspace (from the
+/// activity popover's checkboxes). These gate RECORDING, not just display:
+/// `exclude_ws` drops accesses inside the workspace dir, `wb_only` records
+/// only would-block accesses. Prunes already-recorded entries that the
+/// newly-enabled filters exclude so the change is immediate + reclaims RAM.
+#[tauri::command]
+fn sandbox_set_monitor_filters(id: String, exclude_ws: bool, wb_only: bool) -> Result<(), String> {
+    let dirs = load_workspaces().into_iter().find(|w| w.id == id)
+        .map(|w| sandbox::workspace_exclude_dirs(&w))
+        .unwrap_or_default();
+    sandbox::set_monitor_filters(&id, exclude_ws, wb_only);
+    sandbox::prune_path_access(&id, exclude_ws, wb_only, &dirs);
+    Ok(())
+}
+
+/// Combined access totals for the footer chip in MONITORING mode.
+#[tauri::command]
+fn sandbox_access_counts(id: String) -> SandboxDenyCounts {
+    SandboxDenyCounts {
+        network: proxy::network_access_count(&id),
+        path:    sandbox::path_access_count(&id),
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct AccessHost {
+    host: String,
+    port: u16,
+    count: u64,
+    last_seen_unix_ms: f64,
+    would_block: bool,
+}
+#[tauri::command]
+fn sandbox_recent_access_hosts(id: String) -> Vec<AccessHost> {
+    proxy::network_access_list(&id).into_iter().map(|e| AccessHost {
+        host: e.host,
+        port: e.port,
+        count: e.count,
+        last_seen_unix_ms: e.last_seen_unix_ms as f64,
+        would_block: e.would_block,
+    }).collect()
+}
+
+#[derive(Clone, Serialize)]
+struct AccessPath {
+    path: String,
+    op: String,
+    count: u64,
+    last_seen_unix_ms: f64,
+    last_pid: u32,
+    last_proc: String,
+    would_block: bool,
+}
+#[tauri::command]
+fn sandbox_recent_access_paths(id: String) -> Vec<AccessPath> {
+    sandbox::path_access_list(&id).into_iter().map(|e| AccessPath {
+        path: e.path,
+        op: e.op,
+        count: e.count,
+        last_seen_unix_ms: e.last_seen_unix_ms as f64,
+        last_pid: e.last_pid,
+        last_proc: e.last_proc,
+        would_block: e.would_block,
+    }).collect()
+}
+
+// ── Per-AGENT allow (scope: "per agent") ──────────────────────────────
+// Writes to the agent registry (settings.json) so EVERY workspace
+// running this agent, across all projects, inherits the path/host. The
+// least-repetitive scope: the same CLI probes the same dirs/hosts
+// everywhere. Picked up live at the next spawn (render_profile /
+// render_filter read the agent registry each time). No PTY kill.
+
+#[tauri::command]
+fn agent_sandbox_add_allowed_path(agent_id: String, path: String) -> Result<(), String> {
+    let path = path.trim().to_string();
+    if path.is_empty() { return Err("empty path".into()); }
+    // Tokenize the leading $HOME for portability, matching how the agent
+    // registry's built-in paths are stored ($HOME/Library/...).
+    let stored = tokenize_home_prefix(&path);
+    let mut s = load_settings_inner();
+    let a = s.agents.iter_mut().find(|a| a.id == agent_id).ok_or("no such agent")?;
+    if !a.sandbox_allowed_paths.iter().any(|p| p == &stored) {
+        a.sandbox_allowed_paths.push(stored);
+    }
+    let f = settings_file().map_err(|e| e.to_string())?;
+    fs::write(f, serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn agent_sandbox_add_allowed_host(agent_id: String, host: String) -> Result<(), String> {
+    let host = host.trim().to_string();
+    if host.is_empty() { return Err("empty host".into()); }
+    let mut s = load_settings_inner();
+    let a = s.agents.iter_mut().find(|a| a.id == agent_id).ok_or("no such agent")?;
+    if !a.sandbox_allowed_hosts.iter().any(|h| h == &host) {
+        a.sandbox_allowed_hosts.push(host);
+    }
+    let f = settings_file().map_err(|e| e.to_string())?;
+    fs::write(f, serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Append a host to the workspace's `sandbox_allowed_hosts` list and
 /// save. Does NOT kill the live PTY — adding to the allowlist is
 /// strictly more permissive than what the running agent already has,
@@ -2410,14 +2618,9 @@ fn workspace_sandbox_add_allowed_path(
     // anyway). Only the LEADING prefix — `/Users/simion/Pictures` is
     // the user's home; embedded `/Users/...` elsewhere is left alone.
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    // Tokenized form for persistence ($HOME/...).
-    let stored = if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
-        path.replacen(&home, "$HOME", 1)
-    } else if !home.is_empty() && (path == "$HOME" || path.starts_with("$HOME/")) {
-        path.clone()
-    } else {
-        path.clone()
-    };
+    // Tokenized form for persistence ($HOME/...). Already-tokenized input
+    // passes through unchanged (no literal home prefix to match).
+    let stored = tokenize_home_prefix(&path);
     // Absolute form for the deny-tracker prune (the tracker stores
     // absolute paths from the kernel deny log). The frontend may have
     // sent either form depending on whether the click was on a
@@ -2451,9 +2654,12 @@ fn workspace_sandbox_add_allowed_path(
 }
 
 /// Undo of `workspace_sandbox_add_allowed_path`. Removes the path from
-/// the workspace's `sandbox_rw_paths` list. Used by the toast's Undo
-/// button after a click in the blocked-paths popover. Idempotent —
-/// removing a path that isn't in the list is a no-op success.
+/// BOTH the workspace's `sandbox_rw_paths` AND the project defaults —
+/// symmetric with the add, which lifts the entry into the project so
+/// future workspaces inherit it. Without the project removal, Undo would
+/// leave the project-level copy behind and future workspaces would still
+/// inherit the "reverted" allow. Used by the toast's Undo button.
+/// Idempotent — removing a path that isn't in either list is a no-op.
 #[tauri::command]
 fn workspace_sandbox_remove_allowed_path(
     _state: State<'_, PtyManager>, id: String, path: String,
@@ -2462,14 +2668,21 @@ fn workspace_sandbox_remove_allowed_path(
     if path.is_empty() { return Ok(()); }
     // Match both raw and $HOME-tokenized forms (the stored entry was
     // tokenized at add-time, but the caller may pass either).
-    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    let tokenized = if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
-        path.replacen(&home, "$HOME", 1)
-    } else { path.clone() };
+    let tokenized = tokenize_home_prefix(&path);
+    let matches = |p: &String| p != &path && p != &tokenized;
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
-    w.sandbox_rw_paths.retain(|p| p != &path && p != &tokenized);
+    w.sandbox_rw_paths.retain(matches);
+    let project_id = w.project_id.clone();
     save_workspace(w).map_err(|e| e.to_string())?;
+    // Mirror the add's project-lift: drop the entry from the project
+    // defaults too so the Undo is a true revert.
+    let mut projects = load_projects();
+    if let Some(p) = projects.iter_mut().find(|p| p.id == project_id) {
+        let before = p.sandbox_rw_paths.len();
+        p.sandbox_rw_paths.retain(matches);
+        if p.sandbox_rw_paths.len() != before { let _ = save_projects(&projects); }
+    }
     Ok(())
 }
 
@@ -2580,43 +2793,6 @@ async fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<Strin
     .unwrap_or_default()
 }
 
-/// Self-test the workspace's sandbox: provisions a fresh ephemeral
-/// bundle from the CANDIDATE config the caller passes in (so the
-/// dialog can test pending edits BEFORE the user commits to save),
-/// runs two curls (one allowed, one denied), reports the outcome.
-/// Async (provisioning starts the proxy thread + curl shells out) so
-/// we don't block the IPC handler thread.
-///
-/// Optional list args default to the saved workspace's lists - the
-/// caller can omit them when they want to test the on-disk config
-/// (e.g. before opening the dialog at all). When provided, they
-/// override the saved arrays, matching what the user is staring at
-/// in the textareas right now.
-#[tauri::command]
-async fn workspace_test_sandbox(
-    id: String,
-    rw_paths: Option<Vec<String>>,
-    allowed_hosts: Option<Vec<String>>,
-) -> Result<Vec<sandbox::ProbeResult>, String> {
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<sandbox::ProbeResult>, String> {
-        let mut ws = load_workspaces().into_iter().find(|w| w.id == id)
-            .ok_or("no such workspace")?;
-        // Overlay the candidate lists onto the in-memory copy ONLY.
-        // We never save - the user's "Save & restart" button is the
-        // only place workspace_set_sandbox gets called.
-        if let Some(rw) = rw_paths { ws.sandbox_rw_paths = rw; }
-        if let Some(hosts) = allowed_hosts { ws.sandbox_allowed_hosts = hosts; }
-        // Force sandbox_enabled=true for the test even if the
-        // candidate has it off - testing an off-sandbox is
-        // meaningless and `run_self_test`'s provision call would
-        // fail anyway. The actual ws.sandbox_enabled state on disk
-        // is untouched.
-        ws.sandbox_enabled = true;
-        Ok(sandbox::run_self_test(&ws))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
 
 /// Update a workspace's sandbox config and SIGKILL any live PTYs of
 /// that workspace so the next mount picks up the new profile. Returns
@@ -2633,14 +2809,17 @@ async fn workspace_test_sandbox(
 fn workspace_set_sandbox(
     state: State<'_, PtyManager>,
     id: String,
-    enabled: bool,
+    mode: SandboxMode,
     rw_paths: Vec<String>,
     allowed_hosts: Vec<String>,
     kill_live: bool,
 ) -> Result<usize, String> {
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
-    w.sandbox_enabled = enabled;
+    w.sandbox_mode = Some(mode);
+    // Keep the legacy bool in sync so every existing "is there a cage"
+    // check (footer, YOLO/Zap, pty_spawn) keeps working.
+    w.sandbox_enabled = mode != SandboxMode::Off;
     w.sandbox_rw_paths = rw_paths;
     w.sandbox_allowed_hosts = allowed_hosts;
     save_workspace(w).map_err(|e| e.to_string())?;
@@ -2674,6 +2853,18 @@ fn workspace_set_sandbox(
         let _ = pty_id;
     }
     Ok(count)
+}
+
+/// Set the per-workspace YOLO flag and persist. No PTY kill — it only
+/// affects how the NEXT agent is launched (the frontend separately
+/// flips a live agent via its runtime YOLO command when supported).
+#[tauri::command]
+fn workspace_set_yolo(id: String, yolo: bool) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    w.yolo = yolo;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Increment + persist the workspace's `spawn_count`. Historical metric
@@ -3451,7 +3642,11 @@ fn safe_workspace_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 fn workspace_file_read(id: String, path: String) -> Result<String, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let abs = safe_workspace_path(Path::new(&w.path), &path)?;
+    // Member-aware: a `<dir_name>/…` path resolves inside that member's repo
+    // (which may live outside the wrapper for repo_root members), matching
+    // the diff/finder/grep path scheme.
+    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
+    let abs = safe_workspace_path(&cwd, &rel)?;
     // Refuse binary or huge files for now — viewer is text-only.
     let meta = fs::metadata(&abs).map_err(|e| e.to_string())?;
     if meta.len() > 2_000_000 {
@@ -3468,7 +3663,8 @@ fn workspace_file_read(id: String, path: String) -> Result<String, String> {
 #[tauri::command]
 fn workspace_file_write(id: String, path: String, content: String) -> Result<(), String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let abs = safe_workspace_path(Path::new(&w.path), &path)?;
+    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
+    let abs = safe_workspace_path(&cwd, &rel)?;
     fs::write(&abs, content).map_err(|e| format!("write failed: {e}"))
 }
 
@@ -3480,34 +3676,48 @@ fn workspace_file_write(id: String, path: String, content: String) -> Result<(),
 #[derive(Serialize)]
 struct FileDiffSides { original: String, modified: String }
 
-#[tauri::command]
-fn workspace_file_diff_sides(id: String, path: String) -> Result<FileDiffSides, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let wt = PathBuf::from(&w.path);
-    let original = git(&["--no-pager", "show", &format!("HEAD:{path}")], &wt)
+fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, String), String> {
+    if let Some((member, remainder)) = w.composition.iter().find_map(|m| {
+        if path == m.dir_name {
+            Some((m, ""))
+        } else if let Some(rest) = path.strip_prefix(&format!("{}/", m.dir_name)) {
+            Some((m, rest))
+        } else {
+            None
+        }
+    }) {
+        if remainder.is_empty() {
+            return Err(format!("diff path must point to a file inside member '{}': {path}", member.dir_name));
+        }
+        return Ok((PathBuf::from(&member.path), remainder.to_string()));
+    }
+    Ok((PathBuf::from(&w.path), path.to_string()))
+}
+
+fn workspace_file_diff_sides_for_workspace(w: &Workspace, path: &str) -> Result<FileDiffSides, String> {
+    let (cwd, rel_path) = resolve_workspace_git_path(w, path)?;
+    let original = git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd)
         .unwrap_or_default();
-    let modified = match safe_workspace_path(&wt, &path) {
+    let modified = match safe_workspace_path(&cwd, &rel_path) {
         Ok(p) if p.exists() => fs::read_to_string(&p).unwrap_or_default(),
         _ => String::new(),
     };
     Ok(FileDiffSides { original, modified })
 }
 
-#[tauri::command]
-fn workspace_file_diff(id: String, path: String) -> Result<String, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let wt = PathBuf::from(&w.path);
-    // Tracked diff is safe because the path is forwarded to `git -C wt diff`
+fn workspace_file_diff_for_workspace(w: &Workspace, path: &str) -> Result<String, String> {
+    let (cwd, rel_path) = resolve_workspace_git_path(w, path)?;
+    // Tracked diff is safe because the path is forwarded to `git -C cwd diff`
     // which already constrains paths to the working tree. The untracked
     // fallback below DOES read straight from disk, so for THAT branch we
     // safe-resolve before reading.
-    let tracked_diff = git(&["--no-pager", "diff", "HEAD", "--", &path], &wt)
+    let tracked_diff = git(&["--no-pager", "diff", "HEAD", "--", &rel_path], &cwd)
         .unwrap_or_default();
     if !tracked_diff.trim().is_empty() {
         return Ok(tracked_diff);
     }
     // Maybe it's untracked — synthesize a "new file" diff.
-    let abs = match safe_workspace_path(&wt, &path) {
+    let abs = match safe_workspace_path(&cwd, &rel_path) {
         Ok(p) => p,
         Err(_) => return Ok(String::new()),
     };
@@ -3527,6 +3737,18 @@ fn workspace_file_diff(id: String, path: String) -> Result<String, String> {
         }
     }
     Ok(String::new())
+}
+
+#[tauri::command]
+fn workspace_file_diff_sides(id: String, path: String) -> Result<FileDiffSides, String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    workspace_file_diff_sides_for_workspace(&w, &path)
+}
+
+#[tauri::command]
+fn workspace_file_diff(id: String, path: String) -> Result<String, String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    workspace_file_diff_for_workspace(&w, &path)
 }
 
 #[tauri::command]
@@ -3620,16 +3842,32 @@ fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String>
 async fn workspace_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-        let out = std::process::Command::new("git")
-            .args(["ls-files", "--cached", "--others", "--exclude-standard"])
-            .current_dir(&w.path)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        // List tracked + untracked files in a repo, prefixing each with
+        // `prefix` (empty for the host; `<dir_name>/` for members) so member
+        // paths resolve from the wrapper. A repo that won't list (non-git,
+        // missing) just contributes nothing rather than failing the finder.
+        let ls = |dir: &str, prefix: &str| -> Vec<String> {
+            match std::process::Command::new("git")
+                .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+                .current_dir(dir)
+                .output()
+            {
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| format!("{prefix}{l}"))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        };
+        // Host repo first, then each multi-repo member (serially).
+        let mut files = ls(&w.path, "");
+        for m in &w.composition {
+            if Path::new(&m.path).exists() {
+                files.extend(ls(&m.path, &format!("{}/", m.dir_name)));
+            }
         }
-        let s = String::from_utf8_lossy(&out.stdout);
-        Ok(s.lines().map(|l| l.to_string()).collect())
+        Ok(files)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4563,6 +4801,15 @@ fn workspace_grep_start(
 
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such ws")?;
     let cwd = std::path::PathBuf::from(&w.path);
+    // Search the host repo first, then each multi-repo member, serially.
+    // Member result paths are prefixed with `<dir_name>/` so they resolve
+    // from the wrapper (matching the diff / finder path scheme). Single-repo
+    // workspaces just have the one host entry.
+    let mut repos: Vec<(std::path::PathBuf, String)> = vec![(cwd.clone(), String::new())];
+    for m in &w.composition {
+        let mp = std::path::PathBuf::from(&m.path);
+        if mp.exists() { repos.push((mp, format!("{}/", m.dir_name))); }
+    }
     let emit_done = format!("grep-done://{search_id}");
     let emit_out  = format!("grep-result://{search_id}");
 
@@ -4585,45 +4832,17 @@ fn workspace_grep_start(
     let search_id_o = search_id.clone();
 
     thread::spawn(move || {
-        // -n: line numbers, --column: column number, -I: skip binary,
-        // -F: literal (no regex surprises while typing), -i: case-insensitive,
-        // --untracked --exclude-standard: include new files, still respect
-        // .gitignore. process_group(0) so we can kill the whole tree.
-        let spawn = std::process::Command::new("git")
-            .args([
-                "grep",
-                "-n", "--column", "-I", "-F", "-i",
-                "--untracked", "--exclude-standard",
-                "--no-color",
-                "-e", &query,
-            ])
-            .current_dir(&cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
-        let mut child = match spawn {
-            Ok(c) => c,
-            Err(_) => {
-                let _ = app_o.emit(&emit_done, serde_json::json!({ "truncated": false }));
-                return;
-            }
-        };
-        let pid = child.id() as i32;
-        running_greps_swap(&ws_id_o, Some(pid));
-
-        // 500 lines is enough to be useful (~10 screens of results) without
-        // overwhelming the renderer or the IPC channel. Past this we kill
-        // the child and tell the UI to show a "truncated" notice.
+        // git grep flags: -n line numbers, --column column, -I skip binary,
+        // -F literal, -i case-insensitive, --untracked --exclude-standard
+        // include new files but respect .gitignore. process_group(0) to kill
+        // the tree. We run one child per repo, serially, sharing the result
+        // cap + batch across all of them.
         const RESULT_CAP: usize = 500;
-        // Batch hits before emitting to avoid flooding the WKWebView main
-        // thread with one event per match. On a hot search (common word in
-        // a big repo) the per-event path can saturate the JS event loop and
-        // make Cancel/Esc unresponsive. Flush whenever the batch fills OR
-        // ~30ms has passed since the first un-flushed hit.
         const BATCH_MAX: usize = 50;
         const BATCH_MS: u128 = 30;
         let mut truncated = false;
+        let mut superseded = false;
+        let mut count = 0usize;
         let mut batch: Vec<serde_json::Value> = Vec::with_capacity(BATCH_MAX);
         let mut batch_started = std::time::Instant::now();
         let flush_batch = |app: &tauri::AppHandle, topic: &str, batch: &mut Vec<serde_json::Value>| {
@@ -4633,51 +4852,84 @@ fn workspace_grep_start(
             batch.clear();
         };
 
-        if let Some(stdout) = child.stdout.take() {
-            let mut count = 0usize;
-            for line in BufReader::new(stdout).lines().map_while(|r| r.ok()) {
-                // git grep -n --column output: "path:LINE:COL:preview"
-                // Path may contain ':' on macOS (rare) but LINE/COL never
-                // do, so splitn from the right is safest. We just split
-                // forward 3 times — paths with colons would mis-parse but
-                // that's a rounding error.
-                let mut it = line.splitn(4, ':');
-                let path = it.next().unwrap_or("").to_string();
-                let line_no: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-                let col: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-                let preview = it.next().unwrap_or("").to_string();
-                if path.is_empty() || line_no == 0 { continue; }
-                if batch.is_empty() { batch_started = std::time::Instant::now(); }
-                batch.push(serde_json::json!({
-                    "path": path,
-                    "line": line_no,
-                    "col": col,
-                    "preview": preview,
-                }));
-                count += 1;
-                if batch.len() >= BATCH_MAX
-                    || batch_started.elapsed().as_millis() >= BATCH_MS
-                {
-                    flush_batch(&app_o, &emit_out, &mut batch);
-                }
-                if count >= RESULT_CAP {
-                    truncated = true;
-                    unsafe { libc::kill(-pid, libc::SIGKILL); }
-                    break;
+        let mut my_pid: Option<i32> = None;
+        'repos: for (rcwd, prefix) in &repos {
+            // Before each repo, bail if the slot changed: a newer search
+            // (different pid) supersedes us, or a cancel cleared it (None).
+            if let Some(prev) = my_pid {
+                let cur = RUNNING_GREPS.lock().unwrap().as_ref()
+                    .and_then(|m| m.get(&ws_id_o).copied());
+                if cur != Some(prev) {
+                    if cur.is_some() { superseded = true; }
+                    break 'repos;
                 }
             }
-            flush_batch(&app_o, &emit_out, &mut batch);
+            let spawn = std::process::Command::new("git")
+                .args([
+                    "grep",
+                    "-n", "--column", "-I", "-F", "-i",
+                    "--untracked", "--exclude-standard",
+                    "--no-color",
+                    "-e", &query,
+                ])
+                .current_dir(rcwd)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn();
+            let mut child = match spawn { Ok(c) => c, Err(_) => continue 'repos };
+            let pid = child.id() as i32;
+            my_pid = Some(pid);
+            running_greps_swap(&ws_id_o, Some(pid));
+
+            if let Some(stdout) = child.stdout.take() {
+                for line in BufReader::new(stdout).lines().map_while(|r| r.ok()) {
+                    // git grep -n --column output: "path:LINE:COL:preview"
+                    let mut it = line.splitn(4, ':');
+                    let path = it.next().unwrap_or("").to_string();
+                    let line_no: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let col: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let preview = it.next().unwrap_or("").to_string();
+                    if path.is_empty() || line_no == 0 { continue; }
+                    if batch.is_empty() { batch_started = std::time::Instant::now(); }
+                    batch.push(serde_json::json!({
+                        // Prefix member paths so clicks resolve from the wrapper.
+                        "path": format!("{prefix}{path}"),
+                        "line": line_no,
+                        "col": col,
+                        "preview": preview,
+                    }));
+                    count += 1;
+                    if batch.len() >= BATCH_MAX
+                        || batch_started.elapsed().as_millis() >= BATCH_MS
+                    {
+                        flush_batch(&app_o, &emit_out, &mut batch);
+                    }
+                    if count >= RESULT_CAP {
+                        truncated = true;
+                        unsafe { libc::kill(-pid, libc::SIGKILL); }
+                        break;
+                    }
+                }
+                flush_batch(&app_o, &emit_out, &mut batch);
+            }
+            let _ = child.wait();
+            if truncated { break 'repos; }
         }
-        let _ = child.wait();
-        // Only clear our slot if we're still the active grep for this ws —
-        // a newer search may have overwritten the slot mid-flight.
+
+        // Clear our slot if we still own it. If a newer search took it,
+        // mark superseded so we don't emit a stale "done" over its results.
         {
             let mut g = RUNNING_GREPS.lock().unwrap();
             if let Some(map) = g.as_mut() {
-                if map.get(&ws_id_o).copied() == Some(pid) { map.remove(&ws_id_o); }
+                let cur = map.get(&ws_id_o).copied();
+                if cur == my_pid && my_pid.is_some() { map.remove(&ws_id_o); }
+                else if cur.is_some() { superseded = true; }
             }
         }
-        let _ = app_o.emit(&emit_done, serde_json::json!({ "truncated": truncated }));
+        if !superseded {
+            let _ = app_o.emit(&emit_done, serde_json::json!({ "truncated": truncated }));
+        }
         // search_id_o is only used in the topic strings above; reference it
         // here so the borrow checker doesn't complain about an unused move.
         drop(search_id_o);
@@ -4862,6 +5114,14 @@ pub struct Agent {
     /// to this set. `$HOME` substitution happens at sandbox provision time.
     #[serde(default)]
     pub sandbox_allowed_paths: Vec<String>,
+    /// Allowed-host regexes/wildcards joined into the sandbox proxy
+    /// allow-list whenever this agent's CLI runs — the per-agent
+    /// network counterpart to `sandbox_allowed_paths`. Lets "Allow ·
+    /// per agent" persist a host so every workspace using this agent
+    /// (across all projects) can reach it. Wildcards (`*.x.com`) are
+    /// translated to regex at render time, same as workspace hosts.
+    #[serde(default)]
+    pub sandbox_allowed_hosts: Vec<String>,
     /// Whether the work-done badge/bell is active for this agent.
     /// Defaults to true. Set to false for custom CLIs that emit signals
     /// in ways that cause too many false positives (e.g. continuous OSC
@@ -4965,6 +5225,7 @@ fn default_agents() -> Vec<Agent> {
                 // ~/.agents (the skills convention) is universal — see
                 // builtin_runtime_paths in sandbox.rs; not duplicated here.
             ],
+            sandbox_allowed_hosts: vec![],
             work_done: true,
         },
         Agent {
@@ -4996,6 +5257,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/codex".into(),
                 "$HOME/Library/Application Support/Codex".into(),
             ],
+            sandbox_allowed_hosts: vec![],
             work_done: true,
         },
         Agent {
@@ -5045,6 +5307,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/antigravity".into(),
                 "$HOME/Library/Application Support/Antigravity".into(),
             ],
+            sandbox_allowed_hosts: vec![],
             work_done: true,
         },
         Agent {
@@ -5078,6 +5341,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/gemini".into(),
                 "$HOME/Library/Application Support/Gemini".into(),
             ],
+            sandbox_allowed_hosts: vec![],
             work_done: true,
         },
         Agent {
@@ -5111,6 +5375,7 @@ fn default_agents() -> Vec<Agent> {
                 "$HOME/.local/state/grok".into(),
                 "$HOME/Library/Application Support/Grok".into(),
             ],
+            sandbox_allowed_hosts: vec![],
             work_done: true,
         },
     ]
@@ -5609,8 +5874,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
-            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_sandbox,
-            sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, workspace_recent_denials, workspace_test_sandbox,
+            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_sandbox, workspace_set_yolo,
+            sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, workspace_recent_denials,
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_grep_start, workspace_grep_cancel,
@@ -5951,6 +6216,75 @@ mod tests {
         assert!(s.contains("secrets.env"));
         assert!(s.contains("/y"));
         assert!(!s.contains("/x"));
+    }
+
+    #[test]
+    fn resolve_workspace_git_path_uses_host_repo_for_host_paths() {
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        let ws = Workspace {
+            path: host.path().to_string_lossy().into_owned(),
+            composition: vec![WorkspaceMember {
+                dir_name: "frontend".into(),
+                mode: MemberMode::Worktree,
+                path: member.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let (cwd, rel) = resolve_workspace_git_path(&ws, "src/main.rs").unwrap();
+        assert_eq!(cwd, host.path());
+        assert_eq!(rel, "src/main.rs");
+    }
+
+    #[test]
+    fn resolve_workspace_git_path_strips_member_prefix_for_member_paths() {
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        let ws = Workspace {
+            path: host.path().to_string_lossy().into_owned(),
+            composition: vec![WorkspaceMember {
+                dir_name: "frontend".into(),
+                mode: MemberMode::RepoRoot,
+                path: member.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let (cwd, rel) = resolve_workspace_git_path(&ws, "frontend/src/App.tsx").unwrap();
+        assert_eq!(cwd, member.path());
+        assert_eq!(rel, "src/App.tsx");
+    }
+
+    #[test]
+    fn member_repo_diff_helpers_use_member_cwd_not_host_repo() {
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        git_init_with_commit(host.path());
+        git_init_with_commit(member.path());
+
+        fs::write(member.path().join("base.txt"), "member changed\n").unwrap();
+
+        let ws = Workspace {
+            path: host.path().to_string_lossy().into_owned(),
+            composition: vec![WorkspaceMember {
+                dir_name: "frontend".into(),
+                mode: MemberMode::RepoRoot,
+                path: member.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let sides = workspace_file_diff_sides_for_workspace(&ws, "frontend/base.txt").unwrap();
+        assert!(sides.original.contains("base content"));
+        assert!(sides.modified.contains("member changed"));
+
+        let diff = workspace_file_diff_for_workspace(&ws, "frontend/base.txt").unwrap();
+        assert!(diff.contains("member changed"));
+        assert!(diff.contains("diff --git a/base.txt b/base.txt"));
     }
 
     // ──────────────── spotlight git mechanics ────────────────

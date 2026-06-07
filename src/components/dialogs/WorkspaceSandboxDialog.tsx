@@ -12,8 +12,10 @@ import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
-import { settingsLoad, workspaceSetSandbox, workspaceTestSandbox, sandboxAvailable, type ProbeResult } from "@/lib/ipc";
-import { AlertTriangle, Shield, Zap, FlaskConical, Check, X, Save, RotateCw } from "lucide-react";
+import { settingsLoad, workspaceSetSandbox, sandboxAvailable } from "@/lib/ipc";
+import { effectiveSandboxMode, type SandboxMode } from "@/lib/types";
+import { AlertTriangle, Eye, Zap, Save, RotateCw } from "lucide-react";
+import { SandboxModeSelector } from "@/components/SandboxModeSelector";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
 export function WorkspaceSandboxDialog() {
@@ -33,16 +35,15 @@ export function WorkspaceSandboxDialog() {
   // dialog opens for a new id. Saving pushes back via IPC; cancelling
   // discards. Stored as text so blank lines while typing don't fight
   // the array split.
-  const [enabled, setEnabled] = useState(false);
+  const [mode, setMode] = useState<SandboxMode>("off");
+  // `enabled` = there's a cage of some kind (monitor or enforce). Most
+  // of the form (lists, presets) shows whenever the cage is on; a few
+  // bits are enforce-only (self-test, YOLO note).
+  const enabled = mode !== "off";
   const [rwText,    setRwText]    = useState("");
   const [hostsText, setHostsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr]   = useState<string | null>(null);
-  // Self-test results: null = never run; array = last run's probes.
-  // We don't auto-run; the user clicks the Test button. ~3s round-trip
-  // (provision + 2 curls); the button shows a spinner while in flight.
-  const [probes, setProbes] = useState<ProbeResult[] | null>(null);
-  const [testBusy, setTestBusy] = useState(false);
   // OS sandbox support gate. macOS → true. Linux/Windows → false,
   // and we disable the enable button + show "unavailable" banner.
   // Probed once on mount; cheap (one Path::exists() check) but cached.
@@ -53,38 +54,12 @@ export function WorkspaceSandboxDialog() {
 
   useEffect(() => {
     if (!ws) return;
-    setEnabled(!!ws.sandbox_enabled);
+    setMode(effectiveSandboxMode(ws));
     setRwText((ws.sandbox_rw_paths ?? []).join("\n"));
     setHostsText((ws.sandbox_allowed_hosts ?? []).join("\n"));
     setErr(null);
     setBusy(false);
   }, [ws?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const _unused_loadDenies = async () => {
-    // Recent-denies panel removed in favor of the live footer chip.
-    // Stub kept so accidental imports don't break the build.
-  };
-
-  const runTest = async () => {
-    if (!ws) return;
-    setTestBusy(true); setProbes(null);
-    try {
-      // Pass the CURRENT textarea contents - not the saved workspace -
-      // so the test reflects what the user is staring at. Without
-      // this the dialog tested last-saved state, making the "test
-      // before commit" use case useless.
-      const split = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
-      const out = await workspaceTestSandbox(ws.id, {
-        rwPaths:       split(rwText),
-        allowedHosts:  split(hostsText),
-      });
-      setProbes(out);
-    } catch (e) {
-      setProbes([{ host: "?", expected: "allow", ok: false, http_code: null, note: String(e) }]);
-    } finally {
-      setTestBusy(false);
-    }
-  };
 
   if (!wsId) return null;
 
@@ -98,7 +73,7 @@ export function WorkspaceSandboxDialog() {
   const arrEq = (a: string[], b: string[]) =>
     a.length === b.length && a.every((v, i) => v === b[i]);
   const dirty = ws ? (
-    enabled !== !!ws.sandbox_enabled ||
+    mode !== effectiveSandboxMode(ws) ||
     !arrEq(splitLines(rwText),    ws.sandbox_rw_paths      ?? []) ||
     !arrEq(splitLines(hostsText), ws.sandbox_allowed_hosts ?? [])
   ) : false;
@@ -127,7 +102,7 @@ export function WorkspaceSandboxDialog() {
       // exits land before this function's await even unblocks).
       if (restart) useUI.getState().markPendingSandboxRestart(ws.id);
       const killed = await workspaceSetSandbox(
-        ws.id, enabled,
+        ws.id, mode,
         lines(rwText), lines(hostsText),
         restart,
       );
@@ -142,6 +117,27 @@ export function WorkspaceSandboxDialog() {
     } catch (e) {
       setErr(String(e));
       setBusy(false);
+    }
+  }
+
+  // Switch mode. When turning the cage ON (monitor/enforce) from OFF
+  // with empty lists, seed sensible defaults so the user doesn't start
+  // from a blank cage. Going to OFF never clears the lists (so toggling
+  // back doesn't lose work).
+  async function chooseMode(next: SandboxMode) {
+    const wasOff = mode === "off";
+    setMode(next);
+    if (next !== "off" && wasOff && !rwText.trim() && !hostsText.trim()) {
+      try {
+        const s = await settingsLoad();
+        const merge = (g: string[] = [], pr: string[] = []) => {
+          const seen = new Set<string>(); const out: string[] = [];
+          for (const v of [...g, ...pr]) { if (v && !seen.has(v)) { seen.add(v); out.push(v); } }
+          return out.join("\n");
+        };
+        setRwText(merge(s.sandbox_default_rw_paths, project?.sandbox_rw_paths));
+        setHostsText(merge(s.sandbox_default_allowed_hosts, project?.sandbox_allowed_hosts));
+      } catch {}
     }
   }
 
@@ -167,70 +163,25 @@ export function WorkspaceSandboxDialog() {
             saw the box checked and assumed the cage was ON. State now
             reads from the color band (green = caged, red = open) and
             the verb on the action button ("Disable" vs "Enable"). */}
-        <div
-          className={
-            "flex items-center justify-between gap-4 rounded-md border px-4 py-3 " +
-            (enabled
-              ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10"
-              : "border-[var(--color-err)]/40 bg-[var(--color-err)]/10")
-          }
-        >
-          <div className="flex items-center gap-3">
-            <Shield
-              className={
-                "h-5 w-5 " +
-                (enabled ? "text-[var(--color-ok)]" : "text-[var(--color-err)]")
-              }
-              fill={enabled ? "currentColor" : "none"}
-            />
-            <div className="flex flex-col">
-              <span className="text-[14.5px] font-semibold text-[var(--color-fg)]">
-                Sandbox is {enabled ? "ON" : "OFF"}
-              </span>
-              <span className="text-[12.5px] text-[var(--color-fg-dim)]">
-                {enabled
-                  ? "Agent runs under seatbelt + allowed-hosts proxy."
-                  : "Agent has full filesystem + network access."}
-              </span>
-            </div>
+        {/* Three-way mode selector: OFF / MONITORING / ENFORCING.
+            Monitoring is the middle ground — the agent runs unrestricted
+            but every file + network access is logged (and flagged
+            would-block) so you can see exactly what it touches before
+            committing to the real cage. */}
+        <SandboxModeSelector value={mode} onChange={chooseMode} osUnavailable={osSandboxOk === false} />
+        {mode === "monitor" && (
+          <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
+            <Eye className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
+            <span>
+              <b className="text-[var(--color-fg)]">Monitoring (observe, don't block).</b>{" "}
+              The agent runs with full access. Every file operation and every
+              HTTP/HTTPS request are recorded (non-HTTP traffic like git-over-SSH
+              goes direct and isn't logged). Click the activity chip in the
+              footer to see the detailed log; whitelist anything flagged
+              "would block" before switching to Enforcing.
+            </span>
           </div>
-          <Button
-            // "Disable" gets warn-yellow chrome so it reads as an
-            // intentional action (the previous ghost-styled link was
-            // basically invisible against the green panel). "Enable
-            // sandbox" stays the standard accent-deep primary.
-            variant={enabled ? "secondary" : "primary"}
-            onClick={async () => {
-              const next = !enabled;
-              setEnabled(next);
-              // First-time enable: if all three lists are empty, seed
-              // them from the union of project + global defaults so
-              // the user starts with a sensible baseline instead of a
-              // blank cage. Only fires when there's nothing to lose.
-              if (next && !rwText.trim() && !hostsText.trim()) {
-                try {
-                  const s = await settingsLoad();
-                  const merge = (g: string[] = [], pr: string[] = []) => {
-                    const seen = new Set<string>(); const out: string[] = [];
-                    for (const v of [...g, ...pr]) {
-                      if (v && !seen.has(v)) { seen.add(v); out.push(v); }
-                    }
-                    return out.join("\n");
-                  };
-                  setRwText   (merge(s.sandbox_default_rw_paths,      project?.sandbox_rw_paths));
-                  setHostsText(merge(s.sandbox_default_allowed_hosts, project?.sandbox_allowed_hosts));
-                } catch {}
-              }
-            }}
-            disabled={osSandboxOk === false && !enabled}
-            title={osSandboxOk === false ? "Sandbox is macOS-only (requires sandbox-exec). Not available on this platform." : undefined}
-            className={enabled
-              ? "border-[var(--color-warn)]/50 bg-[var(--color-warn)]/15 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/25 hover:border-[var(--color-warn)]"
-              : undefined}
-          >
-            {enabled ? "Disable" : "Enable sandbox"}
-          </Button>
-        </div>
+        )}
         {osSandboxOk === false && (
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
@@ -248,7 +199,7 @@ export function WorkspaceSandboxDialog() {
             users should know this is happening, not stumble onto it.
             Honors the Settings → General "Bypass permissions in sandboxed
             workspaces" toggle. */}
-        {enabled && sandboxBypassPermissions && (
+        {mode === "enforce" && sandboxBypassPermissions && (
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-ok)]/25 bg-[var(--color-ok)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
             <span>
@@ -303,6 +254,10 @@ export function WorkspaceSandboxDialog() {
           </div>
         )}
 
+        {/* Allow-list config only matters when there's a cage (Monitoring
+            uses it for would-block + to pre-build the Enforcing list).
+            Hidden entirely for OFF — nothing to configure. */}
+        {enabled && (<>
         <Field
           label="Allowed paths"
           hint="Extra dirs the agent can read AND write, on top of the workspace + agent + runtime defaults shown on the right. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
@@ -329,11 +284,17 @@ export function WorkspaceSandboxDialog() {
                 <Chip tone="allow">workspace</Chip>
                 <Chip tone="allow">~/.npm</Chip>
                 <Chip tone="allow">~/.cache</Chip>
-                <Chip tone="allow">~/.cargo</Chip>
+                <Chip tone="allow">~/.cargo/registry</Chip>
                 <Chip tone="allow">~/.bun</Chip>
+                <Chip tone="allow">~/.deno</Chip>
+                <Chip tone="allow">~/.local/share</Chip>
+                <Chip tone="allow">~/.local/bin</Chip>
+                <Chip tone="allow">~/.agents</Chip>
                 <Chip tone="allow">~/Library/Caches</Chip>
+                <Chip tone="allow">~/Library/Keychains</Chip>
                 <Chip tone="allow">/private/tmp</Chip>
                 <Chip tone="allow">TMPDIR</Chip>
+                <Chip tone="allow" muted>shell + git dotfiles</Chip>
               </ChipGroup>
               <ChipGroup tone="allow" label="Always allowed, read only (system bins + linker)">
                 <Chip tone="allow">/usr</Chip>
@@ -342,6 +303,7 @@ export function WorkspaceSandboxDialog() {
                 <Chip tone="allow">/sbin</Chip>
                 <Chip tone="allow">/dev</Chip>
                 <Chip tone="allow">/etc</Chip>
+                <Chip tone="allow">~/.ssh/known_hosts</Chip>
                 <Chip tone="allow" muted>dyld / ld.so cache</Chip>
                 <Chip tone="allow" muted>/lib /lib64 (linux)</Chip>
                 <Chip tone="allow" muted>/proc /sys /run (linux)</Chip>
@@ -354,12 +316,14 @@ export function WorkspaceSandboxDialog() {
                 </ChipGroup>
               )}
               <p className="mt-2 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-                Everything outside the allow-list is denied. Secrets
-                (<span className="font-mono">~/.ssh</span>,{" "}
+                Pure allow-list: anything not listed here or on the left is
+                denied (contents <i>and</i> existence). Secrets like{" "}
+                <span className="font-mono">~/.ssh</span>,{" "}
                 <span className="font-mono">~/.aws</span>,{" "}
-                <span className="font-mono">~/.gnupg</span>, Keychains,
-                browser data) stay denied even if you allow a parent.
-                Add the <i>exact</i> path on the left to override.
+                <span className="font-mono">~/.gnupg</span> and browser data
+                aren't listed, so they're denied. Allow <i>narrowly</i> — a
+                broad parent (e.g. <span className="font-mono">$HOME</span>)
+                would expose everything under it.
               </p>
             </DefaultsPanel>
           </div>
@@ -386,52 +350,12 @@ export function WorkspaceSandboxDialog() {
             </DefaultsPanel>
           </div>
         </Field>
+        </>)}
 
         {/* "Recent denies" panel removed — the TerminalPane footer
             now shows a live deny counter chip per workspace, which
             is the discoverable surface. Detailed log lookups belong
             in the debug.log path, not buried in the dialog. */}
-
-        {/* Sandbox self-test. Provisions a one-shot bundle of the
-            CURRENT config (not saved yet - so the user can verify
-            their pending edits before committing them) and runs two
-            curls inside it: one allowed host, one denied. Useful for
-            reassuring yourself the cage actually closes, and for
-            debugging "did I configure the proxy right?" */}
-        {enabled && (
-          <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-3 py-2 text-[13px]">
-            <div className="flex items-center gap-2">
-              <FlaskConical className="h-3.5 w-3.5 text-[var(--color-fg-dim)]" />
-              <span className="font-medium text-[var(--color-fg)]">Test sandbox</span>
-              <span className="text-[var(--color-fg-faint)]">runs <code className="mono">curl</code> against an allowed host and a denied host inside the cage.</span>
-              <button
-                type="button"
-                onClick={runTest}
-                disabled={testBusy}
-                className="ml-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[13px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)] disabled:opacity-50"
-              >
-                {testBusy ? "Running…" : "Run"}
-              </button>
-            </div>
-            {probes !== null && (
-              <ul className="mt-2 flex flex-col gap-1">
-                {probes.map((p, i) => (
-                  <li key={i} className="flex items-start gap-2">
-                    {p.ok
-                      ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
-                      : <X className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-err)]" />}
-                    <span className="flex-1">
-                      <span className="font-mono text-[13px] text-[var(--color-fg-dim)]">{p.host}</span>
-                      {" "}
-                      <span className="text-[var(--color-fg-faint)]">→ {p.expected}</span>
-                      <span className="ml-2 text-[13px] text-[var(--color-fg-dim)]">{p.note}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
 
         {/* Restart warning. Always visible (not error-state) so the
             user has it in view BEFORE they hit save. */}

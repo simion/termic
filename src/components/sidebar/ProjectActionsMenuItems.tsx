@@ -123,25 +123,38 @@ export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
           </span>
         </div>
       </DropdownItem>
-      {/* Worktree actions only make sense for git projects. A non-git
-          folder has no branches to worktree off (issue #4). */}
-      {!isNonGit && (
-        <>
-          <DropdownSeparator />
-          <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
-            <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
-            <div className="flex min-w-0 flex-col">
-              <span className="truncate">New git worktree</span>
-              <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                {isMulti ? "Separate working directory per member, run agents in parallel" : "Separate working directory, run agents in parallel"}
-              </span>
-            </div>
-          </DropdownItem>
-          {/* "Import existing worktree" now lives inside the New Workspace
-              dialog itself (the "Import an existing worktree instead"
-              link), so it's not duplicated here. */}
-        </>
+      {/* Worktree actions need a git host. For a non-git folder (issue
+          #4) we keep the item VISIBLE but disabled + explain why, rather
+          than hiding it — otherwise the option silently vanishes and the
+          user wonders where it went. */}
+      <DropdownSeparator />
+      {isNonGit ? (
+        <DropdownItem disabled>
+          <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-faint)]" />
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate">New git worktree</span>
+            <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+              Unavailable — {isMulti
+                ? "this multi-repo host is a plain folder, not a git repo"
+                : "this folder isn't a git repo"}, so it has no branches to
+              worktree from. Point the project at a git repo (or git-init
+              this folder) to enable worktrees.
+            </span>
+          </div>
+        </DropdownItem>
+      ) : (
+        <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
+          <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate">New git worktree</span>
+            <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+              {isMulti ? "Separate working directory per member, run agents in parallel" : "Separate working directory, run agents in parallel"}
+            </span>
+          </div>
+        </DropdownItem>
       )}
+      {/* "Import existing worktree" now lives inside the New Workspace
+          dialog itself (the "Import an existing worktree instead" link). */}
     </>
   );
 }

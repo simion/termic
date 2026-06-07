@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Eye, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -15,10 +15,11 @@ import { agentDisplayName } from "@/lib/agents";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
-import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop } from "@/lib/ipc";
+import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop, workspaceSetYolo } from "@/lib/ipc";
 import { startSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Workspace, TerminalTab } from "@/lib/types";
+import { effectiveSandboxMode } from "@/lib/types";
 
 /** Pick a default name for a freshly-created repo-root workspace.
  *  Format: "<agent>-N" where N is the next unused index for that CLI
@@ -697,6 +698,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
     /* click */                terminalTabCount <= 1;
   const collapsed = useApp(s => s.collapsedWorkspaces[w.id] ?? defaultCollapsed);
   const setWorkspaceCollapsed = useApp(s => s.setWorkspaceCollapsed);
+  const setWorkspaceYolo = useApp(s => s.setWorkspaceYolo);
   const addTab = useApp(s => s.addTab);
   const registry = useApp(s => s.agents);
   const renameTab = useApp(s => s.renameTab);
@@ -706,8 +708,8 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const project = useApp(s => s.projects.find(p => p.id === w.project_id) ?? null);
   const spotlightWsId = useApp(s => s.spotlightWsId[w.project_id] ?? null);
   const isSpotlighted = spotlightWsId === w.id;
-  // Spotlight is available for: non-repo-root, single-repo, spotlight_enabled projects.
-  const spotlightAvailable = !w.is_repo_root && !!project?.spotlight_enabled && project?.type !== "multi";
+  // Spotlight is worktree-only: non-repo-root, single-repo, git, spotlight_enabled.
+  const spotlightAvailable = !w.is_repo_root && !!project?.spotlight_enabled && project?.type !== "multi" && !project?.non_git;
 
   const isActive = activeWsId === w.id;
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
@@ -940,34 +942,44 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             </span>
           )}
           <DropdownRoot>
-            <Tip content={w.sandbox_enabled ? "Sandboxed · workspace settings" : "Workspace settings"}>
+            <Tip content="Workspace settings">
             <DropdownTrigger asChild>
               <button
                 data-no-drag
                 onClick={(e) => e.stopPropagation()}
                 className={cn(
                   "absolute inset-0 flex items-center justify-center rounded hover:bg-[var(--color-bg-3)]",
-                  // Sandboxed: button is always visible (the green shield).
-                  // Unsandboxed: button reveals on row hover only.
-                  w.sandbox_enabled
+                  // A persistent badge (sandbox on OR dangerous YOLO) keeps
+                  // the button visible; otherwise it reveals on row hover.
+                  (w.sandbox_enabled || (!!w.yolo && effectiveSandboxMode(w) !== "enforce"))
                     ? "opacity-100 pointer-events-auto"
                     : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
                   wsRenaming !== null && "pointer-events-none",
                 )}
               >
-                {/* Sandboxed idle state: green-fill shield. Hidden on
-                    row hover so the cog underneath shows through. */}
-                {w.sandbox_enabled && (
+                {/* Idle badge, hidden on row hover so the cog shows through.
+                    Precedence: dangerous YOLO (red, no cage) → Enforcing
+                    (green shield) → Monitoring (amber eye). */}
+                {/* Outlined when no agent is launched here, filled once one
+                    is running (terminalTabCount > 0). */}
+                {(!!w.yolo && effectiveSandboxMode(w) !== "enforce") ? (
+                  <Zap
+                    className="absolute h-3.5 w-3.5 text-[var(--color-err)] transition-opacity group-hover/wsrow:opacity-0"
+                    fill={terminalTabs.length > 0 ? "currentColor" : "none"}
+                  />
+                ) : effectiveSandboxMode(w) === "monitor" ? (
+                  <Eye className="absolute h-3.5 w-3.5 text-[var(--color-warn)] transition-opacity group-hover/wsrow:opacity-0" />
+                ) : w.sandbox_enabled ? (
                   <Shield
                     className="absolute h-3.5 w-3.5 text-[var(--color-ok)] transition-opacity group-hover/wsrow:opacity-0"
-                    fill="currentColor"
+                    fill={terminalTabs.length > 0 ? "currentColor" : "none"}
                   />
-                )}
-                {/* Cog: always visible on hover (sandboxed or not). */}
+                ) : null}
+                {/* Cog: always visible on hover (badge or not). */}
                 <Cog
                   className={cn(
                     "h-3.5 w-3.5 text-[var(--color-fg-faint)] transition-opacity",
-                    w.sandbox_enabled && "opacity-0 group-hover/wsrow:opacity-100",
+                    (w.sandbox_enabled || (!!w.yolo && effectiveSandboxMode(w) !== "enforce")) && "opacity-0 group-hover/wsrow:opacity-100",
                   )}
                 />
               </button>
@@ -1008,11 +1020,39 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 <Shield
                   className={cn(
                     "h-4 w-4",
-                    w.sandbox_enabled && "text-[var(--color-ok)]",
+                    effectiveSandboxMode(w) === "enforce" && "text-[var(--color-ok)]",
+                    effectiveSandboxMode(w) === "monitor" && "text-[var(--color-warn)]",
                   )}
-                  fill={w.sandbox_enabled ? "currentColor" : "none"}
+                  fill={effectiveSandboxMode(w) === "enforce" ? "currentColor" : "none"}
                 />
-                <span>{w.sandbox_enabled ? "Sandbox enabled" : "Enable sandbox"}</span>
+                <span>{effectiveSandboxMode(w) === "enforce" ? "Enforcing" : effectiveSandboxMode(w) === "monitor" ? "Monitoring" : "Sandbox settings"}</span>
+              </DropdownItem>
+              {/* Per-workspace YOLO toggle. Disabled (auto-on) under
+                  Enforcing — the seatbelt is the boundary there. Red when
+                  on without a cage (dangerous). */}
+              <DropdownItem
+                className="items-center [&>svg]:mt-0"
+                disabled={effectiveSandboxMode(w) === "enforce"}
+                onSelect={() => {
+                  if (effectiveSandboxMode(w) === "enforce") return;
+                  const next = !w.yolo;
+                  setWorkspaceYolo(w.id, next);
+                  void workspaceSetYolo(w.id, next);
+                }}
+              >
+                <Zap
+                  className={cn(
+                    "h-4 w-4 text-[var(--color-fg-faint)]",
+                    (!!w.yolo && effectiveSandboxMode(w) !== "enforce") && "text-[var(--color-err)]",
+                    effectiveSandboxMode(w) === "enforce" && "text-[var(--color-ok)]",
+                  )}
+                  fill={(effectiveSandboxMode(w) === "enforce" || !!w.yolo) ? "currentColor" : "none"}
+                />
+                <span>
+                  {effectiveSandboxMode(w) === "enforce"
+                    ? "YOLO: auto-on (Enforcing)"
+                    : w.yolo ? "YOLO: on" : "YOLO: off"}
+                </span>
               </DropdownItem>
               <DropdownItem
                 className="items-center [&>svg]:mt-0"

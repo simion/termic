@@ -13,9 +13,10 @@ import * as HoverCard from "@radix-ui/react-hover-card";
 import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, FolderOpen, Play, Archive, ShieldCheck, Shield,
-  Sun, Moon, Monitor, Zap, ArrowUpToLine, Sunrise, Droplet, Binary, Code2,
+  Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Eye,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { effectiveSandboxMode } from "@/lib/types";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { openPath, workspaceRunScript, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
@@ -40,9 +41,6 @@ export function UnifiedBar() {
   const openReview = useUI(s => s.openReview);
   const themeMode = usePrefs(s => s.themeMode);
   const setThemeMode = usePrefs(s => s.setThemeMode);
-  const yoloMode = usePrefs(s => s.yoloMode);
-  const setYoloMode = usePrefs(s => s.setYoloMode);
-  const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
   // When the user picked an explicit theme, show that theme's icon.
   // When "auto" is selected, show the icon for whatever the OS resolved
   // to (Sun / Moon) — that's the theme they're actually looking at — and
@@ -112,51 +110,10 @@ export function UnifiedBar() {
             available. Sits next to the theme picker so it's findable
             but not intrusive. */}
         <UpdaterBanner />
-        {/* YOLO visualizes its safety state based on the active workspace's
-            sandbox pin:
-              - OFF                 → dim gray, neutral tooltip
-              - ON  + sandboxed     → green, "safe" tooltip (sandbox cages
-                                       any damage the agent could do)
-              - ON  + NOT sandboxed → red, DANGER tooltip - the agent
-                                       can rm -rf $HOME if it wants to
-            The visual difference between "green safe" and "red dangerous"
-            is the load-bearing UX: a casual glance has to communicate
-            "you are taking on real risk right now."
-
-            When sandbox is on we ALSO auto-pass YOLO at spawn even if
-            the toggle is off (sandbox is the real boundary), so the
-            toggle is informational in that case - it just affects
-            unsandboxed workspaces. */}
-        {(() => {
-          const sandboxed = !!ws?.sandbox_enabled;
-          // Sandboxed workspaces auto-pass YOLO at spawn unless the user
-          // disabled it in Settings → General.
-          const autoYolo = sandboxed && sandboxBypassPermissions;
-          const dangerous = yoloMode && !sandboxed;
-          const tipContent = dangerous
-            ? "⚠️ YOLO ON without a sandbox. Agents auto-approve EVERY action, including writes outside the worktree, network calls, and shell commands. Click to disable, or enable the workspace sandbox first."
-            : yoloMode && sandboxed
-              ? "YOLO ON, safe: this workspace is sandboxed, so auto-approval is bounded by the seatbelt profile."
-              : autoYolo
-                ? "YOLO OFF (but this workspace is sandboxed, so YOLO is auto-on for it anyway)."
-                : sandboxed
-                  ? "YOLO OFF. This workspace is sandboxed but bypass-permissions is off, so agents still ask for approvals."
-                  : "YOLO OFF. Agents will ask for approvals. YOLO mode is automatically enabled for sandboxed agents.";
-          return (
-            <Tip content={tipContent} side="bottom">
-              <Button
-                size="icon" variant="icon" onClick={() => setYoloMode(!yoloMode)}
-                className={cn(
-                  dangerous && "text-white bg-[var(--color-err)] hover:bg-[var(--color-err)]/80 ring-1 ring-[var(--color-err)]",
-                  yoloMode && sandboxed && "text-[var(--color-ok)] bg-[var(--color-ok)]/15",
-                  !yoloMode && sandboxed && "text-[var(--color-ok)] opacity-70",
-                )}
-              >
-                <Zap className="h-[18px] w-[18px]" />
-              </Button>
-            </Tip>
-          );
-        })()}
+        {/* YOLO is per-workspace only — controlled from the workspace's
+            sidebar dropdown ("YOLO: on/off"), with a red ⚡ status badge
+            on the sidebar row. No top-bar toggle (it had no global
+            meaning and was redundant with the per-workspace control). */}
       </div>
 
       {/* Breadcrumbs / title — text doesn't select on drag (matches AppKit title bar). */}
@@ -271,14 +228,24 @@ export function UnifiedBar() {
                 </Button>
               </Tip>
             )}
-            <Tip content={ws.sandbox_enabled ? "Sandbox settings" : "Enable sandbox"} side="bottom">
-              <Button size="icon" variant="icon"
-                onClick={() => useUI.getState().openSandbox(ws.id)}
-                className={ws.sandbox_enabled ? "text-[var(--color-ok)]" : undefined}
-              >
-                <Shield className="h-4 w-4" fill={ws.sandbox_enabled ? "currentColor" : "none"} />
-              </Button>
-            </Tip>
+            {(() => {
+              const sbMode = effectiveSandboxMode(ws);
+              const tip = sbMode === "enforce" ? "Sandbox: Enforcing"
+                : sbMode === "monitor" ? "Sandbox: Monitoring (logging access)"
+                : "Sandbox: off — click to enable";
+              return (
+                <Tip content={tip} side="bottom">
+                  <Button size="icon" variant="icon"
+                    onClick={() => useUI.getState().openSandbox(ws.id)}
+                    className={sbMode === "enforce" ? "text-[var(--color-ok)]" : sbMode === "monitor" ? "text-[var(--color-warn)]" : undefined}
+                  >
+                    {sbMode === "monitor"
+                      ? <Eye className="h-4 w-4" />
+                      : <Shield className="h-4 w-4" fill={sbMode === "enforce" ? "currentColor" : "none"} />}
+                  </Button>
+                </Tip>
+              );
+            })()}
             <Tip content="Archive workspace" side="bottom">
               <Button size="icon" variant="icon"
                 onClick={async () => {
