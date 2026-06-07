@@ -1,6 +1,23 @@
 {
   "versions": [
     {
+      "version": "0.10.0",
+      "date": "2026-06-07",
+      "summary": "New Monitoring sandbox mode that logs every access so you can build an allow-list.",
+      "notes": [
+        "New: a third sandbox mode, Monitoring. It sits between Off and Enforcing: the agent runs with full access, but Termic records every file and host it touches and flags the ones an Enforcing sandbox would have blocked. Watch a real session, then build a precise allow-list before you switch the workspace to Enforcing, so the agent runs with low friction from the start. Pick the mode (Off, Monitoring, or Enforcing) when you create or edit a workspace.",
+        "The blocked-requests popover doubles as a live activity log in Monitoring mode, with an Aggregate view grouped by folder and a Detailed view. Would-block accesses sort to the top for both paths and hosts, so the things you actually need to allow are right there. Click any row to add it to the allow-list, exactly like in Enforcing mode.",
+        "Two toggles keep monitoring light and focused: Only would-block (on by default) records just the accesses an Enforcing sandbox would deny, and Exclude workspace dir (on by default) ignores the agent's own working tree. Both gate recording itself, not only the display, so long sessions stay fast and memory stays bounded.",
+        "Hosts you allow per agent now persist in Settings, Agents, under Sandbox allowed hosts, and apply to every workspace that uses that agent, so you set them once.",
+        "The Enforcing sandbox is now a pure allow-list: nothing is reachable unless you have allowed it, rather than a deny-list of known-sensitive paths. File and folder names stay enumerable, but their contents stay protected.",
+        "New: per-workspace YOLO. Toggle auto-approve for every agent in a workspace from its menu in the sidebar; it is saved per workspace and shown as a red flash badge. Enforcing sandboxes turn it on automatically, since the cage is the real boundary. The old global toggle is gone.",
+        "Multi-repo workspaces: Cmd+P (file finder) and Cmd+Shift+F (search) now look across every member repository, serially, with each result prefixed by the repo it came from. Both work even while a terminal is focused.",
+        "Multi-repo workspaces: clicking a changed file in a repo-root member now opens its diff, and adding a member repo whose folder does not exist yet creates it on submit (git init plus a seed CLAUDE.md).",
+        "Spotlight now appears only for worktree workspaces, where it makes sense, and is hidden for repo-root, multi-repo, and non-git workspaces.",
+        "Git panel: switching between repository pills clears the current selection and closes the open diff, and the first repository with changes is selected automatically when you open the Changes tab."
+      ]
+    },
+    {
       "version": "0.9.0",
       "date": "2026-06-06",
       "summary": "A Fork-style Git panel: stage, unstage, and commit without leaving Termic.",
