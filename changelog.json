@@ -1,6 +1,19 @@
 {
   "versions": [
     {
+      "version": "0.10.3",
+      "date": "2026-06-08",
+      "summary": "Terminals use your real shell and environment, clickable links, and Settings fixes.",
+      "notes": [
+        "New terminals now launch your real login shell (zsh, bash, or fish) instead of always zsh, and pick up a changed default shell right away.",
+        "Agents and your setup and run scripts now inherit your login shell environment, so tools like bun and your $EDITOR (Ctrl+G in Claude) work the same as in a normal terminal.",
+        "URLs printed in a terminal are clickable: hover to underline, Cmd or Ctrl click to open in your browser. Works in agent and scratch terminals, on macOS and Linux.",
+        "New Workspace: paste a full branch name like username/my-feature and it is used as-is, with no prefix to fight. The sandbox control is now clearly labelled.",
+        "Settings: the spacebar now works in agent argument fields, so you can enter multiple arguments.",
+        "Sandboxed agents no longer receive secrets exported from your shell config, and an activated Python or Conda environment is no longer pinned onto every workspace."
+      ]
+    },
+    {
       "version": "0.10.2",
       "date": "2026-06-08",
       "summary": "Resume agents from a custom session name, per workspace.",
