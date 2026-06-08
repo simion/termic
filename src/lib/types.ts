@@ -166,6 +166,13 @@ export interface Workspace {
    *  binary (e.g. `ssh box`, `npm run dev`). Null/undefined for every
    *  agent / shell workspace. */
   custom_command?: string | null;
+  /** Per-workspace override for the agent's resume arguments. When set
+   *  (non-empty), the spawn uses this verbatim (placeholders like
+   *  `{WORKSPACE_NAME}` / `{WORKSPACE_SLUG}` expanded) as the resume block
+   *  instead of termic's id-based (`--resume <uuid>`) or cwd-based
+   *  (`--continue`) logic. Lets a repo-root workspace resume a named
+   *  session, e.g. `--resume {WORKSPACE_NAME}`. Null/empty = default. */
+  resume_override?: string | null;
 }
 
 /** Per-member input for `workspace_create_multi`. */

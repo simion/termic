@@ -53,6 +53,10 @@ interface UIState {
    *  workspaces. Lives in UI store so opening doesn't churn the
    *  workspace tree. */
   editCommandWsId: string | null;
+  /** Workspace id whose resume-args override is being edited, null =
+   *  closed. Lives in UI store so opening doesn't churn the workspace
+   *  tree. */
+  resumeOverrideWsId: string | null;
   /** Read-only "Keyboard shortcuts" cheat-sheet modal (⌘/). Distinct
    *  from Settings → Shortcuts (which edits them). */
   shortcutsHelpOpen: boolean;
@@ -91,12 +95,12 @@ interface UIState {
    *  fires with the user's choice when the modal closes. */
   terminalDrop: { req: TerminalDropRequest; resolve: (c: TerminalDropChoice) => void } | null;
   /** Workspaces whose PTYs are about to be SIGKILL'd because the user
-   *  explicitly hit "Save & restart" on the Sandbox dialog. The next
-   *  pty-exit for any PTY belonging to one of these workspaces will
-   *  trigger an immediate respawn (the TerminalPane checks the set on
-   *  exit instead of showing the "Restart agent" overlay). Cleared
-   *  per-(ws,tab) when the respawn fires. */
-  pendingSandboxRestarts: Set<string>;
+   *  explicitly hit "Save & restart" on a config dialog (Sandbox or
+   *  Resume override). The next pty-exit for any PTY belonging to one of
+   *  these workspaces will trigger an immediate respawn (the TerminalPane
+   *  checks the set on exit instead of showing the "Restart agent"
+   *  overlay). Cleared per-(ws,tab) when the respawn fires. */
+  pendingPtyRestarts: Set<string>;
   /** Transient bottom-right toasts. Auto-dismiss handled in <Toaster/>. */
   toasts: Toast[];
 
@@ -109,6 +113,8 @@ interface UIState {
   closeCustomCommand: () => void;
   openEditCommand: (wsId: string) => void;
   closeEditCommand: () => void;
+  openResumeOverride: (wsId: string) => void;
+  closeResumeOverride: () => void;
   openShortcutsHelp: () => void;
   closeShortcutsHelp: () => void;
   openWelcome: () => void;
@@ -141,13 +147,14 @@ interface UIState {
    *  sharing strategy (or {kind:"cancel"} on dismiss). */
   askTerminalDrop: (req: TerminalDropRequest) => Promise<TerminalDropChoice>;
   resolveTerminalDrop: (choice: TerminalDropChoice) => void;
-  /** Mark a workspace for auto-restart on the next PTY exit. Called
-   *  by the Sandbox dialog right before `workspace_set_sandbox` (the
-   *  IPC that SIGKILL's the live agents). */
-  markPendingSandboxRestart: (wsId: string) => void;
+  /** Mark a workspace for auto-restart on the next PTY exit. Called by
+   *  dialogs that change spawn-time config and then kill the live agent so
+   *  it relaunches with the new settings (the Sandbox dialog before
+   *  `workspace_set_sandbox`, the Resume override dialog before its kill). */
+  markPendingPtyRestart: (wsId: string) => void;
   /** Pop the marker — TerminalPane calls this after consuming a
    *  pending restart so a SUBSEQUENT real exit shows the overlay. */
-  consumePendingSandboxRestart: (wsId: string) => boolean;
+  consumePendingPtyRestart: (wsId: string) => boolean;
   /** Push a transient toast. Returns its id (so callers can dismiss
    *  early if needed). Auto-dismiss is handled by <Toaster/>.
    *  `opts.action` adds a button (e.g. "Undo") whose click runs the
@@ -182,6 +189,7 @@ export const useUI = create<UIState>(set => ({
   newWorkspaceSeed: null,
   customCommandProjectId: null,
   editCommandWsId: null,
+  resumeOverrideWsId: null,
   shortcutsHelpOpen: false,
   welcomeOpen: false,
   changelogOpen: false,
@@ -194,7 +202,7 @@ export const useUI = create<UIState>(set => ({
   busyMessage: null,
   confirm: null,
   terminalDrop: null,
-  pendingSandboxRestarts: new Set<string>(),
+  pendingPtyRestarts: new Set<string>(),
   toasts: [],
   notifyRoute: null,
 
@@ -206,6 +214,8 @@ export const useUI = create<UIState>(set => ({
   closeCustomCommand: () => set({ customCommandProjectId: null }),
   openEditCommand:    (wsId) => set({ editCommandWsId: wsId }),
   closeEditCommand:   () => set({ editCommandWsId: null }),
+  openResumeOverride: (wsId) => set({ resumeOverrideWsId: wsId }),
+  closeResumeOverride:() => set({ resumeOverrideWsId: null }),
   openShortcutsHelp:  () => set({ shortcutsHelpOpen: true }),
   closeShortcutsHelp: () => set({ shortcutsHelpOpen: false }),
   openWelcome:       () => set({ welcomeOpen: true }),
@@ -248,17 +258,17 @@ export const useUI = create<UIState>(set => ({
     d?.resolve(choice);
     set({ terminalDrop: null });
   },
-  markPendingSandboxRestart: (wsId) => set(s => {
-    const next = new Set(s.pendingSandboxRestarts);
+  markPendingPtyRestart: (wsId) => set(s => {
+    const next = new Set(s.pendingPtyRestarts);
     next.add(wsId);
-    return { pendingSandboxRestarts: next };
+    return { pendingPtyRestarts: next };
   }),
-  consumePendingSandboxRestart: (wsId) => {
+  consumePendingPtyRestart: (wsId) => {
     const s = useUI.getState();
-    if (!s.pendingSandboxRestarts.has(wsId)) return false;
-    const next = new Set(s.pendingSandboxRestarts);
+    if (!s.pendingPtyRestarts.has(wsId)) return false;
+    const next = new Set(s.pendingPtyRestarts);
     next.delete(wsId);
-    useUI.setState({ pendingSandboxRestarts: next });
+    useUI.setState({ pendingPtyRestarts: next });
     return true;
   },
   pushToast: (msg, kind = "success", opts) => {

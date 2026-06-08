@@ -915,7 +915,17 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // isShell / isCustom / isAgent / idCapable / isPrimaryTab were
         // resolved synchronously above (before the rAF await) to avoid a
         // stale-snapshot race.
-        const useIdResume = idCapable && !!ws.is_repo_root && isPrimaryTab;
+        // Per-workspace resume override: a user-supplied verbatim resume
+        // block (e.g. `--resume {WORKSPACE_NAME}`) that REPLACES termic's
+        // id-based / cwd-based resume logic. Only on the primary agent tab
+        // (secondary "+" tabs always start fresh). When active it suppresses
+        // both useIdResume (no uuid mint) and shouldResume (no --continue),
+        // and the agent owns the "session not found" case (claude shows its
+        // resume picker), so the fast-exit fallback never fires.
+        const resumeOverride = isAgent && isPrimaryTab
+          ? (ws.resume_override?.trim() || undefined)
+          : undefined;
+        const useIdResume = !resumeOverride && idCapable && !!ws.is_repo_root && isPrimaryTab;
         const storedUuid = ws.agent_session_ids?.[tab.cli];
         let sessionUuid: string | undefined;
         let resumeKnown = false;
@@ -932,7 +942,8 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // its agents either id-resume (above) or start fresh. Same
         // gating as the original code: history flag set, no in-session
         // failure, default tab, NOT repo-root.
-        const shouldResume = !useIdResume
+        const shouldResume = !resumeOverride
+          && !useIdResume
           && !ws.is_repo_root
           && !!ws.has_resumable_history
           && !failedResumeRef.current
@@ -970,6 +981,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
           isPrimary: isPrimaryTab,
           sessionUuid,
           resumeKnown,
+          resumeOverride,
           ws,
         });
         const spawn = await ipc.ptySpawn({
@@ -1155,10 +1167,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
             setGen(g => g + 1);
             return;
           }
-          // Sandbox-driven restart: the user just hit "Save & restart"
-          // on the Sandbox dialog. Auto-respawn instead of showing the
-          // exited overlay so they don't have to click Restart manually.
-          if (useUI.getState().consumePendingSandboxRestart(ws.id)) {
+          // Config-driven restart: the user just hit "Save & restart" on a
+          // config dialog (Sandbox or Resume override). Auto-respawn instead
+          // of showing the exited overlay so they don't click Restart.
+          if (useUI.getState().consumePendingPtyRestart(ws.id)) {
             setGen(g => g + 1);
             return;
           }

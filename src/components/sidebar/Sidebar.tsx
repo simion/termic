@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Eye, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Eye, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -928,10 +928,10 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
           )}
         </div>
 
-        {/* Trailing slot: status badge by default, single Settings
-            cog dropdown on hover. Replaces the prior archive + shield
+        {/* Trailing slot: status badge by default, single kebab (⋮)
+            menu dropdown on hover. Replaces the prior archive + shield
             pair — a single icon hosts Sandbox + Archive in a Radix
-            DropdownMenu. Instant hover swap (no 2s delay): the cog is
+            DropdownMenu. Instant hover swap (no 2s delay): the kebab is
             unobtrusive enough that revealing it immediately doesn't
             crowd the row. The badge only renders when collapsed
             (expanded rows put per-tab badges on their children). */}
@@ -942,7 +942,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             </span>
           )}
           <DropdownRoot>
-            <Tip content="Workspace settings">
+            <Tip content="Workspace menu">
             <DropdownTrigger asChild>
               <button
                 data-no-drag
@@ -975,8 +975,11 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                     fill={terminalTabs.length > 0 ? "currentColor" : "none"}
                   />
                 ) : null}
-                {/* Cog: always visible on hover (badge or not). */}
-                <Cog
+                {/* Kebab: always visible on hover (badge or not). A
+                    "⋮" menu affordance, distinct from the project-level
+                    Settings cog above so the two don't read as the same
+                    action. */}
+                <MoreVertical
                   className={cn(
                     "h-3.5 w-3.5 text-[var(--color-fg-faint)] transition-opacity",
                     (w.sandbox_enabled || (!!w.yolo && effectiveSandboxMode(w) !== "enforce")) && "opacity-0 group-hover/wsrow:opacity-100",
@@ -1071,6 +1074,19 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 >
                   <SquareChevronRight className="h-4 w-4" />
                   <span>Edit command</span>
+                </DropdownItem>
+              )}
+              {/* Resume override: only for agent workspaces (shell / custom
+                  tabs don't resume an agent session). Lets a workspace
+                  resume a named session instead of termic's auto-managed
+                  uuid, e.g. `--resume {WORKSPACE_NAME}`. */}
+              {w.cli !== "custom" && w.cli !== "shell" && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  onSelect={() => useUI.getState().openResumeOverride(w.id)}
+                >
+                  <History className={cn("h-4 w-4", w.resume_override && "text-[var(--color-accent)]")} />
+                  <span>{w.resume_override ? "Resume args override: on" : "Resume args override"}</span>
                 </DropdownItem>
               )}
               {w.branch && (

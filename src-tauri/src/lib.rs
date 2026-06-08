@@ -267,6 +267,16 @@ pub struct Workspace {
     /// on every respawn / app restart.
     #[serde(default)]
     pub custom_command: Option<String>,
+    /// Per-workspace override for the agent's resume arguments. When set
+    /// (non-empty), the spawn uses THIS verbatim (with `{WORKSPACE_NAME}`
+    /// / `{WORKSPACE_SLUG}` / etc. placeholders expanded) as the resume
+    /// block instead of termic's id-based (`--session-id`/`--resume <uuid>`)
+    /// or cwd-based (`--continue`) logic. Lets a repo-root workspace resume
+    /// a named session, e.g. `--resume {WORKSPACE_NAME}`. The agent owns the
+    /// "session not found" case (claude shows its resume picker), so no
+    /// fast-exit fallback fires for this path. None = default behavior.
+    #[serde(default)]
+    pub resume_override: Option<String>,
 }
 
 impl Workspace {
@@ -1396,6 +1406,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         sandbox_allowed_hosts: Vec::new(),
         composition,
         custom_command,
+        resume_override: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1576,6 +1587,7 @@ fn workspace_import_worktree(
         sandbox_allowed_hosts,
         composition: Vec::new(),
         custom_command: None,
+        resume_override: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1810,6 +1822,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         // Worktree workspaces always run an agent / shell, never a
         // pre-set custom command (that path is repo-root only).
         custom_command: None,
+        resume_override: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2175,6 +2188,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         sandbox_allowed_hosts,
         composition,
         custom_command: None,
+        resume_override: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2373,6 +2387,20 @@ fn workspace_set_custom_command(id: String, command: String) -> Result<Workspace
         return Err("not a custom-command workspace".into());
     }
     w.custom_command = Some(cmd);
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(w.clone())
+}
+
+/// Set (or clear) a workspace's resume-args override. An empty / whitespace
+/// command clears the override (back to termic's default resume logic);
+/// otherwise the trimmed string is persisted and used verbatim as the
+/// resume block on the next agent spawn. Returns the updated workspace.
+#[tauri::command]
+fn workspace_set_resume_override(id: String, command: String) -> Result<Workspace, String> {
+    let cmd = command.trim().to_string();
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    w.resume_override = if cmd.is_empty() { None } else { Some(cmd) };
     save_workspace(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
 }
@@ -5874,7 +5902,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
-            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_sandbox, workspace_set_yolo,
+            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_resume_override, workspace_set_sandbox, workspace_set_yolo,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, workspace_recent_denials,
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,

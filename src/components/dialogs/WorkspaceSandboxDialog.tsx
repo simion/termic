@@ -100,7 +100,7 @@ export function WorkspaceSandboxDialog() {
       // Mark BEFORE the IPC fires so TerminalPane sees the flag when
       // the pty-exit handler runs (the SIGKILL is fast - sometimes
       // exits land before this function's await even unblocks).
-      if (restart) useUI.getState().markPendingSandboxRestart(ws.id);
+      if (restart) useUI.getState().markPendingPtyRestart(ws.id);
       const killed = await workspaceSetSandbox(
         ws.id, mode,
         lines(rwText), lines(hostsText),

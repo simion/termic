@@ -123,6 +123,10 @@ interface AppState {
    *  workspace AND any open custom-command tabs so the next PTY respawn
    *  runs the new script (the disk write alone doesn't refresh either). */
   setWorkspaceCustomCommand: (wsId: string, command: string) => void;
+  /** Mirror a workspace's resume-args override into the store so the next
+   *  PTY spawn in THIS session reads it (the disk write alone doesn't
+   *  refresh the loaded workspace). Empty string clears it. */
+  setWorkspaceResumeOverride: (wsId: string, command: string) => void;
   /** Optimistically set a workspace's YOLO flag in the store. The caller
    *  persists via ipc.workspaceSetYolo. */
   setWorkspaceYolo: (wsId: string, yolo: boolean) => void;
@@ -513,6 +517,11 @@ export const useApp = create<AppState>((set, get) => ({
       ...(nextTabs ? { tabs: { ...s.tabs, [wsId]: nextTabs } } : {}),
     };
   }),
+  setWorkspaceResumeOverride: (wsId, command) => set(s => ({
+    workspaces: s.workspaces.map(w =>
+      w.id === wsId ? { ...w, resume_override: command.trim() || null } : w,
+    ),
+  })),
 
   addTab: (wsId, tab) => {
     set(s => {

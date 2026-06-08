@@ -60,6 +60,12 @@ export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("work
  *  restarts the agent tab. */
 export const workspaceSetCustomCommand = (id: string, command: string) =>
   invoke<Workspace>("workspace_set_custom_command", { id, command });
+/** Set or clear a workspace's resume-args override. An empty string clears
+ *  it (back to default resume logic); otherwise the string is used verbatim
+ *  (placeholders expanded) as the resume block on the next agent spawn.
+ *  Returns the updated workspace; live PTYs keep running until restarted. */
+export const workspaceSetResumeOverride = (id: string, command: string) =>
+  invoke<Workspace>("workspace_set_resume_override", { id, command });
 /** Persist the per-workspace YOLO flag. Applied to every agent launched
  *  in this workspace (next launch; live agents are flipped separately via
  *  the agent's runtime YOLO command where supported). */

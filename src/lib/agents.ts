@@ -28,6 +28,20 @@ function expandArg(arg: string, vars: Record<string, string>): string {
     return v ?? m;
   });
 }
+/** Split a free-form command string into argv tokens, honoring single /
+ *  double quotes so a literal value with spaces stays one arg. Placeholders
+ *  (`{WORKSPACE_NAME}`) are single unquoted tokens here and get expanded
+ *  AFTER the split, so a placeholder whose value contains spaces is still a
+ *  single argv element. Used for the per-workspace resume override. */
+function tokenizeArgs(s: string): string[] {
+  const out: string[] = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    out.push(m[1] !== undefined ? m[1].replace(/\\(.)/g, "$1") : (m[2] ?? m[3]));
+  }
+  return out;
+}
 function workspaceVars(ws: Workspace | undefined, sessionUuid?: string): Record<string, string> {
   const base: Record<string, string> = ws ? {
     WORKSPACE_SLUG: slugify(ws.name),
@@ -228,6 +242,12 @@ export function spawnArgsForCli(
     /** True iff the uuid was already used in a prior spawn (so the
      *  agent has a session file for it). False = first spawn, mint it. */
     resumeKnown?: boolean;
+    /** Per-workspace verbatim resume override (e.g. `--resume {WORKSPACE_NAME}`).
+     *  When non-empty it REPLACES both the id-based and cwd-based resume
+     *  blocks — the caller is expected to have already suppressed the uuid
+     *  mint / `opts.resume` so they don't double up. The agent owns the
+     *  "session not found" case, so there's no fast-exit fallback. */
+    resumeOverride?: string;
   },
 ): string[] {
   const { args, caps } = findAgent(cli);
@@ -240,7 +260,12 @@ export function spawnArgsForCli(
   // sessionUuid present and not yet known to the agent). This is the
   // single spawn that carries name_args.
   let isFirstIdSpawn = false;
-  if (hasIdResume && opts.sessionUuid) {
+  const override = opts.resumeOverride?.trim();
+  if (override) {
+    // Override wins outright — verbatim resume block, placeholders expanded
+    // by the composed.map below. Skips minting / --continue entirely.
+    resumeBlock = tokenizeArgs(override);
+  } else if (hasIdResume && opts.sessionUuid) {
     if (opts.resumeKnown) {
       resumeBlock = caps.resume_id_args ?? [];
     } else {
