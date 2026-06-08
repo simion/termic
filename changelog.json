@@ -1,6 +1,16 @@
 {
   "versions": [
     {
+      "version": "0.10.1",
+      "date": "2026-06-08",
+      "summary": "Terminal editors keep their Ctrl keys, plus an optional Option as Meta key.",
+      "notes": [
+        "Terminal-based editors (vim, emacs, nano) now receive Ctrl key combos again. On macOS, keys like Ctrl+P, Ctrl+W, Ctrl+K and Ctrl+S go to the focused terminal instead of being captured for app shortcuts. The app's own shortcuts still work with Cmd.",
+        "New Appearance setting: Use Option as Meta key. Turn it on so Option+key acts as Meta/Alt in terminal editors, matching Terminal.app's option. It is off by default, so Option keeps typing accented characters until you opt in.",
+        "Clicking Changelog on the What's new card now dismisses the card."
+      ]
+    },
+    {
       "version": "0.10.0",
       "date": "2026-06-07",
       "summary": "New Monitoring sandbox mode that logs every access so you can build an allow-list.",
