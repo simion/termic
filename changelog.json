@@ -1,6 +1,15 @@
 {
   "versions": [
     {
+      "version": "0.10.2",
+      "date": "2026-06-08",
+      "summary": "Resume agents from a custom session name, per workspace.",
+      "notes": [
+        "New per-workspace Resume args override (workspace menu). Set custom resume arguments like --resume {WORKSPACE_NAME} so the agent resumes a named session instead of the auto-managed one. Placeholders {WORKSPACE_NAME}, {WORKSPACE_SLUG}, and {BRANCH} expand at launch. Save applies on the next launch, or Save and restart relaunches the running agent right away.",
+        "The workspace row menu now uses a clearer three-dots icon instead of a settings cog, so it no longer looks like the project Settings button."
+      ]
+    },
+    {
       "version": "0.10.1",
       "date": "2026-06-08",
       "summary": "Terminal editors keep their Ctrl keys, plus an optional Option as Meta key.",
