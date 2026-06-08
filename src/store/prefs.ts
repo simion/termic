@@ -25,6 +25,7 @@ const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_ALLOW_SCOPE     = "sandboxAllowScope";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
+const LS_TERMINAL_OPTION_AS_META = "terminalOptionAsMeta";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
 const LS_SHORTCUTS     = "shortcutBindings";
 
@@ -306,6 +307,12 @@ interface PrefsState {
   terminalLetterSpacing: number;
   /** Lines of scrollback kept in agent terminals. Aux terminal uses half this value. */
   terminalScrollback: number;
+  /** Treat the macOS Option key as Meta in the terminal (xterm's
+   *  `macOptionIsMeta`). When ON, Option+key sends an ESC-prefixed sequence so
+   *  terminal editors (vim/emacs/nano) see Option as their Meta/Alt modifier,
+   *  matching Terminal.app's "Use Option as Meta key". When OFF (default),
+   *  Option produces the usual accented characters. (issue #11) */
+  terminalOptionAsMeta: boolean;
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
@@ -328,6 +335,7 @@ interface PrefsState {
   setTerminalFontSize:(px: number) => void;
   setTerminalLetterSpacing:(px: number) => void;
   setTerminalScrollback:  (n: number) => void;
+  setTerminalOptionAsMeta: (v: boolean) => void;
   setEditorFontSize:  (px: number) => void;
   setCodeLigatures:   (v: boolean) => void;
   /** Restore every Appearance-section pref (fonts, sizes, weight,
@@ -398,6 +406,7 @@ export const APPEARANCE_DEFAULTS = {
   terminalFontSize:      13,
   terminalLetterSpacing: 1,
   terminalScrollback:    5000,
+  terminalOptionAsMeta:  false,
   editorFontSize:        13,
   codeLigatures:         true,
 } as const;
@@ -408,6 +417,7 @@ const initialTerminalFont = lsGet(LS_TERMINAL_FONT, APPEARANCE_DEFAULTS.terminal
 const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, APPEARANCE_DEFAULTS.terminalFontSize);
 const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));
 const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(lsGetNum(LS_TERMINAL_SCROLLBACK, APPEARANCE_DEFAULTS.terminalScrollback))));
+const initialTerminalOptionAsMeta  = lsGetBool(LS_TERMINAL_OPTION_AS_META, APPEARANCE_DEFAULTS.terminalOptionAsMeta);
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
@@ -447,6 +457,7 @@ export const usePrefs = create<PrefsState>(set => ({
   terminalFontSize: initialTerminalSize,
   terminalLetterSpacing: initialTerminalLetterSpacing,
   terminalScrollback: initialTerminalScrollback,
+  terminalOptionAsMeta: initialTerminalOptionAsMeta,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
   workspaceExpandMode: initialWsExpandMode,
@@ -483,6 +494,10 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_TERMINAL_SCROLLBACK, String(clamped)); } catch {}
     set({ terminalScrollback: clamped });
   },
+  setTerminalOptionAsMeta: (v) => {
+    try { localStorage.setItem(LS_TERMINAL_OPTION_AS_META, v ? "1" : "0"); } catch {}
+    set({ terminalOptionAsMeta: v });
+  },
   setEditorFontSize: (px) => {
     try { localStorage.setItem(LS_EDITOR_SIZE, String(px)); } catch {}
     set({ editorFontSize: px });
@@ -501,6 +516,7 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setTerminalFontSize(d.terminalFontSize);
     s.setTerminalLetterSpacing(d.terminalLetterSpacing);
     s.setTerminalScrollback(d.terminalScrollback);
+    s.setTerminalOptionAsMeta(d.terminalOptionAsMeta);
     s.setEditorFontSize(d.editorFontSize);
     s.setCodeLigatures(d.codeLigatures);
   },

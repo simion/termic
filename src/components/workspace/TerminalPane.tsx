@@ -307,6 +307,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
       theme: currentTerminalTheme() as any,
       allowProposedApi: true,
       scrollback: usePrefs.getState().terminalScrollback,
+      // Option-as-Meta for terminal editors (vim/emacs/nano). Off by default;
+      // pref lives in Appearance. (issue #11)
+      macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -1344,6 +1347,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
   const terminalFontId        = usePrefs(s => s.terminalFontId);
   const terminalFontSize      = usePrefs(s => s.terminalFontSize);
   const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
+  const terminalOptionAsMeta  = usePrefs(s => s.terminalOptionAsMeta);
   const firstFontRun = useRef(true);
   useEffect(() => {
     if (firstFontRun.current) { firstFontRun.current = false; return; }
@@ -1352,9 +1356,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
     t.options.fontFamily     = currentTerminalStack();
     t.options.fontSize       = terminalFontSize;
     t.options.letterSpacing  = terminalLetterSpacing;
+    t.options.macOptionIsMeta = terminalOptionAsMeta;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
-  }, [terminalFontId, terminalFontSize, terminalLetterSpacing]);
+  }, [terminalFontId, terminalFontSize, terminalLetterSpacing, terminalOptionAsMeta]);
 
   // Live theme swap: when the user picks a different theme in the
   // dropdown, push the new xterm palette into every mounted terminal.

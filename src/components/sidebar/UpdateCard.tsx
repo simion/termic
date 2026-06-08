@@ -92,7 +92,13 @@ export function UpdateCard() {
 
       <button
         type="button"
-        onClick={openChangelog}
+        onClick={() => {
+          openChangelog();
+          // In what's-new mode the card is a one-shot nudge — opening the
+          // full changelog satisfies it, so dismiss it. The update card stays
+          // (the user still needs the "Update now" button).
+          if (mode === "whatsnew") dismissWhatsNew();
+        }}
         className="mt-2 flex items-center gap-1 text-[12px] font-medium text-[var(--color-accent)] hover:underline"
       >
         Changelog

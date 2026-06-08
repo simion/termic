@@ -57,6 +57,8 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
       theme: currentTerminalTheme() as any,
       allowProposedApi: true,
       scrollback: Math.round(usePrefs.getState().terminalScrollback / 2),
+      // Option-as-Meta for terminal editors. See TerminalPane. (issue #11)
+      macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -167,6 +169,7 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
   const terminalFontId        = usePrefs(s => s.terminalFontId);
   const terminalFontSize      = usePrefs(s => s.terminalFontSize);
   const terminalLetterSpacing = usePrefs(s => s.terminalLetterSpacing);
+  const terminalOptionAsMeta  = usePrefs(s => s.terminalOptionAsMeta);
   const firstFontRun = useRef(true);
   useEffect(() => {
     if (firstFontRun.current) { firstFontRun.current = false; return; }
@@ -175,9 +178,10 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     t.options.fontFamily     = currentTerminalStack();
     t.options.fontSize       = terminalFontSize;
     t.options.letterSpacing  = terminalLetterSpacing;
+    t.options.macOptionIsMeta = terminalOptionAsMeta;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
-  }, [terminalFontId, terminalFontSize, terminalLetterSpacing]);
+  }, [terminalFontId, terminalFontSize, terminalLetterSpacing, terminalOptionAsMeta]);
 
   // Live theme swap mirrors TerminalPane's effect; see the comment there.
   const themeMode = usePrefs(s => s.themeMode);

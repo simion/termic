@@ -19,11 +19,19 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { requestCloseTab } from "@/lib/closeTab";
-import { bindingMatches, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
+import { bindingMatches, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 
 export function useShortcuts() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // macOS: inside a focused terminal, Ctrl is the terminal's OWN modifier
+      // (readline / TUI editor bindings: ^P ^W ^K ^T ^A ^E ^R …). The app folds
+      // Cmd≡Ctrl so its shortcuts fire cross-platform, but that fold would
+      // swallow every Ctrl combo before the PTY ever sees it. When only Ctrl
+      // (not Cmd) is down and a terminal has focus, bail so the keystroke
+      // reaches the shell/editor. App shortcuts still work via Cmd. (issue #10)
+      if (IS_MAC && e.ctrlKey && !e.metaKey && inTermFocused()) return;
+
       const binds = usePrefs.getState().shortcuts;
       // First binding (in registry order) whose combo the event satisfies.
       // Exact modifier matching makes commands mutually exclusive unless the

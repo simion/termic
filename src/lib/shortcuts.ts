@@ -131,6 +131,15 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
 
 export const GROUP_ORDER: ShortcutGroup[] = ["Navigation", "Tabs", "Terminal", "Git", "General"];
 
+/** Groups of commands that intentionally share a binding and can NEVER fire at
+ *  the same time, so the Shortcuts settings page must not flag them as
+ *  conflicts. `discard-file` only acts while the Git panel has a file selected;
+ *  `new-split-terminal` is the global terminal command. They're mutually
+ *  exclusive by context, so ⇧⌘D is safe to share. */
+export const NON_CONFLICTING_GROUPS: ShortcutId[][] = [
+  ["new-split-terminal", "discard-file"],
+];
+
 export type BindingMap = Record<ShortcutId, Binding>;
 
 export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(

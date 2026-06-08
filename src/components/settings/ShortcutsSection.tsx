@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import {
   SHORTCUT_DEFS,
   GROUP_ORDER,
+  NON_CONFLICTING_GROUPS,
   DEFAULT_BINDINGS,
   CMD_LABEL,
   ALT_LABEL,
@@ -44,7 +45,12 @@ export function ShortcutsSection() {
     }
     const clashing = new Set<ShortcutId>();
     for (const list of bySig.values()) {
-      if (list.length > 1) list.forEach(id => clashing.add(id));
+      if (list.length <= 1) continue;
+      // Skip groups that are co-bound on purpose and can't fire together
+      // (e.g. ⇧⌘D: new-split-terminal vs the context-scoped discard-file).
+      const exempt = NON_CONFLICTING_GROUPS.some(g => list.every(id => g.includes(id)));
+      if (exempt) continue;
+      list.forEach(id => clashing.add(id));
     }
     return clashing;
   }, [shortcuts]);

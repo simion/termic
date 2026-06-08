@@ -9,6 +9,7 @@ import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/edi
 import { Button } from "@/components/ui/Button";
 import { AuxTerminal } from "@/components/workspace/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
+import { IS_MAC, ALT_LABEL } from "@/lib/shortcuts";
 import { EditorView } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import { javascript } from "@codemirror/lang-javascript";
@@ -26,6 +27,8 @@ export function AppearanceSection() {
   const setTerminalLetterSpacing = usePrefs(s => s.setTerminalLetterSpacing);
   const terminalScrollback = usePrefs(s => s.terminalScrollback);
   const setTerminalScrollback = usePrefs(s => s.setTerminalScrollback);
+  const terminalOptionAsMeta = usePrefs(s => s.terminalOptionAsMeta);
+  const setTerminalOptionAsMeta = usePrefs(s => s.setTerminalOptionAsMeta);
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const setEditorFontSize = usePrefs(s => s.setEditorFontSize);
   const codeLigatures = usePrefs(s => s.codeLigatures);
@@ -45,6 +48,7 @@ export function AppearanceSection() {
     terminalFontSize      === APPEARANCE_DEFAULTS.terminalFontSize &&
     terminalLetterSpacing === APPEARANCE_DEFAULTS.terminalLetterSpacing &&
     terminalScrollback    === APPEARANCE_DEFAULTS.terminalScrollback &&
+    terminalOptionAsMeta  === APPEARANCE_DEFAULTS.terminalOptionAsMeta &&
     editorFontSize        === APPEARANCE_DEFAULTS.editorFontSize &&
     codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures;
 
@@ -129,6 +133,15 @@ export function AppearanceSection() {
           <NumberInput value={terminalScrollback} onChange={setTerminalScrollback} min={1000} max={100000} step={1000} />
         }
       />
+
+      {IS_MAC && (
+        <Toggle
+          label={`Use ${ALT_LABEL} as Meta key`}
+          hint={`Send ${ALT_LABEL}+key as an ESC-prefixed sequence so terminal editors (vim, emacs, nano) see it as Meta/Alt. When off, ${ALT_LABEL} types accented characters as usual.`}
+          value={terminalOptionAsMeta}
+          onChange={setTerminalOptionAsMeta}
+        />
+      )}
 
       {/* Live terminal preview — spawns a real shell in $HOME so
           font + size + weight changes are reflected immediately
