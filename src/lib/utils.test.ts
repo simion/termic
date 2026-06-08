@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { slugify, shortPath } from "@/lib/utils";
+import { slugify, branchify, shortPath } from "@/lib/utils";
 
 // ── slugify ───────────────────────────────────────────────────────────
 
@@ -42,6 +42,35 @@ describe("slugify", () => {
 
   it("numeric-only string passes through", () => {
     expect(slugify("123")).toBe("123");
+  });
+});
+
+// ── branchify ─────────────────────────────────────────────────────────
+
+describe("branchify", () => {
+  it("preserves slashes in an already-qualified branch", () => {
+    // The #15 case: a Linear branch pasted verbatim stays multi-segment.
+    expect(branchify("jarred/special-branch-name")).toBe("jarred/special-branch-name");
+  });
+
+  it("slugifies each segment independently", () => {
+    expect(branchify("Jarred/Login Fix")).toBe("jarred/login-fix");
+  });
+
+  it("drops leading, trailing, and doubled slashes", () => {
+    expect(branchify("/feature//login/")).toBe("feature/login");
+  });
+
+  it("matches slugify when there is no slash", () => {
+    expect(branchify("fix login bug")).toBe(slugify("fix login bug"));
+  });
+
+  it("returns empty string for slash-only input", () => {
+    expect(branchify("///")).toBe("");
+  });
+
+  it("keeps underscores and hyphens within a segment", () => {
+    expect(branchify("user/my_cool-feature")).toBe("user/my_cool-feature");
   });
 });
 

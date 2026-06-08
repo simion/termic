@@ -1,5 +1,5 @@
-// New workspace dialog: name + CLI segmented pills + branch prefix pills +
-// branch name + branch-from. Calls workspace_create on submit.
+// New workspace dialog: name + CLI segmented pills + branch name +
+// branch-from. Calls workspace_create on submit.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -12,14 +12,16 @@ import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
 import { workspaceCreate, workspaceCreateMulti, settingsLoad, workspaceImportableWorktrees, workspaceImportWorktree, sandboxAvailable } from "@/lib/ipc";
-import { slugify, cn } from "@/lib/utils";
+import { slugify, branchify, cn } from "@/lib/utils";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
 import { SandboxModeSelector } from "@/components/SandboxModeSelector";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
-const PREFIXES = ["feature", "hotfix", "__custom__"] as const;
+// Branch names auto-fill as `feature/<name>`; the user edits the field
+// freely from there (there's no separate prefix control anymore).
+const DEFAULT_BRANCH_PREFIX = "feature";
 
 export function NewWorkspaceDialog() {
   const projectId = useUI(s => s.newWorkspaceProjectId);
@@ -48,7 +50,6 @@ export function NewWorkspaceDialog() {
 
   const [name, setName] = useState("");
   const [cli, setCli] = useState<string>("claude");
-  const [prefix, setPrefix] = useState<typeof PREFIXES[number]>("feature");
   const [branch, setBranch] = useState("");
   const [branchEdited, setBranchEdited] = useState(false);
   const [base, setBase] = useState("");
@@ -88,7 +89,7 @@ export function NewWorkspaceDialog() {
   // Import mode (issue #5): instead of branching a fresh worktree, adopt
   // one that already exists on disk. Only offered for single-repo git
   // projects (multi composition / non-git folders don't apply). When on,
-  // the git fields (prefix / branch / branch-from) are hidden and the
+  // the git fields (branch / branch-from) are hidden and the
   // user picks from `importList` instead.
   const canImport = !isMulti && !project?.non_git;
   const [importMode, setImportMode] = useState(false);
@@ -149,7 +150,6 @@ export function NewWorkspaceDialog() {
       const firstInstalled = list.find(a => !a.disabled && isInstalled(a.id))?.id;
       setCli(firstInstalled ?? "shell");
     }
-    setPrefix("feature");
     // Sandbox toggle defaults to project's preference OR the global
     // default (Settings → General). Either being true checks the box.
     // The user can still flip for THIS workspace - but once Create
@@ -250,12 +250,18 @@ export function NewWorkspaceDialog() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [setupLog]);
 
-  // Auto-derive branch from name + prefix unless user has edited the field.
+  // Branch auto-fills from the name, but ONLY until the user touches the
+  // branch field — after that it's theirs and we never clobber it (#15:
+  // no more fighting a prefix you didn't want). Default shape is
+  // `feature/<name>`, fully editable. A name that's already a qualified
+  // branch (contains a "/", e.g. a Linear "username/my-feature" pasted
+  // straight in) is taken verbatim with no prefix.
   const derived = useMemo(() => {
-    const slug = slugify(name);
-    if (prefix === "__custom__") return slug;
-    return slug ? `${prefix}/${slug}` : "";
-  }, [name, prefix]);
+    const trimmed = name.trim();
+    if (!trimmed) return "";
+    if (trimmed.includes("/")) return branchify(trimmed);
+    return `${DEFAULT_BRANCH_PREFIX}/${slugify(trimmed)}`;
+  }, [name]);
   useEffect(() => { if (!branchEdited) setBranch(derived); }, [derived, branchEdited]);
 
   // Load the project's importable (existing, unopened) worktrees.
@@ -538,38 +544,19 @@ export function NewWorkspaceDialog() {
         </Field>
 
         {!importMode && (<>
-        <Field label="Branch prefix">
-          <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
-            {PREFIXES.map(pf => (
-              <button
-                key={pf} type="button"
-                onClick={() => { setPrefix(pf); if (pf === "__custom__") setBranchEdited(true); else setBranchEdited(false); }}
-                className={cn(
-                  "flex h-7 items-center rounded-[5px] px-2.5 text-[12.5px] transition-colors",
-                  prefix === pf ? "bg-[var(--color-accent-deep)] text-white" : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                )}
-              >{pf === "__custom__" ? "custom" : `${pf}/`}</button>
-            ))}
-          </div>
-        </Field>
-
-        {/* Branch name is derived from the name + prefix and locked
-            read-only — there's no ambiguity to resolve. Picking the
-            "custom" prefix is the explicit opt-in to type a full
-            branch name yourself. */}
+        {/* Always editable. Auto-fills as “feature/<name>” while you type
+            the name, then stops the moment you touch it, so pasting a
+            branch from Linear (“username/my-feature”) is a true one-shot:
+            select all, paste, done. No prefix control to fight (#15). */}
         <Field
           label="Branch name"
-          hint={prefix === "__custom__"
-            ? "Type the full branch name."
-            : "Auto-generated. Pick “custom” to edit."}
+          hint="Auto-fills from the name. Edit or paste a full branch directly; once you change it, it stays."
         >
           <Input
             value={branch}
             onChange={e => { setBranch(e.target.value); setBranchEdited(true); }}
             placeholder="feature/fix-login-bug"
             required
-            readOnly={prefix !== "__custom__"}
-            className={cn(prefix !== "__custom__" && "cursor-default text-[var(--color-fg-dim)]")}
           />
         </Field>
 
@@ -668,13 +655,15 @@ export function NewWorkspaceDialog() {
         )}
 
         {/* Sandbox panel - same shape as the Edit Sandbox dialog so
-            users see one consistent control. Clickable whole-panel
-            toggle. Label stays "Enable sandbox" - the state reads
-            from the color band + Shield fill + status text, not from
-            a verb flip on the button. Pinned at creation - lists
-            below freeze onto the workspace and can't be edited after
-            (archive + recreate to change). */}
-        <SandboxModeSelector value={sandboxMode} onChange={setSandboxMode} osUnavailable={osSandboxOk === false} compact />
+            users see one consistent control. Wrapped in a Field so the
+            OFF / MONITORING / ENFORCING band reads as a labelled "Sandbox"
+            control like every other row (otherwise it's an unlabelled
+            strip of buttons whose purpose isn't obvious). Pinned at
+            creation - lists below freeze onto the workspace and can't be
+            edited after (archive + recreate to change). */}
+        <Field label="Sandbox" hint="Cage the agent's filesystem + network access. Pinned at creation.">
+          <SandboxModeSelector value={sandboxMode} onChange={setSandboxMode} osUnavailable={osSandboxOk === false} compact />
+        </Field>
       </div>
 
       {/* Right column: sandbox config form, only when enabled.

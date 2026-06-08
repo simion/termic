@@ -1,6 +1,7 @@
-// Auxiliary shell in the right-panel footer / main-pane split. Spawns a zsh
-// in the workspace path so the user has a scratch terminal for git/grep/etc.
-// without touching the agent CLI's PTY.
+// Auxiliary shell in the right-panel footer / main-pane split. Spawns the
+// user's login shell ($SHELL, see loginShell) in the workspace path so the
+// user has a scratch terminal for git/grep/etc. without touching the agent
+// CLI's PTY.
 //
 // When the shell exits (Ctrl+D, `exit`, crash) we surface an overlay with a
 // "New shell" button — clicking it bumps a generation counter that retears
@@ -12,9 +13,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import * as ipc from "@/lib/ipc";
+import { loginShell } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
@@ -64,6 +67,14 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     term.loadAddon(fit);
     term.loadAddon(new ClipboardAddon());
     term.loadAddon(new ImageAddon());
+    // Clickable links — same model as TerminalPane: always loaded so URLs
+    // underline on hover, opening gated on Cmd/Ctrl so a plain click still
+    // selects. Routes through `open_path` for the system browser (#14).
+    term.loadAddon(new WebLinksAddon((event, uri) => {
+      if (event.metaKey || event.ctrlKey) {
+        ipc.openPath(uri).catch(() => {});
+      }
+    }));
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -81,9 +92,11 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
       if (cancelled) return;
       try { fit.fit(); } catch {}
+      const shell = await loginShell();
+      if (cancelled) return;
       try {
         const { id: ptyId } = await ipc.ptySpawn({
-          cwd: wsPath, cmd: "zsh", args: ["-l"],
+          cwd: wsPath, cmd: shell, args: ["-l"],
           // Signal terminal theme so prompts / status bars that honor
           // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right
           // colors for the current chrome.

@@ -337,6 +337,10 @@ export const ptyWrite  = (ptyId: string, data: number[]) => invoke<void>("pty_wr
 export const ptyResize = (ptyId: string, rows: number, cols: number) => invoke<void>("pty_resize", { ptyId, rows, cols });
 export const ptyKill   = (ptyId: string) => invoke<void>("pty_kill", { ptyId });
 
+// The user's login shell ($SHELL, falling back to zsh/bash/fish/sh).
+// See lib/loginShell.ts for the cached wrapper used by the terminals.
+export const defaultShell = () => invoke<string>("default_shell");
+
 /**
  * Listen for PTY output chunks. Rust emits a `PtyChunk { data: Vec<u8> }`
  * struct — NOT a bare byte array — so the payload is `{ data: number[] }`

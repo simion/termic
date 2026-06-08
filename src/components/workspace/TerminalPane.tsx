@@ -22,6 +22,7 @@ import { sendMessageToPty } from "@/lib/agentSend";
 import type { TerminalTab, Workspace, SandboxMode } from "@/lib/types";
 import { effectiveSandboxMode } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
+import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession } from "@/lib/agents";
 
@@ -321,40 +322,21 @@ export function TerminalPane({ ws, tab, active }: Props) {
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
-    // Links — iTerm2 convention: affordance (underline + pointer) and
-    // open-on-click are BOTH gated on Cmd. Plain hover/click is normal
-    // terminal behavior (cursor goes through, selection works as usual).
-    // Implementation: the WebLinksAddon owns the underline decoration,
-    // so to hide it under-Cmd we keep the addon dormant and register
-    // it only while Meta/Ctrl is held. Releasing the key disposes the
-    // provider, removing the underline + pointer immediately. Open
-    // routes through `open_path` so the system browser opens, not the
-    // WKWebView (window.open would silently no-op).
-    let linkAddon: WebLinksAddon | null = null;
-    const enableLinks = () => {
-      if (linkAddon) return;
-      linkAddon = new WebLinksAddon((_event, uri) => {
+    // Links — Terminal.app / VS Code convention: the WebLinksAddon stays
+    // loaded the whole time, so URLs are detected up front and underline
+    // on hover. Opening is gated on Cmd/Ctrl inside the handler, so a
+    // plain click still selects/positions normally and only a deliberate
+    // Cmd+click navigates. Open routes through `open_path` so the system
+    // browser opens, not the WKWebView (window.open would silently no-op).
+    //
+    // The previous design loaded the addon ONLY while Cmd was held, but
+    // loading it mid-hold didn't re-linkify the already-visible buffer, so
+    // Cmd+clicking a URL that was already on screen did nothing (#14).
+    term.loadAddon(new WebLinksAddon((event, uri) => {
+      if (event.metaKey || event.ctrlKey) {
         ipc.openPath(uri).catch(() => {});
-      });
-      term.loadAddon(linkAddon);
-    };
-    const disableLinks = () => {
-      if (!linkAddon) return;
-      linkAddon.dispose();
-      linkAddon = null;
-    };
-    const isModKey = (e: KeyboardEvent) =>
-      e.key === "Meta" || e.key === "Control" || e.metaKey || e.ctrlKey;
-    const onKeyDown = (e: KeyboardEvent) => { if (isModKey(e)) enableLinks(); };
-    const onKeyUp   = (e: KeyboardEvent) => {
-      // Only disable when BOTH modifiers are released, so Cmd-then-Ctrl
-      // releases don't yank the affordance underfoot.
-      if (!e.metaKey && !e.ctrlKey) disableLinks();
-    };
-    const onBlur = () => disableLinks();
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", onBlur);
+      }
+    }));
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
@@ -953,19 +935,22 @@ export function TerminalPane({ ws, tab, active }: Props) {
         hasHistoryLocalRef.current = false;
         // Agent: resolve the executable through the registry (users can
         // repoint `claude` etc. in Settings → Agent CLIs). Shell / custom:
-        // a login zsh, mirroring the AuxTerminal scratch shell.
-        const spawnCmd = isAgent ? spawnCommandForCli(tab.cli) : "zsh";
+        // the user's login shell ($SHELL, falling back to bash/fish/sh),
+        // mirroring the AuxTerminal scratch shell. Hard-coding zsh here
+        // locked out users without it (#13).
+        const userShell = isAgent ? "" : await loginShell();
+        if (cancelled) return;
+        const spawnCmd = isAgent ? spawnCommandForCli(tab.cli) : userShell;
         // Custom: run the launch command, then drop into an interactive
         // login shell so the terminal stays usable after it exits (an ssh
         // disconnect / Ctrl-C'd dev server leaves a live shell in the repo
         // dir rather than a dead tab). `-i` so the command sees the same
         // env as a real terminal — many users set PATH (nvm, etc.) in
-        // .zshrc, which a non-interactive shell skips. Shell: plain login
-        // shell. Agent: registry-resolved argv.
+        // their rc, which a non-interactive shell skips. loginShellArgs
+        // handles the cross-shell argv (zsh/bash/fish/sh). Shell: plain
+        // login shell. Agent: registry-resolved argv.
         const spawnArgs = !isAgent
-          ? (isCustom && tab.command
-              ? ["-l", "-i", "-c", `${tab.command}; exec zsh -l`]
-              : ["-l"])
+          ? loginShellArgs(userShell, isCustom && tab.command ? tab.command : undefined)
           : spawnArgsForCli(tab.cli, {
           // YOLO auto-on whenever the workspace is sandboxed: the seatbelt
           // cage is the real security boundary, so the agent's own
@@ -1267,10 +1252,6 @@ export function TerminalPane({ ws, tab, active }: Props) {
       cancelled = true;
       ro.disconnect();
       unregisterDrop();
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", onBlur);
-      disableLinks();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});

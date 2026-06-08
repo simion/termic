@@ -351,14 +351,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
    *  (custom agents have no defaults to revert to). */
   onReset?: () => void;
 }) {
-  // The args + yolo_args fields are arrays — edited as space-separated text
-  // for ergonomics. We split on whitespace and drop empties on commit.
-  const argsText       = (agent.args || []).join(" ");
-  const yoloArgsText   = (agent.capabilities?.yolo_args   || []).join(" ");
-  const resumeArgsText = (agent.capabilities?.resume_args || []).join(" ");
-  const sessionIdArgsText = (agent.capabilities?.session_id_args || []).join(" ");
-  const resumeIdArgsText  = (agent.capabilities?.resume_id_args  || []).join(" ");
-  const nameArgsText      = (agent.capabilities?.name_args       || []).join(" ");
+  // The args fields are string[] edited as space-separated text. ArgsInput
+  // owns the local draft so spaces survive (#19); it splits + bubbles up the
+  // parsed array on each change.
   const cardRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -485,14 +480,14 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           label="Default args"
           hint="Always passed. Space-separated. Placeholders: {workspace_slug}, {workspace_name}, {workspace_id}, {branch}, {port}."
         >
-          <Input value={argsText}
-            onChange={e => onPatch({ args: e.target.value.split(/\s+/).filter(Boolean) })}
+          <ArgsInput value={agent.args || []}
+            onChange={args => onPatch({ args })}
             className="font-mono" placeholder="--option1 --option2"
           />
         </Field>
         <Field label="YOLO args" hint="Appended when YOLO mode (⚡) is on. Empty = no flag added.">
-          <Input value={yoloArgsText}
-            onChange={e => onPatchCaps({ yolo_args: e.target.value.split(/\s+/).filter(Boolean) })}
+          <ArgsInput value={agent.capabilities?.yolo_args || []}
+            onChange={yolo_args => onPatchCaps({ yolo_args })}
             className="font-mono" placeholder="--dangerously-skip-permissions"
           />
         </Field>
@@ -511,28 +506,28 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           </Field>
         </div>
         <Field label="Resume last (worktrees)" hint="CWD-based resume. Used on every spawn after the first inside a worktree workspace — each worktree has its own dir, so the agent's most-recent CWD session IS this workspace's session. Not used in repo-root workspaces (the shared dir would lasso external sessions; repo-root uses Session/Resume ID args instead).">
-          <Input value={resumeArgsText}
-            onChange={e => onPatchCaps({ resume_args: e.target.value.split(/\s+/).filter(Boolean) })}
+          <ArgsInput value={agent.capabilities?.resume_args || []}
+            onChange={resume_args => onPatchCaps({ resume_args })}
             className="font-mono" placeholder="--continue"
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Session ID args (repo-root)" hint="First spawn in a repo-root workspace, mints a termic-owned uuid. Use {UUID}. Empty = no auto-resume in repo-root for this agent.">
-            <Input value={sessionIdArgsText}
-              onChange={e => onPatchCaps({ session_id_args: e.target.value.split(/\s+/).filter(Boolean) })}
+            <ArgsInput value={agent.capabilities?.session_id_args || []}
+              onChange={session_id_args => onPatchCaps({ session_id_args })}
               className="font-mono" placeholder="--session-id {UUID}"
             />
           </Field>
           <Field label="Resume ID args (repo-root)" hint="Every spawn after the first in a repo-root workspace. Resumes the termic-owned uuid (isolates us from external sessions in the same cwd). Use {UUID}.">
-            <Input value={resumeIdArgsText}
-              onChange={e => onPatchCaps({ resume_id_args: e.target.value.split(/\s+/).filter(Boolean) })}
+            <ArgsInput value={agent.capabilities?.resume_id_args || []}
+              onChange={resume_id_args => onPatchCaps({ resume_id_args })}
               className="font-mono" placeholder="--resume {UUID}"
             />
           </Field>
         </div>
         <Field label="Name args" hint="Applied on every spawn. Pins a display name for the session (claude shows it in /resume and the prompt box). Placeholders supported: {WORKSPACE_SLUG}, {WORKSPACE_NAME}, {BRANCH}.">
-          <Input value={nameArgsText}
-            onChange={e => onPatchCaps({ name_args: e.target.value.split(/\s+/).filter(Boolean) })}
+          <ArgsInput value={agent.capabilities?.name_args || []}
+            onChange={name_args => onPatchCaps({ name_args })}
             className="font-mono" placeholder="--name {WORKSPACE_SLUG}"
           />
         </Field>
@@ -594,6 +589,43 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         </Field>
       </div>
     </div>
+  );
+}
+
+/** Space-separated CLI args ⇄ string[]. Same local-draft pattern as
+ *  EnvTextarea / PathsTextarea: edits live in a draft string so a trailing
+ *  space (to begin the next arg) survives. Binding straight to
+ *  `value.join(" ")` re-joined the array on every keystroke and ate the
+ *  space, so only a single arg could ever be entered (#19). Splits on
+ *  whitespace and drops empties on the value that bubbles up. */
+function ArgsInput({ value, onChange, className, placeholder }: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  className?: string;
+  placeholder?: string;
+}) {
+  const serialize = (v: string[]) => v.join(" ");
+  const parse = (text: string) => text.split(/\s+/).filter(Boolean);
+  const [draft, setDraft] = useState(serialize(value));
+  // Sync down only when the parent value changes from OUTSIDE (Reset,
+  // switching agents). Compare parsed forms so our own keystrokes — including
+  // a pending trailing space — don't trigger a reseed that fights the cursor.
+  const externalText = serialize(value);
+  useEffect(() => {
+    if (parse(draft).join(" ") === externalText) return;
+    setDraft(externalText);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalText]);
+  return (
+    <Input
+      value={draft}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onChange(parse(e.target.value));
+      }}
+      className={className}
+      placeholder={placeholder}
+    />
   );
 }
 

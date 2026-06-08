@@ -265,6 +265,17 @@
 .xterm { padding: 8px 6px 8px 10px; }
 .xterm-viewport::-webkit-scrollbar { width: 8px; }
 
+/* Link hover affordance. The WebLinksAddon stays loaded so URLs underline
+   on hover, but opening is gated on Cmd/Ctrl (see TerminalPane/AuxTerminal).
+   Keep the cursor a text caret on plain hover and only show the hand when a
+   modifier is held (`termic-mod-held` is toggled on <html> in modKeyClass),
+   so the pointer matches what a click would actually do. Overrides xterm's
+   own `.xterm-cursor-pointer { cursor: pointer }` rule. */
+.xterm.xterm-cursor-pointer,
+.xterm .xterm-cursor-pointer { cursor: text; }
+html.termic-mod-held .xterm.xterm-cursor-pointer,
+html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
+
 /* Spotlight active indicator — gentle breathing opacity on the wave icon. */
 @keyframes termic-spotlight-wave {
   0%, 100% { opacity: 1; }

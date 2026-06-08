@@ -734,6 +734,22 @@ fn pty_spawn(
     // ~/.bun/bin, /opt/homebrew/bin, or under nvm aren't found. See
     // shell_env.rs.
     cmd.env("PATH", shell_env::resolved_path());
+    // Inject the rest of the user's login-shell environment (EDITOR, VISUAL,
+    // LANG, GPG_TTY, ...) — but ONLY for UNSANDBOXED spawns. The sandboxed
+    // agent is the threat model (CLAUDE.md), and this rc delta can carry
+    // exported secrets (cloud creds, GITHUB_TOKEN, etc.); the seatbelt/proxy
+    // don't filter env, so handing them in would let a compromised agent
+    // read and exfiltrate them via an allow-listed host. Sandboxed agents
+    // still get the resolved PATH above (so the CLI resolves) — just not the
+    // secret-bearing delta. Unsandboxed (scratch terminal, shell/custom
+    // tabs, or sandbox=off agents) the CLI is exec'd directly, so without
+    // this it would miss $EDITOR etc. (#17). The per-spawn overlay below
+    // still wins, so explicit overrides hold.
+    if sandbox_bundle.is_none() {
+        for (k, v) in shell_env::login_env() {
+            cmd.env(k, v);
+        }
+    }
     for (k, v) in &args.env {
         cmd.env(k, v);
     }
@@ -2245,10 +2261,17 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                     serde_json::json!({ "line": format!("[{label}] $ {script}") }));
                 let mut cmd = Command::new("bash");
                 cmd.arg("-lc").arg(script).current_dir(cwd)
+                    // Real login-shell env so setup finds bun/nvm/etc. and
+                    // sees the user's $EDITOR; `bash -l` alone misses what the
+                    // user set in their actual shell (fish/zsh rc) (#16, #17).
+                    .env("PATH", shell_env::resolved_path())
                     .env("TERMIC_PORT", port.to_string())
                     .env("TERMIC_WORKSPACE_NAME", &name)
                     .env("TERMIC_TASK", &name)
                     .stdout(Stdio::piped()).stderr(Stdio::piped());
+                for (k, v) in shell_env::login_env() {
+                    cmd.env(k, v);
+                }
                 for (k, v) in &sibling_ports {
                     cmd.env(k, v.to_string());
                 }
@@ -4003,15 +4026,22 @@ fn simple_glob_match(pat: &str, s: &str) -> bool {
 /// aux/scratch terminal is in the same bucket; sandbox specifically
 /// targets the agent PTY.
 fn run_script(script: &str, cwd: &Path, port: u16, name: &str) -> Result<String> {
-    let out = Command::new("bash")
-        .arg("-lc")
-        .arg(script)
-        .current_dir(cwd)
+    // Same login-shell environment the PTY gets (see pty_spawn). `bash -l`
+    // only sources bash's OWN profile, so a PATH/EDITOR/etc. the user set
+    // in their real shell (fish/zsh rc) or a tool dir like ~/.bun/bin is
+    // missing — GUI launch starts from a bare launchd env. Without this,
+    // `bun`/`nvm`/etc. are "command not found" in setup/run scripts even
+    // though they work in a terminal (#16), and `$EDITOR` is wrong (#17).
+    let mut cmd = Command::new("bash");
+    cmd.arg("-lc").arg(script).current_dir(cwd)
+        .env("PATH", shell_env::resolved_path())
         .env("TERMIC_PORT", port.to_string())
         .env("TERMIC_WORKSPACE_NAME", name)
-        .env("TERMIC_TASK", name)
-        .output()
-        .with_context(|| "run script")?;
+        .env("TERMIC_TASK", name);
+    for (k, v) in shell_env::login_env() {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().with_context(|| "run script")?;
     let mut s = String::new();
     s.push_str(&String::from_utf8_lossy(&out.stdout));
     s.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -4040,10 +4070,14 @@ fn run_script_streaming(
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     thread::spawn(move || {
-        let spawn_res = Command::new("bash")
-            .arg("-lc")
+        let mut cmd = Command::new("bash");
+        cmd.arg("-lc")
             .arg(&script)
             .current_dir(&cwd)
+            // Real login-shell env so setup finds bun/nvm/etc. and sees the
+            // user's $EDITOR; `bash -l` alone misses what the user set in
+            // their actual shell (fish/zsh rc) (#16, #17).
+            .env("PATH", shell_env::resolved_path())
             .env("TERMIC_PORT", port.to_string())
             .env("TERMIC_WORKSPACE_NAME", &name)
             .env("TERMIC_TASK", &name)
@@ -4054,8 +4088,11 @@ fn run_script_streaming(
             .env("PYTHONUNBUFFERED", "1")
             .env("PYTHONIOENCODING", "UTF-8")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
+            .stderr(Stdio::piped());
+        for (k, v) in shell_env::login_env() {
+            cmd.env(k, v);
+        }
+        let spawn_res = cmd.spawn();
         let mut child = match spawn_res {
             Ok(c) => c,
             Err(e) => {
@@ -4717,6 +4754,11 @@ fn workspace_run_script_stream(
         let mut cmd = Command::new("bash");
         cmd.arg("-lc").arg(&script)
             .current_dir(&cwd)
+            // Real login-shell env so the Run script finds bun/nvm/etc. and
+            // sees the user's $EDITOR; `bash -l` alone misses what the user
+            // set in their actual shell (fish/zsh rc) (#16, #17). The
+            // login_env() loop below adds the non-PATH delta.
+            .env("PATH", shell_env::resolved_path())
             .env("TERMIC_PORT", port.to_string())
             .env("TERMIC_WORKSPACE_NAME", &name)
             .env("TERMIC_TASK", &name)
@@ -4736,6 +4778,9 @@ fn workspace_run_script_stream(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        for (k, v) in shell_env::login_env() {
+            cmd.env(k, v);
+        }
         for (k, v) in &sibling_ports {
             cmd.env(k, v.to_string());
         }
@@ -5048,6 +5093,15 @@ fn home_dir() -> String {
     dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// The user's login shell (`$SHELL` with a zsh → bash → fish → sh
+/// fallback). The frontend spawns scratch + custom-command terminals
+/// through this instead of a hard-coded `zsh`, so machines without zsh
+/// can still open a terminal (issue #13).
+#[tauri::command]
+fn default_shell() -> String {
+    shell_env::login_shell()
+}
+
 #[tauri::command]
 fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
@@ -5065,8 +5119,30 @@ fn notify(title: String, body: String) {
 
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
-    Command::new("open").arg(&path).status().map_err(|e| e.to_string())?;
+    let (program, args) = open_command(std::env::consts::OS, &path);
+    Command::new(program).args(&args).status().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The argv for opening `target` (a URL or filesystem path) in the OS
+/// default handler. Split out from the side-effecting spawn so the
+/// per-platform dispatch is unit-testable. `os` is
+/// `std::env::consts::OS`. Before this, `open_path` always invoked the
+/// macOS-only `open`, so on Linux clicking a URL the agent printed in
+/// the terminal did nothing (#14).
+fn open_command(os: &str, target: &str) -> (&'static str, Vec<String>) {
+    match os {
+        "macos" => ("open", vec![target.to_string()]),
+        // `explorer.exe <target>` opens a URL/path in the default handler and
+        // receives the arg directly (CreateProcess argv) — NOT a `cmd /C
+        // start` shell that would re-parse it. The latter splits an agent URL
+        // like `https://x/?a=1&b=2` on the unquoted `&`, truncating it or
+        // executing the tail as a command. explorer's non-zero exit on
+        // success is harmless: open_path only treats a SPAWN failure as Err.
+        "windows" => ("explorer", vec![target.to_string()]),
+        // Linux, the BSDs, etc. — the freedesktop launcher.
+        _ => ("xdg-open", vec![target.to_string()]),
+    }
 }
 
 // ───────────────────────────── settings / discovery ─────────────────────────────
@@ -5913,7 +5989,7 @@ pub fn run() {
             workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, home_dir, path_exists, log_line, pty_debug_append, terminal_stage_file,
+            notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             list_monospace_fonts,
         ])
@@ -6198,6 +6274,35 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn open_command_macos_uses_open() {
+        assert_eq!(open_command("macos", "https://x.com"),
+            ("open", vec!["https://x.com".to_string()]));
+    }
+
+    #[test]
+    fn open_command_linux_uses_xdg_open() {
+        // The #14 regression: Linux must not fall back to macOS `open`.
+        assert_eq!(open_command("linux", "https://x.com"),
+            ("xdg-open", vec!["https://x.com".to_string()]));
+    }
+
+    #[test]
+    fn open_command_unknown_os_falls_back_to_xdg_open() {
+        let (prog, _) = open_command("freebsd", "https://x.com");
+        assert_eq!(prog, "xdg-open");
+    }
+
+    #[test]
+    fn open_command_windows_uses_explorer_no_shell() {
+        // Must NOT route through `cmd /C start` — the target is passed as a
+        // single argv to explorer so cmd metachars (& ^ %) can't be reparsed.
+        let (prog, args) = open_command("windows", "https://x.com/?a=1&b=2");
+        assert_eq!(prog, "explorer");
+        assert_eq!(args, vec!["https://x.com/?a=1&b=2".to_string()]);
+        assert_ne!(prog, "cmd", "no shell in the open path");
+    }
 
     #[test]
     fn gitignore_inserts_managed_block_when_absent() {

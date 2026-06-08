@@ -3,6 +3,7 @@ import "./index.css";
 import { App } from "./App";
 import { logLine } from "@/lib/ipc";
 import { initTerminalDropHandler } from "@/lib/terminalDrop";
+import { initModKeyClass } from "@/lib/modKeyClass";
 
 // StrictMode disabled: it double-mounts effects in dev, which races our async
 // PTY spawn flow (first spawn gets killed by the strict teardown before its
@@ -14,6 +15,11 @@ import { initTerminalDropHandler } from "@/lib/terminalDrop";
 // terminals and CodeMirror still get their selection/copy via keyboard
 // shortcuts; we don't want browser-style "Reload"/"Inspect" menus showing.
 window.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// Track Cmd/Ctrl held → `termic-mod-held` on <html>, so terminal links show
+// the hand cursor only while the modifier is down (the underline stays on
+// plain hover). See modKeyClass.ts + index.css.
+initModKeyClass();
 
 // Mirror uncaught errors + unhandled promise rejections to the Rust-side
 // debug log so they show up in the dev terminal (`/var/folders/.../T/
