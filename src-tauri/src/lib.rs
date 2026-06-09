@@ -3371,7 +3371,9 @@ fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
 
     // Host group: always present. Run git status at the workspace
     // path itself (= wrapper for multi, = worktree for single).
-    let host_out = git(&["status", "--porcelain"], Path::new(&w.path))
+    // -uall lists files inside brand-new untracked dirs individually
+    // (without it git collapses them to a single "dir/" entry).
+    let host_out = git(&["status", "--porcelain", "-uall"], Path::new(&w.path))
         .map_err(|e| e.to_string())?;
     let host_files = parse(&host_out);
     let host_name = load_projects().into_iter()
@@ -3397,7 +3399,7 @@ fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
         // target). Both have a valid .git so `git status` just works.
         let member_path = Path::new(&m.path);
         if !member_path.exists() { continue; }
-        let member_out = git(&["status", "--porcelain"], member_path)
+        let member_out = git(&["status", "--porcelain", "-uall"], member_path)
             .unwrap_or_default();
         let mut member_files = parse(&member_out);
         for f in &mut member_files {
@@ -3514,7 +3516,11 @@ async fn workspace_git_status(id: String) -> Result<GitStatus, String> {
             git(&["log", "-1", "--pretty=%B"], p).map(|s| s.trim_end().to_string()).unwrap_or_default()
         };
         let build = |name: String, dir_name: String, kind: &str, p: &Path| -> GitRepo {
-            let out = git(&["status", "--porcelain"], p).unwrap_or_default();
+            // -uall expands untracked DIRECTORIES into their individual files.
+            // Without it git collapses a brand-new folder to a single
+            // "docs/foo/" entry (trailing slash = directory), which the UI
+            // then treats as a file: blank name in the tree, empty diff.
+            let out = git(&["status", "--porcelain", "-uall"], p).unwrap_or_default();
             let mut staged = Vec::new();
             let mut unstaged = Vec::new();
             let mut seen = std::collections::HashSet::new();

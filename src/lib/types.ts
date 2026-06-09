@@ -504,6 +504,10 @@ export interface EditTab extends BaseTab {
    *  and clears it via `consumeReveal` so subsequent re-renders don't
    *  re-jump the cursor every time. */
   revealAt?: { line: number; col?: number };
+  /** View mode for markdown files (.md/.markdown/.mdx). "source" is the
+   *  raw CodeMirror editor, "preview" the rendered HTML, "split" both
+   *  side-by-side. Undefined → "source". Ignored for non-markdown files. */
+  mdView?: "source" | "preview" | "split";
 }
 
 export type Tab = TerminalTab | DiffTab | EditTab;

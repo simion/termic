@@ -18,7 +18,7 @@ import {
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { effectiveSandboxMode } from "@/lib/types";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
-import { openPath, workspaceRunScript, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
+import { openPath, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
@@ -39,6 +39,7 @@ export function UnifiedBar() {
   const ws = useActiveWorkspace();
   const proj = useApp(s => ws ? s.projects.find(p => p.id === ws.project_id) : null);
   const openReview = useUI(s => s.openReview);
+  const requestRunScript = useUI(s => s.requestRunScript);
   const themeMode = usePrefs(s => s.themeMode);
   const setThemeMode = usePrefs(s => s.setThemeMode);
   // When the user picked an explicit theme, show that theme's icon.
@@ -176,7 +177,14 @@ export function UnifiedBar() {
         {ws && proj && (
           <>
             <Tip content="Run" side="bottom">
-              <Button size="icon" variant="icon" onClick={() => workspaceRunScript(ws.id).catch(() => {})}>
+              <Button size="icon" variant="icon" onClick={() => {
+                // The run-request is handled by the RightPanel, which is
+                // unmounted while the panel is hidden — so reveal it first,
+                // otherwise the click would bump the nonce into the void.
+                // A fresh RightPanel mount picks up the pending request.
+                if (useApp.getState().rightPanelHidden) toggleRP();
+                requestRunScript(ws.id);
+              }}>
                 <Play className="h-4 w-4" />
               </Button>
             </Tip>

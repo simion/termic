@@ -103,6 +103,12 @@ interface UIState {
   pendingPtyRestarts: Set<string>;
   /** Transient bottom-right toasts. Auto-dismiss handled in <Toaster/>. */
   toasts: Toast[];
+  /** Fire-and-forget "run the run-script now" signal from chrome outside
+   *  the RightPanel (the UnifiedBar's top-right Run button). The RightPanel
+   *  owns the footer's collapse/tab state plus the spotlight/members nuance,
+   *  so rather than duplicate `startScript("run")` we bump a nonce here and
+   *  let the matching RightPanel react. null = nothing pending. */
+  runScriptRequest: { wsId: string; nonce: number } | null;
 
   // actions
   openNewProject: () => void;
@@ -170,6 +176,10 @@ interface UIState {
    *  live inside the hook. */
   notifyRoute: { wsId: string; tabId: string; firedAt: number } | null;
   setNotifyRoute: (route: { wsId: string; tabId: string } | null) => void;
+  /** Ask the workspace's RightPanel to start its run-script (used by the
+   *  UnifiedBar's top-right Run button). No-op if that workspace isn't
+   *  mounted. */
+  requestRunScript: (wsId: string) => void;
 }
 
 export type ToastKind = "success" | "info" | "error";
@@ -200,6 +210,7 @@ export const useUI = create<UIState>(set => ({
   fileFinderWsId: null,
   findInFilesWsId: null,
   busyMessage: null,
+  runScriptRequest: null,
   confirm: null,
   terminalDrop: null,
   pendingPtyRestarts: new Set<string>(),
@@ -238,6 +249,9 @@ export const useUI = create<UIState>(set => ({
   setNotifyRoute:    (route) => set({
     notifyRoute: route ? { ...route, firedAt: Date.now() } : null,
   }),
+  requestRunScript:  (wsId) => set(s => ({
+    runScriptRequest: { wsId, nonce: (s.runScriptRequest?.nonce ?? 0) + 1 },
+  })),
   askConfirm: (req: any) =>
     new Promise<any>(resolve => set({ confirm: { req, resolve } })),
   resolveConfirm: (ok, checked) => {

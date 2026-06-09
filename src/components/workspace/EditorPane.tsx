@@ -121,8 +121,21 @@ function revealLine(view: EditorView, line: number, col?: number) {
   requestAnimationFrame(() => view.focus());
 }
 
-export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
+export function EditorPane({ ws, tab, onContent }: {
+  ws: Workspace;
+  tab: EditTab;
+  /** Called with the live EditorView on load and after every edit. The
+   *  markdown split/preview wrapper uses this to render live without
+   *  re-reading disk; it reads `view.state.doc` lazily (inside its own
+   *  debounce) so we don't stringify the whole buffer on every keystroke.
+   *  Plain editor tabs pass nothing. */
+  onContent?: (view: EditorView) => void;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // Latest onContent in a ref so the mount effect (which only runs on
+  // [ws.id, tab.path]) always calls the current callback.
+  const onContentRef = useRef(onContent);
+  onContentRef.current = onContent;
   const viewRef = useRef<EditorView | null>(null);
   const langCompRef = useRef(new Compartment());
   // Theme lives in its own compartment so font-size / ligatures changes can be
@@ -153,6 +166,13 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
 
   useEffect(() => {
     let alive = true;
+    // Reset per-load state up front. This effect re-runs when the path
+    // changes (preview tabs reuse one instance + swap tab.path), so a
+    // stale error from a prior file — e.g. a binary like .DS_Store that
+    // failed the UTF-8 read — must be cleared or it renders on top of the
+    // next file's content.
+    setErr(null);
+    setLoading(true);
     (async () => {
       try {
         const content = await workspaceFileRead(ws.id, tab.path);
@@ -201,7 +221,9 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
               lintGutter(),
               indentUnit.of("  "),
               EditorState.tabSize.of(2),
-              EditorView.updateListener.of(u => { if (u.docChanged) markDirty(); }),
+              EditorView.updateListener.of(u => {
+                if (u.docChanged) { markDirty(); onContentRef.current?.(u.view); }
+              }),
               langCompRef.current.of(lang ? [lang] : []),
               themeCompRef.current.of(
                 buildTheme(editorFontSize, codeLigatures, editorThemeId),
@@ -212,6 +234,9 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
         });
         viewRef.current = view;
         setLoading(false);
+        // Seed the preview/split wrapper with the live view so it can
+        // render before the user makes any edit.
+        onContentRef.current?.(view);
         // Initial jump-to-line for Find-in-Files: do it once the view
         // exists. The other useEffect below handles subsequent jumps
         // (clicking a different match while the tab's already open).
@@ -219,7 +244,16 @@ export function EditorPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
           revealLine(view, tab.revealAt.line, tab.revealAt.col);
           useApp.getState().consumeReveal(ws.id, tab.id);
         }
-      } catch (e) { setErr(String(e)); setLoading(false); }
+      } catch (e) {
+        if (!alive) return;
+        const msg = String(e);
+        // Binary files (.DS_Store, images, compiled blobs) fail the Rust
+        // UTF-8 read. Show a human message instead of the raw stream error.
+        setErr(/valid UTF-8/i.test(msg)
+          ? "This file isn't valid UTF-8 text (it looks binary), so it can't be shown in the editor."
+          : msg);
+        setLoading(false);
+      }
     })();
     return () => { alive = false; viewRef.current?.destroy(); viewRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

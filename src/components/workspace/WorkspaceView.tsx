@@ -17,6 +17,10 @@ import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
+const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
+// Lightweight extension check so we don't import the (lazy) MarkdownPane
+// module just to ask whether a path is markdown.
+const isMarkdownPath = (p: string) => /\.(md|markdown|mdx)$/i.test(p);
 
 const DEFAULT_SPLIT_HEIGHT = 240;
 const MIN_HEIGHT = 80;
@@ -95,7 +99,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
               style={{ visibility: t.id === activeId ? "visible" : "hidden", zIndex: t.id === activeId ? 1 : 0 }}
             >
               {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeId} />}
-              {t.type === "edit"     && <Suspense fallback={null}><EditorPane ws={ws} tab={t} /></Suspense>}
+              {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
               {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
             </div>
           ))}

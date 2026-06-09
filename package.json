@@ -81,6 +81,8 @@
     "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
     "lucide-react": "^0.469.0",
+    "markdown-it": "^14.2.0",
+    "mermaid": "^11.15.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tailwind-merge": "^3.0.0",
@@ -89,6 +91,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.16",
     "@tauri-apps/cli": "^2",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

@@ -289,6 +289,21 @@ export function RightPanel() {
       console.error("workspace_stop_script failed:", err));
   };
 
+  // The UnifiedBar's top-right Run button can't drive the footer's
+  // collapse/tab state (it lives here, not in the store), so it bumps a
+  // nonce in the UI store and we react by running the run-script the same
+  // way the in-panel Run button does. Guard on the nonce so we fire once
+  // per click, and only for this (active) workspace.
+  const runReq = useUI(s => s.runScriptRequest);
+  const lastRunNonce = useRef(0);
+  useEffect(() => {
+    if (!runReq || !ws) return;
+    if (runReq.nonce === lastRunNonce.current) return;
+    lastRunNonce.current = runReq.nonce;
+    if (runReq.wsId !== ws.id) return;
+    startScript("run");
+  }, [runReq, ws?.id]);
+
   const handleSpotlightStart = () => {
     // Log clearing happens in the isSpotlighted useEffect above, which fires
     // when the store confirms spotlight is active. startSpotlight also hands
