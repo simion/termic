@@ -1,6 +1,17 @@
 {
   "versions": [
     {
+      "version": "0.10.4",
+      "date": "2026-06-09",
+      "summary": "Preview Markdown files with rendered text and Mermaid diagrams, plus git and editor fixes.",
+      "notes": [
+        "Open a Markdown file (.md, .markdown, .mdx) and switch between Editor, Preview, and Split with the toggle in the toolbar.",
+        "Mermaid code blocks render as diagrams in the preview, with a clear error box if a diagram has a syntax error.",
+        "The Git changes panel now lists files inside a brand-new folder individually, instead of collapsing the whole folder into one entry with an empty diff.",
+        "Opening a binary file (like .DS_Store) no longer leaves its error stuck on the next file you open, and now shows a plain message that the file is not text."
+      ]
+    },
+    {
       "version": "0.10.3",
       "date": "2026-06-08",
       "summary": "Terminals use your real shell and environment, clickable links, and Settings fixes.",
