@@ -14,6 +14,7 @@ import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import * as ipc from "@/lib/ipc";
@@ -72,7 +73,14 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     // selects. Routes through `open_path` for the system browser (#14).
     term.loadAddon(new WebLinksAddon((event, uri) => {
       if (event.metaKey || event.ctrlKey) {
-        ipc.openPath(uri).catch(() => {});
+        // #14 diagnostics — see TerminalPane. The scratch shell has no TUI
+        // mouse reporting, so this is the control case: links here should
+        // always open. Compare its log lines against the agent terminal's.
+        ipc.logLine(`[link] scratch activate meta=${event.metaKey} ctrl=${event.ctrlKey} uri=${uri}`).catch(() => {});
+        // Official opener plugin (OS-native), matching terax-ai — see TerminalPane (#14).
+        openUrl(uri)
+          .then(() => ipc.logLine("[link] scratch open ok").catch(() => {}))
+          .catch((e) => ipc.logLine(`[link] scratch open FAILED: ${e}`).catch(() => {}));
       }
     }));
     const unicode11 = new Unicode11Addon();

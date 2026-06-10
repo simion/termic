@@ -18,7 +18,8 @@ import {
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { effectiveSandboxMode } from "@/lib/types";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
-import { openPath, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
+import { openPath, workspaceSendDiffToMain } from "@/lib/ipc";
+import { archiveAndRefresh } from "@/lib/archiveWorkspace";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
@@ -35,8 +36,6 @@ export function UnifiedBar() {
   const compact = useApp(s => s.compactSidebar);
   const toggleCompact = useApp(s => s.toggleCompactSidebar);
   const toggleRP = useApp(s => s.toggleRightPanel);
-  const setActive = useApp(s => s.setActiveWorkspace);
-  const loadAll = useApp(s => s.loadAll);
   const ws = useActiveWorkspace();
   const proj = useApp(s => ws ? s.projects.find(p => p.id === ws.project_id) : null);
   const openReview = useUI(s => s.openReview);
@@ -288,9 +287,8 @@ export function UnifiedBar() {
                   if (!confirmed) return;
                   try {
                     useUI.getState().setBusy(`Archiving "${ws.name}"…`);
-                    await workspaceArchive(ws.id, deleteBranch); setActive(null); await loadAll();
-                  } catch (e) { console.error(e); }
-                  finally { useUI.getState().setBusy(null); }
+                    await archiveAndRefresh(ws.id, deleteBranch);
+                  } finally { useUI.getState().setBusy(null); }
                 }}
               ><Archive className="h-4 w-4" /></Button>
             </Tip>
