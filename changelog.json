@@ -1,6 +1,18 @@
 {
   "versions": [
     {
+      "version": "0.10.7",
+      "date": "2026-06-10",
+      "summary": "GitHub Copilot support, clone any agent, drag-to-reorder agents, and sponsors section.",
+      "notes": [
+        "GitHub Copilot CLI is now a built-in agent with the classic Copilot icon, live /yolo on/off toggle, session-id based resume, and sandbox paths pre-configured.",
+        "Clone any agent from the Settings tab: the Clone button copies all settings into a new custom agent you can override independently. Cloned agents show an 'extends: parent' badge.",
+        "Drag agent tabs left or right in Settings to reorder them. The order is saved immediately and reflected everywhere: dropdowns, sidebar, title bar.",
+        "Fixed: cloned and custom agents now show the correct brand icon everywhere (sidebar, top tabs, title bar, dropdowns, dialogs). Previously only the Settings page used the right icon.",
+        "Added a Sponsors section to the website and README."
+      ]
+    },
+    {
       "version": "0.10.6",
       "date": "2026-06-10",
       "summary": "Redesigned message queue, an optional work-in-progress spinner, and hidden-file patterns for the file tree.",

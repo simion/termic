@@ -2383,7 +2383,7 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 
 #[tauri::command]
 fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
-    if !["claude", "codex", "agy", "gemini", "grok"].contains(&cli.as_str()) {
+    if !["claude", "codex", "agy", "gemini", "grok", "copilot"].contains(&cli.as_str()) {
         return Err(format!("unknown cli: {cli}"));
     }
     let mut list = load_workspaces();
@@ -5318,6 +5318,10 @@ pub struct Agent {
     /// output, unusual title patterns, never-quiet PTYs).
     #[serde(default = "default_true")]
     pub work_done: bool,
+    /// ID of the agent this one was cloned from. Purely informational —
+    /// surfaced in the UI as "extends: <name>" in the settings card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends: Option<String>,
 }
 
 fn default_true() -> bool { true }
@@ -5417,6 +5421,7 @@ fn default_agents() -> Vec<Agent> {
             ],
             sandbox_allowed_hosts: vec![],
             work_done: true,
+            extends: None,
         },
         Agent {
             id: "codex".into(),
@@ -5449,6 +5454,7 @@ fn default_agents() -> Vec<Agent> {
             ],
             sandbox_allowed_hosts: vec![],
             work_done: true,
+            extends: None,
         },
         Agent {
             // Google Antigravity CLI (`agy`), launched 2025-11-18 — a
@@ -5499,6 +5505,45 @@ fn default_agents() -> Vec<Agent> {
             ],
             sandbox_allowed_hosts: vec![],
             work_done: true,
+            extends: None,
+        },
+        Agent {
+            // GitHub Copilot CLI (`copilot`). Launched 2025; supports
+            // --session-id for both minting and resuming sessions,
+            // --name for labelling, --allow-all / --yolo for permissions,
+            // and /yolo on|off for live approval-mode switching.
+            id: "copilot".into(),
+            display_name: "copilot".into(),
+            command: "copilot".into(),
+            args: vec![],
+            icon_id: "copilot".into(),
+            color: "#54aeff".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                yolo_args: vec!["--allow-all".into()],
+                // Live approval-mode toggle via slash commands.
+                runtime_yolo_command: "/yolo on".into(),
+                runtime_default_command: "/yolo off".into(),
+                // Worktree fallback: resume most-recent CWD session.
+                resume_args: vec!["--continue".into()],
+                // Repo-root sessions: --session-id serves as both the
+                // mint (new UUID) and the resume (same UUID) flag.
+                session_id_args: vec!["--session-id".into(), "{UUID}".into()],
+                resume_id_args:  vec!["--session-id".into(), "{UUID}".into()],
+                name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
+            },
+            env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                "$HOME/.copilot".into(),
+                "$HOME/.config/copilot".into(),
+                "$HOME/.local/share/copilot".into(),
+                "$HOME/.local/state/copilot".into(),
+                "$HOME/Library/Application Support/GitHub Copilot".into(),
+            ],
+            sandbox_allowed_hosts: vec![],
+            work_done: true,
+            extends: None,
         },
         Agent {
             id: "gemini".into(),
@@ -5533,6 +5578,7 @@ fn default_agents() -> Vec<Agent> {
             ],
             sandbox_allowed_hosts: vec![],
             work_done: true,
+            extends: None,
         },
         Agent {
             // xAI's Grok Build TUI. Help text confirmed:
@@ -5567,6 +5613,7 @@ fn default_agents() -> Vec<Agent> {
             ],
             sandbox_allowed_hosts: vec![],
             work_done: true,
+            extends: None,
         },
     ]
 }
@@ -5592,6 +5639,13 @@ pub(crate) fn load_settings_inner() -> Settings {
                 s.agents.push(def);
             }
         }
+        // Re-sort so builtins appear in canonical default_agents() order.
+        // Custom agents (not in the default list) sort to the end, stable
+        // so their relative order among each other is preserved.
+        let order: Vec<String> = default_agents().iter().map(|a| a.id.clone()).collect();
+        s.agents.sort_by_key(|a| {
+            order.iter().position(|id| id == &a.id).unwrap_or(usize::MAX)
+        });
     }
     // Migration: backfill missing `sandbox_allowed_paths` entries on
     // BUILT-IN agents. We MERGE the shipped defaults into the stored

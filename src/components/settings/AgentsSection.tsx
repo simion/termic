@@ -5,7 +5,7 @@
 // removing them would orphan existing workspaces that reference them.
 // Saves are debounced (500ms) so typing doesn't hammer the JSON file.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { settingsLoad, agentsSave, agentsDefaults } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -13,7 +13,8 @@ import type { Agent, CliInfo } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { AppDialog } from "@/components/ui/Dialog";
-import { Trash2, Plus, Check, AlertTriangle, RotateCcw } from "lucide-react";
+import { Tip } from "@/components/ui/Tooltip";
+import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cn, slugify } from "@/lib/utils";
 
@@ -158,6 +159,32 @@ export function AgentsSection() {
     setAutoFocusId(fresh.id);
   }
 
+  function reorderAgent(id: string, toIndex: number) {
+    const from = agents.findIndex(a => a.id === id);
+    if (from === -1 || from === toIndex) return;
+    const next = [...agents];
+    const [moved] = next.splice(from, 1);
+    next.splice(toIndex, 0, moved);
+    mutate(next);
+  }
+
+  function cloneAgent(id: string) {
+    const src = agents.find(a => a.id === id);
+    if (!src) return;
+    // Base the clone id on the source's id; increment suffix until unique.
+    let n = 2;
+    while (agents.some(a => a.id === `${src.id}-${n}`)) n++;
+    const clone: Agent = {
+      ...src,
+      id: `${src.id}-${n}`,
+      display_name: `${src.display_name}-copy`,
+      builtin: false,
+      extends: src.id,
+    };
+    mutate([...agents, clone]);
+    setAutoFocusId(clone.id);
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-baseline justify-between">
@@ -197,6 +224,8 @@ export function AgentsSection() {
         patchCaps={patchCaps}
         requestRemoveAgent={requestRemoveAgent}
         resetAgent={resetAgent}
+        cloneAgent={cloneAgent}
+        reorderAgent={reorderAgent}
         onAutoFocusConsumed={() => setAutoFocusId(null)}
       />
 
@@ -237,7 +266,7 @@ export function AgentsSection() {
  *  the freshly-created one via the autoFocusId signal. */
 function AgentsTabs({
   agents, activeId, setActiveId, autoFocusId, defaults, isModified,
-  patchAgent, onCommitId, patchCaps, requestRemoveAgent, resetAgent, onAutoFocusConsumed,
+  patchAgent, onCommitId, patchCaps, requestRemoveAgent, resetAgent, cloneAgent, reorderAgent, onAutoFocusConsumed,
 }: {
   agents: Agent[];
   activeId: string | null;
@@ -250,6 +279,8 @@ function AgentsTabs({
   patchCaps: (id: string, p: Partial<NonNullable<Agent["capabilities"]>>) => void;
   requestRemoveAgent: (id: string) => void;
   resetAgent: (id: string) => void;
+  cloneAgent: (id: string) => void;
+  reorderAgent: (id: string, toIndex: number) => void;
   onAutoFocusConsumed: () => void;
 }) {
   // PATH-detection results (keyed by agent id) drive the install badge.
@@ -265,6 +296,93 @@ function AgentsTabs({
   // Auto-jump to a freshly added agent so the user lands on its editor.
   useEffect(() => { if (autoFocusId) setActiveId(autoFocusId); }, [autoFocusId]);
 
+  // Drag-to-reorder — same pointer-based pattern as TabBar (no HTML5 DnD;
+  // WKWebView's native drag is unreliable and Tauri intercepts it).
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragTx, setDragTx] = useState(0);
+  const dragRef = useRef<{
+    id: string; grabOffset: number; startX: number; pointerX: number; started: boolean; appliedTx: number;
+  } | null>(null);
+
+  function computeTx(clientX: number): number {
+    const strip = stripRef.current;
+    const d = dragRef.current;
+    if (!strip || !d) return 0;
+    const pill = strip.querySelector(`[data-agent-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
+    if (!pill) return 0;
+    const layoutLeft = pill.getBoundingClientRect().left - d.appliedTx;
+    const tx = (clientX - d.grabOffset) - layoutLeft;
+    d.appliedTx = tx;
+    return tx;
+  }
+
+  function maybeReorder(clientX: number) {
+    const strip = stripRef.current;
+    const d = dragRef.current;
+    if (!strip || !d) return;
+    const pill = strip.querySelector(`[data-agent-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
+    if (!pill) return;
+    const draggedCenter = (clientX - d.grabOffset) + pill.offsetWidth / 2;
+    const pills = Array.from(strip.querySelectorAll<HTMLElement>("[data-agent-id]"));
+    let target = 0;
+    for (const p of pills) {
+      if (p.dataset.agentId === d.id) continue;
+      const r = p.getBoundingClientRect();
+      if (r.left + r.width / 2 < draggedCenter) target++;
+    }
+    const cur = agents.findIndex(a => a.id === d.id);
+    if (target !== cur) reorderAgent(d.id, target);
+  }
+
+  function onDragPointerMove(e: PointerEvent) {
+    const d = dragRef.current;
+    if (!d) return;
+    d.pointerX = e.clientX;
+    if (!d.started) {
+      if (Math.abs(e.clientX - d.startX) < 5) return;
+      d.started = true;
+      setDragId(d.id);
+    }
+    setDragTx(computeTx(e.clientX));
+    maybeReorder(e.clientX);
+  }
+
+  function onDragPointerUp() {
+    window.removeEventListener("pointermove", onDragPointerMove);
+    window.removeEventListener("pointerup", onDragPointerUp);
+    dragRef.current = null;
+    setDragId(null);
+    setDragTx(0);
+  }
+
+  function startDrag(agentId: string, e: React.PointerEvent) {
+    if (e.button !== 0) return;
+    const pill = e.currentTarget as HTMLElement;
+    dragRef.current = {
+      id: agentId,
+      grabOffset: e.clientX - pill.getBoundingClientRect().left,
+      startX: e.clientX,
+      pointerX: e.clientX,
+      started: false,
+      appliedTx: 0,
+    };
+    window.addEventListener("pointermove", onDragPointerMove);
+    window.addEventListener("pointerup", onDragPointerUp);
+  }
+
+  useLayoutEffect(() => {
+    const d = dragRef.current;
+    if (d?.started) setDragTx(computeTx(d.pointerX));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents]);
+
+  useEffect(() => () => {
+    window.removeEventListener("pointermove", onDragPointerMove);
+    window.removeEventListener("pointerup", onDragPointerUp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const active = agents.find(a => a.id === activeId) ?? agents[0];
   if (!active) return null;
 
@@ -274,21 +392,23 @@ function AgentsTabs({
           border under inactive tabs, accent underline beneath the
           active one. Keeps the visual language consistent across
           settings pages. */}
-      <div className="flex items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-[var(--color-border-soft)]">
+      <div ref={stripRef} className="flex items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-[var(--color-border-soft)]">
         {agents.map((a, idx) => (
           <button
             key={a.id}
             type="button"
+            data-agent-id={a.id}
             onClick={() => setActiveId(a.id)}
+            onPointerDown={(e) => startDrag(a.id, e)}
             className={cn(
-              "relative -mb-px flex items-center gap-1.5 py-2 text-[13px] font-medium transition-colors",
-              // First tab sits flush with the page edge; everything
-              // else gets normal horizontal padding.
+              "relative -mb-px flex items-center gap-1.5 py-2 text-[13px] font-medium transition-colors select-none",
               idx === 0 ? "pr-3" : "px-3",
+              dragId === a.id ? "z-30 opacity-80" : "",
               a.id === active.id
                 ? "text-[var(--color-fg)]"
                 : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
             )}
+            style={dragId === a.id ? { transform: `translateX(${dragTx}px)` } : undefined}
           >
             <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
               <CliIcon cli={a.icon_id} className="h-3.5 w-3.5" />
@@ -321,6 +441,8 @@ function AgentsTabs({
           onCommitId={(newDisplayName) => onCommitId(active.id, newDisplayName)}
           onPatchCaps={(p) => patchCaps(active.id, p)}
           onRemove={() => requestRemoveAgent(active.id)}
+          onClone={() => cloneAgent(active.id)}
+          extendsName={active.extends ? (agents.find(a => a.id === active.extends)?.display_name ?? active.extends) : undefined}
           autoFocus={autoFocusId === active.id}
           onAutoFocusConsumed={onAutoFocusConsumed}
           modified={isModified(active)}
@@ -331,7 +453,7 @@ function AgentsTabs({
   );
 }
 
-function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove, autoFocus, onAutoFocusConsumed, modified, onReset }: {
+function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove, onClone, extendsName, autoFocus, onAutoFocusConsumed, modified, onReset }: {
   agent: Agent;
   /** PATH-detection result for this agent, once `refreshClis` has run.
    *  undefined = not probed yet → no badge. */
@@ -340,6 +462,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   onCommitId: (newDisplayName: string) => void;
   onPatchCaps: (p: Partial<NonNullable<Agent["capabilities"]>>) => void;
   onRemove: () => void;
+  onClone: () => void;
+  /** Display name of the parent agent, if this one was cloned. */
+  extendsName?: string;
   /** True for a freshly-created card — scrolls into view + focuses the name
    *  input on mount. */
   autoFocus?: boolean;
@@ -354,15 +479,11 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   // The args fields are string[] edited as space-separated text. ArgsInput
   // owns the local draft so spaces survive (#19); it splits + bubbles up the
   // parsed array on each change.
-  const cardRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!autoFocus) return;
-    // Two RAFs so layout settles before scrolling — otherwise the card might
-    // not have its final position yet and the scroll target is stale.
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       nameRef.current?.focus();
       nameRef.current?.select();
       onAutoFocusConsumed?.();
@@ -370,7 +491,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   }, [autoFocus, onAutoFocusConsumed]);
 
   return (
-    <div ref={cardRef} className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-1)] p-4">
+    <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-1)] p-4">
       <header className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className={cn(CLI_BRAND_COLOR[agent.icon_id] || "text-[var(--color-fg-dim)]")}>
@@ -395,6 +516,12 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] font-mono">{agent.id}</span>
           {agent.builtin && (
             <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] uppercase tracking-wider">built-in</span>
+          )}
+          {extendsName && (
+            <span
+              className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] font-mono"
+              title={`Cloned from ${extendsName}. All settings inherited at clone time; edit independently.`}
+            >extends: {extendsName}</span>
           )}
           {modified && (
             <span
@@ -462,6 +589,12 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               title="Reset this agent to ship defaults"
             ><RotateCcw className="h-3.5 w-3.5" /> Reset</button>
           )}
+          <Tip content="Clone this agent: copies all settings into a new custom agent you can override independently" side="top">
+            <button
+              onClick={onClone}
+              className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+            ><Copy className="h-4 w-4" /></button>
+          </Tip>
           {!agent.builtin && (
             <button
               onClick={onRemove}

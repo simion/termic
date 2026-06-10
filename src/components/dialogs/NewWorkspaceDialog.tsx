@@ -528,7 +528,7 @@ export function NewWorkspaceDialog() {
                   "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
                   cli === a.id
                     ? "bg-[var(--color-accent-deep)] text-white"
-                    : cn("text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]", CLI_BRAND_COLOR[a.id]),
+                    : cn("text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]", CLI_BRAND_COLOR[a.icon_id]),
                 )}
                 style={cli === a.id ? undefined : (a.color ? { color: a.color } : undefined)}
               >
@@ -536,7 +536,7 @@ export function NewWorkspaceDialog() {
                     so the segmented control fits more comfortably on
                     one row. The global display_name stays untouched
                     (used elsewhere in the app). */}
-                <CliIcon cli={a.id} className="h-3.5 w-3.5" />
+                <CliIcon cli={a.icon_id} className="h-3.5 w-3.5" />
                 {a.id === "agy" ? "Agy" : a.display_name}
               </button>
             ))}

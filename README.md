@@ -326,6 +326,16 @@ Open an issue to push something up the list or pick one off.
 
 ---
 
+## Sponsors
+
+Termic is free and open source. If your company builds on top of AI coding agents and finds this useful, sponsoring helps keep the project moving.
+
+**What sponsors get:** logo on [termic.dev](https://termic.dev) and in this README, and a thank-you in release notes.
+
+[Become a sponsor on GitHub](https://github.com/sponsors/simion)
+
+---
+
 ## License
 
 [AGPL-3.0-or-later](./LICENSE). Fork it, modify it, build a derivative —

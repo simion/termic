@@ -15,7 +15,7 @@ import {
   PanelLeft, PanelRight, FolderOpen, Play, Archive, ShieldCheck, Shield,
   Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Eye,
 } from "lucide-react";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { effectiveSandboxMode } from "@/lib/types";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { openPath, workspaceArchive, workspaceSendDiffToMain } from "@/lib/ipc";
@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
 const TRAFFIC_LIGHT_WIDTH = 84;
 
 export function UnifiedBar() {
+  const agents = useApp(s => s.agents);
   const compact = useApp(s => s.compactSidebar);
   const toggleCompact = useApp(s => s.toggleCompactSidebar);
   const toggleRP = useApp(s => s.toggleRightPanel);
@@ -127,8 +128,8 @@ export function UnifiedBar() {
                 stays vertically centered next to text — items-baseline
                 on the parent would otherwise stick the icon's bottom
                 to the text baseline and float it too high. */}
-            <span className={cn("flex items-center self-center", CLI_BRAND_COLOR[ws.cli])}>
-              <CliIcon cli={ws.cli} className="h-4 w-4" />
+            <span className={cn("flex items-center self-center", CLI_BRAND_COLOR[resolveIconId(ws.cli, agents)])}>
+              <CliIcon cli={resolveIconId(ws.cli, agents)} className="h-4 w-4" />
             </span>
             {/* Workspace name == branch means the user never renamed it,
                 so "<branch> on <branch>" reads as noise. Mirror the

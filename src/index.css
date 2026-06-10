@@ -54,11 +54,12 @@
   --color-warn:      #f0b13a;
   --color-err:       #ef5350;
 
-  --color-cli-claude: #d97757;
-  --color-cli-gemini: #4c8bf5;
-  --color-cli-codex:  #16a34a;
-  --color-cli-agy:    #8b5cf6;
-  --color-cli-grok:   #cbd5e1;
+  --color-cli-claude:  #d97757;
+  --color-cli-gemini:  #4c8bf5;
+  --color-cli-codex:   #16a34a;
+  --color-cli-agy:     #8b5cf6;
+  --color-cli-grok:    #cbd5e1;
+  --color-cli-copilot: #54aeff;
 
   --radius-pill: 999px;
   /* Default mono. Overridden at runtime by the font picker (writes the
