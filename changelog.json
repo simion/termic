@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.10.5",
+      "version": "0.10.6",
       "date": "2026-06-10",
       "summary": "Redesigned message queue, an optional work-in-progress spinner, and hidden-file patterns for the file tree.",
       "notes": [
@@ -12,7 +12,9 @@
         "Markdown preview now uses the full pane width instead of a narrow centered column.",
         "The bottom status bar is tidier: shorter sandbox labels (Sandbox: enforcing, monitoring, or off) and consistent heights and text sizes across every bottom bar.",
         "Fixed: the archive confirmation wraps long workspace and branch names instead of clipping them.",
-        "Fixed: switching bottom terminal tabs with the keyboard now focuses the new tab so you can type right away."
+        "Fixed: switching bottom terminal tabs with the keyboard now focuses the new tab so you can type right away.",
+        "Fixed: resume args override now applies only to the main agent tab. Tabs added with the + button always start a fresh session.",
+        "Fixed: multi-repo member directories no longer disappear from the file tree when hidden-file patterns are configured."
       ]
     },
     {

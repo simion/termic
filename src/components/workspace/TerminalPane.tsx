@@ -903,12 +903,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
         // stale-snapshot race.
         // Per-workspace resume override: a user-supplied verbatim resume
         // block (e.g. `--resume {WORKSPACE_NAME}`) that REPLACES termic's
-        // id-based / cwd-based resume logic. Only on the primary agent tab
-        // (secondary "+" tabs always start fresh). When active it suppresses
+        // id-based / cwd-based resume logic. Only on the auto-created default
+        // tab (is_default: true) — never on user-added "+" tabs, even if they
+        // happen to be the first of their CLI type. When active it suppresses
         // both useIdResume (no uuid mint) and shouldResume (no --continue),
         // and the agent owns the "session not found" case (claude shows its
         // resume picker), so the fast-exit fallback never fires.
-        const resumeOverride = isAgent && isPrimaryTab
+        const resumeOverride = isAgent && !!tab.is_default
           ? (ws.resume_override?.trim() || undefined)
           : undefined;
         const useIdResume = !resumeOverride && idCapable && !!ws.is_repo_root && isPrimaryTab;

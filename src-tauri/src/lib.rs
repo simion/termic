@@ -3927,7 +3927,16 @@ fn workspace_dir_list_sync(id: String, rel: String) -> Result<Vec<FileEntry>, St
         // Member dirs at the root are first-class subtrees — never hide them
         // with the HOST repo's patterns (a host `dist`/`target` exclude must
         // not drop a member repo that happens to share the name).
-        let is_member_dir = rel.is_empty() && w.composition.iter().any(|m| m.dir_name == name);
+        // Primary check: the frozen composition in the workspace JSON.
+        // Fallback: any symlink at the workspace root is a member repo symlink
+        // placed there by workspace_open_repo — protect it regardless of
+        // whether the composition list is current (e.g. after a member rename).
+        let is_symlink_at_root = rel.is_empty()
+            && e.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+        let is_member_dir = rel.is_empty() && (
+            w.composition.iter().any(|m| m.dir_name == name)
+            || is_symlink_at_root
+        );
         if !is_member_dir {
             let local_path = if local_rel.is_empty() { name.clone() } else { format!("{local_rel}/{name}") };
             if path_is_excluded(&exclude_patterns, &local_path) { continue; }
