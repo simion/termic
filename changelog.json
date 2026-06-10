@@ -1,6 +1,21 @@
 {
   "versions": [
     {
+      "version": "0.10.5",
+      "date": "2026-06-10",
+      "summary": "Redesigned message queue, an optional work-in-progress spinner, and hidden-file patterns for the file tree.",
+      "notes": [
+        "The message queue is now a low-friction popover: add messages and they auto-send each time the agent finishes a turn, with no Start or Stop. Open it from the bottom bar, pick which agent, and see a live count per agent.",
+        "New optional Work-in-progress indicator (Settings, General): show a spinner on an agent's tab and in the sidebar while it is working. It is off by default, and a stuck spinner clears itself after a few minutes.",
+        "Hide clutter from the All files tree with glob patterns: a personal list across every project (Settings, General) and a per-repo list committed to .termic.yaml (Settings, Repositories), with one-click presets like Python, Node, and Build output. The Cmd-P file finder respects them too.",
+        "Report a bug now opens a prefilled GitHub issue instead of an email.",
+        "Markdown preview now uses the full pane width instead of a narrow centered column.",
+        "The bottom status bar is tidier: shorter sandbox labels (Sandbox: enforcing, monitoring, or off) and consistent heights and text sizes across every bottom bar.",
+        "Fixed: the archive confirmation wraps long workspace and branch names instead of clipping them.",
+        "Fixed: switching bottom terminal tabs with the keyboard now focuses the new tab so you can type right away."
+      ]
+    },
+    {
       "version": "0.10.4",
       "date": "2026-06-09",
       "summary": "Preview Markdown files with rendered text and Mermaid diagrams, plus git and editor fixes.",
