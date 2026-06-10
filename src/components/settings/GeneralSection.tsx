@@ -11,7 +11,9 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Tip } from "@/components/ui/Tooltip";
 import { usePrefs } from "@/store/prefs";
-import { cn } from "@/lib/utils";
+import { useUI } from "@/store/ui";
+import { ExcludeEditor } from "./ExcludeEditor";
+import { cn, cleanLines } from "@/lib/utils";
 
 export function GeneralSection() {
   // Cache the full Settings object — saves merge into this so we don't
@@ -26,11 +28,18 @@ export function GeneralSection() {
   const [sbRw, setSbRw]       = useState("");
   const [sbHosts, setSbHosts] = useState("");
   const [sbOriginal, setSbOriginal] = useState({ rw: "", hosts: "" });
+  // Personal (global) file-tree exclude globs. Kept as an array so the
+  // ExcludeEditor's preset chips can add/remove cleanly; joined for the
+  // dirty check.
+  const [fileExclude, setFileExclude] = useState<string[]>([]);
+  const [fileExcludeOriginal, setFileExcludeOriginal] = useState("");
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
+  const workingIndicator = usePrefs(s => s.workingIndicator);
+  const setWorkingIndicator = usePrefs(s => s.setWorkingIndicator);
   const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
   const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
   const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
@@ -47,10 +56,14 @@ export function GeneralSection() {
       const hosts = (s.sandbox_default_allowed_hosts ?? []).join("\n");
       setSbRw(rw); setSbHosts(hosts);
       setSbOriginal({ rw, hosts });
+      const ex = s.file_tree_exclude ?? [];
+      setFileExclude(ex);
+      setFileExcludeOriginal(ex.join("\n"));
     }).catch(() => {});
   }, []);
 
   const sbDirty = sbRw !== sbOriginal.rw || sbHosts !== sbOriginal.hosts;
+  const excludeDirty = fileExclude.join("\n") !== fileExcludeOriginal;
   const dirty = reposDir !== originalDir;
 
   async function browse() {
@@ -61,24 +74,42 @@ export function GeneralSection() {
     if (!settings) return;
     setBusy(true);
     try {
-      await settingsSave({ ...settings, repos_dir: reposDir.trim(), welcomed: true });
+      // Keep the cached `settings` in sync — otherwise a later saveSb /
+      // saveExclude spreads a stale object and reverts the repos_dir we
+      // just wrote.
+      const next: Settings = { ...settings, repos_dir: reposDir.trim(), welcomed: true };
+      await settingsSave(next);
+      setSettings(next);
       setOriginalDir(reposDir.trim());
     } finally { setBusy(false); }
   }
-  const splitLines = (s: string) =>
-    s.split("\n").map(l => l.trim()).filter(Boolean);
   async function saveSb() {
     if (!settings) return;
     setBusy(true);
     try {
       const next: Settings = {
         ...settings,
-        sandbox_default_rw_paths:      splitLines(sbRw),
-        sandbox_default_allowed_hosts: splitLines(sbHosts),
+        sandbox_default_rw_paths:      cleanLines(sbRw),
+        sandbox_default_allowed_hosts: cleanLines(sbHosts),
       };
       await settingsSave(next);
       setSettings(next);
       setSbOriginal({ rw: sbRw, hosts: sbHosts });
+    } finally { setBusy(false); }
+  }
+  async function saveExclude() {
+    if (!settings) return;
+    setBusy(true);
+    try {
+      const cleaned = cleanLines(fileExclude);
+      const next: Settings = { ...settings, file_tree_exclude: cleaned };
+      await settingsSave(next);
+      setSettings(next);
+      setFileExclude(cleaned);
+      setFileExcludeOriginal(cleaned.join("\n"));
+      // The file tree is hidden behind this Settings overlay; force it to
+      // re-read so the new excludes apply the moment the user looks back.
+      useUI.getState().reloadFileTree();
     } finally { setBusy(false); }
   }
 
@@ -144,6 +175,15 @@ export function GeneralSection() {
 
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
+          label="Work-in-progress indicator"
+          hint="Show a spinner on an agent's tab and sidebar icon while it's working. Experimental: it relies on work detection, which can occasionally misfire. A stuck spinner auto-clears after a few minutes."
+          value={workingIndicator}
+          onChange={setWorkingIndicator}
+        />
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
           label="Desktop notifications"
           hint="Notify when an inactive agent finishes or rings the bell. Clicking back in jumps to that tab."
           value={desktopNotifications}
@@ -203,6 +243,25 @@ export function GeneralSection() {
           value={sandboxBypassPermissions}
           onChange={setSandboxBypassPermissions}
         />
+      </div>
+
+      {/* Personal file-tree excludes. Hide noise (caches, venvs, build
+          output) from the "All files" tree across every project on this
+          machine. Per-project, team-shared excludes live in each repo's
+          .termic.yaml (Settings → Repositories). */}
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <div className="text-[14px] font-medium">Hidden files (personal)</div>
+        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+          Patterns hidden from the "All files" tree across every project on this machine. Pick a preset or add your own. For team-shared, per-repo excludes, use a project's <code className="font-mono">.termic.yaml</code> (Settings → Repositories).
+        </div>
+        <div className="mt-3">
+          <ExcludeEditor value={fileExclude} onChange={setFileExclude} />
+        </div>
+        <div className="mt-3">
+          <Button variant="primary" disabled={!excludeDirty || busy} onClick={saveExclude}>
+            {busy ? "Saving…" : "Save hidden files"}
+          </Button>
+        </div>
       </div>
     </div>
   );

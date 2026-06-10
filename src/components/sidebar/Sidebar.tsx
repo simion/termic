@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Eye, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2 } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -84,6 +84,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
    *  macOS `open`, which DTRT for mailto: too). */
   const openMailto = (to: string, subject: string, body: string) => {
     const url = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    openPath(url).catch(() => {});
+  };
+  /** Open a prefilled "New issue" on the public GitHub tracker. Same
+   *  query-string shape as openMailto so both support buttons route through
+   *  one builder. */
+  const openIssue = (title: string, body: string) => {
+    const url = `https://github.com/simion/termic/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
     openPath(url).catch(() => {});
   };
   /** True if ANY tab in the workspace just transitioned to settled/idle
@@ -550,7 +557,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           stacked above project rows and the footer so it remains visible
           regardless of scroll position. Renders nothing in compact mode
           or when there's no pending update / unseen release. */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-[44px] z-20">
+      <div className="pointer-events-none absolute inset-x-0 bottom-[var(--bottom-bar-h)] z-20">
         <div className="pointer-events-auto">
           <UpdateCard />
         </div>
@@ -559,17 +566,20 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       <div>
         {/* Footer */}
         <div className={cn(
-          "flex border-t border-[var(--color-border-soft)] p-2 gap-1",
-          compact ? "flex-col items-center" : "items-center",
+          "flex border-t border-[var(--color-border-soft)] gap-1",
+          // --bottom-bar-h (expanded) is the shared height for every bottom
+          // bar. Compact mode stays a vertical icon stack with its own padding.
+          compact ? "flex-col items-center p-2" : "items-center h-[var(--bottom-bar-h)] px-2",
         )}>
-          {/* Left cluster (full mode): support — bug + contact. mailto:
-              opens the user's default mail client; only the recipient +
-              subject differ so triage can sort incoming mail by intent.
-              Compact mode is flex-col, so left/right ordering collapses
-              into a simple top/bottom stack. */}
+          {/* Left cluster (full mode): support — bug + contact. The bug
+              button opens a prefilled GitHub issue (public tracker, better
+              than email for triage + dedupe); Contact stays a mailto: that
+              opens the user's default mail client. Compact mode is
+              flex-col, so left/right ordering collapses into a top/bottom
+              stack. */}
           <Tip content="Report a bug">
             <Button size="icon" variant="icon" onClick={() =>
-              openMailto("bugs@termic.dev", "Termic bug report", "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ")
+              openIssue("Bug: ", "What happened:\n\n\nSteps to reproduce:\n\n\nTermic version: ")
             }>
               <Bug className={iconSize(compact)} />
             </Button>
@@ -643,11 +653,19 @@ function iconSize(compact: boolean) {
 // collapsed) and on each tab child row.
 //   done      → solid blue bullet (work finished, untouched until input)
 //   attention → orange bell (agent explicitly blocked on user)
-// The "working" spinner is intentionally NOT rendered — too many false
-// positives in real-world TUIs (Claude Code's continuous redraws,
-// Codex's status counter). The internal workState=="working" is still
-// tracked so the done detector can fire on busy→idle transitions.
-function TabBadge({ reason }: { reason: "attention" | "done" }) {
+// The "working" spinner is opt-in (Settings → General → Work-in-progress
+// indicator) and OFF by default — it can misfire on noisy TUIs (Claude
+// Code's continuous redraws, Codex's status counter). The internal
+// workState=="working" is always tracked so the done detector fires on
+// busy→idle transitions; this badge just surfaces it when enabled.
+function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
+  if (reason === "working") {
+    return (
+      <span className="shrink-0 text-[var(--color-fg-faint)]" title="Agent working" aria-label="Working">
+        <Loader2 className="h-3 w-3 animate-spin" />
+      </span>
+    );
+  }
   if (reason === "attention") {
     return (
       <span className="shrink-0 text-[var(--color-warn)]" title="Agent needs your input">
@@ -704,6 +722,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const renameTab = useApp(s => s.renameTab);
   const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
   const settledHighlight = usePrefs(s => s.settledHighlight);
+  const workingIndicator = usePrefs(s => s.workingIndicator);
 
   const project = useApp(s => s.projects.find(p => p.id === w.project_id) ?? null);
   const spotlightWsId = useApp(s => s.spotlightWsId[w.project_id] ?? null);
@@ -774,6 +793,11 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const hasAttention = settledHighlight && tabs.some(t => t.unread?.reason === "attention");
   const hasDone = settledHighlight && !hasAttention
     && tabs.some(t => t.type === "terminal" && t.workState === "done");
+  // Working aggregate is independent of settledHighlight (it's its own
+  // opt-in pref) but yields to attention/done — a finished or blocked agent
+  // is more actionable than one still chugging.
+  const hasWorking = workingIndicator && !hasAttention && !hasDone
+    && tabs.some(t => t.type === "terminal" && t.workState === "working");
 
   async function commitWsRename() {
     if (wsRenaming === null) return;
@@ -813,12 +837,17 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               for the full bell/check badge, so color carries meaning:
               warm = needs you, blue = work done. The ring lifts it off
               the icon regardless of the tile's background. */}
-          {(hasAttention || hasDone) && (
+          {(hasAttention || hasDone) ? (
             <span
               className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]"
               style={{ backgroundColor: hasAttention ? "var(--color-warn)" : "var(--color-info, #4aa3ff)" }}
             />
-          )}
+          ) : hasWorking ? (
+            // No room for a full spinner on the rail; a faint pulsing dot
+            // carries "still working" without competing with the bold
+            // attention/done colors.
+            <span className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--color-fg-faint)] ring-2 ring-[var(--color-bg-1)]" />
+          ) : null}
         </div>
       </Tip>
     );
@@ -936,9 +965,9 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             crowd the row. The badge only renders when collapsed
             (expanded rows put per-tab badges on their children). */}
         <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-          {collapsed && (hasAttention || hasDone) && (
+          {collapsed && (hasAttention || hasDone || hasWorking) && (
             <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0">
-              {hasAttention ? <TabBadge reason="attention" /> : <TabBadge reason="done" />}
+              {hasAttention ? <TabBadge reason="attention" /> : hasDone ? <TabBadge reason="done" /> : <TabBadge reason="working" />}
             </span>
           )}
           <DropdownRoot>
@@ -968,7 +997,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                     fill={terminalTabs.length > 0 ? "currentColor" : "none"}
                   />
                 ) : effectiveSandboxMode(w) === "monitor" ? (
-                  <Eye className="absolute h-3.5 w-3.5 text-[var(--color-warn)] transition-opacity group-hover/wsrow:opacity-0" />
+                  <Shield className="absolute h-3.5 w-3.5 text-[var(--color-warn)] transition-opacity group-hover/wsrow:opacity-0" />
                 ) : w.sandbox_enabled ? (
                   <Shield
                     className="absolute h-3.5 w-3.5 text-[var(--color-ok)] transition-opacity group-hover/wsrow:opacity-0"
@@ -1162,6 +1191,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         const title = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const showBell    = settledHighlight && tab.unread?.reason === "attention";
         const showDone    = settledHighlight && !showBell && tab.workState === "done";
+        const showWorking = workingIndicator && !showBell && !showDone && tab.workState === "working";
         const isTabRenaming = tabRenaming?.id === tab.id;
 
         return (
@@ -1214,9 +1244,9 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 appears when hovering the badge itself, not the whole
                 row — row hover keeps the badge visible. */}
             <span className="group/badge relative flex h-4 w-4 shrink-0 items-center justify-center">
-              {(showBell || showDone) && (
+              {(showBell || showDone || showWorking) && (
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/badge:opacity-0">
-                  {showBell ? <TabBadge reason="attention" /> : <TabBadge reason="done" />}
+                  {showBell ? <TabBadge reason="attention" /> : showDone ? <TabBadge reason="done" /> : <TabBadge reason="working" />}
                 </span>
               )}
               <button
@@ -1224,7 +1254,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
                 className={cn(
                   "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-                  (showBell || showDone)
+                  (showBell || showDone || showWorking)
                     // Badge visible: X only on badge-slot hover
                     ? "opacity-0 group-hover/badge:opacity-100 pointer-events-none group-hover/badge:pointer-events-auto"
                     // No badge: X on row hover (original behaviour)

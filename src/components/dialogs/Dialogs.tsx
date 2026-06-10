@@ -14,7 +14,6 @@ import { WelcomeDialog } from "./WelcomeDialog";
 import { ChangelogDialog } from "./ChangelogDialog";
 import { ReviewDialog } from "./ReviewDialog";
 import { BroadcastDialog } from "./BroadcastDialog";
-import { MessageQueueDialog } from "./MessageQueueDialog";
 import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { TerminalDropDialog } from "./TerminalDropDialog";
@@ -43,7 +42,6 @@ export function Dialogs() {
       <ChangelogDialog />
       <ReviewDialog />
       <BroadcastDialog />
-      <MessageQueueDialog />
       <WorkspaceSandboxDialog />
       <ConfirmDialog />
       <TerminalDropDialog />

@@ -6,11 +6,12 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
-import { Plus, X, GitCompare, FileText, SquareSplitVertical, Bell, Megaphone, ListPlus, Repeat } from "lucide-react";
+import { Plus, X, GitCompare, FileText, SquareSplitVertical, Bell, Megaphone, Repeat, Loader2 } from "lucide-react";
+import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
 import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
-import { visibleCliIds, agentDisplayName, workDoneCapable } from "@/lib/agents";
+import { visibleCliIds, agentDisplayName } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
@@ -141,22 +142,6 @@ export function TabBar({ ws }: { ws: Workspace }) {
   const detectedClis = useApp(s => s.detectedClis);
   const visibleClis = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
   const openBroadcast = useUI(s => s.openBroadcast);
-  const openQueue = useUI(s => s.openQueue);
-  // The message queue (ralph loop) advances on work-done, so it's only
-  // offered when at least one running agent in the workspace is work-done
-  // capable (a shell, or an agent with detection turned off, can't gate it).
-  const canQueue = tabs.some(t => t.type === "terminal" && !!t.ptyId && workDoneCapable(t.cli, registry));
-  // Live aggregate across the workspace's agents: total pending sends (sum of
-  // remaining repeats) and whether any queue is actively draining. Drives the
-  // toolbar button's "N queued" indicator for both pending and running states.
-  let queuedCount = 0;
-  let queueRunning = false;
-  for (const t of tabs) {
-    if (t.type !== "terminal") continue;
-    if (t.queue) for (const q of t.queue) queuedCount += q.remaining;
-    if (t.queueActive) queueRunning = true;
-  }
-  const showQueueBadge = queuedCount > 0 || queueRunning;
   const [open, setOpen] = useState(false);
   // When spawnTab fires, suppress Radix's auto focus-return so it
   // doesn't yank focus back to the '+' trigger before our terminal-
@@ -271,40 +256,6 @@ export function TabBar({ ws }: { ws: Workspace }) {
       </DropdownRoot>
 
       <div className="ml-auto flex items-center gap-1">
-        <Tip
-          content={!canQueue
-            ? "Run a work-done-capable agent to queue messages"
-            : showQueueBadge
-              ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}${queueRunning ? " (running)" : " (not started)"}`
-              : "Queue messages for an agent, sent on each work-done (ralph loop)"}
-          side="bottom"
-        >
-          {/* span wrapper so the tooltip still fires while the button is disabled */}
-          <span>
-            <Button
-              size="icon"
-              variant="icon"
-              className={cn(
-                "h-8",
-                showQueueBadge ? "w-auto gap-1.5 px-2" : "w-8",
-                queueRunning && "text-[var(--color-accent)]",
-              )}
-              disabled={!canQueue}
-              onClick={() => openQueue(ws.id)}
-            >
-              <ListPlus className={cn("h-4 w-4 shrink-0", queueRunning && "animate-pulse")} />
-              {showQueueBadge && (
-                <span className={cn(
-                  "text-[12px] font-medium tabular-nums whitespace-nowrap",
-                  queueRunning ? "text-[var(--color-accent)]" : "text-[var(--color-fg-dim)]",
-                )}>
-                  {queuedCount > 0 ? `${queuedCount} queued` : "running"}
-                </span>
-              )}
-            </Button>
-          </span>
-        </Tip>
-
         <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
           <Button
             size="icon" variant="icon" className="h-8 w-8"
@@ -359,8 +310,13 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
   const reason = tab.unread?.reason;
   const workState = tab.type === "terminal" ? tab.workState : undefined;
   const queueRunning = tab.type === "terminal" && !!tab.queueActive;
+  // Experimental work-in-progress spinner — opt-in (Settings → General).
+  // The "working" state is force-cleared by TerminalPane's demoters /
+  // absolute ceiling, so the spinner can't spin forever.
+  const workingIndicator = usePrefs(s => s.workingIndicator);
   const showBell    = reason === "attention";
   const showDone    = !showBell && workState === "done";
+  const showWorking = workingIndicator && !showBell && !showDone && workState === "working";
   const color = tab.type === "terminal" ? CLI_BRAND_COLOR[tab.cli] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
 
@@ -464,7 +420,7 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
           jiggles. Priority: attention > done > dirty > none. */}
       {!isRenaming && (
         <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-          {(showBell || showDone) ? (
+          {(showBell || showDone || showWorking) ? (
             <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover:opacity-0">
               {showBell && (
                 <span className="text-[var(--color-warn)]" title="Agent needs your input">
@@ -479,6 +435,11 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
                   />
                 </span>
               )}
+              {showWorking && (
+                <span className="text-[var(--color-fg-faint)]" title="Agent working" aria-label="Working">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                </span>
+              )}
             </span>
           ) : tab.dirty && (
             <span
@@ -491,7 +452,7 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
             title="Close tab"
             className={cn(
               "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-              (!active || tab.dirty || showBell || showDone) && "opacity-0 group-hover:opacity-100",
+              (!active || tab.dirty || showBell || showDone || showWorking) && "opacity-0 group-hover:opacity-100",
             )}
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           ><X className="h-3 w-3" /></button>

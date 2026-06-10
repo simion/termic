@@ -111,7 +111,7 @@ export function MarkdownPreview({ text, themeDark }: { text: string; themeDark: 
 
   return (
     <div className="h-full overflow-auto bg-[var(--color-bg)]">
-      <div ref={hostRef} className="markdown-body mx-auto max-w-[820px] px-8 py-6" onClick={onClick} />
+      <div ref={hostRef} className="markdown-body px-8 py-6" onClick={onClick} />
     </div>
   );
 }

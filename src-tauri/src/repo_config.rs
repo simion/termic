@@ -35,6 +35,12 @@ pub struct RepoConfig {
     pub version: u32,
     pub scripts: RepoScripts,
     pub sandbox: RepoSandbox,
+    /// Glob patterns hidden from the "All files" tree for this repo
+    /// (team-shared, committed). Matched against each entry's name and
+    /// its workspace-relative path. Unioned with the user's personal
+    /// `Settings.file_tree_exclude`. `.git` is always hidden regardless.
+    #[serde(deserialize_with = "de_vec")]
+    pub exclude: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

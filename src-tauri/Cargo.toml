@@ -41,6 +41,10 @@ regex = "1.12.3"
 # YAML parse/serialize for the repo-root `.termic.yaml`. serde_yml is the
 # maintained fork of the now-unmaintained serde_yaml.
 serde_yml = "0.0.12"
+# Glob matching for the file-tree exclude patterns (.termic.yaml `exclude`
+# + the personal global list). Already in the dependency tree transitively,
+# so pinning it direct doesn't change resolution.
+glob = "0.3"
 
 # macOS-only: raw Objective-C bridge used to round the window's content
 # layer on macOS Tahoe (26+) so the WKWebView corners match the system's

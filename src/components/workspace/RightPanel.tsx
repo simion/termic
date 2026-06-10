@@ -40,6 +40,10 @@ export function RightPanel() {
   // Bumped by the header refresh button to force the FileTree to re-read
   // from disk. The Git side re-fetches via refreshGit() in the same click.
   const [fileTreeReload, setFileTreeReload] = useState(0);
+  // Global reload signal (bumped from Settings when exclude patterns change,
+  // since the tree is hidden behind the Settings overlay then). Folded into
+  // the local token so either source forces a re-read.
+  const fileTreeNonce = useUI(s => s.fileTreeNonce);
   const [refreshing, setRefreshing] = useState(false);
   // Multi-repo workspaces add a Target selector to the footer so
   // Setup/Run can target a composition member. Stored as the
@@ -71,6 +75,20 @@ export function RightPanel() {
   const footHeight        = useApp(s => s.rightFooterHeight);
   const setFootHeight     = useApp(s => s.setRightFooterHeight);
   const asideRef = useRef<HTMLElement>(null);
+  // The footer action toolbar (Setup / Stop / Open) clips off the right
+  // edge on a narrow right panel. We collapse it to icon-only below a
+  // width threshold (the same `compact` treatment used when the Terminal
+  // tab is open). Measured live so it tracks panel resizes and window
+  // size changes, not just a one-shot read.
+  const [asideWidth, setAsideWidth] = useState(0);
+  useEffect(() => {
+    const el = asideRef.current;
+    if (!el) return;
+    setAsideWidth(el.clientWidth);
+    const ro = new ResizeObserver(() => setAsideWidth(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Poll git status (staged/unstaged split) for the Git tab badges + panel.
   // The fetch is reused by GitPanel via the `refreshGit` callback so a
@@ -157,6 +175,11 @@ export function RightPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws?.project_id, ws?.composition?.map(m => m.project_id).sort().join("|")]);
   const footerTerm = useApp(s => (ws ? !!s.footerTerm[ws.id] : false));
+  // Icon-only toolbar when the Terminal tab is open (the tab strip eats
+  // horizontal room) OR the panel is simply narrow. ~380px is where the
+  // full-text Setup / Stop / Open buttons (plus the Copy-URL icon and the
+  // Run / Setup tabs) stop fitting; below it the labels clip off the edge.
+  const compactToolbar = footerTerm || (asideWidth > 0 && asideWidth < 380);
   const setupRunState = useRunState(ws?.id, "setup", footTarget);
   const runRunState   = useRunState(ws?.id, "run",   footTarget);
   // The Setup tab is transient: it only appears once Setup has been
@@ -372,7 +395,7 @@ export function RightPanel() {
           scrolling so it gets the bare flex-1 height with no overflow. */}
       {view === "files" ? (
         <div className="min-h-0 flex-1 overflow-auto py-1">
-          <FileTree wsId={ws.id} reloadToken={fileTreeReload} />
+          <FileTree wsId={ws.id} reloadToken={fileTreeReload + fileTreeNonce} />
         </div>
       ) : (
         <div className="min-h-0 flex-1">
@@ -395,8 +418,8 @@ export function RightPanel() {
       {/* Footer: Setup / Run / Terminal tabs + Run action. Collapsible.
           Height is store-backed + drag-resizable from the top edge. */}
       <footer
-        className="relative flex shrink-0 flex-col border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]"
-        style={{ height: footCollapsed ? 32 : footHeight }}
+        className="relative flex shrink-0 flex-col bg-[var(--color-bg-1)]"
+        style={{ height: footCollapsed ? "var(--bottom-bar-h)" : footHeight }}
       >
         {/* Top-edge drag handle — only shown when the footer is expanded.
             Resizes the footer height; the file list above adapts via flex-1. */}
@@ -424,7 +447,7 @@ export function RightPanel() {
           // complaint.
           <>
             <div className={cn(
-              "flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden px-1.5",
+              "flex h-[var(--bottom-bar-h)] min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-t border-[var(--color-border-soft)] px-1.5",
               // border-b separates the strip from the content below it.
               // Collapsed → no content below → drop it, else it stacks
               // with the footer's own border-t into a doubled line.
@@ -484,7 +507,7 @@ export function RightPanel() {
                 : ws.port;
               const syntheticWs: Workspace = { ...ws, port: memberPort };
               return (
-                <div className="flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-1.5">
+                <div className="flex h-[var(--bottom-bar-h)] min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-1.5">
                   <FTab label="Run"   active={footTab === "run"}   onClick={() => setFootTab("run")} />
                   {showSetupTab && (
                     <FTab
@@ -501,7 +524,7 @@ export function RightPanel() {
                     ws={syntheticWs} project={memberProject} yamlPreviewUrl={yamlPreviewUrls[m?.project_id ?? ""]}
                     hasSetup={!!(m?.setup_script?.trim() || memberProject?.setup_script?.trim() || yamlSetupScripts[m?.project_id ?? ""]?.trim())}
                     setupStatus={setupRunState.status} runStatus={runRunState.status}
-                    compact={footerTerm}
+                    compact={compactToolbar}
                     onSetupStart={() => startScript("setup")}
                     onSetupStop={()  => stopScript("setup")}
                     onRunStart={()   => startScript("run")}
@@ -513,7 +536,7 @@ export function RightPanel() {
           </>
         ) : (
         <div className={cn(
-          "flex h-8 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden px-1.5",
+          "flex h-[var(--bottom-bar-h)] min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-t border-[var(--color-border-soft)] px-1.5",
           // Collapsed → nothing below the strip → drop border-b so it
           // doesn't stack with the footer's border-t into a double line.
           !footCollapsed && "border-b border-[var(--color-border-soft)]",
@@ -598,7 +621,7 @@ export function RightPanel() {
               ws={ws} project={project} yamlPreviewUrl={yamlPreviewUrls[ws.project_id]}
               hasSetup={!!(project?.setup_script?.trim() || yamlSetupScripts[ws.project_id]?.trim())}
               setupStatus={setupRunState.status} runStatus={runRunState.status}
-              compact={footerTerm}
+              compact={compactToolbar}
               onSetupStart={() => startScript("setup")}
               onSetupStop={()  => stopScript("setup")}
               onRunStart={()   => startScript("run")}
@@ -921,35 +944,42 @@ function RunToolbar({ ws, project, yamlPreviewUrl = "", hasSetup, setupStatus, r
   const runRunning = runStatus === "running";
   const btnCls = compact ? "h-6 w-6 p-0" : "h-6 gap-1 px-1.5 text-[12px]";
   const stopCls = cn(btnCls, "text-[var(--color-err)] hover:text-[var(--color-err)]");
+  // In compact (icon-only) mode the inline label is gone, so the action name
+  // moves to an INSTANT app tooltip (Tip, delay 0) instead of a slow native
+  // `title`. Non-compact keeps the visible label and needs no tooltip.
+  const tipWrap = (tip: string, node: React.ReactNode) =>
+    compact ? <Tip content={tip} side="top">{node}</Tip> : node;
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1">
-      {hasSetup && (setupRunning ? (
-        <Button size="sm" variant="secondary" onClick={onSetupStop} title="Stop setup" className={stopCls}>
-          <Square className="h-3 w-3 fill-current" />
-          {!compact && <span>Stop setup</span>}
-        </Button>
-      ) : (
-        <Button size="sm" variant="secondary" onClick={onSetupStart} title="Run setup" className={btnCls}>
-          <Wrench className="h-3 w-3" />
-          {!compact && <span>Setup</span>}
-        </Button>
-      ))}
-      {runRunning ? (
-        <Button size="sm" variant="secondary" onClick={onRunStop} title="Stop" className={stopCls}>
-          <Square className="h-3 w-3 fill-current" />
-          {!compact && <span>Stop</span>}
-        </Button>
-      ) : (
-        <Button size="sm" variant="secondary" onClick={onRunStart} title="Run" className={btnCls}>
-          <Play className="h-3 w-3" />
-          {!compact && <span>Run</span>}
-        </Button>
+      {hasSetup && (setupRunning
+        ? tipWrap("Stop setup",
+            <Button size="sm" variant="secondary" onClick={onSetupStop} className={stopCls}>
+              <Square className="h-3 w-3 fill-current" />
+              {!compact && <span>Stop setup</span>}
+            </Button>)
+        : tipWrap("Run setup",
+            <Button size="sm" variant="secondary" onClick={onSetupStart} className={btnCls}>
+              <Wrench className="h-3 w-3" />
+              {!compact && <span>Setup</span>}
+            </Button>)
       )}
-      {url && (
+      {runRunning
+        ? tipWrap("Stop",
+            <Button size="sm" variant="secondary" onClick={onRunStop} className={stopCls}>
+              <Square className="h-3 w-3 fill-current" />
+              {!compact && <span>Stop</span>}
+            </Button>)
+        : tipWrap("Run",
+            <Button size="sm" variant="secondary" onClick={onRunStart} className={btnCls}>
+              <Play className="h-3 w-3" />
+              {!compact && <span>Run</span>}
+            </Button>)
+      }
+      {url && tipWrap(`Open ${url}`,
         <Button
           size="sm" variant="secondary"
           onClick={() => openPath(url).catch(err => console.error("open failed:", err))}
-          title={compact ? `Open ${url}` : url}
+          title={!compact ? url : undefined}
           className={btnCls}
         >
           <Globe className="h-3 w-3" />

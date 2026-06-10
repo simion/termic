@@ -3829,12 +3829,50 @@ pub struct FileEntry {
     pub is_dir: bool,
 }
 
+/// Compile the effective file-tree exclude globs for one repo: the user's
+/// personal (global Settings) list ∪ that repo's committed `.termic.yaml`
+/// `exclude`. Invalid patterns are skipped; a trailing `/` is stripped so
+/// `build/` matches the `build` entry. Shared by the file tree and the ⌘P
+/// finder so "hidden files" means the same thing in both.
+fn compile_exclude_patterns(owner_pid: &str) -> Vec<glob::Pattern> {
+    let mut raw = load_settings_inner().file_tree_exclude;
+    if let Some(p) = load_projects().into_iter().find(|p| p.id == owner_pid) {
+        raw.extend(repo_config_for(&p).exclude);
+    }
+    raw.iter()
+        .filter_map(|s| {
+            let t = s.trim().trim_end_matches('/');
+            if t.is_empty() { None } else { glob::Pattern::new(t).ok() }
+        })
+        .collect()
+}
+
+/// True if a repo-local path is hidden by the exclude globs: a match on ANY
+/// path segment (so `node_modules` / `*.pyc` hide at any depth, including the
+/// flat finder list) OR on the whole repo-local path (so `docs/build` works).
+fn path_is_excluded(patterns: &[glob::Pattern], repo_local_path: &str) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    repo_local_path
+        .split('/')
+        .any(|seg| patterns.iter().any(|p| p.matches(seg)))
+        || patterns.iter().any(|p| p.matches(repo_local_path))
+}
+
 /// List entries inside a directory, relative to the workspace root. `rel`
 /// of "" returns the workspace's top level. Refuses to traverse outside the
 /// workspace (no `..` segments allowed). Returns `is_dir` directly so the UI
-/// doesn't have to guess by extension.
+/// doesn't have to guess by extension. Async + spawn_blocking: it reads
+/// settings/projects/.termic.yaml off the IPC/WebView thread.
 #[tauri::command]
-fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String> {
+async fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace_dir_list_sync(id, rel))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn workspace_dir_list_sync(id: String, rel: String) -> Result<Vec<FileEntry>, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
     let base = PathBuf::from(&w.path);
     // Multi-repo: when the relative path enters a composition member
@@ -3842,26 +3880,43 @@ fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String>
     // path instead of going through safe_workspace_path — which would
     // canonicalize the symlink-to-real-checkout and reject as "escapes
     // workspace". The member is a first-class browseable subtree.
+    // Which composition member (if any) owns the directory being listed, plus
+    // the path RELATIVE TO THAT member's root — used both to resolve the dir
+    // and to scope/evaluate the member's excludes member-locally.
+    let member_hit: Option<(&WorkspaceMember, String)> = if rel.is_empty() {
+        None
+    } else {
+        w.composition.iter().find_map(|m| {
+            if rel == m.dir_name {
+                Some((m, String::new()))
+            } else if let Some(rest) = rel.strip_prefix(&format!("{}/", m.dir_name)) {
+                Some((m, rest.to_string()))
+            } else {
+                None
+            }
+        })
+    };
     let canon_target = if rel.is_empty() {
         fs::canonicalize(&base).map_err(|e| e.to_string())?
-    } else if let Some((member, remainder)) = w.composition.iter().find_map(|m| {
-        if rel == m.dir_name {
-            Some((m, String::new()))
-        } else if let Some(rest) = rel.strip_prefix(&format!("{}/", m.dir_name)) {
-            Some((m, rest.to_string()))
-        } else {
-            None
-        }
-    }) {
+    } else if let Some((member, remainder)) = &member_hit {
         let mp = PathBuf::from(&member.path);
         if remainder.is_empty() {
             fs::canonicalize(&mp).map_err(|e| e.to_string())?
         } else {
-            safe_workspace_path(&mp, &remainder)?
+            safe_workspace_path(&mp, remainder)?
         }
     } else {
         safe_workspace_path(&base, &rel)?
     };
+    // The repo that owns this directory + the path relative to its root.
+    let (owner_pid, local_rel): (&str, &str) = match &member_hit {
+        Some((m, remainder)) => (m.project_id.as_str(), remainder.as_str()),
+        None => (w.project_id.as_str(), rel.as_str()),
+    };
+    // Excludes: personal (global Settings) ∪ ONLY the owning repo's committed
+    // `.termic.yaml`. A member repo's patterns must not hide sibling/host files.
+    let exclude_patterns = compile_exclude_patterns(owner_pid);
+
     let mut out = Vec::new();
     let rd = fs::read_dir(&canon_target).map_err(|e| e.to_string())?;
     for e in rd.flatten() {
@@ -3869,6 +3924,14 @@ fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String>
         // Always hide .git — it's repo plumbing, never something the
         // user wants to browse in the file tree.
         if name == ".git" { continue; }
+        // Member dirs at the root are first-class subtrees — never hide them
+        // with the HOST repo's patterns (a host `dist`/`target` exclude must
+        // not drop a member repo that happens to share the name).
+        let is_member_dir = rel.is_empty() && w.composition.iter().any(|m| m.dir_name == name);
+        if !is_member_dir {
+            let local_path = if local_rel.is_empty() { name.clone() } else { format!("{local_rel}/{name}") };
+            if path_is_excluded(&exclude_patterns, &local_path) { continue; }
+        }
         // file_type() reports a symlink-to-dir as Symlink, not Dir, which would
         // make member symlinks (repo_root mode) render as files. DirEntry::
         // metadata() also DOES NOT traverse symlinks, so fall back to
@@ -3901,9 +3964,10 @@ async fn workspace_list_files_for_finder(id: String) -> Result<Vec<String>, Stri
         let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
         // List tracked + untracked files in a repo, prefixing each with
         // `prefix` (empty for the host; `<dir_name>/` for members) so member
-        // paths resolve from the wrapper. A repo that won't list (non-git,
-        // missing) just contributes nothing rather than failing the finder.
-        let ls = |dir: &str, prefix: &str| -> Vec<String> {
+        // paths resolve from the wrapper. `patterns` are that repo's exclude
+        // globs (same ones the file tree uses) so a hidden path doesn't leak
+        // back in via ⌘P. A repo that won't list just contributes nothing.
+        let ls = |dir: &str, prefix: &str, patterns: &[glob::Pattern]| -> Vec<String> {
             match std::process::Command::new("git")
                 .args(["ls-files", "--cached", "--others", "--exclude-standard"])
                 .current_dir(dir)
@@ -3912,16 +3976,19 @@ async fn workspace_list_files_for_finder(id: String) -> Result<Vec<String>, Stri
                 Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
                     .lines()
                     .filter(|l| !l.is_empty())
+                    .filter(|l| !path_is_excluded(patterns, l))
                     .map(|l| format!("{prefix}{l}"))
                     .collect(),
                 _ => Vec::new(),
             }
         };
-        // Host repo first, then each multi-repo member (serially).
-        let mut files = ls(&w.path, "");
+        // Host repo first, then each multi-repo member (serially). Each repo's
+        // excludes are compiled once (its own + the personal global list).
+        let mut files = ls(&w.path, "", &compile_exclude_patterns(&w.project_id));
         for m in &w.composition {
             if Path::new(&m.path).exists() {
-                files.extend(ls(&m.path, &format!("{}/", m.dir_name)));
+                let patterns = compile_exclude_patterns(&m.project_id);
+                files.extend(ls(&m.path, &format!("{}/", m.dir_name), &patterns));
             }
         }
         Ok(files)
@@ -5177,6 +5244,10 @@ pub struct Settings {
     /// editing these later only affects NEW workspaces.
     pub sandbox_default_rw_paths: Vec<String>,
     pub sandbox_default_allowed_hosts: Vec<String>,
+    /// Personal (this-machine) glob patterns hidden from the "All files"
+    /// tree across every project. Unioned with each project's committed
+    /// `.termic.yaml` `exclude` list. `.git` is always hidden regardless.
+    pub file_tree_exclude: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -190,7 +190,18 @@ export function useShortcuts() {
               const nextIdx = idx < 0
                 ? (fwd ? 0 : bottomTabs.length - 1)
                 : fwd ? (idx + 1) % bottomTabs.length : (idx - 1 + bottomTabs.length) % bottomTabs.length;
-              state.setActiveBottomTab(wsId, bottomTabs[nextIdx].id);
+              const nextId = bottomTabs[nextIdx].id;
+              state.setActiveBottomTab(wsId, nextId);
+              // AuxTerminal deliberately doesn't grab focus when it becomes
+              // active (so opening the split / switching workspaces doesn't
+              // steal focus from the agent). An explicit keyboard tab-switch
+              // SHOULD move focus, so focus the newly-active shell's textarea
+              // once the re-render makes it visible.
+              requestAnimationFrame(() => {
+                (document.querySelector(
+                  `[data-tab-id="${CSS.escape(nextId)}"] .xterm-helper-textarea`,
+                ) as HTMLElement | null)?.focus();
+              });
             }
             return;
           }

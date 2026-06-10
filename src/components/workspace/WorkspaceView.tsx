@@ -12,6 +12,7 @@ import { usePrefs, currentTerminalTheme } from "@/store/prefs";
 import { TabBar } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
 import { AuxTerminal } from "./AuxTerminal";
+import { MessageQueueButton } from "./MessageQueueButton";
 import { X, Plus, TerminalSquare, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
@@ -114,7 +115,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
               // h-9 tab strip = 36px; when collapsed, panel shrinks to the
               // strip and the terminals div is display:none'd below. Shells
               // stay mounted, so re-expanding doesn't respawn anything.
-              style={{ height: collapsed ? 36 : splitHeight }}
+              style={{ height: collapsed ? "var(--bottom-bar-h)" : splitHeight }}
             >
               {/* Shared 1px handle on the top edge — matches the sidebar /
                   right-panel / footer handles instead of the old fat 6px bar.
@@ -135,13 +136,18 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   / gap-0.5 — so the split-bottom feels like the same UI
                   primitive, not a smaller cousin. */}
               <div className={cn(
-                "flex h-9 shrink-0 items-center gap-0.5 bg-[var(--color-bg-1)] px-2",
+                "flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-0.5 bg-[var(--color-bg-1)] px-2",
                 // Strip's border-b separates strip-from-terminals when expanded.
                 // When collapsed there are no terminals below — FooterBar's own
                 // border-t becomes the only divider, and stacking both produces
                 // a visible double line.
                 !collapsed && "border-b border-[var(--color-border-soft)]",
               )}>
+                {/* Queue affordance pinned far LEFT so it's always seen; the
+                    shell tabs start after a separator. The bottom status-bar
+                    copy is hidden while the split is open — see FooterBar. */}
+                <MessageQueueButton wsId={ws.id} compact />
+                <div className="mx-1.5 h-5 w-px shrink-0 bg-[var(--color-border-soft)]" />
                 {(bottomTabs || []).map(t => (
                   <BottomTabPill
                     key={t.id}

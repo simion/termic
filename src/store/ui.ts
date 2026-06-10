@@ -68,11 +68,6 @@ interface UIState {
    *  workspace at once. null = closed. UI-store (not app) so opening it
    *  doesn't churn the workspace tree. */
   broadcastForWsId: string | null;
-  /** Message queue dialog — workspace id whose agents' queues are being
-   *  edited, null = closed. The dialog picks a target agent tab within
-   *  the workspace. UI-store (not app) so opening it doesn't churn the
-   *  workspace tree. */
-  queueForWsId: string | null;
   /** Open the Edit Sandbox dialog for a specific workspace. null = closed.
    *  Lives in UI store (not app) so flipping it doesn't churn the
    *  workspace tree on every re-render. */
@@ -109,6 +104,11 @@ interface UIState {
    *  so rather than duplicate `startScript("run")` we bump a nonce here and
    *  let the matching RightPanel react. null = nothing pending. */
   runScriptRequest: { wsId: string; nonce: number } | null;
+  /** Bumped to force the "All files" tree to re-read from disk — e.g. after
+   *  the user edits exclude patterns in Settings (the tree is behind the
+   *  Settings overlay, so it can't refresh itself). RightPanel folds this
+   *  into its local reload token. */
+  fileTreeNonce: number;
 
   // actions
   openNewProject: () => void;
@@ -131,8 +131,6 @@ interface UIState {
   closeReview: () => void;
   openBroadcast: (wsId: string) => void;
   closeBroadcast: () => void;
-  openQueue: (wsId: string) => void;
-  closeQueue: () => void;
   openSandbox: (wsId: string) => void;
   closeSandbox: () => void;
   openFileFinder: (wsId: string) => void;
@@ -140,6 +138,7 @@ interface UIState {
   openFindInFiles: (wsId: string) => void;
   closeFindInFiles: () => void;
   setBusy: (msg: string | null) => void;
+  reloadFileTree: () => void;
   /** Open the global confirm modal. Returns a Promise that resolves
    *  to true (user confirmed) or false (cancelled / dismissed). Drop-in
    *  replacement for `window.confirm()` with our own chrome + theming. */
@@ -205,12 +204,12 @@ export const useUI = create<UIState>(set => ({
   changelogOpen: false,
   reviewForWsId: null,
   broadcastForWsId: null,
-  queueForWsId: null,
   sandboxForWsId: null,
   fileFinderWsId: null,
   findInFilesWsId: null,
   busyMessage: null,
   runScriptRequest: null,
+  fileTreeNonce: 0,
   confirm: null,
   terminalDrop: null,
   pendingPtyRestarts: new Set<string>(),
@@ -237,8 +236,6 @@ export const useUI = create<UIState>(set => ({
   closeReview:       () => set({ reviewForWsId: null }),
   openBroadcast:     (wsId) => set({ broadcastForWsId: wsId }),
   closeBroadcast:    () => set({ broadcastForWsId: null }),
-  openQueue:         (wsId) => set({ queueForWsId: wsId }),
-  closeQueue:        () => set({ queueForWsId: null }),
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
   closeSandbox:      () => set({ sandboxForWsId: null }),
   openFileFinder:    (wsId) => set({ fileFinderWsId: wsId }),
@@ -246,6 +243,7 @@ export const useUI = create<UIState>(set => ({
   openFindInFiles:   (wsId) => set({ findInFilesWsId: wsId }),
   closeFindInFiles:  () => set({ findInFilesWsId: null }),
   setBusy:           (msg) => set({ busyMessage: msg }),
+  reloadFileTree:    () => set(s => ({ fileTreeNonce: s.fileTreeNonce + 1 })),
   setNotifyRoute:    (route) => set({
     notifyRoute: route ? { ...route, firedAt: Date.now() } : null,
   }),

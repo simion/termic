@@ -27,6 +27,11 @@
      (so panel edges and the top-bar separator actually read), and
      a neutral off-white fg without the warm cream tint our base
      Dark uses. Same terracotta accent. */
+  /* Shared height for every bottom bar (workspace FooterBar, sidebar footer,
+     right-panel footer strip, split-terminal tab strip) so they can't desync.
+     Equals Tailwind h-9. Used via h-[var(--bottom-bar-h)] / bottom-[…] and the
+     collapsed inline heights. */
+  --bottom-bar-h:    36px;
   --color-bg:        #0c0c0c;
   --color-bg-1:      #141414;
   --color-bg-2:      #1c1c1c;

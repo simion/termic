@@ -102,7 +102,7 @@ export function ConfirmDialog() {
             <div className="flex flex-col gap-1.5">
               <span>{req.checkbox.label}</span>
               {req.checkbox.branchName && (
-                <code className="text-[13.5px] font-semibold font-mono text-[var(--color-accent)] bg-[var(--color-bg-2)] border border-[var(--color-border-soft)] px-2.5 py-0.5 rounded w-max select-text tracking-wide">
+                <code className="text-[13.5px] font-semibold font-mono text-[var(--color-accent)] bg-[var(--color-bg-2)] border border-[var(--color-border-soft)] px-2.5 py-0.5 rounded max-w-full break-all whitespace-pre-wrap select-text tracking-wide">
                   {req.checkbox.branchName}
                 </code>
               )}

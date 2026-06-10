@@ -302,6 +302,10 @@ export interface Settings {
    *  Edit Sandbox dialog when the user enables the cage from scratch. */
   sandbox_default_rw_paths?: string[];
   sandbox_default_allowed_hosts?: string[];
+  /** Personal (this-machine) glob patterns hidden from the "All files"
+   *  tree across every project. Unioned with each project's committed
+   *  `.termic.yaml` `exclude`. `.git` is always hidden regardless. */
+  file_tree_exclude?: string[];
 }
 
 export interface DiscoveredRepo {
@@ -474,10 +478,13 @@ export interface TerminalTab extends BaseTab {
    *  meaningful for work-done-capable agent tabs. Edited via the message
    *  queue dialog; drained in TerminalPane. */
   queue?: QueueItem[];
-  /** Whether the queue is actively draining — true between Start and the
-   *  queue emptying (or the user hitting Stop). Reset on PTY (re)spawn so
-   *  a manual Restart doesn't keep firing into a fresh process. */
+  /** Whether the queue is actively draining. Reset on PTY (re)spawn so a
+   *  manual Restart doesn't keep firing into a fresh process. */
   queueActive?: boolean;
+  /** Bumped each time a message is added. The draining kick in TerminalPane
+   *  watches this so adding a message to an idle agent sends immediately even
+   *  when `queueActive` is already true (no false→true edge to rely on). */
+  queueKick?: number;
 }
 
 /** One entry in a terminal tab's message queue. `repeat` is the total
@@ -524,4 +531,7 @@ export interface RepoConfig {
     allowed_hosts: string[];
     allowed_paths: string[];
   };
+  /** Glob patterns hidden from the "All files" tree (committed, team-shared).
+   *  Unioned with the user's personal `Settings.file_tree_exclude`. */
+  exclude: string[];
 }

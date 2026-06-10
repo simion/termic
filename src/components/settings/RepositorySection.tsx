@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Trash2, Check, Layers, X, AudioWaveform } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { ExcludeEditor } from "./ExcludeEditor";
+import { cn, cleanLines } from "@/lib/utils";
 
 export function RepositorySection({ projectId }: { projectId: string }) {
   const project = useApp(s => s.projects.find(p => p.id === projectId));
@@ -95,6 +96,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       version: 1,
       scripts: { setup: "", run: "", archive: "", preview_url: "", files_to_copy: [] },
       sandbox: { enabled_by_default: false, allowed_hosts: [], allowed_paths: [] },
+      exclude: [],
     };
     repoConfigLoad(projectId)
       .then(loaded => {
@@ -192,13 +194,17 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       ...next,
       scripts: {
         ...next.scripts,
-        files_to_copy: next.scripts.files_to_copy.map(s => s.trim()).filter(Boolean),
+        files_to_copy: cleanLines(next.scripts.files_to_copy),
       },
+      exclude: cleanLines(next.exclude ?? []),
     };
     setStatus("saving"); setErr(null);
     repoConfigSave(projectId, cleaned)
       .then(() => {
         setStatus("saved");
+        // .termic.yaml is now on disk with the latest excludes — nudge the
+        // file tree to re-read so any exclude edits take effect immediately.
+        useUI.getState().reloadFileTree();
         if (savedFlashTimer.current) window.clearTimeout(savedFlashTimer.current);
         savedFlashTimer.current = window.setTimeout(() => setStatus("idle"), 1500) as unknown as number;
       })
@@ -234,6 +240,20 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       scheduleRcSave(next);
       return next;
     });
+  }
+  // File-tree excludes live at the top level of .termic.yaml (not under
+  // scripts). The ExcludeEditor hands back the full pattern array; we save
+  // it and nudge the file tree to re-read so the change is visible behind
+  // the Settings overlay.
+  function patchExclude(next: string[]) {
+    setRc(prev => {
+      if (!prev) return prev;
+      const updated = { ...prev, exclude: next };
+      scheduleRcSave(updated);
+      return updated;
+    });
+    // Tree refresh happens in flushRcSave's success handler — re-reading
+    // here (pre-save) would use the stale on-disk .termic.yaml.
   }
   function patchRcSandbox(paths: string[], hosts: string[]) {
     setRc(prev => {
@@ -457,6 +477,19 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 scriptTarget === "personal" && flashRing("files_to_copy"),
               )}
             />
+          </div>
+
+          {/* Hidden files — committed to .termic.yaml, shared with the team
+              and the standalone CLI. Saved live (debounced) like the other
+              .termic.yaml fields. */}
+          <div className="border-t border-[var(--color-border-soft)] pt-6">
+            <div className="text-[14px] font-medium">Hidden files</div>
+            <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+              Patterns hidden from the "All files" tree for this repo. Saved to <code className="font-mono">.termic.yaml</code> (committed, team-shared) and merged with your personal list (Settings → General).
+            </div>
+            <div className="mt-3">
+              <ExcludeEditor value={rc?.exclude ?? []} onChange={patchExclude} />
+            </div>
           </div>
 
           {/* Spotlight — lives in Scripts & run because it controls

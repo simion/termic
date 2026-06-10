@@ -20,6 +20,7 @@ const LS_LIGATURES     = "codeLigatures";
 const LS_THEME         = "themeMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
+const LS_WORKING_INDICATOR = "workingIndicator";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
 const LS_ALLOW_SCOPE     = "sandboxAllowScope";
@@ -267,6 +268,13 @@ interface PrefsState {
    *  in-app "done" signal. Some users find it distracting and want
    *  the sidebar to stay calm regardless. */
   settledHighlight: boolean;
+  /** Show a spinner on an agent's tab (and sidebar icon) WHILE it's
+   *  working. OFF by default — experimental. The "working" workState is
+   *  always tracked internally to drive work-done detection; this pref only
+   *  controls whether it's surfaced. Work detection can occasionally get a
+   *  signal stuck, so TerminalPane has an absolute ceiling that force-clears
+   *  a stale "working" state regardless of sender signals. */
+  workingIndicator: boolean;
   /** Default for the NewWorkspaceDialog's Sandbox toggle when neither
    *  the project's `default_sandbox` nor an explicit user pick is in
    *  effect. Lets a single-keystroke toggle apply across all projects
@@ -347,6 +355,7 @@ interface PrefsState {
   cycleThemeMode:     () => void;
   setDesktopNotifications: (v: boolean) => void;
   setSettledHighlight: (v: boolean) => void;
+  setWorkingIndicator: (v: boolean) => void;
   setGlobalDefaultSandbox: (v: boolean) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setAllowScope: (s: "agent" | "project" | "repo") => void;
@@ -431,6 +440,9 @@ const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 // users who toggled it OFF keep their setting (lsGetBool returns the
 // stored value when present).
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
+// OFF by default — experimental re-introduction of the work-in-progress
+// spinner. Opt in via Settings → General.
+const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, false);
 const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 // ON by default — sandboxed agents bypass their own permission prompts
 // because the seatbelt is the real boundary. Users can opt out.
@@ -448,6 +460,7 @@ export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
   desktopNotifications: initialDesktopNotif,
   settledHighlight: initialSettledHighlight,
+  workingIndicator: initialWorkingIndicator,
   globalDefaultSandbox: initialDefaultSandbox,
   sandboxBypassPermissions: initialSandboxBypass,
   allowScope: initialAllowScope,
@@ -532,6 +545,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setSettledHighlight: (v) => {
     try { localStorage.setItem(LS_SETTLED_HIGHLIGHT, v ? "1" : "0"); } catch {}
     set({ settledHighlight: v });
+  },
+  setWorkingIndicator: (v) => {
+    try { localStorage.setItem(LS_WORKING_INDICATOR, v ? "1" : "0"); } catch {}
+    set({ workingIndicator: v });
   },
   setGlobalDefaultSandbox: (v) => {
     try { localStorage.setItem(LS_DEFAULT_SANDBOX, v ? "1" : "0"); } catch {}

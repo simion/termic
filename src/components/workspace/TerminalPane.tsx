@@ -3,8 +3,8 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield, Eye, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X } from "lucide-react";
-import * as Popover from "@radix-ui/react-popover";
+import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X } from "lucide-react";
+import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,7 @@ import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession } from "@/lib/agents";
+import { MessageQueueButton } from "./MessageQueueButton";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 
@@ -267,16 +268,19 @@ export function TerminalPane({ ws, tab, active }: Props) {
   }, [ws.id, tab.id, patchTab]);
   sendNextQueuedRef.current = sendNextQueued;
 
-  // Kick the queue off when the user hits Start (queueActive flips true). Only
-  // send immediately if the agent isn't mid-turn; if it's already working, the
-  // in-flight turn's eventual done advances the queue via fireDone instead.
+  // Kick the queue when a message is added (queueKick bumps) or it first
+  // activates. Only send immediately if the agent isn't mid-turn; if it's
+  // already working, the in-flight turn's eventual done advances the queue via
+  // fireDone instead. Watching queueKick (not just the queueActive edge) means
+  // adding a message to an idle agent with an already-active queue still fires.
   const queueActive = tab.type === "terminal" ? tab.queueActive : undefined;
+  const queueKick = tab.type === "terminal" ? tab.queueKick : undefined;
   useEffect(() => {
     if (!queueActive) return;
     const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
     if (cur?.workState === "working") return;
     sendNextQueuedRef.current?.();
-  }, [queueActive, ws.id, tab.id]);
+  }, [queueActive, queueKick, ws.id, tab.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1481,6 +1485,22 @@ export function TerminalPane({ ws, tab, active }: Props) {
         fireDone(`90s hard ceiling`, fallbackReason);
         return;
       }
+      // ABSOLUTE ceiling — fires even when senderBusy. The 90s ceiling and
+      // byte-quiet fallback both defer to the sender's "busy" title, which
+      // is correct for genuine long work but leaves one failure mode: a
+      // sender signal that gets STUCK on "working" (a crashed TUI, a title
+      // that never clears) would otherwise spin forever. This backstop
+      // force-clears any "working" state older than the cap regardless of
+      // sender signals, so the experimental work-in-progress spinner can
+      // never get permanently stuck. Set high enough (10 min) that a real
+      // long-running task is extremely unlikely to trip it.
+      const WORKING_ABSOLUTE_CEILING_MS = 600_000;
+      if (cur && cur.type === "terminal" && cur.workState === "working"
+          && workingStartedAtRef.current > 0
+          && Date.now() - workingStartedAtRef.current >= WORKING_ABSOLUTE_CEILING_MS) {
+        fireDone(`10min absolute ceiling`, fallbackReason);
+        return;
+      }
       // Content-hash check (kept as a third path). Also gated on
       // !senderBusy — Codex's TUI can pause rendering mid-task for
       // several seconds without the hash changing, but if the title
@@ -1596,73 +1616,74 @@ export function FooterBar({ ws, sandboxWarning }: {
   // Sandbox half — four visual states (warning > monitor > enforce > off).
   const sandboxNode = sandboxWarning ? (
     <>
-      <AlertTriangle className="h-3 w-3 text-[var(--color-warn)]" />
+      <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warn)]" />
       <span className="font-medium">Sandbox degraded</span>
       <span className="text-[var(--color-fg-faint)]">·</span>
       <span className="truncate">{sandboxWarning}</span>
     </>
   ) : mode === "enforce" ? (
     <>
-      <Shield className="h-3 w-3 text-[var(--color-ok)]" fill="currentColor" />
-      <span>Enforcing</span>
-      <span className="text-[var(--color-fg-faint)]">·</span>
-      <span>{(ws.sandbox_allowed_hosts?.length ?? 0)} extra host{(ws.sandbox_allowed_hosts?.length ?? 0) === 1 ? "" : "s"}</span>
-      <span className="text-[var(--color-fg-faint)]">·</span>
-      <span>{(ws.sandbox_rw_paths?.length ?? 0)} extra path{(ws.sandbox_rw_paths?.length ?? 0) === 1 ? "" : "s"}</span>
+      <Shield className="h-3.5 w-3.5 text-[var(--color-ok)]" fill="currentColor" />
+      <span>Sandbox: enforcing</span>
     </>
   ) : mode === "monitor" ? (
     <>
-      <Eye className="h-3 w-3 text-[var(--color-warn)]" />
-      <span>Monitoring</span>
-      <span className="ml-1 text-[var(--color-fg-faint)]">(logging all access, not blocking)</span>
+      <Shield className="h-3.5 w-3.5 text-[var(--color-warn)]" />
+      <span>Sandbox: monitoring</span>
     </>
   ) : (
     <>
-      <Shield className="h-3 w-3 text-[var(--color-fg-faint)]" />
-      <span>Unsandboxed</span>
-      <span className="ml-1 text-[var(--color-fg-faint)]">(full filesystem + network)</span>
+      <Shield className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+      <span>Sandbox: off</span>
     </>
   );
 
   return (
     <div
       className={cn(
-        "flex shrink-0 items-center gap-1.5 border-t px-3 py-1 text-[11.5px]",
+        // --bottom-bar-h is the shared height for every bottom bar. text-[12.5px]
+        // matches the queue/terminal buttons and the right-panel footer tabs.
+        "flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-1.5 border-t px-3 text-[12.5px]",
         sandboxWarning
           ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)] text-[var(--color-fg)]"
           : "border-[var(--color-border-soft)] bg-[var(--color-bg-1)] text-[var(--color-fg-dim)]",
       )}
     >
-      <button
-        type="button"
-        onClick={() => useUI.getState().openSandbox(ws.id)}
-        title={sandboxWarning ?? (ws.sandbox_enabled ? "Edit sandbox" : "Enable sandbox")}
-        className="flex flex-1 items-center gap-1.5 truncate text-left hover:text-[var(--color-fg)]"
-      >
-        {sandboxNode}
-      </button>
-      {/* Live deny counter chip — click to see WHICH hosts got
-          blocked. Sibling of the edit button so its click doesn't
-          bubble to "open Edit dialog." Only shown when sandboxed +
-          we've actually seen denies. */}
-      {mode !== "off" && total > 0 && (
-        <DeniedHostsPopover wsId={ws.id} cli={ws.cli ?? "claude"} count={total} mode={mode} />
-      )}
-      {/* +Terminal opens the bottom split. Hidden when split is
-          already open — no point offering to add what's there.
-          (The split itself is owned by WorkspaceView; this is just
-          a convenient trigger that lives where you'd expect it.) */}
+      {/* Queue + Terminal sit on the LEFT (only while the split/aux terminal
+          is closed — when open the queue moves into that strip, see
+          WorkspaceView). The sandbox status is pushed to the RIGHT. */}
+      {!splitOpen && <MessageQueueButton wsId={ws.id} />}
+      {/* +Terminal opens the bottom split. Hidden when the split is already
+          open — no point offering to add what's there. */}
       {!splitOpen && (
         <button
           type="button"
           onClick={() => toggleSplit(ws.id)}
           title="Open a bottom terminal split"
-          className="ml-2 flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
+          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[12.5px] text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
         >
-          <TerminalSquare className="h-3 w-3" />
+          <TerminalSquare className="h-3.5 w-3.5" />
           <span>Terminal</span>
         </button>
       )}
+      {/* Right group: the blocked-hosts chip on the LEFT, the sandbox status
+          as the rightmost item. Click the chip to see WHICH hosts got
+          blocked; it's a sibling of the edit button so its click doesn't
+          bubble to "open Edit dialog." Chip only shows when sandboxed + we've
+          actually seen denies. */}
+      <div className="ml-auto flex items-center gap-1.5">
+        {mode !== "off" && total > 0 && (
+          <DeniedHostsPopover wsId={ws.id} cli={ws.cli ?? "claude"} count={total} mode={mode} />
+        )}
+        <button
+          type="button"
+          onClick={() => useUI.getState().openSandbox(ws.id)}
+          title={sandboxWarning ?? (ws.sandbox_enabled ? "Edit sandbox" : "Enable sandbox")}
+          className="flex items-center gap-1.5 truncate hover:text-[var(--color-fg)]"
+        >
+          {sandboxNode}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1824,8 +1845,8 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
   const visiblePaths = paths.filter(p => !allowed.has(p.path));
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
+    <PopoverRoot open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
         <button
           type="button"
           onClick={(e) => e.stopPropagation()}
@@ -1836,23 +1857,20 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
         >
           {monitor ? `${count} access${count === 1 ? "" : "es"}` : `${count} blocked`}
         </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          align="end"
-          sideOffset={6}
-          // Auto-grow to the widest path/host row. Floor at 440px so
-          // short content doesn't make the popover look puny; ceiling
-          // at viewport-2rem so a deeply-nested path never escapes
-          // the terminal pane edges. Rows use whitespace-nowrap so
-          // their natural width drives the container's intrinsic
-          // size; truncation only kicks in when we hit the ceiling.
-          style={{ width: "max-content" }}
-          className={cn(
-            "z-50 max-w-[calc(100vw-2rem)] overflow-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-2 shadow-2xl text-[12px]",
-            monitor ? "min-w-[580px] max-h-[520px]" : "min-w-[440px] max-h-[400px]",
-          )}
-        >
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        // Auto-grow to the widest path/host row (w-max). Floor so short
+        // content isn't puny; ceiling at viewport-2rem so a deeply-nested
+        // path never escapes the pane edges. Rows are whitespace-nowrap so
+        // their natural width drives the size; truncation kicks in only at
+        // the ceiling. Base chrome (border/bg/shadow/z) comes from the
+        // shared PopoverContent; here we only override shape/size/density.
+        className={cn(
+          "w-max max-w-[calc(100vw-2rem)] overflow-auto rounded-md p-2 text-[12px]",
+          monitor ? "min-w-[580px] max-h-[520px]" : "min-w-[440px] max-h-[400px]",
+        )}
+      >
           {/* Scope selector — where "Allow" writes. Mandatory on first
               use (no preselection); the choice becomes the app-wide
               default and is remembered. */}
@@ -2011,9 +2029,8 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
             Takes effect on next agent restart. The running agent keeps its current (narrower) permissions.
           </div>
           </>)}
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+      </PopoverContent>
+    </PopoverRoot>
   );
 }
 

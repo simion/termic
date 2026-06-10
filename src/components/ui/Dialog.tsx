@@ -80,7 +80,7 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
                 style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
                 className="cursor-grab active:cursor-grabbing select-none"
               >
-                {title && <Dialog.Title className="text-base font-medium">{title}</Dialog.Title>}
+                {title && <Dialog.Title className="text-base font-medium break-words pr-6">{title}</Dialog.Title>}
                 {description && <Dialog.Description className="text-xs text-[var(--color-fg-dim)] -mt-1">{description}</Dialog.Description>}
               </div>
             )}

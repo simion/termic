@@ -19,6 +19,14 @@ export function branchify(s: string) {
   return s.split("/").map(slugify).filter(Boolean).join("/");
 }
 
+/** Split a textarea value (or array) into trimmed, non-empty lines. The
+ *  canonical "one entry per line" cleanup used by the settings editors
+ *  (excludes, sandbox paths/hosts, files-to-copy) before persisting. */
+export function cleanLines(input: string | string[]): string[] {
+  const arr = Array.isArray(input) ? input : input.split("\n");
+  return arr.map(l => l.trim()).filter(Boolean);
+}
+
 /** Truncate path to "…/last/two/segments" when it gets long. */
 export function shortPath(p: string, segments = 2) {
   const parts = p.split("/").filter(Boolean);

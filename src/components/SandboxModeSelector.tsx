@@ -1,13 +1,13 @@
 // Shared OFF / MONITORING / ENFORCING selector used by both the New
 // Workspace dialog and the Edit Sandbox dialog. Single source of truth for
 // the mode list + styling so the two can't drift.
-import { Shield, ShieldOff, Eye } from "lucide-react";
+import { Shield, ShieldOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SandboxMode } from "@/lib/types";
 
 const MODES: { id: SandboxMode; label: string; desc: string; icon: typeof Shield; tone: string }[] = [
   { id: "off",     label: "OFF",        desc: "Full filesystem + network access.",                     icon: ShieldOff, tone: "var(--color-err)" },
-  { id: "monitor", label: "MONITORING", desc: "Allow everything, but LOG every file + network access.", icon: Eye,       tone: "var(--color-warn)" },
+  { id: "monitor", label: "MONITORING", desc: "Allow everything, but LOG every file + network access.", icon: Shield,    tone: "var(--color-warn)" },
   { id: "enforce", label: "ENFORCING",  desc: "Real cage: deny outside the allow-list.",                icon: Shield,    tone: "var(--color-ok)" },
 ];
 

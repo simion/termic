@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import { settingsLoad, workspaceSetSandbox, sandboxAvailable } from "@/lib/ipc";
 import { effectiveSandboxMode, type SandboxMode } from "@/lib/types";
-import { AlertTriangle, Eye, Zap, Save, RotateCw } from "lucide-react";
+import { AlertTriangle, Shield, Zap, Save, RotateCw } from "lucide-react";
 import { SandboxModeSelector } from "@/components/SandboxModeSelector";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
@@ -155,8 +155,9 @@ export function WorkspaceSandboxDialog() {
       className="max-w-4xl max-h-[90vh] overflow-hidden text-[13px]"
     >
       {/* Outer column: body scrolls; footer is shrink-0 so it stays
-          pinned at the bottom of the dialog regardless of scroll. */}
-      <div className="flex max-h-[calc(90vh-7rem)] flex-col">
+          pinned at the bottom of the dialog regardless of scroll. mt-2 gives
+          the header/description room to breathe above the mode cards. */}
+      <div className="mt-2 flex max-h-[calc(90vh-7rem)] flex-col">
         <div className="flex flex-1 flex-col gap-5 overflow-y-auto pr-1">
         {/* On/off panel. Big, color-coded, unambiguous - the prior
             "Unsandboxed" checkbox was a double-negative trap: users
@@ -171,7 +172,7 @@ export function WorkspaceSandboxDialog() {
         <SandboxModeSelector value={mode} onChange={chooseMode} osUnavailable={osSandboxOk === false} />
         {mode === "monitor" && (
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
-            <Eye className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
+            <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
             <span>
               <b className="text-[var(--color-fg)]">Monitoring (observe, don't block).</b>{" "}
               The agent runs with full access. Every file operation and every
