@@ -1,6 +1,15 @@
 {
   "versions": [
     {
+      "version": "0.10.9",
+      "date": "2026-06-10",
+      "summary": "Sidebar refreshes immediately after archiving a workspace; terminal links open via the system opener.",
+      "notes": [
+        "Fixed: archiving a workspace now updates the sidebar right away instead of staying stale until the next app reload.",
+        "Terminal links (Cmd or Ctrl click) now open through the system opener for more reliable cross-platform behavior."
+      ]
+    },
+    {
       "version": "0.10.8",
       "date": "2026-06-10",
       "summary": "Fix missing app icon on Linux.",
