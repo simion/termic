@@ -10,7 +10,7 @@ import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon,
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { agentDisplayName } from "@/lib/agents";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -702,6 +702,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const setActiveTabId = useApp(s => s.setActiveTabId);
   const loadAll = useApp(s => s.loadAll);
   const terminalTabCount = useApp(s => (s.tabs[w.id] ?? []).filter(t => t.type === "terminal").length);
+  const agents = useApp(s => s.agents);
   const expandMode = usePrefs(s => s.workspaceExpandMode);
   // Default collapsed state varies with the user's chosen expand mode.
   // The user can still override per-row via the chevron — once they
@@ -1212,8 +1213,8 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             {/* Brand icon stays at the start; the work-state badge moves
                 to the end of the row (after the title) per iTerm2's
                 tab-bullet placement. */}
-            <span className={cn("shrink-0", CLI_BRAND_COLOR[tab.cli] || "text-[var(--color-fg-dim)]")}>
-              <CliIcon cli={tab.cli} className="h-3.5 w-3.5" />
+            <span className={cn("shrink-0", CLI_BRAND_COLOR[resolveIconId(tab.cli, agents)] || "text-[var(--color-fg-dim)]")}>
+              <CliIcon cli={resolveIconId(tab.cli, agents)} className="h-3.5 w-3.5" />
             </span>
 
             {isTabRenaming ? (

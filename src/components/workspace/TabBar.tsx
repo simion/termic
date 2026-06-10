@@ -5,7 +5,7 @@ import type { Workspace, Tab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
-import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL, resolveIconId } from "@/icons/cli";
 import { Plus, X, GitCompare, FileText, SquareSplitVertical, Bell, Megaphone, Repeat, Loader2 } from "lucide-react";
 import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
@@ -232,7 +232,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
           <DropdownLabel>New agent</DropdownLabel>
           {registry.filter(a => visibleClis.has(a.id)).map(a => (
             <DropdownItem key={a.id} onSelect={() => spawnTab(a.id)}>
-              <span className={cn("shrink-0", CLI_BRAND_COLOR[a.id] || "text-[var(--color-fg-dim)]")}><CliIcon cli={a.id} className="h-4 w-4" /></span>
+              <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}><CliIcon cli={a.icon_id} className="h-4 w-4" /></span>
               {a.display_name}
             </DropdownItem>
           ))}
@@ -310,6 +310,7 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
   const reason = tab.unread?.reason;
   const workState = tab.type === "terminal" ? tab.workState : undefined;
   const queueRunning = tab.type === "terminal" && !!tab.queueActive;
+  const agents = useApp(s => s.agents);
   // Experimental work-in-progress spinner — opt-in (Settings → General).
   // The "working" state is force-cleared by TerminalPane's demoters /
   // absolute ceiling, so the spinner can't spin forever.
@@ -317,7 +318,8 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
   const showBell    = reason === "attention";
   const showDone    = !showBell && workState === "done";
   const showWorking = workingIndicator && !showBell && !showDone && workState === "working";
-  const color = tab.type === "terminal" ? CLI_BRAND_COLOR[tab.cli] : "text-[var(--color-fg-dim)]";
+  const iconId = tab.type === "terminal" ? resolveIconId(tab.cli, agents) : "";
+  const color = tab.type === "terminal" ? CLI_BRAND_COLOR[iconId] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
 
   let fileIcon: string | null = null;
@@ -375,7 +377,7 @@ function TabPill({ ws, tab, active, onSelect, onClose, renaming, onStartRename, 
       {/* Icon slot: Terminals get CLI brand icons, Edit/Diff tabs get dynamic Catppuccin file icons if path is available, else fallback / none */}
       {(tab.type === "terminal" || fileIcon || tab.type === "diff") && (
         <span className={cn("shrink-0 flex items-center justify-center", color)}>
-          {tab.type === "terminal" && <CliIcon cli={tab.cli} className="h-4 w-4" />}
+          {tab.type === "terminal" && <CliIcon cli={iconId} className="h-4 w-4" />}
           {tab.type === "edit" && fileIcon && <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" />}
           {tab.type === "diff" && (fileIcon ? <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" /> : <GitCompare className="h-4 w-4" />)}
         </span>

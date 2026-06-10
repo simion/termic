@@ -4,7 +4,7 @@
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TermicBlockmark } from "@/icons/TermicLogo";
 
 // Module-level flag: animate the hero logo ONCE per app launch, not every
@@ -27,6 +27,7 @@ export function Dashboard() {
   const setActive    = useApp(s => s.setActiveWorkspace);
   const openSettings = useApp(s => s.openSettings);
   const loadAll      = useApp(s => s.loadAll);
+  const agents       = useApp(s => s.agents);
   const openNewProject   = useUI(s => s.openNewProject);
   const openNewWorkspace = useUI(s => s.openNewWorkspace);
 
@@ -104,9 +105,9 @@ export function Dashboard() {
                                 The REPO chip alone signals "live checkout". */}
                             <span className={cn(
                               "shrink-0",
-                              CLI_BRAND_COLOR[w.cli] || "text-[var(--color-fg-faint)]",
+                              CLI_BRAND_COLOR[resolveIconId(w.cli, agents)] || "text-[var(--color-fg-faint)]",
                             )}>
-                              <CliIcon cli={w.cli} className="h-4 w-4" />
+                              <CliIcon cli={resolveIconId(w.cli, agents)} className="h-4 w-4" />
                             </span>
                             {/* Hide the workspace name on repo rows — it's
                                 always just the project name shown above. */}

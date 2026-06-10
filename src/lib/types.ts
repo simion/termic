@@ -291,6 +291,9 @@ export interface Agent {
    *  cause false positives — disables the entire state machine (no badge,
    *  no bell, no OS notification) for terminals running this agent. */
   work_done?: boolean;
+  /** ID of the agent this one was cloned from. Purely informational,
+   *  surfaced as "extends: <name>" in the Settings card header. */
+  extends?: string;
 }
 
 export interface Settings {

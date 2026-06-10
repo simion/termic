@@ -83,8 +83,8 @@ export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
             console.error("workspace_open_repo failed:", err);
           }
         }}>
-          <span className={cn("shrink-0", CLI_BRAND_COLOR[a.id] || "text-[var(--color-fg-dim)]")}>
-            <CliIcon cli={a.id} className="h-4 w-4" />
+          <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
+            <CliIcon cli={a.icon_id} className="h-4 w-4" />
           </span>
           <span className="truncate">{a.display_name}</span>
         </DropdownItem>

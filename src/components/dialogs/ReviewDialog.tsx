@@ -6,7 +6,7 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL, resolveIconId } from "@/icons/cli";
 import { ptyWrite } from "@/lib/ipc";
 import { REVIEW_PROMPT } from "@/lib/review";
 import { visibleCliIds } from "@/lib/agents";
@@ -74,8 +74,8 @@ export function ReviewDialog() {
               "hover:border-[var(--color-accent-soft)] disabled:opacity-50",
             )}
           >
-            <span className={cn("text-[24px]", CLI_BRAND_COLOR[c])}>
-              <CliIcon cli={c} className="h-7 w-7" />
+            <span className={cn("text-[24px]", CLI_BRAND_COLOR[resolveIconId(c, registry)])}>
+              <CliIcon cli={resolveIconId(c, registry)} className="h-7 w-7" />
             </span>
             <span className="text-[13px]">{CLI_LABEL[c] ?? c}</span>
           </button>

@@ -7,7 +7,7 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { sendMessageToPty } from "@/lib/agentSend";
 import { cn } from "@/lib/utils";
 import { Check, Megaphone } from "lucide-react";
@@ -21,6 +21,7 @@ export function BroadcastDialog() {
   const wsId = useUI(s => s.broadcastForWsId);
   const close = useUI(s => s.closeBroadcast);
   const pushToast = useUI(s => s.pushToast);
+  const agents = useApp(s => s.agents);
   const tabsForWs = useApp(s => (wsId ? s.tabs[wsId] : undefined));
   const patchTab = useApp(s => s.patchTab);
 
@@ -121,8 +122,8 @@ export function BroadcastDialog() {
                   )}>
                     {on && <Check className="h-3 w-3" strokeWidth={3} />}
                   </span>
-                  <span className={cn("shrink-0", CLI_BRAND_COLOR[t.cli])}>
-                    <CliIcon cli={t.cli} className="h-4 w-4" />
+                  <span className={cn("shrink-0", CLI_BRAND_COLOR[resolveIconId(t.cli, agents)])}>
+                    <CliIcon cli={resolveIconId(t.cli, agents)} className="h-4 w-4" />
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[var(--color-fg)]">
                     {tabLabel(t)}
