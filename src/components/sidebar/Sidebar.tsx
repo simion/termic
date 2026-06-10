@@ -15,7 +15,8 @@ import { agentDisplayName } from "@/lib/agents";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
-import { workspaceRename, projectRename, workspaceArchive, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop, workspaceSetYolo } from "@/lib/ipc";
+import { workspaceRename, projectRename, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop, workspaceSetYolo } from "@/lib/ipc";
+import { archiveAndRefresh } from "@/lib/archiveWorkspace";
 import { startSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Workspace, TerminalTab } from "@/lib/types";
@@ -1170,11 +1171,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                   if (!confirmed) return;
                   const { setBusy } = useUI.getState();
                   setBusy(`Archiving "${w.name}"…`);
-                  try {
-                    await workspaceArchive(w.id, deleteBranch);
-                    if (isActive) setActive(null);
-                    await loadAll();
-                  } catch (err) { console.error(err); }
+                  try { await archiveAndRefresh(w.id, deleteBranch); }
                   finally { setBusy(null); }
                 }}
               >

@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -338,7 +339,19 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // Cmd+clicking a URL that was already on screen did nothing (#14).
     term.loadAddon(new WebLinksAddon((event, uri) => {
       if (event.metaKey || event.ctrlKey) {
-        ipc.openPath(uri).catch(() => {});
+        // #14 diagnostics: the agent TUI may enable xterm mouse reporting,
+        // which can swallow the modified click before this handler runs (so
+        // hover-underline works but nothing opens). Log that we DID fire +
+        // the open result — if a link won't open and this line is ABSENT
+        // from termic-debug.log, the click was consumed upstream.
+        ipc.logLine(`[link] agent activate meta=${event.metaKey} ctrl=${event.ctrlKey} uri=${uri}`).catch(() => {});
+        // Use the official opener plugin (OS-native) rather than termic's
+        // `open_path` shell-out to `/usr/bin/open`, which can silently no-op
+        // from a packaged / hardened-runtime .app. This is how terax-ai opens
+        // terminal links, and the plugin is already wired in termic (#14).
+        openUrl(uri)
+          .then(() => ipc.logLine("[link] agent open ok").catch(() => {}))
+          .catch((e) => ipc.logLine(`[link] agent open FAILED: ${e}`).catch(() => {}));
       }
     }));
     term.open(host);
