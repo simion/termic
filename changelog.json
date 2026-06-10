@@ -1,6 +1,14 @@
 {
   "versions": [
     {
+      "version": "0.10.8",
+      "date": "2026-06-10",
+      "summary": "Fix missing app icon on Linux.",
+      "notes": [
+        "Fixed: the app icon now appears in the taskbar and launcher on Linux. The 512x512 PNG was present in the repo but not included in the AppImage bundle."
+      ]
+    },
+    {
       "version": "0.10.7",
       "date": "2026-06-10",
       "summary": "GitHub Copilot support, clone any agent, drag-to-reorder agents, and sponsors section.",
