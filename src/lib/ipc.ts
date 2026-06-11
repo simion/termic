@@ -250,6 +250,16 @@ export const workspaceSetHasHistory = (id: string, value: boolean) =>
   invoke<void>("workspace_set_has_history", { id, value });
 export const workspaceSetAgentSessionId = (id: string, cli: string, uuid: string) =>
   invoke<void>("workspace_set_agent_session_id", { id, cli, uuid });
+/** Replace the workspace's durable agent-tab list (metadata + order). Each
+ *  tab's session uuid is preserved across the rewrite (matched by id) so a
+ *  layout change never clobbers a minted session; a tab dropped from the
+ *  list is forgotten (the X-closes-completely behavior). */
+export const workspaceSetTabs = (id: string, tabs: import("@/lib/types").PersistedTab[]) =>
+  invoke<void>("workspace_set_tabs", { id, tabs });
+/** Pin (or clear, via "") the per-tab session uuid for one durable tab.
+ *  Keyed by tab id so several agents in a workspace resume independently. */
+export const workspaceSetTabSessionId = (id: string, tabId: string, uuid: string) =>
+  invoke<void>("workspace_set_tab_session_id", { id, tabId, uuid });
 export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agents_defaults");
 export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
 export const workspaceSendDiffToMain = (id: string) =>

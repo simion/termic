@@ -1,0 +1,177 @@
+// @vitest-environment happy-dom
+//
+// End-to-end check of the issue-#23 resume pipeline using the REAL store,
+// the REAL decideResume, and the REAL spawnArgsForCli (only ipc / tabFocus
+// are mocked). Proves the "restart make dev → main agent resumes" path that
+// regressed: legacy agent_session_ids migrate onto the default tab, persist
+// into persisted_tabs, and survive a simulated restart as a --resume spawn.
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("@/lib/ipc", () => ({
+  ptyKill: vi.fn().mockResolvedValue(undefined),
+  workspaceSetTabs: vi.fn().mockResolvedValue(undefined),
+  workspaceSetTabSessionId: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/tabFocus", () => ({ focusTerminalTab: vi.fn() }));
+
+import { useApp } from "@/store/app";
+import { decideResume, spawnArgsForCli, cliSupportsIdSession } from "@/lib/agents";
+import type { Workspace, TerminalTab } from "@/lib/types";
+
+function makeWs(o: Partial<Workspace> = {}): Workspace {
+  return {
+    id: "ws1", project_id: "p1", name: "seo improvements", branch: "main",
+    base_branch: "main", path: "/x/ws1", cli: "claude", port: 1420,
+    created: "2024-01-01", archived: false, ...o,
+  } as Workspace;
+}
+
+// Mirror of TerminalPane's spawn wiring: tab + workspace → actual argv.
+function argvFor(tab: TerminalTab, ws: Workspace, isPrimary = true): string[] {
+  const decision = decideResume({
+    isAgent: true,
+    idCapable: cliSupportsIdSession(tab.cli),
+    isPrimary,
+    isRepoRoot: !!ws.is_repo_root,
+    hasResumableHistory: !!ws.has_resumable_history,
+    storedUuid: tab.sessionId,
+    resumeOverride: ws.resume_override ?? undefined,
+    failedResume: false,
+  });
+  const sessionUuid =
+    decision.kind === "mint" ? "MINTED-UUID"
+    : decision.kind === "resume-id" ? tab.sessionId
+    : undefined;
+  return spawnArgsForCli(tab.cli, {
+    yolo: false,
+    resume: decision.kind === "cwd-resume",
+    isPrimary,
+    sessionUuid,
+    resumeKnown: decision.kind === "resume-id",
+    resumeOverride: decision.kind === "override" ? decision.override : undefined,
+    ws,
+  });
+}
+
+const firstTab = (wsId = "ws1") => useApp.getState().tabs[wsId][0] as TerminalTab;
+
+beforeEach(() => {
+  useApp.setState({
+    tabs: {}, activeTab: {}, activeWorkspaceId: null,
+    mountedWorkspaces: new Set(), workspaces: [], projects: [], agents: [],
+  });
+  vi.clearAllMocks();
+});
+
+describe("repo-root main agent resumes across a restart", () => {
+  it("migrates a legacy agent_session_ids uuid → --resume on first open AND after restart", () => {
+    const U = "1b02e805-5b4d-482c-927b-b62b9b1c68d8";
+    useApp.setState({ workspaces: [makeWs({ is_repo_root: true, agent_session_ids: { claude: U } })] });
+
+    // First open after upgrade: seed + migrate.
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const seeded = firstTab();
+    expect(seeded.sessionId).toBe(U);
+    expect(argvFor(seeded, useApp.getState().workspaces[0])).toEqual(["--resume", U, "--name", "seo-improvements"]);
+
+    // The migration was carried into persisted_tabs in memory...
+    const persistedAfterSeed = useApp.getState().workspaces[0].persisted_tabs!;
+    expect(persistedAfterSeed[0].session_id).toBe(U);
+
+    // Simulate "restart make dev": app reloads workspaces from disk (here the
+    // in-memory persisted_tabs we just wrote), tabs are empty again.
+    const reloaded = makeWs({ is_repo_root: true, agent_session_ids: { claude: U }, persisted_tabs: persistedAfterSeed });
+    useApp.setState({ workspaces: [reloaded], tabs: {}, activeTab: {} });
+
+    // Reopen → RESTORE path → still resumes the same session.
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const restored = firstTab();
+    expect(restored.sessionId).toBe(U);
+    expect(restored.is_default).toBe(true);
+    expect(argvFor(restored, useApp.getState().workspaces[0])).toEqual(["--resume", U, "--name", "seo-improvements"]);
+  });
+});
+
+describe("close tab + reopen workspace resumes (the reported bug)", () => {
+  it("create agent → say something (mint) → close tab → reopen → --resume", () => {
+    useApp.setState({ workspaces: [makeWs({ is_repo_root: true })] });
+
+    // Open + first spawn mints a session; it survives → persisted per tab.
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const tab = firstTab();
+    const U = "sess-from-conversation";
+    useApp.getState().setTabSessionId("ws1", tab.id, U);
+
+    // User closes the tab (X). Closing must NOT forget the agent.
+    useApp.getState().closeTab("ws1", tab.id);
+    expect(useApp.getState().tabs["ws1"] ?? []).toHaveLength(0);
+    const persisted = useApp.getState().workspaces[0].persisted_tabs!;
+    expect(persisted.find(t => t.id === tab.id)?.session_id).toBe(U);
+
+    // Reopen the workspace (same app session, workspace woke from sleep).
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const reopened = firstTab();
+    expect(reopened.id).toBe(tab.id);
+    expect(reopened.sessionId).toBe(U);
+    expect(argvFor(reopened, useApp.getState().workspaces[0])).toEqual(["--resume", U, "--name", "seo-improvements"]);
+  });
+
+  it("forgetTab → reopen starts fresh (mint), NOT resume", () => {
+    useApp.setState({ workspaces: [makeWs({ is_repo_root: true })] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const tab = firstTab();
+    useApp.getState().setTabSessionId("ws1", tab.id, "doomed");
+
+    useApp.getState().forgetTab("ws1", tab.id);
+
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const fresh = firstTab();
+    expect(fresh.sessionId).toBeUndefined();
+    expect(argvFor(fresh, useApp.getState().workspaces[0])[0]).toBe("--session-id"); // mint, not resume
+  });
+});
+
+describe("worktree main agent resumes across a restart", () => {
+  it("keeps --continue when there's history but no per-tab uuid (legacy worktree)", () => {
+    useApp.setState({ workspaces: [makeWs({ is_repo_root: false, has_resumable_history: true, agent_session_ids: {} })] });
+
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const seeded = firstTab();
+    expect(seeded.sessionId).toBeUndefined();
+    expect(argvFor(seeded, useApp.getState().workspaces[0])).toContain("--continue");
+
+    // Restart: restore the persisted (uuid-less) tab → still --continue.
+    const persisted = useApp.getState().workspaces[0].persisted_tabs!;
+    const reloaded = makeWs({ is_repo_root: false, has_resumable_history: true, persisted_tabs: persisted });
+    useApp.setState({ workspaces: [reloaded], tabs: {}, activeTab: {} });
+
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    expect(argvFor(firstTab(), useApp.getState().workspaces[0])).toContain("--continue");
+  });
+
+  it("a freshly minted worktree session round-trips to --resume after restart", () => {
+    useApp.setState({ workspaces: [makeWs({ is_repo_root: false, has_resumable_history: false })] });
+
+    // No history, no uuid → mint a new session.
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const seeded = firstTab();
+    expect(decideResume({
+      isAgent: true, idCapable: true, isPrimary: true, isRepoRoot: false,
+      hasResumableHistory: false, storedUuid: seeded.sessionId, failedResume: false,
+    }).kind).toBe("mint");
+
+    // The spawn survives → TerminalPane persists the minted uuid per tab.
+    const U = "minted-1234";
+    useApp.getState().setTabSessionId("ws1", seeded.id, U);
+    expect(firstTab().sessionId).toBe(U);
+
+    // Restart → restore carries the uuid → resumes by id.
+    const persisted = useApp.getState().workspaces[0].persisted_tabs!;
+    expect(persisted[0].session_id).toBe(U);
+    const reloaded = makeWs({ is_repo_root: false, persisted_tabs: persisted });
+    useApp.setState({ workspaces: [reloaded], tabs: {}, activeTab: {} });
+
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    expect(argvFor(firstTab(), useApp.getState().workspaces[0])).toEqual(["--resume", U, "--name", "seo-improvements"]);
+  });
+});

@@ -21,7 +21,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName } from "@/lib/agents";
+import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 
 // ── spawnArgsForCli ───────────────────────────────────────────────────
@@ -138,6 +138,102 @@ describe("spawnArgsForCli", () => {
     expect(args).toContain("--profile");
     expect(args).toContain("--yes");
     expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+});
+
+// ── decideResume (issue #23: per-tab resume) ──────────────────────────
+
+describe("decideResume", () => {
+  // Sensible defaults: a primary, id-capable agent tab in a worktree with
+  // no history and no stored uuid. Each test overrides what it exercises.
+  const d = (o: Partial<Parameters<typeof decideResume>[0]> = {}) =>
+    decideResume({
+      isAgent: true,
+      idCapable: true,
+      isPrimary: true,
+      isRepoRoot: false,
+      hasResumableHistory: false,
+      failedResume: false,
+      ...o,
+    });
+
+  it("shell / non-agent tabs never resume", () => {
+    expect(d({ isAgent: false }).kind).toBe("fresh");
+  });
+
+  it("primary tab with a resume override uses it", () => {
+    const r = d({ resumeOverride: "--resume {WORKSPACE_NAME}" });
+    expect(r).toEqual({ kind: "override", override: "--resume {WORKSPACE_NAME}" });
+  });
+
+  it("ignores the override on secondary tabs (falls through to mint)", () => {
+    expect(d({ isPrimary: false, resumeOverride: "--resume foo" }).kind).toBe("mint");
+  });
+
+  it("blank override is not treated as an override", () => {
+    // No history, no uuid → mint (override is whitespace-only).
+    expect(d({ resumeOverride: "   " }).kind).toBe("mint");
+  });
+
+  // id-capable: per-tab uuid, repo-root AND worktree.
+  it("id-capable with a stored uuid resumes by id (repo-root)", () => {
+    expect(d({ isRepoRoot: true, storedUuid: "u1" }).kind).toBe("resume-id");
+  });
+
+  it("id-capable with a stored uuid resumes by id (worktree too)", () => {
+    expect(d({ isRepoRoot: false, storedUuid: "u1" }).kind).toBe("resume-id");
+  });
+
+  it("id-capable with no uuid mints a fresh session (repo-root)", () => {
+    expect(d({ isRepoRoot: true }).kind).toBe("mint");
+  });
+
+  it("id-capable mints fresh on a new worktree (no history)", () => {
+    expect(d({ isRepoRoot: false, hasResumableHistory: false }).kind).toBe("mint");
+  });
+
+  it("a failed resume forces a fresh mint, skipping the stale uuid", () => {
+    expect(d({ isRepoRoot: true, storedUuid: "u1", failedResume: true }).kind).toBe("mint");
+  });
+
+  it("secondary id-capable tab mints its OWN session (independent resume)", () => {
+    // Two claude tabs: the secondary doesn't share the primary's session.
+    expect(d({ isPrimary: false, storedUuid: undefined }).kind).toBe("mint");
+    expect(d({ isPrimary: false, storedUuid: "u2" }).kind).toBe("resume-id");
+  });
+
+  // Legacy worktree main tab: had a --continue conversation before per-tab
+  // uuids existed → preserve it rather than orphaning it with a fresh mint.
+  it("legacy worktree primary (history, no uuid) keeps cwd --continue", () => {
+    expect(d({ isRepoRoot: false, isPrimary: true, hasResumableHistory: true, storedUuid: undefined }).kind)
+      .toBe("cwd-resume");
+  });
+
+  it("legacy-continue does NOT apply to secondary id-capable tabs (they mint)", () => {
+    expect(d({ isRepoRoot: false, isPrimary: false, hasResumableHistory: true }).kind).toBe("mint");
+  });
+
+  // cwd-only agents (codex): primary resumes, secondary starts fresh.
+  it("cwd-only agent resumes on the primary worktree tab with history", () => {
+    expect(d({ idCapable: false, isPrimary: true, hasResumableHistory: true }).kind).toBe("cwd-resume");
+  });
+
+  it("cwd-only secondary tab starts fresh (can't address a past session)", () => {
+    expect(d({ idCapable: false, isPrimary: false, hasResumableHistory: true }).kind).toBe("fresh");
+  });
+
+  it("cwd-only agent in repo-root never resumes (shared cwd lasso)", () => {
+    expect(d({ idCapable: false, isRepoRoot: true, isPrimary: true, hasResumableHistory: true }).kind)
+      .toBe("fresh");
+  });
+
+  it("cwd-only worktree primary with no history starts fresh", () => {
+    expect(d({ idCapable: false, isPrimary: true, hasResumableHistory: false }).kind).toBe("fresh");
+  });
+
+  it("cwd-resume is suppressed right after a failed resume", () => {
+    expect(d({ idCapable: false, isPrimary: true, hasResumableHistory: true, failedResume: true }).kind)
+      .toBe("fresh");
   });
 });
 

@@ -25,7 +25,7 @@ import { effectiveSandboxMode } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, decideResume } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
@@ -890,6 +890,36 @@ export function TerminalPane({ ws, tab, active }: Props) {
     );
     const isPrimaryTab = !!tab.is_default || firstAgentOfCli?.id === tab.id;
 
+    // Per-tab resume. EVERY agent tab resumes now (not just the primary):
+    // id-capable agents (claude / gemini) get their own `sessionId` so two
+    // agents in one workspace resume independently; cwd-only agents (codex)
+    // resume on the primary tab and start fresh on secondary tabs (the CLI
+    // can't address a specific past session). decideResume is pure + unit-
+    // tested; here we just map its verdict onto spawnArgsForCli's inputs.
+    // Read the uuid from the LIVE store snapshot, not the captured `tab`
+    // prop — `setTabSessionId` updates it out-of-band and `tabs` is kept
+    // out of this effect's deps (respawning on every tab edit is far worse).
+    const tabNow = wsTabsNow.find(t => t.id === tab.id) as TerminalTab | undefined;
+    const storedUuid = tabNow?.sessionId;
+    const decision = decideResume({
+      isAgent,
+      idCapable,
+      isPrimary: isPrimaryTab,
+      isRepoRoot: !!ws.is_repo_root,
+      hasResumableHistory: !!ws.has_resumable_history,
+      storedUuid,
+      resumeOverride: ws.resume_override ?? undefined,
+      failedResume: failedResumeRef.current,
+    });
+    const resumeOverride = decision.kind === "override" ? decision.override : undefined;
+    const useIdResume = decision.kind === "resume-id" || decision.kind === "mint";
+    const sessionUuid =
+      decision.kind === "mint" ? crypto.randomUUID()
+      : decision.kind === "resume-id" ? storedUuid
+      : undefined;
+    const resumeKnown = decision.kind === "resume-id";
+    const shouldResume = decision.kind === "cwd-resume";
+
     // PTY spawn flow needs the webview to have laid the container out first,
     // otherwise fit.fit() returns 0×0 and we spawn a PTY with garbage dims.
     (async () => {
@@ -900,55 +930,16 @@ export function TerminalPane({ ws, tab, active }: Props) {
       const rows = Math.max(10, term.rows || 30);
 
       try {
-        // Two resume modes, picked by workspace shape:
-        //   REPO-ROOT + id-capable CLI → termic-owned uuid (the shared
-        //     cwd would let --continue lasso external sessions).
-        //   WORKTREE (any CLI) → resume_args, every CLI's CWD-based
-        //     `--continue` / `resume --last` Just Works because the
-        //     worktree has its own dir. Untouched from before this
-        //     id-resume work — worktree auto-resume keeps its prior
-        //     behavior (has_resumable_history gate + fast-fail retry).
-        // Only the AUTO-CREATED default tab resumes; user-added tabs
-        // always start fresh. `cli: "shell"` is a plain login shell,
-        // never an agent, so it's gated out of both resume modes.
-        // isShell / isCustom / isAgent / idCapable / isPrimaryTab were
-        // resolved synchronously above (before the rAF await) to avoid a
-        // stale-snapshot race.
-        // Per-workspace resume override: a user-supplied verbatim resume
-        // block (e.g. `--resume {WORKSPACE_NAME}`) that REPLACES termic's
-        // id-based / cwd-based resume logic. Only on the auto-created default
-        // tab (is_default: true) — never on user-added "+" tabs, even if they
-        // happen to be the first of their CLI type. When active it suppresses
-        // both useIdResume (no uuid mint) and shouldResume (no --continue),
-        // and the agent owns the "session not found" case (claude shows its
-        // resume picker), so the fast-exit fallback never fires.
-        const resumeOverride = isAgent && !!tab.is_default
-          ? (ws.resume_override?.trim() || undefined)
-          : undefined;
-        const useIdResume = !resumeOverride && idCapable && !!ws.is_repo_root && isPrimaryTab;
-        const storedUuid = ws.agent_session_ids?.[tab.cli];
-        let sessionUuid: string | undefined;
-        let resumeKnown = false;
-        if (useIdResume) {
-          // After an in-session fast-exit resume failure we cleared the
-          // stored uuid on disk but the prop hasn't refreshed yet —
-          // failedResumeRef makes the immediate retry skip the stale
-          // storedUuid and mint a brand-new one.
-          const useStored = !!storedUuid && !failedResumeRef.current;
-          sessionUuid = useStored ? storedUuid : crypto.randomUUID();
-          resumeKnown = useStored;
-        }
-        // CWD-resume path: worktrees only. Repo-root never falls here —
-        // its agents either id-resume (above) or start fresh. Same
-        // gating as the original code: history flag set, no in-session
-        // failure, default tab, NOT repo-root.
-        const shouldResume = !resumeOverride
-          && !useIdResume
-          && !ws.is_repo_root
-          && !!ws.has_resumable_history
-          && !failedResumeRef.current
-          && isPrimaryTab;
+        // The per-tab resume decision (resumeOverride / useIdResume /
+        // sessionUuid / resumeKnown / shouldResume) was resolved
+        // synchronously ABOVE, before the rAF await, alongside isPrimaryTab
+        // — reading the live store snapshot there avoids the stale-snapshot
+        // race two same-cli tabs mounting in one frame would otherwise hit.
+        // See decideResume for the strategy table.
         spawnStartedAtRef.current = Date.now();
+        // Override owns its own "session not found" handling (claude shows
+        // the resume picker), so it never counts as a resume for the fast-
+        // exit fallback — only real resume-id / cwd-resume spawns do.
         lastSpawnWasResumeRef.current = shouldResume || (useIdResume && resumeKnown);
         hasHistoryLocalRef.current = false;
         // Agent: resolve the executable through the registry (users can
@@ -1056,20 +1047,18 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // spawn means we have a usable session regardless of whether
           // this one was a resume or a fallback fresh.
           failedResumeRef.current = false;
-          // Repo-root + id-capable: persist the freshly-minted uuid so
-          // the next spawn (this session or after a restart) uses
-          // --resume <uuid> instead of --session-id <uuid>.
-          if (useIdResume && sessionUuid && !resumeKnown) {
-            ipc.workspaceSetAgentSessionId(ws.id, tab.cli, sessionUuid).catch(() => {});
-            // Mirror into the in-memory workspace so a sleep→resume in THIS
-            // same app session sees the uuid (disk write alone won't refresh
-            // the loaded workspace → resume would re-mint every time).
-            useApp.getState().setWorkspaceSessionId(ws.id, tab.cli, sessionUuid);
+          // Just minted a uuid for THIS tab: persist it (per-tab, so each
+          // agent in the workspace resumes independently) so the next spawn
+          // — this session or after a restart — uses --resume <uuid> instead
+          // of --session-id <uuid>. setTabSessionId updates both the
+          // in-memory tab and disk.
+          if (decision.kind === "mint" && sessionUuid) {
+            useApp.getState().setTabSessionId(ws.id, tab.id, sessionUuid);
           }
-          // Worktree: keep the original has_resumable_history flag flow
-          // so the next worktree spawn (this session or after a restart)
-          // appends resume_args. Repo-root never touches this — it lives
-          // exclusively on the id-resume path above.
+          // Cwd-resume agents (codex) + legacy worktree continue: keep the
+          // has_resumable_history flag flow so the next worktree spawn (this
+          // session or after a restart) appends resume_args. id-resume tabs
+          // never touch this — their per-tab uuid carries the resume state.
           if (!useIdResume && !ws.is_repo_root && !ws.has_resumable_history) {
             ipc.workspaceSetHasHistory(ws.id, true).catch(() => {});
           }
@@ -1156,12 +1145,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
             // makes the immediate retry skip resume even before the
             // workspace prop refreshes.
             failedResumeRef.current = true;
-            if (useIdResume && resumeKnown) {
-              // Stored uuid no longer resolves to a live session
-              // (deleted, rotated, …). Drop it; the immediate retry
-              // mints a fresh one.
-              ipc.workspaceSetAgentSessionId(ws.id, tab.cli, "").catch(() => {});
-              useApp.getState().setWorkspaceSessionId(ws.id, tab.cli, "");
+            if (decision.kind === "resume-id") {
+              // This tab's stored uuid no longer resolves to a live session
+              // (deleted, rotated, …). Drop it (per-tab); the immediate
+              // retry mints a fresh one. setTabSessionId clears both the
+              // in-memory tab and disk.
+              useApp.getState().setTabSessionId(ws.id, tab.id, "");
             } else if (!useIdResume) {
               // Worktree rapid-exit on `--continue` = "no conversation"
               // — flip the persistent flag so future spawns skip resume.

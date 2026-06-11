@@ -11,7 +11,6 @@ import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSepa
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
-import { agentDisplayName } from "@/lib/agents";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
@@ -719,8 +718,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const collapsed = useApp(s => s.collapsedWorkspaces[w.id] ?? defaultCollapsed);
   const setWorkspaceCollapsed = useApp(s => s.setWorkspaceCollapsed);
   const setWorkspaceYolo = useApp(s => s.setWorkspaceYolo);
-  const addTab = useApp(s => s.addTab);
-  const registry = useApp(s => s.agents);
+  const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
   const renameTab = useApp(s => s.renameTab);
   const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
   const settledHighlight = usePrefs(s => s.settledHighlight);
@@ -862,16 +860,13 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         onClick={() => {
           setActive(w.id);
           if (terminalTabs.length === 0) {
-            // No terminals yet — launch the default agent; stays collapsed (1 terminal = collapsed by default).
-            const cli = w.cli || "claude";
-            // Custom-command workspaces re-run their launch command and
-            // title the tab with the workspace name (mirrors ensureDefaultTab).
-            const isCustom = cli === "custom";
-            addTab(w.id, {
-              id: crypto.randomUUID(), type: "terminal", cli, is_default: true,
-              title: isCustom ? w.name : agentDisplayName(cli, registry),
-              ...(isCustom && w.custom_command ? { command: w.custom_command } : {}),
-            });
+            // No terminals yet — wake the workspace through the store's
+            // restore/seed path. MUST be ensureDefaultTab, not an inline
+            // addTab: the durable agent tabs (persisted_tabs) are keyed by
+            // tab id, so minting a fresh id here would orphan every stored
+            // session and break auto-resume (it also no-ops ensureDefaultTab
+            // in WorkspaceView, which mounts after this click).
+            ensureDefaultTab(w.id, w.cli || "claude");
           } else {
             if (activeTabId) setActiveTabId(w.id, activeTabId);
             // Only the "click" mode treats a row click on the already
