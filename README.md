@@ -205,25 +205,21 @@ inference rides on your existing Pro / Max plan.
   `~/termic/workspaces/<project>/<name>/`. Run N agents against the same
   branch across tabs; attach to repo root when you don't want a worktree;
   duplicate a worktree to spin up a parallel attempt off the same tip.
-- **Multi-repo workspaces.** Group N repos under one wrapper with shared
-  `CLAUDE.md` / `AGENTS.md`, per-member port forwarding (`$TERMIC_PORT_<MEMBER>`),
-  and one aggregated diff.
+- **Broadcast & Brainstorm.** Send a single prompt to every agent in a workspace concurrently (⇧⌘B). Perfect for multi-agent code reviews, architectural brainstorming, or getting four "second opinions" on a complex bug in seconds.
+- **Config as Code (`.termic.yaml`).** Persist all project-specific settings—setup scripts, run commands, preview URLs, and sandbox allowlists—into a `.termic.yaml` file. Commit it to your repo so your whole team gets the same optimized agent environment instantly.
 - **Per-workspace sandbox** (macOS). Filesystem + network cage via
   `sandbox-exec` and an in-process HTTPS CONNECT proxy with a hostname
   allowlist. Lets the agent run with `--dangerously-skip-permissions`
   safely — the cage is the boundary, not the prompt.
-- **Work-done indicator** that's actually reliable. Per-CLI title classifier
-  (Claude spinner, Gemini's `◇` / `✦` / `✋`, Codex `Working` / `Ready` /
-  `Waiting`) plus OSC 9;4, gated by byte-quiet and content-hash checks so
-  static-title "thinking" doesn't false-fire done. Blue bullet on the tab
-  when a turn finishes, orange bell when the agent is blocked on input,
-  optional OS notification that drops you on the right workspace and tab.
+- **Sidebar Cockpit.** Expand any workspace in the sidebar to see all its active agents, their live work-done indicators, and their agent-managed titles at a glance.
+- **Work-done indicator** that's actually reliable. Per-CLI title classifier (Claude spinner, Gemini's `◇`, etc.) plus OSC 9;4, gated by byte-quiet and content-hash checks. This reliability enabled **opt-in desktop notifications** that only fire when an agent actually finishes a turn.
+- **Message Queues.** Built on top of work-done detection: queue N messages (with optional repeats) to run autonomous "Ralph loop" sessions.
+- **Auto-Resume Everything.** Termic auto-resumes sessions even for repo-root workspaces. The latest update now auto-resumes ALL agent tabs in a workspace, not just the primary one.
 - **Find + edit in-app.** ⌘P fuzzy file finder, ⇧⌘F find-in-files
-  (`git grep`, .gitignore-aware, streams live). CodeMirror 6 editor and
-  side-by-side / unified diff with syntax highlighting. "Send to main"
-  lands the worktree diff in the parent checkout.
-- **Broadcast** a prompt to every agent in a workspace at once (⇧⌘B).
-  **AI review**: open the Review dialog, pick an agent, it gets the diff
+  (`git grep`, .gitignore-aware, streams live). CodeMirror 6 editor with
+  side-by-side / unified diffs and **Markdown preview** (including inline **Mermaid diagrams**).
+- **Fork-style Git UI.** A dedicated staging area inspired by the Fork app. Stage, unstage, and commit without dropping to a terminal.
+- **AI review**: open the Review dialog, pick an agent, it gets the diff
   + a review prompt and starts streaming.
 - **Bring your own agent.** Settings → Agents is an editable registry.
   Drop in aider, opencode, ollama, a shell script — 30 seconds. Claude,

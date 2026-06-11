@@ -976,8 +976,10 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 className={cn(
                   "absolute inset-0 flex items-center justify-center rounded hover:bg-[var(--color-bg-3)]",
                   // A persistent badge (sandbox on OR dangerous YOLO) keeps
-                  // the button visible; otherwise it reveals on row hover.
-                  (w.sandbox_enabled || (!!w.yolo && effectiveSandboxMode(w) !== "enforce"))
+                  // the button visible; unless the collapsed attention/done
+                  // badge is active — it lives in the same slot and the
+                  // status icon would cover it.
+                  (w.sandbox_enabled || (!!w.yolo && effectiveSandboxMode(w) !== "enforce")) && !(collapsed && (hasAttention || hasDone || hasWorking))
                     ? "opacity-100 pointer-events-auto"
                     : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
                   wsRenaming !== null && "pointer-events-none",
