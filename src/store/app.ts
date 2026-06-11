@@ -2,7 +2,7 @@
 // updates (immutable replacements, not in-place mutations).
 
 import { create } from "zustand";
-import type { Project, Workspace, Tab, TerminalTab } from "@/lib/types";
+import type { Project, Workspace, Tab, TerminalTab, PersistedTab } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { focusTerminalTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
@@ -113,12 +113,27 @@ interface AppState {
   closeBottomTab: (wsId: string, tabId: string) => void;
   setActiveBottomTab: (wsId: string, tabId: string) => void;
 
+  /** Restore the workspace's durable agent tabs from `persisted_tabs` if
+   *  any (quit → reopen → everything back, each id-capable tab resuming its
+   *  own session), else seed a single default tab. No-op once the workspace
+   *  already has tabs in memory. */
   ensureDefaultTab: (wsId: string, cli: string) => void;
-  /** Mirror a just-persisted agent session uuid into the in-memory
-   *  workspace so the NEXT spawn in this same app session can resume it
-   *  (the disk write alone doesn't refresh the loaded workspace). Pass
-   *  "" to clear. */
-  setWorkspaceSessionId: (wsId: string, cli: string, uuid: string) => void;
+  /** Recompute the workspace's durable agent-tab list from the current
+   *  in-memory tabs (drops shell / scratch tabs), mirror it onto the
+   *  in-memory workspace, and persist to disk via `workspaceSetTabs`. Call
+   *  after any add / close / reorder / rename so quit-restore stays accurate
+   *  and an X-close is durably forgotten. */
+  syncDurableTabs: (wsId: string) => void;
+  /** Explicit "close & forget": close the tab AND drop the agent from the
+   *  durable set so it does NOT auto-resume on reopen. For secondary tabs
+   *  plain closeTab already forgets; this exists for the one case closeTab
+   *  deliberately keeps durable — the MAIN tab. */
+  forgetTab: (wsId: string, tabId: string) => void;
+  /** Pin (or clear, via "") a single tab's termic-owned session uuid:
+   *  updates the in-memory tab AND its persisted_tabs entry, then persists
+   *  to disk. Keyed by tab id so agents in one workspace resume
+   *  independently. */
+  setTabSessionId: (wsId: string, tabId: string, uuid: string) => void;
   /** Mirror a just-persisted custom launch command into the in-memory
    *  workspace AND any open custom-command tabs so the next PTY respawn
    *  runs the new script (the disk write alone doesn't refresh either). */
@@ -186,6 +201,25 @@ const numOrDefault = (k: string, fallback: number) => {
 const initialSBW = numOrDefault(LS_SBW, 280);
 const initialRPW = numOrDefault(LS_RPW, 280);
 const initialRFH = numOrDefault(LS_RFH, 260);
+
+/** The durable subset of a workspace's tabs, in display order: agent and
+ *  custom-command tabs (these relaunch / resume), but NOT shell / scratch
+ *  terminals (no session to resume). Maps onto the Rust `PersistedTab`. */
+function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
+  return (tabs ?? [])
+    .filter((t): t is TerminalTab => t.type === "terminal" && (t as TerminalTab).cli !== "shell")
+    .map(t => ({
+      id: t.id,
+      cli: t.cli,
+      // Only carry a title when the user renamed it — otherwise the agent
+      // display name is re-derived on restore (and may have changed).
+      title: t.customTitle ? t.title : null,
+      custom_title: !!t.customTitle,
+      is_default: !!t.is_default,
+      command: t.command ?? null,
+      session_id: t.sessionId ?? null,
+    }));
+}
 
 export const useApp = create<AppState>((set, get) => ({
   projects: [],
@@ -461,39 +495,144 @@ export const useApp = create<AppState>((set, get) => ({
     activeBottomTab: { ...s.activeBottomTab, [wsId]: tabId },
   })),
 
-  ensureDefaultTab: (wsId, cli) => set(s => {
-    const list = s.tabs[wsId] || [];
-    if (list.length) return s;
-    // `is_default: true` is the only tab in a workspace that's
-    // allowed to auto-resume the agent's prior session. User-added
-    // tabs (via the "+" button → `addTab`) leave it unset so they
-    // start fresh - otherwise every new tab tries to resume the
-    // same conversation and we get N copies fighting.
-    // Custom-command workspaces run a user-supplied launch command in a
-    // login shell. Seed the tab's `command` from the workspace so the
-    // PTY spawn (and every respawn) re-runs it, and title the tab with
-    // the workspace name rather than a generic "Command".
+  ensureDefaultTab: (wsId, cli) => {
+    const s = get();
+    // Already mounted (visited this session) → leave the live tabs alone.
+    if ((s.tabs[wsId] || []).length) return;
     const ws = s.workspaces.find(w => w.id === wsId);
+    const persisted = ws?.persisted_tabs ?? [];
+
+    // Restore path: a prior session left a durable agent-tab set. Bring
+    // back every tab (not just the primary), each with its own session id
+    // so id-capable agents resume independently. This is the "quit the app,
+    // reopen the workspace, everything is back" behavior.
+    if (persisted.length) {
+      // Repair corruption from older builds: a buggy close path could wipe
+      // then re-seed the default tab, leaving SEVERAL entries all flagged
+      // is_default (each a phantom "main agent"). Restoring all of them spawns
+      // a pile of agents that collide on session ids. There is only ever ONE
+      // main, so dedupe by id and DROP every is_default entry after the first
+      // (real secondary agents are is_default:false and are kept).
+      const seenIds = new Set<string>();
+      let keptDefault = false;
+      const clean = persisted.filter(pt => {
+        if (seenIds.has(pt.id)) return false;
+        seenIds.add(pt.id);
+        if (pt.is_default) {
+          if (keptDefault) return false; // extra phantom main → drop
+          keptDefault = true;
+        }
+        return true;
+      });
+      const wasCorrupt = clean.length !== persisted.length;
+      const restored: TerminalTab[] = clean.map(pt => ({
+        id: pt.id,
+        type: "terminal",
+        cli: pt.cli,
+        // Honor a user rename; otherwise re-derive the display name (the
+        // agent's configured name may have changed since last launch).
+        title: pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli, s.agents),
+        customTitle: !!pt.custom_title,
+        is_default: !!pt.is_default,
+        ...(pt.command ? { command: pt.command } : {}),
+        ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+      }));
+      const active = restored.find(t => t.is_default) ?? restored[0];
+      // When we repaired corruption, overwrite persisted_tabs DIRECTLY with
+      // the cleaned set — can't go through syncDurableTabs, whose merge would
+      // re-add the dropped phantom tabs as "closed-but-durable".
+      const cleaned = wasCorrupt ? durablePersistedTabs(restored) : null;
+      set(state => ({
+        tabs: { ...state.tabs, [wsId]: restored },
+        activeTab: { ...state.activeTab, [wsId]: active?.id ?? "" },
+        ...(cleaned ? {
+          workspaces: state.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: cleaned } : w),
+        } : {}),
+      }));
+      if (cleaned) ipc.workspaceSetTabs(wsId, cleaned).catch(() => {});
+      return;
+    }
+
+    // Seed path: fresh workspace (or a legacy record from before tab
+    // persistence) — create the single default agent tab. Custom-command
+    // workspaces seed the launch command + workspace-name title.
     const isCustom = cli === "custom";
     const title = isCustom ? (ws?.name || "Command") : agentDisplayName(cli, s.agents);
+    // Migrate a legacy per-cli session uuid onto the default tab so
+    // repo-root workspaces created before per-tab uuids keep resuming the
+    // same session. `syncDurableTabs` carries this into `persisted_tabs`
+    // (the Rust merge honors a payload session_id on a tab's first write).
+    const legacyUuid = ws?.agent_session_ids?.[cli];
     const tab: TerminalTab = {
       id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true,
       ...(isCustom && ws?.custom_command ? { command: ws.custom_command } : {}),
+      ...(legacyUuid ? { sessionId: legacyUuid } : {}),
     };
-    return {
-      tabs: { ...s.tabs, [wsId]: [tab] },
-      activeTab: { ...s.activeTab, [wsId]: tab.id },
-    };
-  }),
+    set(state => ({
+      tabs: { ...state.tabs, [wsId]: [tab] },
+      activeTab: { ...state.activeTab, [wsId]: tab.id },
+    }));
+    get().syncDurableTabs(wsId);
+  },
 
-  setWorkspaceSessionId: (wsId, cli, uuid) => set(s => ({
-    workspaces: s.workspaces.map(w => {
-      if (w.id !== wsId) return w;
-      const ids = { ...(w.agent_session_ids || {}) };
-      if (uuid) ids[cli] = uuid; else delete ids[cli];
-      return { ...w, agent_session_ids: ids };
-    }),
-  })),
+  syncDurableTabs: (wsId) => {
+    const st = get();
+    const ws = st.workspaces.find(w => w.id === wsId);
+    if (!ws) return;
+    const live = durablePersistedTabs(st.tabs[wsId]);
+    // Merge rule = the close semantics (issue #23 decision):
+    //   - Every OPEN agent tab is durable → quitting the app restores all.
+    //   - A CLOSED (X-ed) MAIN tab stays durable: closing main is "end it
+    //     for now"; it auto-resumes when the workspace wakes.
+    //   - A CLOSED secondary tab is FORGOTTEN: X on a "+" agent tab is the
+    //     way to get rid of it for good.
+    // Open agents sort first in live order; a closed main keeps the tail.
+    const liveIds = new Set(live.map(t => t.id));
+    const prev = ws.persisted_tabs ?? [];
+    const closed = prev.filter(p => !liveIds.has(p.id) && p.is_default);
+    const next = [...live, ...closed];
+    // Skip the work when nothing changed (avoids workspace-identity churn
+    // that would re-render the sidebar, and a redundant disk write).
+    if (JSON.stringify(prev) === JSON.stringify(next)) return;
+    set(s => ({
+      workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: next } : w),
+    }));
+    ipc.workspaceSetTabs(wsId, next).catch(() => {});
+  },
+
+  forgetTab: (wsId, tabId) => {
+    // Explicit "close & forget": drop the agent from the durable set so it
+    // does NOT come back on reopen, then close it. Order matters — remove from
+    // persisted BEFORE closeTab's syncDurableTabs runs, so the merge can't
+    // re-add it.
+    const ws = get().workspaces.find(w => w.id === wsId);
+    if (ws) {
+      const next = (ws.persisted_tabs ?? []).filter(t => t.id !== tabId);
+      set(s => ({ workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: next } : w) }));
+      ipc.workspaceSetTabs(wsId, next).catch(() => {});
+    }
+    get().closeTab(wsId, tabId);
+  },
+
+  setTabSessionId: (wsId, tabId, uuid) => {
+    const val = uuid || undefined;
+    set(s => {
+      const list = s.tabs[wsId];
+      const nextTabs = list
+        ? list.map(t => (t.id === tabId && t.type === "terminal" ? { ...t, sessionId: val } as Tab : t))
+        : list;
+      return {
+        ...(nextTabs ? { tabs: { ...s.tabs, [wsId]: nextTabs } } : {}),
+        workspaces: s.workspaces.map(w => w.id !== wsId ? w : {
+          ...w,
+          persisted_tabs: (w.persisted_tabs ?? []).map(pt =>
+            pt.id === tabId ? { ...pt, session_id: uuid || null } : pt,
+          ),
+        }),
+      };
+    });
+    ipc.workspaceSetTabSessionId(wsId, tabId, uuid).catch(() => {});
+  },
 
   setWorkspaceYolo: (wsId, yolo) => set(s => ({
     workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, yolo } : w),
@@ -528,23 +667,32 @@ export const useApp = create<AppState>((set, get) => ({
       const next = [...(s.tabs[wsId] || []), tab];
       return { tabs: { ...s.tabs, [wsId]: next }, activeTab: { ...s.activeTab, [wsId]: tab.id } };
     });
+    // Persist the new durable set (a `+` agent tab is restorable; a shell
+    // tab is filtered out by syncDurableTabs).
+    get().syncDurableTabs(wsId);
     // A new terminal tab grabs focus so the user can type immediately.
     // (edit/diff tabs manage their own focus — no terminal to target.)
     if (tab.type === "terminal") focusTerminalTab(tab.id);
   },
 
-  reorderTab: (wsId, tabId, toIndex) => set(s => {
-    const list = s.tabs[wsId] || [];
-    const from = list.findIndex(t => t.id === tabId);
-    if (from < 0) return s;
-    const without = list.filter(t => t.id !== tabId);
-    const dest = Math.max(0, Math.min(toIndex, without.length));
-    without.splice(dest, 0, list[from]);
-    // Bail if the order is unchanged — avoids a needless render + the
-    // tabs identity churn that would defeat tight selectors.
-    if (without.every((t, i) => t.id === list[i].id)) return s;
-    return { tabs: { ...s.tabs, [wsId]: without } };
-  }),
+  reorderTab: (wsId, tabId, toIndex) => {
+    let changed = false;
+    set(s => {
+      const list = s.tabs[wsId] || [];
+      const from = list.findIndex(t => t.id === tabId);
+      if (from < 0) return s;
+      const without = list.filter(t => t.id !== tabId);
+      const dest = Math.max(0, Math.min(toIndex, without.length));
+      without.splice(dest, 0, list[from]);
+      // Bail if the order is unchanged — avoids a needless render + the
+      // tabs identity churn that would defeat tight selectors.
+      if (without.every((t, i) => t.id === list[i].id)) return s;
+      changed = true;
+      return { tabs: { ...s.tabs, [wsId]: without } };
+    });
+    // Persist the new order so restore preserves it.
+    if (changed) get().syncDurableTabs(wsId);
+  },
 
   closeTab: (wsId, tabId) => {
    let focusId = "";
@@ -586,6 +734,11 @@ export const useApp = create<AppState>((set, get) => ({
     }
     return update as any;
    });
+   // Re-sync the durable set: a closed SECONDARY tab is dropped (X = forget
+   // it), while a closed MAIN tab stays durable and auto-resumes when the
+   // workspace wakes — see the merge rule in syncDurableTabs. No-op if
+   // nothing changed.
+   get().syncDurableTabs(wsId);
    if (focusId) focusTerminalTab(focusId);
   },
 
@@ -708,22 +861,29 @@ export const useApp = create<AppState>((set, get) => ({
     return { tabs: { ...s.tabs, [wsId]: next } };
   }),
 
-  renameTab: (wsId, tabId, title) => set(s => {
-    const list = s.tabs[wsId] || [];
-    const trimmed = title.trim();
-    if (!trimmed) return s;
-    // Manual rename = locked title. Subsequent OSC 0/2 emissions
-    // from the running program won't overwrite it (`customTitle` is
-    // the gate the TabBar / setTabLiveTitle path checks).
-    const next = list.map(t => t.id === tabId ? { ...t, title: trimmed, customTitle: true } as Tab : t);
-    return { tabs: { ...s.tabs, [wsId]: next } };
-  }),
+  renameTab: (wsId, tabId, title) => {
+    set(s => {
+      const list = s.tabs[wsId] || [];
+      const trimmed = title.trim();
+      if (!trimmed) return s;
+      // Manual rename = locked title. Subsequent OSC 0/2 emissions
+      // from the running program won't overwrite it (`customTitle` is
+      // the gate the TabBar / setTabLiveTitle path checks).
+      const next = list.map(t => t.id === tabId ? { ...t, title: trimmed, customTitle: true } as Tab : t);
+      return { tabs: { ...s.tabs, [wsId]: next } };
+    });
+    // Persist the renamed title so it survives restart.
+    get().syncDurableTabs(wsId);
+  },
 
-  clearTabCustomTitle: (wsId, tabId) => set(s => {
-    const list = s.tabs[wsId] || [];
-    const next = list.map(t => t.id !== tabId ? t : { ...t, customTitle: false } as Tab);
-    return { tabs: { ...s.tabs, [wsId]: next } };
-  }),
+  clearTabCustomTitle: (wsId, tabId) => {
+    set(s => {
+      const list = s.tabs[wsId] || [];
+      const next = list.map(t => t.id !== tabId ? t : { ...t, customTitle: false } as Tab);
+      return { tabs: { ...s.tabs, [wsId]: next } };
+    });
+    get().syncDurableTabs(wsId);
+  },
 
   setTabLiveTitle: (wsId, tabId, liveTitle) => set(s => {
     const list = s.tabs[wsId] || [];

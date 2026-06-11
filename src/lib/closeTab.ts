@@ -27,18 +27,24 @@ export async function requestCloseTab(wsId: string, tabId: string) {
     });
     if (!ok) return;
   }
-  // Closing an agent (or custom-command) terminal kills its running
-  // session — confirm so an accidental ⌘W doesn't drop the conversation.
+  // Agent-tab close semantics (issue #23): the MAIN agent tab stays durable
+  // — closing it just ends the process and the session auto-resumes when the
+  // workspace wakes, so it's not destructive. A SECONDARY ("+") agent tab is
+  // FORGOTTEN on close — X is the way to get rid of it for good — so that
+  // close is destructive and the copy says so.
   // Plain shells (cli === "shell") close instantly; there's nothing to lose.
   if (tab?.type === "terminal" && tab.cli !== "shell") {
     const label = tab.cli === "custom"
       ? (tab.title || "this command")
       : agentDisplayName(tab.cli, useApp.getState().agents);
+    const isMain = !!tab.is_default;
     const ok = await useUI.getState().askConfirm({
       title: `Close ${label}?`,
-      message: "Closing this tab ends the running session.",
+      message: isMain
+        ? "Stops the running process. The session resumes when you reopen the workspace."
+        : "Ends this agent's session. It won't be restored when the workspace reopens.",
       confirmLabel: "Close tab",
-      destructive: true,
+      destructive: !isMain,
     });
     if (!ok) return;
   }

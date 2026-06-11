@@ -198,6 +198,76 @@ export function spawnCommandForCli(cli: string): string {
   return findAgent(cli).command;
 }
 
+/** Per-tab resume decision. Pure — given the tab/workspace shape it picks
+ *  exactly one resume strategy. Every agent tab (primary AND secondary)
+ *  resumes now; the per-tab `storedUuid` is what makes that safe, so two
+ *  agents in one workspace never share a session.
+ *
+ *    override    → user's verbatim resume block (primary tab only).
+ *    resume-id   → `--resume {storedUuid}` (id-capable, uuid already minted).
+ *    mint        → `--session-id {newUuid}` (id-capable, first spawn — caller
+ *                  generates the uuid and persists it once the spawn survives).
+ *    cwd-resume  → `resume_args` (`--continue` / `codex resume --last`).
+ *                  Cwd-based resume can't address a specific past session, so
+ *                  it's gated to the PRIMARY tab: secondary tabs of a
+ *                  cwd-only CLI (codex) would otherwise all grab the same
+ *                  latest session, so they start fresh instead.
+ *    fresh       → no resume.
+ */
+export type ResumeDecision =
+  | { kind: "override"; override: string }
+  | { kind: "resume-id" }
+  | { kind: "mint" }
+  | { kind: "cwd-resume" }
+  | { kind: "fresh" };
+
+export function decideResume(opts: {
+  /** Is this an agent tab at all (false for shell / custom — those are fresh). */
+  isAgent: boolean;
+  /** `cliSupportsIdSession(cli)` — claude / gemini true, codex / agy false. */
+  idCapable: boolean;
+  /** Primary = the auto-created default tab OR the first tab of its cli.
+   *  Gates the override + cwd-resume paths (see above). */
+  isPrimary: boolean;
+  isRepoRoot: boolean;
+  hasResumableHistory: boolean;
+  /** This tab's own stored session uuid (TerminalTab.sessionId), if minted. */
+  storedUuid?: string;
+  /** Raw `ws.resume_override` (gated to the primary tab here). */
+  resumeOverride?: string;
+  /** A resume attempt for this tab just rapid-exited → skip the stored
+   *  uuid / cwd-resume and start fresh on the immediate retry. */
+  failedResume: boolean;
+}): ResumeDecision {
+  if (!opts.isAgent) return { kind: "fresh" };
+
+  const override = opts.isPrimary ? opts.resumeOverride?.trim() : undefined;
+  if (override) return { kind: "override", override };
+
+  if (opts.idCapable) {
+    // Legacy worktree main tab: a pre-per-tab-uuid workspace that already
+    // has a `--continue` conversation but no minted uuid. Keep continuing
+    // it (cwd-resume below) rather than minting a brand-new session that
+    // would orphan the existing one. Brand-new worktrees (no history yet)
+    // skip this and mint straight away — cleaner, and no `--continue`
+    // ambiguity once a second agent session exists in the same cwd.
+    const legacyWorktreeContinue =
+      !opts.isRepoRoot && opts.isPrimary && opts.hasResumableHistory && !opts.storedUuid;
+    if (!legacyWorktreeContinue) {
+      if (opts.storedUuid && !opts.failedResume) return { kind: "resume-id" };
+      return { kind: "mint" };
+    }
+  }
+
+  // Cwd-based resume: worktree only (repo-root's shared cwd would lasso
+  // unrelated sessions), primary tab only, and only when there's a real
+  // session on disk and we're not retrying a just-failed resume.
+  if (!opts.isRepoRoot && opts.isPrimary && opts.hasResumableHistory && !opts.failedResume) {
+    return { kind: "cwd-resume" };
+  }
+  return { kind: "fresh" };
+}
+
 /** Compose the full args list for a spawn. Two resume modes, picked by
  *  the workspace shape (worktree vs repo-root) — the caller decides
  *  which mode applies and passes the right inputs:

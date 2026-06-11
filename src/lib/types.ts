@@ -173,6 +173,31 @@ export interface Workspace {
    *  (`--continue`) logic. Lets a repo-root workspace resume a named
    *  session, e.g. `--resume {WORKSPACE_NAME}`. Null/empty = default. */
   resume_override?: string | null;
+  /** Durable agent tabs for this workspace, in display order. Rewritten by
+   *  `workspaceSetTabs` on every tab add / close / reorder / rename, and
+   *  read on app launch to restore the full agent-tab set (not just the
+   *  primary). Each id-capable tab carries its own `session_id` so several
+   *  agents in one workspace resume independently. Shell / scratch tabs are
+   *  never listed here — they have no session to resume. Closing a tab with
+   *  its X drops it from this list (forget); quitting the app leaves it
+   *  intact (restore). */
+  persisted_tabs?: PersistedTab[];
+}
+
+/** One durable agent tab persisted on a workspace. Mirror of
+ *  `PersistedTab` in src-tauri/src/lib.rs. */
+export interface PersistedTab {
+  id: string;
+  cli: string;
+  title?: string | null;
+  custom_title?: boolean;
+  is_default?: boolean;
+  /** Launch command for `cli === "custom"` tabs (re-run on restore). */
+  command?: string | null;
+  /** termic-owned per-tab session uuid for id-capable agents
+   *  (claude / gemini). Null for cwd-resume agents (codex) and tabs that
+   *  have not minted a session yet. Owned by `workspaceSetTabSessionId`. */
+  session_id?: string | null;
 }
 
 /** Per-member input for `workspace_create_multi`. */
@@ -458,6 +483,13 @@ export interface TerminalTab extends BaseTab {
    *  (otherwise multi-tab parallelism collapses into "every new tab tries
    *  to resume the same session"). */
   is_default?: boolean;
+  /** termic-owned session uuid for THIS tab (id-capable agents only:
+   *  claude / gemini). Restored from the workspace's `persisted_tabs` on
+   *  launch and minted on first spawn otherwise. Distinct per tab so two
+   *  agents in one workspace resume independently — the primary tab is no
+   *  longer the only resumable one. Cleared (undefined) when a resume
+   *  attempt rapid-exits (the stored session no longer resolves). */
+  sessionId?: string;
   /** iTerm2-style work-progress state. Authoritative signals: OSC 9;4
    *  (Claude progress), OSC 133;C/D (FinalTerm semantic prompts), OSC 0
    *  title classifier (gemini/codex). `working` → spinner; `done` →

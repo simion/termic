@@ -277,6 +277,64 @@ pub struct Workspace {
     /// fast-exit fallback fires for this path. None = default behavior.
     #[serde(default)]
     pub resume_override: Option<String>,
+    /// Durable agent tabs for this workspace, in display order. Written
+    /// whenever the in-memory tab set changes (add / close / reorder /
+    /// rename) via `workspace_set_tabs`. On the NEXT app launch the
+    /// frontend restores this whole set (every agent tab, not just the
+    /// primary) and each id-capable tab resumes its own `session_id`.
+    /// Shell / scratch terminals are intentionally NOT persisted here
+    /// (they have no session to resume). Closing a tab with its X removes
+    /// it from this list (forget); quitting the app leaves it intact
+    /// (restore) — that asymmetry is the whole point.
+    #[serde(default)]
+    pub persisted_tabs: Vec<PersistedTab>,
+}
+
+/// One durable agent tab. `session_id` is termic's own per-tab session
+/// uuid for id-capable agents (claude / gemini) — distinct per tab so a
+/// workspace can run several agents side by side and resume each one
+/// independently. None for cwd-resume agents (codex) and tabs that have
+/// not yet minted a session.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct PersistedTab {
+    pub id: String,
+    pub cli: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub custom_title: bool,
+    #[serde(default)]
+    pub is_default: bool,
+    /// Launch command for `cli == "custom"` tabs (re-run on restore).
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Per-tab termic-owned session uuid. Owned solely by
+    /// `workspace_set_tab_session_id`; `workspace_set_tabs` PRESERVES it
+    /// across rewrites (matched by tab id) so a metadata update never
+    /// clobbers a freshly minted session.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// Frontend payload for `workspace_set_tabs`. `session_id` is only honored
+/// when there is NO existing record for the tab id (the migration / first
+/// write case) — otherwise the stored uuid wins, so the two writers
+/// (`set_tabs` for layout, `set_tab_session_id` for the uuid) can't clobber
+/// a minted session by racing.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PersistedTabInput {
+    pub id: String,
+    pub cli: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub custom_title: bool,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 impl Workspace {
@@ -1423,6 +1481,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         composition,
         custom_command,
         resume_override: None,
+        persisted_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1604,6 +1663,7 @@ fn workspace_import_worktree(
         composition: Vec::new(),
         custom_command: None,
         resume_override: None,
+        persisted_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1839,6 +1899,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         // pre-set custom command (that path is repo-root only).
         custom_command: None,
         resume_override: None,
+        persisted_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2205,6 +2266,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         composition,
         custom_command: None,
         resume_override: None,
+        persisted_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2426,6 +2488,85 @@ fn workspace_set_resume_override(id: String, command: String) -> Result<Workspac
     w.resume_override = if cmd.is_empty() { None } else { Some(cmd) };
     save_workspace(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
+}
+
+/// Replace a workspace's durable agent-tab list (metadata + order). The
+/// per-tab `session_id` is PRESERVED across the rewrite by matching tab
+/// ids against the existing record, so a layout change (rename, reorder,
+/// add, close) never wipes a minted session. A tab id absent from `tabs`
+/// is dropped entirely — that's how closing a tab with its X forgets the
+/// agent. Idempotent: rewriting the identical list is a cheap no-op (no
+/// disk write).
+#[tauri::command]
+fn workspace_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    // Carry forward each surviving tab's session uuid by id.
+    let prior: std::collections::HashMap<String, Option<String>> = w
+        .persisted_tabs
+        .iter()
+        .map(|t| (t.id.clone(), t.session_id.clone()))
+        .collect();
+    let next: Vec<PersistedTab> = tabs
+        .into_iter()
+        .map(|t| PersistedTab {
+            // Stored uuid wins; only fall back to the payload's session_id
+            // for a tab we've never seen (migrating a legacy per-cli uuid
+            // onto the default tab on its first persist).
+            session_id: prior.get(&t.id).cloned().flatten().or(t.session_id),
+            id: t.id,
+            cli: t.cli,
+            title: t.title,
+            custom_title: t.custom_title,
+            is_default: t.is_default,
+            command: t.command,
+        })
+        .collect();
+    // No-op when nothing actually changed (compare the serialized shape;
+    // session_id lives outside the input so equal metadata + preserved
+    // uuids means an identical record).
+    let same = next.len() == w.persisted_tabs.len()
+        && next.iter().zip(w.persisted_tabs.iter()).all(|(a, b)| {
+            a.id == b.id
+                && a.cli == b.cli
+                && a.title == b.title
+                && a.custom_title == b.custom_title
+                && a.is_default == b.is_default
+                && a.command == b.command
+                && a.session_id == b.session_id
+        });
+    if same {
+        return Ok(());
+    }
+    w.persisted_tabs = next;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pin (or clear) the termic-owned session uuid for a single durable tab.
+/// Mirrors `workspace_set_agent_session_id` but keyed by TAB id, so two
+/// agent tabs in the same workspace resume independently. Called after a
+/// freshly minted spawn survives the rapid-exit window; an empty uuid
+/// clears the slot (the stored session no longer resolves). No-op if the
+/// tab is not (yet) persisted or the value is unchanged.
+#[tauri::command]
+fn workspace_set_tab_session_id(id: String, tab_id: String, uuid: String) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let tab = match w.persisted_tabs.iter_mut().find(|t| t.id == tab_id) {
+        Some(t) => t,
+        // The tab isn't in the durable set yet (set_tabs lands right after
+        // a mint on a brand-new tab). Not an error — the eventual set_tabs
+        // call records it and a later mint re-pins. Swallow quietly.
+        None => return Ok(()),
+    };
+    let next = if uuid.is_empty() { None } else { Some(uuid) };
+    if tab.session_id == next {
+        return Ok(());
+    }
+    tab.session_id = next;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Newest-first list of macOS Sandbox denials touching the workspace
@@ -6122,6 +6263,7 @@ pub fn run() {
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, workspace_recent_denials,
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
+            workspace_set_tabs, workspace_set_tab_session_id,
             workspace_grep_start, workspace_grep_cancel,
             workspace_spotlight_start, workspace_spotlight_stop, workspace_spotlight_resync, workspace_spotlight_status,
             workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,

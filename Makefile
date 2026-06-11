@@ -83,7 +83,10 @@ doctor: ## Verify the dev env without installing anything (CI-friendly, exits no
 # ─── dev ──────────────────────────────────────────────────────────────
 
 dev: ## Run termic in dev mode (Vite HMR + Rust auto-rebuild).
-	@npm run tauri:dev
+	@# Run dev.mjs directly (not via `npm run`): npm 11 swallows Ctrl+C and
+	@# orphans the tauri/cargo/app subtree. Direct exec makes node the
+	@# process-group leader so dev.mjs's signal handler can tear the group down.
+	@node scripts/dev.mjs
 .PHONY: dev
 
 run: dev ## Alias for `make dev`.

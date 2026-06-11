@@ -16,6 +16,11 @@ import { initModKeyClass } from "@/lib/modKeyClass";
 // shortcuts; we don't want browser-style "Reload"/"Inspect" menus showing.
 window.addEventListener("contextmenu", (e) => e.preventDefault());
 
+// Boot marker: lets us confirm a webview reload actually picked up the latest
+// frontend bundle (Vite HMR does NOT hot-apply store changes). Grep the debug
+// log for this tag after ⌘R; if it's missing, you're on stale code.
+logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
+
 // Track Cmd/Ctrl held → `termic-mod-held` on <html>, so terminal links show
 // the hand cursor only while the modifier is down (the underline stays on
 // plain hover). See modKeyClass.ts + index.css.

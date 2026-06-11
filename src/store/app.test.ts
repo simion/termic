@@ -9,6 +9,8 @@ vi.mock("@/lib/ipc", () => ({
   workspacesList: vi.fn().mockResolvedValue([]),
   settingsLoad: vi.fn().mockResolvedValue({ agents: [] }),
   detectClis: vi.fn().mockResolvedValue([]),
+  workspaceSetTabs: vi.fn().mockResolvedValue(undefined),
+  workspaceSetTabSessionId: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/tabFocus", () => ({
@@ -20,7 +22,8 @@ vi.mock("@/lib/agents", () => ({
 }));
 
 import { useApp } from "@/store/app";
-import type { Tab, TerminalTab } from "@/lib/types";
+import * as ipc from "@/lib/ipc";
+import type { Tab, TerminalTab, Workspace, PersistedTab } from "@/lib/types";
 
 // ── helpers ───────────────────────────────────────────────────────────
 
@@ -47,6 +50,15 @@ function addTab(wsId: string, tab: Tab) {
   }));
 }
 
+function makeWs(overrides: Partial<Workspace> = {}): Workspace {
+  return {
+    id: "ws1", project_id: "p1", name: "Feature Foo", branch: "feature/foo",
+    base_branch: "main", path: "/x/ws1", cli: "claude", port: 1420,
+    created: "2024-01-01", archived: false,
+    ...overrides,
+  } as Workspace;
+}
+
 beforeEach(() => {
   // Reset store to clean state before each test.
   useApp.setState({
@@ -58,6 +70,7 @@ beforeEach(() => {
     projects: [],
     agents: [],
   });
+  vi.clearAllMocks();
 });
 
 // ── setWorkState ──────────────────────────────────────────────────────
@@ -290,5 +303,242 @@ describe("reorderTab", () => {
     const before = ids(wsId);
     useApp.getState().reorderTab(wsId, "nope", 0);
     expect(ids(wsId)).toEqual(before);
+  });
+});
+
+// ── persist + restore agent tabs (issue #23) ──────────────────────────
+
+describe("ensureDefaultTab — seed / restore / migrate", () => {
+  it("seeds a single default agent tab when nothing is persisted", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+
+    const tabs = useApp.getState().tabs["ws1"] as TerminalTab[];
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].cli).toBe("claude");
+    expect(tabs[0].is_default).toBe(true);
+    // The seed is persisted so a later quit-restore brings it back.
+    expect(ipc.workspaceSetTabs).toHaveBeenCalledWith("ws1", expect.arrayContaining([
+      expect.objectContaining({ id: tabs[0].id, cli: "claude", is_default: true }),
+    ]));
+  });
+
+  it("restores the full persisted agent-tab set, in order, with sessions", () => {
+    const persisted: PersistedTab[] = [
+      { id: "t1", cli: "claude", is_default: true, session_id: "u1" },
+      { id: "t2", cli: "codex", custom_title: true, title: "Reviewer" },
+    ];
+    useApp.setState({ workspaces: [makeWs({ persisted_tabs: persisted })] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+
+    const tabs = useApp.getState().tabs["ws1"] as TerminalTab[];
+    expect(tabs.map(t => t.id)).toEqual(["t1", "t2"]);
+    expect(tabs[0].sessionId).toBe("u1");
+    expect(tabs[0].is_default).toBe(true);
+    expect(tabs[1].cli).toBe("codex");
+    expect(tabs[1].customTitle).toBe(true);
+    expect(tabs[1].title).toBe("Reviewer");
+    // Active tab is the default one.
+    expect(useApp.getState().activeTab["ws1"]).toBe("t1");
+    // Restore reads existing on-disk state — it must NOT re-persist.
+    expect(ipc.workspaceSetTabs).not.toHaveBeenCalled();
+  });
+
+  it("re-derives the title for tabs the user never renamed", () => {
+    const persisted: PersistedTab[] = [
+      { id: "t1", cli: "gemini", is_default: true, custom_title: false, title: "stale" },
+    ];
+    useApp.setState({ workspaces: [makeWs({ persisted_tabs: persisted })] });
+    useApp.getState().ensureDefaultTab("ws1", "gemini");
+
+    const tabs = useApp.getState().tabs["ws1"] as TerminalTab[];
+    // agentDisplayName is mocked to echo the cli id, so non-renamed tabs
+    // pick up the fresh display name rather than the stale persisted one.
+    expect(tabs[0].title).toBe("gemini");
+    expect(tabs[0].customTitle).toBe(false);
+  });
+
+  it("migrates a legacy per-cli session uuid onto the default tab", () => {
+    useApp.setState({ workspaces: [makeWs({ agent_session_ids: { claude: "legacy-uuid" } })] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+
+    const tabs = useApp.getState().tabs["ws1"] as TerminalTab[];
+    expect(tabs[0].sessionId).toBe("legacy-uuid");
+    // The migrated uuid is carried into the persisted payload (the Rust
+    // merge honors a payload session_id on a tab's first write).
+    expect(ipc.workspaceSetTabs).toHaveBeenCalledWith("ws1", [
+      expect.objectContaining({ id: tabs[0].id, session_id: "legacy-uuid" }),
+    ]);
+  });
+
+  it("repairs corrupted persisted_tabs with multiple is_default entries", () => {
+    // Wreckage from older builds: 4 phantom "main" tabs all is_default.
+    const corrupt: PersistedTab[] = [
+      { id: "t1", cli: "claude", is_default: true, session_id: "s1" },
+      { id: "t2", cli: "claude", is_default: true, session_id: "s2" },
+      { id: "t3", cli: "claude", is_default: true, session_id: "s3" },
+      { id: "t4", cli: "claude", is_default: true, session_id: "s4" },
+    ];
+    useApp.setState({ workspaces: [makeWs({ persisted_tabs: corrupt })] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+
+    // Only the first default survives → ONE agent restored, not four.
+    const tabs = useApp.getState().tabs["ws1"] as TerminalTab[];
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].id).toBe("t1");
+    expect(tabs[0].sessionId).toBe("s1");
+    // And the repaired shape is written back to disk.
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    expect(ws.persisted_tabs!.map(t => t.id)).toEqual(["t1"]);
+  });
+
+  it("keeps real secondary (non-default) agents during repair", () => {
+    const mixed: PersistedTab[] = [
+      { id: "main", cli: "claude", is_default: true, session_id: "m" },
+      { id: "extra-main", cli: "claude", is_default: true, session_id: "x" }, // corruption
+      { id: "reviewer", cli: "codex", is_default: false },                    // legit secondary
+    ];
+    useApp.setState({ workspaces: [makeWs({ persisted_tabs: mixed })] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+
+    const tabs = useApp.getState().tabs["ws1"] as TerminalTab[];
+    expect(tabs.map(t => t.id)).toEqual(["main", "reviewer"]);
+  });
+
+  it("is a no-op when the workspace already has live tabs", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    const tab = makeTermTab({ id: "live" });
+    addTab("ws1", tab);
+    vi.clearAllMocks();
+
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+
+    expect(useApp.getState().tabs["ws1"].map(t => t.id)).toEqual(["live"]);
+    expect(ipc.workspaceSetTabs).not.toHaveBeenCalled();
+  });
+});
+
+describe("durable persistence on tab mutations (issue #23)", () => {
+  function lastSetTabsPayload(): PersistedTab[] {
+    const calls = vi.mocked(ipc.workspaceSetTabs).mock.calls;
+    return calls[calls.length - 1][1] as PersistedTab[];
+  }
+
+  it("addTab persists the durable set and excludes shell tabs", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "a", cli: "claude" }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "b", cli: "codex" }));
+    expect(lastSetTabsPayload().map(t => t.id)).toEqual(["a", "b"]);
+
+    // A scratch shell tab is ephemeral — never persisted.
+    useApp.getState().addTab("ws1", makeTermTab({ id: "sh", cli: "shell" }));
+    expect(lastSetTabsPayload().map(t => t.id)).toEqual(["a", "b"]);
+    // And the in-memory workspace mirror agrees.
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    expect(ws.persisted_tabs!.map(t => t.id)).toEqual(["a", "b"]);
+  });
+
+  it("closeTab on the MAIN tab keeps it durable (X = end for now → resumes on reopen)", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "main", cli: "claude", is_default: true }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "b", cli: "codex" }));
+    // Give main a minted session, then close it.
+    useApp.getState().setTabSessionId("ws1", "main", "sess-main");
+    useApp.getState().closeTab("ws1", "main");
+
+    // main is gone from the live tabs...
+    expect(useApp.getState().tabs["ws1"].map(t => t.id)).toEqual(["b"]);
+    // ...but still in the durable set WITH its session, so reopening resumes it.
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    const persistedMain = ws.persisted_tabs!.find(t => t.id === "main");
+    expect(persistedMain).toBeTruthy();
+    expect(persistedMain!.session_id).toBe("sess-main");
+  });
+
+  it("closeTab on a SECONDARY tab forgets it (X = get rid of it for good)", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "main", cli: "claude", is_default: true }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "extra", cli: "claude" }));
+    useApp.getState().setTabSessionId("ws1", "extra", "sess-extra");
+
+    useApp.getState().closeTab("ws1", "extra");
+
+    expect(useApp.getState().tabs["ws1"].map(t => t.id)).toEqual(["main"]);
+    // Dropped from the durable set — it will NOT be restored on reopen.
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    expect(ws.persisted_tabs!.map(t => t.id)).toEqual(["main"]);
+  });
+
+  it("closing the LAST (main) tab keeps it durable so the workspace resumes on reopen", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "only", cli: "claude", is_default: true }));
+    useApp.getState().setTabSessionId("ws1", "only", "sess-only");
+
+    useApp.getState().closeTab("ws1", "only");
+
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    expect(ws.persisted_tabs!.map(t => t.id)).toEqual(["only"]);
+    expect(ws.persisted_tabs![0].session_id).toBe("sess-only");
+  });
+
+  it("forgetTab drops the agent from the durable set (explicit close & forget)", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "a", cli: "claude" }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "b", cli: "codex" }));
+
+    useApp.getState().forgetTab("ws1", "b");
+
+    expect(useApp.getState().tabs["ws1"].map(t => t.id)).toEqual(["a"]);
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    expect(ws.persisted_tabs!.map(t => t.id)).toEqual(["a"]);
+  });
+
+  it("renameTab persists the new custom title", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "a", cli: "claude" }));
+
+    useApp.getState().renameTab("ws1", "a", "My Tab");
+
+    const entry = lastSetTabsPayload().find(t => t.id === "a")!;
+    expect(entry.custom_title).toBe(true);
+    expect(entry.title).toBe("My Tab");
+  });
+
+  it("reorderTab persists the new order", () => {
+    useApp.setState({ workspaces: [makeWs()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "a", cli: "claude" }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "b", cli: "codex" }));
+
+    useApp.getState().reorderTab("ws1", "a", 1);
+
+    expect(lastSetTabsPayload().map(t => t.id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("setTabSessionId", () => {
+  it("updates the tab, the persisted entry, and the disk", () => {
+    useApp.setState({ workspaces: [makeWs({ persisted_tabs: [{ id: "a", cli: "claude", is_default: true }] })] });
+    addTab("ws1", makeTermTab({ id: "a", cli: "claude" }));
+
+    useApp.getState().setTabSessionId("ws1", "a", "minted-uuid");
+
+    const tab = useApp.getState().tabs["ws1"].find(t => t.id === "a") as TerminalTab;
+    expect(tab.sessionId).toBe("minted-uuid");
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    expect(ws.persisted_tabs!.find(t => t.id === "a")!.session_id).toBe("minted-uuid");
+    expect(ipc.workspaceSetTabSessionId).toHaveBeenCalledWith("ws1", "a", "minted-uuid");
+  });
+
+  it("clears the session uuid when given an empty string", () => {
+    useApp.setState({ workspaces: [makeWs({ persisted_tabs: [{ id: "a", cli: "claude", session_id: "old" }] })] });
+    addTab("ws1", makeTermTab({ id: "a", cli: "claude", sessionId: "old" }));
+
+    useApp.getState().setTabSessionId("ws1", "a", "");
+
+    const tab = useApp.getState().tabs["ws1"].find(t => t.id === "a") as TerminalTab;
+    expect(tab.sessionId).toBeUndefined();
+    const ws = useApp.getState().workspaces.find(w => w.id === "ws1")!;
+    expect(ws.persisted_tabs!.find(t => t.id === "a")!.session_id).toBeNull();
+    expect(ipc.workspaceSetTabSessionId).toHaveBeenCalledWith("ws1", "a", "");
   });
 });
