@@ -4413,7 +4413,7 @@ dependencies = [
 
 [[package]]
 name = "termic"
-version = "0.10.10"
+version = "0.10.11"
 dependencies = [
  "anyhow",
  "chrono",
