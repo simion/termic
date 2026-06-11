@@ -112,32 +112,49 @@ jobs:
             ~/.cargo/git
           key: cargo-${{ runner.os }}-universal-${{ hashFiles('src-tauri/Cargo.lock') }}
       - run: npm ci
-      - name: Write App Store Connect API key
-        # The `secrets` context is not allowed in step `if:` expressions
-        # (the whole workflow fails to parse - this killed v0.10.10's first
-        # run at 0s). Gate in the shell instead. The key PATH is exported
-        # via GITHUB_ENV because `env.HOME` does not exist in workflow
-        # expressions either (it would have rendered as "/.appstoreconnect").
+      - name: Configure Apple signing & notarization
+        # Three constraints shape this step:
+        #   1. `secrets` is not allowed in step `if:` expressions - the
+        #      whole workflow fails to parse (killed v0.10.10's first run
+        #      at 0s). Gate in the shell instead.
+        #   2. tauri treats SET-BUT-EMPTY APPLE_* env vars as "sign with
+        #      this", so the build step must not see them at all until the
+        #      secrets exist. Forward each var via GITHUB_ENV only when
+        #      configured; fall back to ad-hoc signing ('-') meanwhile.
+        #   3. `env.HOME` does not exist in workflow expressions - export
+        #      the API-key PATH from the shell, where $HOME is real.
         env:
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-          APPLE_API_KEY:         ${{ secrets.APPLE_API_KEY }}
+          APPLE_CERTIFICATE:          ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY:     ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY:              ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER:           ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT:      ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
-          if [ -z "$APPLE_API_KEY" ]; then
-            echo "No App Store Connect key configured; skipping notarization setup."
-            exit 0
+          addenv() { printf '%s<<__TERMIC_EOF__\n%s\n__TERMIC_EOF__\n' "$1" "$2" >> "$GITHUB_ENV"; }
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "Apple certificate configured; Developer ID signing."
+            addenv APPLE_CERTIFICATE          "$APPLE_CERTIFICATE"
+            addenv APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+            addenv APPLE_SIGNING_IDENTITY     "${APPLE_SIGNING_IDENTITY:--}"
+          else
+            echo "No Apple certificate secret; ad-hoc signing ('-')."
+            addenv APPLE_SIGNING_IDENTITY "-"
           fi
-          mkdir -p ~/.appstoreconnect/private_keys
-          printf '%s' "$APPLE_API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_"$APPLE_API_KEY".p8
-          echo "APPLE_API_KEY_PATH=$HOME/.appstoreconnect/private_keys/AuthKey_$APPLE_API_KEY.p8" >> "$GITHUB_ENV"
+          if [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_KEY_CONTENT" ]; then
+            echo "App Store Connect key configured; notarization on."
+            mkdir -p ~/.appstoreconnect/private_keys
+            printf '%s' "$APPLE_API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_"$APPLE_API_KEY".p8
+            addenv APPLE_API_KEY      "$APPLE_API_KEY"
+            addenv APPLE_API_ISSUER   "$APPLE_API_ISSUER"
+            addenv APPLE_API_KEY_PATH "$HOME/.appstoreconnect/private_keys/AuthKey_$APPLE_API_KEY.p8"
+          else
+            echo "No App Store Connect key; skipping notarization."
+          fi
       - name: Build, sign & notarize (universal)
         env:
           TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE:                  ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD:         ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY:             ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY:                      ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER:                   ${{ secrets.APPLE_API_ISSUER }}
         run: npm run tauri build -- --target universal-apple-darwin
       - name: Compute SHA256 + read .sig
         id: hashes
