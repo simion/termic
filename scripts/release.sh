@@ -76,15 +76,15 @@ CL_STATUS="$(node -e '
   if (!Array.isArray(j.versions)) j.versions = [];
   let top = j.versions[0];
   if (!top || top.version !== v) {
-    top = { version: v, date: "", summary: "", notes: [""] };
+    top = { version: v, date: "", summary: "", sections: [{ label: "Features", items: [""] }] };
     j.versions.unshift(top);
   }
-  if (!Array.isArray(top.notes) || top.notes.length === 0) top.notes = [""];
   top.date = new Date().toISOString().slice(0, 10);
   fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
   const haveSummary = typeof top.summary === "string" && top.summary.trim().length > 0;
-  const haveNotes = top.notes.some(n => typeof n === "string" && n.trim().length > 0);
-  if (!haveSummary || !haveNotes) { process.stdout.write("INCOMPLETE"); process.exit(0); }
+  const haveSections = Array.isArray(top.sections) && top.sections.some(s => Array.isArray(s.items) && s.items.some(n => typeof n === "string" && n.trim().length > 0));
+  const haveNotes = Array.isArray(top.notes) && top.notes.some(n => typeof n === "string" && n.trim().length > 0);
+  if (!haveSummary || (!haveSections && !haveNotes)) { process.stdout.write("INCOMPLETE"); process.exit(0); }
   const words = top.summary.trim().split(/\s+/).length;
   if (words > 15) {
     process.stderr.write("  ⚠ summary is " + words + " words (target ≤15) — it renders in a narrow sidebar card.\n");
