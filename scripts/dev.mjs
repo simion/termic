@@ -45,16 +45,19 @@ const child = spawn(TAURI_BIN, ["dev", "--config", tmpConf, ...process.argv.slic
 let cleaned = false;
 const cleanup = () => { if (!cleaned) { cleaned = true; try { unlinkSync(tmpConf); } catch {} } };
 
-// Follow the child: when `tauri dev` (and its cargo/app/vite subtree) is
-// gone, so are we. EXCEPT mid-teardown: the CLI dying must not let us
-// exit before the straggler kill below has run - the app outlives the
-// CLI by design of the bug we're fixing.
+// Follow the child: when `tauri dev` is gone, so are we - but NEVER
+// leave its helpers behind, regardless of how it ended. Ctrl+C teardown,
+// a crash, or the app quitting itself (Cmd+Q, the automation bridge's
+// /quit) must all sweep: the CLI exiting does NOT take npm/vite with it,
+// and an orphaned vite squats on the port until killed by hand.
 child.on("exit", code => {
   cleanup();
-  if (!tearingDown) process.exit(code ?? 0);
-  // Brief beat for SIGINT'd processes to die on their own, then SIGKILL
-  // whatever from the teardown snapshot is still around and leave.
-  setTimeout(() => { killStragglers(); process.exit(130); }, 400);
+  // Brief beat for signalled processes to die on their own, then SIGKILL
+  // whatever from the teardown snapshot / live walk is still around.
+  setTimeout(() => {
+    killStragglers();
+    process.exit(tearingDown ? 130 : (code ?? 0));
+  }, tearingDown ? 400 : 150);
 });
 child.on("error", err => { cleanup(); console.error(err); process.exit(1); });
 
@@ -86,22 +89,60 @@ function descendants(root) {
   } catch {}
   return out;
 }
-// Teardown targets are SNAPSHOTTED at signal time: once the tauri CLI
-// dies, cargo/the app reparent to pid 1 and a fresh tree walk from our
-// pid can no longer see them - killing only live-walk results would
-// orphan exactly the processes we're after. Union of snapshot + current
-// walk covers both the reparented and the freshly spawned.
-const teardownPids = new Set();
+// Teardown targets are tracked in a ROLLING snapshot (pid → command),
+// refreshed every few seconds and at signal time. A point-in-time walk
+// is not enough: the helpers (npm/vite, the app) reparent to pid 1 the
+// INSTANT the tauri CLI dies - on its exit, or even mid-Ctrl+C - and a
+// fresh tree walk can no longer see them. Recording the command name
+// alongside the pid means a pid recycled by the OS after our process
+// died is never killed by mistake: kill only when the live command
+// still matches what we recorded.
+const known = new Map(); // pid → comm
 let tearingDown = false;
 
+function psTable() {
+  const out = new Map();
+  try {
+    for (const line of execSync("ps -A -o pid=,ppid=,comm=").toString().trim().split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (m) out.set(Number(m[1]), { ppid: Number(m[2]), comm: m[3] });
+    }
+  } catch {}
+  return out;
+}
+
+/** Record every current descendant (with its command) into `known`. */
+const snapshotTree = () => {
+  const table = psTable();
+  const kids = new Map();
+  for (const [pid, { ppid }] of table) {
+    if (!kids.has(ppid)) kids.set(ppid, []);
+    kids.get(ppid).push(pid);
+  }
+  const stack = [process.pid];
+  while (stack.length) {
+    const p = stack.pop();
+    for (const c of kids.get(p) || []) {
+      known.set(c, table.get(c)?.comm ?? "");
+      stack.push(c);
+    }
+  }
+};
+snapshotTree();
+setInterval(snapshotTree, 3000).unref();
+
 const sweep = (signal) => {
-  const targets = descendants(process.pid);
-  for (const pid of targets) teardownPids.add(pid);
-  for (const pid of targets) { try { process.kill(pid, signal); } catch {} }
+  snapshotTree();
+  for (const pid of known.keys()) { try { process.kill(pid, signal); } catch {} }
 };
 const killStragglers = () => {
-  const targets = new Set([...teardownPids, ...descendants(process.pid)]);
-  for (const pid of targets) { try { process.kill(pid, "SIGKILL"); } catch {} }
+  snapshotTree();
+  const table = psTable();
+  for (const [pid, comm] of known) {
+    const cur = table.get(pid);
+    if (!cur || cur.comm !== comm) continue; // already gone, or pid recycled
+    try { process.kill(pid, "SIGKILL"); } catch {}
+  }
 };
 
 // Ctrl+C handling. The OLD bug: the handler called process.exit() straight

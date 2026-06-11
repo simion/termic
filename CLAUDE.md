@@ -160,6 +160,12 @@ Per-workspace macOS sandbox-exec (Seatbelt) + per-workspace in-process HTTPS CON
 
 **Recent denies** debugging: `workspace_recent_denials(id, minutes?)` IPC shells out to `log show --predicate '...' --last <N>m` filtered to the workspace path and lines containing `deny`. Surfaced in the sandbox dialog under a lazy-load `<details>` — when `npm install` silently fails inside a sandbox, this is the only sane way to diagnose what was blocked.
 
+## Automation bridge (`automation.rs`, dev-only)
+
+Agent-driven E2E against the LIVE app (tauri-driver has no macOS support). Armed only when debug build + `TERMIC_AUTOMATION=1`: localhost HTTP server, port+token printed to the debug log (`[automation] listening`). Routes: `POST /eval` (body = async-function body, runs in the webview, returns `{ok,value}` - `window.__termic` exposes the zustand stores + ipc wrappers, dev bundles only), `GET /screenshot`, `POST /raise?on=1|0` (always-on-top + all-Spaces + fullscreen-auxiliary + app activation), `POST /quit`, `GET /info`. Isolation seams: `TERMIC_DATA_DIR` (scratch profile) + `PORT` (parallel vite). `scripts/fake-agent.sh` registers as a custom agent so spawn/resume/queue flows are testable without burning real-agent tokens.
+
+Operational rules (learned the hard way): tear down by SIGTERM-ing dev.mjs (its sweep reaps the whole tree; `/quit` alone leaves vite on the port). Never touch src-tauri/ while a driven instance runs - the watcher restart strands the old app process. Occluded/other-Space windows report `visibilityState=hidden` and FREEZE rAF: PTY spawns survive this only because TerminalPane's rAF gate has a timeout fallback (do not remove it); prefer store/DOM assertions over screenshots (those also need Screen Recording TCC for the dev binary). Frontend edits: eval `location.reload()`. The full agent playbook lives in `.claude/skills/drive-termic/` (untracked).
+
 ## AI Code Review (`ReviewDialog`)
 
 User picks a CLI → spawn a fresh terminal tab in the workspace → wait for the PTY id → `ptyWrite` the **verbatim review prompt** (`lib/review.ts`) + `\r`. Prompt has a baked-in `git diff` fallback — agent fetches its own diff; we don't pre-inject it.

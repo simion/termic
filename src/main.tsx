@@ -21,6 +21,29 @@ window.addEventListener("contextmenu", (e) => e.preventDefault());
 // log for this tag after ⌘R; if it's missing, you're on stale code.
 logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 
+// Dev-only automation hooks for the localhost bridge (src-tauri/src/
+// automation.rs): /eval scripts reach the zustand stores + ipc wrappers
+// through `window.__termic` instead of scraping the DOM. Tree-shaken out
+// of production bundles (import.meta.env.DEV is statically false there).
+if (import.meta.env.DEV) {
+  void (async () => {
+    const [app, ui, prefs, ipc, core] = await Promise.all([
+      import("@/store/app"),
+      import("@/store/ui"),
+      import("@/store/prefs"),
+      import("@/lib/ipc"),
+      import("@tauri-apps/api/core"),
+    ]);
+    (window as unknown as Record<string, unknown>).__termic = {
+      useApp: app.useApp,
+      useUI: ui.useUI,
+      usePrefs: prefs.usePrefs,
+      ipc,
+      invoke: core.invoke,
+    };
+  })();
+}
+
 // Track Cmd/Ctrl held → `termic-mod-held` on <html>, so terminal links show
 // the hand cursor only while the modifier is down (the underline stays on
 // plain hover). See modKeyClass.ts + index.css.

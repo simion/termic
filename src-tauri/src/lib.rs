@@ -34,6 +34,7 @@ mod sandbox;
 mod proxy;
 mod repo_config;
 mod shell_env;
+mod automation;
 use sandbox::SandboxBundle;
 
 // ───────────────────────────── data model ─────────────────────────────
@@ -447,9 +448,16 @@ pub struct CreateWorkspaceArgs {
 const APP_DIR: &str = if cfg!(debug_assertions) { "termic_dev" } else { "termic" };
 
 fn data_dir() -> Result<PathBuf> {
-    let p = dirs::data_local_dir()
-        .ok_or_else(|| anyhow!("no data dir"))?
-        .join(APP_DIR);
+    // Test/automation seam: an explicit TERMIC_DATA_DIR wins over the
+    // platform default, so a driven instance (see automation.rs) runs
+    // against a scratch profile and can't touch the real one. Also handy
+    // for running parallel dev instances side by side.
+    let p = match std::env::var("TERMIC_DATA_DIR") {
+        Ok(d) if !d.trim().is_empty() => PathBuf::from(d),
+        _ => dirs::data_local_dir()
+            .ok_or_else(|| anyhow!("no data dir"))?
+            .join(APP_DIR),
+    };
     fs::create_dir_all(&p)?;
     Ok(p)
 }
@@ -6238,6 +6246,11 @@ pub fn run() {
                 let _ = position_on_cursor_monitor(&win);
             }
             let _ = win.show();
+
+            // Dev-only automation bridge (no-op unless debug build AND
+            // TERMIC_AUTOMATION=1) - lets an agent drive this instance
+            // over localhost HTTP. See automation.rs.
+            automation::start(app.handle().clone());
             let _ = win.set_focus();
             #[cfg(target_os = "macos")]
             {
@@ -6273,6 +6286,7 @@ pub fn run() {
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
+            automation::automation_result,
             list_monospace_fonts,
         ])
         .build(tauri::generate_context!())

@@ -923,7 +923,18 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // PTY spawn flow needs the webview to have laid the container out first,
     // otherwise fit.fit() returns 0×0 and we spawn a PTY with garbage dims.
     (async () => {
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise<void>(r => {
+        let settled = false;
+        const fin = () => { if (!settled) { settled = true; r(); } };
+        requestAnimationFrame(() => requestAnimationFrame(fin));
+        // rAF freezes to zero in occluded windows (the user switches Space
+        // right after opening a workspace; automation-driven instances run
+        // unfocused by design) - without a fallback the spawn stalls until
+        // the window repaints, possibly forever. On the fallback path
+        // fit.fit() may read 0x0, but cols/rows below clamp to sane
+        // minimums and the next real paint resizes the PTY to true dims.
+        setTimeout(fin, 400);
+      });
       if (cancelled) return;
       try { fit.fit(); } catch {}
       const cols = Math.max(40, term.cols || 100);
