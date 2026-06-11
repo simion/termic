@@ -145,3 +145,6 @@ PLAN-*.md
 # clean. (Repos that use termic won't have this line in their .gitignore.)
 .termic.yaml
 
+
+# e2e persistent profile + fixture repo (scripts/.claude/skills/e2e)
+.e2e/

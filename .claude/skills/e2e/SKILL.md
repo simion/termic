@@ -1,6 +1,6 @@
 ---
-name: drive-termic
-description: Launch termic in dev mode and drive the live app via the localhost automation bridge - eval JS in the webview, read stores, click UI, take screenshots. Use to verify changes end-to-end in the real app.
+name: e2e
+description: Launch termic in dev mode and drive the live app via the localhost automation bridge - eval JS in the webview, read stores, click UI, take screenshots. Use when the user asks to verify/test something in the running app, AND proactively before declaring done on changes that impact UI flows (workspace create/archive, PTY spawn/resume, tabs, sidebar, dialogs, settings).
 ---
 
 # Drive termic (dev automation bridge)
@@ -9,28 +9,46 @@ The bridge (src-tauri/src/automation.rs) is a localhost HTTP server inside
 DEBUG builds, armed only when `TERMIC_AUTOMATION=1`. It can eval JS in the
 webview (with results), screenshot the window, and quit the app.
 
-## Launch an isolated instance
+## Launch (persistent E2E profile - seed once, reuse forever)
 
-Never drive the user's own session. Use a scratch profile + a different
-port (both are first-class seams):
+Never drive the user's own session. The repo keeps a gitignored
+persistent profile at `.e2e/` so the seeding (fixture repo + fake agent)
+happened ONCE and every later run reuses it:
 
-```sh
-PROFILE=/tmp/termic-auto-profile
-mkdir -p "$PROFILE"
-echo '{"welcomed": true}' > "$PROFILE/settings.json"   # skip the welcome dialog
-TERMIC_AUTOMATION=1 TERMIC_DATA_DIR="$PROFILE" PORT=1599 make dev   # run in background
+```
+.e2e/profile/        TERMIC_DATA_DIR: settings.json, projects.json, workspaces/
+.e2e/fixture-repo/   tiny git repo, registered as project "fixture-repo"
 ```
 
-Wait for readiness by polling the debug log (NOT sleeps):
+Recreate only if `.e2e/` is missing:
+
+```sh
+mkdir -p .e2e/profile && echo '{"welcomed": true}' > .e2e/profile/settings.json
+git init -q .e2e/fixture-repo && (cd .e2e/fixture-repo && echo "# e2e fixture" > README.md \
+  && git add . && git -c user.email=e2e@termic.dev -c user.name=e2e commit -qm "init fixture")
+```
+
+Launch with FIXED automation port + token so every command below is
+copy-paste (no grepping for random values):
+
+```sh
+TERMIC_AUTOMATION=1 TERMIC_AUTOMATION_PORT=45901 \
+TERMIC_AUTOMATION_TOKEN=e2e-local-$(id -u) \
+TERMIC_DATA_DIR="$PWD/.e2e/profile" PORT=1599 make dev   # run in background
+B=http://127.0.0.1:45901; T=e2e-local-$(id -u)
+```
+
+Wait for readiness by polling the log (NOT sleeps) - the listening line
+goes to BOTH the debug log and the dev stdout:
 
 ```sh
 LOG="$(python3 -c 'import tempfile;print(tempfile.gettempdir()+"/termic-debug.log")')"
-grep "\[automation\] listening" "$LOG" | tail -1
-# → [automation] listening on 127.0.0.1:PORT token=TOKEN
+grep "\[automation\] listening on 127.0.0.1:45901" "$LOG" | tail -1
 ```
 
 First build after a Rust change takes 1-2 min; the app window appears on
-screen (it is a real GUI instance).
+screen (it is a real GUI instance - usually unfocused/behind; `POST
+/raise?on=1` floats it for the user to watch).
 
 ## Drive it
 
@@ -70,64 +88,75 @@ return ws.id;
 return document.body.textContent.includes("No uncommitted changes");
 ```
 
-## Fake agent (no tokens burned)
+## Seeding (already done in the committed-profile flow; idempotent)
 
-Register `scripts/fake-agent.sh` as a custom agent in the scratch profile,
-then spawn workspaces with `cli: "fakeagent"` - real PTY, real spawn args
-(assert `--session-id` / `--resume` in its echo), zero cost:
+The persistent profile already contains the `fakeagent` agent
+(`scripts/fake-agent.sh` - real PTY, echoes its argv + stdin, zero
+tokens) and the `fixture-repo` project. This eval re-seeds ONLY what is
+missing, so it is safe to run unconditionally as step 1 of any session:
 
 ```js
-const defs = await __termic.ipc.agentsDefaults();
-await __termic.ipc.agentsSave([...defs, {
-  id: "fakeagent", display_name: "FakeAgent",
-  command: "<repo>/scripts/fake-agent.sh", args: [], yolo_args: [],
-  capabilities: {},
-}]);
 await __termic.useApp.getState().loadAll();
+const st = __termic.useApp.getState();
+if (!st.agents.some(a => a.id === "fakeagent")) {
+  const defs = await __termic.ipc.agentsDefaults();
+  // Clone a default - the Agent schema has required fields (icon_id...);
+  // never hand-write the object.
+  const fake = JSON.parse(JSON.stringify(defs.find(a => a.id === "claude")));
+  fake.id = "fakeagent"; fake.display_name = "FakeAgent";
+  fake.command = "<ABS REPO PATH>/scripts/fake-agent.sh";
+  fake.args = []; fake.yolo_args = [];
+  await __termic.ipc.agentsSave([...(st.agents.length ? st.agents : defs), fake]);
+}
+// NOTE: project root_path is CANONICALIZED on add (symlinks resolved),
+// so match by name, not by the path you passed in.
+if (!st.projects.some(p => p.name === "fixture-repo")) {
+  await __termic.ipc.projectAdd("<ABS REPO PATH>/.e2e/fixture-repo");
+}
+await __termic.useApp.getState().loadAll();
+return __termic.useApp.getState().projects.map(p => p.name);
 ```
 
-## Worked example (verified end to end)
+## Worked example (verified end to end, 2026-06-11)
 
-A complete session that registered a fixture agent, created a workspace
-through real IPC, spawned it hidden, asserted the spawn args, exercised
-the PTY, and clicked UI - the reference shape for live feature tests:
+The complete reference flow, run live against the persistent profile:
+seed check, workspace reuse-or-create through real IPC, spawn assert,
+argv receipt, PTY round-trip, UI click. Every step's assertion shape is
+exactly what worked.
 
 ```sh
-# 1. Launch isolated (see above), grep the log line for PORT + TOKEN.
-B=http://127.0.0.1:PORT; T=TOKEN
+# 1. Launch (see above). B/T are the fixed base URL + token.
+curl -s "$B/info?t=$T"   # sanity: data_dir must be .../.e2e/profile
 
-# 2. Register the fixture agent (clone a default - the Agent schema has
-#    required fields like icon_id; never hand-write the object).
-curl -s -X POST --data-binary '
-const defs = await __termic.ipc.agentsDefaults();
-const fake = JSON.parse(JSON.stringify(defs.find(a => a.id === "claude")));
-fake.id = "fakeagent"; fake.display_name = "FakeAgent";
-fake.command = "<ABS REPO PATH>/scripts/fake-agent.sh";
-fake.args = []; fake.yolo_args = [];
-await __termic.ipc.agentsSave([...defs, fake]);
-await __termic.useApp.getState().loadAll();
-return __termic.useApp.getState().agents.map(a => a.id);
-' "$B/eval?t=$T"
+# 2. Seed-if-missing (the eval from "Seeding" above). No-op on reuse.
 
-# 3. Project + repo-root workspace via real IPC, then activate it.
+# 3. Repo-root workspace: REUSE if one is live, create otherwise.
+#    (Repo-root = no worktree, archive never rm -rfs; ideal fixture.)
 curl -s -X POST --data-binary '
-const p = await __termic.ipc.projectAdd("/tmp/some-fixture-repo");
-const ws = await __termic.invoke("workspace_open_repo", { projectId: p.id, cli: "fakeagent", name: null });
-await __termic.useApp.getState().loadAll();
+const st = __termic.useApp.getState();
+const proj = st.projects.find(p => p.name === "fixture-repo");
+let ws = st.workspaces.find(w => !w.archived && w.project_id === proj.id);
+if (!ws) {
+  ws = await __termic.invoke("workspace_open_repo", { projectId: proj.id, cli: "fakeagent", name: null });
+  await __termic.useApp.getState().loadAll();
+}
 __termic.useApp.getState().setActiveWorkspace(ws.id);
-return ws.id;' "$B/eval?t=$T"
+return { wsId: ws.id, isRepoRoot: ws.is_repo_root };' "$B/eval?t=$T"
 
-# 4. Assert the spawn (poll until hasPty; ~2-5s):
+# 4. Assert the spawn (poll until hasPty; usually first try, ~2-5s max):
 curl -s -X POST --data-binary '
 const s = __termic.useApp.getState();
 const ws = s.workspaces.find(w => !w.archived);
 return (s.tabs[ws.id] ?? []).map(t => ({ cli: t.cli, hasPty: !!t.ptyId, sessionId: t.sessionId ?? null }));
 ' "$B/eval?t=$T"
-# ...and the argv receipt in the debug log (proves resume flags):
+# ...and the argv receipt in the debug log (proves resume flags). The log
+# write can land a beat AFTER hasPty flips - re-grep before concluding:
 grep "pty_spawn.*fake-agent" "$LOG" | tail -1
-# → cmd=.../fake-agent.sh args=["--session-id", "<uuid>", "--name", "main"]
+# → [pty_spawn] sandbox=OFF cmd=.../fake-agent.sh args=["--session-id", "<uuid>", "--name", "main"]
 
-# 5. PTY round-trip (fake agent echoes stdin):
+# 5. PTY round-trip (fake agent echoes stdin). Assert via lastOutputAt,
+#    NOT innerText - xterm renders on a WebGL canvas, so terminal content
+#    NEVER appears in the DOM (see operational rules).
 curl -s -X POST --data-binary '
 const s = __termic.useApp.getState();
 const ws = s.workspaces.find(w => !w.archived);
@@ -137,7 +166,7 @@ await new Promise(r => setTimeout(r, 800));
 return { gotOutput: !!__termic.useApp.getState().tabs[ws.id][0].lastOutputAt };
 ' "$B/eval?t=$T"
 
-# 6. UI interaction by DOM + assertion:
+# 6. UI interaction by DOM + assertion (non-terminal UI IS in the DOM):
 curl -s -X POST --data-binary '
 [...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Git").click();
 await new Promise(r => setTimeout(r, 600));
@@ -145,6 +174,7 @@ return document.body.innerText.includes("Working tree is clean");
 ' "$B/eval?t=$T"
 
 # 7. Teardown: SIGTERM the dev.mjs node process (NOT /quit alone).
+#    Leave the workspace in place - the next run reuses it via step 3.
 kill -TERM "$(ps aux | grep '[n]ode scripts/dev.mjs' | awk '{print $2}')"
 ```
 
@@ -181,9 +211,21 @@ kill -TERM "$(ps aux | grep '[n]ode scripts/dev.mjs' | awk '{print $2}')"
   `POST /raise?on=1` floats the window (always-on-top + all-Spaces +
   fullscreen-auxiliary + app activation) but may still not unhide it on
   every setup; do not block on visibility for state-level assertions.
+- TERMINAL CONTENT IS NOT IN THE DOM. xterm renders to a WebGL canvas;
+  `document.body.innerText` will never contain PTY output, no matter how
+  long you wait. Assert terminal activity via `tab.lastOutputAt`, the
+  store, or the debug-log argv receipt. All OTHER app UI (sidebar, tabs,
+  dialogs, Git panel) is normal DOM and innerText-assertable.
+- Paths round-trip canonicalized: `projectAdd("/Users/x/r/termic/...")`
+  stores `root_path` with symlinks resolved (`/Users/x/Work/Repos/...`).
+  Idempotence checks must match by `name` (or endsWith), never by the
+  path you passed in.
 - /screenshot additionally needs (a) the window actually visible and
   (b) Screen Recording permission granted to the dev binary (TCC prompts
   on first use; "could not create image" also means locked/asleep
   display). Prefer store/DOM assertions; screenshots are the garnish.
+  Verified failure mode: `screencapture failed (Screen Recording
+  permission?)` until the user grants it to the terminal app once in
+  System Settings → Privacy & Security → Screen Recording.
 - The bridge refuses everything in release builds; do not try to use it
   against an installed termic.app.
