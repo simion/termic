@@ -97,7 +97,16 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
     fitRef.current = fit;
 
     (async () => {
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise<void>(r => {
+        let settled = false;
+        const fin = () => { if (!settled) { settled = true; r(); } };
+        requestAnimationFrame(() => requestAnimationFrame(fin));
+        // Same fallback as TerminalPane: rAF freezes to zero in occluded
+        // windows, and without it the scratch-shell spawn stalls until
+        // the window repaints. rows/cols below already clamp to sane
+        // minimums on the fallback path.
+        setTimeout(fin, 400);
+      });
       if (cancelled) return;
       try { fit.fit(); } catch {}
       const shell = await loginShell();
