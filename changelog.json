@@ -1,6 +1,17 @@
 {
   "versions": [
     {
+      "version": "0.10.10",
+      "date": "2026-06-11",
+      "summary": "All agent tabs now persist and auto-resume after restarting the app.",
+      "notes": [
+        "Secondary agent tabs (the + button) are now durable: every agent tab is restored on relaunch and resumes its own session independently, so claude and codex can run side by side in one workspace across restarts (#23).",
+        "Closing a secondary agent tab removes it for good; closing the main agent tab just stops it, and it resumes when the workspace reopens.",
+        "Existing workspaces migrate automatically and keep resuming their current conversations.",
+        "Dev: Ctrl+C on make dev / make run now reliably tears down the whole dev stack."
+      ]
+    },
+    {
       "version": "0.10.9",
       "date": "2026-06-10",
       "summary": "Sidebar refreshes immediately after archiving a workspace; terminal links open via the system opener.",
