@@ -137,11 +137,10 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   primitive, not a smaller cousin. */}
               <div className={cn(
                 "flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-0.5 bg-[var(--color-bg-1)] px-2",
-                // Strip's border-b separates strip-from-terminals when expanded.
-                // When collapsed there are no terminals below — FooterBar's own
-                // border-t becomes the only divider, and stacking both produces
-                // a visible double line.
-                !collapsed && "border-b border-[var(--color-border-soft)]",
+                // Always show border-b: separates strip from terminals when expanded,
+                // and from FooterBar when collapsed. FooterBar suppresses its own
+                // border-t when collapsed to avoid a 2px double line.
+                "border-b border-[var(--color-border-soft)]",
               )}>
                 {/* Queue affordance pinned far LEFT so it's always seen; the
                     shell tabs start after a separator. The bottom status-bar

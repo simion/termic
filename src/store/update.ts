@@ -35,21 +35,33 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 const LS_DISMISSED = "updateDismissedVersion"; // update-card dismissal
 const LS_LAST_SEEN = "updateLastSeenVersion";  // what's-new watermark
 
+/** One category block inside a changelog entry. */
+export interface ChangelogSection {
+  /** Display label: "Features", "Bug fixes", "Sponsors", etc. */
+  label: string;
+  /** Plain-text bullet items (no markdown). */
+  items: string[];
+}
+
 /** One per-version entry in changelog.json. Authored at release time;
  *  see RELEASING.md for the schema.
  *  - `summary` (≤15 words): single-sentence headline, rendered on the
  *    sidebar UpdateCard and as each version's heading line in the
  *    Changelog dialog.
- *  - `notes`: bulleted detail, rendered as a list under the summary in
- *    the Changelog dialog only. Optional for back-compat with older
- *    entries that pre-date the split. */
+ *  - `sections`: categorized change list. Each section has a label
+ *    ("Features", "Bug fixes", "Sponsors", etc.) and a list of items.
+ *  - `notes`: legacy flat bullet list, kept for back-compat with entries
+ *    authored before the sections schema. Rendered without a category
+ *    header when sections is absent. */
 export interface ChangelogEntry {
   version: string;
   /** ISO date (YYYY-MM-DD), auto-stamped by release.sh. */
   date: string;
   /** One short sentence (≤15 words). */
   summary: string;
-  /** Bullet list of changes. Plain strings — no markdown. */
+  /** Categorized change list (current schema). */
+  sections?: ChangelogSection[];
+  /** Legacy flat bullet list. Still rendered for old entries. */
   notes?: string[];
 }
 
@@ -215,19 +227,22 @@ const MOCK_CHANGELOG: ChangelogEntry[] = [
     version: "9.9.9",
     date: "2026-05-21",
     summary: "Per-repository Spotlight testing and in-workspace HTML preview.",
-    notes: [
-      "Configure Spotlight testing per repository",
-      "Preview HTML files right inside your workspace",
-      "Faster cold-start when opening large repos",
+    sections: [
+      { label: "Features", items: [
+        "Configure Spotlight testing per repository.",
+        "Preview HTML files right inside your workspace.",
+      ]},
+      { label: "Bug fixes", items: [
+        "Faster cold-start when opening large repos.",
+      ]},
     ],
   },
   {
     version: "9.9.8",
     date: "2026-05-18",
     summary: "A prior version so the Changelog dialog has history to scroll.",
-    notes: [
-      "Sample bullet one",
-      "Sample bullet two",
+    sections: [
+      { label: "Features", items: ["Sample feature one.", "Sample feature two."] },
     ],
   },
 ];
