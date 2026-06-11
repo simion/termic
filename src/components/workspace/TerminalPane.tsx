@@ -1594,7 +1594,8 @@ export function FooterBar({ ws, sandboxWarning }: {
   ws: { id: string; cli?: string; sandbox_enabled?: boolean; sandbox_mode?: SandboxMode; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[] };
   sandboxWarning: string | null;
 }) {
-  const splitOpen = useApp(s => !!s.terminalSplit[ws.id]);
+  const splitOpen     = useApp(s => !!s.terminalSplit[ws.id]);
+  const splitCollapsed = useApp(s => !!s.terminalSplitCollapsed[ws.id]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
   const mode = effectiveSandboxMode(ws);
 
@@ -1646,7 +1647,10 @@ export function FooterBar({ ws, sandboxWarning }: {
       className={cn(
         // --bottom-bar-h is the shared height for every bottom bar. text-[12.5px]
         // matches the queue/terminal buttons and the right-panel footer tabs.
-        "flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-1.5 border-t px-3 text-[12.5px]",
+        // Suppress border-t when the split is collapsed: the strip's border-b
+        // already provides the separator; two adjacent 1px lines look doubled.
+        "flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-1.5 px-3 text-[12.5px]",
+        !(splitOpen && splitCollapsed) && "border-t",
         sandboxWarning
           ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)] text-[var(--color-fg)]"
           : "border-[var(--color-border-soft)] bg-[var(--color-bg-1)] text-[var(--color-fg-dim)]",

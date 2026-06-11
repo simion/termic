@@ -259,6 +259,25 @@ export function EditorPane({ ws, tab, onContent }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.id, tab.path]);
 
+  // Reload from disk on window focus if the buffer has no unsaved edits.
+  // Covers the common case: agent edits a file, user cmd-tabs back, content
+  // is stale. Also refreshes read-only markdown preview tabs (no dirty state).
+  useEffect(() => {
+    const onFocus = () => {
+      const v = viewRef.current;
+      if (!v || dirtyRef.current) return;
+      workspaceFileRead(ws.id, tab.path).then(content => {
+        const v2 = viewRef.current;
+        if (!v2 || dirtyRef.current) return;
+        if (content === v2.state.doc.toString()) return;
+        v2.dispatch({ changes: { from: 0, to: v2.state.doc.length, insert: content } });
+        onContentRef.current?.(v2);
+      }).catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [ws.id, tab.path]);
+
   // Subsequent jumps: tab.revealAt changes when the user clicks a new
   // Find-in-Files result for an already-open file. Mount effect above
   // handles the first jump (view doesn't exist yet at that point).

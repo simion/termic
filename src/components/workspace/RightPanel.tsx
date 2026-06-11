@@ -375,19 +375,21 @@ export function RightPanel() {
           useApp.getState().setRightPanelWidth(next);
         }}
       />
-      <header className="flex h-10 shrink-0 items-center gap-1 px-2.5">
+      <header className="flex h-10 shrink-0 items-stretch border-b border-[var(--color-border-soft)]">
         <RTab label="All files" active={view === "files"} onClick={() => setView("files")} />
         <RTab label="Git" active={view === "changes"} onClick={() => setView("changes")}
           badge={(gitStatus?.total_changed ?? 0) > 0 ? gitStatus!.total_changed : undefined}
           repoBadge={(gitStatus?.repos_changed ?? 0) > 1 ? gitStatus!.repos_changed : undefined} />
-        <Tip content="Refresh files and git status" side="bottom">
-          <button
-            onClick={doRefresh}
-            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-          >
-            <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
-          </button>
-        </Tip>
+        <div className="flex shrink-0 items-center px-1.5">
+          <Tip content="Refresh files and git status" side="bottom">
+            <button
+              onClick={doRefresh}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+            >
+              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+            </button>
+          </Tip>
+        </div>
       </header>
 
       {/* Files / Git — flexible, takes whatever's left after the footer.
@@ -1143,10 +1145,10 @@ function RTab({ label, active, badge, repoBadge, onClick }: { label: string; act
     <button
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+        "flex flex-1 items-center justify-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors",
         active
-          ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
-          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+          ? "border-[var(--color-accent)] bg-[var(--color-bg)] text-[var(--color-fg)]"
+          : "border-transparent text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
       )}
     >
       {label}
