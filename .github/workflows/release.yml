@@ -113,13 +113,22 @@ jobs:
           key: cargo-${{ runner.os }}-universal-${{ hashFiles('src-tauri/Cargo.lock') }}
       - run: npm ci
       - name: Write App Store Connect API key
-        if: ${{ secrets.APPLE_API_KEY != '' }}
+        # The `secrets` context is not allowed in step `if:` expressions
+        # (the whole workflow fails to parse - this killed v0.10.10's first
+        # run at 0s). Gate in the shell instead. The key PATH is exported
+        # via GITHUB_ENV because `env.HOME` does not exist in workflow
+        # expressions either (it would have rendered as "/.appstoreconnect").
         env:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           APPLE_API_KEY:         ${{ secrets.APPLE_API_KEY }}
         run: |
+          if [ -z "$APPLE_API_KEY" ]; then
+            echo "No App Store Connect key configured; skipping notarization setup."
+            exit 0
+          fi
           mkdir -p ~/.appstoreconnect/private_keys
-          echo -n "$APPLE_API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8
+          printf '%s' "$APPLE_API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_"$APPLE_API_KEY".p8
+          echo "APPLE_API_KEY_PATH=$HOME/.appstoreconnect/private_keys/AuthKey_$APPLE_API_KEY.p8" >> "$GITHUB_ENV"
       - name: Build, sign & notarize (universal)
         env:
           TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -129,7 +138,6 @@ jobs:
           APPLE_SIGNING_IDENTITY:             ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_KEY:                      ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER:                   ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_PATH:                 ${{ format('{0}/.appstoreconnect/private_keys/AuthKey_{1}.p8', env.HOME, secrets.APPLE_API_KEY) }}
         run: npm run tauri build -- --target universal-apple-darwin
       - name: Compute SHA256 + read .sig
         id: hashes
