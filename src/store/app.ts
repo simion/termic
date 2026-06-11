@@ -52,9 +52,22 @@ interface AppState {
   terminalSplitCollapsed: Record<string, boolean>;
   /** Per-workspace: bottom-terminal tab IDs (each = its own scratch shell).
    *  Lives in memory only — like the main terminal tabs, PTYs die with the app. */
-  bottomTabs: Record<string, { id: string; title: string }[]>;
+  bottomTabs: Record<string, { id: string; title: string; liveTitle?: string }[]>;
   /** Per-workspace: id of the active bottom-terminal tab. */
   activeBottomTab: Record<string, string>;
+  /** Per-workspace: whether the main pane is split vertically (agent on
+   *  left, scratch shell on the right). Persisted in localStorage. */
+  rightSplit: Record<string, boolean>;
+  /** Per-workspace: right split width as a fraction 0–1 of the container.
+   *  Persisted in localStorage so window resizes keep the same proportion. */
+  rightSplitRatio: Record<string, number>;
+  /** Per-workspace: id of the active right-panel tab. */
+  activeRightTab: Record<string, string>;
+  /** Per-workspace: which split pane currently has focus ("main" | "right").
+   *  Drives the single-active-tab visual cue (only the focused pane's active
+   *  tab reads as fully active) and routes file-opens to the last-focused
+   *  pane. Session-only, defaults to "main". */
+  activePane: Record<string, "main" | "right">;
   /** Workspaces the user has activated this session. We keep them rendered
    *  (hidden) after switching away so terminals + PTYs stay alive. Cleared
    *  on app restart — survival is intentionally per-session. */
@@ -112,6 +125,30 @@ interface AppState {
   addBottomTab: (wsId: string) => string;
   closeBottomTab: (wsId: string, tabId: string) => void;
   setActiveBottomTab: (wsId: string, tabId: string) => void;
+  /** Update a bottom-shell tab's live OSC 0/2 title (what the shell emits,
+   *  e.g. the running command or cwd). Falls back to the base "shell N" when
+   *  empty. Idempotent. */
+  setBottomTabLiveTitle: (wsId: string, tabId: string, liveTitle: string) => void;
+  toggleRightSplit: (wsId: string) => void;
+  setRightSplitRatio: (wsId: string, ratio: number) => void;
+  /** Returns the id of the new right-panel shell tab. */
+  addRightTab: (wsId: string, sandboxed?: boolean) => string;
+  /** Add an agent tab to the right-panel split. */
+  addRightAgentTab: (wsId: string, cli: string) => void;
+  closeRightTab: (wsId: string, tabId: string) => void;
+  setActiveRightTab: (wsId: string, tabId: string) => void;
+  /** Mark which split pane has focus. Called on tab activation and on
+   *  mousedown into a pane's terminal. */
+  setActivePane: (wsId: string, pane: "main" | "right") => void;
+  /** Move a terminal tab between the main and right split panes (drag-to-move).
+   *  Opens the right split if moving into it; closes the right split (and
+   *  forgets its ratio) if the move empties it. Never empties the main pane. */
+  moveTabToPane: (wsId: string, tabId: string, toPane: "main" | "right") => void;
+  /** Restore right-split agent tabs from `right_split_tabs` if any. Opens
+   *  the split and populates tabs. No-op if already populated. */
+  ensureDefaultRightTabs: (wsId: string) => void;
+  /** Sync the right-split's durable agent-tab list to disk. */
+  syncDurableRightTabs: (wsId: string) => void;
 
   /** Restore the workspace's durable agent tabs from `persisted_tabs` if
    *  any (quit → reopen → everything back, each id-capable tab resuming its
@@ -179,6 +216,10 @@ const LS_RPANEL  = "rightPanelHidden";
 const LS_SPLIT   = "terminalSplit";       // Record<wsId, boolean>
 const LS_SPLITH  = "terminalSplitHeight"; // Record<wsId, number>
 const LS_SPLITC  = "terminalSplitCollapsed"; // Record<wsId, boolean>
+const LS_RSPLIT    = "rightTerminalSplit";     // Record<wsId, boolean>
+// rightSplitRatio is intentionally NOT persisted: it resets to 0.5 each time
+// the split is opened. Storing it across sessions felt wrong when the window
+// has been resized or a different workspace opened at a different size.
 const LS_SBW     = "sidebarWidth";
 const LS_RPW     = "rightPanelWidth";
 const LS_RFH     = "rightFooterHeight";
@@ -192,6 +233,7 @@ const initialHidden  = (() => { try { return localStorage.getItem(LS_RPANEL)  ==
 const initialSplit   = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLIT)  || "{}"); } catch { return {}; } })();
 const initialSplitH  = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLITH) || "{}"); } catch { return {}; } })();
 const initialSplitC  = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLITC) || "{}"); } catch { return {}; } })();
+const initialRSplit = (() => { try { return JSON.parse(localStorage.getItem(LS_RSPLIT) || "{}"); } catch { return {}; } })();
 const numOrDefault = (k: string, fallback: number) => {
   // Math.round on read too — protects against any older saved fractional
   // value sneaking through and re-blurring the layout on next launch.
@@ -202,20 +244,41 @@ const initialSBW = numOrDefault(LS_SBW, 280);
 const initialRPW = numOrDefault(LS_RPW, 280);
 const initialRFH = numOrDefault(LS_RFH, 260);
 
-/** The durable subset of a workspace's tabs, in display order: agent and
+/** The durable subset of a workspace's MAIN-PANEL tabs: agent and
  *  custom-command tabs (these relaunch / resume), but NOT shell / scratch
- *  terminals (no session to resume). Maps onto the Rust `PersistedTab`. */
+ *  terminals and NOT right-panel tabs (those go through durableRightPersistedTabs). */
 function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
   return (tabs ?? [])
-    .filter((t): t is TerminalTab => t.type === "terminal" && (t as TerminalTab).cli !== "shell")
+    .filter((t): t is TerminalTab =>
+      t.type === "terminal" &&
+      (t as TerminalTab).cli !== "shell" &&
+      !(t as TerminalTab).panel,
+    )
     .map(t => ({
       id: t.id,
       cli: t.cli,
-      // Only carry a title when the user renamed it — otherwise the agent
-      // display name is re-derived on restore (and may have changed).
       title: t.customTitle ? t.title : null,
       custom_title: !!t.customTitle,
       is_default: !!t.is_default,
+      command: t.command ?? null,
+      session_id: t.sessionId ?? null,
+    }));
+}
+
+/** Durable subset of right-panel tabs (agents only, no shells). */
+function durableRightPersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
+  return (tabs ?? [])
+    .filter((t): t is TerminalTab =>
+      t.type === "terminal" &&
+      (t as TerminalTab).panel === "right" &&
+      (t as TerminalTab).cli !== "shell",
+    )
+    .map(t => ({
+      id: t.id,
+      cli: t.cli,
+      title: t.customTitle ? t.title : null,
+      custom_title: !!t.customTitle,
+      is_default: false,
       command: t.command ?? null,
       session_id: t.sessionId ?? null,
     }));
@@ -238,6 +301,10 @@ export const useApp = create<AppState>((set, get) => ({
   terminalSplitCollapsed: initialSplitC,
   bottomTabs: {},
   activeBottomTab: {},
+  rightSplit: initialRSplit,
+  rightSplitRatio: {},
+  activeRightTab: {},
+  activePane: {},
   mountedWorkspaces: new Set<string>(),
   footerTerm: {},
   collapsedProjects:   initialCollapsed   as Record<string, boolean>,
@@ -494,11 +561,256 @@ export const useApp = create<AppState>((set, get) => ({
   setActiveBottomTab: (wsId, tabId) => set(s => ({
     activeBottomTab: { ...s.activeBottomTab, [wsId]: tabId },
   })),
+  setBottomTabLiveTitle: (wsId, tabId, liveTitle) => set(s => {
+    const list = s.bottomTabs[wsId];
+    if (!list) return s;
+    const trimmed = liveTitle.trim();
+    let changed = false;
+    const next = list.map(t => {
+      if (t.id !== tabId || t.liveTitle === trimmed) return t;
+      changed = true;
+      return { ...t, liveTitle: trimmed };
+    });
+    return changed ? { bottomTabs: { ...s.bottomTabs, [wsId]: next } } : s;
+  }),
+
+  toggleRightSplit: (wsId) => set(s => {
+    const opening = !s.rightSplit[wsId];
+    const next = { ...s.rightSplit, [wsId]: opening };
+    try { localStorage.setItem(LS_RSPLIT, JSON.stringify(next)); } catch {}
+    if (opening) return { rightSplit: next };
+    // Closing: forget the ratio so next open starts at 0.5, and hand focus
+    // back to the main pane so its active tab reads as fully active again.
+    const { [wsId]: _, ...ratioRest } = s.rightSplitRatio; void _;
+    return { rightSplit: next, rightSplitRatio: ratioRest, activePane: { ...s.activePane, [wsId]: "main" } };
+  }),
+  setRightSplitRatio: (wsId, ratio) => set(s => ({
+    rightSplitRatio: { ...s.rightSplitRatio, [wsId]: Math.max(0.1, Math.min(0.9, ratio)) },
+  })),
+  addRightTab: (wsId, sandboxed) => {
+    const id = crypto.randomUUID();
+    set(s => {
+      const rightCount = (s.tabs[wsId] ?? []).filter(
+        t => t.type === "terminal" && (t as TerminalTab).panel === "right",
+      ).length;
+      const tab: TerminalTab = {
+        id, type: "terminal",
+        title: sandboxed ? "Sandboxed" : `shell ${rightCount + 1}`,
+        cli: "shell", panel: "right",
+        ...(sandboxed !== undefined ? { sandboxed } : {}),
+      };
+      return {
+        tabs:          { ...s.tabs, [wsId]: [...(s.tabs[wsId] ?? []), tab] },
+        activeRightTab: { ...s.activeRightTab, [wsId]: id },
+        activePane:     { ...s.activePane, [wsId]: "right" },
+      };
+    });
+    focusTerminalTab(id);
+    return id;
+  },
+  addRightAgentTab: (wsId, cli) => {
+    const s = get();
+    const id = crypto.randomUUID();
+    const tab: TerminalTab = {
+      id, type: "terminal",
+      title: agentDisplayName(cli, s.agents),
+      cli,
+      panel: "right",
+    };
+    set(state => ({
+      tabs:          { ...state.tabs, [wsId]: [...(state.tabs[wsId] ?? []), tab] },
+      activeRightTab: { ...state.activeRightTab, [wsId]: id },
+      activePane:     { ...state.activePane, [wsId]: "right" },
+    }));
+    get().syncDurableRightTabs(wsId);
+    focusTerminalTab(id);
+  },
+  closeRightTab: (wsId, tabId) => {
+    let focusId = "";
+    set(s => {
+      const allTabs = s.tabs[wsId] ?? [];
+      const tabIdx = allTabs.findIndex(t => t.id === tabId);
+      if (tabIdx < 0) return s;
+      const closing = allTabs[tabIdx];
+      if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
+      const nextAll = allTabs.filter(t => t.id !== tabId);
+      const rightNext = nextAll.filter(
+        t => t.type === "terminal" && (t as TerminalTab).panel === "right",
+      );
+      const wasActive = s.activeRightTab[wsId] === tabId;
+      let activeRight = s.activeRightTab[wsId];
+      if (wasActive) {
+        const prevRight = allTabs.filter(t => t.type === "terminal" && (t as TerminalTab).panel === "right");
+        const prevIdx = prevRight.findIndex(t => t.id === tabId);
+        activeRight = rightNext[Math.max(0, prevIdx - 1)]?.id || rightNext[0]?.id || "";
+      }
+      if (rightNext.length === 0) {
+        if (wasActive) focusId = s.activeTab[wsId] || "";
+        const nextRS = { ...s.rightSplit, [wsId]: false };
+        try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
+        // Forget the ratio so next open starts fresh at 0.5.
+        const { [wsId]: _, ...ratioRest } = s.rightSplitRatio; void _;
+        return {
+          tabs:           { ...s.tabs, [wsId]: nextAll },
+          activeRightTab: { ...s.activeRightTab, [wsId]: "" },
+          activePane:     { ...s.activePane, [wsId]: "main" },
+          rightSplit:     nextRS,
+          rightSplitRatio: ratioRest,
+        };
+      }
+      if (wasActive) focusId = activeRight;
+      return {
+        tabs:          { ...s.tabs, [wsId]: nextAll },
+        activeRightTab: { ...s.activeRightTab, [wsId]: activeRight },
+      };
+    });
+    get().syncDurableRightTabs(wsId);
+    if (focusId) focusTerminalTab(focusId);
+  },
+  setActiveRightTab: (wsId, tabId) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const now = Date.now();
+    const next = list.map(t => {
+      if (t.id !== tabId) return t;
+      if (t.type !== "terminal") return t;
+      const patch: Partial<TerminalTab> = {};
+      if (t.unread) patch.unread = null;
+      if (t.workState === "done" || t.workState === "working") {
+        patch.workState = "idle";
+        patch.workProgress = null;
+        patch.workProgressKind = null;
+        patch.workClearedAt = now;
+      }
+      return Object.keys(patch).length ? { ...t, ...patch } : t;
+    });
+    return {
+      activeRightTab: { ...s.activeRightTab, [wsId]: tabId },
+      activePane:     { ...s.activePane, [wsId]: "right" },
+      tabs: { ...s.tabs, [wsId]: next },
+    };
+  }),
+  setActivePane: (wsId, pane) => set(s =>
+    s.activePane[wsId] === pane ? s : { activePane: { ...s.activePane, [wsId]: pane } },
+  ),
+  moveTabToPane: (wsId, tabId, toPane) => {
+    let focusId = "";
+    set(s => {
+      const list = s.tabs[wsId] ?? [];
+      const tab = list.find(t => t.id === tabId);
+      if (!tab || tab.type !== "terminal") return s;
+      const fromPane: "main" | "right" =
+        (tab as TerminalTab).panel === "right" ? "right" : "main";
+      if (fromPane === toPane) return s;
+
+      // Flip the panel discriminator on the moved tab. Stripping the key
+      // (vs setting panel: undefined) keeps the durable-tab serializers
+      // from emitting a spurious `panel` field.
+      const next = list.map(t => {
+        if (t.id !== tabId) return t;
+        const { panel: _p, ...rest } = t as TerminalTab; void _p;
+        return toPane === "right"
+          ? ({ ...rest, panel: "right" } as TerminalTab)
+          : ({ ...rest } as TerminalTab);
+      });
+      const mainTabs = next.filter(
+        t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"),
+      );
+      const rightTabs = next.filter(
+        t => t.type === "terminal" && (t as TerminalTab).panel === "right",
+      );
+      // Never strand the main pane with no content.
+      if (toPane === "right" && mainTabs.length === 0) return s;
+
+      const patch: Partial<AppState> = {
+        tabs: { ...s.tabs, [wsId]: next },
+        activePane: { ...s.activePane, [wsId]: toPane },
+      };
+
+      if (toPane === "right") {
+        patch.activeRightTab = { ...s.activeRightTab, [wsId]: tabId };
+        if (s.activeTab[wsId] === tabId) {
+          patch.activeTab = { ...s.activeTab, [wsId]: mainTabs[mainTabs.length - 1]?.id ?? "" };
+        }
+        if (!s.rightSplit[wsId]) {
+          const nextRS = { ...s.rightSplit, [wsId]: true };
+          try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
+          patch.rightSplit = nextRS;
+        }
+      } else {
+        patch.activeTab = { ...s.activeTab, [wsId]: tabId };
+        if (rightTabs.length === 0) {
+          // Move emptied the right pane → close the split + forget its ratio.
+          const nextRS = { ...s.rightSplit, [wsId]: false };
+          try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
+          patch.rightSplit = nextRS;
+          const { [wsId]: _r, ...ratioRest } = s.rightSplitRatio; void _r;
+          patch.rightSplitRatio = ratioRest;
+          patch.activeRightTab = { ...s.activeRightTab, [wsId]: "" };
+        } else if (s.activeRightTab[wsId] === tabId) {
+          patch.activeRightTab = { ...s.activeRightTab, [wsId]: rightTabs[rightTabs.length - 1]?.id ?? "" };
+        }
+      }
+      focusId = tabId;
+      return patch;
+    });
+    get().syncDurableRightTabs(wsId);
+    get().syncDurableTabs(wsId);
+    if (focusId) focusTerminalTab(focusId);
+  },
+  ensureDefaultRightTabs: (wsId) => {
+    const s = get();
+    const ws = s.workspaces.find(w => w.id === wsId);
+    const persisted = ws?.right_split_tabs ?? [];
+    if (!persisted.length) return;
+    // Already have right-panel tabs in memory — leave them alone.
+    const existingRight = (s.tabs[wsId] ?? []).filter(
+      t => t.type === "terminal" && (t as TerminalTab).panel === "right",
+    );
+    if (existingRight.length) return;
+    const restored: TerminalTab[] = persisted.map(pt => ({
+      id: pt.id,
+      type: "terminal",
+      cli: pt.cli,
+      panel: "right" as const,
+      title: pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli, s.agents),
+      customTitle: !!pt.custom_title,
+      is_default: false,
+      ...(pt.command ? { command: pt.command } : {}),
+      ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+    }));
+    const firstRight = restored[0];
+    set(state => {
+      const nextRS = { ...state.rightSplit, [wsId]: true };
+      try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
+      return {
+        tabs: { ...state.tabs, [wsId]: [...(state.tabs[wsId] ?? []), ...restored] },
+        activeRightTab: { ...state.activeRightTab, [wsId]: firstRight.id },
+        rightSplit: nextRS,
+      };
+    });
+  },
+  syncDurableRightTabs: (wsId) => {
+    const st = get();
+    const ws = st.workspaces.find(w => w.id === wsId);
+    if (!ws) return;
+    const live = durableRightPersistedTabs(st.tabs[wsId]);
+    const prev = ws.right_split_tabs ?? [];
+    if (JSON.stringify(prev) === JSON.stringify(live)) return;
+    set(s => ({
+      workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, right_split_tabs: live } : w),
+    }));
+    ipc.workspaceSetRightTabs(wsId, live).catch(() => {});
+  },
 
   ensureDefaultTab: (wsId, cli) => {
     const s = get();
     // Already mounted (visited this session) → leave the live tabs alone.
-    if ((s.tabs[wsId] || []).length) return;
+    // Count only MAIN-panel tabs — right-panel tabs live in the same array
+    // but should not prevent seeding the main agent tab on first visit.
+    const mainTabs = (s.tabs[wsId] || []).filter(
+      t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"),
+    );
+    if (mainTabs.length) return;
     const ws = s.workspaces.find(w => w.id === wsId);
     const persisted = ws?.persisted_tabs ?? [];
 
@@ -603,35 +915,63 @@ export const useApp = create<AppState>((set, get) => ({
   forgetTab: (wsId, tabId) => {
     // Explicit "close & forget": drop the agent from the durable set so it
     // does NOT come back on reopen, then close it. Order matters — remove from
-    // persisted BEFORE closeTab's syncDurableTabs runs, so the merge can't
-    // re-add it.
+    // persisted BEFORE close's syncDurable* runs, so the merge can't re-add it.
+    const tab = (get().tabs[wsId] ?? []).find(t => t.id === tabId);
+    const isRight = tab?.type === "terminal" && (tab as TerminalTab).panel === "right";
     const ws = get().workspaces.find(w => w.id === wsId);
-    if (ws) {
-      const next = (ws.persisted_tabs ?? []).filter(t => t.id !== tabId);
-      set(s => ({ workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: next } : w) }));
-      ipc.workspaceSetTabs(wsId, next).catch(() => {});
+    if (isRight) {
+      if (ws) {
+        const next = (ws.right_split_tabs ?? []).filter(t => t.id !== tabId);
+        set(s => ({ workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, right_split_tabs: next } : w) }));
+        ipc.workspaceSetRightTabs(wsId, next).catch(() => {});
+      }
+      get().closeRightTab(wsId, tabId);
+    } else {
+      if (ws) {
+        const next = (ws.persisted_tabs ?? []).filter(t => t.id !== tabId);
+        set(s => ({ workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: next } : w) }));
+        ipc.workspaceSetTabs(wsId, next).catch(() => {});
+      }
+      get().closeTab(wsId, tabId);
     }
-    get().closeTab(wsId, tabId);
   },
 
   setTabSessionId: (wsId, tabId, uuid) => {
     const val = uuid || undefined;
+    const tab = (get().tabs[wsId] ?? []).find(t => t.id === tabId);
+    const isRight = tab?.type === "terminal" && (tab as TerminalTab).panel === "right";
     set(s => {
       const list = s.tabs[wsId];
       const nextTabs = list
         ? list.map(t => (t.id === tabId && t.type === "terminal" ? { ...t, sessionId: val } as Tab : t))
         : list;
+      const wsUpdate = isRight
+        ? {
+            workspaces: s.workspaces.map(w => w.id !== wsId ? w : {
+              ...w,
+              right_split_tabs: (w.right_split_tabs ?? []).map(pt =>
+                pt.id === tabId ? { ...pt, session_id: uuid || null } : pt,
+              ),
+            }),
+          }
+        : {
+            workspaces: s.workspaces.map(w => w.id !== wsId ? w : {
+              ...w,
+              persisted_tabs: (w.persisted_tabs ?? []).map(pt =>
+                pt.id === tabId ? { ...pt, session_id: uuid || null } : pt,
+              ),
+            }),
+          };
       return {
         ...(nextTabs ? { tabs: { ...s.tabs, [wsId]: nextTabs } } : {}),
-        workspaces: s.workspaces.map(w => w.id !== wsId ? w : {
-          ...w,
-          persisted_tabs: (w.persisted_tabs ?? []).map(pt =>
-            pt.id === tabId ? { ...pt, session_id: uuid || null } : pt,
-          ),
-        }),
+        ...wsUpdate,
       };
     });
-    ipc.workspaceSetTabSessionId(wsId, tabId, uuid).catch(() => {});
+    if (isRight) {
+      ipc.workspaceSetRightTabSessionId(wsId, tabId, uuid).catch(() => {});
+    } else {
+      ipc.workspaceSetTabSessionId(wsId, tabId, uuid).catch(() => {});
+    }
   },
 
   setWorkspaceYolo: (wsId, yolo) => set(s => ({
@@ -665,7 +1005,7 @@ export const useApp = create<AppState>((set, get) => ({
   addTab: (wsId, tab) => {
     set(s => {
       const next = [...(s.tabs[wsId] || []), tab];
-      return { tabs: { ...s.tabs, [wsId]: next }, activeTab: { ...s.activeTab, [wsId]: tab.id } };
+      return { tabs: { ...s.tabs, [wsId]: next }, activeTab: { ...s.activeTab, [wsId]: tab.id }, activePane: { ...s.activePane, [wsId]: "main" } };
     });
     // Persist the new durable set (a `+` agent tab is restorable; a shell
     // tab is filtered out by syncDurableTabs).
@@ -705,14 +1045,19 @@ export const useApp = create<AppState>((set, get) => ({
     if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
     const next = list.filter(t => t.id !== tabId);
     const wasActive = s.activeTab[wsId] === tabId;
+    // Active-tab replacement considers only other MAIN-panel tabs — right-panel
+    // tabs are always present in the list but not shown in the main strip.
+    // Use mainIdx (position in the main-only list) not idx (full-array position)
+    // so "go to previous" is correct when right-panel tabs sit before the closing tab.
+    const mainList = list.filter(t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"));
+    const mainIdx = mainList.findIndex(t => t.id === tabId);
+    const mainNext = mainList.filter(t => t.id !== tabId);
     let active = s.activeTab[wsId];
-    if (wasActive) active = next[Math.max(0, idx - 1)]?.id || next[0]?.id || "";
-    // Last tab closed → put the workspace to sleep. activeWorkspaceId
-    // clears so the dashboard takes over the main pane; the workspace
-    // also drops out of mountedWorkspaces below so xterm.js + every
-    // PTY for it tear down. Re-entering via the sidebar re-mounts
-    // and ensureDefaultTab spawns a fresh agent tab.
-    const isLast = next.length === 0;
+    if (wasActive) active = mainNext[Math.max(0, mainIdx - 1)]?.id || mainNext[0]?.id || "";
+    // Last MAIN-panel tab closed → put the workspace to sleep. Right-panel tabs
+    // are not counted: they are managed separately and should not keep the
+    // workspace alive with an empty left pane.
+    const isLast = mainNext.length === 0;
     // Closed the focused tab and another tab survives → focus follows
     // to the tab that takes over (the previous one), so ⌘W-ing through
     // tabs keeps keyboard focus in the main pane.
@@ -778,6 +1123,7 @@ export const useApp = create<AppState>((set, get) => ({
     });
     return {
       activeTab: { ...s.activeTab, [wsId]: tabId },
+      activePane: { ...s.activePane, [wsId]: "main" },
       tabs: { ...s.tabs, [wsId]: next },
     };
   }),
@@ -872,8 +1218,9 @@ export const useApp = create<AppState>((set, get) => ({
       const next = list.map(t => t.id === tabId ? { ...t, title: trimmed, customTitle: true } as Tab : t);
       return { tabs: { ...s.tabs, [wsId]: next } };
     });
-    // Persist the renamed title so it survives restart.
+    // Persist the renamed title so it survives restart (both panels).
     get().syncDurableTabs(wsId);
+    get().syncDurableRightTabs(wsId);
   },
 
   clearTabCustomTitle: (wsId, tabId) => {
@@ -883,6 +1230,7 @@ export const useApp = create<AppState>((set, get) => ({
       return { tabs: { ...s.tabs, [wsId]: next } };
     });
     get().syncDurableTabs(wsId);
+    get().syncDurableRightTabs(wsId);
   },
 
   setTabLiveTitle: (wsId, tabId, liveTitle) => set(s => {
@@ -944,7 +1292,9 @@ export const useApp = create<AppState>((set, get) => ({
     //     OUTSIDE the grace window, working applies normally — so the
     //     spinner + progress bar show right after a fresh submit.
     let effective = state;
-    if (s.activeWorkspaceId === wsId && s.activeTab[wsId] === tabId) {
+    const isFocused = s.activeWorkspaceId === wsId &&
+      (s.activeTab[wsId] === tabId || s.activeRightTab[wsId] === tabId);
+    if (isFocused) {
       if (effective === "done") {
         effective = "idle";
       } else if (effective === "working") {
@@ -994,6 +1344,7 @@ export const useActiveWorkspace = () => useApp(s => {
   if (!id) return null;
   return s.workspaces.find(w => w.id === id) ?? null;
 });
+/** All tabs for a workspace (main panel + right panel). */
 export const useWorkspaceTabs = (wsId: string | null | undefined) =>
   useApp(s => (wsId ? (s.tabs[wsId] ?? EMPTY_TABS) : EMPTY_TABS));
 export const useActiveTabId = (wsId: string | null | undefined) =>

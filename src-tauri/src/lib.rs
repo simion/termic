@@ -289,6 +289,11 @@ pub struct Workspace {
     /// (restore) — that asymmetry is the whole point.
     #[serde(default)]
     pub persisted_tabs: Vec<PersistedTab>,
+    /// Durable agent tabs in the right split. Analogous to `persisted_tabs`
+    /// but scoped to the right-panel split. Same quit-restore / X-forget
+    /// semantics. Shell tabs are excluded (no session to resume).
+    #[serde(default)]
+    pub right_split_tabs: Vec<PersistedTab>,
 }
 
 /// One durable agent tab. `session_id` is termic's own per-tab session
@@ -1492,6 +1497,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         custom_command,
         resume_override: None,
         persisted_tabs: Vec::new(),
+        right_split_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1674,6 +1680,7 @@ fn workspace_import_worktree(
         custom_command: None,
         resume_override: None,
         persisted_tabs: Vec::new(),
+        right_split_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1910,6 +1917,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         custom_command: None,
         resume_override: None,
         persisted_tabs: Vec::new(),
+        right_split_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2277,6 +2285,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         custom_command: None,
         resume_override: None,
         persisted_tabs: Vec::new(),
+        right_split_tabs: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2568,6 +2577,66 @@ fn workspace_set_tab_session_id(id: String, tab_id: String, uuid: String) -> Res
         // The tab isn't in the durable set yet (set_tabs lands right after
         // a mint on a brand-new tab). Not an error — the eventual set_tabs
         // call records it and a later mint re-pins. Swallow quietly.
+        None => return Ok(()),
+    };
+    let next = if uuid.is_empty() { None } else { Some(uuid) };
+    if tab.session_id == next {
+        return Ok(());
+    }
+    tab.session_id = next;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Mirror of `workspace_set_tabs` for the right-split panel. Rewrites
+/// `right_split_tabs` with the same merge semantics (stored session_ids
+/// carry forward by tab id so a layout rewrite never wipes a minted uuid).
+#[tauri::command]
+fn workspace_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let prior: std::collections::HashMap<String, Option<String>> = w
+        .right_split_tabs
+        .iter()
+        .map(|t| (t.id.clone(), t.session_id.clone()))
+        .collect();
+    let next: Vec<PersistedTab> = tabs
+        .into_iter()
+        .map(|t| PersistedTab {
+            session_id: prior.get(&t.id).cloned().flatten().or(t.session_id),
+            id: t.id,
+            cli: t.cli,
+            title: t.title,
+            custom_title: t.custom_title,
+            is_default: t.is_default,
+            command: t.command,
+        })
+        .collect();
+    let same = next.len() == w.right_split_tabs.len()
+        && next.iter().zip(w.right_split_tabs.iter()).all(|(a, b)| {
+            a.id == b.id
+                && a.cli == b.cli
+                && a.title == b.title
+                && a.custom_title == b.custom_title
+                && a.is_default == b.is_default
+                && a.command == b.command
+                && a.session_id == b.session_id
+        });
+    if same {
+        return Ok(());
+    }
+    w.right_split_tabs = next;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Mirror of `workspace_set_tab_session_id` for right-split tabs.
+#[tauri::command]
+fn workspace_set_right_tab_session_id(id: String, tab_id: String, uuid: String) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let tab = match w.right_split_tabs.iter_mut().find(|t| t.id == tab_id) {
+        Some(t) => t,
         None => return Ok(()),
     };
     let next = if uuid.is_empty() { None } else { Some(uuid) };
@@ -6279,6 +6348,7 @@ pub fn run() {
             repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_set_tabs, workspace_set_tab_session_id,
+            workspace_set_right_tabs, workspace_set_right_tab_session_id,
             workspace_grep_start, workspace_grep_cancel,
             workspace_spotlight_start, workspace_spotlight_stop, workspace_spotlight_resync, workspace_spotlight_status,
             workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,

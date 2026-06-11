@@ -6,14 +6,16 @@
 // instead of unmount) — terminals MUST keep their xterm instances alive.
 
 import { lazy, Suspense, useEffect, useRef } from "react";
-import type { Workspace } from "@/lib/types";
+import type { Workspace, TerminalTab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
+import { workDoneCapable } from "@/lib/agents";
 import { usePrefs, currentTerminalTheme } from "@/store/prefs";
 import { TabBar } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { X, Plus, TerminalSquare, ChevronDown, ChevronUp } from "lucide-react";
+// X/Plus/TerminalSquare used in BottomTabPill and bottom split strip.
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
@@ -25,33 +27,38 @@ const isMarkdownPath = (p: string) => /\.(md|markdown|mdx)$/i.test(p);
 
 const DEFAULT_SPLIT_HEIGHT = 240;
 const MIN_HEIGHT = 80;
+const DEFAULT_SPLIT_WIDTH = 360;
+const MIN_WIDTH = 120;
 
 function BottomTabPill({ title, active, onSelect, onClose }: {
   title: string; active: boolean; canClose?: boolean; onSelect: () => void; onClose: () => void;
 }) {
-  // Geometry mirrors TabBar.tsx's TabPill: h-7 / rounded-md / text-[13.5px]
-  // / h-4 icons. So the split-strip below the agent terminal feels like the
-  // *same* tab system as the main strip up top, not a separate mini-strip.
+  // Matches the main/right TabPill design (full-height browser tab, bg-base
+  // when active + 2.5px accent underline + border-r separators in the
+  // tab-separator color) so every tab strip in the app reads as one system.
   return (
     <div
       onClick={onSelect}
       className={cn(
-        "group flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13.5px] transition-colors max-w-[220px]",
+        "group relative flex h-full cursor-pointer select-none items-center gap-1.5 border-r border-[var(--color-border-soft)] px-3 text-[12.5px] transition-colors min-w-[140px] max-w-[260px]",
         active
-          ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
-          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
+          ? "bg-[var(--color-bg)] text-[var(--color-fg)]"
+          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       <TerminalSquare className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
-      <span className="truncate">{title}</span>
+      <span className="min-w-0 flex-1 truncate" title={title}>{title}</span>
       {/* Close button always visible — closing the last shell tab
           also collapses the split (handled by the store's
           closeBottomTab → toggleSplit fallback if count hits 0). */}
       <button
         title="Close shell"
-        className="ml-0.5 rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+        className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
         onClick={(e) => { e.stopPropagation(); onClose(); }}
       ><X className="h-3 w-3" /></button>
+      {active && (
+        <span className="absolute inset-x-0 bottom-0 h-[2.5px] bg-[var(--color-accent)]" />
+      )}
     </div>
   );
 }
@@ -70,6 +77,27 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   const addBottomTab = useApp(s => s.addBottomTab);
   const closeBottomTab = useApp(s => s.closeBottomTab);
   const setActiveBottom = useApp(s => s.setActiveBottomTab);
+  const setBottomLiveTitle = useApp(s => s.setBottomTabLiveTitle);
+
+  const rightSplit       = useApp(s => !!s.rightSplit[ws.id]);
+  const rightSplitRatio  = useApp(s => s.rightSplitRatio[ws.id] ?? 0.5);
+  const setRightRatio    = useApp(s => s.setRightSplitRatio);
+  const activeRight      = useApp(s => s.activeRightTab[ws.id]);
+  const addRightTab      = useApp(s => s.addRightTab);
+  const ensureRightTabs  = useApp(s => s.ensureDefaultRightTabs);
+
+  // Fade the bottom-strip queue button when a right-pane agent is focused —
+  // the right footer button (see FooterBar) takes over for that agent.
+  const wvActivePane = useApp(s => s.activePane[ws.id] ?? "main");
+  const wvAgents = useApp(s => s.agents);
+  const wvRightCli = useApp(s => {
+    const id = s.activeRightTab[ws.id];
+    const t = (s.tabs[ws.id] ?? []).find(x => x.id === id);
+    return t && t.type === "terminal" ? t.cli : null;
+  });
+  const rightHasAgent =
+    rightSplit && wvRightCli != null && workDoneCapable(wvRightCli, wvAgents);
+  const rightAgentFocused = rightHasAgent && wvActivePane === "right";
 
   // Subscribe to themeMode so the terminals-area bg recomputes when the
   // user switches themes — currentTerminalTheme() reads the live store but
@@ -85,25 +113,92 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
     if (split && (!bottomTabs || bottomTabs.length === 0)) addBottomTab(ws.id);
   }, [split, bottomTabs, ws.id, addBottomTab]);
 
+  // On first open of the right split, either restore persisted agent tabs
+  // (ensureDefaultRightTabs) or seed a fresh shell tab. The ensure call
+  // is a no-op when right_split_tabs is empty.
+  useEffect(() => {
+    if (!rightSplit) return;
+    ensureRightTabs(ws.id);
+    const s = useApp.getState();
+    const hasRight = (s.tabs[ws.id] ?? []).some(
+      t => t.type === "terminal" && (t as TerminalTab).panel === "right",
+    );
+    if (!hasRight) addRightTab(ws.id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rightSplit, ws.id]);
+
+  // Default ratio to 0.5 on first open (no persisted ratio yet).
+  useEffect(() => {
+    if (!rightSplit) return;
+    const stored = useApp.getState().rightSplitRatio[ws.id];
+    if (stored == null) setRightRatio(ws.id, 0.5);
+  }, [rightSplit, ws.id, setRightRatio]);
+
   const containerRef = useRef<HTMLDivElement>(null);
+  const hRowRef      = useRef<HTMLDivElement>(null);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <TabBar ws={ws} />
       <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
-        {/* Top: tab content (agent terminal / editor / diff). */}
-        <div className="relative min-h-0 flex-1">
-          {tabs.map(t => (
+        {/* Horizontal row: main tab content + optional right split. */}
+        <div ref={hRowRef} className="flex min-h-0 flex-1">
+          {/* Left: main-panel tab content (agent terminal / editor / diff).
+              Right-panel tabs are rendered in the right split below. */}
+          <div data-main-content="" className="relative min-h-0 flex-1 min-w-0">
+            {tabs.filter(t => !(t.type === "terminal" && (t as TerminalTab).panel === "right")).map(t => (
+              <div
+                key={t.id}
+                className="absolute inset-0"
+                style={{ visibility: t.id === activeId ? "visible" : "hidden", zIndex: t.id === activeId ? 1 : 0 }}
+              >
+                {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeId} />}
+                {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
+                {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
+              </div>
+            ))}
+          </div>
+
+          {/* Optional right split: agent or shell tabs to the right of the
+              agent. The tab strip lives in TabBar (same row as agent tabs).
+              Uses TerminalPane so agents can be placed here with full
+              session-resume and attention-tracking support. */}
+          {rightSplit && (
             <div
-              key={t.id}
-              className="absolute inset-0"
-              style={{ visibility: t.id === activeId ? "visible" : "hidden", zIndex: t.id === activeId ? 1 : 0 }}
+              data-right-split=""
+              // 1px border-l (tab-separator color) mirrors the right tab strip
+              // in TabBar so the separator is continuous AND crisp — a wider
+              // 3px band at this low opacity sat on a sub-pixel boundary and
+              // read as fuzzy. With box-sizing: border-box the ResizeHandle's
+              // `left-0` resolves inside this border, so `-ml-px` lands the
+              // visible 1px handle exactly on it (and aligned with the strip).
+              className="relative flex shrink-0 flex-col border-l-2 border-[var(--color-border-soft)]"
+              style={{ width: `${rightSplitRatio * 100}%`, backgroundColor: xtermBg }}
             >
-              {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeId} />}
-              {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
-              {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
+              <ResizeHandle
+                direction="x"
+                className="left-0"
+                alwaysVisible
+                onDrag={(dx) => {
+                  const containerW = hRowRef.current?.clientWidth ?? 800;
+                  if (containerW === 0) return;
+                  const cur = useApp.getState().rightSplitRatio[ws.id] ?? 0.5;
+                  const newRatio = (cur * containerW - dx) / containerW;
+                  setRightRatio(ws.id, newRatio);
+                }}
+              />
+              {(tabs.filter(t => t.type === "terminal" && (t as TerminalTab).panel === "right") as TerminalTab[]).map(t => (
+                <div
+                  key={t.id}
+                  data-tab-id={t.id}
+                  className="absolute inset-0"
+                  style={{ visibility: t.id === activeRight ? "visible" : "hidden", zIndex: t.id === activeRight ? 1 : 0 }}
+                >
+                  <TerminalPane ws={ws} tab={t} active={t.id === activeRight} />
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
 
         {/* Optional bottom split: drag handle + tab strip + scratch shells. */}
@@ -145,12 +240,12 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 {/* Queue affordance pinned far LEFT so it's always seen; the
                     shell tabs start after a separator. The bottom status-bar
                     copy is hidden while the split is open — see FooterBar. */}
-                <MessageQueueButton wsId={ws.id} compact />
+                <MessageQueueButton wsId={ws.id} compact className={cn(rightAgentFocused && "opacity-40 transition-opacity")} />
                 <div className="mx-1.5 h-5 w-px shrink-0 bg-[var(--color-border-soft)]" />
                 {(bottomTabs || []).map(t => (
                   <BottomTabPill
                     key={t.id}
-                    title={t.title}
+                    title={t.liveTitle || t.title}
                     active={t.id === activeBottom}
                     canClose={(bottomTabs?.length ?? 0) > 1}
                     onSelect={() => setActiveBottom(ws.id, t.id)}
@@ -162,13 +257,26 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   onClick={() => addBottomTab(ws.id)}
                   className="ml-1 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                 ><Plus className="h-4 w-4" /></button>
-                <button
-                  title={collapsed ? "Expand terminal" : "Collapse terminal"}
-                  onClick={() => toggleCollapsed(ws.id)}
-                  className="ml-auto rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-                >
-                  {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                </button>
+                {/* Right group, pushed far right: the right-pane agent's queue
+                    button (dimmed unless that pane is focused) sits next to the
+                    collapse toggle. */}
+                <div className="ml-auto flex items-center gap-0.5">
+                  {rightHasAgent && (
+                    <MessageQueueButton
+                      wsId={ws.id}
+                      preferTabId={activeRight}
+                      compact
+                      className={cn(wvActivePane !== "right" && "opacity-40 transition-opacity")}
+                    />
+                  )}
+                  <button
+                    title={collapsed ? "Expand terminal" : "Collapse terminal"}
+                    onClick={() => toggleCollapsed(ws.id)}
+                    className="rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+                  >
+                    {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
               {/* Terminals: render each tab as an AuxTerminal kept mounted with
                   visibility toggle, same as the main tabs — switching tabs must
@@ -201,6 +309,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                       // over (or the main pane if this was the last one),
                       // so Ctrl+D'ing through shells never dumps focus.
                       onExited={() => closeBottomTab(ws.id, t.id)}
+                      onTitle={(title) => setBottomLiveTitle(ws.id, t.id, title)}
                     />
                   </div>
                 ))}

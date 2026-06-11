@@ -38,6 +38,7 @@ export type ShortcutId =
   | "close-tab"
   | "clear-terminal"
   | "new-split-terminal"
+  | "new-right-split-terminal"
   | "open-settings"
   | "open-shortcuts"
   | "file-finder"
@@ -103,6 +104,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("k", { cmd: true }) },
   { id: "new-split-terminal", group: "Terminal", label: "New bottom-split terminal",
     defaultBinding: B("d", { cmd: true, shift: true }) },
+  { id: "new-right-split-terminal", group: "Terminal", label: "New right-split terminal",
+    defaultBinding: B("d", { cmd: true }) },
 
   // General
   { id: "open-settings", group: "General", label: "Open settings",

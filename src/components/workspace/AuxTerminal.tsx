@@ -25,7 +25,12 @@ import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg 
 // `currentTerminalTheme()` picks the matching palette at mount; the
 // themeMode effect below pushes updates into live instances.
 
-export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; active: boolean; onExited?: () => void }) {
+export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: string; active: boolean; onExited?: () => void; onTitle?: (title: string) => void }) {
+  // Keep the latest onTitle in a ref so the long-lived spawn effect's
+  // onTitleChange handler always calls the current callback without
+  // re-running (and respawning the PTY) when the parent re-renders.
+  const onTitleRef = useRef(onTitle);
+  onTitleRef.current = onTitle;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef  = useRef<FitAddon | null>(null);
@@ -140,6 +145,9 @@ export function AuxTerminal({ wsPath, active, onExited }: { wsPath: string; acti
         });
         term.onData(d => ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(d))).catch(() => {}));
         term.onResize(({ cols, rows }) => ipc.ptyResize(ptyId, rows, cols).catch(() => {}));
+        // Surface the shell's OSC 0/2 title (running command / cwd) so the
+        // bottom tab can show it, matching the main agent tabs.
+        term.onTitleChange(t => onTitleRef.current?.(t));
         setTimeout(() => { try { fit.fit(); } catch {} }, 200);
       } catch (e) { term.write(`\x1b[1;31mspawn failed: ${e}\x1b[0m\r\n`); }
     })();
