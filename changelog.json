@@ -1,16 +1,39 @@
 {
   "versions": [
     {
-      "version": "0.10.11",
+      "version": "0.11.0",
       "date": "2026-06-11",
-      "summary": "DontPayFull.com joins as Termic's first company sponsor. Quality-of-life improvements across the app.",
+      "summary": "Split a workspace into two side-by-side panes. DontPayFull.com joins as our first company sponsor.",
       "sections": [
+        {
+          "label": "Features",
+          "items": [
+            "Split a workspace into two side-by-side panes (#25). Each pane has its own tab strip and can run agents, terminals, or shells, and you can drag a tab between panes to move it.",
+            "Each pane tracks focus on its own: only the active pane's tab is highlighted, and opening a file or queueing a message targets the focused pane.",
+            "The message queue button follows the focused pane, so you can queue work for either agent independently."
+          ]
+        },
+        {
+          "label": "Improvements",
+          "items": [
+            "Unified tab design across the main, right, and bottom terminal strips.",
+            "Bottom terminal tabs now show the live title emitted by the shell.",
+            "Crisper, consistent pane separators."
+          ]
+        },
         {
           "label": "Sponsors",
           "items": [
             "[DontPayFull.com](https://www.dontpayfull.com) is Termic's first company sponsor. If your company builds on AI developer tools and wants to support open source, consider joining them on [GitHub Sponsors](https://github.com/simion/termic#sponsors)."
           ]
-        },
+        }
+      ]
+    },
+    {
+      "version": "0.10.11",
+      "date": "2026-06-11",
+      "summary": "Quality-of-life improvements across the app.",
+      "sections": [
         {
           "label": "Features",
           "items": [
