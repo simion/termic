@@ -182,6 +182,8 @@ export interface Workspace {
    *  its X drops it from this list (forget); quitting the app leaves it
    *  intact (restore). */
   persisted_tabs?: PersistedTab[];
+  /** Same as `persisted_tabs` but for right-split panel agents. */
+  right_split_tabs?: PersistedTab[];
 }
 
 /** One durable agent tab persisted on a workspace. Mirror of
@@ -464,6 +466,9 @@ export interface TerminalTab extends BaseTab {
    *  sentinel `"shell"` for a plain login-shell tab, OR `"custom"` for a
    *  workspace launched with a user-supplied command (see `command`). */
   cli: string;
+  /** When set, this tab lives in a split panel rather than the main pane.
+   *  `"right"` = right-split panel. Absent/undefined = main panel. */
+  panel?: "right";
   /** Launch command for `cli === "custom"` tabs — run through a login
    *  shell (`zsh -lc`). Seeded from the workspace's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */

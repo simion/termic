@@ -28,16 +28,23 @@ function tabLabel(t: TerminalTab): string {
   return t.customTitle ? t.title : (t.liveTitle || t.title);
 }
 
-export function MessageQueueButton({ wsId, compact = false, className }: {
+export function MessageQueueButton({ wsId, compact = false, className, preferTabId }: {
   wsId: string;
   /** Icon-only rendering for tight spots like the split terminal's tab strip
    *  (vs. icon + "Queue messages" text in the bottom status bar). */
   compact?: boolean;
   /** Extra classes for the trigger wrapper (e.g. `ml-auto` to sit by a caret). */
   className?: string;
+  /** Override which agent this button defaults to (badge + pre-selected
+   *  target). Used by the right-split footer button so it targets the right
+   *  pane's agent instead of the main pane's active tab. */
+  preferTabId?: string;
 }) {
   const tabsForWs = useApp(s => s.tabs[wsId]);
   const activeTabId = useApp(s => s.activeTab[wsId]);
+  // The agent this button defaults to: an explicit override (right-pane
+  // button) or the main pane's active tab.
+  const defaultTabId = preferTabId ?? activeTabId;
   const agents = useApp(s => s.agents);
   const patchTab = useApp(s => s.patchTab);
 
@@ -54,7 +61,7 @@ export function MessageQueueButton({ wsId, compact = false, className }: {
   // The button badge reflects ONLY the active agent (the one in the main pane),
   // not a workspace-wide sum — a count from a different agent's queue here is
   // confusing. The popover still lists every agent via the selector.
-  const activeAgent = targets.find(t => t.id === activeTabId);
+  const activeAgent = targets.find(t => t.id === defaultTabId);
   const queuedCount = (activeAgent?.queue ?? []).reduce((sum, q) => sum + q.remaining, 0);
   const queueRunning = !!activeAgent?.queueActive;
   const showBadge = queuedCount > 0;
@@ -68,7 +75,7 @@ export function MessageQueueButton({ wsId, compact = false, className }: {
 
   const target =
     targets.find(t => t.id === selectedTabId) ??
-    targets.find(t => t.id === activeTabId) ??
+    targets.find(t => t.id === defaultTabId) ??
     targets[0] ??
     null;
   const queue = target?.queue ?? [];
@@ -78,11 +85,11 @@ export function MessageQueueButton({ wsId, compact = false, className }: {
   // clutter. Anchored on activeTabId (not the live selection) so pills don't
   // vanish as you click between them.
   const agentQueued = (t: TerminalTab) => (t.queue ?? []).reduce((s, q) => s + q.remaining, 0);
-  const selectorAgents = targets.filter(t => t.id === activeTabId || (t.queue?.length ?? 0) > 0);
+  const selectorAgents = targets.filter(t => t.id === defaultTabId || (t.queue?.length ?? 0) > 0);
 
   function onOpenChange(next: boolean) {
     if (next) {
-      const preferred = targets.find(t => t.id === activeTabId) ?? targets[0];
+      const preferred = targets.find(t => t.id === defaultTabId) ?? targets[0];
       setSelectedTabId(preferred?.id ?? null);
       setDraft("");
       setRepeat(1);

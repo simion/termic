@@ -25,7 +25,7 @@ import { effectiveSandboxMode } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, decideResume } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, decideResume, workDoneCapable } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
@@ -1181,7 +1181,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // that's done is done. The "exited / Restart" overlay is for
           // agents only, where an unexpected death is worth surfacing.
           if (tab.cli === "shell") {
-            useApp.getState().closeTab(ws.id, tab.id);
+            if (tab.panel === "right") {
+              useApp.getState().closeRightTab(ws.id, tab.id);
+            } else {
+              useApp.getState().closeTab(ws.id, tab.id);
+            }
             return;
           }
           markAttention(ws.id, tab.id, "exit");
@@ -1548,7 +1552,16 @@ export function TerminalPane({ ws, tab, active }: Props) {
   }, [ws.id, tab.id, fireDone]);
 
   return (
-    <div className="relative flex h-full w-full flex-col" data-tab-id={tab.id}>
+    <div
+      className="relative flex h-full w-full flex-col"
+      data-tab-id={tab.id}
+      // Clicking into either pane's terminal makes that pane the focused one,
+      // so the single-active-tab cue and file-open routing follow the cursor.
+      // Capture phase so it fires before xterm grabs the mousedown.
+      onMouseDownCapture={() =>
+        useApp.getState().setActivePane(ws.id, tab.panel === "right" ? "right" : "main")
+      }
+    >
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
       {searchOpen && (
         <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 shadow-lg">
@@ -1610,6 +1623,22 @@ export function FooterBar({ ws, sandboxWarning }: {
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
   const mode = effectiveSandboxMode(ws);
 
+  // Right-split queue affordance: when the user is focused on a right-pane
+  // AGENT (not a plain shell), fade the main/left queue button and surface a
+  // right-aligned one targeting that agent — so the queue follows the pane.
+  const rightSplitOpen = useApp(s => !!s.rightSplit[ws.id]);
+  const footerActivePane = useApp(s => s.activePane[ws.id] ?? "main");
+  const rightActiveId = useApp(s => s.activeRightTab[ws.id]);
+  const agentsReg = useApp(s => s.agents);
+  const rightActiveCli = useApp(s => {
+    const id = s.activeRightTab[ws.id];
+    const t = (s.tabs[ws.id] ?? []).find(x => x.id === id);
+    return t && t.type === "terminal" ? t.cli : null;
+  });
+  const rightHasAgent =
+    rightSplitOpen && rightActiveCli != null && workDoneCapable(rightActiveCli, agentsReg);
+  const rightAgentFocused = rightHasAgent && footerActivePane === "right";
+
   // Live counter. ENFORCING polls the deny counter ("N blocked");
   // MONITORING polls the access counter ("N accesses"). Cheap (one
   // mutex lookup); 2s cadence.
@@ -1670,7 +1699,12 @@ export function FooterBar({ ws, sandboxWarning }: {
       {/* Queue + Terminal sit on the LEFT (only while the split/aux terminal
           is closed — when open the queue moves into that strip, see
           WorkspaceView). The sandbox status is pushed to the RIGHT. */}
-      {!splitOpen && <MessageQueueButton wsId={ws.id} />}
+      {!splitOpen && (
+        <MessageQueueButton
+          wsId={ws.id}
+          className={cn(rightAgentFocused && "opacity-40 transition-opacity")}
+        />
+      )}
       {/* +Terminal opens the bottom split. Hidden when the split is already
           open — no point offering to add what's there. */}
       {!splitOpen && (
@@ -1690,6 +1724,15 @@ export function FooterBar({ ws, sandboxWarning }: {
           bubble to "open Edit dialog." Chip only shows when sandboxed + we've
           actually seen denies. */}
       <div className="ml-auto flex items-center gap-1.5">
+        {/* Right-pane agent queue button, right-aligned by the sandbox status.
+            Only while no bottom split is open (then it lives in that strip). */}
+        {!splitOpen && rightHasAgent && rightActiveId && (
+          <MessageQueueButton
+            wsId={ws.id}
+            preferTabId={rightActiveId}
+            className={cn(footerActivePane !== "right" && "opacity-40 transition-opacity")}
+          />
+        )}
         {mode !== "off" && total > 0 && (
           <DeniedHostsPopover wsId={ws.id} cli={ws.cli ?? "claude"} count={total} mode={mode} />
         )}

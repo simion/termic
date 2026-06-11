@@ -260,6 +260,12 @@ export const workspaceSetTabs = (id: string, tabs: import("@/lib/types").Persist
  *  Keyed by tab id so several agents in a workspace resume independently. */
 export const workspaceSetTabSessionId = (id: string, tabId: string, uuid: string) =>
   invoke<void>("workspace_set_tab_session_id", { id, tabId, uuid });
+/** Mirror of workspaceSetTabs for right-split panel agent tabs. */
+export const workspaceSetRightTabs = (id: string, tabs: import("@/lib/types").PersistedTab[]) =>
+  invoke<void>("workspace_set_right_tabs", { id, tabs });
+/** Mirror of workspaceSetTabSessionId for right-split panel tabs. */
+export const workspaceSetRightTabSessionId = (id: string, tabId: string, uuid: string) =>
+  invoke<void>("workspace_set_right_tab_session_id", { id, tabId, uuid });
 export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agents_defaults");
 export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
 export const workspaceSendDiffToMain = (id: string) =>

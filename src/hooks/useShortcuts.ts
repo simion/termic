@@ -11,6 +11,7 @@
 //   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
 //   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘])
 //   ⌘W       → close the active tab
+//   ⌘D       → open a new right-split terminal in the active workspace
 //   ⇧⌘D      → open a new bottom-split terminal in the active workspace
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
 //   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings
@@ -20,6 +21,7 @@ import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { requestCloseTab } from "@/lib/closeTab";
 import { bindingMatches, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
+import type { TerminalTab } from "@/lib/types";
 
 export function useShortcuts() {
   useEffect(() => {
@@ -45,11 +47,17 @@ export function useShortcuts() {
 
       const state = useApp.getState();
       const wsId = state.activeWorkspaceId;
-      const tabs = wsId ? state.tabs[wsId] || [] : [];
+      // Right-panel tabs live in the same array but must not appear in
+      // main-strip navigation (⌘1..9, ⇧⌘[/], ⌥⌘←/→) — those shortcuts
+      // target the left agent strip only.
+      const tabs = (wsId ? state.tabs[wsId] || [] : []).filter(
+        t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"),
+      );
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
       const tag = (e.target as HTMLElement | null)?.tagName;
       const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable;
       const inBottom = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
+      const inRight  = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-right-split]");
 
       // Workspace nav cycles only AWAKE workspaces — ones the user has opened
       // at least once + still has tabs in. Order MUST match the sidebar's
@@ -74,7 +82,11 @@ export function useShortcuts() {
               if (w.project_id !== p.id || w.archived) continue;
               rows.push({ wsId: w.id });
               const wsTabs = state.tabs[w.id] ?? [];
-              const terminalTabs = wsTabs.filter(t => t.type === "terminal");
+              // Exclude right-panel tabs from sidebar rows — they live in the
+              // right split and are not navigable via sidebar-prev/next.
+              const terminalTabs = wsTabs.filter(
+                t => t.type === "terminal" && !(t as TerminalTab).panel,
+              );
               const explicit = state.collapsedWorkspaces[w.id];
               const collapsed = explicit ?? (terminalTabs.length <= 1);
               if (!collapsed) {
@@ -250,6 +262,28 @@ export function useShortcuts() {
           return;
         }
 
+        // ⌘D → open right split (if closed) or focus the active right terminal.
+        case "new-right-split-terminal": {
+          if (!wsId) return;
+          e.preventDefault();
+          const splitOpen = !!state.rightSplit[wsId];
+          const hasRightTabs = (state.tabs[wsId] ?? []).some(
+            t => t.type === "terminal" && (t as TerminalTab).panel === "right",
+          );
+          if (!splitOpen) state.toggleRightSplit(wsId);
+          // On first open, ensureDefaultRightTabs runs via WorkspaceView's
+          // useEffect. If there are no persisted right tabs, add a fresh shell.
+          if (!hasRightTabs && splitOpen) state.addRightTab(wsId);
+          const tryFocus = (tries = 20) => {
+            const split = document.querySelector("[data-right-split]");
+            const active = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+            if (active) { active.focus(); return; }
+            if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
+          };
+          tryFocus();
+          return;
+        }
+
         // ⇧⌘B → open the Broadcast dialog for the active workspace.
         case "broadcast":
           if (!wsId) return;
@@ -264,6 +298,8 @@ export function useShortcuts() {
           e.preventDefault();
           if (inBottom()) {
             state.addBottomTab(wsId);
+          } else if (inRight()) {
+            window.dispatchEvent(new CustomEvent("termic-new-right-tab-menu", { detail: { wsId } }));
           } else {
             // Main pane: open the "+" tab menu so the user can pick an agent
             // with the keyboard. The active workspace's TabBar listens.
@@ -283,12 +319,17 @@ export function useShortcuts() {
 
         // ⌘W → close the active tab. ALWAYS preventDefault so the OS doesn't
         // read it as "close window" and quit. Focus-aware for the bottom
-        // split. NO `isTyping` guard (xterm's hidden textarea).
+        // and right splits. NO `isTyping` guard (xterm's hidden textarea).
         case "close-tab": {
           e.preventDefault();
           if (inBottom() && wsId) {
             const bottomId = state.activeBottomTab[wsId];
             if (bottomId) state.closeBottomTab(wsId, bottomId);
+            return;
+          }
+          if (inRight() && wsId) {
+            const rightId = state.activeRightTab[wsId];
+            if (rightId) state.closeRightTab(wsId, rightId);
             return;
           }
           // requestCloseTab confirms first if it's a dirty edit tab.

@@ -16,10 +16,13 @@ interface Props {
   onStart?: () => void;
   /** Optional: called once when drag ends (e.g., persist final value). */
   onEnd?: () => void;
+  /** When true, the handle paints a visible resting line (use for splits where
+   *  the border is the only separator, e.g. the vertical right split). */
+  alwaysVisible?: boolean;
   className?: string;
 }
 
-export function ResizeHandle({ direction, onDrag, onStart, onEnd, className }: Props) {
+export function ResizeHandle({ direction, onDrag, onStart, onEnd, alwaysVisible, className }: Props) {
   const lastRef = useRef<number | null>(null);
 
   function onMouseDown(e: React.MouseEvent) {
@@ -61,7 +64,9 @@ export function ResizeHandle({ direction, onDrag, onStart, onEnd, className }: P
         // Avoids fractional offsets (`-ml-0.5` = -2px on retina but 0px-ish on
         // 1x → sub-pixel placement); -ml-px is exactly 1 device pixel.
         direction === "x"
-          ? "top-0 bottom-0 w-px -ml-px cursor-col-resize"
+          ? alwaysVisible
+            ? "top-0 bottom-0 w-[2px] -ml-[2px] cursor-col-resize"
+            : "top-0 bottom-0 w-px -ml-px cursor-col-resize"
           : "left-0 right-0 h-px -mt-px cursor-row-resize",
         className,
       )}
@@ -72,6 +77,7 @@ export function ResizeHandle({ direction, onDrag, onStart, onEnd, className }: P
       <div
         className={cn(
           "h-full w-full transition-colors group-hover:bg-[var(--color-accent-soft)] group-active:bg-[var(--color-accent)]",
+          alwaysVisible && "bg-[var(--color-border-soft)]",
         )}
       />
       {/* Invisible wider hit area for easier grabbing — 4px on each side of
@@ -80,7 +86,9 @@ export function ResizeHandle({ direction, onDrag, onStart, onEnd, className }: P
         aria-hidden
         className={cn(
           "absolute",
-          direction === "x" ? "top-0 bottom-0 -left-1 -right-1" : "left-0 right-0 -top-1 -bottom-1",
+          direction === "x"
+            ? "top-0 bottom-0 -left-2 -right-2"
+            : "left-0 right-0 -top-1 -bottom-1",
         )}
       />
     </div>
