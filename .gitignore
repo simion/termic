@@ -100,7 +100,11 @@ $RECYCLE.BIN/
 ~/.tauri/
 
 # ── ai assistant scratch / local notes ────────────────────────────────
-.claude/
+# .claude/* (not .claude/) so the SHARED skills dir can be re-included
+# below - git cannot re-include children of an excluded directory.
+# settings.local.json and other per-machine state stay ignored.
+.claude/*
+!.claude/skills/
 .antigravitycli/
 .cursorrules.local
 NOTES.local.md
