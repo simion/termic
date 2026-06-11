@@ -448,12 +448,14 @@ pub struct CreateWorkspaceArgs {
 const APP_DIR: &str = if cfg!(debug_assertions) { "termic_dev" } else { "termic" };
 
 fn data_dir() -> Result<PathBuf> {
-    // Test/automation seam: an explicit TERMIC_DATA_DIR wins over the
-    // platform default, so a driven instance (see automation.rs) runs
-    // against a scratch profile and can't touch the real one. Also handy
-    // for running parallel dev instances side by side.
+    // Test/automation seam (DEBUG BUILDS ONLY): an explicit
+    // TERMIC_DATA_DIR wins over the platform default, so a driven
+    // instance (see automation.rs) runs against a scratch profile and
+    // can't touch the real one. Also handy for parallel dev instances.
+    // Deliberately dead in release: a leaked env var must never silently
+    // relocate the real profile and make the user's workspaces "vanish".
     let p = match std::env::var("TERMIC_DATA_DIR") {
-        Ok(d) if !d.trim().is_empty() => PathBuf::from(d),
+        Ok(d) if cfg!(debug_assertions) && !d.trim().is_empty() => PathBuf::from(d),
         _ => dirs::data_local_dir()
             .ok_or_else(|| anyhow!("no data dir"))?
             .join(APP_DIR),

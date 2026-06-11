@@ -107,6 +107,10 @@ pub fn start(app: tauri::AppHandle) {
 }
 
 fn handle(stream: TcpStream, app: tauri::AppHandle) -> std::io::Result<()> {
+    // A client that connects and never finishes its request must not pin
+    // this thread forever. Only request *reading* races the clock; long
+    // evals respond after reading and are unaffected.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -138,7 +142,13 @@ fn handle(stream: TcpStream, app: tauri::AppHandle) -> std::io::Result<()> {
             }
         }
     }
-    let mut body = vec![0u8; content_len.min(4 * 1024 * 1024)];
+    // Reject oversized bodies outright: silently truncating a script at
+    // 4MB would hand the webview half a program, which fails as a parse
+    // error and reads like a mystery timeout to the driver.
+    if content_len > 4 * 1024 * 1024 {
+        return respond(stream, 413, "text/plain", b"body too large (4MB max)");
+    }
+    let mut body = vec![0u8; content_len];
     if !body.is_empty() {
         reader.read_exact(&mut body)?;
     }
@@ -280,8 +290,14 @@ fn eval_in_webview(app: &tauri::AppHandle, js: &str, timeout_ms: u64) -> Result<
     pending().lock().unwrap().insert(id.clone(), tx);
 
     // The user script becomes the body of an async function: `return`
-    // produces the JSON value of the call. Errors (incl. syntax errors,
-    // which surface as the eval'd IIFE throwing) come back as {ok:false}.
+    // produces the JSON value of the call. The script is passed as a JSON
+    // string literal and compiled via the AsyncFunction constructor inside
+    // a try/catch - NOT spliced into the wrapper source - so a syntax
+    // error comes back as {ok:false} immediately instead of killing the
+    // whole injected script at parse time (which would leave the channel
+    // hanging until the timeout). It also means no script content can
+    // unbalance the wrapper.
+    let js_lit = serde_json::Value::String(js.to_string()).to_string();
     let wrapped = format!(
         r#"(() => {{
             const __send = (ok, value) => {{
@@ -290,16 +306,32 @@ fn eval_in_webview(app: &tauri::AppHandle, js: &str, timeout_ms: u64) -> Result<
                     payload: JSON.stringify({{ ok, value }}),
                 }}).catch(() => {{}});
             }};
+            // String(e) carries "SyntaxError: <message>"; WebKit's .stack
+            // does NOT repeat the message, so concatenate both.
+            const __err = e => String(e) + ((e && e.stack) ? '\n' + e.stack : '');
+            let __fn;
+            try {{
+                const __AF = Object.getPrototypeOf(async function () {{}}).constructor;
+                __fn = new __AF({js_lit});
+            }} catch (e) {{
+                __send(false, __err(e));
+                return;
+            }}
             Promise.resolve().then(async () => {{
-                const __r = await (async () => {{ {js} }})();
+                const __r = await __fn();
                 let __v = null;
                 try {{ __v = __r === undefined ? null : JSON.parse(JSON.stringify(__r)); }}
                 catch {{ __v = String(__r); }}
                 __send(true, __v);
-            }}).catch(e => __send(false, String((e && e.stack) || e)));
+            }}).catch(e => __send(false, __err(e)));
         }})();"#
     );
-    win.eval(&wrapped).map_err(|e| format!("eval failed: {e}"))?;
+    if let Err(e) = win.eval(&wrapped) {
+        // Without this, a failed eval would strand the correlation id in
+        // the pending map forever (the webview never calls back).
+        pending().lock().unwrap().remove(&id);
+        return Err(format!("eval failed: {e}"));
+    }
 
     match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
         Ok(payload) => Ok(payload),
@@ -349,6 +381,7 @@ fn respond(mut stream: TcpStream, status: u16, ctype: &str, body: &[u8]) -> std:
         200 => "OK",
         401 => "Unauthorized",
         404 => "Not Found",
+        413 => "Payload Too Large",
         _ => "Error",
     };
     let head = format!(

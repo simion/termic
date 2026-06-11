@@ -61,9 +61,8 @@ child.on("exit", code => {
 });
 child.on("error", err => { cleanup(); console.error(err); process.exit(1); });
 
-// Every pid below `root` in the process tree, from a single `ps` snapshot
-// (BFS over parent→child links). We tear the dev stack down by WALKING THE
-// TREE rather than killing a process group, because:
+// We tear the dev stack down by WALKING THE TREE (ps snapshot, BFS over
+// parent→child links) rather than killing a process group, because:
 //   - under `make`/`npm` node is NOT the group leader, so `kill(-node.pid)`
 //     is ESRCH (this was the bug in the first fix attempt); and
 //   - newer tauri CLIs run the app in a DIFFERENT process group, so the
@@ -72,23 +71,7 @@ child.on("error", err => { cleanup(); console.error(err); process.exit(1); });
 // Tree-walking sidesteps both: it finds tauri/cargo/app/vite by ppid no
 // matter their groups, and it never backgrounds vite (no detach → no
 // SIGTTIN stalls).
-function descendants(root) {
-  const out = [];
-  try {
-    const kids = new Map();
-    for (const line of execSync("ps -A -o pid=,ppid=").toString().trim().split("\n")) {
-      const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-      if (!kids.has(ppid)) kids.set(ppid, []);
-      kids.get(ppid).push(pid);
-    }
-    const stack = [root];
-    while (stack.length) {
-      const p = stack.pop();
-      for (const c of kids.get(p) || []) { out.push(c); stack.push(c); }
-    }
-  } catch {}
-  return out;
-}
+//
 // Teardown targets are tracked in a ROLLING snapshot (pid → command),
 // refreshed every few seconds and at signal time. A point-in-time walk
 // is not enough: the helpers (npm/vite, the app) reparent to pid 1 the
@@ -111,9 +94,21 @@ function psTable() {
   return out;
 }
 
-/** Record every current descendant (with its command) into `known`. */
+/**
+ * Refresh `known`: prune entries whose pid is gone or recycled (live
+ * command no longer matches the recorded one), then record every current
+ * descendant. Pruning matters because `known` would otherwise accumulate
+ * dead pids over an hours-long dev session, and `sweep` would signal
+ * whatever unrelated process the OS recycled them onto. Pruning cannot
+ * lose the reparented-to-pid-1 helpers this map exists for: those are
+ * alive with an unchanged command, so they survive the comm check.
+ */
 const snapshotTree = () => {
   const table = psTable();
+  for (const [pid, comm] of known) {
+    const cur = table.get(pid);
+    if (!cur || cur.comm !== comm) known.delete(pid);
+  }
   const kids = new Map();
   for (const [pid, { ppid }] of table) {
     if (!kids.has(ppid)) kids.set(ppid, []);
