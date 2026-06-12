@@ -53,8 +53,30 @@ const FORWARDED_INPUT_TYPES = new Set([
   "deleteContentForward",
 ]);
 
-function isReplacement(inputType: string): boolean {
+/** True for input events xterm drops and whose delta we must forward. */
+export function isForwardedInputType(inputType: string): boolean {
   return FORWARDED_INPUT_TYPES.has(inputType);
+}
+
+/**
+ * Compute the bytes that turn the PTY line from `prevVal` into `newVal`:
+ * code-point-aware backspaces (DEL) for the changed suffix, then the new tail.
+ * Returns an empty array when the values are identical. Diffing the whole
+ * value (not just the trailing char) is what makes Korean final-consonant
+ * migration work (안 + ㅏ -> 아나: prev "안" vs new "아나" -> DEL + "아나").
+ */
+export function computeImeDelta(prevVal: string, newVal: string): number[] {
+  const a = Array.from(prevVal); // code-point aware (handles surrogate pairs)
+  const b = Array.from(newVal);
+  let common = 0;
+  while (common < a.length && common < b.length && a[common] === b[common]) common++;
+  const back = a.length - common;
+  const tail = b.slice(common).join("");
+  if (back === 0 && tail.length === 0) return [];
+  const bytes: number[] = [];
+  for (let i = 0; i < back; i++) bytes.push(DEL);
+  if (tail.length > 0) bytes.push(...new TextEncoder().encode(tail));
+  return bytes;
 }
 
 /**
@@ -75,26 +97,14 @@ export function setupImeReplacementBridge(
   if (!ta) return () => {};
 
   let prevVal = "";
-  const enc = new TextEncoder();
 
   const onInput = (ev: Event) => {
     const e = ev as InputEvent;
     const newVal = ta.value;
-    if (isReplacement(e.inputType)) {
-      // Code-point aware diff so multi-byte syllables count as one unit.
-      const a = Array.from(prevVal);
-      const b = Array.from(newVal);
-      let common = 0;
-      while (common < a.length && common < b.length && a[common] === b[common]) common++;
-      const back = a.length - common;
-      const tail = b.slice(common).join("");
+    if (isForwardedInputType(e.inputType)) {
+      const bytes = computeImeDelta(prevVal, newVal);
       const pid = getPty();
-      if (pid && (back > 0 || tail.length > 0)) {
-        const bytes: number[] = [];
-        for (let i = 0; i < back; i++) bytes.push(DEL);
-        if (tail.length > 0) bytes.push(...enc.encode(tail));
-        write(pid, bytes);
-      }
+      if (pid && bytes.length > 0) write(pid, bytes);
     }
     // Always resync the baseline (insertText is forwarded by xterm itself; we
     // only need its value to keep the diff anchored).
