@@ -1,6 +1,27 @@
 {
   "versions": [
     {
+      "version": "0.11.6",
+      "date": "2026-06-12",
+      "summary": "Custom terminals in the new tab menu, plus notification completion sounds.",
+      "sections": [
+        {
+          "label": "Features",
+          "items": [
+            "Custom terminals (#27): add your own terminal entries (docker exec, ssh boxes, REPLs) in Settings, Agents & Terminals. They appear under New terminal in the + tab menu and run through your login shell.",
+            "Completion sounds (macOS): pick which sound desktop notifications play when an agent finishes a turn (Settings, General).",
+            "New {workspace_path} placeholder for agent args and terminal command lines, expands per worktree."
+          ]
+        },
+        {
+          "label": "Improvements",
+          "items": [
+            "Diff view: side by side now disables itself only for genuinely new or deleted files, not files emptied in the worktree."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.11.5",
       "date": "2026-06-12",
       "summary": "Korean and CJK terminal input fixed, plus Linux AppImage rendering and install fixes.",
