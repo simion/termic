@@ -458,6 +458,11 @@ export interface BaseTab {
    *  close-without-saving confirm. termic never auto-saves — this is
    *  cleared only by an explicit ⌘S. */
   dirty?: boolean;
+  /** When set, this tab lives in a split panel rather than the main pane.
+   *  `"right"` = right-split panel. Absent/undefined = main panel. Applies
+   *  to every tab type: terminals run there, and files opened while the
+   *  right pane is focused open there too. */
+  panel?: "right";
 }
 
 export interface TerminalTab extends BaseTab {
@@ -466,9 +471,6 @@ export interface TerminalTab extends BaseTab {
    *  sentinel `"shell"` for a plain login-shell tab, OR `"custom"` for a
    *  workspace launched with a user-supplied command (see `command`). */
   cli: string;
-  /** When set, this tab lives in a split panel rather than the main pane.
-   *  `"right"` = right-split panel. Absent/undefined = main panel. */
-  panel?: "right";
   /** Launch command for `cli === "custom"` tabs — run through a login
    *  shell (`zsh -lc`). Seeded from the workspace's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */

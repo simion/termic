@@ -1,8 +1,8 @@
 {
   "versions": [
     {
-      "version": "0.11.0",
-      "date": "2026-06-11",
+      "version": "0.11.1",
+      "date": "2026-06-12",
       "summary": "Split a workspace into two side-by-side panes. DontPayFull.com joins as our first company sponsor.",
       "sections": [
         {
@@ -18,7 +18,11 @@
           "items": [
             "Unified tab design across the main, right, and bottom terminal strips.",
             "Bottom terminal tabs now show the live title emitted by the shell.",
-            "Crisper, consistent pane separators."
+            "Crisper, consistent pane separators.",
+            "Opening a file targets the last-focused split pane, from the file tree, Git, file finder, and find-in-files.",
+            "Drag any tab, including open files, between the two panes.",
+            "Tab strips hide their scrollbars and pin the new-tab and action buttons, so only the tabs scroll.",
+            "The home screen with no workspace selected now shows the full dashboard."
           ]
         },
         {

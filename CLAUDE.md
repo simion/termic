@@ -35,7 +35,7 @@ npm run build        # tsc -b && vite build
 
 ## Releasing
 
-Add entry to TOP of `changelog.json` (`{version, date, summary}` — only write `summary`) before running `make release`. Full flow: **`RELEASING.md`**. Mock update UI: `VITE_MOCK_UPDATE=available|whatsnew npm run tauri:dev`.
+Add entry to TOP of `changelog.json` (`{version, date, summary}` — only write `summary`) before running `make release`. For a small change riding along with the last release, `make release-patch` folds it into a patch (appends the bullet to the last entry, no new entry). Full flow: the **`release` skill** (`.claude/skills/release/SKILL.md`). Mock update UI: `VITE_MOCK_UPDATE=available|whatsnew npm run tauri:dev`.
 
 ## Copy rules
 

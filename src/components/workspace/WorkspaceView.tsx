@@ -10,12 +10,11 @@ import type { Workspace, TerminalTab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { workDoneCapable } from "@/lib/agents";
 import { usePrefs, currentTerminalTheme } from "@/store/prefs";
-import { TabBar } from "./TabBar";
+import { TabBar, TabPill } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
-import { X, Plus, TerminalSquare, ChevronDown, ChevronUp } from "lucide-react";
-// X/Plus/TerminalSquare used in BottomTabPill and bottom split strip.
+import { Plus, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
@@ -29,39 +28,6 @@ const DEFAULT_SPLIT_HEIGHT = 240;
 const MIN_HEIGHT = 80;
 const DEFAULT_SPLIT_WIDTH = 360;
 const MIN_WIDTH = 120;
-
-function BottomTabPill({ title, active, onSelect, onClose }: {
-  title: string; active: boolean; canClose?: boolean; onSelect: () => void; onClose: () => void;
-}) {
-  // Matches the main/right TabPill design (full-height browser tab, bg-base
-  // when active + 2.5px accent underline + border-r separators in the
-  // tab-separator color) so every tab strip in the app reads as one system.
-  return (
-    <div
-      onClick={onSelect}
-      className={cn(
-        "group relative flex h-full cursor-pointer select-none items-center gap-1.5 border-r border-[var(--color-border-soft)] px-3 text-[12.5px] transition-colors min-w-[140px] max-w-[260px]",
-        active
-          ? "bg-[var(--color-bg)] text-[var(--color-fg)]"
-          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-      )}
-    >
-      <TerminalSquare className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
-      <span className="min-w-0 flex-1 truncate" title={title}>{title}</span>
-      {/* Close button always visible — closing the last shell tab
-          also collapses the split (handled by the store's
-          closeBottomTab → toggleSplit fallback if count hits 0). */}
-      <button
-        title="Close shell"
-        className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-        onClick={(e) => { e.stopPropagation(); onClose(); }}
-      ><X className="h-3 w-3" /></button>
-      {active && (
-        <span className="absolute inset-x-0 bottom-0 h-[2.5px] bg-[var(--color-accent)]" />
-      )}
-    </div>
-  );
-}
 
 export function WorkspaceView({ ws }: { ws: Workspace }) {
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
@@ -146,7 +112,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
           {/* Left: main-panel tab content (agent terminal / editor / diff).
               Right-panel tabs are rendered in the right split below. */}
           <div data-main-content="" className="relative min-h-0 flex-1 min-w-0">
-            {tabs.filter(t => !(t.type === "terminal" && (t as TerminalTab).panel === "right")).map(t => (
+            {tabs.filter(t => t.panel !== "right").map(t => (
               <div
                 key={t.id}
                 className="absolute inset-0"
@@ -187,14 +153,16 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   setRightRatio(ws.id, newRatio);
                 }}
               />
-              {(tabs.filter(t => t.type === "terminal" && (t as TerminalTab).panel === "right") as TerminalTab[]).map(t => (
+              {tabs.filter(t => t.panel === "right").map(t => (
                 <div
                   key={t.id}
                   data-tab-id={t.id}
                   className="absolute inset-0"
                   style={{ visibility: t.id === activeRight ? "visible" : "hidden", zIndex: t.id === activeRight ? 1 : 0 }}
                 >
-                  <TerminalPane ws={ws} tab={t} active={t.id === activeRight} />
+                  {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeRight} />}
+                  {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
+                  {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
                 </div>
               ))}
             </div>
@@ -242,21 +210,39 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                     copy is hidden while the split is open — see FooterBar. */}
                 <MessageQueueButton wsId={ws.id} compact className={cn(rightAgentFocused && "opacity-40 transition-opacity")} />
                 <div className="mx-1.5 h-5 w-px shrink-0 bg-[var(--color-border-soft)]" />
-                {(bottomTabs || []).map(t => (
-                  <BottomTabPill
-                    key={t.id}
-                    title={t.liveTitle || t.title}
-                    active={t.id === activeBottom}
-                    canClose={(bottomTabs?.length ?? 0) > 1}
-                    onSelect={() => setActiveBottom(ws.id, t.id)}
-                    onClose={() => closeBottomTab(ws.id, t.id)}
-                  />
-                ))}
-                <button
-                  title="New shell tab"
-                  onClick={() => addBottomTab(ws.id)}
-                  className="ml-1 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-                ><Plus className="h-4 w-4" /></button>
+                {/* Tabs + New scroll horizontally (no scrollbar) so the queue
+                    button on the left and the collapse toggle on the right stay
+                    fixed and reachable no matter how many shells are open. */}
+                <div className="flex min-w-0 flex-1 items-stretch gap-0 overflow-x-auto no-scrollbar">
+                  {(bottomTabs || []).map(t => (
+                    // Scratch shells live in a separate `bottomTabs` array, but
+                    // render through the SAME TabPill as agent tabs (via a
+                    // synthetic shell Tab) so every strip looks identical.
+                    <TabPill
+                      key={t.id}
+                      ws={ws}
+                      tab={{ id: t.id, type: "terminal", cli: "shell", title: t.title, liveTitle: t.liveTitle } as TerminalTab}
+                      active={t.id === activeBottom}
+                      paneFocused
+                      compact
+                      onSelect={() => setActiveBottom(ws.id, t.id)}
+                      onClose={() => closeBottomTab(ws.id, t.id)}
+                      renaming={null}
+                      onStartRename={() => {}}
+                      onChangeRename={() => {}}
+                      onCommitRename={() => {}}
+                      onCancelRename={() => {}}
+                      dragging={false}
+                      dragTx={0}
+                      onStartDrag={() => {}}
+                    />
+                  ))}
+                  <button
+                    title="New shell tab"
+                    onClick={() => addBottomTab(ws.id)}
+                    className="ml-1 shrink-0 self-center rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                  ><Plus className="h-4 w-4" /></button>
+                </div>
                 {/* Right group, pushed far right: the right-pane agent's queue
                     button (dimmed unless that pane is focused) sits next to the
                     collapse toggle. */}

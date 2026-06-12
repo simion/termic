@@ -1,8 +1,9 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Workspace, Tab, TerminalTab, Agent } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
+import { useTabStripDrag } from "./useTabStripDrag";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL, resolveIconId } from "@/icons/cli";
@@ -17,168 +18,21 @@ import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
 const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
 
-/** Which split pane sits under a screen point, for cross-pane tab drag.
- *  Panes are tagged with data-attributes: the main strip + content carry
- *  data-main-strip / data-main-content; the right strip + content carry
- *  data-right-strip / data-right-split. Returns null when over neither. */
-function paneAtPoint(x: number, y: number): "main" | "right" | null {
-  const el = document.elementFromPoint(x, y) as HTMLElement | null;
-  if (!el) return null;
-  if (el.closest("[data-right-strip], [data-right-split]")) return "right";
-  if (el.closest("[data-main-strip], [data-main-content]")) return "main";
-  return null;
-}
-
 export function TabBar({ ws }: { ws: Workspace }) {
   const allTabsRaw = useWorkspaceTabs(ws.id);
   // Main strip shows only non-right-panel tabs.
-  const tabs = allTabsRaw.filter(t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"));
+  const tabs = allTabsRaw.filter(t => t.panel !== "right");
   const activeId = useActiveTabId(ws.id);
   const setActive = useApp(s => s.setActiveTabId);
   const addTab = useApp(s => s.addTab);
   const reorderTab = useApp(s => s.reorderTab);
   const renameTab = useApp(s => s.renameTab);
-  // Drag-to-reorder (issue #6) — pointer-based, NOT HTML5 DnD (WKWebView's
-  // native drag is unreliable + Tauri intercepts it for file drops). The
-  // dragged pill follows the cursor via a transform; tabs reorder live as
-  // its center crosses a neighbour's. `dragId` triggers styling; the live
-  // transform lives in `dragTx` (state, so a re-render after a reorder can
-  // re-derive it before paint).
+  // Drag-to-reorder + cross-pane move lives in a shared hook (see
+  // useTabStripDrag) so the main and right strips behave identically and any
+  // tab type drags the same way. The hook is wired up after the right-split
+  // subscriptions below (it needs moveTabToPane).
   const stripRef = useRef<HTMLDivElement>(null);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [dragTx, setDragTx] = useState(0);
-  // Mutable drag bookkeeping that must not trigger re-renders. `appliedTx`
-  // is the transform currently on the dragged element — tracked so we can
-  // recover its untranslated layout position from a live getBoundingClientRect.
-  const dragRef = useRef<{
-    id: string; grabOffset: number; startX: number; pointerX: number; pointerY: number; started: boolean; appliedTx: number;
-  } | null>(null);
-  // Set briefly on drop so the click that ends a drag doesn't also select
-  // the tab (pointerup → click both fire).
-  const suppressClickRef = useRef(false);
 
-  // Translate that keeps the dragged pill's left edge at (cursor − grab
-  // offset). Self-correcting: it reads the pill's live rect and subtracts
-  // the transform already applied to recover the untranslated layout slot,
-  // so it stays right even after a live reorder shuffles the DOM. Updates
-  // `appliedTx` so the next call has the correct baseline.
-  function computeTx(clientX: number): number {
-    const strip = stripRef.current;
-    const d = dragRef.current;
-    if (!strip || !d) return 0;
-    const pill = strip.querySelector(`[data-tab-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
-    if (!pill) return 0;
-    const layoutLeft = pill.getBoundingClientRect().left - d.appliedTx;
-    const tx = (clientX - d.grabOffset) - layoutLeft;
-    d.appliedTx = tx;
-    return tx;
-  }
-
-  // Reorder when the dragged pill's center passes a neighbour's center.
-  function maybeReorder(clientX: number) {
-    const strip = stripRef.current;
-    const d = dragRef.current;
-    if (!strip || !d) return;
-    const pill = strip.querySelector(`[data-tab-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
-    if (!pill) return;
-    const draggedCenter = (clientX - d.grabOffset) + pill.offsetWidth / 2;
-    const pills = Array.from(strip.querySelectorAll<HTMLElement>("[data-tab-id]"));
-    // Target index = how many OTHER pills sit left of the dragged center.
-    let target = 0;
-    for (const p of pills) {
-      if (p.dataset.tabId === d.id) continue;
-      const r = p.getBoundingClientRect();
-      if (r.left + r.width / 2 < draggedCenter) target++;
-    }
-    const cur = tabs.findIndex(t => t.id === d.id);
-    if (target !== cur) {
-      // `tabs` is the filtered (main-panel-only) list; `reorderTab` takes an
-      // index into `allTabsRaw` minus the dragged tab. Translate `target` from
-      // filtered space to full-array space so right-panel tabs (which sit in
-      // the same array but not in the strip) don't corrupt the order.
-      const filteredWithout = tabs.filter(t => t.id !== d.id);
-      const fullWithout = allTabsRaw.filter(t => t.id !== d.id);
-      let fullTarget: number;
-      if (target >= filteredWithout.length) {
-        const lastMain = filteredWithout[filteredWithout.length - 1];
-        fullTarget = lastMain ? fullWithout.findIndex(t => t.id === lastMain.id) + 1 : fullWithout.length;
-      } else {
-        const anchor = filteredWithout[target];
-        fullTarget = fullWithout.findIndex(t => t.id === anchor.id);
-      }
-      reorderTab(ws.id, d.id, fullTarget);
-    }
-  }
-
-  function onPointerMove(e: PointerEvent) {
-    const d = dragRef.current;
-    if (!d) return;
-    d.pointerX = e.clientX;
-    d.pointerY = e.clientY;
-    if (!d.started) {
-      if (Math.abs(e.clientX - d.startX) < 5) return; // below the drag threshold
-      d.started = true;
-      setDragId(d.id);
-    }
-    setDragTx(computeTx(e.clientX));
-    // Only reorder while the cursor is still over the main pane — once it's
-    // over the right pane the drop will MOVE the tab, so intra-strip reorder
-    // would just thrash the order pointlessly.
-    if (paneAtPoint(e.clientX, e.clientY) !== "right") maybeReorder(e.clientX);
-  }
-  function onPointerUp() {
-    const d = dragRef.current;
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
-    if (d?.started) {
-      suppressClickRef.current = true;
-      setTimeout(() => { suppressClickRef.current = false; }, 0);
-      // Dropped over the right pane → move this (main) tab into the split.
-      // Only terminal tabs can live in the right pane; edit/diff stay main.
-      const dropped = paneAtPoint(d.pointerX, d.pointerY);
-      const tab = tabs.find(t => t.id === d.id);
-      if (dropped === "right" && tab?.type === "terminal") {
-        moveTabToPane(ws.id, d.id, "right");
-      }
-    }
-    dragRef.current = null;
-    setDragId(null);
-    setDragTx(0);
-  }
-  function startDrag(tabId: string, e: React.PointerEvent) {
-    // Left button only; ignore drags that begin on the close button /
-    // rename input (those have their own jobs).
-    if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest("button, input, [data-no-drag]")) return;
-    const pill = e.currentTarget as HTMLElement;
-    dragRef.current = {
-      id: tabId,
-      grabOffset: e.clientX - pill.getBoundingClientRect().left,
-      startX: e.clientX,
-      pointerX: e.clientX,
-      pointerY: e.clientY,
-      started: false,
-      appliedTx: 0,
-    };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  }
-
-  // After a live reorder re-renders the strip, the dragged pill sits in a
-  // new slot — re-derive its transform from the new layout BEFORE paint so
-  // it doesn't jump for a frame.
-  useLayoutEffect(() => {
-    const d = dragRef.current;
-    if (d?.started) setDragTx(computeTx(d.pointerX));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs]);
-
-  // Tear down window listeners if the component unmounts mid-drag.
-  useEffect(() => () => {
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Hide disabled / not-installed agents from the + (new agent) menu.
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
@@ -206,10 +60,14 @@ export function TabBar({ ws }: { ws: Workspace }) {
   const closeRightTab   = useApp(s => s.closeRightTab);
   const setActiveRight  = useApp(s => s.setActiveRightTab);
   const toggleRightSplit = useApp(s => s.toggleRightSplit);
-  // Right-panel tabs derived from the unified tab list (already computed above).
-  const rightTabs = allTabsRaw.filter(
-    t => t.type === "terminal" && (t as TerminalTab).panel === "right",
-  ) as TerminalTab[];
+  // Right-panel tabs derived from the unified tab list — terminals AND the
+  // edit/diff file tabs opened while the right pane was focused.
+  const rightTabs = allTabsRaw.filter(t => t.panel === "right");
+
+  // Shared drag (reorder + cross-pane move) for the main strip.
+  const { dragId, dragTx, suppressClickRef, startDrag } = useTabStripDrag({
+    wsId: ws.id, pane: "main", stripRef, stripTabs: tabs, allTabs: allTabsRaw, reorderTab, moveTabToPane,
+  });
 
   // ⌘T from the main pane (handled in useShortcuts) opens this menu so
   // the user can keyboard-pick an agent / terminal. Scoped by wsId —
@@ -261,14 +119,14 @@ export function TabBar({ ws }: { ws: Workspace }) {
 
   return (
     <div className="termic-tabstrip flex h-9 shrink-0 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
-      {/* Left portion: agent tabs + utility buttons. flex-1 so it fills all
-          space left after the optional right-split strip. overflow-x-auto lets
-          many agent tabs scroll horizontally without breaking the layout. */}
+      {/* Left portion: scrollable tab pills + a fixed control cluster (new-tab,
+          broadcast, split toggles) pinned right. Only the pills scroll. */}
+      <div className="flex min-w-0 flex-1 items-center">
       <div
         ref={stripRef}
         data-main-strip=""
         className={cn(
-          "flex min-w-0 flex-1 items-center gap-0 pl-2",
+          "flex min-w-0 flex-1 items-center gap-0 pl-2 no-scrollbar",
           // While dragging, let the pill escape the strip's clip and lift the
           // whole strip above the right strip (a later DOM sibling that would
           // otherwise paint over the pill) so the tab stays visible as it
@@ -291,10 +149,13 @@ export function TabBar({ ws }: { ws: Workspace }) {
             onStartDrag={(e) => startDrag(t.id, e)}
           />
         ))}
+      </div>
 
+      {/* Fixed control cluster — never scrolls; always reachable on the right. */}
+      <div className="flex shrink-0 items-center gap-1 pl-1 pr-2">
         <DropdownRoot open={open} onOpenChange={setOpen}>
           <DropdownTrigger asChild>
-            <Button size="icon" variant="icon" className="ml-1 h-8 w-8 shrink-0"><Plus className="h-4 w-4" /></Button>
+            <Button size="icon" variant="icon" className="h-8 w-8 shrink-0"><Plus className="h-4 w-4" /></Button>
           </DropdownTrigger>
           <DropdownMenu
             align="start"
@@ -327,19 +188,18 @@ export function TabBar({ ws }: { ws: Workspace }) {
           </DropdownMenu>
         </DropdownRoot>
 
-        <div className="ml-auto flex shrink-0 items-center gap-1 pr-2">
-          <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
-            <Button
-              size="icon" variant="icon" className="h-8 w-8"
-              onClick={() => openBroadcast(ws.id)}
-            >
-              <Megaphone className="h-4 w-4" />
-            </Button>
-          </Tip>
+        <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
+          <Button
+            size="icon" variant="icon" className="h-8 w-8"
+            onClick={() => openBroadcast(ws.id)}
+          >
+            <Megaphone className="h-4 w-4" />
+          </Button>
+        </Tip>
 
-          <SplitToggle wsId={ws.id} />
-          <RightSplitToggle wsId={ws.id} />
-        </div>
+        <SplitToggle wsId={ws.id} />
+        <RightSplitToggle wsId={ws.id} />
+      </div>
       </div>
 
       {/* Right portion: agent/shell tabs for the right split. Width matches
@@ -373,7 +233,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
 function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, rightSplitRatio, registry, visibleClis,
   setActiveRight, closeRightTab, addRightTab, addRightAgentTab, toggleRightSplit, moveTabToPane, reorderTab }: {
   ws: Workspace;
-  rightTabs: TerminalTab[];
+  rightTabs: Tab[];
   allTabsRaw: Tab[];
   activeRight: string | undefined;
   rightFocused: boolean;
@@ -392,103 +252,22 @@ function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, righ
   const suppressReturn = useRef(false);
   const isSandboxed = !!(ws as any).sandbox_enabled;
 
-  // Pointer-drag for right-pane tabs: reorder within the strip, or drop over
-  // the main pane to MOVE the session there (mirrors the main strip's drag).
-  const stripRef = useRef<HTMLDivElement>(null);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [dragTx, setDragTx] = useState(0);
-  const suppressClickRef = useRef(false);
-  const dragRef = useRef<{
-    id: string; grabOffset: number; startX: number; pointerX: number; pointerY: number; started: boolean; appliedTx: number;
-  } | null>(null);
+  // Inline rename state — double-click a non-preview tab to rename, same as
+  // the main strip (handled inside the shared TabPill).
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+  const renameTab = useApp(s => s.renameTab);
+  function commitRename() {
+    if (!renaming) return;
+    renameTab(ws.id, renaming.id, renaming.value);
+    setRenaming(null);
+  }
 
-  function computeTx(clientX: number): number {
-    const strip = stripRef.current; const d = dragRef.current;
-    if (!strip || !d) return 0;
-    const pill = strip.querySelector(`[data-tab-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
-    if (!pill) return 0;
-    const layoutLeft = pill.getBoundingClientRect().left - d.appliedTx;
-    const tx = (clientX - d.grabOffset) - layoutLeft;
-    d.appliedTx = tx;
-    return tx;
-  }
-  function maybeReorder(clientX: number) {
-    const strip = stripRef.current; const d = dragRef.current;
-    if (!strip || !d) return;
-    const pill = strip.querySelector(`[data-tab-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
-    if (!pill) return;
-    const draggedCenter = (clientX - d.grabOffset) + pill.offsetWidth / 2;
-    const pills = Array.from(strip.querySelectorAll<HTMLElement>("[data-tab-id]"));
-    let target = 0;
-    for (const p of pills) {
-      if (p.dataset.tabId === d.id) continue;
-      const r = p.getBoundingClientRect();
-      if (r.left + r.width / 2 < draggedCenter) target++;
-    }
-    const cur = rightTabs.findIndex(t => t.id === d.id);
-    if (target === cur) return;
-    // Translate the filtered (right-only) target into a full-array index for
-    // reorderTab, anchoring on the right tab that should follow the dragged one.
-    const filteredWithout = rightTabs.filter(t => t.id !== d.id);
-    const fullWithout = allTabsRaw.filter(t => t.id !== d.id);
-    let fullTarget: number;
-    if (target >= filteredWithout.length) {
-      const lastRight = filteredWithout[filteredWithout.length - 1];
-      fullTarget = lastRight ? fullWithout.findIndex(t => t.id === lastRight.id) + 1 : fullWithout.length;
-    } else {
-      const anchor = filteredWithout[target];
-      fullTarget = fullWithout.findIndex(t => t.id === anchor.id);
-    }
-    reorderTab(ws.id, d.id, fullTarget);
-  }
-  function onPointerMove(e: PointerEvent) {
-    const d = dragRef.current; if (!d) return;
-    d.pointerX = e.clientX; d.pointerY = e.clientY;
-    if (!d.started) {
-      if (Math.abs(e.clientX - d.startX) < 5) return;
-      d.started = true; setDragId(d.id);
-    }
-    setDragTx(computeTx(e.clientX));
-    if (paneAtPoint(e.clientX, e.clientY) !== "main") maybeReorder(e.clientX);
-  }
-  function onPointerUp() {
-    const d = dragRef.current;
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
-    if (d?.started) {
-      suppressClickRef.current = true;
-      setTimeout(() => { suppressClickRef.current = false; }, 0);
-      // Dropped over the main pane → move this session out of the split.
-      // moveTabToPane closes the split if this was the last right tab.
-      if (paneAtPoint(d.pointerX, d.pointerY) === "main") {
-        moveTabToPane(ws.id, d.id, "main");
-      }
-    }
-    dragRef.current = null; setDragId(null); setDragTx(0);
-  }
-  function startDrag(tabId: string, e: React.PointerEvent) {
-    if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest("button, input, [data-no-drag]")) return;
-    const pill = e.currentTarget as HTMLElement;
-    dragRef.current = {
-      id: tabId,
-      grabOffset: e.clientX - pill.getBoundingClientRect().left,
-      startX: e.clientX, pointerX: e.clientX, pointerY: e.clientY,
-      started: false, appliedTx: 0,
-    };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  }
-  useLayoutEffect(() => {
-    const d = dragRef.current;
-    if (d?.started) setDragTx(computeTx(d.pointerX));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rightTabs]);
-  useEffect(() => () => {
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Shared drag (reorder + cross-pane move) — identical to the main strip via
+  // the same hook, so any tab (terminal / edit / diff) drags the same way.
+  const stripRef = useRef<HTMLDivElement>(null);
+  const { dragId, dragTx, suppressClickRef, startDrag } = useTabStripDrag({
+    wsId: ws.id, pane: "right", stripRef, stripTabs: rightTabs, allTabs: allTabsRaw, reorderTab, moveTabToPane,
+  });
 
   useEffect(() => {
     const onMenu = (e: Event) => {
@@ -511,62 +290,43 @@ function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, righ
 
   return (
     <div
-      ref={stripRef}
       data-right-strip=""
-      className={cn(
-        "flex shrink-0 items-stretch gap-0 border-l-2 border-[var(--color-border-soft)] pl-2",
-        // While dragging, unclip + elevate so the pill stays visible as it
-        // crosses into the main pane (see the main strip for the rationale).
-        dragId ? "relative z-30 overflow-visible" : "overflow-x-auto overflow-y-hidden",
-      )}
+      className="flex shrink-0 items-stretch overflow-visible border-l-2 border-[var(--color-border-soft)]"
       style={{ width: `${rightSplitRatio * 100}%` }}
     >
-      {rightTabs.map(t => {
-        const isAgent = t.cli !== "shell";
-        const isActive = t.id === activeRight;
-        const isDragging = dragId === t.id;
-        return (
-          // Mirrors the main TabPill design (full-height browser tab,
-          // bg-base when active + 2.5px accent underline + border-r
-          // separators) so both split panes share one active-tab look.
-          <div
-            key={t.id}
-            data-tab-id={t.id}
-            onPointerDown={(e) => startDrag(t.id, e)}
-            onClick={() => { if (suppressClickRef.current) return; setActiveRight(ws.id, t.id); }}
-            style={isDragging ? { transform: `translateX(${dragTx}px)`, zIndex: 30, pointerEvents: "none" as const } : undefined}
-            className={cn(
-              "group relative flex h-full cursor-pointer select-none items-center gap-1.5 border-r border-[var(--color-border-soft)] px-3.5 text-[12.5px] transition-colors min-w-[120px] max-w-[220px]",
-              isDragging && "!transition-none cursor-grabbing shadow-lg",
-              isActive
-                ? "bg-[var(--color-bg)] text-[var(--color-fg)]"
-                : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-            )}
-          >
-            {isAgent
-              ? <CliIcon cli={resolveIconId(t.cli, registry)} className={cn("h-4 w-4 shrink-0", CLI_BRAND_COLOR[resolveIconId(t.cli, registry)] || "text-[var(--color-fg-dim)]")} />
-              : <TerminalSquare className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />}
-            <span className="min-w-0 flex-1 truncate">{t.liveTitle && !t.customTitle ? t.liveTitle : t.title}</span>
-            <button
-              title="Close tab"
-              className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
-              onClick={(e) => { e.stopPropagation(); closeRightTab(ws.id, t.id); }}
-            ><X className="h-3 w-3" /></button>
-            {isActive && (
-              <span className={cn(
-                "absolute inset-x-0 bottom-0 h-[2.5px]",
-                rightFocused ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]",
-              )} />
-            )}
-          </div>
-        );
-      })}
+      <div
+        ref={stripRef}
+        className={cn(
+          "flex min-w-0 flex-1 items-stretch gap-0 pl-2 no-scrollbar",
+          // While dragging, unclip + elevate so the pill stays visible as it
+          // crosses into the main pane (see the main strip for the rationale).
+          dragId ? "relative z-30 overflow-visible" : "overflow-x-auto overflow-y-hidden",
+        )}
+      >
+        {rightTabs.map(t => (
+        <TabPill
+          key={t.id} ws={ws} tab={t} active={t.id === activeRight} paneFocused={rightFocused} compact
+          onSelect={() => { if (suppressClickRef.current) return; setActiveRight(ws.id, t.id); }}
+          onClose={() => closeRightTab(ws.id, t.id)}
+          renaming={renaming?.id === t.id ? renaming.value : null}
+          onStartRename={() => setRenaming({ id: t.id, value: t.title })}
+          onChangeRename={(v) => setRenaming(r => r ? { ...r, value: v } : r)}
+          onCommitRename={commitRename}
+          onCancelRename={() => setRenaming(null)}
+          dragging={dragId === t.id}
+          dragTx={dragId === t.id ? dragTx : 0}
+          onStartDrag={(e) => startDrag(t.id, e)}
+        />
+        ))}
+      </div>
 
+      {/* Fixed controls — new-tab + close-split, never scroll. */}
+      <div className="flex shrink-0 items-center pl-1 pr-1">
       <DropdownRoot open={open} onOpenChange={setOpen}>
         <DropdownTrigger asChild>
           <button
             title="New tab in right split"
-            className="ml-1 shrink-0 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+            className="shrink-0 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
           ><Plus className="h-4 w-4" /></button>
         </DropdownTrigger>
         <DropdownMenu
@@ -607,8 +367,9 @@ function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, righ
             toggleRightSplit(ws.id);
           }
         }}
-        className="ml-auto shrink-0 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+        className="shrink-0 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
       ><X className="h-4 w-4" /></button>
+      </div>
     </div>
   );
 }
@@ -647,12 +408,15 @@ function SplitToggle({ wsId }: { wsId: string }) {
   );
 }
 
-function TabPill({ ws, tab, active, paneFocused, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename, dragging, dragTx, onStartDrag }: {
+export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename, dragging, dragTx, onStartDrag }: {
   ws: Workspace; tab: Tab; active: boolean;
-  /** True when the main pane is the focused one. The active tab keeps its
+  /** True when this pill's pane is the focused one. The active tab keeps its
    *  bg highlight regardless, but only shows the accent underline when its
    *  pane is focused — so across a split only ONE tab reads as fully active. */
   paneFocused: boolean;
+  /** Right-split strip: size to content (narrower) instead of the main strip's
+   *  fit-three-tabs flex basis. */
+  compact?: boolean;
   onSelect: () => void; onClose: () => void;
   renaming: string | null;  // current draft value while renaming, else null
   onStartRename: () => void;
@@ -720,7 +484,8 @@ function TabPill({ ws, tab, active, paneFocused, onSelect, onClose, renaming, on
       // always sized to comfortably fit 3 tabs; min-w floors
       // readability, max-w caps a lone tab on a very wide bar.
       style={{
-        flex: "0 1 calc((100% - 5rem) / 3)",
+        // Main strip sizes tabs to fit ~three; the right strip sizes to content.
+        ...(compact ? null : { flex: "0 1 calc((100% - 5rem) / 3)" }),
         // While dragging this pill rides the cursor via translateX and
         // floats above its neighbours. z-index needs the inline value so
         // it beats sibling stacking contexts. pointer-events: none lets
@@ -730,7 +495,7 @@ function TabPill({ ws, tab, active, paneFocused, onSelect, onClose, renaming, on
       }}
       className={cn(
         "group flex h-full self-stretch cursor-pointer items-center gap-1.5 px-3.5 text-[12.5px] transition-colors relative select-none border-r border-[var(--color-border-soft)]",
-        "min-w-[140px] max-w-[260px]",
+        compact ? "min-w-[120px] max-w-[220px]" : "min-w-[140px] max-w-[260px]",
         dragging
           ? "cursor-grabbing !transition-none bg-[var(--color-bg)] text-[var(--color-fg)] shadow-lg"
           : active

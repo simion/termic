@@ -12,7 +12,6 @@
 import { useApp, useActiveWorkspace } from "@/store/app";
 import { Dashboard } from "@/components/views/Dashboard";
 import { HistoryView } from "@/components/views/History";
-import { Empty } from "@/components/views/Empty";
 import { WorkspaceView } from "@/components/workspace/WorkspaceView";
 
 export function MainArea() {
@@ -31,13 +30,13 @@ export function MainArea() {
   const mountedList = workspaces.filter(w => mounted.has(w.id) && !w.archived);
   const activeId = ws?.id ?? null;
 
-  // No active workspace → show Dashboard / History / Empty as the OVERLAY
-  // content. But still render the hidden mounted workspaces underneath so
-  // their PTYs survive. The active-overlay sits on top with its own bg.
+  // No active workspace → show the Dashboard (the real home screen: logo,
+  // Add project / Discover repos / Settings, project list) as the OVERLAY,
+  // unless the user explicitly navigated to History. The hidden mounted
+  // workspaces still render underneath so their PTYs survive.
   const overlay =
-    view === "dashboard" && !ws ? <Dashboard /> :
-    view === "history"   && !ws ? <HistoryView /> :
-    !ws ? <Empty /> :
+    view === "history" && !ws ? <HistoryView /> :
+    !ws ? <Dashboard /> :
     null;
 
   return (

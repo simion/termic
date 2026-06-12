@@ -51,7 +51,7 @@ export function useShortcuts() {
       // main-strip navigation (⌘1..9, ⇧⌘[/], ⌥⌘←/→) — those shortcuts
       // target the left agent strip only.
       const tabs = (wsId ? state.tabs[wsId] || [] : []).filter(
-        t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"),
+        t => t.panel !== "right",
       );
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
       const tag = (e.target as HTMLElement | null)?.tagName;

@@ -261,11 +261,14 @@
   }
 }
 
-/* Tab strip: scrolls horizontally on overflow but the scrollbar
-   gutter would steal vertical space (h-9 = 36px) and look ugly,
-   so hide the chrome. WebKit + Firefox both honored. */
+/* Tab strips scroll horizontally on overflow, but a persistent scrollbar
+   gutter steals vertical space (h-9 = 36px) and looks ugly. Hide the chrome
+   on every scrolling strip (main, right split, bottom shells) while keeping
+   the scroll. WebKit (WKWebView) + Firefox both honored. */
 .termic-tabstrip { scrollbar-width: none; }
 .termic-tabstrip::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
 
 /* xterm tweaks so it fills its container cleanly */
 .xterm { padding: 8px 6px 8px 10px; }

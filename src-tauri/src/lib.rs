@@ -6359,6 +6359,7 @@ pub fn run() {
             notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             automation::automation_result,
+            automation::automation_armed,
             list_monospace_fonts,
         ])
         .build(tauri::generate_context!())

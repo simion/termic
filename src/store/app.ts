@@ -634,13 +634,14 @@ export const useApp = create<AppState>((set, get) => ({
       const closing = allTabs[tabIdx];
       if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
       const nextAll = allTabs.filter(t => t.id !== tabId);
-      const rightNext = nextAll.filter(
-        t => t.type === "terminal" && (t as TerminalTab).panel === "right",
-      );
+      // Right pane holds terminals AND file (edit/diff) tabs — count by panel,
+      // not type, so closing a terminal while a file tab remains keeps the
+      // split open (and vice versa).
+      const rightNext = nextAll.filter(t => t.panel === "right");
       const wasActive = s.activeRightTab[wsId] === tabId;
       let activeRight = s.activeRightTab[wsId];
       if (wasActive) {
-        const prevRight = allTabs.filter(t => t.type === "terminal" && (t as TerminalTab).panel === "right");
+        const prevRight = allTabs.filter(t => t.panel === "right");
         const prevIdx = prevRight.findIndex(t => t.id === tabId);
         activeRight = rightNext[Math.max(0, prevIdx - 1)]?.id || rightNext[0]?.id || "";
       }
@@ -697,9 +698,10 @@ export const useApp = create<AppState>((set, get) => ({
     set(s => {
       const list = s.tabs[wsId] ?? [];
       const tab = list.find(t => t.id === tabId);
-      if (!tab || tab.type !== "terminal") return s;
-      const fromPane: "main" | "right" =
-        (tab as TerminalTab).panel === "right" ? "right" : "main";
+      // Any tab type can move between panes — both render terminals AND
+      // edit/diff file tabs now.
+      if (!tab) return s;
+      const fromPane: "main" | "right" = tab.panel === "right" ? "right" : "main";
       if (fromPane === toPane) return s;
 
       // Flip the panel discriminator on the moved tab. Stripping the key
@@ -707,17 +709,13 @@ export const useApp = create<AppState>((set, get) => ({
       // from emitting a spurious `panel` field.
       const next = list.map(t => {
         if (t.id !== tabId) return t;
-        const { panel: _p, ...rest } = t as TerminalTab; void _p;
+        const { panel: _p, ...rest } = t; void _p;
         return toPane === "right"
-          ? ({ ...rest, panel: "right" } as TerminalTab)
-          : ({ ...rest } as TerminalTab);
+          ? ({ ...rest, panel: "right" } as Tab)
+          : ({ ...rest } as Tab);
       });
-      const mainTabs = next.filter(
-        t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"),
-      );
-      const rightTabs = next.filter(
-        t => t.type === "terminal" && (t as TerminalTab).panel === "right",
-      );
+      const mainTabs = next.filter(t => t.panel !== "right");
+      const rightTabs = next.filter(t => t.panel === "right");
       // Never strand the main pane with no content.
       if (toPane === "right" && mainTabs.length === 0) return s;
 
@@ -807,9 +805,7 @@ export const useApp = create<AppState>((set, get) => ({
     // Already mounted (visited this session) → leave the live tabs alone.
     // Count only MAIN-panel tabs — right-panel tabs live in the same array
     // but should not prevent seeding the main agent tab on first visit.
-    const mainTabs = (s.tabs[wsId] || []).filter(
-      t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"),
-    );
+    const mainTabs = (s.tabs[wsId] || []).filter(t => t.panel !== "right");
     if (mainTabs.length) return;
     const ws = s.workspaces.find(w => w.id === wsId);
     const persisted = ws?.persisted_tabs ?? [];
@@ -1049,7 +1045,7 @@ export const useApp = create<AppState>((set, get) => ({
     // tabs are always present in the list but not shown in the main strip.
     // Use mainIdx (position in the main-only list) not idx (full-array position)
     // so "go to previous" is correct when right-panel tabs sit before the closing tab.
-    const mainList = list.filter(t => !(t.type === "terminal" && (t as TerminalTab).panel === "right"));
+    const mainList = list.filter(t => t.panel !== "right");
     const mainIdx = mainList.findIndex(t => t.id === tabId);
     const mainNext = mainList.filter(t => t.id !== tabId);
     let active = s.activeTab[wsId];
@@ -1151,7 +1147,20 @@ export const useApp = create<AppState>((set, get) => ({
 
   openPreviewTab: (wsId, data) => set(s => {
     const list = s.tabs[wsId] || [];
-    const existing = list.find(t => t.type === data.type && (t as any).path === data.path);
+    // Open into the last-focused pane: if the right split is up and was the
+    // one the user last interacted with, the file lands there; otherwise it
+    // opens in the main pane. Preview-tab reuse + the "already open" lookup
+    // are scoped to that pane so each side keeps its own file tabs.
+    const target: "main" | "right" =
+      s.rightSplit[wsId] && (s.activePane[wsId] ?? "main") === "right" ? "right" : "main";
+    const inTarget = (t: Tab) => (t.panel === "right" ? "right" : "main") === target;
+    const panelTag = target === "right" ? { panel: "right" as const } : {};
+    const setActive = (id: string): Partial<AppState> =>
+      target === "right"
+        ? { activeRightTab: { ...s.activeRightTab, [wsId]: id }, activePane: { ...s.activePane, [wsId]: "right" } }
+        : { activeTab: { ...s.activeTab, [wsId]: id }, activePane: { ...s.activePane, [wsId]: "main" } };
+
+    const existing = list.find(t => t.type === data.type && (t as any).path === data.path && inTarget(t));
     if (existing) {
       // If a revealAt was requested (Find-in-Files click), refresh it on
       // the existing tab so EditorPane scrolls to the new line. Otherwise
@@ -1159,13 +1168,10 @@ export const useApp = create<AppState>((set, get) => ({
       const next = data.revealAt && existing.type === "edit"
         ? list.map(t => t.id === existing.id ? { ...t, revealAt: data.revealAt } as Tab : t)
         : list;
-      return {
-        tabs: { ...s.tabs, [wsId]: next },
-        activeTab: { ...s.activeTab, [wsId]: existing.id }
-      };
+      return { tabs: { ...s.tabs, [wsId]: next }, ...setActive(existing.id) };
     }
 
-    const previewTab = list.find(t => t.preview);
+    const previewTab = list.find(t => t.preview && inTarget(t));
     if (previewTab) {
       const next = list.map(t => t.id === previewTab.id ? {
         ...t,
@@ -1176,12 +1182,10 @@ export const useApp = create<AppState>((set, get) => ({
         customTitle: false,
         dirty: false,
         preview: true,
+        ...panelTag,
         ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
       } as Tab : t);
-      return {
-        tabs: { ...s.tabs, [wsId]: next },
-        activeTab: { ...s.activeTab, [wsId]: previewTab.id }
-      };
+      return { tabs: { ...s.tabs, [wsId]: next }, ...setActive(previewTab.id) };
     }
 
     const newTab: Tab = {
@@ -1190,12 +1194,10 @@ export const useApp = create<AppState>((set, get) => ({
       title: data.title,
       path: data.path,
       preview: true,
+      ...panelTag,
       ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
     } as any;
-    return {
-      tabs: { ...s.tabs, [wsId]: [...list, newTab] },
-      activeTab: { ...s.activeTab, [wsId]: newTab.id }
-    };
+    return { tabs: { ...s.tabs, [wsId]: [...list, newTab] }, ...setActive(newTab.id) };
   }),
 
   consumeReveal: (wsId, tabId) => set(s => {
