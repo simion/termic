@@ -17,6 +17,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
+import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
@@ -92,6 +93,19 @@ export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: str
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
     term.open(hostRef.current);
+    // Korean/CJK IME (WKWebView). WebKit composes via textarea `input` events
+    // (insertText + insertReplacementText), not compositionstart/end, and
+    // xterm drops the replacement events — so input gets mangled (안녕 → ㅇㄴ).
+    // setupImeReplacementBridge fills the gap; see src/lib/ime.ts. The
+    // keyCode-229 guard below keeps xterm's keydown path inert during IME so
+    // only the input-event bridge drives composition. Mirrors TerminalPane.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
+        return false;
+      }
+      return true;
+    });
+    const disposeImeBridge = setupImeReplacementBridge(hostRef.current, () => ptyRef.current, ipc.ptyWrite);
     termRef.current = term;
     // Hold a ref to the WebGL addon so the cleanup path can dispose it BEFORE
     // term.dispose(). Without that, the addon's pending render frame fires
@@ -172,6 +186,7 @@ export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: str
       cancelled = true;
       ro.disconnect();
       unregisterDrop();
+      disposeImeBridge();
       unlistenData?.(); unlistenExit?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose the renderer addon FIRST so its render loop can't fire

@@ -19,6 +19,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
+import { setupImeReplacementBridge } from "@/lib/ime";
 import { sendMessageToPty } from "@/lib/agentSend";
 import type { TerminalTab, Workspace, SandboxMode } from "@/lib/types";
 import { effectiveSandboxMode } from "@/lib/types";
@@ -358,6 +359,47 @@ export function TerminalPane({ ws, tab, active }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
+    // ── Korean/CJK IME fix for WKWebView ───────────────────────────────
+    // WebKit drives CJK composition NOT through compositionstart/update/end
+    // (those never fire here; isComposing stays false, keyCode is always
+    // 229) but through `input` events on the helper textarea:
+    //   • insertText            → a fresh jamo is appended (syllable start)
+    //   • insertReplacementText → the composing syllable is refined
+    // xterm's _inputEvent only forwards inputType === 'insertText', so every
+    // replacement is DROPPED and only the leading jamo of each syllable
+    // reaches the PTY (안녕 → ㅇㄴ). We fill the gap: on a replacement event,
+    // diff the textarea against its previous value and emit backspaces + the
+    // new tail so the PTY line tracks the textarea exactly — this also
+    // handles Korean's final-consonant migration (안 + ㅏ → 아나), since the
+    // whole composing value is diffed, not just the last char. `prevTaVal`
+    // is synced on EVERY input event (including the insertText ones xterm
+    // forwards) so the diff baseline stays correct across syllable
+    // boundaries. English/control keys route through keypress/keydown and
+    // never hit the replacement branch, so they're untouched. See the
+    // keyCode-229 guard above, which keeps the keydown path inert for IME.
+    const disposeImeBridge = setupImeReplacementBridge(host, () => ptyRef.current, ipc.ptyWrite);
+
+    // ── IME diagnostic (opt-in) ────────────────────────────────────────
+    // Toggle with `localStorage.imeDebug = "1"`, type Korean, read the dev
+    // log (console.warn is forwarded by vite; console.log is not). Kept for
+    // debugging future IME regressions on other WebKit builds / layouts.
+    if ((() => { try { return localStorage.getItem("imeDebug") === "1"; } catch { return false; } })()) {
+      const ta = host.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+      const tag = `[ime ${ws.name}/${tab.cli}]`;
+      if (ta) {
+        ta.addEventListener("keydown", (e) => {
+          console.warn(`${tag} keydown key=${JSON.stringify(e.key)} code=${e.code} keyCode=${e.keyCode} isComposing=${e.isComposing} taValue=${JSON.stringify(ta.value)}`);
+        }, true);
+        ta.addEventListener("compositionstart", (e) => console.warn(`${tag} compositionstart data=${JSON.stringify((e as CompositionEvent).data)} taValue=${JSON.stringify(ta.value)}`));
+        ta.addEventListener("compositionupdate", (e) => console.warn(`${tag} compositionupdate data=${JSON.stringify((e as CompositionEvent).data)} taValue=${JSON.stringify(ta.value)}`));
+        ta.addEventListener("compositionend", (e) => console.warn(`${tag} compositionend data=${JSON.stringify((e as CompositionEvent).data)} taValue=${JSON.stringify(ta.value)}`));
+        ta.addEventListener("input", (e) => console.warn(`${tag} input inputType=${(e as InputEvent).inputType} data=${JSON.stringify((e as InputEvent).data)} isComposing=${(e as InputEvent).isComposing} taValue=${JSON.stringify(ta.value)}`));
+        console.warn(`${tag} IME diagnostic attached.`);
+      } else {
+        console.warn(`${tag} IME diagnostic: helper textarea not found.`);
+      }
+    }
+
     // Drop target: dragging a file (screenshot, etc.) onto this terminal
     // inserts the file's escaped path at the prompt — like macOS Terminal.
     // The getter reads ptyRef lazily so a Restart (fresh pty id) still works.
@@ -395,6 +437,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
       "file-finder", "find-in-files", "broadcast", "open-shortcuts", "open-settings",
     ];
     term.attachCustomKeyEventHandler((e) => {
+      // IME composition guard (Korean/Japanese/Chinese). xterm's
+      // CompositionHelper.keydown() decides "still composing?" purely by
+      // `keyCode === 229`. Chromium sets that for every composition keystroke,
+      // but WKWebView (WebKit) reports the real jamo key instead, so xterm
+      // finalizes the composition on EVERY keystroke — committing the partial
+      // syllable and resetting (안녕하세요 → ㅇㄴㅎ세). Returning false here
+      // short-circuits xterm's keydown BEFORE its composition handler runs and,
+      // crucially, without preventDefault — so the native textarea + xterm's
+      // own compositionstart/update/end listeners assemble the full syllable
+      // and emit it once on compositionend. `isComposing` covers continuation
+      // keystrokes; `keyCode === 229` covers the one that starts composition.
+      if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
+        return false;
+      }
       if (e.type === "keydown") {
         const binds = usePrefs.getState().shortcuts;
         if (PASS_TO_APP.some(id => bindingMatches(e, binds[id]))) {
@@ -1274,6 +1330,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
       cancelled = true;
       ro.disconnect();
       unregisterDrop();
+      disposeImeBridge();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
