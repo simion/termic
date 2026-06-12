@@ -6197,6 +6197,20 @@ fn detect_clis_blocking() -> Vec<CliInfo> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK 2.42+ defaults to its DMA-BUF renderer, which paints a
+    // solid-gray window on X11 with NVIDIA / virtualized drivers (seen
+    // on openSUSE X11; tauri-apps/tauri#9304). Opt out for X11 sessions
+    // BEFORE any GTK/WebKit init. Wayland keeps the fast path, and an
+    // explicit user-set value always wins.
+    #[cfg(target_os = "linux")]
+    {
+        let x11 = std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11")
+            || (std::env::var_os("WAYLAND_DISPLAY").is_none()
+                && std::env::var_os("DISPLAY").is_some());
+        if x11 && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
     tauri::Builder::default()
         // skip_initial_state("main"): we now create the main window
         // programmatically in `setup` (to pick the macOS traffic-light
