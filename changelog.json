@@ -14,18 +14,6 @@
           ]
         },
         {
-          "label": "Improvements",
-          "items": [
-            "Unified tab design across the main, right, and bottom terminal strips.",
-            "Bottom terminal tabs now show the live title emitted by the shell.",
-            "Crisper, consistent pane separators.",
-            "Opening a file targets the last-focused split pane, from the file tree, Git, file finder, and find-in-files.",
-            "Drag any tab, including open files, between the two panes.",
-            "Tab strips hide their scrollbars and pin the new-tab and action buttons, so only the tabs scroll.",
-            "The home screen with no workspace selected now shows the full dashboard."
-          ]
-        },
-        {
           "label": "Sponsors",
           "items": [
             "[DontPayFull.com](https://www.dontpayfull.com) is Termic's first company sponsor. If your company builds on AI developer tools and wants to support open source, consider joining them on [GitHub Sponsors](https://github.com/simion/termic#sponsors)."
