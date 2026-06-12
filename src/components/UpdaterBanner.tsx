@@ -8,8 +8,10 @@
 // relaunch dance — lives in store/update.ts. This component is pure
 // presentation.
 
+import { useEffect, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUpdate } from "@/store/update";
+import { automationArmed } from "@/lib/ipc";
 import { ArrowDownToLine, RotateCw } from "lucide-react";
 
 export function UpdaterBanner() {
@@ -18,6 +20,15 @@ export function UpdaterBanner() {
   const install = useUpdate(s => s.install);
   const dismissedVersion = useUpdate(s => s.dismissedVersion);
   const compact = useApp(s => s.compactSidebar);
+
+  // Is this window driven by the e2e automation bridge? If so the DEV pill
+  // becomes a red E2E pill so an automated run is never mistaken for a normal
+  // dev window. Only probed in dev builds (the command is absent in release).
+  const [isE2E, setIsE2E] = useState(false);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    automationArmed().then(setIsE2E).catch(() => {});
+  }, []);
 
   // Dev builds can't surface a real update (no signed release to check
   // against). With no mock update injected, claim the slot with a DEV
@@ -29,7 +40,14 @@ export function UpdaterBanner() {
     import.meta.env.VITE_HIDE_DEV_PILL === "1" ||
     import.meta.env.VITE_HIDE_DEV_PILL === "true";
   if (import.meta.env.DEV && !update && !hideDevPill) {
-    return (
+    return isE2E ? (
+      <span
+        title="Driven by the e2e automation bridge (TERMIC_AUTOMATION=1)."
+        className="flex select-none items-center rounded-full border border-[var(--color-err)]/50 bg-[var(--color-err)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-err)]"
+      >
+        E2E
+      </span>
+    ) : (
       <span
         title="Development build, not a released version."
         className="flex select-none items-center rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-warn)]"

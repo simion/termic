@@ -46,6 +46,14 @@ pub fn armed() -> bool {
     cfg!(debug_assertions) && std::env::var("TERMIC_AUTOMATION").map(|v| v == "1").unwrap_or(false)
 }
 
+/// Frontend probe: is this instance being driven by the e2e automation
+/// bridge? Drives the red E2E pill so an automated run is never mistaken
+/// for a normal dev window. Always false in release builds.
+#[tauri::command]
+pub fn automation_armed() -> bool {
+    armed()
+}
+
 fn token() -> &'static str {
     static TOKEN: OnceLock<String> = OnceLock::new();
     TOKEN.get_or_init(|| {

@@ -115,6 +115,15 @@ release: ## Cut a release tag (CI does the rest). Use BUMP=patch|minor|major|<ve
 	@./scripts/release.sh $(BUMP)
 .PHONY: release
 
+# `make release-patch` folds an uncommitted working-tree change into a
+# fresh patch on top of the LAST release: bumps patch, appends the bullet
+# to the last changelog entry (no new entry), commits everything + tags.
+# Patch only. Bump the top changelog entry's version + append your bullet
+# first; the script gates on it. See the `release` skill.
+release-patch: ## Fold the current working change into a patch on the last release (CI does the rest).
+	@./scripts/release.sh patch merge
+.PHONY: release-patch
+
 # ─── icons ────────────────────────────────────────────────────────────
 
 icons: ## Regenerate every icon size + format from src-tauri/icons/icon.svg.
