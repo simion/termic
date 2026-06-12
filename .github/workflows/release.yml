@@ -180,12 +180,20 @@ jobs:
   # shipping them would silently break self-update for those users).
   # AppImage is the only format the updater can drop in place.
   #
-  # ubuntu-latest tracks 24.04 which ships WebKitGTK 4.1 — Tauri 2's
-  # required version. If GitHub bumps the alias before 4.1 lands, pin
-  # to ubuntu-24.04 explicitly.
+  # Pinned to ubuntu-22.04, NOT ubuntu-latest, for two load-bearing
+  # reasons (AppImage best practice is "build on the oldest supported
+  # LTS"):
+  #   1. glibc floor: the binary links the runner's glibc, so 22.04
+  #      (2.35) runs on far more distros than 24.04 (2.39).
+  #   2. tauri-bundler copies the runner's libwebkit2gtk-4.1.so.0 INTO
+  #      the AppImage. 24.04's newer WebKitGTK gray-screens on X11
+  #      setups (seen on openSUSE) where 22.04's renders fine — verified
+  #      by comparing against another Tauri app (Terax) built on 22.04
+  #      that works on the same machine. 22.04 ships WebKitGTK 4.1 too,
+  #      which is all Tauri 2 requires.
   build-linux:
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       version:        ${{ steps.meta.outputs.version }}
       appimage_name:  ${{ steps.find.outputs.appimage_name }}
@@ -222,7 +230,9 @@ jobs:
             src-tauri/target
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-linux-${{ hashFiles('src-tauri/Cargo.lock') }}
+          # ubuntu2204 in the key, not runner.os: objects cached from a
+          # different runner image would link against its newer glibc.
+          key: cargo-ubuntu2204-linux-${{ hashFiles('src-tauri/Cargo.lock') }}
       - run: npm ci
       - name: Build & sign (AppImage)
         # --bundles appimage skips .deb / .rpm so we don't spend build
@@ -262,6 +272,19 @@ jobs:
           cd "$BUNDLE_DIR"
           NAME=$(basename "$(ls ./*.AppImage | head -n1)")
           "./$NAME" --appimage-extract >/dev/null   # → squashfs-root/
+
+          # Strip bundled libwayland-*: it's on the official AppImage
+          # excludelist ("New version of Mesa has some dependency issues
+          # with libwayland-client if it is bundled") but Tauri's GTK
+          # plugin bundles it anyway. The stale copy shadows the host's
+          # and breaks mesa's EGL bootstrap, so WebKitGTK 2.46+ (EGL-
+          # only, no GLX fallback) aborts with "Could not create default
+          # EGL display: EGL_BAD_PARAMETER" and the window stays blank.
+          # Verified on openSUSE X11 + AMD: removing these from the
+          # extracted AppImage is what made Termic render. Every distro
+          # that can run our GTK3 build ships libwayland, so relying on
+          # the host copy is safe.
+          rm -fv squashfs-root/usr/lib/libwayland-*.so*
 
           # Rewrite every absolute symlink that points inside the build
           # AppDir to a relative one. Anything absolute pointing OUTSIDE
