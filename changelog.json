@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.11.3",
+      "version": "0.11.4",
       "date": "2026-06-12",
       "summary": "Split a workspace into two side-by-side panes. DontPayFull.com joins as our first company sponsor.",
       "sections": [
@@ -17,8 +17,10 @@
           "label": "Bug fixes",
           "items": [
             "Fixed: blank gray window on Linux X11 systems (NVIDIA and virtual machines included).",
+            "Fixed: blank white window on Linux systems with newer Mesa drivers. The AppImage no longer bundles libwayland, which broke the host's EGL setup.",
             "Fixed: AppImage installs failed with 'Symlink target not found' in Gear Lever and AppImageLauncher.",
-            "Fixed: the app icon now shows in Linux launchers and docks after integrating the AppImage."
+            "Fixed: the app icon now shows in Linux launchers and docks after integrating the AppImage.",
+            "The Linux AppImage now builds on Ubuntu 22.04, so it runs on distributions with older glibc (Debian 12, Ubuntu 22.04 and newer)."
           ]
         },
         {
