@@ -14,12 +14,6 @@
           ]
         },
         {
-          "label": "Bug fixes",
-          "items": [
-            "The active tab in the main pane now shows a clean bottom border like the right split pane, instead of a boxed, misplaced highlight."
-          ]
-        },
-        {
           "label": "Sponsors",
           "items": [
             "[DontPayFull.com](https://www.dontpayfull.com) is Termic's first company sponsor. If your company builds on AI developer tools and wants to support open source, consider joining them on [GitHub Sponsors](https://github.com/simion/termic#sponsors)."
