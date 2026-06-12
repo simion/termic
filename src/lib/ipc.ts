@@ -9,6 +9,15 @@ import type {
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, FileEntry, Agent, RepoConfig,
   SandboxMode,
 } from "./types";
+import {
+  COMPLETION_SOUND_SUPPORTED,
+  MACOS_DEFAULT_SOUND,
+  completionSoundMacName,
+  isCompletionSoundId,
+  readCompletionSoundEnabled,
+  readCompletionSoundId,
+  type CompletionSoundId,
+} from "./notificationSounds";
 
 // ───────────────────────────── projects ─────────────────────────────
 
@@ -284,7 +293,9 @@ export const terminalStageFile = (wsId: string, src: string) =>
   invoke<string>("terminal_stage_file", { wsId, src });
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
 export const workspaceFileDiffSides = (id: string, path: string) =>
-  invoke<{ original: string; modified: string }>("workspace_file_diff_sides", { id, path });
+  invoke<{ original: string; modified: string; original_exists: boolean; modified_exists: boolean }>(
+    "workspace_file_diff_sides", { id, path },
+  );
 export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });
 export const workspaceFileWrite = (id: string, path: string, content: string) =>
   invoke<void>("workspace_file_write", { id, path, content });
@@ -437,14 +448,80 @@ export async function ensureNotifyPermission(): Promise<boolean> {
  *  that attributes to "Script Editor" and is silently dropped on modern
  *  macOS). Requests permission on first use. No-op if denied. Pass `route`
  *  so a click jumps to the originating (workspace, tab) via onNotifyClick. */
-export async function notify(title: string, body: string, route?: NotifyRoute): Promise<void> {
+export async function notify(
+  title: string,
+  body: string,
+  route?: NotifyRoute,
+  opts?: { sound?: boolean | string },
+): Promise<void> {
   try {
     if (!(await ensureNotifyPermission())) return;
-    notifSend({ title, body, extra: route ? { wsId: route.wsId, tabId: route.tabId } : undefined });
+    const sound = opts?.sound ? await resolveCompletionSoundValue(opts.sound) : undefined;
+    notifSend({ title, body, sound, extra: route ? { wsId: route.wsId, tabId: route.tabId } : undefined });
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }
 }
+
+/** Fire a sample notification with the given sound. Mirrors the shape of a
+ *  real agent-finished notification (title "project · workspace", body
+ *  "agent finished") so the preview shows exactly what users will get.
+ *  Note: in dev the banner carries the Terminal icon — the notification
+ *  plugin attributes unbundled dev binaries to com.apple.Terminal; release
+ *  builds show the termic app icon. */
+export async function previewCompletionSound(
+  soundId?: CompletionSoundId,
+  example?: { title?: string; body?: string },
+): Promise<void> {
+  try {
+    if (!(await ensureNotifyPermission())) return;
+    const sound = await resolveCompletionSoundValue(soundId ?? readCompletionSoundId(), false);
+    notifSend({
+      title: example?.title ?? "project · workspace",
+      body: example?.body ?? "agent finished",
+      sound,
+    });
+  } catch {
+    // Plugin unavailable (e.g. headless) — silently skip.
+  }
+}
+
+// macOS resolves notification sounds by NAME via the Library/Sounds search
+// path; it never finds our bundled Tauri resources (nested dir in release,
+// no .app bundle in dev) and can't decode mp3 anyway. So custom sounds ship
+// in the bundle as .caf and get copied into ~/Library/Sounds on first use,
+// then referenced by their installed (extension-less) name.
+let chooChooInstall: Promise<boolean> | null = null;
+function ensureChooChooInstalled(): Promise<boolean> {
+  chooChooInstall ??= invoke<void>("install_notification_sound", {
+    resource: "resources/sounds/choo_choo.caf",
+    fileName: "termic_choo_choo.caf",
+  }).then(
+    () => true,
+    () => { chooChooInstall = null; return false; },  // retry on next use
+  );
+  return chooChooInstall;
+}
+
+async function resolveCompletionSoundValue(
+  sound: boolean | string,
+  respectToggle: boolean = true,
+): Promise<string | undefined> {
+  if (!sound) return undefined;
+  // The catalog is macOS sound names — on Linux/Windows none resolve, so
+  // send no sound key at all and let the platform default apply.
+  if (!COMPLETION_SOUND_SUPPORTED) return undefined;
+  if (respectToggle && !readCompletionSoundEnabled()) return undefined;
+  const selected = typeof sound === "string" ? sound : readCompletionSoundId();
+  if (!isCompletionSoundId(selected)) return selected; // explicit macOS name passed through
+  // Bundled sound: must be copied into ~/Library/Sounds before its name
+  // resolves; fall back to the stock default sound if that fails.
+  if (selected === "choo_choo" && !(await ensureChooChooInstalled())) {
+    return MACOS_DEFAULT_SOUND;
+  }
+  return completionSoundMacName(selected);
+}
+
 export const openPath  = (path: string) => invoke<void>("open_path", { path });
 export const homeDir   = () => invoke<string>("home_dir");
 export const pathExists= (path: string) => invoke<boolean>("path_exists", { path });

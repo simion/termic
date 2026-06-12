@@ -15,6 +15,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Trash2, Check, Layers, X, AudioWaveform } from "lucide-react";
 import { ExcludeEditor } from "./ExcludeEditor";
 import { cn, cleanLines } from "@/lib/utils";
+import { isTerminalEntry } from "@/lib/agents";
 
 export function RepositorySection({ projectId }: { projectId: string }) {
   const project = useApp(s => s.projects.find(p => p.id === projectId));
@@ -675,9 +676,12 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               >
                 {/* Built from the editable agent registry so custom
                     agents show up here too. Terminal (cli="shell") is
-                    always available as the no-agent fallback. */}
+                    always available as the no-agent fallback. Custom
+                    terminals (kind: "terminal") are excluded — a project
+                    default CLI must be an agent (resume, review, and
+                    workspace semantics all assume one). */}
                 {agents
-                  .filter(a => !a.disabled)
+                  .filter(a => !a.disabled && !isTerminalEntry(a))
                   .map(a => (
                     <option key={a.id} value={a.id}>{a.display_name}</option>
                   ))}

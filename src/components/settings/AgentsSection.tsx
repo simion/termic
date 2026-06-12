@@ -1,5 +1,7 @@
-// Settings → Agents. Lets the user edit per-CLI launch commands, default
-// args, YOLO flags, and runtime YOLO slash-commands.
+// Settings → Agents & Terminals. Lets the user edit per-CLI launch commands,
+// default args, YOLO flags, and runtime YOLO slash-commands — plus custom
+// terminal entries (kind: "terminal", #27): same registry, but they spawn
+// through the login shell and the card hides the agent-only fields.
 //
 // Built-in agents (claude/codex/agy/gemini) are editable but not removable —
 // removing them would orphan existing workspaces that reference them.
@@ -17,6 +19,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cn, slugify } from "@/lib/utils";
+import { isTerminalEntry } from "@/lib/agents";
 
 export function AgentsSection() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -159,13 +162,40 @@ export function AgentsSection() {
     setAutoFocusId(fresh.id);
   }
 
-  function reorderAgent(id: string, toIndex: number) {
-    const from = agents.findIndex(a => a.id === id);
-    if (from === -1 || from === toIndex) return;
-    const next = [...agents];
-    const [moved] = next.splice(from, 1);
-    next.splice(toIndex, 0, moved);
-    mutate(next);
+  /** Custom terminal entry (#27): kind "terminal" puts it under the +
+   *  menu's "New terminal" section and gives the spawn shell semantics
+   *  (login shell wrapping the command line, no agent machinery). */
+  function addTerminal() {
+    let n = 1;
+    while (agents.some(a => a.id === `terminal-${n}`)) n++;
+    const fresh: Agent = {
+      id: `terminal-${n}`,
+      display_name: `New terminal ${n}`,
+      command: "",
+      args: [],
+      icon_id: "lucide:terminal",
+      color: "#9aa0a6",
+      builtin: false,
+      kind: "terminal",
+      sandbox_allowed_paths: [],
+    };
+    mutate([...agents, fresh]);
+    setAutoFocusId(fresh.id);
+  }
+
+  /** Reorder within the entry's own group (agents or terminals): the strip
+   *  renders the two groups separately, so `toGroupIndex` is an index among
+   *  same-kind entries. Other-kind entries keep their array positions. */
+  function reorderAgent(id: string, toGroupIndex: number) {
+    const moved = agents.find(a => a.id === id);
+    if (!moved) return;
+    const movedTerm = isTerminalEntry(moved);
+    const group = agents.filter(a => isTerminalEntry(a) === movedTerm && a.id !== id);
+    const clamped = Math.max(0, Math.min(toGroupIndex, group.length));
+    group.splice(clamped, 0, moved);
+    let gi = 0;
+    const next = agents.map(a => (isTerminalEntry(a) === movedTerm ? group[gi++] : a));
+    if (next.some((a, i) => a.id !== agents[i].id)) mutate(next);
   }
 
   function cloneAgent(id: string) {
@@ -188,7 +218,7 @@ export function AgentsSection() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-[20px] font-medium">Agent CLIs</h1>
+        <h1 className="text-[20px] font-medium">Agents & Terminals</h1>
         <div className="flex items-center gap-3">
           <div className="text-[12px] text-[var(--color-fg-faint)] min-h-[1em]">
             {status === "saving" && <span>Saving…</span>}
@@ -201,13 +231,18 @@ export function AgentsSection() {
           <Button variant="secondary" size="sm" onClick={addAgent}>
             <Plus className="h-3.5 w-3.5" /> Add agent CLI
           </Button>
+          <Button variant="secondary" size="sm" onClick={addTerminal} title="Add a custom terminal: a command line (docker exec, ssh, ...) offered under New terminal in the + tab menu">
+            <Plus className="h-3.5 w-3.5" /> Add terminal
+          </Button>
         </div>
       </div>
 
       <p className="text-[13px] text-[var(--color-fg-dim)] -mt-2">
         Customize the command and flags used to launch each agent. Useful when the CLI renames a flag
         (e.g., a future <code className="font-mono">--yolo</code> rename) or you want to point at a
-        wrapper script. Built-in agents can be edited but not removed.
+        wrapper script. Built-in agents can be edited but not removed. Custom terminals appear under
+        "New terminal" in the + tab menu and run their command line through your login shell
+        (handy for devcontainers: <code className="font-mono">docker exec</code>, ssh boxes, REPLs).
       </p>
 
       {err && <div className="text-[13px] text-[var(--color-err)]">{err}</div>}
@@ -240,7 +275,9 @@ export function AgentsSection() {
             <AlertTriangle className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold">Remove agent?</div>
+            <div className="text-[15px] font-semibold">
+              Remove {isTerminalEntry(pendingDelete ?? undefined) ? "terminal" : "agent"}?
+            </div>
             <p className="mt-1 text-[13px] text-[var(--color-fg-dim)]">
               <span className="font-mono text-[var(--color-fg)]">{pendingDelete?.display_name}</span>{" "}
               will be removed. Workspaces that reference it will fall back to spawning the
@@ -324,15 +361,18 @@ function AgentsTabs({
     const pill = strip.querySelector(`[data-agent-id="${CSS.escape(d.id)}"]`) as HTMLElement | null;
     if (!pill) return;
     const draggedCenter = (clientX - d.grabOffset) + pill.offsetWidth / 2;
+    // Reorder within the dragged pill's own group only — agents and
+    // terminals render as separate groups, so the target index counts
+    // same-kind pills and `reorderAgent` maps it back into the array.
+    const movedKind = pill.dataset.kind;
     const pills = Array.from(strip.querySelectorAll<HTMLElement>("[data-agent-id]"));
     let target = 0;
     for (const p of pills) {
-      if (p.dataset.agentId === d.id) continue;
+      if (p.dataset.agentId === d.id || p.dataset.kind !== movedKind) continue;
       const r = p.getBoundingClientRect();
       if (r.left + r.width / 2 < draggedCenter) target++;
     }
-    const cur = agents.findIndex(a => a.id === d.id);
-    if (target !== cur) reorderAgent(d.id, target);
+    reorderAgent(d.id, target);
   }
 
   function onDragPointerMove(e: PointerEvent) {
@@ -386,6 +426,49 @@ function AgentsTabs({
   const active = agents.find(a => a.id === activeId) ?? agents[0];
   if (!active) return null;
 
+  // Grouped display: agents first, then custom terminals (#27). The array
+  // itself may interleave the kinds; the strip derives the grouped order
+  // and drag-reorder stays within a group (see maybeReorder).
+  const agentEntries = agents.filter(a => !isTerminalEntry(a));
+  const termEntries = agents.filter(isTerminalEntry);
+
+  const pill = (a: Agent, first: boolean) => (
+    <button
+      key={a.id}
+      type="button"
+      data-agent-id={a.id}
+      data-kind={isTerminalEntry(a) ? "terminal" : "agent"}
+      onClick={() => setActiveId(a.id)}
+      onPointerDown={(e) => startDrag(a.id, e)}
+      className={cn(
+        "relative -mb-px flex items-center gap-1.5 py-2 text-[13px] font-medium transition-colors select-none",
+        first ? "pr-3" : "px-3",
+        dragId === a.id ? "z-30 opacity-80" : "",
+        a.id === active.id
+          ? "text-[var(--color-fg)]"
+          : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+      )}
+      style={dragId === a.id ? { transform: `translateX(${dragTx}px)` } : undefined}
+    >
+      <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
+        <CliIcon cli={a.icon_id} className="h-3.5 w-3.5" />
+      </span>
+      <span className="truncate max-w-[140px]">{a.display_name || a.id}</span>
+      {isModified(a) && (
+        <span title="Modified from ship defaults" className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
+      )}
+      {a.id === active.id && (
+        <span className={cn(
+          "absolute bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]",
+          // First tab: underline hugs the left edge so it lines
+          // up with the page gutter; subsequent tabs get the
+          // standard inset.
+          first ? "left-0 right-2" : "inset-x-2",
+        )} />
+      )}
+    </button>
+  );
+
   return (
     <div className="flex flex-col">
       {/* Tab strip — mirrors the Repository sub-tab style: bottom
@@ -393,41 +476,13 @@ function AgentsTabs({
           active one. Keeps the visual language consistent across
           settings pages. */}
       <div ref={stripRef} className="flex items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-[var(--color-border-soft)]">
-        {agents.map((a, idx) => (
-          <button
-            key={a.id}
-            type="button"
-            data-agent-id={a.id}
-            onClick={() => setActiveId(a.id)}
-            onPointerDown={(e) => startDrag(a.id, e)}
-            className={cn(
-              "relative -mb-px flex items-center gap-1.5 py-2 text-[13px] font-medium transition-colors select-none",
-              idx === 0 ? "pr-3" : "px-3",
-              dragId === a.id ? "z-30 opacity-80" : "",
-              a.id === active.id
-                ? "text-[var(--color-fg)]"
-                : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-            )}
-            style={dragId === a.id ? { transform: `translateX(${dragTx}px)` } : undefined}
-          >
-            <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
-              <CliIcon cli={a.icon_id} className="h-3.5 w-3.5" />
-            </span>
-            <span className="truncate max-w-[140px]">{a.display_name || a.id}</span>
-            {isModified(a) && (
-              <span title="Modified from ship defaults" className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
-            )}
-            {a.id === active.id && (
-              <span className={cn(
-                "absolute bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]",
-                // First tab: underline hugs the left edge so it lines
-                // up with the page gutter; subsequent tabs get the
-                // standard inset.
-                idx === 0 ? "left-0 right-2" : "inset-x-2",
-              )} />
-            )}
-          </button>
-        ))}
+        {agentEntries.map((a, idx) => pill(a, idx === 0))}
+        {termEntries.length > 0 && (
+          <span className="ml-4 mr-1 shrink-0 select-none text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+            Terminals
+          </span>
+        )}
+        {termEntries.map(a => pill(a, false))}
       </div>
 
       {/* Active agent card. Mount-keyed by id so internal state
@@ -480,6 +535,10 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   // owns the local draft so spaces survive (#19); it splits + bubbles up the
   // parsed array on each change.
   const nameRef = useRef<HTMLInputElement>(null);
+  // Custom terminal entries (#27) hide every agent-only field: YOLO, the
+  // runtime toggle commands, resume / session args, name args, and the
+  // work-done switch — none of the agent machinery runs for them.
+  const isTerminal = isTerminalEntry(agent);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -517,6 +576,12 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           {agent.builtin && (
             <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] uppercase tracking-wider">built-in</span>
           )}
+          {isTerminal && (
+            <span
+              className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] uppercase tracking-wider"
+              title="Custom terminal: offered under New terminal in the + tab menu. Runs through your login shell; no agent features (resume, work-done, message queue)."
+            >terminal</span>
+          )}
           {extendsName && (
             <span
               className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] font-mono"
@@ -529,8 +594,10 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               title="Some fields differ from this agent's ship defaults. Use Reset to revert."
             >modified</span>
           )}
-          {/* Install status — from PATH detection (refreshClis). */}
-          {detected && (
+          {/* Install status — from PATH detection (refreshClis). Skipped
+              for terminals: their command is a free-form shell line that
+              `which` can't probe, so the badge would cry wolf. */}
+          {!isTerminal && detected && (
             <span
               className={cn(
                 "rounded px-1.5 py-0.5 text-[11px] uppercase tracking-wider",
@@ -606,18 +673,23 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
       </header>
 
       <div className="grid grid-cols-1 gap-3">
-        <Field label="Command" hint="Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work, and shell-style `VAR=val cmd` prefixes won't either; use the Environment box below for env vars.">
-          <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder="claude" />
+        <Field label="Command" hint={isTerminal
+          ? "Run through your login shell (quoting, pipes, and rc-file PATH all work). The shell stays interactive after the command exits. Placeholders: {workspace_slug}, {workspace_name}, {workspace_path}, {branch}, {port}."
+          : "Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work, and shell-style `VAR=val cmd` prefixes won't either; use the Environment box below for env vars."}>
+          <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder={isTerminal ? "docker exec -it -w {workspace_path} mybox zsh" : "claude"} />
         </Field>
         <Field
           label="Default args"
-          hint="Always passed. Space-separated. Placeholders: {workspace_slug}, {workspace_name}, {workspace_id}, {branch}, {port}."
+          hint={isTerminal
+            ? "Appended to the command line above. Space-separated. Same placeholders, including {workspace_path} (differs between the main repo and each worktree)."
+            : "Always passed. Space-separated. Placeholders: {workspace_slug}, {workspace_name}, {workspace_id}, {workspace_path}, {branch}, {port}."}
         >
           <ArgsInput value={agent.args || []}
             onChange={args => onPatch({ args })}
             className="font-mono" placeholder="--option1 --option2"
           />
         </Field>
+        {!isTerminal && <>
         <Field label="YOLO args" hint="Appended when YOLO mode (⚡) is on. Empty = no flag added.">
           <ArgsInput value={agent.capabilities?.yolo_args || []}
             onChange={yolo_args => onPatchCaps({ yolo_args })}
@@ -664,6 +736,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             className="font-mono" placeholder="--name {WORKSPACE_SLUG}"
           />
         </Field>
+        </>}
         <Field
           label="Environment"
           hint="One KEY=VALUE per line. Merged into the spawn env on top of inherited parent env. Lines starting with # are ignored. Preserved across Reset."
@@ -693,7 +766,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             placeholder={"*.mycompany.com\nbitbucket.org"}
           />
         </Field>
-        <Field
+        {!isTerminal && <Field
           label="Work-done detection"
           hint="When off, the done badge, bell, and OS notification are never shown for this agent. Disable for custom CLIs that emit signals in ways that cause false positives."
         >
@@ -719,7 +792,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               {agent.work_done !== false ? "Enabled" : "Disabled"}
             </span>
           </div>
-        </Field>
+        </Field>}
       </div>
     </div>
   );

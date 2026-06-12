@@ -1,6 +1,6 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Workspace, Tab, TerminalTab, Agent } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { useTabStripDrag } from "./useTabStripDrag";
@@ -12,11 +12,27 @@ import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
 import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
-import { visibleCliIds, agentDisplayName } from "@/lib/agents";
+import { visibleCliIds, agentDisplayName, isTerminalEntry } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
 const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
+
+/** Registry entries rendered as dropdown rows — shared by the main strip's
+ *  and the right strip's + menus (both their "New terminal" custom entries
+ *  and their "New agent" lists) so the two menus can't drift apart. */
+function CliMenuItems({ entries, onSpawn }: { entries: Agent[]; onSpawn: (cli: string) => void }) {
+  return (
+    <>
+      {entries.map(a => (
+        <DropdownItem key={a.id} onSelect={() => onSpawn(a.id)}>
+          <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}><CliIcon cli={a.icon_id} className="h-4 w-4" /></span>
+          {a.display_name}
+        </DropdownItem>
+      ))}
+    </>
+  );
+}
 
 export function TabBar({ ws }: { ws: Workspace }) {
   const allTabsRaw = useWorkspaceTabs(ws.id);
@@ -37,6 +53,15 @@ export function TabBar({ ws }: { ws: Workspace }) {
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const visibleClis = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
+  // Custom terminals (Settings → kind: "terminal", #27) join the "New
+  // terminal" section. Disabled toggle only — no PATH detection, their
+  // command is a free-form shell line `which` can't probe. Memoized (and
+  // passed down to the right strip) — the strip re-renders on every tab
+  // state change and the list only depends on the registry.
+  const customTerminals = useMemo(
+    () => registry.filter(a => isTerminalEntry(a) && !a.disabled),
+    [registry],
+  );
   const openBroadcast = useUI(s => s.openBroadcast);
   const [open, setOpen] = useState(false);
   // When spawnTab fires, suppress Radix's auto focus-return so it
@@ -181,14 +206,10 @@ export function TabBar({ ws }: { ws: Workspace }) {
                 Sandboxed
               </DropdownItem>
             )}
+            <CliMenuItems entries={customTerminals} onSpawn={spawnTab} />
             <DropdownSeparator />
             <DropdownLabel>New agent</DropdownLabel>
-            {registry.filter(a => visibleClis.has(a.id)).map(a => (
-              <DropdownItem key={a.id} onSelect={() => spawnTab(a.id)}>
-                <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}><CliIcon cli={a.icon_id} className="h-4 w-4" /></span>
-                {a.display_name}
-              </DropdownItem>
-            ))}
+            <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={spawnTab} />
           </DropdownMenu>
         </DropdownRoot>
 
@@ -218,6 +239,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
           rightSplitRatio={rightSplitRatio}
           registry={registry}
           visibleClis={visibleClis}
+          customTerminals={customTerminals}
           setActiveRight={setActiveRight}
           closeRightTab={closeRightTab}
           addRightTab={addRightTab}
@@ -234,7 +256,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
 /** Tab strip for the right-split panel. Shows agent+shell tabs with the same
  *  "+" dropdown as the main strip so the user can spawn agents in the right
  *  panel too. */
-function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, rightSplitRatio, registry, visibleClis,
+function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, rightSplitRatio, registry, visibleClis, customTerminals,
   setActiveRight, closeRightTab, addRightTab, addRightAgentTab, toggleRightSplit, moveTabToPane, reorderTab }: {
   ws: Workspace;
   rightTabs: Tab[];
@@ -244,6 +266,7 @@ function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, righ
   rightSplitRatio: number;
   registry: Agent[];
   visibleClis: Set<string>;
+  customTerminals: Agent[];
   setActiveRight: (wsId: string, tabId: string) => void;
   closeRightTab: (wsId: string, tabId: string) => void;
   addRightTab: (wsId: string, sandboxed?: boolean) => string;
@@ -350,14 +373,10 @@ function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, righ
               Sandboxed
             </DropdownItem>
           )}
+          <CliMenuItems entries={customTerminals} onSpawn={spawnRightAgent} />
           <DropdownSeparator />
           <DropdownLabel>New agent</DropdownLabel>
-          {registry.filter(a => visibleClis.has(a.id)).map(a => (
-            <DropdownItem key={a.id} onSelect={() => spawnRightAgent(a.id)}>
-              <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}><CliIcon cli={a.icon_id} className="h-4 w-4" /></span>
-              {a.display_name}
-            </DropdownItem>
-          ))}
+          <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={spawnRightAgent} />
         </DropdownMenu>
       </DropdownRoot>
 

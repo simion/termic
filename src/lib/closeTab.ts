@@ -7,7 +7,7 @@
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { agentDisplayName } from "@/lib/agents";
+import { agentDisplayName, isTerminalCli } from "@/lib/agents";
 
 /** Close a tab, asking first when closing it is destructive:
  *   - an `edit` tab with unsaved changes (discards the buffer), or
@@ -34,17 +34,22 @@ export async function requestCloseTab(wsId: string, tabId: string) {
   // close is destructive and the copy says so.
   // Plain shells (cli === "shell") close instantly; there's nothing to lose.
   if (tab?.type === "terminal" && tab.cli !== "shell") {
+    // Custom-command and registry-terminal tabs have no agent session to
+    // end or resume — the confirm is only about killing the live process.
+    const termLike = isTerminalCli(tab.cli, useApp.getState().agents);
     const label = tab.cli === "custom"
       ? (tab.title || "this command")
       : agentDisplayName(tab.cli, useApp.getState().agents);
     const isMain = !!tab.is_default;
     const ok = await useUI.getState().askConfirm({
       title: `Close ${label}?`,
-      message: isMain
-        ? "Stops the running process. The session resumes when you reopen the workspace."
-        : "Ends this agent's session. It won't be restored when the workspace reopens.",
+      message: termLike
+        ? "Stops the running process and closes the tab."
+        : isMain
+          ? "Stops the running process. The session resumes when you reopen the workspace."
+          : "Ends this agent's session. It won't be restored when the workspace reopens.",
       confirmLabel: "Close tab",
-      destructive: !isMain,
+      destructive: !isMain && !termLike,
     });
     if (!ok) return;
   }

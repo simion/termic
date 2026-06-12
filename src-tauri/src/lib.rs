@@ -3951,7 +3951,16 @@ fn workspace_file_write(id: String, path: String, content: String) -> Result<(),
 /// for untracked); modified = current on-disk content (empty if
 /// deleted in the worktree).
 #[derive(Serialize)]
-struct FileDiffSides { original: String, modified: String }
+struct FileDiffSides {
+    original: String,
+    modified: String,
+    /// Whether each side actually exists (and is readable as UTF-8): the
+    /// content strings are "" both for a MISSING side and for an EMPTY
+    /// file, so the frontend's one-sided detection needs these to avoid
+    /// misclassifying a truncated-to-empty file as "new or deleted".
+    original_exists: bool,
+    modified_exists: bool,
+}
 
 fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, String), String> {
     if let Some((member, remainder)) = w.composition.iter().find_map(|m| {
@@ -3973,13 +3982,20 @@ fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, Str
 
 fn workspace_file_diff_sides_for_workspace(w: &Workspace, path: &str) -> Result<FileDiffSides, String> {
     let (cwd, rel_path) = resolve_workspace_git_path(w, path)?;
-    let original = git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd)
-        .unwrap_or_default();
+    // `git show` fails for a path not in HEAD (untracked/added file);
+    // read_to_string fails for non-UTF8. Either way the side is
+    // unrenderable → exists=false, content "".
+    let original = git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
     let modified = match safe_workspace_path(&cwd, &rel_path) {
-        Ok(p) if p.exists() => fs::read_to_string(&p).unwrap_or_default(),
-        _ => String::new(),
+        Ok(p) if p.exists() => fs::read_to_string(&p).ok(),
+        _ => None,
     };
-    Ok(FileDiffSides { original, modified })
+    Ok(FileDiffSides {
+        original_exists: original.is_some(),
+        modified_exists: modified.is_some(),
+        original: original.unwrap_or_default(),
+        modified: modified.unwrap_or_default(),
+    })
 }
 
 fn workspace_file_diff_for_workspace(w: &Workspace, path: &str) -> Result<String, String> {
@@ -5409,6 +5425,39 @@ fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
 
+/// Copy a bundled notification sound into `~/Library/Sounds` so macOS can
+/// resolve it by name. `NSUserNotification.soundName` only searches the
+/// `Library/Sounds` directories plus the app bundle's Resources ROOT, and it
+/// can't decode mp3 — Tauri resources land nested under
+/// `Resources/resources/…` (dev mode has no .app bundle at all), so a name
+/// like "choo_choo.mp3" never resolves and macOS silently falls back to the
+/// default sound. Idempotent: skips the copy when the installed file already
+/// matches by size (sounds only change wholesale on app updates).
+#[tauri::command]
+async fn install_notification_sound(app: AppHandle, resource: String, file_name: String) -> Result<(), String> {
+    if cfg!(not(target_os = "macos")) {
+        return Ok(());
+    }
+    if file_name.contains('/') || file_name.contains("..") {
+        return Err("invalid sound file name".into());
+    }
+    use tauri::Manager;
+    let src = app
+        .path()
+        .resolve(&resource, tauri::path::BaseDirectory::Resource)
+        .map_err(|e| e.to_string())?;
+    let dir = dirs::home_dir().ok_or("no home dir")?.join("Library/Sounds");
+    let dst = dir.join(&file_name);
+    if let (Ok(s), Ok(d)) = (fs::metadata(&src), fs::metadata(&dst)) {
+        if s.len() == d.len() {
+            return Ok(());
+        }
+    }
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::copy(&src, &dst).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn notify(title: String, body: String) {
     let script = format!(
@@ -5542,9 +5591,19 @@ pub struct Agent {
     /// surfaced in the UI as "extends: <name>" in the settings card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
+    /// "agent" (default) or "terminal". Terminal entries share the registry
+    /// (same persistence, env, sandbox lists) but spawn with shell semantics:
+    /// command + args are joined into one line and run through the user's
+    /// login shell, and none of the agent machinery applies (no resume, no
+    /// work-done detection, no message queue, broadcast default-unchecked).
+    /// Issue #27: lets users add e.g. a devcontainer shell to the + menu's
+    /// "New terminal" section. `#[serde(default)]` → "agent" for old files.
+    #[serde(default = "default_kind")]
+    pub kind: String,
 }
 
 fn default_true() -> bool { true }
+fn default_kind() -> String { "agent".into() }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -5642,6 +5701,7 @@ fn default_agents() -> Vec<Agent> {
             sandbox_allowed_hosts: vec![],
             work_done: true,
             extends: None,
+            kind: "agent".into(),
         },
         Agent {
             id: "codex".into(),
@@ -5675,6 +5735,7 @@ fn default_agents() -> Vec<Agent> {
             sandbox_allowed_hosts: vec![],
             work_done: true,
             extends: None,
+            kind: "agent".into(),
         },
         Agent {
             // Google Antigravity CLI (`agy`), launched 2025-11-18 — a
@@ -5726,6 +5787,7 @@ fn default_agents() -> Vec<Agent> {
             sandbox_allowed_hosts: vec![],
             work_done: true,
             extends: None,
+            kind: "agent".into(),
         },
         Agent {
             // GitHub Copilot CLI (`copilot`). Launched 2025; supports
@@ -5764,6 +5826,7 @@ fn default_agents() -> Vec<Agent> {
             sandbox_allowed_hosts: vec![],
             work_done: true,
             extends: None,
+            kind: "agent".into(),
         },
         Agent {
             id: "gemini".into(),
@@ -5799,6 +5862,7 @@ fn default_agents() -> Vec<Agent> {
             sandbox_allowed_hosts: vec![],
             work_done: true,
             extends: None,
+            kind: "agent".into(),
         },
         Agent {
             // xAI's Grok Build TUI. Help text confirmed:
@@ -5834,6 +5898,7 @@ fn default_agents() -> Vec<Agent> {
             sandbox_allowed_hosts: vec![],
             work_done: true,
             extends: None,
+            kind: "agent".into(),
         },
     ]
 }
@@ -6370,7 +6435,7 @@ pub fn run() {
             workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file,
+            notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file, install_notification_sound,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,

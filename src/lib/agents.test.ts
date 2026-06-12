@@ -21,7 +21,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume } from "@/lib/agents";
+import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 
 // ── spawnArgsForCli ───────────────────────────────────────────────────
@@ -290,6 +290,70 @@ describe("visibleCliIds", () => {
     };
     const result = visibleCliIds(["claude", "custom-agent"], agents, detected);
     expect(result.has("custom-agent")).toBe(true);
+  });
+
+  it("excludes terminal-kind entries (they belong to the New terminal section)", () => {
+    const agents = [makeAgent("claude"), { ...makeAgent("devcontainer"), kind: "terminal" } as Agent];
+    const result = visibleCliIds(["claude", "devcontainer"], agents, {});
+    expect(result.has("devcontainer")).toBe(false);
+    expect(result.has("claude")).toBe(true);
+  });
+});
+
+// ── custom terminals (#27) ────────────────────────────────────────────
+
+describe("custom terminals", () => {
+  beforeEach(() => { mockAgents.length = 0; });
+
+  const termEntry = (over: Partial<Agent> = {}): Agent => ({
+    id: "devcontainer", display_name: "devcontainer", command: "docker",
+    args: ["exec", "-it", "-w", "{WORKSPACE_PATH}", "mybox", "zsh"],
+    icon_id: "lucide:terminal", color: "#9aa0a6", builtin: false,
+    kind: "terminal", ...over,
+  } as Agent);
+  const fakeWs = {
+    id: "ws1", name: "Improve Tests", branch: "main", port: 1420,
+    path: "/repos/proj/.worktrees/improve-tests",
+  } as any;
+
+  it("isTerminalCli: shell/custom sentinels and terminal-kind entries are terminals", () => {
+    mockAgents.push(termEntry());
+    expect(isTerminalCli("shell", mockAgents)).toBe(true);
+    expect(isTerminalCli("custom", mockAgents)).toBe(true);
+    expect(isTerminalCli("devcontainer", mockAgents)).toBe(true);
+    expect(isTerminalCli("claude", mockAgents)).toBe(false);
+  });
+
+  it("workDoneCapable: terminal-kind entries never qualify, even with work_done true", () => {
+    mockAgents.push(termEntry({ work_done: true }));
+    expect(workDoneCapable("devcontainer", mockAgents)).toBe(false);
+  });
+
+  it("terminalLaunchCommand joins command + args and expands placeholders", () => {
+    mockAgents.push(termEntry());
+    expect(terminalLaunchCommand("devcontainer", fakeWs)).toBe(
+      "docker exec -it -w /repos/proj/.worktrees/improve-tests mybox zsh",
+    );
+  });
+
+  it("terminalLaunchCommand returns undefined for an empty command (plain shell)", () => {
+    mockAgents.push(termEntry({ command: "", args: [] }));
+    expect(terminalLaunchCommand("devcontainer", fakeWs)).toBeUndefined();
+  });
+
+  it("terminalLaunchCommand shell-quotes expanded values with spaces or metachars", () => {
+    mockAgents.push(termEntry());
+    const ws = { ...fakeWs, path: "/Users/x/My Projects/repo" };
+    expect(terminalLaunchCommand("devcontainer", ws)).toBe(
+      "docker exec -it -w '/Users/x/My Projects/repo' mybox zsh",
+    );
+    // A name with a single quote must not break out of the quoting.
+    mockAgents.length = 0;
+    mockAgents.push(termEntry({ args: ["{WORKSPACE_NAME}"] }));
+    const wsQuote = { ...fakeWs, name: "it's a test" };
+    expect(terminalLaunchCommand("devcontainer", wsQuote)).toBe(
+      `docker 'it'\\''s a test'`,
+    );
   });
 });
 

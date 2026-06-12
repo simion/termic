@@ -4,7 +4,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TextareaHTMLAttributes } from "react";
-import { settingsLoad, settingsSave, ensureNotifyPermission } from "@/lib/ipc";
+import { settingsLoad, settingsSave, ensureNotifyPermission, previewCompletionSound } from "@/lib/ipc";
 import type { Settings } from "@/lib/types";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
@@ -12,8 +12,10 @@ import { Input } from "@/components/ui/Input";
 import { Tip } from "@/components/ui/Tooltip";
 import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
+import { useApp } from "@/store/app";
 import { ExcludeEditor } from "./ExcludeEditor";
 import { cn, cleanLines } from "@/lib/utils";
+import { COMPLETION_SOUND_OPTIONS, COMPLETION_SOUND_SUPPORTED } from "@/lib/notificationSounds";
 
 export function GeneralSection() {
   // Cache the full Settings object — saves merge into this so we don't
@@ -36,6 +38,10 @@ export function GeneralSection() {
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
+  const completionSound = usePrefs(s => s.completionSound);
+  const setCompletionSound = usePrefs(s => s.setCompletionSound);
+  const completionSoundId = usePrefs(s => s.completionSoundId);
+  const setCompletionSoundId = usePrefs(s => s.setCompletionSoundId);
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
   const workingIndicator = usePrefs(s => s.workingIndicator);
@@ -195,6 +201,63 @@ export function GeneralSection() {
           }}
         />
       </div>
+
+      {/* macOS-only: the sound catalog is macOS system-sound names (plus a
+          .caf installed into ~/Library/Sounds) — none resolve elsewhere. */}
+      {COMPLETION_SOUND_SUPPORTED && (
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        {/* The sound plays INSIDE the desktop notification — with
+            notifications off it can never fire, so lock the controls
+            instead of letting Preview suggest otherwise. */}
+        <div className={cn(!desktopNotifications && "pointer-events-none opacity-50 select-none")}>
+        <Toggle
+          label="Completion sound"
+          hint="Pick which sound plays inside desktop notifications when an inactive agent finishes a turn. Default: Funk."
+          value={completionSound}
+          onChange={setCompletionSound}
+        />
+        <div className="mt-3 max-w-sm">
+          <div className="flex items-center gap-2">
+            <select
+              value={completionSoundId}
+              onChange={(e) => setCompletionSoundId(e.target.value as typeof completionSoundId)}
+              className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
+            >
+              {COMPLETION_SOUND_OPTIONS.map(option => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+            </select>
+            <Button
+              variant="secondary"
+              size="md"
+              className="h-9 shrink-0"
+              onClick={() => {
+                // Preview with a real project · workspace title so the
+                // banner looks exactly like an agent-finished notification.
+                const st = useApp.getState();
+                const ws =
+                  st.workspaces.find(w => w.id === st.activeWorkspaceId && !w.archived) ??
+                  st.workspaces.find(w => !w.archived);
+                const proj = ws && st.projects.find(p => p.id === ws.project_id);
+                const title = ws && proj?.name
+                  ? `${proj.name} · ${ws.name || "workspace"}`
+                  : (ws?.name || "project · workspace");
+                previewCompletionSound(completionSoundId, { title, body: "agent finished" });
+              }}
+              title="Play a preview of the selected completion sound"
+            >
+              Preview
+            </Button>
+          </div>
+        </div>
+        </div>
+        {!desktopNotifications && (
+          <p className="mt-2 text-[12px] text-[var(--color-fg-faint)]">
+            Turn on Desktop notifications above to enable completion sounds.
+          </p>
+        )}
+      </div>
+      )}
 
       {/* Global sandbox default. The New workspace dialog defaults its
           Sandbox toggle to this OR the project's own `default_sandbox`

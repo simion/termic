@@ -65,7 +65,7 @@ export function Settings() {
           active={tab === "general"} onClick={() => openSettings("general")} />
         <RailItem icon={<Palette className="h-4 w-4" />} label="Appearance"
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
-        <RailItem icon={<Terminal className="h-4 w-4" />} label="Agent CLIs"
+        <RailItem icon={<Terminal className="h-4 w-4" />} label="Agents & Terminals"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
         <RailItem icon={<Keyboard className="h-4 w-4" />} label="Shortcuts"
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />

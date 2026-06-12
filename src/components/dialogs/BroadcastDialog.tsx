@@ -9,6 +9,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { sendMessageToPty } from "@/lib/agentSend";
+import { isTerminalCli } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { Check, Megaphone } from "lucide-react";
 import type { TerminalTab } from "@/lib/types";
@@ -43,7 +44,10 @@ export function BroadcastDialog() {
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
 
   function isSelected(t: TerminalTab): boolean {
-    return overrides[t.id] ?? (t.cli !== "shell");
+    // Agents default checked; shells, custom-command tabs, and registry
+    // terminal entries default unchecked — broadcast prose typed into a
+    // raw shell prompt is rarely what the user wants.
+    return overrides[t.id] ?? !isTerminalCli(t.cli, agents);
   }
 
   // (Re-)open: clear the message and any prior overrides.
@@ -63,7 +67,7 @@ export function BroadcastDialog() {
 
   function toggle(t: TerminalTab) {
     setOverrides(o => {
-      const cur = o[t.id] ?? (t.cli !== "shell");
+      const cur = o[t.id] ?? !isTerminalCli(t.cli, agents);
       return { ...o, [t.id]: !cur };
     });
   }

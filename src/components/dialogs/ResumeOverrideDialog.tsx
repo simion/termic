@@ -14,6 +14,7 @@ import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { workspaceSetResumeOverride, ptyKill } from "@/lib/ipc";
+import { isTerminalCli } from "@/lib/agents";
 import type { TerminalTab } from "@/lib/types";
 import { History, RotateCcw } from "lucide-react";
 
@@ -39,10 +40,12 @@ export function ResumeOverrideDialog() {
   // The primary agent tab is the only one that resumes (secondary "+" tabs
   // always start fresh), so it's the only one worth restarting. Mirror
   // TerminalPane's primary-tab rule: the default tab, else the first agent
-  // terminal tab. Shell / custom tabs never resume an agent session.
+  // terminal tab. Shell / custom / registry-terminal tabs never resume an
+  // agent session — isTerminalCli excludes all three, so Save & restart
+  // can't SIGKILL a live docker/ssh terminal when no agent tab is open.
   const primaryAgentTab = (): TerminalTab | undefined => {
     const tabs = (useApp.getState().tabs[wsId ?? ""] ?? []).filter(
-      t => t.type === "terminal" && (t as TerminalTab).cli !== "shell" && (t as TerminalTab).cli !== "custom",
+      t => t.type === "terminal" && !isTerminalCli((t as TerminalTab).cli),
     ) as TerminalTab[];
     return tabs.find(t => t.is_default) ?? tabs[0];
   };

@@ -31,7 +31,8 @@ export function useAttentionNotifier() {
     const unsub = useApp.subscribe((state, prev) => {
       // Gate every notification on the user's pref. We still update unread
       // dots in the sidebar — only the OS notification is opt-in.
-      if (!usePrefs.getState().desktopNotifications) return;
+      const desktopNotifications = usePrefs.getState().desktopNotifications;
+      if (!desktopNotifications) return;
       const wsIds = Object.keys(state.tabs);
       for (const wsId of wsIds) {
         const tabs = state.tabs[wsId] || [];
@@ -65,6 +66,7 @@ export function useAttentionNotifier() {
             title,
             `agent ${reason}`,
             { wsId, tabId: t.id },
+            { sound: t.unread.reason === "done" },
           ).catch(() => {});
           lastRouteRef.current = { wsId, tabId: t.id, firedAt: now };
         }

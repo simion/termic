@@ -10,6 +10,15 @@ import {
   type BindingMap,
   type ShortcutId,
 } from "@/lib/shortcuts";
+import {
+  DEFAULT_COMPLETION_SOUND_ID,
+  LS_COMPLETION_SOUND,
+  LS_COMPLETION_SOUND_ID,
+  isCompletionSoundId,
+  readCompletionSoundEnabled,
+  readCompletionSoundId,
+  type CompletionSoundId,
+} from "@/lib/notificationSounds";
 
 const LS_EDITOR_FONT   = "editorFont";
 const LS_EDITOR_THEME  = "editorThemeId";
@@ -263,6 +272,12 @@ interface PrefsState {
   /** Send OS notifications when an inactive tab's agent settles (output
    *  stopped changing). OFF by default — too noisy for many users. */
   desktopNotifications: boolean;
+  /** Play a selectable notification sound when an inactive agent finishes
+   *  a turn. OFF by default. */
+  completionSound: boolean;
+  /** Which notification sound to use when completion sound is enabled.
+   *  Defaults to the app's default sound. */
+  completionSoundId: CompletionSoundId;
   /** Highlight workspaces / tabs whose agent has just settled (idle).
    *  ON by default — the brand-color icon swap on settle is the
    *  in-app "done" signal. Some users find it distracting and want
@@ -354,6 +369,8 @@ interface PrefsState {
   /** Convenience: cycle auto → light → dark → auto. */
   cycleThemeMode:     () => void;
   setDesktopNotifications: (v: boolean) => void;
+  setCompletionSound: (v: boolean) => void;
+  setCompletionSoundId: (id: CompletionSoundId) => void;
   setSettledHighlight: (v: boolean) => void;
   setWorkingIndicator: (v: boolean) => void;
   setGlobalDefaultSandbox: (v: boolean) => void;
@@ -431,6 +448,8 @@ const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorF
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
+const initialCompletionSound = readCompletionSoundEnabled();
+const initialCompletionSoundId = readCompletionSoundId();
 // WIP feature - the "agent has settled" heuristic produces false
 // positives often enough that the highlight is noise more than
 // Default ON. Claude Code's title classifier (Braille spinner glyph
@@ -459,6 +478,8 @@ const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
   desktopNotifications: initialDesktopNotif,
+  completionSound: initialCompletionSound,
+  completionSoundId: initialCompletionSoundId,
   settledHighlight: initialSettledHighlight,
   workingIndicator: initialWorkingIndicator,
   globalDefaultSandbox: initialDefaultSandbox,
@@ -541,6 +562,15 @@ export const usePrefs = create<PrefsState>(set => ({
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}
     set({ desktopNotifications: v });
+  },
+  setCompletionSound: (v) => {
+    try { localStorage.setItem(LS_COMPLETION_SOUND, v ? "1" : "0"); } catch {}
+    set({ completionSound: v });
+  },
+  setCompletionSoundId: (id) => {
+    const next = isCompletionSoundId(id) ? id : DEFAULT_COMPLETION_SOUND_ID;
+    try { localStorage.setItem(LS_COMPLETION_SOUND_ID, next); } catch {}
+    set({ completionSoundId: next });
   },
   setSettledHighlight: (v) => {
     try { localStorage.setItem(LS_SETTLED_HIGHLIGHT, v ? "1" : "0"); } catch {}

@@ -18,6 +18,10 @@ import { slugify } from "@/lib/utils";
  *    {WORKSPACE_SLUG}  → slugified workspace name (e.g. "improve-tests")
  *    {WORKSPACE_NAME}  → raw workspace name
  *    {WORKSPACE_ID}    → workspace's own uuid
+ *    {WORKSPACE_PATH}  → absolute path of the workspace dir (worktree path
+ *                        for worktree workspaces, repo root otherwise) —
+ *                        lets a custom terminal vary e.g. a `docker exec
+ *                        -w` mount path per worktree (#27)
  *    {BRANCH}          → git branch
  *    {PORT}            → assigned dev port
  *  Unknown placeholders pass through unchanged so weird arg shapes don't
@@ -47,12 +51,14 @@ function workspaceVars(ws: Workspace | undefined, sessionUuid?: string): Record<
     WORKSPACE_SLUG: slugify(ws.name),
     WORKSPACE_NAME: ws.name,
     WORKSPACE_ID: ws.id,
+    WORKSPACE_PATH: ws.path,
     BRANCH: ws.branch,
     PORT: String(ws.port),
     // Lowercase aliases — legacy, the original placeholder set.
     workspace_slug: slugify(ws.name),
     workspace_name: ws.name,
     workspace_id: ws.id,
+    workspace_path: ws.path,
     branch: ws.branch,
     port: String(ws.port),
   } : {};
@@ -150,14 +156,68 @@ export function agentDisplayName(cli: string, agents: Agent[] = useApp.getState(
   }
 }
 
-/** Whether work-done detection runs for a terminal tab's agent. Mirrors
- *  the runtime gate in TerminalPane (`tab.cli !== "shell" && (work_done ?? true)`):
- *  plain shells never qualify, and any agent whose registry entry has
- *  `work_done === false` is opted out. Unknown / custom clis default on. */
+/** The canonical kind predicate for a registry entry. Missing `kind`
+ *  means "agent" (entries predating #27). Every consumer should call
+ *  this rather than re-inlining the `?? "agent"` defaulting. */
+export function isTerminalEntry(a: Pick<Agent, "kind"> | undefined): boolean {
+  return (a?.kind ?? "agent") === "terminal";
+}
+
+/** True when a tab's cli resolves to terminal-style SPAWN semantics: the
+ *  plain-shell sentinel, the custom-command sentinel, or a registry entry
+ *  with `kind: "terminal"` (a custom terminal, #27). These tabs never
+ *  resume, never get YOLO args, and default unchecked in broadcast.
+ *  NOTE this is not the work-done/queue gate — that's workDoneCapable,
+ *  which deliberately KEEPS custom-command tabs on (a custom command may
+ *  wrap a remote agent over ssh that emits real OSC signals). */
+export function isTerminalCli(cli: string, agents: Agent[] = useApp.getState().agents): boolean {
+  if (cli === "shell" || cli === "custom") return true;
+  return isTerminalEntry(agents.find(x => x.id === cli));
+}
+
+/** Whether work-done detection runs for a terminal tab's cli. THE single
+ *  gate — TerminalPane's state machine (OSC handlers, submit-window
+ *  promotion, settled-detection interval) and the queue/right-split UIs
+ *  all call this, so the rule can't drift between paths. Plain shells and
+ *  terminal-kind entries never qualify; any agent whose registry entry
+ *  has `work_done === false` is opted out. Unknown / custom clis default
+ *  on. Defaults to the LIVE registry so a Settings toggle takes effect
+ *  without a terminal remount. */
 export function workDoneCapable(cli: string, agents: Agent[] = useApp.getState().agents): boolean {
   if (cli === "shell") return false;
   const a = agents.find(x => x.id === cli);
+  if (isTerminalEntry(a)) return false;
   return a?.work_done !== false;
+}
+
+/** Single-quote a value for safe interpolation into a `sh -c` line, only
+ *  when it contains characters the shell would split or interpret. Plain
+ *  flag-ish tokens pass through untouched so the composed line stays
+ *  readable in `ps` output. */
+function shellQuote(v: string): string {
+  if (v === "" || /[^A-Za-z0-9_\-./:=@%+,]/.test(v)) {
+    return `'${v.replaceAll("'", `'\\''`)}'`;
+  }
+  return v;
+}
+
+/** Launch command line for a registry terminal entry (kind: "terminal").
+ *  Command + args are joined into ONE string, placeholders expanded, and
+ *  the result is handed to the user's login shell (`zsh -lc`, see
+ *  loginShellArgs) — so unlike agent commands, shell quoting and pipes
+ *  work here, and rc-file PATH/aliases apply. Expanded placeholder VALUES
+ *  are shell-quoted automatically (a workspace path with a space must not
+ *  word-split, and a name with `$`/`'` must not inject) — so users write
+ *  bare `{workspace_path}`, not `"{workspace_path}"`. Empty command →
+ *  undefined (plain login shell, same as a Terminal tab). */
+export function terminalLaunchCommand(cli: string, ws?: Workspace): string | undefined {
+  const { command, args } = findAgent(cli);
+  const line = [command, ...args].join(" ").trim();
+  if (!line) return undefined;
+  const vars = Object.fromEntries(
+    Object.entries(workspaceVars(ws)).map(([k, v]) => [k, shellQuote(v)]),
+  );
+  return expandArg(line, vars);
 }
 
 function findAgent(cli: string): {
@@ -385,7 +445,11 @@ export const resumeArgsForCli = (cli: string) => findAgent(cli).caps.resume_args
 export const envForCli = (cli: string): Record<string, string> => findAgent(cli).env;
 
 /** Which agent ids should appear in the CLI pickers (worktree popover,
- *  New Workspace, Review, the + tab menu). Two filters, in order:
+ *  New Workspace, Review, the + tab menu). Terminal-kind entries are
+ *  excluded up front — they belong to the "New terminal" section of the
+ *  + menu (filtered by `disabled` only, no PATH detection: their command
+ *  is a free-form shell line that `which` can't probe), never to the
+ *  agent pickers. Then two filters, in order:
  *
  *    1. User `disabled` toggle (Settings → Agent CLIs) — ALWAYS
  *       respected. Hiding a disabled agent is an explicit choice.
@@ -401,9 +465,10 @@ export function visibleCliIds(
   agents: Agent[],
   detected: Record<string, CliInfo>,
 ): Set<string> {
-  const enabled = candidateIds.filter(
-    id => !(agents.find(a => a.id === id)?.disabled ?? false),
-  );
+  const enabled = candidateIds.filter(id => {
+    const a = agents.find(x => x.id === id);
+    return !(a?.disabled ?? false) && !isTerminalEntry(a);
+  });
   if (Object.keys(detected).length === 0) return new Set(enabled);
   const installed = enabled.filter(id => detected[id]?.found ?? true);
   return new Set(installed.length ? installed : enabled);

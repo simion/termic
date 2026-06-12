@@ -31,6 +31,10 @@ function writeMode(m: Mode) {
 export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   const [err, setErr] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>(() => readMode());
+  // New or deleted file: one diff side is empty, so side-by-side would
+  // just show a blank pane (issue #26). We render unified instead and
+  // disable the toggle, without touching the persisted preference.
+  const [oneSided, setOneSided] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   // Only one of these is mounted at a time depending on `mode`.
   const mergeRef = useRef<MergeView | null>(null);
@@ -51,6 +55,11 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
     setErr(null);
     workspaceFileDiffSides(ws.id, tab.path).then(sides => {
       if (!alive || !hostRef.current) return;
+      // Existence flags, not content emptiness — "" is what BOTH a missing
+      // side and an empty (or non-UTF8) file serialize to, and a file
+      // truncated to 0 bytes still has two real sides to compare.
+      const degenerate = !sides.original_exists || !sides.modified_exists;
+      setOneSided(degenerate);
       // Tear any prior view down before mounting the new one.
       mergeRef.current?.destroy();
       mergeRef.current = null;
@@ -125,7 +134,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       ];
       if (lang) baseExt.push(lang as Extension);
 
-      if (mode === "side") {
+      if (mode === "side" && !degenerate) {
         mergeRef.current = new MergeView({
           parent: hostRef.current,
           a: { doc: sides.original, extensions: baseExt },
@@ -159,6 +168,8 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
     };
   }, [ws.id, tab.path, editorFontSize, mode, editorThemeId]);
 
+  const effectiveMode: Mode = oneSided ? "unified" : mode;
+
   return (
     // bg MUST be opaque: tab swap keeps the codex/claude terminal
     // mounted under us via visibility-toggle, and xterm's WebGL canvas
@@ -176,20 +187,22 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
               onClick={() => setModeAndPersist("unified")}
               className={cn(
                 "h-6 rounded-[5px] px-1.5 text-[11.5px] transition-colors",
-                mode === "unified"
+                effectiveMode === "unified"
                   ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
                   : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
               )}
             ><AlignJustify className="h-3.5 w-3.5" /></button>
             <button
               type="button"
-              title="Side by side"
+              title={oneSided ? "Side by side is unavailable: new or deleted file, nothing to compare" : "Side by side"}
+              disabled={oneSided}
               onClick={() => setModeAndPersist("side")}
               className={cn(
                 "h-6 rounded-[5px] px-1.5 text-[11.5px] transition-colors",
-                mode === "side"
+                effectiveMode === "side"
                   ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
                   : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                oneSided && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
               )}
             ><Columns2 className="h-3.5 w-3.5" /></button>
           </div>

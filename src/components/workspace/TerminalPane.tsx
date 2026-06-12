@@ -26,7 +26,7 @@ import { effectiveSandboxMode } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, decideResume, workDoneCapable } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
@@ -542,12 +542,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
     const dbg = (tag: string, content: string) => debugLogRef.current?.(tag, content);
 
     // Work-done detection: respect per-agent opt-out. When disabled, skip
-    // the entire state machine — no OSC handlers, no interval checks, no
-    // badge, no bell. Shell tabs always skip (cli === "shell").
-    const agentEntry = tab.cli !== "shell"
-      ? useApp.getState().agents.find(a => a.id === tab.cli)
-      : undefined;
-    const workDoneEnabled = tab.cli !== "shell" && (agentEntry?.work_done ?? true);
+    // the entire state machine — no OSC handlers, no submit-window
+    // promotion, no badge, no bell. Shell tabs and registry terminal
+    // entries (kind: "terminal") always skip — a raw shell never emits
+    // the OSC signals, so detection would only produce noise. ONE rule,
+    // shared with the queue/right-split UIs via workDoneCapable.
+    const workDoneEnabled = workDoneCapable(tab.cli);
 
     // ── State machine ──
     //
@@ -938,7 +938,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // no agent_id, no per-agent env" treatment; only the spawned argv
     // differs (see spawnArgs below).
     const isCustom = tab.cli === "custom";
-    const isAgent = !isShell && !isCustom;
+    // Registry terminal entries (Settings → kind: "terminal", #27): spawn
+    // like custom tabs (launch line through a login shell, no resume) but
+    // KEEP their registry env block + agent_id (so their sandbox path /
+    // host lists apply), since both are user-configured on the entry.
+    const isRegistryTerminal = !isShell && !isCustom && isTerminalCli(tab.cli);
+    const isAgent = !isShell && !isCustom && !isRegistryTerminal;
     const idCapable = isAgent && cliSupportsIdSession(tab.cli);
     const wsTabsNow = useApp.getState().tabs[ws.id] || [];
     const firstAgentOfCli = wsTabsNow.find(
@@ -1017,16 +1022,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
         const userShell = isAgent ? "" : await loginShell();
         if (cancelled) return;
         const spawnCmd = isAgent ? spawnCommandForCli(tab.cli) : userShell;
-        // Custom: run the launch command, then drop into an interactive
-        // login shell so the terminal stays usable after it exits (an ssh
-        // disconnect / Ctrl-C'd dev server leaves a live shell in the repo
-        // dir rather than a dead tab). `-i` so the command sees the same
-        // env as a real terminal — many users set PATH (nvm, etc.) in
-        // their rc, which a non-interactive shell skips. loginShellArgs
-        // handles the cross-shell argv (zsh/bash/fish/sh). Shell: plain
-        // login shell. Agent: registry-resolved argv.
+        // Custom / registry terminal: run the launch command, then drop
+        // into an interactive login shell so the terminal stays usable
+        // after it exits (an ssh disconnect / Ctrl-C'd dev server leaves a
+        // live shell in the repo dir rather than a dead tab). `-i` so the
+        // command sees the same env as a real terminal — many users set
+        // PATH (nvm, etc.) in their rc, which a non-interactive shell
+        // skips. loginShellArgs handles the cross-shell argv
+        // (zsh/bash/fish/sh). Shell: plain login shell. Agent:
+        // registry-resolved argv.
+        const launchCmd = isCustom && tab.command ? tab.command
+          : isRegistryTerminal ? terminalLaunchCommand(tab.cli, ws)
+          : undefined;
         const spawnArgs = !isAgent
-          ? loginShellArgs(userShell, isCustom && tab.command ? tab.command : undefined)
+          ? loginShellArgs(userShell, launchCmd)
           : spawnArgsForCli(tab.cli, {
           // YOLO auto-on whenever the workspace is sandboxed: the seatbelt
           // cage is the real security boundary, so the agent's own
@@ -1059,7 +1068,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
             TERMIC_PORT: String(ws.port),
             TERMIC_WORKSPACE_NAME: ws.name,
             COLORFGBG: currentColorFgBg(),
-            ...(isAgent ? envForCli(tab.cli) : {}),
+            // Registry entries (agents AND terminal-kind) carry a
+            // user-configured env block; sentinel shell/custom tabs don't.
+            ...(isAgent || isRegistryTerminal ? envForCli(tab.cli) : {}),
           },
           // Sandbox gating: a shell tab created "no sandbox"
           // (`sandboxed === false`) omits workspace_id → Rust spawns it
@@ -1070,9 +1081,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // (claude workspace with a gemini tab open, etc.). Send the
           // tab's agent id so the rendered SBPL profile uses THIS
           // agent's allowed paths + host allowlist, not the workspace
-          // default. A shell tab has no agent id → Rust falls back to
-          // the workspace's primary CLI for the profile.
-          agent_id: isAgent ? tab.cli : undefined,
+          // default. Registry terminal entries pass theirs too — their
+          // sandbox lists are equally user-configured. A shell tab has
+          // no agent id → Rust falls back to the workspace's primary
+          // CLI for the profile.
+          agent_id: isAgent || isRegistryTerminal ? tab.cli : undefined,
           rows, cols,
         });
         const ptyId = spawn.id;
@@ -1185,7 +1198,8 @@ export function TerminalPane({ ws, tab, active }: Props) {
             // window for them causes false positives because Claude's TUI
             // redraws on every Enter (viewport shifts, hash changes,
             // settled-done fires on idle prompt).
-            if (senderStateRef.current === null
+            if (workDoneEnabled
+                && senderStateRef.current === null
                 && now < submitWindowUntilRef.current
                 && now - submitAtRef.current >= ECHO_DEAD_MS
                 && cur.workState !== "working") {
@@ -1233,10 +1247,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
             setGen(g => g + 1);
             return;
           }
-          // Plain shell tabs close on exit (Ctrl+D / `exit`) — a shell
-          // that's done is done. The "exited / Restart" overlay is for
-          // agents only, where an unexpected death is worth surfacing.
-          if (tab.cli === "shell") {
+          // Plain shell tabs AND registry terminal entries close on exit
+          // (Ctrl+D / `exit`) — a shell that's done is done. The "exited /
+          // Restart" overlay and the unread "exit" badge are for agents
+          // (and custom-command workspaces), where an unexpected death is
+          // worth surfacing.
+          if (tab.cli === "shell" || isRegistryTerminal) {
             if (tab.panel === "right") {
               useApp.getState().closeRightTab(ws.id, tab.id);
             } else {
@@ -1454,6 +1470,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
   const firstYoloRun = useRef(true);
   useEffect(() => {
     if (firstYoloRun.current) { firstYoloRun.current = false; return; }
+    // YOLO only exists for agents. Shell / custom / registry-terminal tabs
+    // spawn through the login shell and never receive yolo_args, so the
+    // restart prompt would offer a respawn that changes nothing.
+    if (isTerminalCli(tab.cli)) return;
     const ptyId = ptyRef.current;
     if (!ptyId) return;
     let cancelled = false;
@@ -1494,8 +1514,11 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // strict enough to fire even when a status counter keeps ticking.
     const SCROLLBACK_STABLE_SAMPLES = 3;
     const id = window.setInterval(() => {
-      if (tab.cli !== "shell" &&
-          !(useApp.getState().agents.find(a => a.id === tab.cli)?.work_done ?? true)) return;
+      // Same gate as the rest of the state machine — workDoneCapable reads
+      // the LIVE registry, so a Settings toggle (or a kind change) takes
+      // effect without a terminal remount. Also skips shells and registry
+      // terminal entries, which must never produce a done/attention badge.
+      if (!workDoneCapable(tab.cli)) return;
       const t = termRef.current;
       if (!t || !ptyRef.current) return;
       const cur = (useApp.getState().tabs[ws.id] || []).find(x => x.id === tab.id);

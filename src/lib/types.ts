@@ -321,6 +321,14 @@ export interface Agent {
   /** ID of the agent this one was cloned from. Purely informational,
    *  surfaced as "extends: <name>" in the Settings card header. */
   extends?: string;
+  /** "agent" (default) or "terminal". Terminal entries live in the same
+   *  registry (env, sandbox lists, enable toggle all apply) but spawn with
+   *  shell semantics: command + args joined into one line and run through
+   *  the user's login shell. No agent machinery: no resume, no work-done
+   *  detection, no message queue, broadcast default-unchecked. They appear
+   *  under "New terminal" in the + tab menu instead of "New agent" (#27).
+   *  Missing = "agent". */
+  kind?: "agent" | "terminal";
 }
 
 export interface Settings {
