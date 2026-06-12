@@ -199,7 +199,14 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   / gap-0.5 — so the split-bottom feels like the same UI
                   primitive, not a smaller cousin. */}
               <div className={cn(
-                "flex h-[var(--bottom-bar-h)] shrink-0 items-center gap-0.5 bg-[var(--color-bg-1)] px-2",
+                // items-stretch (NOT items-center): the TabPills below use
+                // h-full + border-b-2, so the strip must give them full height
+                // or they collapse to content height and float as boxy pills
+                // with the active underline stranded mid-bar. The fixed
+                // controls (queue button, separator, collapse toggle) opt back
+                // into vertical centering with self-center. Mirrors the main
+                // TabBar — see its items-stretch comment for the same rationale.
+                "flex h-[var(--bottom-bar-h)] shrink-0 items-stretch gap-0.5 bg-[var(--color-bg-1)] px-2",
                 // Always show border-b: separates strip from terminals when expanded,
                 // and from FooterBar when collapsed. FooterBar suppresses its own
                 // border-t when collapsed to avoid a 2px double line.
@@ -208,8 +215,8 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 {/* Queue affordance pinned far LEFT so it's always seen; the
                     shell tabs start after a separator. The bottom status-bar
                     copy is hidden while the split is open — see FooterBar. */}
-                <MessageQueueButton wsId={ws.id} compact className={cn(rightAgentFocused && "opacity-40 transition-opacity")} />
-                <div className="mx-1.5 h-5 w-px shrink-0 bg-[var(--color-border-soft)]" />
+                <MessageQueueButton wsId={ws.id} compact className={cn("self-center", rightAgentFocused && "opacity-40 transition-opacity")} />
+                <div className="mx-1.5 h-5 w-px shrink-0 self-center bg-[var(--color-border-soft)]" />
                 {/* Tabs + New scroll horizontally (no scrollbar) so the queue
                     button on the left and the collapse toggle on the right stay
                     fixed and reachable no matter how many shells are open. */}
