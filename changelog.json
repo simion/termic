@@ -1,6 +1,24 @@
 {
   "versions": [
     {
+      "version": "0.11.5",
+      "date": "2026-06-12",
+      "summary": "Korean and CJK terminal input fixed, plus Linux AppImage rendering and install fixes.",
+      "sections": [
+        {
+          "label": "Bug fixes",
+          "items": [
+            "Fixed: typing Korean (and other IME-composed CJK input) into a terminal no longer drops characters. Composed syllables now reach the shell intact, so the agent and bottom split shells handle CJK input correctly (#29).",
+            "Fixed: blank gray window on Linux X11 systems (NVIDIA and virtual machines included).",
+            "Fixed: blank white window on Linux systems with newer Mesa drivers. The AppImage no longer bundles libwayland, which broke the host's EGL setup.",
+            "Fixed: AppImage installs failed with 'Symlink target not found' in Gear Lever and AppImageLauncher.",
+            "Fixed: the app icon now shows in Linux launchers and docks after integrating the AppImage.",
+            "The Linux AppImage now builds on Ubuntu 22.04, so it runs on distributions with older glibc (Debian 12, Ubuntu 22.04 and newer)."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.11.4",
       "date": "2026-06-12",
       "summary": "Split a workspace into two side-by-side panes. DontPayFull.com joins as our first company sponsor.",
@@ -11,16 +29,6 @@
             "Split a workspace into two side-by-side panes (#25). Each pane has its own tab strip and can run agents, terminals, or shells, and you can drag a tab between panes to move it.",
             "Each pane tracks focus on its own: only the active pane's tab is highlighted, and opening a file or queueing a message targets the focused pane.",
             "The message queue button follows the focused pane, so you can queue work for either agent independently."
-          ]
-        },
-        {
-          "label": "Bug fixes",
-          "items": [
-            "Fixed: blank gray window on Linux X11 systems (NVIDIA and virtual machines included).",
-            "Fixed: blank white window on Linux systems with newer Mesa drivers. The AppImage no longer bundles libwayland, which broke the host's EGL setup.",
-            "Fixed: AppImage installs failed with 'Symlink target not found' in Gear Lever and AppImageLauncher.",
-            "Fixed: the app icon now shows in Linux launchers and docks after integrating the AppImage.",
-            "The Linux AppImage now builds on Ubuntu 22.04, so it runs on distributions with older glibc (Debian 12, Ubuntu 22.04 and newer)."
           ]
         },
         {
