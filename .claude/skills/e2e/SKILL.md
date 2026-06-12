@@ -196,9 +196,15 @@ kill -TERM "$(ps aux | grep '[n]ode scripts/dev.mjs' | awk '{print $2}')"
 - Check `ps aux | grep target/debug/termic` BEFORE launching: never reuse
   or kill an instance you did not start. Verify ownership before any kill
   via `ps -E -p PID | grep TERMIC_DATA_DIR`.
-- TEARDOWN = `kill -TERM <dev.mjs pid>` (its sweep reaps the whole tree,
-  including reparented orphans). `/quit` alone kills only the app; vite
-  can survive and squat on the port.
+- TEARDOWN = `kill -TERM <dev.mjs pid>` (its sweep USUALLY reaps the whole
+  tree, including reparented orphans). `/quit` alone kills only the app;
+  vite can survive and squat on the port. CAVEAT: if a SECOND termic runs
+  (your own session alongside the e2e one), `grep dev.mjs` matches both
+  pids and the sweep may still leave the app child (`target/debug/termic`)
+  alive. Discriminate ownership by ENV, not by guessing: `ps -E -p PID |
+  grep -o 'TERMIC_AUTOMATION_PORT=45901'` (or `TERMIC_DATA_DIR=.../.e2e`)
+  matches ONLY your e2e processes. After SIGTERM, re-`ps` and `kill -KILL`
+  any surviving e2e-owned app child; never touch a pid without the e2e env.
 - NEVER edit src-tauri/ while a driven instance runs: tauri-dev's watcher
   rebuilds and RESTARTS the app, stranding the old app process and
   invalidating the bridge. For Rust changes: tear down, rebuild, relaunch.
@@ -216,6 +222,22 @@ kill -TERM "$(ps aux | grep '[n]ode scripts/dev.mjs' | awk '{print $2}')"
   long you wait. Assert terminal activity via `tab.lastOutputAt`, the
   store, or the debug-log argv receipt. All OTHER app UI (sidebar, tabs,
   dialogs, Git panel) is normal DOM and innerText-assertable.
+- TO TEST PURE FRONTEND LOGIC NOT REACHABLE VIA STORES/IPC/CLICKS (input
+  handlers, IME/WebKit input quirks, parsers, formatters): in dev, vite
+  serves the source tree, so `const m = await import("/src/lib/foo.ts")`
+  inside an /eval pulls the REAL production module into the live WKWebView.
+  You then drive it against real DOM events in the actual engine - the
+  only way to catch WebKit-specific behavior that happy-dom unit tests
+  cannot. Verified pattern (the CJK-IME fix, PR #30): build a real
+  `<textarea class="xterm-helper-textarea">`, `setupImeReplacementBridge`
+  onto it with a capturing `write`, dispatch the exact WebKit
+  `new InputEvent("input",{inputType,data})` sequence, and assert the
+  reconstructed bytes. Run the buggy path (bridge off) as a negative
+  control so a pass proves the fix, not just that code ran. NOTE: xterm's
+  own listener on the REAL terminal textarea also fires (full wired path:
+  textarea -> bridge -> real `ipc.ptyWrite` -> PTY -> fake-agent echo ->
+  `lastOutputAt` advances); use a FRESH detached textarea when you want to
+  capture only your handler's output in isolation.
 - Paths round-trip canonicalized: `projectAdd("/Users/x/r/termic/...")`
   stores `root_path` with symlinks resolved (`/Users/x/Work/Repos/...`).
   Idempotence checks must match by `name` (or endsWith), never by the
