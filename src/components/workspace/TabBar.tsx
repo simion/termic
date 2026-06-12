@@ -120,13 +120,17 @@ export function TabBar({ ws }: { ws: Workspace }) {
   return (
     <div className="termic-tabstrip flex h-9 shrink-0 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
       {/* Left portion: scrollable tab pills + a fixed control cluster (new-tab,
-          broadcast, split toggles) pinned right. Only the pills scroll. */}
-      <div className="flex min-w-0 flex-1 items-center">
+          broadcast, split toggles) pinned right. Only the pills scroll.
+          items-stretch (NOT items-center) so pills fill the full bar height —
+          a centered strip collapses pills to content height, which floats the
+          active tab as a boxy pill and drops its border-b-2 mid-bar. The
+          right strip already stretches; this keeps both panes identical. */}
+      <div className="flex min-w-0 flex-1 items-stretch">
       <div
         ref={stripRef}
         data-main-strip=""
         className={cn(
-          "flex min-w-0 flex-1 items-center gap-0 pl-2 no-scrollbar",
+          "flex min-w-0 flex-1 items-stretch gap-0 pl-2 no-scrollbar",
           // While dragging, let the pill escape the strip's clip and lift the
           // whole strip above the right strip (a later DOM sibling that would
           // otherwise paint over the pill) so the tab stays visible as it
@@ -471,11 +475,11 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
           onStartRename();
         }
       }}
-      // Active state needs to win at-a-glance. Three signals stacked:
-      //   1. Brighter bg (color-bg-3 vs the bar's color-bg-1).
-      //   2. Accent-colored border (vs near-invisible border-soft).
-      //   3. Semibold weight on the label.
-      // Inactive: muted bg-1 hover, fg-dim text, no border — sinks back.
+      // Active state wins at-a-glance WITHOUT a boxed fill: brighter label
+      // (color-fg vs the bar's fg-dim) + medium weight + a bottom-only accent
+      // border (border-b-2, set in the className below). No bg fill and no
+      // side dividers — both read as a recessed box against the bar.
+      // Inactive: fg-dim text, subtle hover overlay — sinks back.
       // Width: basis is one-third of the bar (minus ~5rem reserved for
       // the +/split buttons), flex-grow 0 so tabs DON'T balloon to fill
       // the bar — two tabs stay one-third-width each instead of each
@@ -493,14 +497,19 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
         // the cursor instead of the dragged pill itself.
         ...(dragging ? { transform: `translateX(${dragTx}px)`, zIndex: 30, pointerEvents: "none" as const } : null),
       }}
+      // Active cue is a bottom-only accent border (border-b-2), matching the
+      // "All files / Git" RTab style — no side dividers, no fill, so the tab
+      // never reads as a boxed pill. Focused pane → accent; an unfocused
+      // pane's active tab keeps a muted border so only one tab reads as fully
+      // active across a split.
       className={cn(
-        "group flex h-full self-stretch cursor-pointer items-center gap-1.5 px-3.5 text-[12.5px] transition-colors relative select-none border-r border-[var(--color-border-soft)]",
+        "group flex h-full self-stretch cursor-pointer items-center gap-1.5 px-3.5 text-[12.5px] transition-colors relative select-none border-b-2",
         compact ? "min-w-[120px] max-w-[220px]" : "min-w-[140px] max-w-[260px]",
         dragging
-          ? "cursor-grabbing !transition-none bg-[var(--color-bg)] text-[var(--color-fg)] shadow-lg"
+          ? "cursor-grabbing !transition-none border-transparent bg-[var(--color-bg)] text-[var(--color-fg)] shadow-lg"
           : active
-            ? "bg-[var(--color-bg)] text-[var(--color-fg)]"
-            : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+            ? cn("font-medium text-[var(--color-fg)]", paneFocused ? "border-[var(--color-accent)]" : "border-[var(--color-border)]")
+            : "border-transparent text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       {/* Work-state badge moved to the trailing slot — see below. */}
@@ -589,15 +598,6 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           ><X className="h-3 w-3" /></button>
         </span>
-      )}
-      {active && (
-        <span className={cn(
-          "absolute inset-x-0 bottom-0 h-[2.5px]",
-          // Focused pane → accent underline. Unfocused pane's active tab keeps
-          // the bg highlight but a muted underline, so only one tab reads as
-          // fully active across a split.
-          paneFocused ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)]",
-        )} />
       )}
     </div>
   );
