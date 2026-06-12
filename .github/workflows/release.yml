@@ -234,6 +234,57 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles appimage
+      - name: Repair AppImage root symlinks + re-sign
+        # tauri-bundler writes the AppDir's root symlinks (.DirIcon and
+        # Termic.desktop) with ABSOLUTE targets, so the runner's
+        # /home/runner/... paths get baked into the squashfs
+        # (tauri-apps/tauri#15110, no merged fix as of cli 2.11). On
+        # user machines those links dangle: Gear Lever/AppImageLauncher
+        # abort integration with "Symlink target not found" and the
+        # desktop/dock icon never resolves (.DirIcon is what every
+        # integration tool reads). Until upstream merges a fix: unpack,
+        # relink relative, repack with appimagetool, and re-sign (the
+        # repack invalidates the .sig `tauri build` just produced; the
+        # later "Compute SHA256 + read .sig" step picks up the new one).
+        env:
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR=src-tauri/target/release/bundle/appimage
+
+          # Static appimagetool; --appimage-extract-and-run avoids the
+          # FUSE requirement on GitHub runners.
+          curl -fsSL -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+
+          cd "$BUNDLE_DIR"
+          NAME=$(basename "$(ls ./*.AppImage | head -n1)")
+          "./$NAME" --appimage-extract >/dev/null   # → squashfs-root/
+
+          # Rewrite every absolute symlink that points inside the build
+          # AppDir to a relative one. Anything absolute pointing OUTSIDE
+          # the AppDir is already broken today; warn so it shows in logs.
+          find squashfs-root -type l | while IFS= read -r link; do
+            tgt=$(readlink "$link")
+            case "$tgt" in /*) ;; *) continue ;; esac
+            inner="${tgt#*.AppDir/}"
+            if [ "$inner" = "$tgt" ]; then
+              echo "::warning::absolute symlink escapes the AppDir: $link -> $tgt"
+              continue
+            fi
+            rel=$(realpath -m --relative-to="$(dirname "$link")" "squashfs-root/$inner")
+            echo "relink: $link -> $rel (was $tgt)"
+            ln -sfn "$rel" "$link"
+          done
+
+          rm -f "$NAME"
+          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run -n squashfs-root "$NAME"
+          rm -rf squashfs-root
+
+          cd "$GITHUB_WORKSPACE"
+          npx tauri signer sign "$BUNDLE_DIR/$NAME"   # rewrites $NAME.sig
       - name: Locate AppImage
         # Tauri lowercases productName for the AppImage filename. The
         # exact form (`termic_<v>_amd64.AppImage`) has held across

@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.11.2",
+      "version": "0.11.3",
       "date": "2026-06-12",
       "summary": "Split a workspace into two side-by-side panes. DontPayFull.com joins as our first company sponsor.",
       "sections": [
@@ -11,6 +11,14 @@
             "Split a workspace into two side-by-side panes (#25). Each pane has its own tab strip and can run agents, terminals, or shells, and you can drag a tab between panes to move it.",
             "Each pane tracks focus on its own: only the active pane's tab is highlighted, and opening a file or queueing a message targets the focused pane.",
             "The message queue button follows the focused pane, so you can queue work for either agent independently."
+          ]
+        },
+        {
+          "label": "Bug fixes",
+          "items": [
+            "Fixed: blank gray window on Linux X11 systems (NVIDIA and virtual machines included).",
+            "Fixed: AppImage installs failed with 'Symlink target not found' in Gear Lever and AppImageLauncher.",
+            "Fixed: the app icon now shows in Linux launchers and docks after integrating the AppImage."
           ]
         },
         {
