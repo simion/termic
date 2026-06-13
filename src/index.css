@@ -294,6 +294,23 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   animation: termic-spotlight-wave 2s ease-in-out infinite;
 }
 
+/* Pending review-comments pill (ReviewCommentsBar). Comments are HELD until
+   the user explicitly sends them to an agent, so the affordance has to be
+   loud or people leave them stranded. An expanding-ring ripple (box-shadow,
+   no layout cost) plus a slow brightness breathe says "these are waiting on
+   you". Disabled under reduced-motion. */
+@keyframes termic-review-pending {
+  0%   { box-shadow: 0 0 0 0 var(--color-accent); filter: brightness(1); }
+  70%  { box-shadow: 0 0 0 7px transparent;       filter: brightness(1.12); }
+  100% { box-shadow: 0 0 0 0 transparent;         filter: brightness(1); }
+}
+.termic-review-pending {
+  animation: termic-review-pending 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .termic-review-pending { animation: none; }
+}
+
 /* Indeterminate progress strip on tab pills — slides a slug across
    the bar while the agent is working without a known percentage
    (OSC 9;4;3). Matches iTerm2's progress indicator behavior. */

@@ -12,9 +12,24 @@ import { ptyWrite } from "./ipc";
  *  tab's `lastInputAt` (via patchTab) so TerminalPane re-arms the detector,
  *  exactly as a keyboard Enter would. */
 export function sendMessageToPty(ptyId: string, text: string): void {
+  // Fire-and-forget wrapper for callers that don't care whether the write
+  // landed (broadcast, queue drain). Swallows errors.
+  void deliverMessage(ptyId, text).catch(() => {});
+}
+
+/** Same delivery as {@link sendMessageToPty}, but the returned promise
+ *  rejects if the initial text write fails (e.g. the PTY has exited). The
+ *  Enter (CR) is still scheduled only after the text write resolves, so a
+ *  dead PTY never gets a stray submit. Callers that must not discard the
+ *  user's input on a failed send (review comments) await this and react. */
+export function deliverMessage(ptyId: string, text: string): Promise<void> {
   const textBytes = Array.from(new TextEncoder().encode(text));
-  ptyWrite(ptyId, textBytes).catch(() => {});
-  window.setTimeout(() => {
-    ptyWrite(ptyId, [0x0d]).catch(() => {});
-  }, 90);
+  // Resolve only after BOTH the text AND the Enter (CR) have been written, so
+  // an awaiting caller doesn't treat a half-delivered message (text in, never
+  // submitted) as sent. Rejects if either write fails.
+  return ptyWrite(ptyId, textBytes).then(
+    () => new Promise<void>((resolve, reject) => {
+      window.setTimeout(() => { ptyWrite(ptyId, [0x0d]).then(() => resolve(), reject); }, 90);
+    }),
+  );
 }

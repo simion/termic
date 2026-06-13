@@ -16,6 +16,8 @@ import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { cn } from "@/lib/utils";
 import { langForPath } from "./EditorPane";
 import { resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
+import { reviewCommentsExtension, dispatchFileComment } from "./reviewCommentsExt";
+import { MessageSquarePlus } from "lucide-react";
 
 type Mode = "side" | "unified";
 const LS_DIFF_MODE = "diffMode";
@@ -35,6 +37,9 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   // just show a blank pane (issue #26). We render unified instead and
   // disable the toggle, without touching the persisted preference.
   const [oneSided, setOneSided] = useState(false);
+  // True once a comment-bearing editor is mounted (either mode). Gates the
+  // header "Comment" button so it never fires into a not-yet-built view.
+  const [commentable, setCommentable] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   // Only one of these is mounted at a time depending on `mode`.
   const mergeRef = useRef<MergeView | null>(null);
@@ -53,6 +58,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   useEffect(() => {
     let alive = true;
     setErr(null);
+    setCommentable(false);
     workspaceFileDiffSides(ws.id, tab.path).then(sides => {
       if (!alive || !hostRef.current) return;
       // Existence flags, not content emptiness — "" is what BOTH a missing
@@ -134,21 +140,32 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       ];
       if (lang) baseExt.push(lang as Extension);
 
+      // Inline review comments (#28) on the MODIFIED side in BOTH modes, so
+      // line numbers + quotes always refer to the new file (what an agent
+      // acts on). In side-by-side the comment cards are block widgets on the
+      // `b` pane: MergeView only re-aligns its two panes at change-chunk
+      // boundaries, so the panes drift slightly below a card until the next
+      // hunk. Accepted tradeoff (unified is pixel-exact); the alternative is
+      // an out-of-flow overlay, which is a lot more machinery for this.
+      const commentExt = reviewCommentsExtension(ws.id, tab.path);
+
       if (mode === "side" && !degenerate) {
         mergeRef.current = new MergeView({
           parent: hostRef.current,
           a: { doc: sides.original, extensions: baseExt },
-          b: { doc: sides.modified, extensions: baseExt },
+          b: { doc: sides.modified, extensions: [...baseExt, commentExt] },
           highlightChanges: true,
           gutter: true,
           collapseUnchanged: { margin: 3, minSize: 6 },
         });
+        setCommentable(true);
       } else {
         editorRef.current = new EditorView({
           parent: hostRef.current,
           doc: sides.modified,
           extensions: [
             ...baseExt,
+            commentExt,
             unifiedMergeView({
               original: sides.original,
               highlightChanges: true,
@@ -159,6 +176,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
             }),
           ],
         });
+        setCommentable(true);
       }
     }).catch(e => alive && setErr(String(e)));
     return () => {
@@ -206,6 +224,14 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
               )}
             ><Columns2 className="h-3.5 w-3.5" /></button>
           </div>
+          {/* Whole-file comment. Targets the modified pane: the `b` editor in
+              side-by-side, the single editor in unified. */}
+          {commentable && (
+            <Button size="sm" variant="ghost" title="Leave a comment on this whole file" onClick={() => {
+              const v = mergeRef.current?.b ?? editorRef.current;
+              if (v) { v.focus(); dispatchFileComment(v); }
+            }}><MessageSquarePlus className="h-4 w-4" /> Comment</Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() =>
             addTab(ws.id, { id: crypto.randomUUID(), type: "edit", path: tab.path, title: tab.path.split("/").pop() || tab.path })
           }><Eye className="h-4 w-4" /> View</Button>

@@ -28,6 +28,7 @@ import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
+import { ReviewCommentsBar } from "./ReviewCommentsBar";
 
 interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 
@@ -1806,6 +1807,10 @@ export function FooterBar({ ws, sandboxWarning }: {
           className={cn(rightAgentFocused && "opacity-40 transition-opacity")}
         />
       )}
+      {/* Pending inline review comments (#28). Self-hides when there are none,
+          so it's safe to render unconditionally — keeps the "N comments · Send"
+          affordance reachable from any tab regardless of split state. */}
+      <ReviewCommentsBar wsId={ws.id} />
       {/* +Terminal opens the bottom split. Hidden when the split is already
           open — no point offering to add what's there. */}
       {!splitOpen && (
