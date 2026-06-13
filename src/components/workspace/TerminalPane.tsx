@@ -470,6 +470,27 @@ export function TerminalPane({ ws, tab, active }: Props) {
         e.stopPropagation();
         return false;
       }
+      // Linux/Windows terminal copy/paste. macOS keeps native ⌘C / ⌘V (this
+      // whole block is skipped), so standard Mac behavior is untouched. Defaults
+      // are Ctrl+Shift+C / Ctrl+Shift+V — the Shift keeps plain Ctrl+C as SIGINT
+      // for the shell. Rebindable via Settings > Shortcuts.
+      if (!IS_MAC && e.type === "keydown") {
+        const binds = usePrefs.getState().shortcuts;
+        // Copy only when there's a selection; otherwise fall through so the
+        // combo isn't swallowed.
+        if (bindingMatches(e, binds["terminal-copy"]) && term.hasSelection()) {
+          navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+        if (bindingMatches(e, binds["terminal-paste"])) {
+          navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+      }
       const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter";
       if (e.type === "keydown" && e.shiftKey && isEnter && !e.altKey && !e.ctrlKey && !e.metaKey) {
         const pid = ptyRef.current;
