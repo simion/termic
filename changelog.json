@@ -1,6 +1,21 @@
 {
   "versions": [
     {
+      "version": "0.12.0",
+      "date": "2026-06-13",
+      "summary": "Leave PR-style review comments on diffs and send them to an agent.",
+      "sections": [
+        {
+          "label": "Features",
+          "items": [
+            "Inline review comments (#28): hover a line in a diff for a one-click comment button, or select a range, and leave GitHub-style feedback. Comments are batched per workspace.",
+            "Send the whole batch to a running agent as one message. Each comment carries its quoted source, so the agent can still find the spot after line numbers shift, and sending focuses that agent's terminal.",
+            "A pulsing footer pill shows how many comments are pending so they are not left unsent. The composer sends on Enter (Shift+Enter for a newline)."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.11.8",
       "date": "2026-06-13",
       "summary": "Linux fixes: terminal copy/paste shortcuts and faster typing on NVIDIA/software WebGL.",
