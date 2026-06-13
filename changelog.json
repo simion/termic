@@ -1,6 +1,20 @@
 {
   "versions": [
     {
+      "version": "0.11.7",
+      "date": "2026-06-13",
+      "summary": "Fix slow terminal typing on Linux with NVIDIA or software WebGL.",
+      "sections": [
+        {
+          "label": "Bug fixes",
+          "items": [
+            "Linux: terminal typing no longer lags on NVIDIA or Wayland setups where WebKitGTK fell back to a slow software renderer (the DMA-BUF GPU path is now disabled in those cases).",
+            "New GPU (WebGL) terminal renderer toggle in Settings, Appearance (Linux and Windows): turn it off if typing feels slow and the plain renderer is faster on your machine."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.11.6",
       "date": "2026-06-12",
       "summary": "Custom terminals in the new tab menu, plus notification completion sounds.",
