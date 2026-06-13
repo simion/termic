@@ -8,6 +8,7 @@
 
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { Terminal } from "@xterm/xterm";
+import { usePrefs } from "@/store/prefs";
 
 function dumpRenderer(addon: WebglAddon | null): void {
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -29,17 +30,23 @@ function dumpRenderer(addon: WebglAddon | null): void {
 
 /** Load xterm's WebGL renderer onto `term`. Returns a disposable —
  *  call `dispose()` BEFORE `term.dispose()` so the render loop can't
- *  fire on a half-disposed terminal. If WebGL is unsupported the load
- *  is skipped and xterm's built-in DOM renderer remains. */
+ *  fire on a half-disposed terminal. If WebGL is unsupported (throw) OR the
+ *  user disabled the GPU renderer (the `terminalGpuEnabled` pref — escape
+ *  hatch for Linux/WebKitGTK boxes where WebGL runs on a software rasterizer
+ *  and typing crawls), the load is skipped and xterm's built-in DOM renderer
+ *  remains. Read once at mount; toggling the pref takes effect on the next
+ *  terminal spawn (relaunch to switch every open terminal). */
 export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
   let addon: WebglAddon | null = null;
-  try {
-    const a = new WebglAddon();
-    a.onContextLoss(() => a.dispose());
-    term.loadAddon(a);
-    addon = a;
-  } catch {
-    addon = null;  // WebGL unsupported → xterm's DOM renderer remains
+  if (usePrefs.getState().terminalGpuEnabled) {
+    try {
+      const a = new WebglAddon();
+      a.onContextLoss(() => a.dispose());
+      term.loadAddon(a);
+      addon = a;
+    } catch {
+      addon = null;  // WebGL unsupported → xterm's DOM renderer remains
+    }
   }
 
   // TEMP diagnostic. Auto-dumps the launch state; the global lets the

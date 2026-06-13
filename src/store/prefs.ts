@@ -36,6 +36,7 @@ const LS_ALLOW_SCOPE     = "sandboxAllowScope";
 const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_TERMINAL_OPTION_AS_META = "terminalOptionAsMeta";
+const LS_TERMINAL_GPU            = "terminalGpuEnabled";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
 const LS_SHORTCUTS     = "shortcutBindings";
 
@@ -336,6 +337,12 @@ interface PrefsState {
    *  matching Terminal.app's "Use Option as Meta key". When OFF (default),
    *  Option produces the usual accented characters. (issue #11) */
   terminalOptionAsMeta: boolean;
+  /** Use xterm's GPU (WebGL) renderer. ON (default) is the fast path on every
+   *  platform. Some Linux/WebKitGTK setups initialize WebGL on a software
+   *  rasterizer (llvmpipe), where it is far SLOWER than the DOM renderer and
+   *  makes typing lag. Turning this OFF forces xterm's DOM renderer. Applies to
+   *  terminals opened after the change (relaunch to switch every terminal). */
+  terminalGpuEnabled: boolean;
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
@@ -359,6 +366,7 @@ interface PrefsState {
   setTerminalLetterSpacing:(px: number) => void;
   setTerminalScrollback:  (n: number) => void;
   setTerminalOptionAsMeta: (v: boolean) => void;
+  setTerminalGpuEnabled: (v: boolean) => void;
   setEditorFontSize:  (px: number) => void;
   setCodeLigatures:   (v: boolean) => void;
   /** Restore every Appearance-section pref (fonts, sizes, weight,
@@ -433,6 +441,7 @@ export const APPEARANCE_DEFAULTS = {
   terminalLetterSpacing: 1,
   terminalScrollback:    5000,
   terminalOptionAsMeta:  false,
+  terminalGpuEnabled:    true,
   editorFontSize:        13,
   codeLigatures:         true,
 } as const;
@@ -444,6 +453,7 @@ const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, APPEARANCE_DEFAULTS.termi
 const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));
 const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(lsGetNum(LS_TERMINAL_SCROLLBACK, APPEARANCE_DEFAULTS.terminalScrollback))));
 const initialTerminalOptionAsMeta  = lsGetBool(LS_TERMINAL_OPTION_AS_META, APPEARANCE_DEFAULTS.terminalOptionAsMeta);
+const initialTerminalGpuEnabled    = lsGetBool(LS_TERMINAL_GPU, APPEARANCE_DEFAULTS.terminalGpuEnabled);
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
@@ -492,6 +502,7 @@ export const usePrefs = create<PrefsState>(set => ({
   terminalLetterSpacing: initialTerminalLetterSpacing,
   terminalScrollback: initialTerminalScrollback,
   terminalOptionAsMeta: initialTerminalOptionAsMeta,
+  terminalGpuEnabled: initialTerminalGpuEnabled,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
   workspaceExpandMode: initialWsExpandMode,
@@ -532,6 +543,10 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_TERMINAL_OPTION_AS_META, v ? "1" : "0"); } catch {}
     set({ terminalOptionAsMeta: v });
   },
+  setTerminalGpuEnabled: (v) => {
+    try { localStorage.setItem(LS_TERMINAL_GPU, v ? "1" : "0"); } catch {}
+    set({ terminalGpuEnabled: v });
+  },
   setEditorFontSize: (px) => {
     try { localStorage.setItem(LS_EDITOR_SIZE, String(px)); } catch {}
     set({ editorFontSize: px });
@@ -551,6 +566,7 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setTerminalLetterSpacing(d.terminalLetterSpacing);
     s.setTerminalScrollback(d.terminalScrollback);
     s.setTerminalOptionAsMeta(d.terminalOptionAsMeta);
+    s.setTerminalGpuEnabled(d.terminalGpuEnabled);
     s.setEditorFontSize(d.editorFontSize);
     s.setCodeLigatures(d.codeLigatures);
   },
