@@ -12,8 +12,16 @@ import {
   SHORTCUT_DEFS,
   GROUP_ORDER,
   bindingGlyphs,
+  IS_MAC,
   type ShortcutGroup,
+  type ShortcutId,
 } from "@/lib/shortcuts";
+
+// Terminal copy/paste are native (⌘C / ⌘V) on macOS and only wired on
+// Linux/Windows, so omit them from the macOS cheat sheet.
+const HIDDEN_ON_MAC: Set<ShortcutId> = IS_MAC
+  ? new Set<ShortcutId>(["terminal-copy", "terminal-paste"])
+  : new Set<ShortcutId>();
 
 export function ShortcutsHelpDialog() {
   const open = useUI(s => s.shortcutsHelpOpen);
@@ -33,6 +41,7 @@ export function ShortcutsHelpDialog() {
     for (const group of GROUP_ORDER) {
       const defs = SHORTCUT_DEFS.filter(d =>
         d.group === group &&
+        !HIDDEN_ON_MAC.has(d.id) &&
         (!q || d.label.toLowerCase().includes(q) || (d.hint ?? "").toLowerCase().includes(q)),
       );
       if (defs.length) out.push({ group, defs });

@@ -22,8 +22,15 @@ import {
   bindingsEqual,
   glyphLabel,
   isValidBinding,
+  IS_MAC,
   type ShortcutId,
 } from "@/lib/shortcuts";
+
+// Terminal copy/paste are native (⌘C / ⌘V) on macOS and only wired/rebindable
+// on Linux/Windows, so hide their rows from the macOS shortcuts list.
+const HIDDEN_ON_MAC: Set<ShortcutId> = IS_MAC
+  ? new Set<ShortcutId>(["terminal-copy", "terminal-paste"])
+  : new Set<ShortcutId>();
 
 export function ShortcutsSection() {
   const shortcuts = usePrefs(s => s.shortcuts);
@@ -101,7 +108,7 @@ export function ShortcutsSection() {
       </div>
 
       {GROUP_ORDER.map(group => {
-        const defs = SHORTCUT_DEFS.filter(d => d.group === group);
+        const defs = SHORTCUT_DEFS.filter(d => d.group === group && !HIDDEN_ON_MAC.has(d.id));
         if (defs.length === 0) return null;
         return (
           <div key={group} className="flex flex-col gap-2">

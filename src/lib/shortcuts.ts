@@ -39,6 +39,8 @@ export type ShortcutId =
   | "clear-terminal"
   | "new-split-terminal"
   | "new-right-split-terminal"
+  | "terminal-copy"
+  | "terminal-paste"
   | "open-settings"
   | "open-shortcuts"
   | "file-finder"
@@ -106,6 +108,18 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("d", { cmd: true, shift: true }) },
   { id: "new-right-split-terminal", group: "Terminal", label: "New right-split terminal",
     defaultBinding: B("d", { cmd: true }) },
+  // Copy / paste are LINUX/WINDOWS ONLY and handled locally in the terminal
+  // panes (TerminalPane / AuxTerminal `attachCustomKeyEventHandler`), gated to
+  // !IS_MAC, NOT by the global useShortcuts handler (like the Git ids below,
+  // they have no `switch` case there). macOS keeps native ⌘C / ⌘V untouched, so
+  // these rows are hidden from the Shortcuts settings on macOS. The Shift in the
+  // defaults is load-bearing: plain Ctrl+C must stay SIGINT for the shell.
+  { id: "terminal-copy", group: "Terminal", label: "Copy selection",
+    hint: "Linux/Windows only. macOS uses Cmd+C natively.",
+    defaultBinding: B("c", { cmd: true, shift: true }) },
+  { id: "terminal-paste", group: "Terminal", label: "Paste into terminal",
+    hint: "Linux/Windows only. macOS uses Cmd+V natively.",
+    defaultBinding: B("v", { cmd: true, shift: true }) },
 
   // General
   { id: "open-settings", group: "General", label: "Open settings",
