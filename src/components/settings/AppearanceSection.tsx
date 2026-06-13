@@ -29,6 +29,8 @@ export function AppearanceSection() {
   const setTerminalScrollback = usePrefs(s => s.setTerminalScrollback);
   const terminalOptionAsMeta = usePrefs(s => s.terminalOptionAsMeta);
   const setTerminalOptionAsMeta = usePrefs(s => s.setTerminalOptionAsMeta);
+  const terminalGpuEnabled = usePrefs(s => s.terminalGpuEnabled);
+  const setTerminalGpuEnabled = usePrefs(s => s.setTerminalGpuEnabled);
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const setEditorFontSize = usePrefs(s => s.setEditorFontSize);
   const codeLigatures = usePrefs(s => s.codeLigatures);
@@ -49,6 +51,7 @@ export function AppearanceSection() {
     terminalLetterSpacing === APPEARANCE_DEFAULTS.terminalLetterSpacing &&
     terminalScrollback    === APPEARANCE_DEFAULTS.terminalScrollback &&
     terminalOptionAsMeta  === APPEARANCE_DEFAULTS.terminalOptionAsMeta &&
+    terminalGpuEnabled    === APPEARANCE_DEFAULTS.terminalGpuEnabled &&
     editorFontSize        === APPEARANCE_DEFAULTS.editorFontSize &&
     codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures;
 
@@ -140,6 +143,18 @@ export function AppearanceSection() {
           hint={`Send ${ALT_LABEL}+key as an ESC-prefixed sequence so terminal editors (vim, emacs, nano) see it as Meta/Alt. When off, ${ALT_LABEL} types accented characters as usual.`}
           value={terminalOptionAsMeta}
           onChange={setTerminalOptionAsMeta}
+        />
+      )}
+
+      {/* Linux/Windows only: macOS WKWebView always has a working GPU path,
+          so exposing this there would only let a Mac user accidentally
+          downgrade themselves to the slower DOM renderer. */}
+      {!IS_MAC && (
+        <Toggle
+          label="GPU (WebGL) terminal renderer"
+          hint="On is the fast path. Turn off if typing feels laggy: some Linux/WebKitGTK setups run WebGL on a software rasterizer where the plain renderer is faster. Applies to terminals opened after the change (relaunch to switch every terminal)."
+          value={terminalGpuEnabled}
+          onChange={setTerminalGpuEnabled}
         />
       )}
 

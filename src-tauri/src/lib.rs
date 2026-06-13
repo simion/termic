@@ -6262,18 +6262,26 @@ fn detect_clis_blocking() -> Vec<CliInfo> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK 2.42+ defaults to its DMA-BUF renderer, which paints a
-    // solid-gray window on X11 with NVIDIA / virtualized drivers (seen
-    // on openSUSE X11; tauri-apps/tauri#9304). Opt out for X11 sessions
-    // BEFORE any GTK/WebKit init. Wayland keeps the fast path, and an
-    // explicit user-set value always wins.
+    // WebKitGTK 2.42+ defaults to its DMA-BUF renderer. Two failure modes:
+    //   * X11 with NVIDIA / virtualized drivers → solid-gray window
+    //     (tauri-apps/tauri#9304).
+    //   * Wayland with the NVIDIA proprietary driver → WebGL/compositing
+    //     fall back to a slow software/copy path, so terminal typing crawls
+    //     (tauri-apps/tauri#9394). This is the "typing is slow" report.
+    // Opt out in BOTH cases, BEFORE any GTK/WebKit init. AMD/Intel Wayland
+    // keeps the fast path, and an explicit user-set value always wins.
     #[cfg(target_os = "linux")]
     {
         let x11 = std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11")
             || (std::env::var_os("WAYLAND_DISPLAY").is_none()
                 && std::env::var_os("DISPLAY").is_some());
-        if x11 && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // Proprietary-NVIDIA presence (the driver creates these device nodes).
+        // nouveau does not, and isn't affected, so it correctly keeps DMA-BUF.
+        let nvidia = std::path::Path::new("/dev/nvidia0").exists()
+            || std::path::Path::new("/proc/driver/nvidia").exists();
+        if (x11 || nvidia) && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            dlog(&format!("[gpu] WebKitGTK DMA-BUF renderer disabled (x11={x11} nvidia={nvidia})"));
         }
     }
     tauri::Builder::default()
