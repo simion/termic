@@ -21,6 +21,7 @@ import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
+import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
 // `currentTerminalTheme()` picks the matching palette at mount; the
@@ -102,6 +103,25 @@ export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: str
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
         return false;
+      }
+      // Linux/Windows terminal copy/paste. macOS keeps native ⌘C / ⌘V (this
+      // whole block is skipped), so standard Mac behavior is untouched. Defaults
+      // are Ctrl+Shift+C / Ctrl+Shift+V — the Shift keeps plain Ctrl+C as SIGINT
+      // for the shell. Rebindable via Settings > Shortcuts. Mirrors TerminalPane.
+      if (!IS_MAC && e.type === "keydown") {
+        const binds = usePrefs.getState().shortcuts;
+        if (bindingMatches(e, binds["terminal-copy"]) && term.hasSelection()) {
+          navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+        if (bindingMatches(e, binds["terminal-paste"])) {
+          navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
       }
       return true;
     });
