@@ -6327,26 +6327,61 @@ fn detect_clis_blocking() -> Vec<CliInfo> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK 2.42+ defaults to its DMA-BUF renderer. Two failure modes:
-    //   * X11 with NVIDIA / virtualized drivers → solid-gray window
-    //     (tauri-apps/tauri#9304).
-    //   * Wayland with the NVIDIA proprietary driver → WebGL/compositing
-    //     fall back to a slow software/copy path, so terminal typing crawls
-    //     (tauri-apps/tauri#9394). This is the "typing is slow" report.
-    // Opt out in BOTH cases, BEFORE any GTK/WebKit init. AMD/Intel Wayland
-    // keeps the fast path, and an explicit user-set value always wins.
+    // WebKitGTK 2.42+ defaults to its DMA-BUF renderer. It's the FAST path on
+    // AMD/Intel (X11 and Wayland) and MUST stay on there: disabling it drops
+    // the whole webview onto a slow copy/software compositing path and makes
+    // the ENTIRE UI laggy, not just the terminal. The renderer only misbehaves
+    // on the proprietary NVIDIA driver, and the right escape hatch differs by
+    // session (tauri#9304/#9394, WebKit bug 262607, the webkit2gtk-nvidia-quirk
+    // crate). So scope the workaround to NVIDIA proprietary ONLY:
+    //   * NVIDIA proprietary + X11     → WEBKIT_DISABLE_DMABUF_RENDERER=1
+    //   * NVIDIA proprietary + Wayland → __NV_DISABLE_EXPLICIT_SYNC=1 (keep DMA-BUF)
+    // AMD / Intel / nouveau are left entirely untouched. An explicit user-set
+    // value always wins. Done BEFORE any GTK/WebKit init.
     #[cfg(target_os = "linux")]
     {
-        let x11 = std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11")
-            || (std::env::var_os("WAYLAND_DISPLAY").is_none()
-                && std::env::var_os("DISPLAY").is_some());
-        // Proprietary-NVIDIA presence (the driver creates these device nodes).
-        // nouveau does not, and isn't affected, so it correctly keeps DMA-BUF.
-        let nvidia = std::path::Path::new("/dev/nvidia0").exists()
-            || std::path::Path::new("/proc/driver/nvidia").exists();
-        if (x11 || nvidia) && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-            dlog(&format!("[gpu] WebKitGTK DMA-BUF renderer disabled (x11={x11} nvidia={nvidia})"));
+        // The boot/primary GPU is NVIDIA. The boot-GPU gate matters on hybrid
+        // laptops (Intel iGPU primary + NVIDIA dGPU for offload): the webview
+        // renders on the iGPU there, so DMA-BUF is fine and must stay on.
+        fn boot_gpu_is_nvidia() -> bool {
+            let mut saw_nvidia = false;
+            let Ok(cards) = std::fs::read_dir("/sys/class/drm") else { return false };
+            for e in cards.flatten() {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                // card0, card1, ... - skip connectors like card0-DP-1.
+                if !name.starts_with("card") || name.contains('-') { continue; }
+                let dev = e.path().join("device");
+                let is_nvidia = std::fs::read_to_string(dev.join("vendor"))
+                    .map(|v| v.trim().eq_ignore_ascii_case("0x10de"))
+                    .unwrap_or(false);
+                saw_nvidia |= is_nvidia;
+                // boot_vga=1 marks the primary GPU; its vendor is authoritative.
+                if std::fs::read_to_string(dev.join("boot_vga"))
+                    .map(|s| s.trim() == "1").unwrap_or(false)
+                {
+                    return is_nvidia;
+                }
+            }
+            saw_nvidia
+        }
+        // nouveau registers no `nvidia` kernel module, so this isolates the
+        // proprietary driver (the only one with the broken DMA-BUF path).
+        let nvidia_proprietary =
+            std::path::Path::new("/sys/module/nvidia").exists() && boot_gpu_is_nvidia();
+        if nvidia_proprietary {
+            let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+            let (var, val) = if wayland {
+                ("__NV_DISABLE_EXPLICIT_SYNC", "1")
+            } else {
+                ("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+            };
+            if std::env::var_os(var).is_none() {
+                std::env::set_var(var, val);
+                dlog(&format!("[gpu] NVIDIA proprietary detected; set {var}={val} (wayland={wayland})"));
+            }
+        } else {
+            dlog("[gpu] non-NVIDIA GPU (or nouveau/offload); keeping WebKitGTK DMA-BUF renderer on");
         }
     }
     tauri::Builder::default()
