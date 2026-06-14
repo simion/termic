@@ -1,6 +1,20 @@
 {
   "versions": [
     {
+      "version": "0.12.1",
+      "date": "2026-06-14",
+      "summary": "Completion sound now plays, and bun run works in sandboxed workspaces.",
+      "sections": [
+        {
+          "label": "Bug fixes",
+          "items": [
+            "Completion sound (#34): play it directly so it is audible on modern macOS, where the notification banner had stopped carrying the sound.",
+            "Sandbox (#35, #36): bun run and bunx, and any tool that canonicalizes its working directory, now work in enforcing workspaces instead of failing at startup with a CouldntReadCurrentDirectory error."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.12.0",
       "date": "2026-06-13",
       "summary": "Leave PR-style review comments on diffs and send them to an agent.",
