@@ -1,6 +1,19 @@
 {
   "versions": [
     {
+      "version": "0.12.4",
+      "date": "2026-06-14",
+      "summary": "Fix sluggish UI on Linux by keeping GPU rendering on for non-NVIDIA GPUs.",
+      "sections": [
+        {
+          "label": "Bug fixes",
+          "items": [
+            "Linux performance: the whole UI (not just the terminal) could feel laggy because termic switched off WebKitGTK's GPU accelerated renderer on every X11 session. It now stays on for AMD, Intel, and nouveau, and is only adjusted for the proprietary NVIDIA driver (DMA-BUF on X11, explicit-sync on Wayland)."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.12.3",
       "date": "2026-06-14",
       "summary": "Completion sound now plays, and bun run works in sandboxed workspaces.",
