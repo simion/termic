@@ -456,8 +456,12 @@ export async function notify(
 ): Promise<void> {
   try {
     if (!(await ensureNotifyPermission())) return;
-    const sound = opts?.sound ? await resolveCompletionSoundValue(opts.sound) : undefined;
-    notifSend({ title, body, sound, extra: route ? { wsId: route.wsId, tabId: route.tabId } : undefined });
+    // Play the completion sound DIRECTLY (afplay) rather than through the
+    // notification's `sound` field: mac-notification-sys rides the deprecated
+    // NSUserNotification API, which drops the banner sound on modern macOS.
+    // The banner stays silent; the sound is decoupled and reliable.
+    if (opts?.sound) void playCompletionSound(opts.sound, true);
+    notifSend({ title, body, extra: route ? { wsId: route.wsId, tabId: route.tabId } : undefined });
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }
@@ -474,16 +478,30 @@ export async function previewCompletionSound(
   example?: { title?: string; body?: string },
 ): Promise<void> {
   try {
-    if (!(await ensureNotifyPermission())) return;
-    const sound = await resolveCompletionSoundValue(soundId ?? readCompletionSoundId(), false);
-    notifSend({
-      title: example?.title ?? "project · workspace",
-      body: example?.body ?? "agent finished",
-      sound,
-    });
+    // Play directly (afplay) so Preview works regardless of macOS
+    // notification-sound settings. respectToggle=false: Preview always plays.
+    await playCompletionSound(soundId ?? readCompletionSoundId(), false);
+    // Still show a silent sample banner so the user sees the notification
+    // shape, but only if notifications are permitted — never block the sound.
+    if (await ensureNotifyPermission()) {
+      notifSend({
+        title: example?.title ?? "project · workspace",
+        body: example?.body ?? "agent finished",
+      });
+    }
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }
+}
+
+/** Resolve a completion sound and play it directly via afplay (Rust side).
+ *  Decoupled from the notification banner because mac-notification-sys drops
+ *  the banner sound on modern macOS. No-op off macOS / when the toggle gates
+ *  it out / when nothing resolves. */
+async function playCompletionSound(sound: boolean | string, respectToggle: boolean): Promise<void> {
+  const name = await resolveCompletionSoundValue(sound, respectToggle);
+  if (!name) return;
+  try { await invoke<void>("play_completion_sound", { name }); } catch {}
 }
 
 // macOS resolves notification sounds by NAME via the Library/Sounds search

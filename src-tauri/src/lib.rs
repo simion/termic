@@ -5468,6 +5468,71 @@ fn notify(title: String, body: String) {
     let _ = Command::new("osascript").arg("-e").arg(&script).status();
 }
 
+/// Resolve a macOS sound NAME to a playable file, mirroring the OS's own
+/// `Library/Sounds` search order (user → local → system). Names are
+/// extension-less; system sounds are `.aiff`, our bundled Choo Choo is the
+/// `.caf` installed by `install_notification_sound`.
+#[cfg(target_os = "macos")]
+fn resolve_completion_sound_path(name: &str) -> Option<std::path::PathBuf> {
+    // The "macOS default" pseudo-name: approximate it with the user's
+    // selected system alert sound (the closest queryable analog to the
+    // default notification sound), falling back to a stock sound.
+    if name.is_empty() || name == "NSUserNotificationDefaultSoundName" {
+        if let Ok(out) = Command::new("defaults")
+            .args(["read", "-g", "com.apple.sound.beep.sound"])
+            .output()
+        {
+            let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !val.is_empty() {
+                let p = std::path::PathBuf::from(&val);
+                if p.is_absolute() && p.exists() {
+                    return Some(p);
+                }
+                if let Some(found) = resolve_completion_sound_path(&val) {
+                    return Some(found);
+                }
+            }
+        }
+        return resolve_completion_sound_path("Funk");
+    }
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(h) = dirs::home_dir() {
+        roots.push(h.join("Library/Sounds"));
+    }
+    roots.push(std::path::PathBuf::from("/Library/Sounds"));
+    roots.push(std::path::PathBuf::from("/System/Library/Sounds"));
+    const EXTS: [&str; 6] = ["aiff", "caf", "aif", "wav", "m4a", "mp3"];
+    for root in roots {
+        for ext in EXTS {
+            let p = root.join(format!("{name}.{ext}"));
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Play a completion sound directly via `afplay`, decoupled from the
+/// notification banner. `mac-notification-sys` (the desktop notification
+/// backend) rides the deprecated NSUserNotification API, which on modern
+/// macOS routinely drops the banner's sound — so we play it ourselves.
+/// Spawns afplay on a detached thread that reaps the child, so the IPC call
+/// returns immediately and never blocks the WKWebView event loop. macOS-only.
+#[tauri::command]
+async fn play_completion_sound(name: String) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(path) = resolve_completion_sound_path(&name) {
+            std::thread::spawn(move || {
+                let _ = Command::new("afplay").arg(&path).status();
+            });
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = name;
+}
+
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     let (program, args) = open_command(std::env::consts::OS, &path);
@@ -6443,7 +6508,7 @@ pub fn run() {
             workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file, install_notification_sound,
+            notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
