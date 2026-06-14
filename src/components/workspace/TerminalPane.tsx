@@ -405,13 +405,16 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // inserts the file's escaped path at the prompt — like macOS Terminal.
     // The getter reads ptyRef lazily so a Restart (fresh pty id) still works.
     // wsId + sandboxed let the drop handler stage the file into TMPDIR (or
-    // prompt) when this agent runs under the seatbelt, so a dropped path the
+    // prompt) when this tab runs under the seatbelt, so a dropped path the
     // sandbox would deny is still readable. ws.sandbox_enabled is read lazily.
     const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current, {
       wsId: ws.id,
-      // Only ENFORCING actually denies reads; MONITORING allows
-      // everything (just logs), so no need to stage dropped files there.
-      sandboxed: () => effectiveSandboxMode(ws) === "enforce",
+      // Only AGENTS run caged now (shell / custom / registry terminals are
+      // always uncaged — see the spawn gating), and only ENFORCING actually
+      // denies reads (MONITORING just logs), so stage drops only for a caged
+      // agent. A dropped path is otherwise readable directly.
+      sandboxed: () => effectiveSandboxMode(ws) === "enforce"
+        && tab.cli !== "shell" && tab.cli !== "custom" && !isTerminalCli(tab.cli),
     });
 
     // Shift+Enter → newline-without-submit.
@@ -1094,11 +1097,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
             // user-configured env block; sentinel shell/custom tabs don't.
             ...(isAgent || isRegistryTerminal ? envForCli(tab.cli) : {}),
           },
-          // Sandbox gating: a shell tab created "no sandbox"
-          // (`sandboxed === false`) omits workspace_id → Rust spawns it
-          // uncaged. Everything else passes the id; Rust then gates on
-          // ws.sandbox_enabled (harmless no-op when sandbox is off).
-          workspace_id: tab.sandboxed === false ? undefined : ws.id,
+          // Sandbox gating: ONLY agents run inside the cage — they're the
+          // threat model. Terminals the user drives (plain shell, custom
+          // command, registry terminal) ALWAYS spawn uncaged: omitting
+          // workspace_id makes Rust skip the seatbelt, so git/ssh, shell
+          // history, and the full login env work. Agents pass the id; Rust
+          // then gates on ws.sandbox_enabled (a no-op when sandbox is off).
+          workspace_id: isAgent ? ws.id : undefined,
           // The tab's CLI may differ from the workspace's primary CLI
           // (claude workspace with a gemini tab open, etc.). Send the
           // tab's agent id so the rendered SBPL profile uses THIS

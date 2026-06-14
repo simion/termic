@@ -34,6 +34,20 @@ function CliMenuItems({ entries, onSpawn }: { entries: Agent[]; onSpawn: (cli: s
   );
 }
 
+/** The plain "Terminal" entry, shared by the main and right-split + menus.
+ *  Terminals are ALWAYS uncaged now (only agents run inside the seatbelt —
+ *  they're the threat model; a shell the user drives is not). There is no
+ *  "Sandboxed" shell variant: a caged terminal you type into yourself made no
+ *  sense (it just broke git/ssh + shell history). See issue #32. */
+function ShellTerminalItem({ onSelect }: { onSelect: () => void }) {
+  return (
+    <DropdownItem onSelect={onSelect}>
+      <span className="shrink-0 text-[var(--color-fg-dim)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
+      Terminal
+    </DropdownItem>
+  );
+}
+
 export function TabBar({ ws }: { ws: Workspace }) {
   const allTabsRaw = useWorkspaceTabs(ws.id);
   // Main strip shows only non-right-panel tabs.
@@ -129,16 +143,14 @@ export function TabBar({ ws }: { ws: Workspace }) {
     addAndFocusTab({ id: crypto.randomUUID(), type: "terminal", title: displayName, cli });
   }
 
-  /** Plain login-shell tab. `sandboxed` decides whether it spawns
-   *  inside the workspace's seatbelt cage — only meaningful (and only
-   *  offered) when the workspace has the sandbox enabled. */
-  function spawnShellTab(sandboxed: boolean) {
+  /** Plain login-shell tab. Always uncaged: only agents run inside the
+   *  workspace's seatbelt (see ShellTerminalItem / TerminalPane spawn). */
+  function spawnShellTab() {
     addAndFocusTab({
       id: crypto.randomUUID(),
       type: "terminal",
-      title: sandboxed ? "Sandboxed" : "Terminal",
+      title: "Terminal",
       cli: "shell",
-      sandboxed,
     });
   }
 
@@ -196,16 +208,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
             }}
           >
             <DropdownLabel>New terminal</DropdownLabel>
-            <DropdownItem onSelect={() => spawnShellTab(false)}>
-              <span className="text-[var(--color-fg-dim)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
-              Terminal
-            </DropdownItem>
-            {ws.sandbox_enabled && (
-              <DropdownItem onSelect={() => spawnShellTab(true)}>
-                <span className="text-[var(--color-ok)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
-                Sandboxed
-              </DropdownItem>
-            )}
+            <ShellTerminalItem onSelect={() => spawnShellTab()} />
             <CliMenuItems entries={customTerminals} onSpawn={spawnTab} />
             <DropdownSeparator />
             <DropdownLabel>New agent</DropdownLabel>
@@ -277,7 +280,6 @@ function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, righ
 }) {
   const [open, setOpen] = useState(false);
   const suppressReturn = useRef(false);
-  const isSandboxed = !!(ws as any).sandbox_enabled;
 
   // Inline rename state — double-click a non-preview tab to rename, same as
   // the main strip (handled inside the shared TabPill).
@@ -363,16 +365,7 @@ function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, righ
           }}
         >
           <DropdownLabel>New terminal</DropdownLabel>
-          <DropdownItem onSelect={spawnRightShell}>
-            <span className="text-[var(--color-fg-dim)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
-            Terminal
-          </DropdownItem>
-          {isSandboxed && (
-            <DropdownItem onSelect={() => { suppressReturn.current = true; addRightTab(ws.id, true); setOpen(false); }}>
-              <span className="text-[var(--color-ok)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
-              Sandboxed
-            </DropdownItem>
-          )}
+          <ShellTerminalItem onSelect={spawnRightShell} />
           <CliMenuItems entries={customTerminals} onSpawn={spawnRightAgent} />
           <DropdownSeparator />
           <DropdownLabel>New agent</DropdownLabel>

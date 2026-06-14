@@ -483,11 +483,6 @@ export interface TerminalTab extends BaseTab {
    *  shell (`zsh -lc`). Seeded from the workspace's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */
   command?: string;
-  /** Plain shell tabs (`cli: "shell"`) carry an explicit sandbox choice:
-   *  `true` → spawn inside the workspace's seatbelt cage, `false` →
-   *  uncaged. Agent tabs leave this unset — they always pass through
-   *  the workspace sandbox (Rust gates on `sandbox_enabled`). */
-  sandboxed?: boolean;
   ptyId?: string;
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;

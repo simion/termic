@@ -132,7 +132,7 @@ interface AppState {
   toggleRightSplit: (wsId: string) => void;
   setRightSplitRatio: (wsId: string, ratio: number) => void;
   /** Returns the id of the new right-panel shell tab. */
-  addRightTab: (wsId: string, sandboxed?: boolean) => string;
+  addRightTab: (wsId: string) => string;
   /** Add an agent tab to the right-panel split. */
   addRightAgentTab: (wsId: string, cli: string) => void;
   closeRightTab: (wsId: string, tabId: string) => void;
@@ -587,7 +587,7 @@ export const useApp = create<AppState>((set, get) => ({
   setRightSplitRatio: (wsId, ratio) => set(s => ({
     rightSplitRatio: { ...s.rightSplitRatio, [wsId]: Math.max(0.1, Math.min(0.9, ratio)) },
   })),
-  addRightTab: (wsId, sandboxed) => {
+  addRightTab: (wsId) => {
     const id = crypto.randomUUID();
     set(s => {
       const rightCount = (s.tabs[wsId] ?? []).filter(
@@ -595,9 +595,8 @@ export const useApp = create<AppState>((set, get) => ({
       ).length;
       const tab: TerminalTab = {
         id, type: "terminal",
-        title: sandboxed ? "Sandboxed" : `shell ${rightCount + 1}`,
+        title: `shell ${rightCount + 1}`,
         cli: "shell", panel: "right",
-        ...(sandboxed !== undefined ? { sandboxed } : {}),
       };
       return {
         tabs:          { ...s.tabs, [wsId]: [...(s.tabs[wsId] ?? []), tab] },
