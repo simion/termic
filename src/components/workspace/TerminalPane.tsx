@@ -409,12 +409,13 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // sandbox would deny is still readable. ws.sandbox_enabled is read lazily.
     const unregisterDrop = registerTerminalDropTarget(host, () => ptyRef.current, {
       wsId: ws.id,
-      // Only AGENTS run caged now (shell / custom / registry terminals are
-      // always uncaged — see the spawn gating), and only ENFORCING actually
+      // Caged tabs are the workspace's primary process (agents + custom-
+      // command workspaces); plain shells and registry "custom terminal"
+      // entries are always uncaged (see the spawn gating). Only ENFORCING
       // denies reads (MONITORING just logs), so stage drops only for a caged
-      // agent. A dropped path is otherwise readable directly.
+      // tab. A dropped path is otherwise readable directly.
       sandboxed: () => effectiveSandboxMode(ws) === "enforce"
-        && tab.cli !== "shell" && tab.cli !== "custom" && !isTerminalCli(tab.cli),
+        && tab.cli !== "shell" && !isTerminalCli(tab.cli),
     });
 
     // Shift+Enter → newline-without-submit.
@@ -1097,13 +1098,15 @@ export function TerminalPane({ ws, tab, active }: Props) {
             // user-configured env block; sentinel shell/custom tabs don't.
             ...(isAgent || isRegistryTerminal ? envForCli(tab.cli) : {}),
           },
-          // Sandbox gating: ONLY agents run inside the cage — they're the
-          // threat model. Terminals the user drives (plain shell, custom
-          // command, registry terminal) ALWAYS spawn uncaged: omitting
-          // workspace_id makes Rust skip the seatbelt, so git/ssh, shell
-          // history, and the full login env work. Agents pass the id; Rust
-          // then gates on ws.sandbox_enabled (a no-op when sandbox is off).
-          workspace_id: isAgent ? ws.id : undefined,
+          // Sandbox gating: ad-hoc TERMINALS the user drives spawn UNCAGED —
+          // a plain shell (`cli: "shell"`) and registry "custom terminal"
+          // entries (docker/ssh/repl, #27). Omitting workspace_id makes Rust
+          // skip the seatbelt, so git/ssh, shell history, and the full login
+          // env work. The workspace's PRIMARY process keeps the cage: agents
+          // AND custom-command workspaces (`cli: "custom"`) pass the id, since
+          // both run something automated against the repo (the threat model).
+          // Rust then gates on ws.sandbox_enabled (a no-op when sandbox off).
+          workspace_id: (isShell || isRegistryTerminal) ? undefined : ws.id,
           // The tab's CLI may differ from the workspace's primary CLI
           // (claude workspace with a gemini tab open, etc.). Send the
           // tab's agent id so the rendered SBPL profile uses THIS

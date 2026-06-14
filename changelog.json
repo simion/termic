@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.12.2",
+      "version": "0.12.3",
       "date": "2026-06-14",
       "summary": "Completion sound now plays, and bun run works in sandboxed workspaces.",
       "sections": [
@@ -10,7 +10,7 @@
           "items": [
             "Completion sound (#34): play it directly so it is audible on modern macOS, where the notification banner had stopped carrying the sound.",
             "Sandbox (#35, #36): bun run and bunx, and any tool that canonicalizes its working directory, now work in enforcing workspaces instead of failing at startup with a CouldntReadCurrentDirectory error.",
-            "Terminals are no longer sandboxed (#32): a shell or custom command you open yourself is never caged, so git, ssh, and shell history work normally in a sandboxed workspace. Only agents stay sandboxed (they are the threat model)."
+            "Terminals are no longer sandboxed (#32): a plain shell or a custom terminal entry (docker, ssh, repl) you open yourself is never caged, so git, ssh, and shell history work in a sandboxed workspace. Agents and custom-command workspaces stay sandboxed (they run automated tools against your repo)."
           ]
         }
       ]
