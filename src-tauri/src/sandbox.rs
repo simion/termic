@@ -319,6 +319,10 @@ pub struct MonitorPolicy {
     /// .tmp.*). Without these, monitor falsely flags regex-allowed paths
     /// as "would block".
     rw_regexes: Vec<regex::Regex>,
+    /// Workspace ancestor directory nodes granted read as `literal` (the
+    /// exact path, NOT its subtree) so realpath(cwd) traversal isn't
+    /// flagged would-block. Mirrors render_profile's ancestor grants.
+    read_literals: Vec<String>,
 }
 
 fn under(path: &str, base: &str) -> bool {
@@ -354,6 +358,10 @@ impl MonitorPolicy {
         if !is_write {
             if path == "/" { return false; }
             if self.read_roots.iter().any(|r| under(path, r)) { return false; }
+            // Workspace ancestor nodes are granted read as `literal`
+            // (exact path, not subtree) so realpath(cwd) traversal isn't
+            // flagged; sibling contents under them still block.
+            if self.read_literals.iter().any(|d| path == d) { return false; }
         }
         // Anything else: enforce would deny.
         true
@@ -434,7 +442,11 @@ pub fn compute_monitor_policy(workspace: &Workspace, agent_override: Option<&str
     // (e.g. ~/.ssh/known_hosts). Reads here don't block; writes do.
     let mut read_roots: Vec<String> = system_read_roots().iter().map(|s| s.to_string()).collect();
     read_roots.extend(builtin_runtime_readonly_paths(&home));
-    MonitorPolicy { rw_subpaths, read_roots, rw_regexes }
+    // Workspace ancestor path nodes (literal reads) so the monitor's
+    // would-block classifier agrees with what render_profile permits for
+    // realpath(cwd) traversal.
+    let read_literals = workspace_ancestor_dirs(workspace);
+    MonitorPolicy { rw_subpaths, read_roots, rw_regexes, read_literals }
 }
 
 /// Drop every path-deny entry for this workspace whose path is at or
@@ -1060,6 +1072,29 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
         // (\. → \\. ; seatbelt then matches literal backslash, not dot).
         out.push_str(&format!("(allow file-read*  (regex #\"{}\"))\n", sbpl_regex_escape(r)));
         out.push_str(&format!("(allow file-write* (regex #\"{}\"))\n", sbpl_regex_escape(r)));
+    }
+
+    // ── Workspace ancestor path nodes (read: the directory NODE only).
+    //    A shell/agent launched in the workspace canonicalizes its cwd via
+    //    realpath(3), which open()s each ancestor directory up the chain.
+    //    open(dir) is a `file-read-data` op, denied by the allow-list for
+    //    anything outside the workspace subtree — so `bun run` / `bunx`
+    //    (claude is Bun-compiled; its RunCommand realpath()s the cwd at
+    //    startup) and ANY tool that realpath()s the cwd fail immediately
+    //    with EPERM ("error loading current directory" /
+    //    "CouldntReadCurrentDirectory"). file-read-metadata +
+    //    file-test-existence are global, so stat/lstat/realpath-via-lstat
+    //    work — but the kernel realpath(3) does a directory OPEN, which
+    //    they don't cover. Grant each ancestor as `literal` (the exact
+    //    node, NOT `subpath`) so traversal + enumeration of the path
+    //    components works WITHOUT exposing sibling subtrees' contents —
+    //    the same shape as the `(literal "/")` grant above, one level down.
+    let ancestors = workspace_ancestor_dirs(workspace);
+    if !ancestors.is_empty() {
+        out.push_str("\n;; --- Workspace ancestor path (realpath/traverse; dir node only) ---\n");
+        for a in &ancestors {
+            out.push_str(&format!("(allow file-read* (literal \"{}\"))\n", sbpl_escape(a)));
+        }
     }
 
     // ── Per-agent allow-list (read + write). Joined from the agent
@@ -1775,6 +1810,46 @@ fn dedupe(v: &mut Vec<String>) {
     v.retain(|s| seen.insert(s.clone()));
 }
 
+/// Strict ancestor directories of `path` — its parent, grandparent, … up
+/// to (but NOT including) the filesystem root `/`. Returned deepest-first.
+///
+/// Used to grant `(allow file-read* (literal …))` on each: a shell/agent
+/// launched in the workspace canonicalizes its cwd with realpath(3), which
+/// must open() every ancestor directory to resolve the path. open(dir) is a
+/// `file-read-data` op the allow-list denies outside the workspace subtree,
+/// so without these grants `bun run` / `bunx` — and anything else that
+/// realpath()s the cwd — fail at startup with EPERM. `/` is granted
+/// separately (literal) and is this loop's terminator.
+fn ancestor_dirs(path: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = std::path::Path::new(path);
+    while let Some(parent) = cur.parent() {
+        if parent.as_os_str().is_empty() || parent == std::path::Path::new("/") {
+            break;
+        }
+        out.push(parent.to_string_lossy().into_owned());
+        cur = parent;
+    }
+    out
+}
+
+/// Every workspace root's (and multi-repo member's) ancestor directory
+/// chain, canonicalized + deduped — the set granted `literal` read so cwd
+/// canonicalization (realpath) works without exposing sibling subtrees.
+/// Shared by `render_profile` (enforcement) and `compute_monitor_policy`
+/// (the would-block classifier) so the two never disagree.
+fn workspace_ancestor_dirs(workspace: &Workspace) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for root in std::iter::once(canonicalize_or_keep(&workspace.path))
+        .chain(workspace.composition.iter().map(|m| canonicalize_or_keep(&m.path)))
+    {
+        if root.is_empty() { continue; }
+        out.extend(ancestor_dirs(&root));
+    }
+    dedupe(&mut out);
+    out
+}
+
 /// Convert a wildcard host pattern into an anchored regex string the
 /// proxy's matcher can use. Convention is the simplest possible:
 ///
@@ -1876,6 +1951,7 @@ mod tests {
             rw_subpaths: vec!["/Users/x/proj".into()],
             read_roots: vec!["/usr".into()],
             rw_regexes: vec![regex::Regex::new(r"^/Users/x/\.claude(\.[^/]*|/.*)?$").unwrap()],
+            read_literals: vec![],
         };
         // regex allow (claude family): reads + writes never block.
         assert!(!policy.would_block("/Users/x/.claude.json", "file-read-data"));
@@ -1895,6 +1971,54 @@ mod tests {
         assert!(!policy.would_block("/Users/x/other/secret", "file-read-metadata"));
         assert!(!policy.would_block("/Users/x/.ssh", "file-test-existence"));
         assert!(!policy.would_block("/tmp", "file-read-metadata"));
+    }
+
+    // ── ancestor path grants (realpath cwd traversal) ─────────────────
+
+    #[test]
+    fn ancestor_dirs_walks_up_to_but_not_root() {
+        assert_eq!(
+            ancestor_dirs("/Users/x/termic/ws/proj"),
+            vec![
+                "/Users/x/termic/ws".to_string(),
+                "/Users/x/termic".to_string(),
+                "/Users/x".to_string(),
+                "/Users".to_string(),
+            ]
+        );
+        // Directly under root: nothing (root "/" is granted separately).
+        assert!(ancestor_dirs("/proj").is_empty());
+        assert!(ancestor_dirs("/").is_empty());
+    }
+
+    #[test]
+    fn workspace_ancestor_dirs_strict_ancestors_only() {
+        use crate::Workspace;
+        let ws = Workspace { path: "/Users/x/ws/a".into(), ..Default::default() };
+        let anc = workspace_ancestor_dirs(&ws);
+        assert!(anc.contains(&"/Users/x/ws".to_string()));
+        assert!(anc.contains(&"/Users/x".to_string()));
+        assert!(anc.contains(&"/Users".to_string()));
+        // Never the workspace dir itself, and never the root.
+        assert!(!anc.contains(&"/Users/x/ws/a".to_string()));
+        assert!(!anc.contains(&"/".to_string()));
+    }
+
+    #[test]
+    fn would_block_allows_ancestor_node_read_not_subtree() {
+        let policy = MonitorPolicy {
+            rw_subpaths: vec!["/Users/x/ws/proj".into()],
+            read_roots: vec![],
+            rw_regexes: vec![],
+            read_literals: vec!["/Users/x".into(), "/Users/x/ws".into()],
+        };
+        // The ancestor directory NODE is readable (realpath traversal).
+        assert!(!policy.would_block("/Users/x", "file-read-data"));
+        assert!(!policy.would_block("/Users/x/ws", "file-read-data"));
+        // But NOT a sibling subtree under an ancestor.
+        assert!(policy.would_block("/Users/x/other/secret", "file-read-data"));
+        // Writes to an ancestor node still block (literal grants read only).
+        assert!(policy.would_block("/Users/x", "file-write-create"));
     }
 
     // ── wildcard_to_regex ─────────────────────────────────────────────
