@@ -505,6 +505,12 @@ export interface TerminalTab extends BaseTab {
    *  title classifier (gemini/codex). `working` → spinner; `done` →
    *  blue bullet; cleared on next user keystroke (NOT on tab view). */
   workState?: "idle" | "working" | "done";
+  /** Set while a library prompt (target "new-agent") is waiting for this
+   *  freshly spawned agent to come up before its prompt is injected. Drives
+   *  the "starting agent" loader overlay in TerminalPane; cleared once the
+   *  prompt is sent (or the spawn times out). The string is the prompt title,
+   *  shown in the overlay. */
+  promptPendingTitle?: string | null;
   /** Optional 0..100 progress percentage from ConEmu OSC 9;4;1|2|4;<pct>.
    *  Null/undefined means "indeterminate" — render the spinner without
    *  a bar. Drives the slim progress strip on the tab pill. */

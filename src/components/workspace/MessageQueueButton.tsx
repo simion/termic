@@ -20,7 +20,7 @@ import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { workDoneCapable } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { MessageSquarePlus, X, Repeat, CornerDownLeft } from "lucide-react";
-import type { TerminalTab, QueueItem } from "@/lib/types";
+import type { TerminalTab } from "@/lib/types";
 
 const MAX_REPEAT = 99;
 
@@ -47,6 +47,7 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
   const defaultTabId = preferTabId ?? activeTabId;
   const agents = useApp(s => s.agents);
   const patchTab = useApp(s => s.patchTab);
+  const enqueueAgentMessage = useApp(s => s.enqueueAgentMessage);
 
   // Only work-done-capable agent tabs with a live PTY can host a queue — the
   // loop advances on work-done, which shells / detection-off agents never emit.
@@ -102,16 +103,10 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
     const text = draft.trim();
     if (!text) return;
     const r = Math.min(MAX_REPEAT, Math.max(1, Math.round(repeat) || 1));
-    const item: QueueItem = { id: crypto.randomUUID(), text, repeat: r, remaining: r };
-    // queueActive:true marks it running; bumping queueKick is what actually
-    // wakes TerminalPane's drain effect — relying on a queueActive false→true
-    // edge would stall when the queue was already active (agent idle, empty
-    // queue not yet flipped inactive).
-    patchTab(wsId, target.id, {
-      queue: [...(target.queue ?? []), item],
-      queueActive: true,
-      queueKick: (target.queueKick ?? 0) + 1,
-    });
+    // enqueueAgentMessage owns the queueKick-bump protocol (see app store):
+    // bumping queueKick is what wakes TerminalPane's drain effect; a
+    // queueActive false->true edge would stall when the queue was already active.
+    enqueueAgentMessage(wsId, target.id, text, r);
     setDraft("");
     setRepeat(1);
   }

@@ -12,7 +12,6 @@ import { ResumeOverrideDialog } from "./ResumeOverrideDialog";
 import { ShortcutsHelpDialog } from "./ShortcutsHelpDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
 import { ChangelogDialog } from "./ChangelogDialog";
-import { ReviewDialog } from "./ReviewDialog";
 import { BroadcastDialog } from "./BroadcastDialog";
 import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -40,7 +39,6 @@ export function Dialogs() {
       <ShortcutsHelpDialog />
       <WelcomeDialog />
       <ChangelogDialog />
-      <ReviewDialog />
       <BroadcastDialog />
       <WorkspaceSandboxDialog />
       <ConfirmDialog />

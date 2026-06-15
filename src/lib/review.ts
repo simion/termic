@@ -53,34 +53,28 @@ The comments will be presented in the code review as inline comments. You should
 
 ## Getting the diff
 
-Use the \`mcp__termic__GetWorkspaceDiff\` tool to review the workspace diff. Start with \`stat: true\` to understand the files that changed, then request specific files as needed.
-
-## Fallback: if you don't have access to the workspace diff tool
-
-If you don't have access to the \`mcp__termic__GetWorkspaceDiff\` tool, use the following git commands to get the diff:
+Use git to see the changes under review. A branch's changes are the committed diff against its base branch plus any uncommitted work:
 
 \`\`\`bash
-# Get the merge base between this branch and the target
-MERGE_BASE=$(git merge-base origin/master HEAD)
+# Merge base with the base branch (adjust the base ref as needed:
+# origin/main, origin/master, main, ...)
+BASE=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null || git merge-base master HEAD)
 
-# Get the committed diff against the merge base
-git diff $MERGE_BASE HEAD
+# Committed changes on this branch, relative to the base
+git diff "$BASE" HEAD
 
-# Get any uncommitted changes (staged and unstaged)
+# Uncommitted changes (staged + unstaged)
 git diff HEAD
+
+# Untracked files
+git status --short
 \`\`\`
 
-Review the combination of both outputs: the first shows all committed changes on this branch relative to the target, and the second shows any uncommitted work in progress.
-
-No need to mention in your report whether or not you used one of the fallback strategies; it's usually irrelevant.
+Review the combination: the committed diff shows what the branch changes relative to the base; the rest shows work in progress.
 
 ## Output format
 
-Post inline comments for each issue using mcp__termic__DiffComment:
-
-**IMPORTANT: Only post ONE comment per unique issue.**
-
-Write out a list of issues found, along with the location of the comment. For example:
+Write out a list of the issues you find, each with its location. **Report each unique issue only once.** For example:
 
 <example>
 ### **#1 Empty input causes crash**

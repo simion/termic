@@ -141,6 +141,13 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
 
 /** Helper to get an agent's display name by its id. Consulting the registry first,
  *  then falling back to built-in names and finally returning the id itself. */
+/** Display label for a terminal tab: a user-set custom title wins, then the
+ *  live (OSC-driven) title, then the static title. Shared by the tab strip,
+ *  message queue, broadcast, and the prompt destination picker. */
+export function tabLabel(t: { customTitle?: boolean; title: string; liveTitle?: string | null }): string {
+  return t.customTitle ? t.title : (t.liveTitle || t.title);
+}
+
 export function agentDisplayName(cli: string, agents: Agent[] = useApp.getState().agents): string {
   const a = agents.find(x => x.id === cli);
   if (a) return a.display_name;

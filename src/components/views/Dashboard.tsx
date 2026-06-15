@@ -43,7 +43,7 @@ export function Dashboard() {
             return <TermicBlockmark cellSize={10} gap={2} animate={shouldAnimate} />;
           })()}
           <div className="text-[11.5px] uppercase tracking-[0.3em] text-[var(--color-fg-faint)]">
-            many agents · one window
+            Home for your CLI coding agents
           </div>
         </header>
 

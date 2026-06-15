@@ -5,13 +5,14 @@
 import { useEffect, useState } from "react";
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
 import { GeneralSection } from "./GeneralSection";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { AgentsSection } from "./AgentsSection";
+import { PromptLibrarySection } from "./PromptLibrarySection";
 
 export function Settings() {
   const view = useApp(s => s.view);
@@ -67,6 +68,8 @@ export function Settings() {
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
         <RailItem icon={<Terminal className="h-4 w-4" />} label="Agents & Terminals"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
+        <RailItem icon={<Library className="h-4 w-4" />} label="Prompts"
+          active={tab === "prompts"} onClick={() => openSettings("prompts")} />
         <RailItem icon={<Keyboard className="h-4 w-4" />} label="Shortcuts"
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />
 
@@ -101,6 +104,7 @@ export function Settings() {
           {tab === "general"     && <GeneralSection />}
           {tab === "appearance"  && <AppearanceSection />}
           {tab === "agents"      && <AgentsSection />}
+          {tab === "prompts"     && <PromptLibrarySection />}
           {tab === "shortcuts"   && <ShortcutsSection />}
           {tab === "repositories" && (
             isRepoSelected

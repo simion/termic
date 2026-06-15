@@ -1,7 +1,7 @@
 // Left sidebar: traffic-light spacer, toggle, primary nav, projects tree, footer.
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
@@ -151,8 +151,26 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   //   document pointermove while dragging → hit-test, splice store
   //   document pointerup → IPC project_reorder + clean up listeners
   const [dragProjectId, setDragProjectId] = useState<string | null>(null);
-  const dragArmed = useRef<{ id: string; x: number; y: number; started: boolean } | null>(null);
+  // translateY applied to the dragged header so it follows the cursor (the
+  // smooth feel, same as the prompt library); the list still reorders live.
+  const [dragTy, setDragTy] = useState(0);
+  const dragArmed = useRef<
+    { id: string; x: number; y: number; started: boolean; grabOffsetY: number; appliedTy: number; pointerY: number } | null
+  >(null);
   const dragListenersRef = useRef<{ move: (e: PointerEvent) => void; up: (e: PointerEvent) => void } | null>(null);
+
+  // translateY that keeps the dragged header under the cursor, self-correcting
+  // against the live layout after each reorder (reads the header's real rect
+  // minus the transform already applied to recover its untranslated slot).
+  const computeProjectTy = (clientY: number): number => {
+    const armed = dragArmed.current;
+    const el = armed && document.querySelector<HTMLElement>(`[data-project-id="${CSS.escape(armed.id)}"]`);
+    if (!armed || !el) return 0;
+    const layoutTop = el.getBoundingClientRect().top - armed.appliedTy;
+    const ty = (clientY - armed.grabOffsetY) - layoutTop;
+    armed.appliedTy = ty;
+    return ty;
+  };
 
   // Tear-down helper, used by both pointerup and pointercancel.
   const endDrag = (commit: boolean) => {
@@ -166,6 +184,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const wasStarted = dragArmed.current?.started ?? false;
     dragArmed.current = null;
     setDragProjectId(null);
+    setDragTy(0);
     if (commit && wasStarted) {
       const finalIds = useApp.getState().projects.map(x => x.id);
       projectReorder(finalIds).catch(() => { void useApp.getState().loadAll(); });
@@ -185,6 +204,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       armed.started = true;
       setDragProjectId(armed.id);
     }
+    // Follow the cursor every move (before the reorder hit-test, which has
+    // early returns), so the header tracks smoothly even when no swap happens.
+    armed.pointerY = e.clientY;
+    setDragTy(computeProjectTy(e.clientY));
     const dragId = armed.id;
     const all = useApp.getState().projects;
     const fromIdx = all.findIndex(x => x.id === dragId);
@@ -211,6 +234,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       projects: nextIds.map(id => s.projects.find(x => x.id === id)!).filter(Boolean),
     }));
   };
+
+  // After a live reorder re-renders the list, the dragged header sits in a new
+  // slot — re-derive its transform from the new layout BEFORE paint so it
+  // doesn't jump for a frame.
+  useLayoutEffect(() => {
+    if (dragArmed.current?.started) setDragTy(computeProjectTy(dragArmed.current.pointerY));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects]);
 
   async function commitRename() {
     if (!renaming) return;
@@ -327,6 +358,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     // a single header's height to trigger a swap,
                     // matching what the user sees.
                     data-project-id={p.id}
+                    style={dragProjectId === p.id ? { transform: `translateY(${dragTy}px)`, position: "relative", zIndex: 20 } : undefined}
                     // Compact mode has no drag-to-reorder (the pointer
                     // handler below bails), so a plain click handles the
                     // collapse toggle the monogram represents.
@@ -342,7 +374,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       if (e.button !== 0) return;
                       const target = e.target as HTMLElement;
                       if (target.closest('button, input, a, [data-no-drag]')) return;
-                      dragArmed.current = { id: p.id, x: e.clientX, y: e.clientY, started: false };
+                      dragArmed.current = {
+                        id: p.id, x: e.clientX, y: e.clientY, started: false,
+                        grabOffsetY: e.clientY - (e.currentTarget as HTMLElement).getBoundingClientRect().top,
+                        appliedTy: 0, pointerY: e.clientY,
+                      };
                       // Attach document-level listeners so drag
                       // tracking survives the dragged DOM node being
                       // reparented mid-drag (React reorders kill
@@ -377,7 +413,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       wsList.length === 0 ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg)]",
                       menuOpenProjectId === p.id && "bg-[var(--color-hover)]",
                       compact ? "px-0 py-0.5 justify-center" : "pl-2 pr-0 py-1.5",
-                      dragProjectId === p.id && "bg-[var(--color-accent)]/15 text-[var(--color-accent)]",
+                      dragProjectId === p.id && "bg-[var(--color-accent)]/15 text-[var(--color-accent)] shadow-lg",
                     )}
                   >
                     {compact ? (

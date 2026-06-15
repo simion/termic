@@ -63,7 +63,6 @@ interface UIState {
   welcomeOpen: boolean;
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
-  reviewForWsId: string | null;          // null = closed
   /** Broadcast dialog — send one message to several open agents in a
    *  workspace at once. null = closed. UI-store (not app) so opening it
    *  doesn't churn the workspace tree. */
@@ -127,8 +126,6 @@ interface UIState {
   closeWelcome: () => void;
   openChangelog: () => void;
   closeChangelog: () => void;
-  openReview: (wsId: string) => void;
-  closeReview: () => void;
   openBroadcast: (wsId: string) => void;
   closeBroadcast: () => void;
   openSandbox: (wsId: string) => void;
@@ -202,7 +199,6 @@ export const useUI = create<UIState>(set => ({
   shortcutsHelpOpen: false,
   welcomeOpen: false,
   changelogOpen: false,
-  reviewForWsId: null,
   broadcastForWsId: null,
   sandboxForWsId: null,
   fileFinderWsId: null,
@@ -232,8 +228,6 @@ export const useUI = create<UIState>(set => ({
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),
   closeChangelog:    () => set({ changelogOpen: false }),
-  openReview:        (wsId) => set({ reviewForWsId: wsId }),
-  closeReview:       () => set({ reviewForWsId: null }),
   openBroadcast:     (wsId) => set({ broadcastForWsId: wsId }),
   closeBroadcast:    () => set({ broadcastForWsId: null }),
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),

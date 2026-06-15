@@ -36,12 +36,21 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
 
+  const treeRef = useRef<HTMLDivElement>(null);
+  // Path briefly highlighted after a reveal-in-tree.
+  const [revealedRel, setRevealedRel] = useState<string | null>(null);
+  const revealFile = useApp(s => s.revealFile);
+  const clearReveal = useApp(s => s.clearReveal);
+
   // Load root on mount / wsId change. Reset everything else — different
   // workspace has a different file tree.
   useEffect(() => {
     setRootEntries(null); setChildren({}); setExpanded(new Set()); setErr(null);
     workspaceDirList(wsId, "")
-      .then(list => { setRootEntries(list); setChildren({ "": list }); })
+      // Merge (not replace) so a reveal-in-tree that expanded ancestor dirs
+      // while this mount's root load was in flight doesn't get its children
+      // clobbered. The synchronous reset above already dropped stale entries.
+      .then(list => { setRootEntries(list); setChildren(c => ({ ...c, "": list })); })
       .catch(e => setErr(String(e)));
   }, [wsId]);
 
@@ -83,16 +92,54 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
     });
   }, [ensureLoaded]);
 
+  // Reveal-in-tree: expand the path's ancestors, scroll to it, highlight it.
+  // Driven by the store (set by the editor breadcrumb / locate button) so it
+  // works even after the panel is un-hidden and switched to the files view.
+  useEffect(() => {
+    if (!revealFile || revealFile.wsId !== wsId || !revealFile.path) return;
+    let alive = true;
+    const { path, isDir } = revealFile;
+    (async () => {
+      const parts = path.split("/").filter(Boolean);
+      const upto = isDir ? parts.length : parts.length - 1;
+      const dirs: string[] = [];
+      for (let i = 0; i < upto; i++) dirs.push(parts.slice(0, i + 1).join("/"));
+      const patch: Record<string, FileEntry[]> = {};
+      await Promise.all(dirs.map(async d => {
+        try { patch[d] = await workspaceDirList(wsId, d); } catch {}
+      }));
+      if (!alive) return;
+      if (Object.keys(patch).length) setChildren(c => ({ ...c, ...patch }));
+      setExpanded(s => { const n = new Set(s); dirs.forEach(d => n.add(d)); return n; });
+      setRevealedRel(path);
+      // Two rAFs so the freshly-expanded rows have laid out before scrolling.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        treeRef.current
+          ?.querySelector<HTMLElement>(`[data-path="${CSS.escape(path)}"]`)
+          ?.scrollIntoView({ block: "center" });
+      }));
+      clearReveal();
+    })();
+    return () => { alive = false; };
+  }, [revealFile, wsId, clearReveal]);
+
+  // Fade the reveal highlight after a moment.
+  useEffect(() => {
+    if (!revealedRel) return;
+    const t = setTimeout(() => setRevealedRel(null), 1600);
+    return () => clearTimeout(t);
+  }, [revealedRel]);
+
   if (err) return <div className="px-3 py-2 text-[12.5px] text-[var(--color-err)]">{err}</div>;
   if (!rootEntries) return <div className="px-3 py-2 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
   if (rootEntries.length === 0) return <div className="px-3 py-2 text-[13.5px] text-[var(--color-fg-faint)]">(empty)</div>;
 
   return (
-    <div className="flex flex-col select-none">
+    <div ref={treeRef} className="flex flex-col select-none">
       {rootEntries.map(e => (
         <TreeNode
           key={e.name} wsId={wsId} entry={e} depth={0} rel={e.name}
-          expanded={expanded} children_={children} toggle={toggle}
+          expanded={expanded} children_={children} toggle={toggle} revealed={revealedRel}
         />
       ))}
     </div>
@@ -107,9 +154,10 @@ interface NodeProps {
   expanded: Set<string>;
   children_: Record<string, FileEntry[]>;
   toggle: (rel: string) => void;
+  revealed: string | null;
 }
 
-function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: NodeProps) {
+function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle, revealed }: NodeProps) {
   const openPreviewTab = useApp(s => s.openPreviewTab);
   const persistTab = useApp(s => s.persistTab);
   const tabs = useApp(s => s.tabs[wsId] || []);
@@ -144,8 +192,10 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: Node
         onClick={onClick}
         onDoubleClick={onDoubleClick}
         title={rel}
+        data-path={rel}
         className={cn(
           "group flex h-[26px] w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 text-left text-[13px] transition-colors duration-150 outline-none select-none",
+          rel === revealed && "ring-1 ring-inset ring-[var(--color-accent)]",
           isActive
             ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
             // Idle rows: a NEUTRAL dimmed foreground (fg at 85%), not
@@ -173,7 +223,7 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle }: Node
       {entry.is_dir && isOpen && kids && kids.map(c => (
         <TreeNode
           key={c.name} wsId={wsId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`}
-          expanded={expanded} children_={children_} toggle={toggle}
+          expanded={expanded} children_={children_} toggle={toggle} revealed={revealed}
         />
       ))}
       {entry.is_dir && isOpen && !kids && (

@@ -215,7 +215,7 @@ export function FileFinderDialog() {
         <Dialog.Content
           // Top-anchored (Sublime / VS Code / Conductor convention) — feels
           // wrong floating in the vertical center for a quick-pick.
-          className="fixed left-1/2 top-12 z-50 w-[min(640px,90vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
+          className="fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}
         >
           <Dialog.Title className="sr-only">Find file</Dialog.Title>

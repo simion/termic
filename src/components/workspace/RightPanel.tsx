@@ -36,6 +36,13 @@ export function RightPanel() {
   const split = useApp(s => !!s.terminalSplit[ws?.id ?? ""]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
   const [view, setView] = useState<"files" | "changes">("files");
+  // A reveal-in-tree request (editor breadcrumb / locate button) forces the
+  // "All files" view so the tree is on screen for FileTree to expand/scroll.
+  const revealFile = useApp(s => s.revealFile);
+  useEffect(() => {
+    if (revealFile && ws && revealFile.wsId === ws.id) setView("files");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealFile, ws?.id]);
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   // Bumped by the header refresh button to force the FileTree to re-read
   // from disk. The Git side re-fetches via refreshGit() in the same click.
@@ -98,6 +105,10 @@ export function RightPanel() {
     if (!ws) return;
     workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
   }, [ws?.id]);
+  // Clear + reload ONLY on a real workspace switch (ws.id), not on every
+  // ws-object re-patch (window refocus, attention/settled updates re-create the
+  // object) — clearing then flashed the Git panel to "Loading…". The poll and
+  // the focus refresh below swap fresh status in WITHOUT clearing.
   useEffect(() => {
     if (!ws) { setGitStatus(null); return; }
     setGitStatus(null);
@@ -106,7 +117,17 @@ export function RightPanel() {
       workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
     }, 4000);
     return () => window.clearInterval(id);
-  }, [ws]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws?.id]);
+
+  // Window regained focus: the user may have run git in an external terminal
+  // while away. Refresh in place (no clear, no "Loading…" flash).
+  useEffect(() => {
+    if (!ws) return;
+    const onFocus = () => refreshGit();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [ws?.id, refreshGit]);
 
   // Header refresh button: re-read both the file tree and git status. The
   // brief `refreshing` flag spins the icon for feedback.
@@ -965,18 +986,36 @@ function RunToolbar({ ws, project, yamlPreviewUrl = "", hasSetup, setupStatus, r
               {!compact && <span>Setup</span>}
             </Button>)
       )}
-      {runRunning
-        ? tipWrap("Stop",
-            <Button size="sm" variant="secondary" onClick={onRunStop} className={stopCls}>
-              <Square className="h-3 w-3 fill-current" />
-              {!compact && <span>Stop</span>}
-            </Button>)
-        : tipWrap("Run",
-            <Button size="sm" variant="secondary" onClick={onRunStart} className={btnCls}>
-              <Play className="h-3 w-3" />
-              {!compact && <span>Run</span>}
-            </Button>)
-      }
+      {/* Run / Stop, with a chevron split-button menu (Configure for now). */}
+      <div className="flex items-center">
+        {runRunning
+          ? tipWrap("Stop",
+              <Button size="sm" variant="secondary" onClick={onRunStop} className={cn(stopCls, project && "rounded-r-none")}>
+                <Square className="h-3 w-3 fill-current" />
+                {!compact && <span>Stop</span>}
+              </Button>)
+          : tipWrap("Run",
+              <Button size="sm" variant="secondary" onClick={onRunStart} className={cn(btnCls, project && "rounded-r-none")}>
+                <Play className="h-3 w-3" />
+                {!compact && <span>Run</span>}
+              </Button>)
+        }
+        {project && (
+          <DropdownRoot>
+            <DropdownTrigger asChild>
+              <Button size="sm" variant="secondary" title="Run options" className="h-6 rounded-l-none border-l border-[var(--color-border)] px-1">
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+            </DropdownTrigger>
+            <DropdownMenu align="end">
+              <DropdownItem onSelect={() => useApp.getState().openSettings("repositories", project.id)}>
+                <Settings className="h-4 w-4" />
+                <span>Configure</span>
+              </DropdownItem>
+            </DropdownMenu>
+          </DropdownRoot>
+        )}
+      </div>
       {url && tipWrap(`Open ${url}`,
         <Button
           size="sm" variant="secondary"

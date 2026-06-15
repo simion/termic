@@ -1,6 +1,6 @@
 // Broadcast: type one message, fire it into several already-open agents
-// in a workspace at once. Same injection path as ReviewDialog — write the
-// text + a carriage return straight to each target's PTY.
+// in a workspace at once. Same injection path as the prompt library
+// (agentSend): write the text + a carriage return straight to each PTY.
 
 import { useEffect, useMemo, useState } from "react";
 import { useUI } from "@/store/ui";

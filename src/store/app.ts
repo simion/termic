@@ -17,7 +17,7 @@ interface View {
    *  and panel state all stay intact while it's open. */
   settingsOpen?: boolean;
   /** When the Settings overlay is open, which section is selected. */
-  settingsTab?: "general" | "appearance" | "agents" | "repositories" | "shortcuts";
+  settingsTab?: "general" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts";
   /** When viewing a repository's settings, which project id is active. */
   settingsRepoId?: string;
 }
@@ -108,6 +108,13 @@ interface AppState {
   closeSettings: () => void;
   toggleCompactSidebar: () => void;
   toggleRightPanel: () => void;
+  /** Request the "All files" tree reveal a path: un-hides the right panel and
+   *  signals RightPanel/FileTree to switch to files, expand ancestors, scroll
+   *  and highlight. `isDir` expands the path itself (folder breadcrumb segment);
+   *  false reveals a file (expand its ancestors only). Transient one-shot. */
+  revealFile: { wsId: string; path: string; isDir: boolean; nonce: number } | null;
+  revealInTree: (wsId: string, path: string, isDir: boolean) => void;
+  clearReveal: () => void;
   setSidebarWidth: (px: number) => void;
   setRightPanelWidth: (px: number) => void;
   setRightFooterHeight: (px: number) => void;
@@ -195,6 +202,11 @@ interface AppState {
    *  so a re-render doesn't re-jump the cursor. */
   consumeReveal: (wsId: string, tabId: string) => void;
   patchTab: (wsId: string, tabId: string, patch: Partial<Tab>) => void;
+  /** Append a message to an agent tab's queue and wake the drain engine.
+   *  Shared by the message-queue button and the prompt library so the
+   *  queueKick-bump protocol (don't rely on a queueActive false->true edge)
+   *  lives in exactly one place. No-op for non-terminal tabs. */
+  enqueueAgentMessage: (wsId: string, tabId: string, text: string, repeat?: number) => void;
   renameTab: (wsId: string, tabId: string, title: string) => void;
   clearTabCustomTitle: (wsId: string, tabId: string) => void;
   /** Update the tab's PTY-driven `OSC 0/2` title. No-op when the user
@@ -441,6 +453,15 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem(LS_RPANEL, next ? "1" : "0"); } catch {}
     return { rightPanelHidden: next };
   }),
+  revealFile: null,
+  revealInTree: (wsId, path, isDir) => set(s => {
+    if (s.rightPanelHidden) { try { localStorage.setItem(LS_RPANEL, "0"); } catch {} }
+    return {
+      rightPanelHidden: false,
+      revealFile: { wsId, path, isDir, nonce: (s.revealFile?.nonce ?? 0) + 1 },
+    };
+  }),
+  clearReveal: () => set({ revealFile: null }),
 
   // All three setters round to integer px — anywhere a fractional value
   // would land in a CSS dimension makes nested text render at sub-pixel
@@ -1134,6 +1155,22 @@ export const useApp = create<AppState>((set, get) => ({
         return updated;
       }
       return t;
+    });
+    return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  enqueueAgentMessage: (wsId, tabId, text, repeat = 1) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const r = Math.max(1, Math.round(repeat) || 1);
+    const next = list.map(t => {
+      if (t.id !== tabId || t.type !== "terminal") return t;
+      const item = { id: crypto.randomUUID(), text, repeat: r, remaining: r };
+      return {
+        ...t,
+        queue: [...(t.queue ?? []), item],
+        queueActive: true,
+        queueKick: (t.queueKick ?? 0) + 1,
+      } as Tab;
     });
     return { tabs: { ...s.tabs, [wsId]: next } };
   }),

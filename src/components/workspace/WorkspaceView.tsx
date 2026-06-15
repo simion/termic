@@ -5,7 +5,7 @@
 // Per-tab content stays mounted across tab switches (we toggle visibility
 // instead of unmount) — terminals MUST keep their xterm instances alive.
 
-import { lazy, Suspense, useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { Workspace, TerminalTab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { workDoneCapable } from "@/lib/agents";
@@ -14,8 +14,10 @@ import { TabBar, TabPill } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
-import { Plus, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { openPath } from "@/lib/ipc";
+import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
@@ -28,6 +30,67 @@ const DEFAULT_SPLIT_HEIGHT = 240;
 const MIN_HEIGHT = 80;
 const DEFAULT_SPLIT_WIDTH = 360;
 const MIN_WIDTH = 120;
+
+// Conductor-style path breadcrumb under the tab bar, shown for the active file
+// tab. Each segment is individually clickable: a folder reveals/expands that
+// folder in the tree, the filename reveals the file. The locate button on the
+// right reveals the file too.
+function EditorBreadcrumb({ ws }: { ws: Workspace }) {
+  const activeId = useActiveTabId(ws.id);
+  const tab = useApp(s => (s.tabs[ws.id] ?? []).find(t => t.id === activeId));
+  const revealInTree = useApp(s => s.revealInTree);
+  const [copied, setCopied] = useState(false);
+  if (!tab || (tab.type !== "edit" && tab.type !== "diff") || !tab.path) return null;
+  const path = tab.path;
+  const parts = path.split("/").filter(Boolean);
+  const fileName = parts[parts.length - 1] ?? path;
+  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  // Absolute folder that contains the file — opening THE DIRECTORY (not the
+  // file) launches the OS file manager (Finder / Files / Explorer) at that
+  // location. openPath → opener plugin: `open` on macOS, xdg-open on Linux.
+  const folderAbs = dir ? `${ws.path}/${dir}` : ws.path;
+  const iconBtn = "shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
+  const copyPath = () => {
+    navigator.clipboard.writeText(path)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); })
+      .catch(() => {});
+  };
+  return (
+    <div className="flex h-7 shrink-0 items-center gap-0.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 text-[12px]">
+      <img src={fileIconUrl(fileName)} alt="" className="mr-1 h-3.5 w-3.5 shrink-0 file-icon" />
+      <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+        {parts.map((seg, i) => {
+          const isLast = i === parts.length - 1;
+          const rel = parts.slice(0, i + 1).join("/");
+          return (
+            <div key={rel} className="flex min-w-0 items-center">
+              {i > 0 && <ChevronRight className="mx-0.5 h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />}
+              <button
+                onClick={() => revealInTree(ws.id, rel, !isLast)}
+                title={isLast ? "Locate in file tree" : `Reveal ${rel} in file tree`}
+                className={cn(
+                  "max-w-[240px] truncate rounded px-1 py-0.5 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                  isLast ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]",
+                )}
+              >{seg}</button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="ml-1 flex shrink-0 items-center gap-0.5">
+        <button onClick={copyPath} title="Copy path" className={iconBtn}>
+          {copied ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
+        <button onClick={() => openPath(folderAbs).catch(() => {})} title="Open in file manager" className={iconBtn}>
+          <FolderOpen className="h-3.5 w-3.5" />
+        </button>
+        <button onClick={() => revealInTree(ws.id, path, false)} title="Locate in file tree" className={iconBtn}>
+          <LocateFixed className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function WorkspaceView({ ws }: { ws: Workspace }) {
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
@@ -106,6 +169,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <TabBar ws={ws} />
+      <EditorBreadcrumb ws={ws} />
       <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
         {/* Horizontal row: main tab content + optional right split. */}
         <div ref={hRowRef} className="flex min-h-0 flex-1">

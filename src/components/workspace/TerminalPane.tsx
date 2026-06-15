@@ -3,7 +3,7 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X } from "lucide-react";
+import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -1705,6 +1705,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
           degraded-warning string isn't plumbed across that boundary
           yet (rare case); plumb through useUI later if it matters. */}
       {void sandboxWarning}
+      {!exited && tab.promptPendingTitle && (
+        // The agent is still booting after a "new agent" prompt spawn. Cover
+        // the tab with a loader until runPrompt injects the prompt (then it
+        // clears promptPendingTitle). The terminal boots underneath.
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-bg)]/80">
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--color-accent)]" />
+          <div className="text-center">
+            <div className="text-[13px] text-[var(--color-fg)]">Starting {agentDisplayName(tab.cli)}…</div>
+            <div className="mt-0.5 text-[12px] text-[var(--color-fg-dim)]">
+              Sending "{tab.promptPendingTitle}" when it is ready.
+            </div>
+          </div>
+        </div>
+      )}
       {exited && (
         // Overlay on the dead xterm. The terminal underneath stays mounted
         // so the user can still scroll through whatever the agent printed

@@ -89,7 +89,7 @@ export function TermicHero({ className }: { className?: string }) {
         <TermicWordmark size={36} />
       </div>
       <div className="text-[12.5px] text-[var(--color-fg-faint)] uppercase tracking-[0.25em]">
-        many agents · one window
+        Home for your CLI coding agents
       </div>
     </div>
   );

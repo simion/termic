@@ -17,7 +17,6 @@ export function ConfirmDialog() {
   const newWorkspaceProjectId = useUI(s => s.newWorkspaceProjectId);
   const welcomeOpen = useUI(s => s.welcomeOpen);
   const changelogOpen = useUI(s => s.changelogOpen);
-  const reviewForWsId = useUI(s => s.reviewForWsId);
   const broadcastForWsId = useUI(s => s.broadcastForWsId);
   const sandboxForWsId = useUI(s => s.sandboxForWsId);
 
@@ -26,7 +25,6 @@ export function ConfirmDialog() {
     newWorkspaceProjectId !== null ||
     welcomeOpen ||
     changelogOpen ||
-    reviewForWsId !== null ||
     broadcastForWsId !== null ||
     sandboxForWsId !== null;
 

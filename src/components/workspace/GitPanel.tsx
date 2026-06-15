@@ -91,18 +91,16 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const repos = status?.repos ?? [];
   const changedRepos = repos.filter(r => r.changed > 0);
 
-  // Keep the active repo valid: snap to the first changed repo when the
-  // current selection has no changes (or doesn't exist). Falls back to the
-  // host repo when nothing is changed.
+  // Snap to the first changed repo ONLY when there's no valid selection yet
+  // (fresh Git-tab open / workspace switch resets activeRepoDir to ""), so
+  // changes show immediately. An explicit pick of any existing repo, even one
+  // with no changes, is respected (the pills list every repo now).
   useEffect(() => {
     if (repos.length === 0) return;
     const cur = repos.find(r => r.dir_name === activeRepoDir);
-    if (cur && cur.changed > 0) return;
+    if (cur) return;
     const next = changedRepos[0] ?? repos[0];
     if (next && next.dir_name !== activeRepoDir) setActiveRepoDir(next.dir_name);
-    // activeRepoDir in deps so an empty selection (fresh Git-tab open /
-    // workspace switch) immediately snaps to the first changed repo. The
-    // pills only list changed repos, so this never overrides a real pick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, activeRepoDir]);
 
@@ -243,7 +241,10 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     );
   }
 
-  const showSubTabs = changedRepos.length > 1;
+  // Always show the repo pills for a multi-repo workspace, even when only one
+  // repo (or none) has changes, so you always know which repo you're looking
+  // at and can switch to any of them.
+  const showSubTabs = repos.length > 1;
   const fileWord = stagedCount === 1 ? "File" : "Files";
   const commitDisabled = committing || !subject.trim() || stagedCount === 0;
   const commitLabel = `Commit ${stagedCount} ${fileWord}${pushDefault ? " and Push" : ""}`;
@@ -263,7 +264,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       {/* 1. Repo sub-tabs (wrapping pills) */}
       {showSubTabs && (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-[var(--color-border-soft)] px-2 py-1.5">
-          {changedRepos.map(r => (
+          {repos.map(r => (
             <button
               key={r.dir_name}
               onClick={() => {
@@ -286,9 +287,11 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
               )}
             >
               <span className="truncate max-w-[140px]">{r.name}</span>
-              <span className="inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-[var(--color-bg-3)] px-1 text-[10.5px] tabular-nums text-[var(--color-fg-dim)]">
-                {r.changed}
-              </span>
+              {r.changed > 0 && (
+                <span className="inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-[var(--color-bg-3)] px-1 text-[10.5px] tabular-nums text-[var(--color-fg-dim)]">
+                  {r.changed}
+                </span>
+              )}
             </button>
           ))}
         </div>
