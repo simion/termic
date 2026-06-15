@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { EditTab, Workspace } from "@/lib/types";
 import { EditorState, Compartment, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
+import { indentWithTab } from "@codemirror/commands";
 import { basicSetup } from "codemirror";
 import { search } from "@codemirror/search";
 import { lintGutter } from "@codemirror/lint";
@@ -206,7 +207,9 @@ export function EditorPane({ ws, tab, onContent }: {
             extensions: [
               // ⌘S save — first in the array = highest precedence, so it
               // wins over anything basicSetup's keymaps bind.
-              keymap.of([{ key: "Mod-s", preventDefault: true, run: saveDoc }]),
+              // Tab indents (and Shift-Tab dedents) instead of moving DOM
+              // focus to the next button. High precedence so it wins.
+              keymap.of([{ key: "Mod-s", preventDefault: true, run: saveDoc }, indentWithTab]),
               // basicSetup: line numbers, fold gutter, history, indentOnInput,
               // bracket matching, close-brackets, autocomplete, active-line +
               // selection-match highlight, and the default/search/history keymaps.

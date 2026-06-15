@@ -16,7 +16,7 @@
 // repo-relative; member diffs are re-prefixed with `dir_name` before
 // opening (the host stays unprefixed).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Search,
 } from "lucide-react";
@@ -135,20 +135,46 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
 
   // ── git mutations ──
   const dir = repo?.dir_name ?? "";
-  // After staging/unstaging a single file, keep it focused by moving the
-  // selection to its new pane (it has crossed from Unstaged to Staged or
-  // back). Bulk "Stage all" / "Unstage all" leave the selection alone.
+  // After a single file leaves its pane (stage / unstage / discard), move the
+  // selection to the NEXT file in that pane's visual order so files can be
+  // worked through in sequence — never linger on the file just acted on. If it
+  // was the last file in the pane, clear the selection and close the preview
+  // ("pending", italic-titled) diff tab so no stale diff is left open.
+  // Drop the selection and close the preview ("pending", italic-titled) diff
+  // tab so no stale diff is left open after the last file is gone.
+  const closePreviewDiff = useCallback(() => {
+    setSelected(null);
+    const st = useApp.getState();
+    const diff = (st.tabs[ws.id] || []).find(t => t.preview && t.type === "diff");
+    if (diff) st.closeTab(ws.id, diff.id);
+  }, [ws.id]);
+
+  const focusNext = useCallback((pane: "unstaged" | "staged", path: string) => {
+    const list = (pane === "unstaged" ? unstaged : staged)
+      .map(f => f.path)
+      .sort((a, b) => a.localeCompare(b));
+    const idx = list.indexOf(path);
+    const next = idx >= 0 ? list[idx + 1] : undefined;
+    if (next) {
+      setSelected(`${pane} ${next}`);
+      if (clickable) onOpenDiff(dir ? `${dir}/${next}` : next);
+      return;
+    }
+    closePreviewDiff();
+  }, [unstaged, staged, clickable, onOpenDiff, dir, closePreviewDiff]);
+
+  // Bulk "Stage all" / "Unstage all" leave the selection alone.
   const doStage = (paths: string[]) => {
     if (paths.length === 0) return;
     workspaceStage(ws.id, dir, paths).then(() => {
-      if (paths.length === 1) setSelected(`staged ${paths[0]}`);
+      if (paths.length === 1) focusNext("unstaged", paths[0]);
       refresh();
     }).catch(e => pushToast(String(e), "error"));
   };
   const doUnstage = (paths: string[]) => {
     if (paths.length === 0) return;
     workspaceUnstage(ws.id, dir, paths).then(() => {
-      if (paths.length === 1) setSelected(`unstaged ${paths[0]}`);
+      if (paths.length === 1) focusNext("staged", paths[0]);
       refresh();
     }).catch(e => pushToast(String(e), "error"));
   };
@@ -159,6 +185,9 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     workspaceCommit(ws.id, dir, subject, body, false, push)
       .then(() => {
         setSubject(""); setBody("");
+        // The committed files no longer have changes — drop the now-stale
+        // preview diff tab (same as clearing the last staged/unstaged file).
+        closePreviewDiff();
         pushToast(push ? "Committed and pushed" : "Committed", "success");
         refresh();
       })
@@ -200,15 +229,14 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       }
       const sp = selected.indexOf(" ");
       if (sp < 0) return;
-      const pane = selected.slice(0, sp);
+      const pane = selected.slice(0, sp) as "unstaged" | "staged";
       const path = selected.slice(sp + 1);
       e.preventDefault();
       e.stopPropagation();
       if (isStage) {
         const fn = pane === "unstaged" ? workspaceStage : workspaceUnstage;
-        const destPane = pane === "unstaged" ? "staged" : "unstaged";
         fn(ws.id, dir, [path]).then(() => {
-          setSelected(`${destPane} ${path}`);   // keep the file focused in its new pane
+          focusNext(pane, path);   // advance to the next file in this pane
           refresh();
         }).catch(err => pushToast(String(err), "error"));
       } else {
@@ -220,14 +248,14 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
         }).then(ok => {
           if (!ok) return;
           workspaceDiscard(ws.id, dir, [path])
-            .then(() => { setSelected(null); refresh(); })
+            .then(() => { focusNext(pane, path); refresh(); })
             .catch(err => pushToast(String(err), "error"));
         });
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [selected, dir, ws.id, refresh, pushToast, stageBinding, discardBinding]);
+  }, [selected, dir, ws.id, refresh, pushToast, stageBinding, discardBinding, focusNext]);
 
   if (!status) {
     return <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
@@ -249,6 +277,16 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const fileWord = stagedCount === 1 ? "File" : "Files";
   const commitDisabled = committing || !subject.trim() || stagedCount === 0;
   const commitLabel = `Commit ${stagedCount} ${fileWord}${pushDefault ? " and Push" : ""}`;
+
+  // ⌘/Ctrl+Enter from either commit field fires the commit button (the
+  // remembered Commit / Commit-and-Push mode), so you never have to reach
+  // for the mouse after typing the message.
+  const onCommitKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !commitDisabled) {
+      e.preventDefault();
+      doCommit(pushDefault);
+    }
+  };
 
   // Single click: select the row (keeps it highlighted + shows its stage
   // button, Fork-style) and open the diff preview. Works for every group
@@ -359,6 +397,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
         <input
           value={subject}
           onChange={e => setSubject(e.target.value)}
+          onKeyDown={onCommitKey}
           placeholder="Commit subject"
           spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
           className="h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[13px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
@@ -366,6 +405,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
         <textarea
           value={body}
           onChange={e => setBody(e.target.value)}
+          onKeyDown={onCommitKey}
           placeholder="Description"
           rows={2}
           spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"

@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.13.2",
+      "version": "0.13.3",
       "date": "2026-06-15",
       "summary": "Prompt library, an editor breadcrumb that reveals files in the tree, and multi-repo Git fixes.",
       "sections": [
@@ -25,6 +25,9 @@
         {
           "label": "Bug fixes",
           "items": [
+            "Pressing Tab in the code editor now indents (Shift+Tab dedents) instead of jumping focus to a toolbar button.",
+            "Git tab: staging, unstaging, or discarding a file now moves focus to the next file in the list, and closes the preview diff once none are left.",
+            "Git tab: Cmd+Enter from the commit subject or description now commits, and the preview diff closes after you commit.",
             "The Git tab no longer flashes empty when the window regains focus; it refreshes in place and only reloads when you switch projects.",
             "GitHub Copilot CLI: queued messages and fired prompts now submit reliably instead of sitting unsent in Copilot's input.",
             "Creating a new workspace under a collapsed project now expands the project first, so its name prompt is actually visible.",
