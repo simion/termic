@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2 } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -74,6 +74,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const workspaceExpandMode = usePrefs(s => s.workspaceExpandMode);
   const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
+  const hideInactiveProjects = usePrefs(s => s.hideInactiveProjects);
+  const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
+  // Temporary, non-persisted reveal of the hidden inactive projects. Reset
+  // whenever the hide pref flips off so the "Show N inactive" row starts
+  // collapsed next time the user re-enables hiding.
+  const [showInactive, setShowInactive] = useState(false);
   const isUnread = (wsId: string) =>
     settledHighlight &&
     (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread);
@@ -257,6 +263,26 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
 
   const asideRef = useRef<HTMLElement>(null);
 
+  // Inactive = no active (non-archived) workspaces. When the hide pref is on we
+  // split the list into two groups that each KEEP the original project order:
+  // active rows render in place, inactive rows fold into a group below the
+  // "Show N inactive" toggle. Membership is purely "does it have a workspace" —
+  // a project only graduates to the active group once an actual workspace
+  // exists, NOT while its repo-name prompt is still open (the prompt renders in
+  // place within the revealed inactive group). Because both groups preserve
+  // order, a folded project that gains a workspace pops back to its rightful
+  // position among the active rows.
+  const projectIsActive = (pid: string) =>
+    workspaces.some(w => w.project_id === pid && !w.archived);
+  const shownInline = (p: typeof projects[number]) =>
+    !hideInactiveProjects || projectIsActive(p.id);
+  const activeProjects = projects.filter(shownInline);
+  const inactiveProjects = projects.filter(p => !shownInline(p));
+  const inactiveCount = inactiveProjects.length;
+  // If hiding is disabled (or nothing is hidden), keep the reveal latch off so
+  // re-enabling starts collapsed.
+  if (showInactive && inactiveCount === 0) setShowInactive(false);
+
   return (
     <aside ref={asideRef} className="relative flex h-full flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
       {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
@@ -280,14 +306,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           {!compact && <span>Projects</span>}
           <div className={cn("flex gap-0.5", compact && "flex-col")}>
             <DropdownRoot>
-              <Tip content="Agents: expand / collapse / behavior">
+              <Tip content="Project list options">
                 <DropdownTrigger asChild>
                   <Button size="icon" variant="icon">
                     <ChevronsUpDown className={iconSize(compact)} />
                   </Button>
                 </DropdownTrigger>
               </Tip>
-              <DropdownMenu align="end" sideOffset={4} className="w-[280px]">
+              {/* preventDefault on close keeps focus from snapping back to the
+                  trigger, which would otherwise re-fire its (focus-triggered)
+                  tooltip and leave it stuck open after selecting an item. */}
+              <DropdownMenu side="right" align="start" sideOffset={4} className="w-[280px]" onCloseAutoFocus={(e) => e.preventDefault()}>
                 <DropdownItem onSelect={() => setAllWorkspacesCollapsed(false)}>
                   <ChevronsUpDown className="h-4 w-4 text-[var(--color-fg-dim)]" />
                   <span>Expand all agents</span>
@@ -322,6 +351,21 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     </DropdownItem>
                   );
                 })}
+                <DropdownSeparator />
+                <DropdownItem
+                  onSelect={() => setHideInactiveProjects(!hideInactiveProjects)}
+                  className={hideInactiveProjects
+                    ? "bg-[var(--color-sel)] data-[highlighted]:bg-[var(--color-sel)]"
+                    : undefined}
+                >
+                  {hideInactiveProjects
+                    ? <Check className="h-4 w-4 text-[var(--color-accent)]" />
+                    : <EyeOff className="h-4 w-4 text-[var(--color-fg-dim)]" />}
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span className={hideInactiveProjects ? "text-[var(--color-accent)] font-medium" : undefined}>Hide inactive projects</span>
+                    <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">Fold projects with no agents behind a row at the bottom.</span>
+                  </div>
+                </DropdownItem>
               </DropdownMenu>
             </DropdownRoot>
             <Tip content="Add project (repo)"><Button size="icon" variant="icon" onClick={openNewProject}>
@@ -330,7 +374,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         </div>
 
         <div className="flex flex-col gap-0.5">
-          {projects.map(p => {
+          {(() => {
+          const renderProject = (p: typeof projects[number]) => {
             const wsList = workspaces.filter(w => w.project_id === p.id && !w.archived);
             // Empty projects default to collapsed (no point pinning a blank
             // expanded row). User overrides stick: explicit true / false
@@ -505,7 +550,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                 ><Plus className="h-4 w-4" /></button>
                               </DropdownTrigger>
                             </Tip>
-                            <DropdownMenu align="end" sideOffset={4} className="max-w-[220px]">
+                            <DropdownMenu side="right" align="start" sideOffset={4} className="max-w-[220px]">
                               <ProjectActionsMenuItems
                                 projectId={p.id}
                                 onPickRepoCli={(cli) => {
@@ -548,7 +593,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           <span>Get started</span>
                         </button>
                       </DropdownTrigger>
-                      <DropdownMenu align="start" sideOffset={4} className="max-w-[220px]">
+                      <DropdownMenu side="right" align="start" sideOffset={4} className="max-w-[220px]">
                         <ProjectActionsMenuItems
                                 projectId={p.id}
                                 onPickRepoCli={(cli) => {
@@ -597,7 +642,50 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 )}
               </div>
             );
-          })}
+          };
+          return (
+            <>
+              {/* Active projects render in place (original order). */}
+              {activeProjects.map(renderProject)}
+              {/* "INACTIVE PROJECTS" section header — same type treatment as
+                  the PROJECTS header above. Clicking it toggles the fold; the
+                  inactive group renders BELOW it so revealing never reshuffles
+                  the active rows. */}
+              {hideInactiveProjects && inactiveCount > 0 && (
+                <button
+                  key="inactive-header"
+                  type="button"
+                  onClick={() => setShowInactive(v => !v)}
+                  title={compact ? `${inactiveCount} inactive ${inactiveCount === 1 ? "project" : "projects"}` : undefined}
+                  className={cn(
+                    "flex items-center text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] transition-colors",
+                    compact ? "flex-col gap-1 py-1" : "justify-between px-2 py-1 mt-1",
+                  )}
+                >
+                  {compact ? (
+                    <>
+                      {showInactive
+                        ? <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                        : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                      <span className="tabular-nums normal-case">{inactiveCount}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex items-center gap-1">
+                        {showInactive
+                          ? <ChevronDown className="h-3 w-3 shrink-0" />
+                          : <ChevronRight className="h-3 w-3 shrink-0" />}
+                        Inactive Projects
+                      </span>
+                      <span className="tabular-nums">{inactiveCount}</span>
+                    </>
+                  )}
+                </button>
+              )}
+              {hideInactiveProjects && showInactive && inactiveProjects.map(renderProject)}
+            </>
+          );
+          })()}
         </div>
       </div>
 
@@ -1072,7 +1160,8 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             </DropdownTrigger>
             </Tip>
             <DropdownMenu
-              align="end"
+              side="right"
+              align="start"
               // Don't return focus to the trigger on close — the user
               // walks away from the cog after picking an item; leaving
               // the trigger highlighted with a focus ring is just noise.

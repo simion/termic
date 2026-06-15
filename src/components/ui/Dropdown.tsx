@@ -8,8 +8,16 @@ export const DropdownTrigger = DM.Trigger;
 interface MenuProps {
   children: ReactNode;
   align?: "start" | "center" | "end";
+  /** Which edge of the trigger the menu prefers. Radix still flips on
+   *  collision; "right" is handy for sidebar menus that would otherwise
+   *  flip UP and overlap the window chrome when the trigger sits near the
+   *  bottom of a scrolled list. */
+  side?: "top" | "right" | "bottom" | "left";
   /** Vertical gap between trigger and menu. 0 = docked. */
   sideOffset?: number;
+  /** Minimum distance to keep from the viewport edges when positioning /
+   *  flipping. Keeps a tall menu off the title-bar / window edges. */
+  collisionPadding?: number;
   className?: string;
   onMouseEnter?: (e: React.MouseEvent) => void;
   onMouseLeave?: (e: React.MouseEvent) => void;
@@ -20,12 +28,14 @@ interface MenuProps {
   onCloseAutoFocus?: (event: Event) => void;
 }
 
-export function DropdownMenu({ children, align = "end", sideOffset = 4, className, onMouseEnter, onMouseLeave, onCloseAutoFocus }: MenuProps) {
+export function DropdownMenu({ children, align = "end", side, sideOffset = 4, collisionPadding = 8, className, onMouseEnter, onMouseLeave, onCloseAutoFocus }: MenuProps) {
   return (
     <DM.Portal>
       <DM.Content
         align={align}
+        side={side}
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
         onCloseAutoFocus={onCloseAutoFocus}
@@ -37,8 +47,13 @@ export function DropdownMenu({ children, align = "end", sideOffset = 4, classNam
         // inside clickable containers without leaking the click.
         onClick={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
+        // Cap the menu to the space Radix measured between the trigger and the
+        // viewport edge (its own CSS var) and scroll the overflow. Without this
+        // a tall menu (e.g. the 10-agent picker) in a SHORT window can't fit
+        // above or below the trigger and spills over the window chrome.
+        style={{ maxHeight: "var(--radix-dropdown-menu-content-available-height)" }}
         className={cn(
-          "z-50 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
+          "z-50 min-w-[160px] overflow-y-auto overflow-x-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-1 shadow-xl",
           "data-[state=open]:animate-in data-[state=open]:fade-in-0",
           className,
         )}

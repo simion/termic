@@ -38,6 +38,7 @@ const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_TERMINAL_OPTION_AS_META = "terminalOptionAsMeta";
 const LS_TERMINAL_GPU            = "terminalGpuEnabled";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
+const LS_HIDE_INACTIVE_PROJECTS = "hideInactiveProjects";
 const LS_SHORTCUTS     = "shortcutBindings";
 
 export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
@@ -354,6 +355,11 @@ interface PrefsState {
    *  - "always":  workspaces are always expanded by default. The chevron
    *               still collapses, and that collapsed-state sticks. */
   workspaceExpandMode: "chevron" | "click" | "always";
+  /** When true, projects with no active workspaces are hidden from the
+   *  sidebar list and folded behind a "Show N inactive" row at the bottom.
+   *  Keeps a long project list (repos you've added but aren't actively
+   *  working in) from crowding out the projects that have live agents. */
+  hideInactiveProjects: boolean;
   /** Resolved keyboard shortcut bindings (defaults merged with the user's
    *  overrides). Read live by `useShortcuts`; edited from the Shortcuts
    *  settings page. */
@@ -385,6 +391,7 @@ interface PrefsState {
   setSandboxBypassPermissions: (v: boolean) => void;
   setAllowScope: (s: "agent" | "project" | "repo") => void;
   setWorkspaceExpandMode: (m: "chevron" | "click" | "always") => void;
+  setHideInactiveProjects: (v: boolean) => void;
   /** Rebind a single shortcut. */
   setShortcut: (id: ShortcutId, binding: Binding) => void;
   /** Restore one shortcut to its factory binding. */
@@ -484,6 +491,7 @@ const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
   const raw = lsGet(LS_WS_EXPAND_MODE, "chevron");
   return raw === "click" || raw === "always" ? raw : "chevron";
 })();
+const initialHideInactiveProjects = lsGet(LS_HIDE_INACTIVE_PROJECTS, "") === "1";
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
@@ -506,6 +514,7 @@ export const usePrefs = create<PrefsState>(set => ({
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
   workspaceExpandMode: initialWsExpandMode,
+  hideInactiveProjects: initialHideInactiveProjects,
   shortcuts: loadShortcuts(),
 
   setEditorFontId: (id) => {
@@ -611,6 +620,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setWorkspaceExpandMode: (m) => {
     try { localStorage.setItem(LS_WS_EXPAND_MODE, m); } catch {}
     set({ workspaceExpandMode: m });
+  },
+  setHideInactiveProjects: (v) => {
+    try { localStorage.setItem(LS_HIDE_INACTIVE_PROJECTS, v ? "1" : "0"); } catch {}
+    set({ hideInactiveProjects: v });
   },
   setShortcut: (id, binding) => {
     const next = { ...usePrefs.getState().shortcuts, [id]: binding };

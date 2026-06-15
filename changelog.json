@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.13.1",
+      "version": "0.13.2",
       "date": "2026-06-15",
       "summary": "Prompt library, an editor breadcrumb that reveals files in the tree, and multi-repo Git fixes.",
       "sections": [
@@ -9,7 +9,8 @@
           "label": "Features",
           "items": [
             "Prompt library: a Prompts menu in the top bar with built-in prompts (Review, Write tests, Security review, Explain the changes, Commit) plus your own. When you fire one, pick where it runs: any running agent (queued if it is busy) or a new agent with the CLI of your choice, and tweak the prompt before sending. Manage, reorder, disable, and reset prompts in Settings, Prompts.",
-            "Editor breadcrumb under the tab bar: click any path segment to reveal and expand it in the file tree, plus copy-path and open-in-file-manager buttons."
+            "Editor breadcrumb under the tab bar: click any path segment to reveal and expand it in the file tree, plus copy-path and open-in-file-manager buttons.",
+            "Hide inactive projects: an option in the project list menu folds projects with no agents into an Inactive Projects section (with a count) at the bottom of the sidebar, so the list stays focused on what you are working in."
           ]
         },
         {
@@ -17,7 +18,8 @@
           "items": [
             "Multi-repo Git tab shows a pill only for repos that have changes (even when just one does), so the row stays focused on what you are actually editing.",
             "Smooth drag-to-reorder for projects in the sidebar.",
-            "The file finder (Cmd+P) now matches the find-in-files width."
+            "The file finder (Cmd+P) now matches the find-in-files width.",
+            "Sidebar menus (agent picker, project options, workspace actions) open to the side and scroll within tall menus instead of overflowing the window in a short window."
           ]
         },
         {
@@ -25,7 +27,9 @@
           "items": [
             "The Git tab no longer flashes empty when the window regains focus; it refreshes in place and only reloads when you switch projects.",
             "GitHub Copilot CLI: queued messages and fired prompts now submit reliably instead of sitting unsent in Copilot's input.",
-            "Creating a new workspace under a collapsed project now expands the project first, so its name prompt is actually visible."
+            "Creating a new workspace under a collapsed project now expands the project first, so its name prompt is actually visible.",
+            "Diff view: the Open button now opens the file in the editor (the external open option is gone).",
+            "The project list menu tooltip no longer stays stuck open after you pick an item."
           ]
         }
       ]

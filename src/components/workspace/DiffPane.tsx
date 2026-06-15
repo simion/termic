@@ -5,9 +5,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DiffTab, Workspace } from "@/lib/types";
-import { workspaceFileDiffSides, openPath } from "@/lib/ipc";
+import { workspaceFileDiffSides } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
-import { FolderOpen, Eye, Columns2, AlignJustify } from "lucide-react";
+import { FolderOpen, Columns2, AlignJustify } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { MergeView, unifiedMergeView } from "@codemirror/merge";
@@ -232,12 +232,9 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
               if (v) { v.focus(); dispatchFileComment(v); }
             }}><MessageSquarePlus className="h-4 w-4" /> Comment</Button>
           )}
-          <Button size="sm" variant="ghost" onClick={() =>
+          <Button size="sm" variant="ghost" title="Open this file in the editor" onClick={() =>
             addTab(ws.id, { id: crypto.randomUUID(), type: "edit", path: tab.path, title: tab.path.split("/").pop() || tab.path })
-          }><Eye className="h-4 w-4" /> View</Button>
-          <Button size="sm" variant="ghost" onClick={() => openPath(`${ws.path}/${tab.path}`).catch(() => {})}>
-            <FolderOpen className="h-4 w-4" /> Open
-          </Button>
+          }><FolderOpen className="h-4 w-4" /> Open</Button>
         </div>
       </div>
       {err && <div className="p-4 font-mono text-[12.5px] text-[var(--color-err)]">Error: {err}</div>}
