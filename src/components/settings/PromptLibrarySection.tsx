@@ -43,6 +43,28 @@ export function PromptLibrarySection() {
   // Body editor modal — the inline row only shows a preview.
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = prompts.find(p => p.id === editingId) ?? null;
+  // The id of a prompt created via "New prompt" this open. Prompts persist on
+  // every keystroke (live save), so a new one the user abandons before filling
+  // in both fields is discarded on close rather than left as a blank entry.
+  const [newId, setNewId] = useState<string | null>(null);
+
+  // Title and body are both required: Done stays disabled until each is filled.
+  const incomplete = !!editing && (!editing.title.trim() || !editing.body.trim());
+
+  function openNewPrompt() {
+    const id = addPrompt();
+    setNewId(id);
+    setEditingId(id);
+  }
+  function closeEditor() {
+    // Discard a brand-new prompt the user never completed.
+    if (editingId && editingId === newId) {
+      const p = prompts.find(x => x.id === editingId);
+      if (p && (!p.title.trim() || !p.body.trim())) deletePrompt(editingId);
+    }
+    setNewId(null);
+    setEditingId(null);
+  }
 
   async function confirmReset(id: string, title: string) {
     const ok = await useUI.getState().askConfirm({
@@ -167,7 +189,7 @@ export function PromptLibrarySection() {
             reorder. Built-ins can be edited and reset.
           </p>
         </div>
-        <Button variant="primary" size="sm" className="shrink-0 gap-1.5" onClick={() => setEditingId(addPrompt())}>
+        <Button variant="primary" size="sm" className="shrink-0 gap-1.5" onClick={openNewPrompt}>
           <Plus className="h-3.5 w-3.5" /> New prompt
         </Button>
       </div>
@@ -274,7 +296,7 @@ export function PromptLibrarySection() {
       {editing && (
         <AppDialog
           open
-          onOpenChange={(v) => { if (!v) setEditingId(null); }}
+          onOpenChange={(v) => { if (!v) closeEditor(); }}
           title="Edit prompt"
           className="max-w-5xl"
         >
@@ -300,14 +322,16 @@ export function PromptLibrarySection() {
             className="h-[58vh] w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
           />
           <div className="flex items-center justify-between">
-            <span className="text-[11.5px] text-[var(--color-fg-faint)]">Changes save automatically.</span>
+            <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+              {incomplete ? "Title and prompt text are both required." : "Changes save automatically."}
+            </span>
             <div className="flex items-center gap-2">
               {editing.builtin && editing.modified && (
                 <Button variant="secondary" size="sm" onClick={() => confirmReset(editing.id, editing.title)}>
                   Reset to built-in
                 </Button>
               )}
-              <Button variant="primary" size="sm" onClick={() => setEditingId(null)}>
+              <Button variant="primary" size="sm" disabled={incomplete} onClick={closeEditor}>
                 Done
               </Button>
             </div>

@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.13.0",
+      "version": "0.13.1",
       "date": "2026-06-15",
       "summary": "Prompt library, an editor breadcrumb that reveals files in the tree, and multi-repo Git fixes.",
       "sections": [
@@ -15,7 +15,7 @@
         {
           "label": "Improvements",
           "items": [
-            "Multi-repo Git tab always shows the repo pills, even when only one repo has changes, so you always know which repo you are viewing and can switch to any of them.",
+            "Multi-repo Git tab shows a pill only for repos that have changes (even when just one does), so the row stays focused on what you are actually editing.",
             "Smooth drag-to-reorder for projects in the sidebar.",
             "The file finder (Cmd+P) now matches the find-in-files width."
           ]
@@ -23,7 +23,9 @@
         {
           "label": "Bug fixes",
           "items": [
-            "The Git tab no longer flashes empty when the window regains focus; it refreshes in place and only reloads when you switch projects."
+            "The Git tab no longer flashes empty when the window regains focus; it refreshes in place and only reloads when you switch projects.",
+            "GitHub Copilot CLI: queued messages and fired prompts now submit reliably instead of sitting unsent in Copilot's input.",
+            "Creating a new workspace under a collapsed project now expands the project first, so its name prompt is actually visible."
           ]
         }
       ]

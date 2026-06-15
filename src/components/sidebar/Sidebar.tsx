@@ -508,11 +508,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             <DropdownMenu align="end" sideOffset={4} className="max-w-[220px]">
                               <ProjectActionsMenuItems
                                 projectId={p.id}
-                                onPickRepoCli={(cli) => setPendingRepoRoot({
-                                  projectId: p.id,
-                                  cli,
-                                  value: defaultRepoRootName(cli, wsList),
-                                })}
+                                onPickRepoCli={(cli) => {
+                                  // The inline name prompt only renders under an
+                                  // expanded project, so expand first or the row
+                                  // would be invisible on a collapsed one.
+                                  setProjectCollapsed(p.id, false);
+                                  setPendingRepoRoot({
+                                    projectId: p.id,
+                                    cli,
+                                    value: defaultRepoRootName(cli, wsList),
+                                  });
+                                }}
                               />
                             </DropdownMenu>
                           </DropdownRoot>
@@ -545,11 +551,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       <DropdownMenu align="start" sideOffset={4} className="max-w-[220px]">
                         <ProjectActionsMenuItems
                                 projectId={p.id}
-                                onPickRepoCli={(cli) => setPendingRepoRoot({
-                                  projectId: p.id,
-                                  cli,
-                                  value: defaultRepoRootName(cli, wsList),
-                                })}
+                                onPickRepoCli={(cli) => {
+                                  // The inline name prompt only renders under an
+                                  // expanded project, so expand first or the row
+                                  // would be invisible on a collapsed one.
+                                  setProjectCollapsed(p.id, false);
+                                  setPendingRepoRoot({
+                                    projectId: p.id,
+                                    cli,
+                                    value: defaultRepoRootName(cli, wsList),
+                                  });
+                                }}
                               />
                       </DropdownMenu>
                     </DropdownRoot>

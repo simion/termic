@@ -151,7 +151,7 @@ export const usePromptLibrary = create<PromptStore>((set) => {
 
     addPrompt: (init) => {
       const id = crypto.randomUUID();
-      const custom: StoredCustom = { id, title: init?.title ?? "New prompt", body: init?.body ?? "" };
+      const custom: StoredCustom = { id, title: init?.title ?? "", body: init?.body ?? "" };
       commit({ ...p, customs: [...p.customs, custom], order: [...p.order, id] });
       return id;
     },
