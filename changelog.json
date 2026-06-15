@@ -1,6 +1,34 @@
 {
   "versions": [
     {
+      "version": "0.13.0",
+      "date": "2026-06-15",
+      "summary": "Prompt library, an editor breadcrumb that reveals files in the tree, and multi-repo Git fixes.",
+      "sections": [
+        {
+          "label": "Features",
+          "items": [
+            "Prompt library: a Prompts menu in the top bar with built-in prompts (Review, Write tests, Security review, Explain the changes, Commit) plus your own. When you fire one, pick where it runs: any running agent (queued if it is busy) or a new agent with the CLI of your choice, and tweak the prompt before sending. Manage, reorder, disable, and reset prompts in Settings, Prompts.",
+            "Editor breadcrumb under the tab bar: click any path segment to reveal and expand it in the file tree, plus copy-path and open-in-file-manager buttons."
+          ]
+        },
+        {
+          "label": "Improvements",
+          "items": [
+            "Multi-repo Git tab always shows the repo pills, even when only one repo has changes, so you always know which repo you are viewing and can switch to any of them.",
+            "Smooth drag-to-reorder for projects in the sidebar.",
+            "The file finder (Cmd+P) now matches the find-in-files width."
+          ]
+        },
+        {
+          "label": "Bug fixes",
+          "items": [
+            "The Git tab no longer flashes empty when the window regains focus; it refreshes in place and only reloads when you switch projects."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.12.4",
       "date": "2026-06-14",
       "summary": "Fix sluggish UI on Linux by keeping GPU rendering on for non-NVIDIA GPUs.",
