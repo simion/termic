@@ -1,8 +1,9 @@
 // Fork-style git staging panel (the "Git" tab of the right panel).
 //
 // Layout, top to bottom:
-//   1. Repo sub-tabs   — only for multi-repo workspaces with >1 changed
-//      repo. Wrapping pills, each badged with its own changed-file count.
+//   1. Repo sub-tabs   — multi-repo workspaces only; one wrapping pill per
+//      repo that has changes (even if just one), each badged with its
+//      changed-file count. Clean repos get no pill.
 //   2. Toolbar         — search filter + view-mode menu (Tree / List /
 //      Combined List + Hide untracked).
 //   3. Unstaged pane   — resizable, scrollable file list.
@@ -91,13 +92,13 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const repos = status?.repos ?? [];
   const changedRepos = repos.filter(r => r.changed > 0);
 
-  // Snap to the first changed repo ONLY when there's no valid selection yet
-  // (fresh Git-tab open / workspace switch resets activeRepoDir to ""), so
-  // changes show immediately. An explicit pick of any existing repo, even one
-  // with no changes, is respected (the pills list every repo now).
+  // Keep the selection on a repo that actually has changes — the pills only
+  // list changed repos now, so an activeRepoDir pointing at a clean repo
+  // (fresh open, or one that just went clean after a commit) has no pill and
+  // must snap to the first changed repo so its files show immediately.
   useEffect(() => {
     if (repos.length === 0) return;
-    const cur = repos.find(r => r.dir_name === activeRepoDir);
+    const cur = changedRepos.find(r => r.dir_name === activeRepoDir);
     if (cur) return;
     const next = changedRepos[0] ?? repos[0];
     if (next && next.dir_name !== activeRepoDir) setActiveRepoDir(next.dir_name);
@@ -241,10 +242,10 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     );
   }
 
-  // Always show the repo pills for a multi-repo workspace, even when only one
-  // repo (or none) has changes, so you always know which repo you're looking
-  // at and can switch to any of them.
-  const showSubTabs = repos.length > 1;
+  // Show repo pills only for repos that actually have changes — even when
+  // that's a single repo. Unchanged repos are noise here; the "All files"
+  // tab is where you browse repos that aren't currently dirty.
+  const showSubTabs = repos.length > 1 && changedRepos.length > 0;
   const fileWord = stagedCount === 1 ? "File" : "Files";
   const commitDisabled = committing || !subject.trim() || stagedCount === 0;
   const commitLabel = `Commit ${stagedCount} ${fileWord}${pushDefault ? " and Push" : ""}`;
@@ -264,7 +265,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       {/* 1. Repo sub-tabs (wrapping pills) */}
       {showSubTabs && (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-[var(--color-border-soft)] px-2 py-1.5">
-          {repos.map(r => (
+          {changedRepos.map(r => (
             <button
               key={r.dir_name}
               onClick={() => {

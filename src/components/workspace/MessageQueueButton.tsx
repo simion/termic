@@ -161,7 +161,7 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
         </span>
       </Tip>
 
-      <PopoverContent side="top" align="start" className="flex w-[360px] flex-col gap-2">
+      <PopoverContent side="top" align="start" className="flex w-[480px] flex-col gap-2">
         {/* Agent selector — the active agent + any agent with a queue. Each
             shows its pending-message count. Hidden when there's nothing to
             pick between. */}
