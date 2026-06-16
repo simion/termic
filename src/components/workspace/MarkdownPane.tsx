@@ -37,8 +37,15 @@ function ToolbarButton({ active, onClick, children }: {
 }
 
 export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
-  const view: View = tab.mdView ?? "source";
-  const setView = (v: View) => useApp.getState().patchTab(ws.id, tab.id, { mdView: v });
+  // Fall back to the last-used view (a persisted pref) so a freshly opened
+  // doc shows however you last looked at one. Toggling writes BOTH the
+  // per-tab override and the global pref, so the choice survives relaunch.
+  const defaultView = usePrefs(s => s.markdownDefaultView);
+  const view: View = tab.mdView ?? defaultView;
+  const setView = (v: View) => {
+    useApp.getState().patchTab(ws.id, tab.id, { mdView: v });
+    usePrefs.getState().setMarkdownDefaultView(v);
+  };
 
   // Live buffer text fed from the editor's onContent. Debounced so split-mode
   // typing doesn't re-parse markdown + re-run mermaid on every keystroke. We

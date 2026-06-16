@@ -17,17 +17,19 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
+import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
+import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
 // `currentTerminalTheme()` picks the matching palette at mount; the
 // themeMode effect below pushes updates into live instances.
 
-export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: string; active: boolean; onExited?: () => void; onTitle?: (title: string) => void }) {
+export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle }: { wsId?: string; wsPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void }) {
   // Keep the latest onTitle in a ref so the long-lived spawn effect's
   // onTitleChange handler always calls the current callback without
   // re-running (and respawning the PTY) when the parent re-renders.
@@ -74,6 +76,7 @@ export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: str
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new ClipboardAddon());
+    const disposeCopyOnSelect = attachCopyOnSelect(term, host);
     term.loadAddon(new ImageAddon());
     // Clickable links — same model as TerminalPane: always loaded so URLs
     // underline on hover, opening gated on Cmd/Ctrl so a plain click still
@@ -183,6 +186,17 @@ export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: str
         // bottom tab can show it, matching the main agent tabs.
         term.onTitleChange(t => onTitleRef.current?.(t));
         setTimeout(() => { try { fit.fit(); } catch {} }, 200);
+        // Reliable focus for user-created scratch shells (⇧⌘D / + / ⌘T).
+        // We do it HERE, once the PTY is live and the grid has rendered,
+        // because the external focus poll fires during the heavy mount and
+        // the focus doesn't stick. Direct (no rAF: that freezes in occluded
+        // windows). Gated on `autoFocus` (so launch-restored and
+        // preview/footer shells never grab focus) and on still being the
+        // active workspace (so a quick workspace switch mid-spawn can't yank
+        // focus into a now-background terminal).
+        if (autoFocus && !cancelled && (!wsId || useApp.getState().activeWorkspaceId === wsId)) {
+          try { term.focus(); } catch {}
+        }
       } catch (e) { term.write(`\x1b[1;31mspawn failed: ${e}\x1b[0m\r\n`); }
     })();
 
@@ -205,6 +219,7 @@ export function AuxTerminal({ wsPath, active, onExited, onTitle }: { wsPath: str
     return () => {
       cancelled = true;
       ro.disconnect();
+      disposeCopyOnSelect();
       unregisterDrop();
       disposeImeBridge();
       unlistenData?.(); unlistenExit?.();

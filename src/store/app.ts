@@ -52,7 +52,7 @@ interface AppState {
   terminalSplitCollapsed: Record<string, boolean>;
   /** Per-workspace: bottom-terminal tab IDs (each = its own scratch shell).
    *  Lives in memory only — like the main terminal tabs, PTYs die with the app. */
-  bottomTabs: Record<string, { id: string; title: string; liveTitle?: string }[]>;
+  bottomTabs: Record<string, { id: string; title: string; liveTitle?: string; autoFocus?: boolean }[]>;
   /** Per-workspace: id of the active bottom-terminal tab. */
   activeBottomTab: Record<string, string>;
   /** Per-workspace: whether the main pane is split vertically (agent on
@@ -128,8 +128,10 @@ interface AppState {
   setAllWorkspacesCollapsed: (collapsed: boolean) => void;
   setTerminalSplitHeight: (wsId: string, px: number) => void;
   toggleTerminalSplitCollapsed: (wsId: string) => void;
-  /** Returns the id of the new bottom tab. */
-  addBottomTab: (wsId: string) => string;
+  /** Returns the id of the new bottom tab. `focus` (default true) marks the
+   *  fresh shell to grab focus once it spawns; pass false for the auto-seed
+   *  on split-open / launch-restore so it can't yank focus off the agent. */
+  addBottomTab: (wsId: string, opts?: { focus?: boolean }) => string;
   closeBottomTab: (wsId: string, tabId: string) => void;
   setActiveBottomTab: (wsId: string, tabId: string) => void;
   /** Update a bottom-shell tab's live OSC 0/2 title (what the shell emits,
@@ -529,19 +531,25 @@ export const useApp = create<AppState>((set, get) => ({
     return { collapsedWorkspaces: next };
   }),
 
-  addBottomTab: (wsId) => {
+  addBottomTab: (wsId, opts) => {
     const id = crypto.randomUUID();
+    const focus = opts?.focus ?? true;
     set(s => {
       const list = s.bottomTabs[wsId] || [];
       const title = `shell ${list.length + 1}`;
+      // `autoFocus` is read by AuxTerminal: it self-focuses once its PTY is
+      // live (the external poll below fires too early on first open — the
+      // xterm textarea isn't focusable yet during the heavy mount/fit).
       return {
-        bottomTabs:      { ...s.bottomTabs, [wsId]: [...list, { id, title }] },
+        bottomTabs:      { ...s.bottomTabs, [wsId]: [...list, { id, title, autoFocus: focus }] },
         activeBottomTab: { ...s.activeBottomTab, [wsId]: id },
       };
     });
     // Move focus into the freshly-spawned shell so the user can type
-    // straight away. Covers the bottom-strip "+", ⌘T and ⇧⌘D.
-    focusTerminalTab(id);
+    // straight away. Covers the bottom-strip "+", ⌘T and ⇧⌘D. The
+    // AuxTerminal self-focus (via autoFocus) is the reliable path; this
+    // best-effort poll just narrows the window before the PTY is up.
+    if (focus) focusTerminalTab(id);
     return id;
   },
   closeBottomTab: (wsId, tabId) => {

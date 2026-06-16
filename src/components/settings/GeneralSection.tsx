@@ -52,6 +52,10 @@ export function GeneralSection() {
   const setSandboxBypassPermissions = usePrefs(s => s.setSandboxBypassPermissions);
   const workspaceExpandMode = usePrefs(s => s.workspaceExpandMode);
   const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
+  const branchPrefix = usePrefs(s => s.branchPrefix);
+  const setBranchPrefix = usePrefs(s => s.setBranchPrefix);
+  const terminalCopyOnSelect = usePrefs(s => s.terminalCopyOnSelect);
+  const setTerminalCopyOnSelect = usePrefs(s => s.setTerminalCopyOnSelect);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -140,6 +144,16 @@ export function GeneralSection() {
       </div>
 
       <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <div className="text-[14px] font-medium">Branch prefix</div>
+        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+          Prepended to auto-generated branch names for new workspaces (<code className="font-mono">{(() => { const p = branchPrefix.trim().replace(/^\/+|\/+$/g, ""); return p ? `${p}/my-task` : "my-task"; })()}</code>). Leave empty for no prefix. You can still edit the branch per workspace.
+        </div>
+        <div className="mt-2 max-w-xs">
+          <Input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="feature" className="font-mono" />
+        </div>
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
         <div className="flex items-start justify-between gap-6">
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-medium">Workspace expand behavior</div>
@@ -185,6 +199,15 @@ export function GeneralSection() {
           hint="Show a spinner on an agent's tab and sidebar icon while it's working. Experimental: it relies on work detection, which can occasionally misfire. A stuck spinner auto-clears after a few minutes."
           value={workingIndicator}
           onChange={setWorkingIndicator}
+        />
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Copy on select"
+          hint="iTerm-style: selecting text with the mouse in any terminal copies it to the clipboard automatically. Applies to every terminal (agents and scratch shells)."
+          value={terminalCopyOnSelect}
+          onChange={setTerminalCopyOnSelect}
         />
       </div>
 

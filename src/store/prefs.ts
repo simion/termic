@@ -37,9 +37,15 @@ const LS_TERMINAL_LETTERSPACING = "terminalLetterSpacing";
 const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_TERMINAL_OPTION_AS_META = "terminalOptionAsMeta";
 const LS_TERMINAL_GPU            = "terminalGpuEnabled";
+const LS_TERMINAL_COPY_ON_SELECT = "terminalCopyOnSelect";
 const LS_WS_EXPAND_MODE = "workspaceExpandMode";
 const LS_HIDE_INACTIVE_PROJECTS = "hideInactiveProjects";
+const LS_MD_VIEW       = "markdownDefaultView";
+const LS_BRANCH_PREFIX = "branchPrefix";
 const LS_SHORTCUTS     = "shortcutBindings";
+
+/** Markdown edit-tab view: source editor, rendered preview, or both. */
+export type MarkdownView = "source" | "preview" | "split";
 
 export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
@@ -344,6 +350,9 @@ interface PrefsState {
    *  makes typing lag. Turning this OFF forces xterm's DOM renderer. Applies to
    *  terminals opened after the change (relaunch to switch every terminal). */
   terminalGpuEnabled: boolean;
+  /** iTerm-style copy-on-select: a finished mouse selection in any terminal
+   *  is written to the clipboard automatically. ON by default. */
+  terminalCopyOnSelect: boolean;
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
@@ -360,6 +369,14 @@ interface PrefsState {
    *  Keeps a long project list (repos you've added but aren't actively
    *  working in) from crowding out the projects that have live agents. */
   hideInactiveProjects: boolean;
+  /** Last-used view for markdown edit tabs (source / preview / split).
+   *  New markdown tabs open in this mode, and toggling a tab's view
+   *  updates it — so the app remembers however you last looked at a doc. */
+  markdownDefaultView: MarkdownView;
+  /** Prefix prepended to auto-generated worktree branch names in the New
+   *  workspace dialog (e.g. "feature" → "feature/my-task"). Empty means no
+   *  prefix. The user can still freely edit the branch field per workspace. */
+  branchPrefix: string;
   /** Resolved keyboard shortcut bindings (defaults merged with the user's
    *  overrides). Read live by `useShortcuts`; edited from the Shortcuts
    *  settings page. */
@@ -373,6 +390,7 @@ interface PrefsState {
   setTerminalScrollback:  (n: number) => void;
   setTerminalOptionAsMeta: (v: boolean) => void;
   setTerminalGpuEnabled: (v: boolean) => void;
+  setTerminalCopyOnSelect: (v: boolean) => void;
   setEditorFontSize:  (px: number) => void;
   setCodeLigatures:   (v: boolean) => void;
   /** Restore every Appearance-section pref (fonts, sizes, weight,
@@ -392,6 +410,8 @@ interface PrefsState {
   setAllowScope: (s: "agent" | "project" | "repo") => void;
   setWorkspaceExpandMode: (m: "chevron" | "click" | "always") => void;
   setHideInactiveProjects: (v: boolean) => void;
+  setMarkdownDefaultView: (v: MarkdownView) => void;
+  setBranchPrefix: (v: string) => void;
   /** Rebind a single shortcut. */
   setShortcut: (id: ShortcutId, binding: Binding) => void;
   /** Restore one shortcut to its factory binding. */
@@ -461,6 +481,7 @@ const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL
 const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(lsGetNum(LS_TERMINAL_SCROLLBACK, APPEARANCE_DEFAULTS.terminalScrollback))));
 const initialTerminalOptionAsMeta  = lsGetBool(LS_TERMINAL_OPTION_AS_META, APPEARANCE_DEFAULTS.terminalOptionAsMeta);
 const initialTerminalGpuEnabled    = lsGetBool(LS_TERMINAL_GPU, APPEARANCE_DEFAULTS.terminalGpuEnabled);
+const initialTerminalCopyOnSelect  = lsGetBool(LS_TERMINAL_COPY_ON_SELECT, true);
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
@@ -492,6 +513,11 @@ const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
   return raw === "click" || raw === "always" ? raw : "chevron";
 })();
 const initialHideInactiveProjects = lsGet(LS_HIDE_INACTIVE_PROJECTS, "") === "1";
+const initialMarkdownView: MarkdownView = (() => {
+  const raw = lsGet(LS_MD_VIEW, "source");
+  return raw === "preview" || raw === "split" ? raw : "source";
+})();
+const initialBranchPrefix = lsGet(LS_BRANCH_PREFIX, "feature");
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
@@ -511,10 +537,13 @@ export const usePrefs = create<PrefsState>(set => ({
   terminalScrollback: initialTerminalScrollback,
   terminalOptionAsMeta: initialTerminalOptionAsMeta,
   terminalGpuEnabled: initialTerminalGpuEnabled,
+  terminalCopyOnSelect: initialTerminalCopyOnSelect,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
   workspaceExpandMode: initialWsExpandMode,
   hideInactiveProjects: initialHideInactiveProjects,
+  markdownDefaultView: initialMarkdownView,
+  branchPrefix: initialBranchPrefix,
   shortcuts: loadShortcuts(),
 
   setEditorFontId: (id) => {
@@ -555,6 +584,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setTerminalGpuEnabled: (v) => {
     try { localStorage.setItem(LS_TERMINAL_GPU, v ? "1" : "0"); } catch {}
     set({ terminalGpuEnabled: v });
+  },
+  setTerminalCopyOnSelect: (v) => {
+    try { localStorage.setItem(LS_TERMINAL_COPY_ON_SELECT, v ? "1" : "0"); } catch {}
+    set({ terminalCopyOnSelect: v });
   },
   setEditorFontSize: (px) => {
     try { localStorage.setItem(LS_EDITOR_SIZE, String(px)); } catch {}
@@ -624,6 +657,16 @@ export const usePrefs = create<PrefsState>(set => ({
   setHideInactiveProjects: (v) => {
     try { localStorage.setItem(LS_HIDE_INACTIVE_PROJECTS, v ? "1" : "0"); } catch {}
     set({ hideInactiveProjects: v });
+  },
+  setMarkdownDefaultView: (v) => {
+    try { localStorage.setItem(LS_MD_VIEW, v); } catch {}
+    set({ markdownDefaultView: v });
+  },
+  setBranchPrefix: (v) => {
+    // Store as-typed (normalization happens at the use site in
+    // NewWorkspaceDialog) so a trailing "/" isn't stripped mid-keystroke.
+    try { localStorage.setItem(LS_BRANCH_PREFIX, v); } catch {}
+    set({ branchPrefix: v });
   },
   setShortcut: (id, binding) => {
     const next = { ...usePrefs.getState().shortcuts, [id]: binding };

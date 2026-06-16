@@ -139,7 +139,11 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   // Seed the first bottom tab the moment the split opens, so the user has
   // something to type into immediately (no empty state).
   useEffect(() => {
-    if (split && (!bottomTabs || bottomTabs.length === 0)) addBottomTab(ws.id);
+    // Seed without focus: this fires on split-open AND on launch-restore of
+    // a persisted split, where stealing focus off the agent terminal would
+    // be wrong. Explicit creation (⇧⌘D, +, ⌘T) focuses via addBottomTab's
+    // default.
+    if (split && (!bottomTabs || bottomTabs.length === 0)) addBottomTab(ws.id, { focus: false });
   }, [split, bottomTabs, ws.id, addBottomTab]);
 
   // On first open of the right split, either restore persisted agent tabs
@@ -360,8 +364,13 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                     style={{ visibility: t.id === activeBottom ? "visible" : "hidden", zIndex: t.id === activeBottom ? 1 : 0 }}
                   >
                     <AuxTerminal
+                      wsId={ws.id}
                       wsPath={ws.path}
                       active={t.id === activeBottom}
+                      // Grab focus once the PTY is live, but only for shells
+                      // the user explicitly created (set by addBottomTab) —
+                      // not the auto-seed on split-open / launch.
+                      autoFocus={!!t.autoFocus}
                       // closeBottomTab moves focus to the shell that takes
                       // over (or the main pane if this was the last one),
                       // so Ctrl+D'ing through shells never dumps focus.

@@ -19,9 +19,9 @@ import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
-// Branch names auto-fill as `feature/<name>`; the user edits the field
-// freely from there (there's no separate prefix control anymore).
-const DEFAULT_BRANCH_PREFIX = "feature";
+// Branch names auto-fill as `<prefix>/<name>` where the prefix comes from
+// the customizable `branchPrefix` pref (Settings → General, default
+// "feature"). The user edits the resulting field freely from there.
 
 export function NewWorkspaceDialog() {
   const projectId = useUI(s => s.newWorkspaceProjectId);
@@ -31,6 +31,7 @@ export function NewWorkspaceDialog() {
   const loadAll = useApp(s => s.loadAll);
   const agents = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
+  const branchPrefix = usePrefs(s => s.branchPrefix);
   // CLI choices: the registry (custom agents included), or the built-in
   // list before it loads — minus any disabled / not-installed agents.
   // Build the picker options. Always APPEND a synthetic "Terminal"
@@ -260,8 +261,12 @@ export function NewWorkspaceDialog() {
     const trimmed = name.trim();
     if (!trimmed) return "";
     if (trimmed.includes("/")) return branchify(trimmed);
-    return `${DEFAULT_BRANCH_PREFIX}/${slugify(trimmed)}`;
-  }, [name]);
+    // Normalize the user's prefix at use time: drop surrounding slashes /
+    // whitespace. An empty prefix yields a bare slug (no leading slash).
+    const prefix = branchPrefix.trim().replace(/^\/+|\/+$/g, "");
+    const slug = slugify(trimmed);
+    return prefix ? `${prefix}/${slug}` : slug;
+  }, [name, branchPrefix]);
   useEffect(() => { if (!branchEdited) setBranch(derived); }, [derived, branchEdited]);
 
   // Load the project's importable (existing, unopened) worktrees.

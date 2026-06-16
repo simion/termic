@@ -13,6 +13,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
+import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
@@ -322,6 +323,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new ClipboardAddon());
+    const disposeCopyOnSelect = attachCopyOnSelect(term, host);
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);
     searchAddonRef.current = searchAddon;
@@ -1375,6 +1377,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
     return () => {
       cancelled = true;
       ro.disconnect();
+      disposeCopyOnSelect();
       unregisterDrop();
       disposeImeBridge();
       unlistenDataRef.current?.();
