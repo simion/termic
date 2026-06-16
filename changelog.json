@@ -1,6 +1,27 @@
 {
   "versions": [
     {
+      "version": "0.13.4",
+      "date": "2026-06-16",
+      "summary": "Remember markdown view mode, customizable branch prefix, copy on select, focus fix.",
+      "sections": [
+        {
+          "label": "Features",
+          "items": [
+            "Markdown files remember your last view (editor, preview, or split) and open new docs that way.",
+            "Copy on select: selecting text with the mouse in any terminal copies it to the clipboard automatically. On by default, toggle in Settings, General.",
+            "Customizable branch prefix for new workspaces in Settings, General (default \"feature\"). Leave it empty for no prefix."
+          ]
+        },
+        {
+          "label": "Bug fixes",
+          "items": [
+            "The bottom scratch terminal now grabs focus the first time you open it with Shift+Cmd+D, instead of needing a second press."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.13.3",
       "date": "2026-06-15",
       "summary": "Prompt library, an editor breadcrumb that reveals files in the tree, and multi-repo Git fixes.",
