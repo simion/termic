@@ -18,6 +18,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { TerminalDropDialog } from "./TerminalDropDialog";
 import { FileFinderDialog } from "./FileFinderDialog";
 import { FindInFilesDialog } from "./FindInFilesDialog";
+import { ProjectPickerDialog } from "./ProjectPickerDialog";
 import { Loader2 } from "lucide-react";
 
 export function Dialogs() {
@@ -45,6 +46,7 @@ export function Dialogs() {
       <TerminalDropDialog />
       <FileFinderDialog />
       <FindInFilesDialog />
+      <ProjectPickerDialog />
       {/* Blocking work overlay: shown while a slow IPC call is in flight
           (archive workspace, etc.). Click-blocks the whole window so users
           don't fire the action twice mid-wait. */}
