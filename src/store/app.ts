@@ -209,6 +209,11 @@ interface AppState {
    *  queueKick-bump protocol (don't rely on a queueActive false->true edge)
    *  lives in exactly one place. No-op for non-terminal tabs. */
   enqueueAgentMessage: (wsId: string, tabId: string, text: string, repeat?: number) => void;
+  /** Force the head queued message out immediately (the "Send now" button),
+   *  even while the agent is mid-turn. Bumps `queueForceKick`, which a
+   *  dedicated TerminalPane effect watches and drains without the mid-turn
+   *  guard. No-op for non-terminal tabs or an empty/inactive queue. */
+  forceAgentQueueSend: (wsId: string, tabId: string) => void;
   renameTab: (wsId: string, tabId: string, title: string) => void;
   clearTabCustomTitle: (wsId: string, tabId: string) => void;
   /** Update the tab's PTY-driven `OSC 0/2` title. No-op when the user
@@ -1194,6 +1199,21 @@ export const useApp = create<AppState>((set, get) => ({
         queue: [...(t.queue ?? []), item],
         queueActive: true,
         queueKick: (t.queueKick ?? 0) + 1,
+      } as Tab;
+    });
+    return { tabs: { ...s.tabs, [wsId]: next } };
+  }),
+
+  forceAgentQueueSend: (wsId, tabId) => set(s => {
+    const list = s.tabs[wsId] || [];
+    const next = list.map(t => {
+      if (t.id !== tabId || t.type !== "terminal" || !(t.queue?.length)) return t;
+      // Re-activate in case the loop had stalled, then bump the force kick so
+      // TerminalPane drains the head right now (ignoring the mid-turn guard).
+      return {
+        ...t,
+        queueActive: true,
+        queueForceKick: (t.queueForceKick ?? 0) + 1,
       } as Tab;
     });
     return { tabs: { ...s.tabs, [wsId]: next } };

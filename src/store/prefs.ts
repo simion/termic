@@ -42,6 +42,7 @@ const LS_WS_EXPAND_MODE = "workspaceExpandMode";
 const LS_HIDE_INACTIVE_PROJECTS = "hideInactiveProjects";
 const LS_MD_VIEW       = "markdownDefaultView";
 const LS_BRANCH_PREFIX = "branchPrefix";
+const LS_QUEUE_MIN_INTERVAL = "queueMinIntervalMs";
 const LS_SHORTCUTS     = "shortcutBindings";
 
 /** Markdown edit-tab view: source editor, rendered preview, or both. */
@@ -377,6 +378,12 @@ interface PrefsState {
    *  workspace dialog (e.g. "feature" → "feature/my-task"). Empty means no
    *  prefix. The user can still freely edit the branch field per workspace. */
   branchPrefix: string;
+  /** Minimum delay (ms) enforced between consecutive message-queue sends to
+   *  the same agent. A throttle on the "ralph loop": even if the agent
+   *  reports work-done in under this window (or a false "done" fires), the
+   *  next queued message waits out the remainder. Default 10000 (10s). 0
+   *  disables the floor. Applies to "Send now" too. */
+  queueMinIntervalMs: number;
   /** Resolved keyboard shortcut bindings (defaults merged with the user's
    *  overrides). Read live by `useShortcuts`; edited from the Shortcuts
    *  settings page. */
@@ -412,6 +419,7 @@ interface PrefsState {
   setHideInactiveProjects: (v: boolean) => void;
   setMarkdownDefaultView: (v: MarkdownView) => void;
   setBranchPrefix: (v: string) => void;
+  setQueueMinIntervalMs: (ms: number) => void;
   /** Rebind a single shortcut. */
   setShortcut: (id: ShortcutId, binding: Binding) => void;
   /** Restore one shortcut to its factory binding. */
@@ -518,6 +526,9 @@ const initialMarkdownView: MarkdownView = (() => {
   return raw === "preview" || raw === "split" ? raw : "source";
 })();
 const initialBranchPrefix = lsGet(LS_BRANCH_PREFIX, "feature");
+// Clamp 0–120s. Default 10s — fast loops (or false "done" oscillation)
+// shouldn't fire prompts at the agent faster than this.
+const initialQueueMinInterval = Math.max(0, Math.min(120000, Math.round(lsGetNum(LS_QUEUE_MIN_INTERVAL, 10000))));
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
@@ -544,6 +555,7 @@ export const usePrefs = create<PrefsState>(set => ({
   hideInactiveProjects: initialHideInactiveProjects,
   markdownDefaultView: initialMarkdownView,
   branchPrefix: initialBranchPrefix,
+  queueMinIntervalMs: initialQueueMinInterval,
   shortcuts: loadShortcuts(),
 
   setEditorFontId: (id) => {
@@ -667,6 +679,11 @@ export const usePrefs = create<PrefsState>(set => ({
     // NewWorkspaceDialog) so a trailing "/" isn't stripped mid-keystroke.
     try { localStorage.setItem(LS_BRANCH_PREFIX, v); } catch {}
     set({ branchPrefix: v });
+  },
+  setQueueMinIntervalMs: (ms) => {
+    const clamped = Math.max(0, Math.min(120000, Math.round(ms)));
+    try { localStorage.setItem(LS_QUEUE_MIN_INTERVAL, String(clamped)); } catch {}
+    set({ queueMinIntervalMs: clamped });
   },
   setShortcut: (id, binding) => {
     const next = { ...usePrefs.getState().shortcuts, [id]: binding };

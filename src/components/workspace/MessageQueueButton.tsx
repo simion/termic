@@ -19,7 +19,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { workDoneCapable } from "@/lib/agents";
 import { cn } from "@/lib/utils";
-import { MessageSquarePlus, X, Repeat, CornerDownLeft } from "lucide-react";
+import { MessageSquarePlus, X, Repeat, CornerDownLeft, Send } from "lucide-react";
 import type { TerminalTab } from "@/lib/types";
 
 const MAX_REPEAT = 99;
@@ -48,6 +48,7 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
   const agents = useApp(s => s.agents);
   const patchTab = useApp(s => s.patchTab);
   const enqueueAgentMessage = useApp(s => s.enqueueAgentMessage);
+  const forceAgentQueueSend = useApp(s => s.forceAgentQueueSend);
 
   // Only work-done-capable agent tabs with a live PTY can host a queue — the
   // loop advances on work-done, which shells / detection-off agents never emit.
@@ -122,6 +123,11 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
   function clearAll() {
     if (!target) return;
     patchTab(wsId, target.id, { queue: [], queueActive: false });
+  }
+
+  function sendNow() {
+    if (!target || queue.length === 0) return;
+    forceAgentQueueSend(wsId, target.id);
   }
 
   const tip = !canQueue
@@ -263,7 +269,14 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
               />
               ×
             </label>
-            <Button variant="primary" size="sm" className="ml-auto gap-1.5" disabled={!draft.trim()} onClick={addMessage}>
+            {queue.length > 0 && (
+              <Tip content="Send the next queued message right now, ignoring the work-done wait and the send interval" side="top">
+                <Button variant="ghost" size="sm" className="ml-auto gap-1.5" onClick={sendNow}>
+                  <Send className="h-3 w-3" /> Send now
+                </Button>
+              </Tip>
+            )}
+            <Button variant="primary" size="sm" className={cn("gap-1.5", queue.length === 0 && "ml-auto")} disabled={!draft.trim()} onClick={addMessage}>
               Add <CornerDownLeft className="h-3 w-3" />
             </Button>
           </div>

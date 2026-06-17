@@ -536,6 +536,11 @@ export interface TerminalTab extends BaseTab {
    *  watches this so adding a message to an idle agent sends immediately even
    *  when `queueActive` is already true (no false→true edge to rely on). */
   queueKick?: number;
+  /** Bumped by the "Send now" button to drain the head message immediately,
+   *  bypassing the work-done wait (and the queueKick effect's mid-turn guard).
+   *  Watched by a dedicated TerminalPane effect that sends regardless of
+   *  `workState` AND bypasses the queue send-interval throttle. */
+  queueForceKick?: number;
 }
 
 /** One entry in a terminal tab's message queue. `repeat` is the total

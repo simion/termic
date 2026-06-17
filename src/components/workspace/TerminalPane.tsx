@@ -208,7 +208,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // fireDone is the single completion funnel; draining the message queue from
   // there means a focused agent's loop still advances (the store downgrades
   // a focused tab's "done" to "idle", so we can't watch workState for this).
-  const sendNextQueuedRef = useRef<(() => boolean) | null>(null);
+  const sendNextQueuedRef = useRef<((force?: boolean) => boolean) | null>(null);
 
   // Single funnel for every "work done" transition. Enforces one-done-per-
   // submit (blocks oscillation / late-OSC re-fires) and suppresses the
@@ -243,12 +243,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
     app.markAttention(ws.id, tab.id, attn);
   }, [ws.id, tab.id]);
 
+  // Throttle state for the message queue: the wall-clock of the last send and
+  // a handle to a pending deferred send. Enforces prefs.queueMinIntervalMs so
+  // a fast loop (or false-"done" oscillation) can't fire prompts at the agent
+  // faster than the user-configured floor.
+  const lastQueueSendAtRef = useRef(0);
+  const queueThrottleTimerRef = useRef<number | null>(null);
+
   // Drain one message from the tab's queue (the ralph loop). Returns true if
-  // a message was sent (so fireDone can suppress the badge), false when the
-  // queue is inactive or empty. Sending mirrors the broadcast path: type the
-  // text, submit the CR a beat later (sendMessageToPty), and stamp lastInputAt
-  // so the watcher below re-arms work-done detection for the next turn.
-  const sendNextQueued = useCallback((): boolean => {
+  // a message was sent OR a send is already scheduled (so fireDone suppresses
+  // the badge either way), false when the queue is inactive or empty. Sending
+  // mirrors the broadcast path: type the text, submit the CR a beat later
+  // (sendMessageToPty), and stamp lastInputAt so the watcher below re-arms
+  // work-done detection for the next turn.
+  const sendNextQueued = useCallback((force = false): boolean => {
     const ptyId = ptyRef.current;
     if (!ptyId) return false;
     const cur = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
@@ -260,8 +268,34 @@ export function TerminalPane({ ws, tab, active }: Props) {
       useUI.getState().pushToast("Message queue finished");
       return false;
     }
+    // Rate limit the automatic loop: if the floor hasn't elapsed since the last
+    // send, defer this one to the remainder rather than firing now. A timer
+    // already pending means we're scheduled — report success so the badge stays
+    // suppressed. `force` (the "Send now" button) bypasses the floor entirely;
+    // it also cancels any pending deferred send so we don't double-fire.
+    if (force) {
+      if (queueThrottleTimerRef.current != null) {
+        clearTimeout(queueThrottleTimerRef.current);
+        queueThrottleTimerRef.current = null;
+      }
+    } else {
+      const minInterval = usePrefs.getState().queueMinIntervalMs;
+      if (minInterval > 0) {
+        if (queueThrottleTimerRef.current != null) return true;
+        const wait = minInterval - (Date.now() - lastQueueSendAtRef.current);
+        if (wait > 0) {
+          queueThrottleTimerRef.current = window.setTimeout(() => {
+            queueThrottleTimerRef.current = null;
+            sendNextQueuedRef.current?.();
+          }, wait);
+          debugLogRef.current?.("queue-throttle", `deferring next send ${wait}ms`);
+          return true;
+        }
+      }
+    }
     const head = q[0];
     sendMessageToPty(ptyId, head.text);
+    lastQueueSendAtRef.current = Date.now();
     patchTab(ws.id, tab.id, { lastInputAt: Date.now() });
     const remaining = head.remaining - 1;
     const nextQueue = remaining <= 0
@@ -286,6 +320,26 @@ export function TerminalPane({ ws, tab, active }: Props) {
     if (cur?.workState === "working") return;
     sendNextQueuedRef.current?.();
   }, [queueActive, queueKick, ws.id, tab.id]);
+
+  // "Send now": drain the head immediately on a queueForceKick bump, WITHOUT
+  // the mid-turn guard above — the user explicitly asked to advance now.
+  // Skip the initial mount run so resuming a tab with an active queue doesn't
+  // fire a stray send (only real bumps after mount should send).
+  const queueForceKick = tab.type === "terminal" ? tab.queueForceKick : undefined;
+  const forceKickMountedRef = useRef(false);
+  useEffect(() => {
+    if (!forceKickMountedRef.current) { forceKickMountedRef.current = true; return; }
+    sendNextQueuedRef.current?.(true);
+  }, [queueForceKick]);
+
+  // Cancel any pending throttled send when this pane unmounts so the timer
+  // doesn't fire into a torn-down tab.
+  useEffect(() => () => {
+    if (queueThrottleTimerRef.current != null) {
+      clearTimeout(queueThrottleTimerRef.current);
+      queueThrottleTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

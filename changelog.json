@@ -1,13 +1,15 @@
 {
   "versions": [
     {
-      "version": "0.14.2",
+      "version": "0.14.3",
       "date": "2026-06-17",
       "summary": "Command palette (Cmd+K), quick project picker, worktree or repo-root toggle, right-click menus.",
       "sections": [
         {
           "label": "Features",
           "items": [
+            "Message queue: a Send now button fires the next queued message immediately, skipping the wait for the agent to finish.",
+            "Message queue: a configurable minimum send interval (Settings, General; default 10 seconds) throttles the loop so messages can't fire too fast.",
             "Command palette (Cmd+K): search and run any action (new workspace, file picker, find in files, rename, archive, YOLO, sandbox, theme, sidebars, settings) from one place, with each action's shortcut shown inline.",
             "Quick project picker (Cmd+N): fuzzy-search any project and start a new workspace without scrolling the sidebar.",
             "New Workspace dialog has a worktree vs repo root toggle, so you can launch an agent directly in the repo's live checkout (no worktree).",

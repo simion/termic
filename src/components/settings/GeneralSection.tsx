@@ -54,6 +54,8 @@ export function GeneralSection() {
   const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
   const branchPrefix = usePrefs(s => s.branchPrefix);
   const setBranchPrefix = usePrefs(s => s.setBranchPrefix);
+  const queueMinIntervalMs = usePrefs(s => s.queueMinIntervalMs);
+  const setQueueMinIntervalMs = usePrefs(s => s.setQueueMinIntervalMs);
   const terminalCopyOnSelect = usePrefs(s => s.terminalCopyOnSelect);
   const setTerminalCopyOnSelect = usePrefs(s => s.setTerminalCopyOnSelect);
 
@@ -150,6 +152,24 @@ export function GeneralSection() {
         </div>
         <div className="mt-2 max-w-xs">
           <Input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="feature" className="font-mono" />
+        </div>
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <div className="text-[14px] font-medium">Queue send interval</div>
+        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+          Minimum delay between consecutive queued messages sent to an agent (the "ralph loop"). Even if the agent finishes faster, or a false "done" fires, the next message waits this long. Set to 0 to disable. "Send now" ignores this and sends immediately.
+        </div>
+        <div className="mt-2 flex max-w-xs items-center gap-2">
+          <Input
+            type="number"
+            min={0}
+            max={120}
+            value={Math.round(queueMinIntervalMs / 1000)}
+            onChange={(e) => setQueueMinIntervalMs((Number(e.target.value) || 0) * 1000)}
+            className="w-24 font-mono"
+          />
+          <span className="text-[12.5px] text-[var(--color-fg-dim)]">seconds</span>
         </div>
       </div>
 
