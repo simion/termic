@@ -532,8 +532,19 @@ fn delete_workspace_file(id: &str) -> Result<()> {
 // ───────────────────────────── git ─────────────────────────────
 
 fn git(args: &[&str], cwd: &Path) -> Result<String> {
-    let out = Command::new("git").args(args).current_dir(cwd).output()
-        .with_context(|| format!("git {:?}", args))?;
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(cwd);
+    // Run with the user's login-shell environment, same as the PTY (see
+    // pty_spawn). A GUI-launched .app gets a bare launchd PATH; without this,
+    // git hooks (pre-commit, etc.) can't find node/bun/python/etc. and exported
+    // vars (direnv, tokens) the user's rc sets are missing — so a commit that
+    // works in the embedded terminal would fail from the Git panel. The
+    // resolved env is cached (OnceLock), so this is cheap per call.
+    cmd.env("PATH", shell_env::resolved_path());
+    for (k, v) in shell_env::login_env() {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().with_context(|| format!("git {:?}", args))?;
     if !out.status.success() {
         return Err(anyhow!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr)));
     }

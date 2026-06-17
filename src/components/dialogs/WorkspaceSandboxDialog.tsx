@@ -158,7 +158,10 @@ export function WorkspaceSandboxDialog() {
           pinned at the bottom of the dialog regardless of scroll. mt-2 gives
           the header/description room to breathe above the mode cards. */}
       <div className="mt-2 flex max-h-[calc(90vh-7rem)] flex-col">
-        <div className="flex flex-1 flex-col gap-5 overflow-y-auto pr-1">
+        {/* px-0.5 pt-1: the scroll container clips overflow, which was cutting
+            the focus ring off the top row of mode cards. A few px of inset
+            gives the ring room to render. */}
+        <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-0.5 pt-1 pr-1">
         {/* On/off panel. Big, color-coded, unambiguous - the prior
             "Unsandboxed" checkbox was a double-negative trap: users
             saw the box checked and assumed the cage was ON. State now

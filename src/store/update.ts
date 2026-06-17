@@ -115,6 +115,10 @@ interface UpdateState {
   /** Idempotent. Call once from App. */
   init: () => void;
   fetchChangelog: () => Promise<void>;
+  /** Manual "check for updates" (command palette). Re-probes the updater
+   *  and refetches the changelog. Resolves with the outcome so the caller
+   *  can toast. In dev (no signed release) always resolves "uptodate". */
+  checkNow: () => Promise<"available" | "uptodate" | "error">;
   install: () => Promise<void>;
   dismissUpdate: () => void;
   dismissWhatsNew: () => void;
@@ -186,6 +190,19 @@ export const useUpdate = create<UpdateState>((set, get) => ({
     } catch (e) {
       console.warn("[updater] changelog fetch failed:", e);
       set({ changelogStatus: "error" });
+    }
+  },
+
+  checkNow: async () => {
+    get().fetchChangelog();
+    if (import.meta.env.DEV) return "uptodate";
+    try {
+      const u = await check();
+      set({ update: u });
+      return u ? "available" : "uptodate";
+    } catch (e) {
+      console.warn("[updater] manual check failed:", e);
+      return "error";
     }
   },
 

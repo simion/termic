@@ -42,10 +42,13 @@ export type ShortcutId =
   | "terminal-copy"
   | "terminal-paste"
   | "new-workspace-quick"
+  | "command-palette"
   | "open-settings"
   | "open-shortcuts"
   | "file-finder"
   | "find-in-files"
+  | "toggle-left-sidebar"
+  | "toggle-right-sidebar"
   | "broadcast"
   | "stage-file"
   | "discard-file";
@@ -104,7 +107,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: "focus-terminal", group: "Terminal", label: "Focus active terminal",
     defaultBinding: B("l", { cmd: true }) },
   { id: "clear-terminal", group: "Terminal", label: "Clear focused terminal",
-    defaultBinding: B("k", { cmd: true }) },
+    hint: "Moved from ⌘K, which now opens the command palette.",
+    defaultBinding: B("k", { cmd: true, shift: true }) },
   { id: "new-split-terminal", group: "Terminal", label: "New bottom-split terminal",
     defaultBinding: B("d", { cmd: true, shift: true }) },
   { id: "new-right-split-terminal", group: "Terminal", label: "New right-split terminal",
@@ -123,6 +127,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("v", { cmd: true, shift: true }) },
 
   // General
+  { id: "command-palette", group: "General", label: "Command palette",
+    hint: "Search every command and action", defaultBinding: B("k", { cmd: true }) },
   { id: "new-workspace-quick", group: "General", label: "New workspace…",
     hint: "Search a project and start a new workspace", defaultBinding: B("n", { cmd: true }) },
   { id: "open-settings", group: "General", label: "Open settings",
@@ -133,6 +139,10 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("p", { cmd: true }) },
   { id: "find-in-files", group: "General", label: "Find in files",
     defaultBinding: B("f", { cmd: true, shift: true }) },
+  { id: "toggle-left-sidebar", group: "General", label: "Toggle left sidebar",
+    hint: "Collapse / expand the projects sidebar", defaultBinding: B("b", { cmd: true }) },
+  { id: "toggle-right-sidebar", group: "General", label: "Toggle right sidebar",
+    hint: "Show / hide the right panel", defaultBinding: B("b", { cmd: true, alt: true }) },
   { id: "broadcast", group: "General", label: "Broadcast to agents",
     defaultBinding: B("b", { cmd: true, shift: true }) },
 

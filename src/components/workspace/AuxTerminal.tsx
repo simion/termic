@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
+import { Osc52Base64 } from "@/lib/osc52";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -75,7 +76,8 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new ClipboardAddon());
+    // Repair double-encoded OSC 52 payloads (Claude Code). See lib/osc52.ts.
+    term.loadAddon(new ClipboardAddon(new Osc52Base64()));
     const disposeCopyOnSelect = attachCopyOnSelect(term, host);
     term.loadAddon(new ImageAddon());
     // Clickable links — same model as TerminalPane: always loaded so URLs

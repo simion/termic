@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Search,
+  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Search, Trash2,
 } from "lucide-react";
 import type { Workspace, GitStatus, GitRepo, GitFile } from "@/lib/types";
 import { workspaceStage, workspaceUnstage, workspaceCommit, workspaceDiscard } from "@/lib/ipc";
@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { Tip } from "@/components/ui/Tooltip";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
@@ -179,6 +180,30 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     }).catch(e => pushToast(String(e), "error"));
   };
 
+  // Discard always confirms first (irreversible). Shared by the ⇧⌘D shortcut
+  // and the right-click menu on both files and folders. `pane` advances the
+  // selection to the next file after a single-file discard; multi-path
+  // (folder) discards just drop the preview diff.
+  const doDiscard = useCallback((paths: string[], opts?: { pane?: "unstaged" | "staged"; label?: string }) => {
+    if (paths.length === 0) return;
+    const label = opts?.label ?? (paths.length === 1 ? paths[0] : `${paths.length} files`);
+    useUI.getState().askConfirm({
+      title: "Discard changes",
+      message: `Discard all changes to ${label}? This cannot be undone.`,
+      confirmLabel: "Discard",
+      destructive: true,
+    }).then(ok => {
+      if (!ok) return;
+      workspaceDiscard(ws.id, dir, paths)
+        .then(() => {
+          if (opts?.pane && paths.length === 1) focusNext(opts.pane, paths[0]);
+          else closePreviewDiff();
+          refresh();
+        })
+        .catch(err => pushToast(String(err), "error"));
+    });
+  }, [ws.id, dir, focusNext, closePreviewDiff, refresh, pushToast]);
+
   const doCommit = (push: boolean) => {
     if (!subject.trim() || committing) return;
     setCommitting(true);
@@ -240,22 +265,12 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           refresh();
         }).catch(err => pushToast(String(err), "error"));
       } else {
-        useUI.getState().askConfirm({
-          title: "Discard changes",
-          message: `Discard all changes to ${path}? This cannot be undone.`,
-          confirmLabel: "Discard",
-          destructive: true,
-        }).then(ok => {
-          if (!ok) return;
-          workspaceDiscard(ws.id, dir, [path])
-            .then(() => { focusNext(pane, path); refresh(); })
-            .catch(err => pushToast(String(err), "error"));
-        });
+        doDiscard([path], { pane });
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [selected, dir, ws.id, refresh, pushToast, stageBinding, discardBinding, focusNext]);
+  }, [selected, dir, ws.id, refresh, pushToast, stageBinding, discardBinding, focusNext, doDiscard]);
 
   if (!status) {
     return <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
@@ -375,7 +390,9 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
           headerAction={unstaged.length > 0 ? { label: "Stage all", onClick: () => doStage(unstaged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("unstaged", p)}
-          onToggle={doStage} rowActionIcon="down"
+          onToggle={doStage}
+          onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "unstaged" } : undefined)}
+          rowActionIcon="down"
           style={{ flexBasis: `${ratio * 100}%`, flexGrow: 0, flexShrink: 0 }}
         />
         <div className="relative h-px shrink-0 bg-[var(--color-border-soft)]">
@@ -387,7 +404,9 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
           headerAction={staged.length > 0 ? { label: "Unstage all", onClick: () => doUnstage(staged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("staged", p)}
-          onToggle={doUnstage} rowActionIcon="up"
+          onToggle={doUnstage}
+          onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "staged" } : undefined)}
+          rowActionIcon="up"
           className="min-h-0 flex-1"
         />
       </div>
@@ -481,6 +500,9 @@ interface PaneProps {
   /** Stage (unstaged pane) or unstage (staged pane) the given paths.
    *  Accepts many so a directory row can act on its whole subtree. */
   onToggle: (paths: string[]) => void;
+  /** Discard changes to the given paths (confirms first). Same multi-path
+   *  contract as onToggle so a folder row discards its whole subtree. */
+  onDiscard: (paths: string[]) => void;
   rowActionIcon: "up" | "down";
   className?: string;
   style?: React.CSSProperties;
@@ -488,7 +510,7 @@ interface PaneProps {
 
 function Pane({
   title, files, pane, viewMode, collapsed, setCollapsed, clickable, selectedKey, stageGlyph,
-  headerAction, onRowClick, onToggle, rowActionIcon, className, style,
+  headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, className, style,
 }: PaneProps) {
   return (
     <div className={cn("flex flex-col overflow-hidden", className)} style={style}>
@@ -517,7 +539,7 @@ function Pane({
             collapsed={collapsed} setCollapsed={setCollapsed} clickable={clickable}
             selectedKey={selectedKey} stageGlyph={stageGlyph}
             onRowClick={onRowClick}
-            onToggle={onToggle} rowActionIcon={rowActionIcon}
+            onToggle={onToggle} onDiscard={onDiscard} rowActionIcon={rowActionIcon}
           />
         )}
       </div>
@@ -567,6 +589,7 @@ function rowProps(p: Omit<PaneProps, "title" | "headerAction" | "className" | "s
     clickable: p.clickable,
     onClick: p.onRowClick,
     onToggle: p.onToggle,
+    onDiscard: p.onDiscard,
     rowActionIcon: p.rowActionIcon,
   };
 }
@@ -604,7 +627,7 @@ function buildTree(files: GitFile[]): TreeNode {
 }
 
 function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" | "style">) {
-  const { files, pane, collapsed, setCollapsed, onToggle, rowActionIcon, stageGlyph } = props;
+  const { files, pane, collapsed, setCollapsed, onToggle, onDiscard, rowActionIcon, stageGlyph } = props;
   const tree = useMemo(() => buildTree(files), [files]);
   const DirActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
 
@@ -629,33 +652,48 @@ function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" 
         const key = `${pane}\0${k.path}`;
         const isCollapsed = collapsed.has(key);
         const dirLabel = rowActionIcon === "down" ? "Stage folder" : "Unstage folder";
+        const leaves = collectLeafPaths(k);
         out.push(
-          <div
-            key={`d:${k.path}`}
-            onClick={() => toggle(k.path)}
-            className="group flex h-[24px] w-full cursor-pointer items-center gap-1.5 px-2 pr-1 text-left text-[12.5px] text-[var(--color-fg)]/85 hover:bg-[var(--color-hover)]"
-            style={{ paddingLeft: 6 + depth * 12 }}
-          >
-            <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] transition-transform", !isCollapsed && "rotate-90")} />
-            <img src={folderIconUrl(k.name, !isCollapsed)} alt="" className="h-4 w-4 shrink-0 file-icon" />
-            <span className="truncate flex-1 font-medium">{k.name}</span>
-            <Tip
-              side="left"
-              content={
-                <span className="flex items-center gap-1.5">
-                  {dirLabel}
-                  <kbd className="rounded bg-[var(--color-bg-3)] px-1 text-[10.5px] text-[var(--color-fg-faint)]">{stageGlyph}</kbd>
-                </span>
-              }
-            >
-              <button
-                onClick={(e) => { e.stopPropagation(); onToggle(collectLeafPaths(k)); }}
-                className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
+          <ContextMenuRoot key={`d:${k.path}`}>
+            <ContextMenuTrigger asChild>
+              <div
+                onClick={() => toggle(k.path)}
+                className="group flex h-[24px] w-full cursor-pointer items-center gap-1.5 px-2 pr-1 text-left text-[12.5px] text-[var(--color-fg)]/85 hover:bg-[var(--color-hover)]"
+                style={{ paddingLeft: 6 + depth * 12 }}
               >
-                <DirActionIcon className="h-3.5 w-3.5" />
-              </button>
-            </Tip>
-          </div>,
+                <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] transition-transform", !isCollapsed && "rotate-90")} />
+                <img src={folderIconUrl(k.name, !isCollapsed)} alt="" className="h-4 w-4 shrink-0 file-icon" />
+                <span className="truncate flex-1 font-medium">{k.name}</span>
+                <Tip
+                  side="left"
+                  content={
+                    <span className="flex items-center gap-1.5">
+                      {dirLabel}
+                      <kbd className="rounded bg-[var(--color-bg-3)] px-1 text-[10.5px] text-[var(--color-fg-faint)]">{stageGlyph}</kbd>
+                    </span>
+                  }
+                >
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onToggle(leaves); }}
+                    className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
+                  >
+                    <DirActionIcon className="h-3.5 w-3.5" />
+                  </button>
+                </Tip>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem onSelect={() => onToggle(leaves)}>
+                <DirActionIcon />
+                {rowActionIcon === "down" ? "Stage" : "Unstage"} <span className="font-medium">"{k.name}"</span>
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem destructive onSelect={() => onDiscard(leaves)}>
+                <Trash2 />
+                Discard <span className="font-medium">"{k.name}"</span>
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenuRoot>,
         );
         if (!isCollapsed) out.push(...render(k, depth + 1));
       } else if (k.file) {
@@ -673,7 +711,7 @@ function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" 
 // the diff preview. Double click stages / unstages (same as the trailing
 // arrow button). The arrow + the staging double-click work even on
 // non-clickable repo_root rows (no diff there, but staging is fine).
-function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clickable, onClick, onToggle, rowActionIcon }: {
+function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clickable, onClick, onToggle, onDiscard, rowActionIcon }: {
   file: GitFile;
   label: string;
   depth?: number;
@@ -683,12 +721,16 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clicka
   clickable: boolean;
   onClick: (p: string) => void;
   onToggle: (paths: string[]) => void;
+  onDiscard: (paths: string[]) => void;
   rowActionIcon: "up" | "down";
 }) {
   const key = file.status;
   const ActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
+  const actionLabel = rowActionIcon === "down" ? "Stage" : "Unstage";
   const selected = selectedKey === `${pane} ${file.path}`;
   return (
+    <ContextMenuRoot>
+      <ContextMenuTrigger asChild>
     <div
       className={cn(
         "group flex h-[26px] w-full items-center gap-2 border-l-2 pr-1 text-[13px]",
@@ -734,5 +776,18 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clicka
         </button>
       </Tip>
     </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => onToggle([file.path])}>
+          <ActionIcon />
+          {actionLabel}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem destructive onSelect={() => onDiscard([file.path])}>
+          <Trash2 />
+          Discard changes
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenuRoot>
   );
 }

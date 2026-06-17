@@ -284,9 +284,11 @@ export function FindInFilesDialog() {
   return (
     <Dialog.Root open={!!wsId} onOpenChange={(v) => (v ? null : close())}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40" />
+        {/* Transparent overlay — no dim (the old `bg-black/40` flickered the
+            whole screen on open); Radix outside-click dismissal still works. */}
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-transparent" />
         <Dialog.Content
-          className="fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
+          className="termic-pop fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}
         >
           <Dialog.Title className="sr-only">Find in files</Dialog.Title>

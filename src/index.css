@@ -311,6 +311,36 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   .termic-review-pending { animation: none; }
 }
 
+/* Overlay / finder entrance — fade in + a short slide down (~22px) from the
+   top. Used by the ⌘K command palette and the ⌘P / ⇧⌘F / ⌘N finder dialogs.
+   The slide animates the `transform` property; the dialogs center themselves
+   with Tailwind's `-translate-x-1/2`, which v4 compiles to the SEPARATE
+   `translate:` property — the two compose (individual `translate` is applied
+   before `transform` per spec), so the panel stays horizontally centered the
+   whole time. (The first version animated `translate:` here too, which
+   clobbered the centering → the panel flew in from the right.) */
+@keyframes termic-pop-in {
+  from { opacity: 0; transform: translateY(-16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes termic-pop-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-16px); }
+}
+/* State-driven so the panel animates BOTH ways. Radix keeps the node mounted
+   while a `data-[state=closed]` animation is running (its <Presence> defers
+   unmount until animationend), so the close reverses the entrance instead of
+   snapping away. ease-out in (decelerate), ease-in out (accelerate). */
+.termic-pop[data-state="open"] {
+  animation: termic-pop-in 340ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.termic-pop[data-state="closed"] {
+  animation: termic-pop-out 130ms cubic-bezier(0, 0, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .termic-pop[data-state] { animation: none; }
+}
+
 /* Indeterminate progress strip on tab pills — slides a slug across
    the bar while the agent is working without a known percentage
    (OSC 9;4;3). Matches iTerm2's progress indicator behavior. */

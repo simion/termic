@@ -13,6 +13,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
+import { Osc52Base64 } from "@/lib/osc52";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -322,7 +323,9 @@ export function TerminalPane({ ws, tab, active }: Props) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new ClipboardAddon());
+    // Custom base64 codec repairs double-encoded OSC 52 payloads (Claude
+    // Code) so pasted text isn't mojibake. See lib/osc52.ts.
+    term.loadAddon(new ClipboardAddon(new Osc52Base64()));
     const disposeCopyOnSelect = attachCopyOnSelect(term, host);
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);

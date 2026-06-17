@@ -124,11 +124,14 @@ export function FileFinderDialog() {
   return (
     <Dialog.Root open={!!wsId} onOpenChange={(v) => (v ? null : close())}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40" />
+        {/* Transparent overlay — keeps Radix outside-click dismissal but
+            paints nothing (the old `bg-black/40` dim flickered the whole
+            screen on open). A subtle backdrop is reserved for ⌘K only. */}
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-transparent" />
         <Dialog.Content
           // Top-anchored (Sublime / VS Code / Conductor convention) — feels
           // wrong floating in the vertical center for a quick-pick.
-          className="fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
+          className="termic-pop fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}
         >
           <Dialog.Title className="sr-only">Find file</Dialog.Title>

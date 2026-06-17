@@ -77,6 +77,16 @@ interface UIState {
   /** Global fuzzy project picker (⌘N) — search any loaded project and
    *  start a new workspace for it without scrolling the sidebar. */
   projectPickerOpen: boolean;
+  /** ⌘K command palette — searchable list of every command / action. */
+  commandPaletteOpen: boolean;
+  /** Fire-and-forget "start inline-rename on this workspace row" signal.
+   *  The sidebar's WorkspaceRow watches the nonce and, when the wsId
+   *  matches, flips its own local rename state (the same thing the row's
+   *  dropdown "Rename" does). Lives here so the command palette can
+   *  trigger the sidebar rename from outside the sidebar tree. The caller
+   *  is responsible for expanding the row's project first (a collapsed
+   *  project doesn't render the row, so the signal would be missed). */
+  renameRequest: { wsId: string; nonce: number } | null;
   /** ⇧⌘F find-in-files dialog — workspace id, null = closed. */
   findInFilesWsId: string | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
@@ -137,6 +147,10 @@ interface UIState {
   closeFileFinder: () => void;
   openProjectPicker: () => void;
   closeProjectPicker: () => void;
+  openCommandPalette: () => void;
+  closeCommandPalette: () => void;
+  /** Ask the sidebar to start inline-renaming `wsId`. */
+  requestWorkspaceRename: (wsId: string) => void;
   openFindInFiles: (wsId: string) => void;
   closeFindInFiles: () => void;
   setBusy: (msg: string | null) => void;
@@ -209,6 +223,8 @@ export const useUI = create<UIState>(set => ({
   fileFinderWsId: null,
   findInFilesWsId: null,
   projectPickerOpen: false,
+  commandPaletteOpen: false,
+  renameRequest: null,
   busyMessage: null,
   runScriptRequest: null,
   fileTreeNonce: 0,
@@ -244,6 +260,11 @@ export const useUI = create<UIState>(set => ({
   closeFindInFiles:  () => set({ findInFilesWsId: null }),
   openProjectPicker: () => set({ projectPickerOpen: true }),
   closeProjectPicker:() => set({ projectPickerOpen: false }),
+  openCommandPalette: () => set({ commandPaletteOpen: true }),
+  closeCommandPalette:() => set({ commandPaletteOpen: false }),
+  requestWorkspaceRename: (wsId) => set(s => ({
+    renameRequest: { wsId, nonce: (s.renameRequest?.nonce ?? 0) + 1 },
+  })),
   setBusy:           (msg) => set({ busyMessage: msg }),
   reloadFileTree:    () => set(s => ({ fileTreeNonce: s.fileTreeNonce + 1 })),
   setNotifyRoute:    (route) => set({

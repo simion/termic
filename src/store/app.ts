@@ -448,6 +448,17 @@ export const useApp = create<AppState>((set, get) => ({
   toggleCompactSidebar: () => set(s => {
     const next = !s.compactSidebar;
     try { localStorage.setItem(LS_COMPACT, next ? "1" : "0"); } catch {}
+    // Resize the sidebar column INSTANTLY — suppress the 220ms grid
+    // transition (same `--cols-transition: none` trick the resize handle
+    // uses) just for this toggle, then restore it on the next frame so the
+    // right-panel show/hide keeps animating.
+    try {
+      const root = document.documentElement;
+      root.style.setProperty("--cols-transition", "none");
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => root.style.removeProperty("--cols-transition")),
+      );
+    } catch {}
     return { compactSidebar: next };
   }),
   toggleRightPanel: () => set(s => {
@@ -1191,13 +1202,17 @@ export const useApp = create<AppState>((set, get) => ({
 
   openPreviewTab: (wsId, data) => set(s => {
     const list = s.tabs[wsId] || [];
-    // Open into the last-focused pane: if the right split is up and was the
-    // one the user last interacted with, the file lands there; otherwise it
-    // opens in the main pane. Preview-tab reuse + the "already open" lookup
-    // are scoped to that pane so each side keeps its own file tabs.
-    const target: "main" | "right" =
+    const paneOf = (t: Tab): "main" | "right" => (t.panel === "right" ? "right" : "main");
+    // The preview (italic-title temporary) tab is a singleton across both
+    // splits. If one already exists, reuse it wherever it lives, regardless
+    // of which pane was last focused, and move focus to that pane. Only when
+    // no preview tab exists do we fall back to the last-focused pane: the
+    // right split if it's up and was last interacted with, else main.
+    const previewTab = list.find(t => t.preview);
+    const lastFocused: "main" | "right" =
       s.rightSplit[wsId] && (s.activePane[wsId] ?? "main") === "right" ? "right" : "main";
-    const inTarget = (t: Tab) => (t.panel === "right" ? "right" : "main") === target;
+    const target: "main" | "right" = previewTab ? paneOf(previewTab) : lastFocused;
+    const inTarget = (t: Tab) => paneOf(t) === target;
     const panelTag = target === "right" ? { panel: "right" as const } : {};
     const setActive = (id: string): Partial<AppState> =>
       target === "right"
@@ -1215,7 +1230,6 @@ export const useApp = create<AppState>((set, get) => ({
       return { tabs: { ...s.tabs, [wsId]: next }, ...setActive(existing.id) };
     }
 
-    const previewTab = list.find(t => t.preview && inTarget(t));
     if (previewTab) {
       const next = list.map(t => t.id === previewTab.id ? {
         ...t,

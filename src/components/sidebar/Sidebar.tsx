@@ -15,7 +15,7 @@ import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
 import { workspaceRename, projectRename, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop, workspaceSetYolo } from "@/lib/ipc";
-import { archiveAndRefresh } from "@/lib/archiveWorkspace";
+import { confirmAndArchive } from "@/lib/archiveWorkspace";
 import { startSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Workspace, TerminalTab } from "@/lib/types";
@@ -886,6 +886,18 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   // Workspace rename
   const [wsRenaming, setWsRenaming] = useState<string | null>(null);
   const wsRenameInputRef = useRef<HTMLInputElement | null>(null);
+  // External rename trigger (⌘K command palette → "Rename workspace"). The
+  // palette can't reach into this row's local state, so it bumps a nonce on
+  // the UI store; we start the inline rename when it targets us, then clear
+  // it so a later collapse/expand re-mount doesn't re-fire. The palette
+  // expands the row's project first, so by the time we mount this runs.
+  const renameReq = useUI(s => s.renameRequest);
+  useEffect(() => {
+    if (renameReq && renameReq.wsId === w.id) {
+      setWsRenaming(w.name);
+      useUI.setState({ renameRequest: null });
+    }
+  }, [renameReq?.nonce, w.id, w.name]);
   // Radix DropdownMenu closes AFTER onSelect fires and asynchronously
   // restores focus; autoFocus on the freshly-mounted input loses the race.
   // Re-focus on the next two frames to land after Radix's restore tick.
@@ -1294,26 +1306,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 className="items-center [&>svg]:mt-0"
                 onSelect={async () => {
                   if (wsRenaming !== null) return;
-                  const ok = await useUI.getState().askConfirm({
-                    title: `Archive "${w.name}"?`,
-                    message: w.is_repo_root
-                      ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it any time. Any agent running here will be terminated."
-                      : (w.composition?.length ?? 0) > 0
-                      ? `Branches stay in git, so you can recreate the workspace later. This removes: the host worktree + every member worktree (${w.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts. Any running agent will be terminated.`
-                      : "The branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory and terminates any running agent. Can't be undone from inside Termic.",
-                    confirmLabel: "Archive",
-                    destructive: true,
-                    checkbox: w.is_repo_root ? undefined : (w.composition?.length ?? 0) > 0
-                      ? { label: "Delete the git branches", defaultValue: false }
-                      : { label: "Delete the git branch:", branchName: w.branch || undefined, defaultValue: false },
-                  });
-                  const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
-                  const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
-                  if (!confirmed) return;
-                  const { setBusy } = useUI.getState();
-                  setBusy(`Archiving "${w.name}"…`);
-                  try { await archiveAndRefresh(w.id, deleteBranch); }
-                  finally { setBusy(null); }
+                  await confirmAndArchive(w);
                 }}
               >
                 <Archive className="h-4 w-4" />

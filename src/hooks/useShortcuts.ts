@@ -117,6 +117,28 @@ export function useShortcuts() {
           useUI.getState().openProjectPicker();
           return;
 
+        // ⌘K → toggle the command palette (open, or close if already open).
+        // MUST fire from anywhere, including while focused in a terminal (the
+        // app is terminal-centric), so no `isTyping` guard. This is why
+        // ⌘K-clear moved to ⌘⇧K.
+        case "command-palette": {
+          e.preventDefault();
+          const ui = useUI.getState();
+          if (ui.commandPaletteOpen) ui.closeCommandPalette();
+          else ui.openCommandPalette();
+          return;
+        }
+
+        // ⌘B / ⌥⌘B → collapse the left sidebar / hide the right panel.
+        case "toggle-left-sidebar":
+          e.preventDefault();
+          state.toggleCompactSidebar();
+          return;
+        case "toggle-right-sidebar":
+          e.preventDefault();
+          state.toggleRightPanel();
+          return;
+
         // ⌘, → open settings (macOS convention).
         case "open-settings":
           e.preventDefault();

@@ -10,7 +10,9 @@
 // the now-archived workspace lingered in the sidebar until the next reload.
 
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { workspaceArchive } from "@/lib/ipc";
+import type { Workspace } from "@/lib/types";
 
 /** Archive `wsId`, then ALWAYS refresh the store — even if the IPC rejects on
  *  a best-effort cleanup error, because the workspace is already persisted as
@@ -30,4 +32,32 @@ export async function archiveAndRefresh(wsId: string, deleteBranch: boolean): Pr
     useApp.getState().setActiveWorkspace(null);
   }
   await useApp.getState().loadAll();
+}
+
+/** Confirm + archive a workspace, with the SAME prompt copy + delete-branch
+ *  checkbox the sidebar row's "Archive" menu item uses, plus the busy overlay.
+ *  Shared so the command palette's "Archive <name>" can't drift from the
+ *  sidebar. No-op if the user cancels. */
+export async function confirmAndArchive(w: Workspace): Promise<void> {
+  const ui = useUI.getState();
+  const memberWorktrees = (w.composition ?? []).filter(m => m.mode === "worktree");
+  const ok = await ui.askConfirm({
+    title: `Archive "${w.name}"?`,
+    message: w.is_repo_root
+      ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it any time. Any agent running here will be terminated."
+      : (w.composition?.length ?? 0) > 0
+      ? `Branches stay in git, so you can recreate the workspace later. This removes: the host worktree + every member worktree (${memberWorktrees.map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts. Any running agent will be terminated.`
+      : "The branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory and terminates any running agent. Can't be undone from inside Termic.",
+    confirmLabel: "Archive",
+    destructive: true,
+    checkbox: w.is_repo_root ? undefined : (w.composition?.length ?? 0) > 0
+      ? { label: "Delete the git branches", defaultValue: false }
+      : { label: "Delete the git branch:", branchName: w.branch || undefined, defaultValue: false },
+  });
+  const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
+  const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
+  if (!confirmed) return;
+  ui.setBusy(`Archiving "${w.name}"…`);
+  try { await archiveAndRefresh(w.id, deleteBranch); }
+  finally { ui.setBusy(null); }
 }

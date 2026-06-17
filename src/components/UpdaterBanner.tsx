@@ -72,7 +72,7 @@ export function UpdaterBanner() {
       {installing === null && (
         <>
           <ArrowDownToLine className="h-3 w-3" />
-          <span>Update {update.version}</span>
+          <span>Download &amp; restart</span>
         </>
       )}
       {installing === "downloading" && (
