@@ -213,6 +213,14 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   `~/termic/workspaces/<project>/<name>/`. Run N agents against the same
   branch across tabs; attach to repo root when you don't want a worktree;
   duplicate a worktree to spin up a parallel attempt off the same tip.
+- **Command palette (⌘K).** Search and run any action — new workspace, file
+  picker, find-in-files, rename, archive, YOLO, sandbox, theme, sidebars,
+  settings — from one place, each with its shortcut inline. ⌘N is a quick
+  project picker: fuzzy-find any repo and start a workspace without touching
+  the sidebar.
+- **Multi-repo workspaces.** Group N repos (backend, frontend, infra) under
+  one workspace with a shared CLAUDE.md and per-member dev-server ports. File
+  finder, find-in-files, and the diff view span every member.
 - **Broadcast & Brainstorm.** Send a single prompt to every agent in a workspace concurrently (⇧⌘B). Perfect for multi-agent code reviews, architectural brainstorming, or getting four "second opinions" on a complex bug in seconds.
 - **Config as Code (`.termic.yaml`).** Persist all project-specific settings—setup scripts, run commands, preview URLs, and sandbox allowlists—into a `.termic.yaml` file. Commit it to your repo so your whole team gets the same optimized agent environment instantly.
 - **Per-workspace sandbox** (macOS). Filesystem + network cage via
@@ -223,20 +231,31 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
 - **Work-done indicator** that's actually reliable. Per-CLI title classifier (Claude spinner, Gemini's `◇`, etc.) plus OSC 9;4, gated by byte-quiet and content-hash checks. This reliability enabled **opt-in desktop notifications** that only fire when an agent actually finishes a turn.
 - **Message Queues.** Built on top of work-done detection: queue N messages (with optional repeats) to run autonomous "Ralph loop" sessions.
 - **Auto-Resume Everything.** Termic auto-resumes sessions even for repo-root workspaces. The latest update now auto-resumes ALL agent tabs in a workspace, not just the primary one.
+- **Spotlight.** Mirror one worktree's changes — committed, uncommitted, and untracked — into your repo root in real time, so your editor, dev server, and browser see the agent's work live. It runs on a detached HEAD and never commits to your branch; disabling it cleanly restores the checkout. (Conductor checkpoints your branch; Spotlight doesn't touch it.)
 - **Find + edit in-app.** ⌘P fuzzy file finder, ⇧⌘F find-in-files
   (`git grep`, .gitignore-aware, streams live). CodeMirror 6 editor with
   side-by-side / unified diffs and **Markdown preview** (including inline **Mermaid diagrams**).
 - **Fork-style Git UI.** A dedicated staging area inspired by the Fork app. Stage, unstage, and commit without dropping to a terminal.
 - **AI review**: open the Review dialog, pick an agent, it gets the diff
-  + a review prompt and starts streaming.
+  + a review prompt and starts streaming. Or leave **GitHub-style inline
+  comments** on the diff yourself — they batch into one message and fire to
+  the agent on send.
+- **Prompt library.** Save reusable prompts and fire them at a running or
+  fresh agent from the top menu. Ships with Review, Write tests, Security
+  review, Explain changes, and Commit; queues automatically if the agent is
+  busy.
 - **Bring your own agent.** Settings → Agents is an editable registry.
   Drop in aider, opencode, ollama, a shell script — 30 seconds. Claude,
   Codex, Antigravity, Gemini, and Grok ship as built-ins.
-- **Keyboard-first.** ⌘1..9 swaps tabs, ⌥↑/↓ walks the visible sidebar
-  tree, ⌥⌘↑/↓ hops workspace-only, ⇧⌘D opens a split shell, ⌘T spawns a
-  new tab, ⌘W closes one. Seven themes (System, Light, Claude, Dark+,
-  Solarized Dark, Cobalt, Matrix), each re-themes both chrome and the
-  terminal pane.
+- **Keyboard-first.** ⌘K command palette, ⌘1..9 swaps tabs, ⌥↑/↓ walks the
+  visible sidebar tree, ⌥⌘↑/↓ hops workspace-only, ⌘D / ⇧⌘D split right /
+  bottom, ⌘T spawns a new tab, ⌘W closes one. Every shortcut is rebindable in
+  Settings → Shortcuts (⌘/ for the searchable cheat sheet). Seven themes
+  (System, Light, Claude, Dark+, Solarized Dark, Cobalt, Matrix), each
+  re-themes both chrome and the terminal pane.
+- **Terminal niceties.** xterm.js + WebGL, OSC 52 clipboard (copy out of a
+  container or over SSH), optional copy-on-select, inline images, clickable
+  links, and drag-and-drop file paths.
 
 ---
 
@@ -299,6 +318,8 @@ The honest pitch — see [termic.dev/vs/conductor](https://termic.dev/vs/conduct
 | Runs `codex` | ✓ | ✓ |
 | Bring your own agent (PTY-based) | ✓ — opencode, aider, ollama, anything that runs in a terminal | ✗ |
 | Multi-repo workspaces | ✓ — N repos under one wrapper, shared CLAUDE.md, per-member ports | ✗ |
+| Sync a worktree into the repo root live | ✓ — Spotlight, detached HEAD, never commits to your branch | ◐ Checkpoints onto your branch |
+| Command palette + fuzzy project / file switch | ✓ — ⌘K / ⌘N / ⌘P | varies |
 | Uses Claude Pro / Max subscription quota | ✓ — spawns the interactive `claude` CLI directly | ◐ Routes through the Claude Agent SDK |
 | Monthly Claude cost on top of your Pro / Max plan | $0 — same quota as running `claude` in iTerm | Capped by the separate SDK credit ($20 / $100 / $200) |
 | Local-only, no vendor backend in the loop | ✓ | ✗ — vendor-hosted services |
