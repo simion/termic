@@ -124,10 +124,10 @@ export function FileFinderDialog() {
   return (
     <Dialog.Root open={!!wsId} onOpenChange={(v) => (v ? null : close())}>
       <Dialog.Portal>
-        {/* Transparent overlay — keeps Radix outside-click dismissal but
-            paints nothing (the old `bg-black/40` dim flickered the whole
-            screen on open). A subtle backdrop is reserved for ⌘K only. */}
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-transparent" />
+        {/* Soft animated dim (matches the ⌘K palette): fades in/out via
+            data-state instead of the old `bg-black/40` snap, so the panel
+            reads with more contrast without the flicker. */}
+        <Dialog.Overlay className="termic-backdrop fixed inset-0 z-40 bg-black/30" />
         <Dialog.Content
           // Top-anchored (Sublime / VS Code / Conductor convention) — feels
           // wrong floating in the vertical center for a quick-pick.

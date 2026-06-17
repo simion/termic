@@ -370,6 +370,14 @@ export function CommandPalette() {
     // panel itself (backdrop-blur), so there's nothing full-screen to flicker.
     <Dialog.Root open={open} onOpenChange={(v) => (v ? null : close())} modal={false}>
       <Dialog.Portal>
+        {/* Soft animated dim. Non-blocking (pointer-events-none) so outside-click
+            still dismisses via Radix's dismissable layer; data-state mirrors the
+            panel so it fades out on close instead of snapping. */}
+        <div
+          aria-hidden
+          data-state={open ? "open" : "closed"}
+          className="termic-backdrop pointer-events-none fixed inset-0 z-40 bg-black/30"
+        />
         <Dialog.Content
           // Capture whatever was focused BEFORE Radix pulls focus into the
           // palette (terminal main/split/aux, an input, …) so we can restore it.
@@ -388,8 +396,8 @@ export function CommandPalette() {
           // Translucent so the blurred app shows through (Conductor look). The
           // lower the percentage, the more the (blurred) app behind bleeds
           // through — the strong backdrop-blur keeps it readable.
-          style={{ background: "color-mix(in srgb, var(--color-bg-1) 42%, transparent)" }}
-          className="termic-pop fixed left-1/2 top-[14vh] z-50 w-[min(620px,92vw)] -translate-x-1/2 overflow-hidden rounded-xl border border-[var(--color-border)] shadow-2xl outline-none backdrop-blur-md"
+          style={{ background: "color-mix(in srgb, var(--color-bg-1) 86%, transparent)" }}
+          className="termic-pop fixed left-1/2 top-[14vh] z-50 w-[min(620px,92vw)] -translate-x-1/2 overflow-hidden rounded-xl border border-[var(--color-border)] shadow-2xl outline-none backdrop-blur-lg"
           onKeyDown={onKeyDown}
         >
           <Dialog.Title className="sr-only">Command palette</Dialog.Title>
@@ -443,7 +451,7 @@ export function CommandPalette() {
                       onMouseMove={() => setActiveIdx(i)}
                       // Subtle neutral highlight (Conductor-style) — a faint
                       // fg-tinted overlay, theme-aware, no accent/border.
-                      style={i === activeIdx ? { background: "color-mix(in srgb, var(--color-fg) 8%, transparent)" } : undefined}
+                      style={i === activeIdx ? { background: "color-mix(in srgb, var(--color-fg) 13%, transparent)" } : undefined}
                       className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
                     >
                       <Icon className={cn(

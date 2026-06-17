@@ -341,6 +341,18 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   .termic-pop[data-state] { animation: none; }
 }
 
+/* Soft, non-blocking backdrop for the ⌘K command palette: a gentle dim that
+   fades in with the panel and out on close, so the palette reads with more
+   contrast against a busy editor/file-tree without the old harsh black flash.
+   data-state is mirrored from the panel so it reverses on dismiss. */
+@keyframes termic-backdrop-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes termic-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+.termic-backdrop[data-state="open"]   { animation: termic-backdrop-in  220ms ease-out; }
+.termic-backdrop[data-state="closed"] { animation: termic-backdrop-out 130ms ease-in; }
+@media (prefers-reduced-motion: reduce) {
+  .termic-backdrop[data-state] { animation: none; }
+}
+
 /* Indeterminate progress strip on tab pills — slides a slug across
    the bar while the agent is working without a known percentage
    (OSC 9;4;3). Matches iTerm2's progress indicator behavior. */

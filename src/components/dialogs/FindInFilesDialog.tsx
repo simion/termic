@@ -284,9 +284,9 @@ export function FindInFilesDialog() {
   return (
     <Dialog.Root open={!!wsId} onOpenChange={(v) => (v ? null : close())}>
       <Dialog.Portal>
-        {/* Transparent overlay — no dim (the old `bg-black/40` flickered the
-            whole screen on open); Radix outside-click dismissal still works. */}
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-transparent" />
+        {/* Soft animated dim (matches the ⌘K palette): fades in/out via
+            data-state instead of a snap, for contrast without flicker. */}
+        <Dialog.Overlay className="termic-backdrop fixed inset-0 z-40 bg-black/30" />
         <Dialog.Content
           className="termic-pop fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}

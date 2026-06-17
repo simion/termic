@@ -31,8 +31,17 @@ export function Dashboard() {
   const openNewProject   = useUI(s => s.openNewProject);
   const openNewWorkspace = useUI(s => s.openNewWorkspace);
 
+  // Projects with at least one active workspace float to the top, preserving
+  // the store's order within each group (Array.sort is stable). Mirrors how
+  // the sidebar splits active vs. inactive projects.
+  const hasActiveWs = (projId: string) =>
+    workspaces.some(w => w.project_id === projId && !w.archived);
+  const sortedProjects = [...projects].sort(
+    (a, b) => Number(hasActiveWs(b.id)) - Number(hasActiveWs(a.id)),
+  );
+
   return (
-    <div className="flex-1 overflow-auto p-6">
+    <div className="h-full overflow-auto p-6">
       <div className="mx-auto max-w-3xl">
         {/* Hero */}
         <header className="mb-10 mt-6 flex flex-col items-center gap-4 text-center">
@@ -79,7 +88,7 @@ export function Dashboard() {
               <span className="text-[12px] text-[var(--color-fg-faint)]">{projects.length}</span>
             </div>
             <div className="flex flex-col gap-3">
-              {projects.map(p => {
+              {sortedProjects.map(p => {
                 const wsList = workspaces.filter(w => w.project_id === p.id && !w.archived);
                 return (
                   <ProjectCard

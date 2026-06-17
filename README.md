@@ -2,7 +2,9 @@
 
 # termic
 
-**Run `claude`, `codex`, `gemini`, `grok`, and `agy` in parallel, each in its own git worktree.**
+### One window, many parallel coding agents. Each in its own git worktree.
+
+**`claude` · `codex` · `gemini` · `grok` · `agy` — the real CLIs, your own Pro / Max plan, no vendor backend.**
 
 [![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
@@ -11,13 +13,20 @@
 [![Windows: build from source](https://img.shields.io/badge/Windows-build%20from%20source-d97757)](#windows-self-build-no-sandbox)
 [![termic.dev](https://img.shields.io/badge/website-termic.dev-d97757)](https://termic.dev)
 
-Free, open-source desktop app for running AI coding-agent CLIs in parallel,
-each in an isolated git worktree, with an optional macOS sandbox cage per
-workspace.
+[**Install**](#install) · [What it does](#what-it-does) · [Sandbox](#sandbox) · [vs. Conductor](#why-use-termic-over-conductor) · [Contributing](./CONTRIBUTING.md)
 
-[Install](#install) · [What it does](#what-it-does) · [Sandbox](#sandbox) · [Contributing](./CONTRIBUTING.md)
+<br />
+
+<img src="./docs/hero.png" alt="Termic running a Claude Code agent in the termic.dev repo, with the project sidebar, file tree, and run panel" width="900" />
 
 </div>
+
+Termic is a free, open-source desktop app that runs your AI coding-agent CLIs
+side by side, each isolated in its own git worktree, with an optional per-workspace
+macOS sandbox cage. It spawns the **real** `claude` / `codex` / `gemini` / `grok` /
+`agy` binaries (not the vendor SDKs), so inference rides on the Pro / Max plan you
+already pay for. Spin up four agents on the same branch, broadcast one prompt to
+all of them, watch a reliable work-done indicator tell you the moment each finishes.
 
 ---
 
@@ -195,11 +204,10 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full dev guide.
 
 ## What it does
 
-Termic spawns the real `claude` / `codex` / `gemini` / `grok` / `agy`
-(Antigravity) CLIs inside PTYs, the same binaries you run in iTerm. It
-does NOT use the vendor SDKs (which bill against a separate credit
-pool as of [June 2026](https://thenewstack.io/anthropic-agent-sdk-credits/));
-inference rides on your existing Pro / Max plan.
+Every agent runs inside a real PTY, the same binary you'd launch in iTerm, so
+there's nothing between you and the CLI. No vendor SDK (which bills against a
+separate credit pool as of [June 2026](https://thenewstack.io/anthropic-agent-sdk-credits/)),
+no metered markup, no backend daemon. Here's what the window gives you on top:
 
 - **Parallel worktrees.** Each workspace is a git worktree under
   `~/termic/workspaces/<project>/<name>/`. Run N agents against the same
