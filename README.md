@@ -348,6 +348,14 @@ Open an issue to push something up the list or pick one off.
   / landlock on Linux and AppContainer on Windows are the gap.
 - **Windows prebuilts.** AppImage CI is live for Linux; Windows MSI is
   the matching CI matrix entry.
+- **Code navigation via language servers.** Cmd-click go-to-definition,
+  find class / symbol, hover types. Pluggable LSP servers (rust-analyzer,
+  typescript-language-server, pyright, gopls), pulled / detected from the
+  user's toolchain first. Likely a fast heuristic (ripgrep + tree-sitter)
+  pass for all languages, then real LSP where a server is present.
+- **Send selection to the agent as a reference.** Select text in the
+  editor, right-click or hover, and push it into the active agent terminal
+  as an `@file:123` style reference so the agent picks it up as context.
 
 ---
 
