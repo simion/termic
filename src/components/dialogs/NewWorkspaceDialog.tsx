@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
-import { workspaceCreate, workspaceCreateMulti, settingsLoad, workspaceImportableWorktrees, workspaceImportWorktree, sandboxAvailable } from "@/lib/ipc";
+import { workspaceCreate, workspaceCreateMulti, settingsLoad, workspaceImportableWorktrees, workspaceImportWorktree, sandboxAvailable, workspaceOpenRepo } from "@/lib/ipc";
 import { slugify, branchify, cn } from "@/lib/utils";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
 import { SandboxModeSelector } from "@/components/SandboxModeSelector";
@@ -54,6 +54,13 @@ export function NewWorkspaceDialog() {
   const [branch, setBranch] = useState("");
   const [branchEdited, setBranchEdited] = useState(false);
   const [base, setBase] = useState("");
+  // Single-repo workspace shape: "worktree" (branch a fresh working dir) or
+  // "repo_root" (no worktree — launch the agent in the repo's live checkout,
+  // the same shape as the sidebar's "Run in repo with <agent>"). Worktree is
+  // the default; repo_root hides the branch fields + sandbox panel and
+  // creates via workspace_open_repo. Multi-repo ignores this (it has its own
+  // per-member toggle); non-git projects force repo_root (no branches).
+  const [mode, setMode] = useState<"worktree" | "repo_root">("worktree");
   // Sandbox pin captured at creation. Defaults from project, can be
   // overridden for this one workspace, then is permanent post-create.
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("off");
@@ -66,7 +73,9 @@ export function NewWorkspaceDialog() {
     if (osSandboxOk === false && sandboxMode !== "off") setSandboxMode("off");
   }, [osSandboxOk, sandboxMode]);
   // Derived: any cage on. Drives the 2-column layout + "send lists" gating.
-  const sandbox = sandboxMode !== "off";
+  // Repo-root mode has no sandbox (workspace_open_repo takes no sandbox args),
+  // so force it off there — keeps the layout single-column + the panel hidden.
+  const sandbox = sandboxMode !== "off" && mode === "worktree";
   // The sandbox lists. Initialized from the
   // project's defaults whenever projectId changes; the user edits
   // freely until Create. Stored as multi-line text - we convert to
@@ -224,6 +233,9 @@ export function NewWorkspaceDialog() {
     const wantImport = !!seed?.importMode && canImp;
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setImportMode(wantImport);
+    // Non-git folders can't be worktreed → force repo_root. Everything else
+    // defaults to worktree (the safe, isolated default).
+    setMode(p?.non_git ? "repo_root" : "worktree");
     if (canImp) loadImportable(projectId);
     setPhase("form"); setSetupLog([]); setCreatedWsId(null);
     // CRITICAL: also reset `busy`. On a successful prior creation we
@@ -320,7 +332,29 @@ export function NewWorkspaceDialog() {
     }
   }
 
+  // Repo-root create: no worktree, no file-copy, no setup script — just open
+  // the agent in the repo's live checkout (same IPC the sidebar "Run in repo"
+  // rows use). Skips the streaming phases entirely, like submitImport.
+  async function submitRepoRoot() {
+    if (!projectId || !name.trim()) return;
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setBusy(true); setErr(null);
+    try {
+      const w = await workspaceOpenRepo(projectId, cli, name.trim());
+      await loadAll();
+      setActive(w.id);
+      close();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+      submittingRef.current = false;
+    }
+  }
+
   async function submit() {
+    if (mode === "repo_root" && !isMulti) { submitRepoRoot(); return; }
     if (importMode) { submitImport(); return; }
     if (!projectId || !name.trim() || !branch.trim()) return;
     if (submittingRef.current) return;
@@ -414,8 +448,8 @@ export function NewWorkspaceDialog() {
       // for several seconds on big repos.
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={isMulti ? "New multi-repo workspace" : importMode ? "Import existing worktree" : "New workspace via worktree"}
-      description={project ? `in ${project.name}` : undefined}
+      title={isMulti ? "New multi-repo workspace" : importMode ? "Import existing worktree" : mode === "repo_root" ? "New workspace in repo root" : "New workspace via worktree"}
+      description={undefined}
       // Widen the dialog based on what's actually inside:
       //   - sandbox ON     → 4xl (the sandbox form needs a 2nd column)
       //   - multi-repo     → 3xl (per-member row = name + Worktree/Repo
@@ -423,7 +457,7 @@ export function NewWorkspaceDialog() {
       //   - plain worktree → md (anything wider looks empty)
       // Import mode lists full worktree paths, which overflow max-w-lg —
       // give it more room (still narrower than the sandbox 2-column form).
-      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : importMode ? "max-w-2xl" : "max-w-lg"}
+      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : importMode ? "max-w-2xl" : "max-w-xl"}
     >
       {/* Phase-aware body: form on start, then progress view while creating
           + running setup. Form stays unmounted in non-form phases so its
@@ -441,11 +475,11 @@ export function NewWorkspaceDialog() {
       <form
         onSubmit={(e) => { e.preventDefault(); submit(); }}
         className={cn(
-          "gap-5",
-          sandbox ? "grid grid-cols-2 gap-x-6" : "flex flex-col",
+          "mt-1.5 gap-6",
+          sandbox ? "grid grid-cols-2 gap-x-8" : "flex flex-col",
         )}
       >
-      <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-6">
         {/* Every field uses the same structure: label on its own line, optional
             hint underneath, control on a new line. Previous version inlined
             the segmented controls next to the label and put hints on the same
@@ -454,7 +488,7 @@ export function NewWorkspaceDialog() {
         {/* Import affordance (issue #5). Single-repo git projects only.
             A subtle link that flips the dialog into "adopt an existing
             worktree" mode, hiding the branch fields. */}
-        {canImport && !importMode && importList.length > 0 && (
+        {canImport && !importMode && mode === "worktree" && importList.length > 0 && (
           <button
             type="button"
             onClick={enterImport}
@@ -516,6 +550,49 @@ export function NewWorkspaceDialog() {
           </Field>
         )}
 
+        {/* Worktree vs repo-root toggle (single-repo only — multi has its
+            own per-member toggle below). Repo root hides the branch + sandbox
+            fields and creates in the repo's live checkout. Non-git projects
+            can't worktree, so the Worktree button is disabled there. */}
+        {!isMulti && !importMode && (
+          <Field label="Workspace type">
+            <div className="flex flex-col gap-1.5">
+              <div className="inline-flex self-start items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+                <button
+                  type="button"
+                  onClick={() => setMode("worktree")}
+                  disabled={!!project?.non_git}
+                  className={cn(
+                    "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors disabled:opacity-40",
+                    mode === "worktree"
+                      ? "bg-[var(--color-accent-deep)] text-white"
+                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  <GitBranch className="h-3.5 w-3.5" /> New worktree
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("repo_root")}
+                  className={cn(
+                    "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
+                    mode === "repo_root"
+                      ? "bg-[var(--color-warn)] text-black"
+                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  <Link2 className="h-3.5 w-3.5" /> Repo root
+                </button>
+              </div>
+              <p className="text-[12px] text-[var(--color-fg-faint)]">
+                {mode === "worktree"
+                  ? "Isolated branch in its own working directory. Run agents in parallel without touching your checkout."
+                  : "No worktree. The agent runs in the repo's live checkout, on its current branch. Edits land on your real files."}
+              </p>
+            </div>
+          </Field>
+        )}
+
         <Field label="Name">
           <Input value={name} onChange={e => setName(e.target.value)} placeholder="fix login bug" autoFocus required />
         </Field>
@@ -548,7 +625,7 @@ export function NewWorkspaceDialog() {
           </div>
         </Field>
 
-        {!importMode && (<>
+        {!importMode && mode === "worktree" && (<>
         {/* Always editable. Auto-fills as “feature/<name>” while you type
             the name, then stops the moment you touch it, so pasting a
             branch from Linear (“username/my-feature”) is a true one-shot:
@@ -666,9 +743,13 @@ export function NewWorkspaceDialog() {
             strip of buttons whose purpose isn't obvious). Pinned at
             creation - lists below freeze onto the workspace and can't be
             edited after (archive + recreate to change). */}
+        {/* Sandbox is worktree-only here: workspace_open_repo (repo-root)
+            takes no sandbox args, and multi keeps mode="worktree". */}
+        {mode === "worktree" && (
         <Field label="Sandbox" hint="Cage the agent's filesystem + network access. Pinned at creation.">
           <SandboxModeSelector value={sandboxMode} onChange={setSandboxMode} osUnavailable={osSandboxOk === false} compact />
         </Field>
+        )}
       </div>
 
       {/* Right column: sandbox config form, only when enabled.
@@ -724,7 +805,7 @@ export function NewWorkspaceDialog() {
           <Button
             variant="primary"
             type="submit"
-            disabled={busy || !name.trim() || (importMode ? !importSelected : !branch.trim())}
+            disabled={busy || !name.trim() || (mode === "repo_root" ? false : importMode ? !importSelected : !branch.trim())}
           >
             {importMode ? "Import" : "Create"}
           </Button>
@@ -810,9 +891,9 @@ function Field({ label, hint, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
       <label className="text-[13px] font-medium text-[var(--color-fg)]">{label}</label>
-      {hint && <div className="text-[12px] text-[var(--color-fg-faint)] -mt-1">{hint}</div>}
+      {hint && <div className="text-[12px] leading-snug text-[var(--color-fg-faint)] -mt-1">{hint}</div>}
       {children}
     </div>
   );
