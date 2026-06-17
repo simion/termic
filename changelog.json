@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.14.0",
+      "version": "0.14.1",
       "date": "2026-06-17",
       "summary": "Command palette (Cmd+K), quick project picker, worktree or repo-root toggle, right-click menus.",
       "sections": [
@@ -25,7 +25,8 @@
         {
           "label": "Bug fixes",
           "items": [
-            "OSC 52 clipboard: fixed garbled copies from agents that double-encode UTF-8 (for example em dashes landing as mojibake)."
+            "OSC 52 clipboard: fixed garbled copies from agents that double-encode UTF-8 (for example em dashes landing as mojibake).",
+            "Bottom terminal: closing its last shell now stays closed across restarts instead of reopening on its own."
           ]
         }
       ]

@@ -582,10 +582,15 @@ export const useApp = create<AppState>((set, get) => ({
         // No bottom shell survives → focus falls back to the main-area
         // active tab rather than to <body>.
         if (wasActive) focusId = s.activeTab[wsId] || "";
+        // Persist the closed split too — otherwise localStorage keeps the
+        // `true` that toggleTerminalSplit wrote on open, and the split (and
+        // thus an auto-spawned shell) reappears on the next launch.
+        const nextSplit = { ...s.terminalSplit, [wsId]: false };
+        try { localStorage.setItem(LS_SPLIT, JSON.stringify(nextSplit)); } catch {}
         return {
           bottomTabs:      { ...s.bottomTabs, [wsId]: next },
           activeBottomTab: { ...s.activeBottomTab, [wsId]: "" },
-          terminalSplit:   { ...s.terminalSplit, [wsId]: false },
+          terminalSplit:   nextSplit,
         };
       }
       // Closed the focused shell → keep focus in the bottom split by
