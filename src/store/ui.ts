@@ -74,6 +74,9 @@ interface UIState {
   /** ⌘P file finder — workspace id to scope the search to; null = closed.
    *  Lives here so opening doesn't churn the workspace tree. */
   fileFinderWsId: string | null;
+  /** Global fuzzy project picker (⌘N) — search any loaded project and
+   *  start a new workspace for it without scrolling the sidebar. */
+  projectPickerOpen: boolean;
   /** ⇧⌘F find-in-files dialog — workspace id, null = closed. */
   findInFilesWsId: string | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
@@ -132,6 +135,8 @@ interface UIState {
   closeSandbox: () => void;
   openFileFinder: (wsId: string) => void;
   closeFileFinder: () => void;
+  openProjectPicker: () => void;
+  closeProjectPicker: () => void;
   openFindInFiles: (wsId: string) => void;
   closeFindInFiles: () => void;
   setBusy: (msg: string | null) => void;
@@ -203,6 +208,7 @@ export const useUI = create<UIState>(set => ({
   sandboxForWsId: null,
   fileFinderWsId: null,
   findInFilesWsId: null,
+  projectPickerOpen: false,
   busyMessage: null,
   runScriptRequest: null,
   fileTreeNonce: 0,
@@ -236,6 +242,8 @@ export const useUI = create<UIState>(set => ({
   closeFileFinder:   () => set({ fileFinderWsId: null }),
   openFindInFiles:   (wsId) => set({ findInFilesWsId: wsId }),
   closeFindInFiles:  () => set({ findInFilesWsId: null }),
+  openProjectPicker: () => set({ projectPickerOpen: true }),
+  closeProjectPicker:() => set({ projectPickerOpen: false }),
   setBusy:           (msg) => set({ busyMessage: msg }),
   reloadFileTree:    () => set(s => ({ fileTreeNonce: s.fileTreeNonce + 1 })),
   setNotifyRoute:    (route) => set({

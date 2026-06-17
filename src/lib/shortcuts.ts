@@ -41,6 +41,7 @@ export type ShortcutId =
   | "new-right-split-terminal"
   | "terminal-copy"
   | "terminal-paste"
+  | "new-workspace-quick"
   | "open-settings"
   | "open-shortcuts"
   | "file-finder"
@@ -122,6 +123,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("v", { cmd: true, shift: true }) },
 
   // General
+  { id: "new-workspace-quick", group: "General", label: "New workspace…",
+    hint: "Search a project and start a new workspace", defaultBinding: B("n", { cmd: true }) },
   { id: "open-settings", group: "General", label: "Open settings",
     defaultBinding: B(",", { cmd: true }) },
   { id: "open-shortcuts", group: "General", label: "Open keyboard shortcuts",

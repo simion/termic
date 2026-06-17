@@ -109,6 +109,14 @@ export function useShortcuts() {
           return;
         }
 
+        // ⌘N → global project picker. Fires from anywhere (no active
+        // workspace needed) so you can start a new workspace without first
+        // selecting one. No `isTyping` guard, same as the file finder.
+        case "new-workspace-quick":
+          e.preventDefault();
+          useUI.getState().openProjectPicker();
+          return;
+
         // ⌘, → open settings (macOS convention).
         case "open-settings":
           e.preventDefault();
