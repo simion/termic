@@ -143,7 +143,12 @@ export function ProjectActionsMenuItems({ projectId, onPickRepoCli }: {
           </div>
         </DropdownItem>
       ) : (
-        <DropdownItem onSelect={() => openNewWorkspace(projectId)}>
+        // Defer one frame: this fires inside a Radix DropdownMenu close,
+        // whose focus-teardown runs AFTER onSelect. Opening the dialog
+        // synchronously lets that teardown steal focus from the
+        // autofocused name input (the command-palette path dodges this by
+        // closing its picker Dialog first). rAF lets the menu settle.
+        <DropdownItem onSelect={() => requestAnimationFrame(() => openNewWorkspace(projectId))}>
           <GitBranchPlus className="h-4 w-4 text-[var(--color-fg-dim)]" />
           <div className="flex min-w-0 flex-col">
             <span className="truncate">New git worktree</span>
