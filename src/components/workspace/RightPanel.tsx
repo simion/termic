@@ -51,6 +51,10 @@ export function RightPanel() {
   // since the tree is hidden behind the Settings overlay then). Folded into
   // the local token so either source forces a re-read.
   const fileTreeNonce = useUI(s => s.fileTreeNonce);
+  // Bumped when an agent terminal in this workspace settles (app store). Drives
+  // the file tree + Git refresh below so on-disk changes appear without a
+  // window focus cycle or the 4s poll, and without a heavy FS watcher.
+  const fsRevision = useApp(s => (ws ? s.fsRevision[ws.id] ?? 0 : 0));
   const [refreshing, setRefreshing] = useState(false);
   // Multi-repo workspaces add a Target selector to the footer so
   // Setup/Run can target a composition member. Stored as the
@@ -128,6 +132,15 @@ export function RightPanel() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [ws?.id, refreshGit]);
+
+  // Agent terminal settled → its file edits are reflected in git status too.
+  // Refresh in place on the same signal that reloads the file tree below.
+  // Skip the first run (initial fetch above already covers it).
+  const fsGitFirst = useRef(true);
+  useEffect(() => {
+    if (fsGitFirst.current) { fsGitFirst.current = false; return; }
+    refreshGit();
+  }, [fsRevision, refreshGit]);
 
   // Header refresh button: re-read both the file tree and git status. The
   // brief `refreshing` flag spins the icon for feedback.
@@ -418,7 +431,7 @@ export function RightPanel() {
           scrolling so it gets the bare flex-1 height with no overflow. */}
       {view === "files" ? (
         <div className="min-h-0 flex-1 overflow-auto py-1">
-          <FileTree wsId={ws.id} reloadToken={fileTreeReload + fileTreeNonce} />
+          <FileTree wsId={ws.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision} />
         </div>
       ) : (
         <div className="min-h-0 flex-1">

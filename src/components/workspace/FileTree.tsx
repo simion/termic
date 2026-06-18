@@ -20,6 +20,26 @@ interface Props {
   reloadToken?: number;
 }
 
+// Compare a freshly re-fetched listing against the cached one. `next` holds
+// only the dirs we re-read (root + expanded), which are exactly the ones the
+// tree renders, so it's the source of truth for keys: if every dir in `next`
+// matches what we already have (same names, same dir-ness, same order from a
+// stable readdir), the visible tree is unchanged and we can skip the update.
+function sameChildren(
+  prev: Record<string, FileEntry[]>,
+  next: Record<string, FileEntry[]>,
+): boolean {
+  for (const rel in next) {
+    const a = prev[rel];
+    const b = next[rel];
+    if (!a || a.length !== b.length) return false;
+    for (let i = 0; i < b.length; i++) {
+      if (a[i].name !== b[i].name || a[i].is_dir !== b[i].is_dir) return false;
+    }
+  }
+  return true;
+}
+
 export function FileTree({ wsId, reloadToken = 0 }: Props) {
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   // Per-dir cache of children, keyed by rel-path ("" = root).
@@ -35,6 +55,11 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
   // make it re-run on every expand/collapse).
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
+  // Mirror children too: the reload effect (driven by an agent settling)
+  // compares the fresh listing against this to avoid a setState — and the
+  // whole-tree re-render it triggers — when nothing on disk actually changed.
+  const childrenRef = useRef(children);
+  childrenRef.current = children;
 
   const treeRef = useRef<HTMLDivElement>(null);
   // Path briefly highlighted after a reveal-in-tree.
@@ -67,6 +92,10 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
       if (!alive) return;
       const next: Record<string, FileEntry[]> = {};
       for (const [rel, list] of results) if (list) next[rel] = list;
+      // Skip the update (and the tree-wide re-render) if every re-fetched
+      // dir is byte-identical to what we already have. The common case after
+      // an agent turn is "nothing in the visible tree changed".
+      if (sameChildren(childrenRef.current, next)) return;
       setChildren(next);
       setRootEntries(next[""] ?? []);
     });
