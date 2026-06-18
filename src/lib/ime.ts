@@ -101,7 +101,15 @@ export function setupImeReplacementBridge(
   const onInput = (ev: Event) => {
     const e = ev as InputEvent;
     const newVal = ta.value;
-    if (isForwardedInputType(e.inputType)) {
+    // `isComposing === true` means WebKit is driving a REAL composition and
+    // firing genuine compositionstart/update/end events — the macOS Dictation
+    // and emoji-picker path. There xterm's own CompositionHelper forwards the
+    // composed text on compositionend, so if we ALSO forwarded the delta every
+    // dictated word would double (#38: "Hello" -> "HelloHello"). CJK keyboard
+    // input in WKWebView is the opposite: composition events never fire and
+    // isComposing stays false (see header), so xterm's helper is inert and the
+    // bridge is the ONLY forwarder. Hence: forward only when NOT composing.
+    if (!e.isComposing && isForwardedInputType(e.inputType)) {
       const bytes = computeImeDelta(prevVal, newVal);
       const pid = getPty();
       if (pid && bytes.length > 0) write(pid, bytes);
