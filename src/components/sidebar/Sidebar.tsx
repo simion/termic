@@ -1295,7 +1295,10 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               {!w.is_repo_root && w.branch && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
-                  onSelect={() => useUI.getState().openNewWorkspace(w.project_id, { baseBranch: w.branch })}
+                  // Defer one frame so the dropdown's focus-teardown
+                  // doesn't steal focus from the dialog's autofocused name
+                  // input (see ProjectActionsMenuItems for the full why).
+                  onSelect={() => requestAnimationFrame(() => useUI.getState().openNewWorkspace(w.project_id, { baseBranch: w.branch }))}
                 >
                   <GitBranchPlus className="h-4 w-4" />
                   <span>Duplicate worktree</span>

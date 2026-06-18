@@ -43,6 +43,7 @@ No em dashes (—) anywhere in user-visible text: dialogs, tooltips, buttons, `c
 
 ## What NOT to do without asking
 
+- Run e2e live testing (the `e2e` skill / automation bridge) proactively. Only run it when the user explicitly asks, or when it's absolutely necessary to confirm a change can't be verified any other way. Default to NOT launching the live app.
 - Switch editor from CodeMirror 6 (Monaco is slower in WKWebView, verified).
 - Re-enable React StrictMode (async PTY race).
 - Add a server/backend daemon (app is entirely on-device).
