@@ -1,8 +1,8 @@
 {
   "versions": [
     {
-      "version": "0.14.3",
-      "date": "2026-06-17",
+      "version": "0.14.4",
+      "date": "2026-06-18",
       "summary": "Command palette (Cmd+K), quick project picker, worktree or repo-root toggle, right-click menus.",
       "sections": [
         {
@@ -14,7 +14,9 @@
             "Quick project picker (Cmd+N): fuzzy-search any project and start a new workspace without scrolling the sidebar.",
             "New Workspace dialog has a worktree vs repo root toggle, so you can launch an agent directly in the repo's live checkout (no worktree).",
             "Right-click context menus across the app.",
-            "Toggle the left and right sidebars with Cmd+B and Option+Cmd+B."
+            "Toggle the left and right sidebars with Cmd+B and Option+Cmd+B.",
+            "Run tab picks up run scripts from a .termic.yaml in the workspace.",
+            "File tree, open editors, and the Git panel auto-refresh when an agent finishes a turn."
           ]
         },
         {
@@ -29,7 +31,9 @@
           "items": [
             "OSC 52 clipboard: fixed garbled copies from agents that double-encode UTF-8 (for example em dashes landing as mojibake).",
             "Bottom terminal: closing its last shell now stays closed across restarts instead of reopening on its own.",
-            "Dashboard: the projects list now scrolls when it overflows, and projects with active workspaces sort to the top."
+            "Dashboard: the projects list now scrolls when it overflows, and projects with active workspaces sort to the top.",
+            "macOS Dictation no longer types every word twice in the terminal.",
+            "Creating a worktree from the sidebar menu now autofocuses the name input."
           ]
         }
       ]
