@@ -439,27 +439,6 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // keyCode-229 guard above, which keeps the keydown path inert for IME.
     const disposeImeBridge = setupImeReplacementBridge(host, () => ptyRef.current, ipc.ptyWrite);
 
-    // ── IME diagnostic (opt-in) ────────────────────────────────────────
-    // Toggle with `localStorage.imeDebug = "1"`, type Korean, read the dev
-    // log (console.warn is forwarded by vite; console.log is not). Kept for
-    // debugging future IME regressions on other WebKit builds / layouts.
-    if ((() => { try { return localStorage.getItem("imeDebug") === "1"; } catch { return false; } })()) {
-      const ta = host.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-      const tag = `[ime ${ws.name}/${tab.cli}]`;
-      if (ta) {
-        ta.addEventListener("keydown", (e) => {
-          console.warn(`${tag} keydown key=${JSON.stringify(e.key)} code=${e.code} keyCode=${e.keyCode} isComposing=${e.isComposing} taValue=${JSON.stringify(ta.value)}`);
-        }, true);
-        ta.addEventListener("compositionstart", (e) => console.warn(`${tag} compositionstart data=${JSON.stringify((e as CompositionEvent).data)} taValue=${JSON.stringify(ta.value)}`));
-        ta.addEventListener("compositionupdate", (e) => console.warn(`${tag} compositionupdate data=${JSON.stringify((e as CompositionEvent).data)} taValue=${JSON.stringify(ta.value)}`));
-        ta.addEventListener("compositionend", (e) => console.warn(`${tag} compositionend data=${JSON.stringify((e as CompositionEvent).data)} taValue=${JSON.stringify(ta.value)}`));
-        ta.addEventListener("input", (e) => console.warn(`${tag} input inputType=${(e as InputEvent).inputType} data=${JSON.stringify((e as InputEvent).data)} isComposing=${(e as InputEvent).isComposing} taValue=${JSON.stringify(ta.value)}`));
-        console.warn(`${tag} IME diagnostic attached.`);
-      } else {
-        console.warn(`${tag} IME diagnostic: helper textarea not found.`);
-      }
-    }
-
     // Drop target: dragging a file (screenshot, etc.) onto this terminal
     // inserts the file's escaped path at the prompt — like macOS Terminal.
     // The getter reads ptyRef lazily so a Restart (fresh pty id) still works.

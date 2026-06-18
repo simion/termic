@@ -88,6 +88,13 @@ function fireInput(ta: HTMLTextAreaElement, inputType: string, value: string, da
   ta.dispatchEvent(new InputEvent("input", { inputType, data, bubbles: true }));
 }
 
+// macOS Dictation / emoji-picker path: WebKit fires a REAL composition, so
+// every input event carries isComposing === true.
+function fireComposingInput(ta: HTMLTextAreaElement, inputType: string, value: string, data: string | null) {
+  ta.value = value;
+  ta.dispatchEvent(new InputEvent("input", { inputType, data, isComposing: true, bubbles: true }));
+}
+
 describe("setupImeReplacementBridge", () => {
   const PID = "pty-1";
 
@@ -130,6 +137,30 @@ describe("setupImeReplacementBridge", () => {
     apply([DEL, ...enc("녀")]);
     apply([DEL, ...enc("녕")]);
     expect(line.join("")).toBe("안녕");
+
+    host.remove();
+  });
+
+  it("does NOT forward macOS Dictation (isComposing) — xterm's CompositionHelper owns it (#38)", () => {
+    const { host, ta } = mountTerminal();
+    const write = vi.fn();
+    setupImeReplacementBridge(host, () => PID, write);
+
+    // The exact WebKit event sequence captured from the live app dictating
+    // "Hello". Unlike CJK, every event has isComposing === true because real
+    // compositionstart/update/end fire — xterm's own CompositionHelper sends
+    // the composed text. If the bridge also forwarded, "Hello" -> "HelloHello".
+    fireComposingInput(ta, "insertCompositionText", "H", "H");
+    fireComposingInput(ta, "insertCompositionText", "He", "He");
+    fireComposingInput(ta, "insertCompositionText", "Hel", "Hel");
+    fireComposingInput(ta, "insertCompositionText", "Hell", "Hell");
+    fireComposingInput(ta, "insertCompositionText", "Hello", "Hello");
+    fireComposingInput(ta, "insertCompositionText", "Hello", "Hello");
+    fireComposingInput(ta, "deleteCompositionText", "", null);
+    fireComposingInput(ta, "insertFromComposition", "Hello", "Hello");
+
+    // Bridge stays silent for the whole dictation; xterm forwards "Hello" once.
+    expect(write).not.toHaveBeenCalled();
 
     host.remove();
   });
