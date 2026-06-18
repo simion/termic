@@ -194,20 +194,25 @@ export function RightPanel() {
   // either the in-app config or .termic.yaml) hide it entirely.
   const [yamlPreviewUrls, setYamlPreviewUrls] = useState<Record<string, string>>({});
   const [yamlSetupScripts, setYamlSetupScripts] = useState<Record<string, string>>({});
+  const [yamlRunScripts, setYamlRunScripts] = useState<Record<string, string>>({});
+  // Re-reads on `fileTreeNonce` too: Settings bumps it after writing a
+  // `.termic.yaml` change, so the Setup/Run tabs pick up scripts edited
+  // behind the Settings overlay without needing a workspace switch.
   useEffect(() => {
-    if (!ws) { setYamlPreviewUrls({}); setYamlSetupScripts({}); return; }
+    if (!ws) { setYamlPreviewUrls({}); setYamlSetupScripts({}); setYamlRunScripts({}); return; }
     const ids = [ws.project_id, ...(ws.composition ?? []).map(m => m.project_id)];
     const unique = [...new Set(ids)].filter(Boolean);
     Promise.all(unique.map(id =>
       repoConfigLoad(id)
-        .then(rc => [id, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? ""] as const)
-        .catch(() => [id, "", ""] as const),
+        .then(rc => [id, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? "", rc?.scripts?.run?.trim() ?? ""] as const)
+        .catch(() => [id, "", "", ""] as const),
     )).then(entries => {
       setYamlPreviewUrls(Object.fromEntries(entries.map(([id, url]) => [id, url])));
       setYamlSetupScripts(Object.fromEntries(entries.map(([id, , setup]) => [id, setup])));
+      setYamlRunScripts(Object.fromEntries(entries.map(([id, , , run]) => [id, run])));
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.project_id, ws?.composition?.map(m => m.project_id).sort().join("|")]);
+  }, [ws?.project_id, ws?.composition?.map(m => m.project_id).sort().join("|"), fileTreeNonce]);
   const footerTerm = useApp(s => (ws ? !!s.footerTerm[ws.id] : false));
   // Icon-only toolbar when the Terminal tab is open (the tab strip eats
   // horizontal room) OR the panel is simply narrow. ~380px is where the
@@ -680,9 +685,10 @@ export function RightPanel() {
             {footTab !== "term" && !(spotlightAvailable && footTab === "spotlight") && showRunTab && (() => {
               const activeMember = ws.composition?.find(m => m.dir_name === footTarget);
               const activeProjectId = activeMember?.project_id ?? ws.project_id;
-              const hasRunScript = !!(activeMember
+              const hasRunScript = !!((activeMember
                 ? activeMember.run_script?.trim()
-                : project?.run_script?.trim());
+                : project?.run_script?.trim())
+                || yamlRunScripts[activeProjectId]?.trim());
               return (
                 <ScriptStream
                   wsId={ws.id} kind={footTab as "setup" | "run"} run={footRun}
