@@ -1,7 +1,7 @@
 // CodeMirror 6 editor with syntax highlight. Loads file contents, picks the
 // right language extension by extension, mounts once.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { EditTab, Workspace } from "@/lib/types";
 import { EditorState, Compartment, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
@@ -149,6 +149,12 @@ export function EditorPane({ ws, tab, onContent }: {
   // keystroke (patchTab re-renders the whole TabBar).
   const dirtyRef = useRef(false);
 
+  // Per-workspace "files changed" tick. Bumped when an agent terminal
+  // settles (see app store). We re-read on its rising edge so an open file
+  // the agent just rewrote refreshes without a window blur/focus cycle —
+  // the common case where the agent runs in the same window the user watches.
+  const fsRevision = useApp(s => s.fsRevision[ws.id] ?? 0);
+
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const codeLigatures  = usePrefs(s => s.codeLigatures);
   // Syntax theme (atomone, tokyo-night, …). Independent of the app
@@ -262,24 +268,37 @@ export function EditorPane({ ws, tab, onContent }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.id, tab.path]);
 
-  // Reload from disk on window focus if the buffer has no unsaved edits.
-  // Covers the common case: agent edits a file, user cmd-tabs back, content
-  // is stale. Also refreshes read-only markdown preview tabs (no dirty state).
-  useEffect(() => {
-    const onFocus = () => {
-      const v = viewRef.current;
-      if (!v || dirtyRef.current) return;
-      workspaceFileRead(ws.id, tab.path).then(content => {
-        const v2 = viewRef.current;
-        if (!v2 || dirtyRef.current) return;
-        if (content === v2.state.doc.toString()) return;
-        v2.dispatch({ changes: { from: 0, to: v2.state.doc.length, insert: content } });
-        onContentRef.current?.(v2);
-      }).catch(() => {});
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+  // Re-read the file from disk and swap it into the live view, but only if
+  // the buffer has no unsaved edits (we never clobber the user's typing) and
+  // the on-disk content actually differs (skip the dispatch otherwise so we
+  // don't reset the selection / re-render for a no-op).
+  const reloadFromDisk = useCallback(() => {
+    const v = viewRef.current;
+    if (!v || dirtyRef.current) return;
+    workspaceFileRead(ws.id, tab.path).then(content => {
+      const v2 = viewRef.current;
+      if (!v2 || dirtyRef.current) return;
+      if (content === v2.state.doc.toString()) return;
+      v2.dispatch({ changes: { from: 0, to: v2.state.doc.length, insert: content } });
+      onContentRef.current?.(v2);
+    }).catch(() => {});
   }, [ws.id, tab.path]);
+
+  // Reload on window focus: covers external edits while away (another app,
+  // a `git` in a real terminal, an agent in a different window).
+  useEffect(() => {
+    window.addEventListener("focus", reloadFromDisk);
+    return () => window.removeEventListener("focus", reloadFromDisk);
+  }, [reloadFromDisk]);
+
+  // Reload when an agent terminal in this workspace settles. Skip the first
+  // run (the mount effect already loaded fresh content); thereafter every
+  // bump of fsRevision means a turn finished and the file may have changed.
+  const fsFirstRef = useRef(true);
+  useEffect(() => {
+    if (fsFirstRef.current) { fsFirstRef.current = false; return; }
+    reloadFromDisk();
+  }, [fsRevision, reloadFromDisk]);
 
   // Subsequent jumps: tab.revealAt changes when the user clicks a new
   // Find-in-Files result for an already-open file. Mount effect above

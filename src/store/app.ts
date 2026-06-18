@@ -228,6 +228,12 @@ interface AppState {
    *  3 indeterminate / 4 warn). Null pct = indeterminate.
    *  Idempotent (no-op on equal values). */
   setWorkProgress: (wsId: string, tabId: string, pct: number | null, kind: 1 | 2 | 3 | 4) => void;
+  /** Per-workspace "files on disk may have changed" tick. Bumped when an
+   *  agent terminal settles (workState leaves "working"), the cheap stand-in
+   *  for an FS watcher: the file tree, open editor tabs, and the Git panel
+   *  re-read on the rising edge. Ephemeral (not persisted). */
+  fsRevision: Record<string, number>;
+  bumpFsRevision: (wsId: string) => void;
 }
 
 const LS_COMPACT = "compactSidebar";
@@ -309,6 +315,7 @@ export const useApp = create<AppState>((set, get) => ({
   activeWorkspaceId: null,
   tabs: {},
   activeTab: {},
+  fsRevision: {},
   view: { page: "dashboard" },
   compactSidebar: initialCompact,
   rightPanelHidden: initialHidden,
@@ -1391,6 +1398,11 @@ export const useApp = create<AppState>((set, get) => ({
       }
     }
     if ((cur.workState ?? "idle") === effective) return s;
+    // Falling edge of "working" → the agent just finished a turn, so any
+    // files it touched are now settled on disk. Bump fsRevision so the file
+    // tree / open editors / Git panel re-read. This is our FS-watcher stand-in:
+    // it fires once per turn, only when an agent was actually working.
+    const settled = cur.workState === "working" && effective !== "working";
     const next = list.map(t => {
       if (t.id !== tabId) return t;
       // Leaving "working" → clear progress so the bar disappears on
@@ -1403,8 +1415,17 @@ export const useApp = create<AppState>((set, get) => ({
       }
       return { ...t, ...patch } as Tab;
     });
-    return { tabs: { ...s.tabs, [wsId]: next } };
+    return {
+      tabs: { ...s.tabs, [wsId]: next },
+      ...(settled
+        ? { fsRevision: { ...s.fsRevision, [wsId]: (s.fsRevision[wsId] ?? 0) + 1 } }
+        : null),
+    };
   }),
+
+  bumpFsRevision: (wsId) => set(s => ({
+    fsRevision: { ...s.fsRevision, [wsId]: (s.fsRevision[wsId] ?? 0) + 1 },
+  })),
 
   setWorkProgress: (wsId, tabId, pct, kind) => set(s => {
     const list = s.tabs[wsId] || [];
