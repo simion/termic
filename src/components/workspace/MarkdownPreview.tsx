@@ -50,7 +50,9 @@ function renderMermaidError(el: HTMLElement, message: string, src: string) {
   el.appendChild(pre);
 }
 
-export function MarkdownPreview({ text, themeDark }: { text: string; themeDark: boolean }) {
+export function MarkdownPreview(
+  { text, themeDark, linkify = true }: { text: string; themeDark: boolean; linkify?: boolean },
+) {
   const hostRef = useRef<HTMLDivElement>(null);
 
   // Single imperative effect: parse → inject → hydrate mermaid. Re-runs when
@@ -59,6 +61,11 @@ export function MarkdownPreview({ text, themeDark }: { text: string; themeDark: 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    // Toggle linkify right before the (synchronous) render. Callers like the
+    // Changelog dialog pass linkify=false so bare filenames (CLAUDE.md, *.app)
+    // don't autolink; explicit [text](url) links still render. The md instance
+    // is shared, but set+render are atomic per effect run so there's no bleed.
+    md.set({ linkify });
     host.innerHTML = md.render(text || "");
     const blocks = Array.from(host.querySelectorAll<HTMLElement>(".mermaid-block"));
     if (blocks.length === 0) return;
@@ -96,7 +103,7 @@ export function MarkdownPreview({ text, themeDark }: { text: string; themeDark: 
       }
     })();
     return () => { alive = false; };
-  }, [text, themeDark]);
+  }, [text, themeDark, linkify]);
 
   // Intercept link clicks: a bare <a href> would navigate the whole webview
   // (and blow away the app). Route external links to the OS opener instead.

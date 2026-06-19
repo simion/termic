@@ -27,7 +27,16 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 
+// Two changelog artifacts served from termic.dev/updates/:
+//   - changelog.json — SLIM {version,date,summary} per version. Drives the
+//     sidebar UpdateCard summary line + the what's-new version compare.
+//   - changelog.md   — the full human-authored CHANGELOG.md. Rendered as-is
+//     by the Changelog dialog (the app already has a markdown renderer).
+// CHANGELOG.md in the termic repo is the single source of truth; the .json
+// is generated from it (see scripts/changelog.mjs) and both are copied here
+// by CI on release.
 const CHANGELOG_URL = "https://termic.dev/updates/changelog.json";
+const CHANGELOG_MD_URL = "https://termic.dev/updates/changelog.md";
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 
 // localStorage keys. Kept here (not in prefs.ts) because this is app
@@ -102,9 +111,13 @@ interface UpdateState {
   /** Pending update, or null. The raw Tauri object — it carries
    *  downloadAndInstall(), so we keep it rather than a copy. */
   update: Update | null;
-  /** Per-version changelog, newest first. null until fetched. */
+  /** Per-version changelog (slim: version/date/summary), newest first. Drives
+   *  the UpdateCard summary + what's-new compare. null until fetched. */
   changelog: ChangelogEntry[] | null;
   changelogStatus: "idle" | "loading" | "ready" | "error";
+  /** Full CHANGELOG.md text, rendered by the Changelog dialog. null until
+   *  fetched (or if the .md fetch failed but the .json succeeded). */
+  changelogMarkdown: string | null;
   /** Non-null while an install is in flight. */
   installing: Installing;
   /** Version whose update card the user dismissed (× ). */
@@ -131,6 +144,7 @@ export const useUpdate = create<UpdateState>((set, get) => ({
   update: null,
   changelog: null,
   changelogStatus: "idle",
+  changelogMarkdown: null,
   installing: null,
   dismissedVersion: lsGet(LS_DISMISSED),
   lastSeenVersion: lsGet(LS_LAST_SEEN),
@@ -187,12 +201,27 @@ export const useUpdate = create<UpdateState>((set, get) => ({
   fetchChangelog: async () => {
     if (get().changelogStatus === "loading") return;
     set({ changelogStatus: "loading" });
+    // Fetch the slim JSON (drives the card + what's-new) and the full markdown
+    // (rendered by the dialog) together. The JSON is the one that gates status:
+    // the card must have a summary. The markdown is best-effort — if only it
+    // fails the dialog falls back to the JSON summaries.
+    const [jsonRes, mdRes] = await Promise.allSettled([
+      fetch(CHANGELOG_URL, { cache: "no-cache" }),
+      fetch(CHANGELOG_MD_URL, { cache: "no-cache" }),
+    ]);
     try {
-      const res = await fetch(CHANGELOG_URL, { cache: "no-cache" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      if (jsonRes.status !== "fulfilled" || !jsonRes.value.ok) {
+        throw new Error(jsonRes.status === "fulfilled" ? `HTTP ${jsonRes.value.status}` : String(jsonRes.reason));
+      }
+      const json = await jsonRes.value.json();
       const versions: ChangelogEntry[] = Array.isArray(json?.versions) ? json.versions : [];
-      set({ changelog: versions, changelogStatus: "ready" });
+      let markdown: string | null = null;
+      if (mdRes.status === "fulfilled" && mdRes.value.ok) {
+        markdown = await mdRes.value.text();
+      } else {
+        console.warn("[updater] changelog.md fetch failed (falling back to summaries)");
+      }
+      set({ changelog: versions, changelogMarkdown: markdown, changelogStatus: "ready" });
     } catch (e) {
       console.warn("[updater] changelog fetch failed:", e);
       set({ changelogStatus: "error" });
@@ -286,6 +315,30 @@ const MOCK_CHANGELOG: ChangelogEntry[] = [
   },
 ];
 
+// Markdown counterpart of MOCK_CHANGELOG, so VITE_MOCK_UPDATE exercises the
+// dialog's markdown rendering offline (mirrors the real changelog.md shape).
+const MOCK_CHANGELOG_MD = `# Changelog
+
+## [9.9.9] - 2026-05-21
+
+Per-repository Spotlight testing and in-workspace HTML preview.
+
+### Features
+- Configure Spotlight testing per repository.
+- Preview HTML files right inside your workspace.
+
+### Bug fixes
+- Faster cold-start when opening large repos.
+
+## [9.9.8] - 2026-05-18
+
+A prior version so the Changelog dialog has history to scroll.
+
+### Features
+- Sample feature one.
+- Sample feature two.
+`;
+
 /** Dev-only fake Update — cast through unknown; the app only ever
  *  touches version / currentVersion / downloadAndInstall(). */
 function makeMockUpdate(version: string): Update {
@@ -304,6 +357,7 @@ function devMockState(mode: string): Partial<UpdateState> {
       currentVersion: MOCK_CHANGELOG[0].version,
       lastSeenVersion: "0.0.0",
       changelog: MOCK_CHANGELOG,
+      changelogMarkdown: MOCK_CHANGELOG_MD,
       changelogStatus: "ready",
     };
   }
@@ -313,6 +367,7 @@ function devMockState(mode: string): Partial<UpdateState> {
     lastSeenVersion: "0.4.0",
     update: makeMockUpdate(MOCK_CHANGELOG[0].version),
     changelog: MOCK_CHANGELOG,
+    changelogMarkdown: MOCK_CHANGELOG_MD,
     changelogStatus: "ready",
   };
 }

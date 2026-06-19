@@ -35,11 +35,11 @@ npm run build        # tsc -b && vite build
 
 ## Releasing
 
-Add entry to TOP of `changelog.json` (`{version, date, summary}` — only write `summary`) before running `make release`. For a small change riding along with the last release, `make release-patch` folds it into a patch (appends the bullet to the last entry, no new entry). Full flow: the **`release` skill** (`.claude/skills/release/SKILL.md`). Mock update UI: `VITE_MOCK_UPDATE=available|whatsnew npm run tauri:dev`.
+Add a `## [version] - ` section to the TOP of `CHANGELOG.md` (Keep a Changelog format: summary lead line + `### Features`/`### Bug fixes` bullets) before running `make release`. `CHANGELOG.md` is the source of truth; `changelog.json` is derived from it by `scripts/changelog.mjs` (do not hand-edit it). For a small change riding along with the last release, `make release-patch` folds it into a patch (bump the top heading in place + append a bullet, no new entry). Full flow: the **`release` skill** (`.claude/skills/release/SKILL.md`). Mock update UI: `VITE_MOCK_UPDATE=available|whatsnew npm run tauri:dev`.
 
 ## Copy rules
 
-No em dashes (—) anywhere in user-visible text: dialogs, tooltips, buttons, `changelog.json`, error messages. Use a comma, period, parentheses, or colon instead.
+No em dashes (—) anywhere in user-visible text: dialogs, tooltips, buttons, `CHANGELOG.md`, error messages. Use a comma, period, parentheses, or colon instead.
 
 ## What NOT to do without asking
 
