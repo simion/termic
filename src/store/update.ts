@@ -168,7 +168,13 @@ export const useUpdate = create<UpdateState>((set, get) => ({
 
     const probe = async () => {
       try {
-        set({ update: await check() });
+        const u = await check();
+        set({ update: u });
+        // A release that landed AFTER startup won't be in the changelog we
+        // fetched at init(), so entryFor() returns null and the card falls
+        // back to a generic, summary-less line (GH #41). Refetch so the real
+        // release notes resolve for the newly-surfaced version.
+        if (u && !entryFor(get().changelog, u.version)) await get().fetchChangelog();
       } catch (e) {
         // Network down / malformed manifest — no card, no harm.
         console.warn("[updater] check failed:", e);
@@ -207,10 +213,26 @@ export const useUpdate = create<UpdateState>((set, get) => ({
   },
 
   install: async () => {
-    const u = get().update;
-    if (!u || get().installing) return;
+    if (!get().update || get().installing) return;
     set({ installing: "downloading" });
     try {
+      // Re-probe before installing. The pending `update` may have been
+      // captured by a periodic check hours ago; meanwhile an even newer
+      // release could have shipped. Installing the stale one would land the
+      // user a version behind and immediately re-prompt them (GH #41). A
+      // fresh check() returns whatever the manifest points at right now.
+      let u = get().update!;
+      try {
+        const fresh = await check();
+        if (fresh && cmpVersion(fresh.version, u.version) > 0) {
+          u = fresh;
+          set({ update: fresh });
+          if (!entryFor(get().changelog, fresh.version)) await get().fetchChangelog();
+        }
+      } catch (e) {
+        // Network blip — fall back to the update we already hold.
+        console.warn("[updater] pre-install re-check failed:", e);
+      }
       // Progress callback ignored for v1 — banner just says "Downloading".
       await u.downloadAndInstall();
       set({ installing: "installing" });
