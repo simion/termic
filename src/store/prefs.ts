@@ -482,7 +482,7 @@ export const APPEARANCE_DEFAULTS = {
 } as const;
 
 const initialEditorFont   = lsGet(LS_EDITOR_FONT, APPEARANCE_DEFAULTS.editorFontId);
-const initialEditorTheme  = lsGet(LS_EDITOR_THEME, "atomone");
+const initialEditorTheme  = lsGet(LS_EDITOR_THEME, "auto");
 const initialTerminalFont = lsGet(LS_TERMINAL_FONT, APPEARANCE_DEFAULTS.terminalFontId);
 const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, APPEARANCE_DEFAULTS.terminalFontSize);
 const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));

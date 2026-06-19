@@ -9,7 +9,7 @@ import { workspaceFileDiffSides } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
 import { FolderOpen, Columns2, AlignJustify } from "lucide-react";
 import { useApp } from "@/store/app";
-import { usePrefs } from "@/store/prefs";
+import { usePrefs, resolveTheme } from "@/store/prefs";
 import { MergeView, unifiedMergeView } from "@codemirror/merge";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
@@ -47,8 +47,11 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   const addTab = useApp(s => s.addTab);
   const editorFontSize = usePrefs(s => s.editorFontSize);
   // Same syntax theme as the editor. A change re-renders → the effect
-  // below rebuilds the diff view with the new palette.
+  // below rebuilds the diff view with the new palette. The "auto" syntax
+  // theme also follows the app palette, so rebuild on theme switch too.
   const editorThemeId = usePrefs(s => s.editorThemeId);
+  const themeMode = usePrefs(s => s.themeMode);
+  const appIsLight = resolveTheme(themeMode) === "light";
 
   function setModeAndPersist(m: Mode) {
     writeMode(m);
@@ -83,7 +86,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
         // Same syntax theme as the editor; surfaces pulled from the app
         // CSS vars. dimActiveLine=true — the diff's per-line red/green
         // tints carry the signal, the active-line wash would muddy it.
-        resolveEditorTheme(editorThemeId),
+        resolveEditorTheme(editorThemeId, appIsLight),
         editorSurfaceTheme(editorFontSize, false, true),
         EditorView.theme({
           // @codemirror/merge styles "changed text" as a 2px
@@ -98,8 +101,12 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
           // our flat background loses and the gradient underline
           // stays. The merge rules aren't !important themselves, so
           // !important wins regardless of specificity.
+          // Issue #40: keep the changed-WORD highlights soft so they don't
+          // wash out syntax-coloured (often dim, e.g. comments) text on the
+          // inserted side. A gentle word tint + a clear per-LINE wash carry
+          // the add/remove signal instead of a heavy block behind the text.
           ".cm-changedText": {
-            background: "rgba(64,160,90,0.26) !important",
+            background: "rgba(64,160,90,0.16) !important",
             textDecoration: "none",
             borderRadius: "2px",
             boxShadow: "none",
@@ -108,16 +115,25 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
           // removals — tint them red. More specific than the plain
           // `.cm-changedText` above so it wins on that side only.
           "&.cm-merge-a .cm-changedText": {
-            background: "rgba(239,83,80,0.24) !important",
+            background: "rgba(239,83,80,0.16) !important",
           },
+          // Per-line washes. Symmetric green/red so an inserted line and a
+          // deleted line read at the same weight (the old setup tinted the
+          // deleted side lighter, which made added lines look "louder").
           ".cm-changedLine": {
-            backgroundColor: "rgba(64,160,90,0.10) !important",
+            backgroundColor: "rgba(64,160,90,0.13) !important",
+          },
+          "ins.cm-insertedLine, .cm-insertedLine": {
+            backgroundColor: "rgba(64,160,90,0.13) !important",
           },
           ".cm-deletedChunk": {
-            backgroundColor: "rgba(239,83,80,0.08)",
+            backgroundColor: "rgba(239,83,80,0.12)",
+          },
+          "del.cm-deletedLine, .cm-deletedLine": {
+            backgroundColor: "rgba(239,83,80,0.13) !important",
           },
           ".cm-deletedText": {
-            background: "rgba(239,83,80,0.26) !important",
+            background: "rgba(239,83,80,0.16) !important",
             textDecoration: "none",
           },
           // CodeMirror merge wraps inserted/deleted lines in <ins>/<del>
@@ -135,6 +151,21 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
           },
           "del.cm-deletedLine .cm-deletedText, .cm-deletedLine .cm-deletedText, del.cm-deletedLine .cm-deleted, .cm-deletedLine .cm-deleted": {
             background: "transparent !important",
+          },
+          // The "N unchanged lines" collapsed-fold widget. @codemirror/merge
+          // ships it with a hard-coded dark gradient that renders as a solid
+          // black bar under a light app theme (issue #40). Re-skin it to the
+          // app surface vars so it tracks any palette.
+          ".cm-collapsedLines": {
+            background: "color-mix(in srgb, var(--color-fg) 6%, transparent) !important",
+            color: "var(--color-fg-dim) !important",
+            backgroundImage: "none !important",
+            borderTop: "1px solid var(--color-border-soft)",
+            borderBottom: "1px solid var(--color-border-soft)",
+          },
+          ".cm-collapsedLines:hover": {
+            background: "color-mix(in srgb, var(--color-fg) 11%, transparent) !important",
+            color: "var(--color-fg) !important",
           },
         }),
       ];
@@ -184,7 +215,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       mergeRef.current?.destroy(); mergeRef.current = null;
       editorRef.current?.destroy(); editorRef.current = null;
     };
-  }, [ws.id, tab.path, editorFontSize, mode, editorThemeId]);
+  }, [ws.id, tab.path, editorFontSize, mode, editorThemeId, appIsLight]);
 
   const effectiveMode: Mode = oneSided ? "unified" : mode;
 

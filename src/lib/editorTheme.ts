@@ -20,6 +20,7 @@ import { tokyoNight } from "@uiw/codemirror-theme-tokyo-night";
 import { xcodeDark, xcodeLight } from "@uiw/codemirror-theme-xcode";
 
 export type EditorThemeId =
+  | "auto"
   | "atomone"
   | "tokyo-night"
   | "aura"
@@ -31,11 +32,17 @@ export type EditorThemeId =
   | "xcode-dark"
   | "xcode-light";
 
-/** atomone — the default. The theme terax-ai ships and what the
- *  user pointed at; warm, high-contrast, easy on the eyes. */
-export const DEFAULT_EDITOR_THEME: EditorThemeId = "atomone";
+/** "auto" — the default: follow the app palette so code is never light
+ *  tokens on a light background (issue #40). Resolves to a light syntax
+ *  theme under a light app theme, a dark one otherwise. */
+export const DEFAULT_EDITOR_THEME: EditorThemeId = "auto";
 
-const THEME_EXT: Record<EditorThemeId, Extension> = {
+/** Concrete syntax themes "auto" maps to, by app palette brightness. */
+type ConcreteThemeId = Exclude<EditorThemeId, "auto">;
+const AUTO_DARK: ConcreteThemeId = "atomone";
+const AUTO_LIGHT: ConcreteThemeId = "github-light";
+
+const THEME_EXT: Record<Exclude<EditorThemeId, "auto">, Extension> = {
   atomone,
   "tokyo-night": tokyoNight,
   aura,
@@ -51,6 +58,7 @@ const THEME_EXT: Record<EditorThemeId, Extension> = {
 /** Picker order — dark themes first (the app's primary look), the two
  *  light themes last. */
 export const EDITOR_THEMES: { id: EditorThemeId; label: string }[] = [
+  { id: "auto", label: "Auto (match app)" },
   { id: "atomone", label: "Atom One" },
   { id: "tokyo-night", label: "Tokyo Night" },
   { id: "aura", label: "Aura" },
@@ -63,10 +71,13 @@ export const EDITOR_THEMES: { id: EditorThemeId; label: string }[] = [
   { id: "xcode-light", label: "Xcode Light" },
 ];
 
-/** Resolve a (possibly stale) theme id to its CodeMirror extension,
- *  falling back to the default if the stored id is unknown. */
-export function resolveEditorTheme(id: string): Extension {
-  return THEME_EXT[id as EditorThemeId] ?? THEME_EXT[DEFAULT_EDITOR_THEME];
+/** Resolve a (possibly stale) theme id to its CodeMirror extension.
+ *  "auto" follows the app palette (`appIsLight`) so a light app never
+ *  renders dark-theme tokens on a light background (issue #40). Unknown
+ *  ids fall back to the auto behaviour. */
+export function resolveEditorTheme(id: string, appIsLight = false): Extension {
+  if (id === "auto") return THEME_EXT[appIsLight ? AUTO_LIGHT : AUTO_DARK];
+  return THEME_EXT[id as ConcreteThemeId] ?? THEME_EXT[appIsLight ? AUTO_LIGHT : AUTO_DARK];
 }
 
 /**

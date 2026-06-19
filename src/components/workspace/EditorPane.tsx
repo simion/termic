@@ -31,7 +31,7 @@ import { properties } from "@codemirror/legacy-modes/mode/properties";
 import { workspaceFileRead, workspaceFileWrite } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { usePrefs } from "@/store/prefs";
+import { usePrefs, resolveTheme } from "@/store/prefs";
 import { resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
 
 // Map a file path to a CodeMirror language extension. We match by extension
@@ -157,16 +157,19 @@ export function EditorPane({ ws, tab, onContent }: {
 
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const codeLigatures  = usePrefs(s => s.codeLigatures);
-  // Syntax theme (atomone, tokyo-night, …). Independent of the app
-  // themeMode — surfaces still track the app palette via CSS vars.
+  // Syntax theme (atomone, tokyo-night, …). Surfaces track the app
+  // palette via CSS vars; the "auto" syntax theme also follows the app
+  // palette so a light app never renders dark tokens on a light bg (#40).
   const editorThemeId  = usePrefs(s => s.editorThemeId);
+  const themeMode      = usePrefs(s => s.themeMode);
+  const appIsLight     = resolveTheme(themeMode) === "light";
 
   // Everything in the theme compartment: the chosen syntax theme plus the
   // surface overrides (font-size / ligatures fold in here too). All
   // reconfigure live — no EditorView rebuild, so cursor + undo survive.
   function buildTheme(sizePx: number, ligatures: boolean, themeId: string): Extension[] {
     return [
-      resolveEditorTheme(themeId),
+      resolveEditorTheme(themeId, appIsLight),
       editorSurfaceTheme(sizePx, ligatures),
     ];
   }
@@ -321,7 +324,7 @@ export function EditorPane({ ws, tab, onContent }: {
       ),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorFontSize, codeLigatures, editorThemeId]);
+  }, [editorFontSize, codeLigatures, editorThemeId, appIsLight]);
 
   return (
     // No chrome bar: the tab already shows the filename, and the old

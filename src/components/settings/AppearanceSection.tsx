@@ -2,7 +2,7 @@
 // Mirrors Termic's split: "Mono Font" governs the editor; "Terminal Font"
 // governs xterm. Sizes are independent.
 
-import { usePrefs, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync } from "@/store/prefs";
+import { usePrefs, resolveTheme, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync } from "@/store/prefs";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
@@ -332,6 +332,8 @@ function CodePreview() {
   const themeId  = usePrefs(s => s.editorThemeId);
   const size     = usePrefs(s => s.editorFontSize);
   const ligatures = usePrefs(s => s.codeLigatures);
+  const themeMode = usePrefs(s => s.themeMode);
+  const appIsLight = resolveTheme(themeMode) === "light";
   const hostRef  = useRef<HTMLDivElement>(null);
   const viewRef  = useRef<EditorView | null>(null);
   const themeComp = useRef(new Compartment());
@@ -346,7 +348,7 @@ function CodePreview() {
           EditorView.editable.of(false),
           EditorView.theme({ "&.cm-editor": { outline: "none" } }),
           themeComp.current.of([
-            resolveEditorTheme(themeId),
+            resolveEditorTheme(themeId, appIsLight),
             editorSurfaceTheme(size, ligatures),
           ]),
         ],
@@ -364,11 +366,11 @@ function CodePreview() {
     if (!v) return;
     v.dispatch({
       effects: themeComp.current.reconfigure([
-        resolveEditorTheme(themeId),
+        resolveEditorTheme(themeId, appIsLight),
         editorSurfaceTheme(size, ligatures),
       ]),
     });
-  }, [themeId, size, ligatures]);
+  }, [themeId, size, ligatures, appIsLight]);
 
   return (
     <div ref={hostRef} className="rounded-lg border border-[var(--color-border-soft)] overflow-hidden bg-[var(--color-bg)]" />
