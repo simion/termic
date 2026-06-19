@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { workspaceSpotlightStatus } from "@/lib/ipc";
+import { installPointerEventsGuard } from "@/lib/pointerEventsGuard";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
@@ -39,6 +40,7 @@ export function App() {
   useAttentionNotifier();
 
   useEffect(() => {
+    installPointerEventsGuard();
     loadAll();
     // CLI install detection runs at startup + when Settings → Agent CLIs
     // opens (AgentsSection drives the latter). Deliberately NOT on every

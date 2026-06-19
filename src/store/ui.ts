@@ -274,7 +274,15 @@ export const useUI = create<UIState>(set => ({
     runScriptRequest: { wsId, nonce: (s.runScriptRequest?.nonce ?? 0) + 1 },
   })),
   askConfirm: (req: any) =>
-    new Promise<any>(resolve => set({ confirm: { req, resolve } })),
+    // Defer mounting the confirm dialog by a macrotask. When a Radix
+    // ContextMenu / Dropdown item's onSelect calls askConfirm, the menu is
+    // still mounted and holds a `pointer-events: none` lock on <body>. If the
+    // dialog mounts synchronously it captures that `none` as its own baseline,
+    // and on close restores `none` — leaving the whole UI unclickable (an
+    // invisible layer over everything). setTimeout(0) runs after React has
+    // flushed the menu's unmount + its body cleanup, so the dialog mounts with
+    // a clean `pointer-events: ""` baseline. (GH #43: discard via right-click.)
+    new Promise<any>(resolve => setTimeout(() => set({ confirm: { req, resolve } }), 0)),
   resolveConfirm: (ok, checked) => {
     const c = useUI.getState().confirm;
     if (c) {
