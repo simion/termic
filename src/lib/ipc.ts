@@ -303,6 +303,15 @@ export const workspaceFileWrite = (id: string, path: string, content: string) =>
   invoke<void>("workspace_file_write", { id, path, content });
 export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
 export const workspaceDirList  = (id: string, rel: string) => invoke<FileEntry[]>("workspace_dir_list", { id, rel });
+/** Rename a file/dir in place (new bare name). Returns the new ws-relative path. */
+export const workspacePathRename = (id: string, path: string, newName: string) =>
+  invoke<string>("workspace_path_rename", { id, path, newName });
+/** Permanently delete a file/dir (caller confirms first). */
+export const workspacePathDelete = (id: string, path: string) =>
+  invoke<void>("workspace_path_delete", { id, path });
+/** Reveal a file/dir in the OS file manager ("Show in Finder"). */
+export const workspaceRevealPath = (id: string, path: string) =>
+  invoke<void>("workspace_reveal_path", { id, path });
 export const workspaceChanges  = (id: string) => invoke<Changes>("workspace_changes", { id });
 // Fork-style staging: staged/unstaged split per repo + stage/unstage/commit.
 export const workspaceGitStatus = (id: string) => invoke<GitStatus>("workspace_git_status", { id });
@@ -543,6 +552,9 @@ async function resolveCompletionSoundValue(
 }
 
 export const openPath  = (path: string) => invoke<void>("open_path", { path });
+/** Reveal an absolute path in the OS file manager (select it on macOS/Windows,
+ *  open its parent on Linux). For workspace-relative paths use workspaceRevealPath. */
+export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
 export const homeDir   = () => invoke<string>("home_dir");
 export const pathExists= (path: string) => invoke<boolean>("path_exists", { path });
 export const pathIsGitRepo = (path: string) => invoke<boolean>("path_is_git_repo", { path });

@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { Tip } from "@/components/ui/Tooltip";
+import { CopyPathItems } from "./CopyPathItems";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
 // Per-side status → glyph / color / label. `?` is untracked (rendered as
@@ -393,6 +394,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           onToggle={doStage}
           onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "unstaged" } : undefined)}
           rowActionIcon="down"
+          root={ws.path} repoDir={dir}
           style={{ flexBasis: `${ratio * 100}%`, flexGrow: 0, flexShrink: 0 }}
         />
         <div className="relative h-px shrink-0 bg-[var(--color-border-soft)]">
@@ -407,6 +409,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           onToggle={doUnstage}
           onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "staged" } : undefined)}
           rowActionIcon="up"
+          root={ws.path} repoDir={dir}
           className="min-h-0 flex-1"
         />
       </div>
@@ -504,13 +507,19 @@ interface PaneProps {
    *  contract as onToggle so a folder row discards its whole subtree. */
   onDiscard: (paths: string[]) => void;
   rowActionIcon: "up" | "down";
+  /** Workspace absolute root + active repo's dir_name. Used to build the
+   *  absolute / workspace-relative paths for the "Copy path" context items.
+   *  Git paths are repo-relative, so the workspace-relative form prefixes
+   *  `repoDir` (empty for the host repo). */
+  root: string;
+  repoDir: string;
   className?: string;
   style?: React.CSSProperties;
 }
 
 function Pane({
   title, files, pane, viewMode, collapsed, setCollapsed, clickable, selectedKey, stageGlyph,
-  headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, className, style,
+  headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, className, style,
 }: PaneProps) {
   return (
     <div className={cn("flex flex-col overflow-hidden", className)} style={style}>
@@ -540,6 +549,7 @@ function Pane({
             selectedKey={selectedKey} stageGlyph={stageGlyph}
             onRowClick={onRowClick}
             onToggle={onToggle} onDiscard={onDiscard} rowActionIcon={rowActionIcon}
+            root={root} repoDir={repoDir}
           />
         )}
       </div>
@@ -591,6 +601,8 @@ function rowProps(p: Omit<PaneProps, "title" | "headerAction" | "className" | "s
     onToggle: p.onToggle,
     onDiscard: p.onDiscard,
     rowActionIcon: p.rowActionIcon,
+    root: p.root,
+    repoDir: p.repoDir,
   };
 }
 
@@ -627,7 +639,7 @@ function buildTree(files: GitFile[]): TreeNode {
 }
 
 function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" | "style">) {
-  const { files, pane, collapsed, setCollapsed, onToggle, onDiscard, rowActionIcon, stageGlyph } = props;
+  const { files, pane, collapsed, setCollapsed, onToggle, onDiscard, rowActionIcon, stageGlyph, root, repoDir } = props;
   const tree = useMemo(() => buildTree(files), [files]);
   const DirActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
 
@@ -683,15 +695,17 @@ function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" 
               </div>
             </ContextMenuTrigger>
             <ContextMenuContent>
+              {/* Git actions first (stage + discard), then path/finder items. */}
               <ContextMenuItem onSelect={() => onToggle(leaves)}>
                 <DirActionIcon />
                 {rowActionIcon === "down" ? "Stage" : "Unstage"} <span className="font-medium">"{k.name}"</span>
               </ContextMenuItem>
-              <ContextMenuSeparator />
               <ContextMenuItem destructive onSelect={() => onDiscard(leaves)}>
                 <Trash2 />
                 Discard <span className="font-medium">"{k.name}"</span>
               </ContextMenuItem>
+              <ContextMenuSeparator />
+              <CopyPathItems rel={repoDir ? `${repoDir}/${k.path}` : k.path} root={root} isDir />
             </ContextMenuContent>
           </ContextMenuRoot>,
         );
@@ -711,7 +725,7 @@ function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" 
 // the diff preview. Double click stages / unstages (same as the trailing
 // arrow button). The arrow + the staging double-click work even on
 // non-clickable repo_root rows (no diff there, but staging is fine).
-function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clickable, onClick, onToggle, onDiscard, rowActionIcon }: {
+function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clickable, onClick, onToggle, onDiscard, rowActionIcon, root, repoDir }: {
   file: GitFile;
   label: string;
   depth?: number;
@@ -723,6 +737,8 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clicka
   onToggle: (paths: string[]) => void;
   onDiscard: (paths: string[]) => void;
   rowActionIcon: "up" | "down";
+  root: string;
+  repoDir: string;
 }) {
   const key = file.status;
   const ActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
@@ -778,15 +794,17 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clicka
     </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        {/* Git actions first (stage + discard), then the path/finder items. */}
         <ContextMenuItem onSelect={() => onToggle([file.path])}>
           <ActionIcon />
           {actionLabel}
         </ContextMenuItem>
-        <ContextMenuSeparator />
         <ContextMenuItem destructive onSelect={() => onDiscard([file.path])}>
           <Trash2 />
           Discard changes
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        <CopyPathItems rel={repoDir ? `${repoDir}/${file.path}` : file.path} root={root} />
       </ContextMenuContent>
     </ContextMenuRoot>
   );

@@ -4115,6 +4115,85 @@ fn workspace_file_write(id: String, path: String, content: String) -> Result<(),
     fs::write(&abs, content).map_err(|e| format!("write failed: {e}"))
 }
 
+/// Rename a file or directory in the workspace (file-tree context menu).
+/// `new_name` is a bare name (no path separators) — the entry stays in its
+/// current directory. Member-aware + constrained to the worktree via
+/// `safe_workspace_path`. Returns the new workspace-relative path so the
+/// caller can update an open tab / re-select the row.
+#[tauri::command]
+fn workspace_path_rename(id: String, path: String, new_name: String) -> Result<String, String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() || trimmed.contains('/') || trimmed == "." || trimmed == ".." {
+        return Err(format!("invalid name: {new_name:?}"));
+    }
+    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
+    let abs = safe_workspace_path(&cwd, &rel)?;
+    let parent = abs.parent().ok_or("no parent directory")?;
+    let dest = parent.join(trimmed);
+    if dest.exists() {
+        return Err(format!("\"{trimmed}\" already exists here"));
+    }
+    fs::rename(&abs, &dest).map_err(|e| format!("rename failed: {e}"))?;
+    // Rebuild the workspace-relative path: swap the last segment of the
+    // INBOUND `path` (which keeps any `<member>/` prefix) for the new name.
+    let new_rel = match path.rsplit_once('/') {
+        Some((head, _)) => format!("{head}/{trimmed}"),
+        None => trimmed.to_string(),
+    };
+    Ok(new_rel)
+}
+
+/// Delete a file or directory in the workspace (file-tree context menu).
+/// Permanent (no trash) — the caller confirms first. Directories delete
+/// recursively. Member-aware + worktree-constrained.
+#[tauri::command]
+fn workspace_path_delete(id: String, path: String) -> Result<(), String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
+    let abs = safe_workspace_path(&cwd, &rel)?;
+    let meta = fs::symlink_metadata(&abs).map_err(|e| format!("stat failed: {e}"))?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        fs::remove_dir_all(&abs).map_err(|e| format!("delete failed: {e}"))
+    } else {
+        fs::remove_file(&abs).map_err(|e| format!("delete failed: {e}"))
+    }
+}
+
+/// Reveal a workspace entry in the OS file manager ("Show in Finder").
+/// Resolves the absolute path server-side (member-aware) so the frontend
+/// doesn't have to reconstruct paths for members that live outside the
+/// wrapper. macOS selects the item; Windows selects it; Linux opens the
+/// containing folder (no portable "select" verb).
+#[tauri::command]
+fn workspace_reveal_path(id: String, path: String) -> Result<(), String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
+    let abs = safe_workspace_path(&cwd, &rel)?;
+    let target = abs.to_string_lossy().into_owned();
+    let (program, args) = reveal_command(std::env::consts::OS, &target);
+    Command::new(program).args(&args).status().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// argv to reveal `target` in the OS file manager, selecting it where the
+/// platform supports it. Split out for the same testability reason as
+/// `open_command`.
+fn reveal_command(os: &str, target: &str) -> (&'static str, Vec<String>) {
+    match os {
+        "macos" => ("open", vec!["-R".to_string(), target.to_string()]),
+        // explorer /select,<path> opens the folder with the item highlighted.
+        "windows" => ("explorer", vec![format!("/select,{target}")]),
+        // No portable freedesktop "select" verb — open the containing dir.
+        _ => {
+            let dir = Path::new(target).parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| target.to_string());
+            ("xdg-open", vec![dir])
+        }
+    }
+}
+
 /// Return the (original, modified) sides of a tracked file so a
 /// language-aware diff viewer can render them side-by-side with
 /// syntax highlighting. Original = `git show HEAD:<path>` (empty
@@ -5744,6 +5823,18 @@ fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Reveal an ABSOLUTE path in the OS file manager, selecting it where the
+/// platform supports it (macOS / Windows; Linux opens the containing dir).
+/// Sibling of `open_path`: callers that already hold the absolute path use
+/// this instead of `workspace_reveal_path` (which resolves a workspace-
+/// relative path server-side). Cross-platform via `reveal_command`.
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    let (program, args) = reveal_command(std::env::consts::OS, &path);
+    Command::new(program).args(&args).status().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// The argv for opening `target` (a URL or filesystem path) in the OS
 /// default handler. Split out from the side-effecting spawn so the
 /// per-platform dispatch is unit-testable. `os` is
@@ -6745,9 +6836,10 @@ pub fn run() {
             workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
             workspace_changes, workspace_git_status, workspace_stage, workspace_unstage, workspace_commit, workspace_discard,
             workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
+            workspace_path_rename, workspace_path_delete, workspace_reveal_path,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
+            notify, open_path, reveal_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,

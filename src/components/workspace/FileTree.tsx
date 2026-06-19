@@ -5,12 +5,15 @@
 // - Indentation reflects depth; chevrons rotate to indicate expansion state.
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Pencil, Trash2 } from "lucide-react";
 import type { FileEntry } from "@/lib/types";
-import { workspaceDirList } from "@/lib/ipc";
+import { workspaceDirList, workspacePathRename, workspacePathDelete } from "@/lib/ipc";
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
+import { CopyPathItems } from "./CopyPathItems";
 
 interface Props {
   wsId: string;
@@ -41,6 +44,9 @@ function sameChildren(
 }
 
 export function FileTree({ wsId, reloadToken = 0 }: Props) {
+  // Absolute workspace root, used to build the "Copy path" (absolute) item.
+  // Tree `rel` paths are workspace-root-relative, so absolute = root/rel.
+  const root = useApp(s => s.workspaces.find(w => w.id === wsId)?.path ?? "");
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   // Per-dir cache of children, keyed by rel-path ("" = root).
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
@@ -113,6 +119,16 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
     finally { setLoading(s => { const n = new Set(s); n.delete(rel); return n; }); }
   }, [wsId, children, loading]);
 
+  // Force a re-read of one dir from disk + update the cache. Used after a
+  // context-menu rename/delete mutates that directory's contents. "" = root.
+  const refetchDir = useCallback(async (rel: string) => {
+    try {
+      const list = await workspaceDirList(wsId, rel);
+      setChildren(c => ({ ...c, [rel]: list }));
+      if (rel === "") setRootEntries(list);
+    } catch (e) { console.error("refetch dir failed", rel, e); }
+  }, [wsId]);
+
   const toggle = useCallback((rel: string) => {
     setExpanded(s => {
       const n = new Set(s);
@@ -167,8 +183,8 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
     <div ref={treeRef} className="flex flex-col select-none">
       {rootEntries.map(e => (
         <TreeNode
-          key={e.name} wsId={wsId} entry={e} depth={0} rel={e.name}
-          expanded={expanded} children_={children} toggle={toggle} revealed={revealedRel}
+          key={e.name} wsId={wsId} entry={e} depth={0} rel={e.name} root={root}
+          expanded={expanded} children_={children} toggle={toggle} revealed={revealedRel} refetch={refetchDir}
         />
       ))}
     </div>
@@ -180,19 +196,86 @@ interface NodeProps {
   entry: FileEntry;
   depth: number;
   rel: string;
+  /** Absolute workspace root, for the "Copy path" context item. */
+  root: string;
   expanded: Set<string>;
   children_: Record<string, FileEntry[]>;
   toggle: (rel: string) => void;
   revealed: string | null;
+  /** Re-read a directory after a rename/delete mutates its contents. */
+  refetch: (rel: string) => void;
 }
 
-function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle, revealed }: NodeProps) {
+function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch }: NodeProps) {
   const openPreviewTab = useApp(s => s.openPreviewTab);
   const persistTab = useApp(s => s.persistTab);
+  const closeTab = useApp(s => s.closeTab);
   const tabs = useApp(s => s.tabs[wsId] || []);
   const activeTabId = useApp(s => s.activeTab[wsId]);
   const isOpen = expanded.has(rel);
   const kids = children_[rel];
+
+  // Inline rename state. While renaming the row swaps to a text input.
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(entry.name);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!renaming) return;
+    const el = renameInputRef.current;
+    if (el) { el.focus(); el.select(); }
+  }, [renaming]);
+
+  // The directory this entry lives in (re-read after a mutation).
+  const parentRel = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+
+  // Close any open edit/diff tabs pointing at a path that just moved or was
+  // deleted (the entry itself, or anything beneath it when it's a folder).
+  function closeStaleTabs(p: string) {
+    for (const t of tabs) {
+      if ((t.type === "edit" || t.type === "diff") && (t.path === p || t.path.startsWith(`${p}/`))) {
+        closeTab(wsId, t.id);
+      }
+    }
+  }
+
+  // Enter and the input's onBlur both fire submit; this guard keeps the
+  // rename from running twice (the second call would hit the old, now
+  // missing path and toast a spurious error).
+  const submittingRef = useRef(false);
+  async function submitRename() {
+    if (submittingRef.current) return;
+    const name = draft.trim();
+    if (!name || name === entry.name) { setRenaming(false); return; }
+    submittingRef.current = true;
+    setRenaming(false);
+    try {
+      await workspacePathRename(wsId, rel, name);
+      closeStaleTabs(rel);
+      refetch(parentRel);
+    } catch (e) {
+      useUI.getState().pushToast(String(e), "error");
+      submittingRef.current = false;
+    }
+  }
+
+  async function remove() {
+    const ok = await useUI.getState().askConfirm({
+      title: `Delete ${entry.name}?`,
+      message: entry.is_dir
+        ? "This permanently deletes the folder and everything inside it."
+        : "This permanently deletes the file.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await workspacePathDelete(wsId, rel);
+      closeStaleTabs(rel);
+      refetch(parentRel);
+    } catch (e) {
+      useUI.getState().pushToast(String(e), "error");
+    }
+  }
 
   const activeTab = tabs.find(t => t.id === activeTabId);
   const isActive = activeTab?.type === "edit" && activeTab.path === rel;
@@ -217,6 +300,29 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle, reveal
 
   return (
     <>
+      {renaming ? (
+        <div
+          className="flex h-[26px] w-full min-w-0 items-center gap-2 rounded-sm px-2 text-[13px]"
+          style={{ paddingLeft: 6 + depth * 12 }}
+        >
+          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" />
+          {iconUrl ? <img src={iconUrl} alt="" className="h-4 w-4 shrink-0 file-icon" /> : <span className="h-4 w-4 shrink-0" />}
+          <input
+            ref={renameInputRef}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") { e.preventDefault(); submitRename(); }
+              else if (e.key === "Escape") { e.preventDefault(); setRenaming(false); setDraft(entry.name); }
+            }}
+            onBlur={submitRename}
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            className="min-w-0 flex-1 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1 py-[1px] text-[13px] text-[var(--color-fg)] outline-none"
+          />
+        </div>
+      ) : (
+      <ContextMenuRoot>
+      <ContextMenuTrigger asChild>
       <button
         onClick={onClick}
         onDoubleClick={onDoubleClick}
@@ -225,6 +331,10 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle, reveal
         className={cn(
           "group flex h-[26px] w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 text-left text-[13px] transition-colors duration-150 outline-none select-none",
           rel === revealed && "ring-1 ring-inset ring-[var(--color-accent)]",
+          // While this row's context menu is open, keep it visibly marked so
+          // it's clear which item the actions apply to (Radix sets
+          // data-state="open" on the trigger).
+          "data-[state=open]:bg-[var(--color-hover)] data-[state=open]:text-[var(--color-fg)] data-[state=open]:ring-1 data-[state=open]:ring-inset data-[state=open]:ring-[var(--color-border)]",
           isActive
             ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
             // Idle rows: a NEUTRAL dimmed foreground (fg at 85%), not
@@ -249,10 +359,24 @@ function TreeNode({ wsId, entry, depth, rel, expanded, children_, toggle, reveal
       }
         <span className="truncate flex-1 min-w-0 font-medium">{entry.name}</span>
       </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <CopyPathItems rel={rel} root={root} isDir={entry.is_dir} />
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => { setDraft(entry.name); setRenaming(true); }}>
+          <Pencil /> Rename
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem destructive onSelect={remove}>
+          <Trash2 /> Remove
+        </ContextMenuItem>
+      </ContextMenuContent>
+      </ContextMenuRoot>
+      )}
       {entry.is_dir && isOpen && kids && kids.map(c => (
         <TreeNode
-          key={c.name} wsId={wsId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`}
-          expanded={expanded} children_={children_} toggle={toggle} revealed={revealed}
+          key={c.name} wsId={wsId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`} root={root}
+          expanded={expanded} children_={children_} toggle={toggle} revealed={revealed} refetch={refetch}
         />
       ))}
       {entry.is_dir && isOpen && !kids && (

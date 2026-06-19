@@ -19,6 +19,8 @@ import { cn } from "@/lib/utils";
 import { openPath } from "@/lib/ipc";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
+import { CopyPathItems } from "./CopyPathItems";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
@@ -65,14 +67,24 @@ function EditorBreadcrumb({ ws }: { ws: Workspace }) {
           return (
             <div key={rel} className="flex min-w-0 items-center">
               {i > 0 && <ChevronRight className="mx-0.5 h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />}
-              <button
-                onClick={() => revealInTree(ws.id, rel, !isLast)}
-                title={isLast ? "Locate in file tree" : `Reveal ${rel} in file tree`}
-                className={cn(
-                  "max-w-[240px] truncate rounded px-1 py-0.5 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-                  isLast ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]",
-                )}
-              >{seg}</button>
+              {/* Each segment is its own copy target: right-clicking a folder
+                  segment copies the path up to that folder; the last segment
+                  copies the file (GH #44). */}
+              <ContextMenuRoot>
+                <ContextMenuTrigger asChild>
+                  <button
+                    onClick={() => revealInTree(ws.id, rel, !isLast)}
+                    title={isLast ? "Locate in file tree" : `Reveal ${rel} in file tree`}
+                    className={cn(
+                      "max-w-[240px] truncate rounded px-1 py-0.5 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                      isLast ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]",
+                    )}
+                  >{seg}</button>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <CopyPathItems rel={rel} root={ws.path} isDir={!isLast} />
+                </ContextMenuContent>
+              </ContextMenuRoot>
             </div>
           );
         })}

@@ -883,6 +883,9 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
     t => t.id === activeTabId || t.id === activeRightTabId,
   );
 
+  // Workspace actions menu — controlled so a right-click on the row can
+  // open the same menu the kebab button triggers.
+  const [menuOpen, setMenuOpen] = useState(false);
   // Workspace rename
   const [wsRenaming, setWsRenaming] = useState<string | null>(null);
   const wsRenameInputRef = useRef<HTMLInputElement | null>(null);
@@ -1031,6 +1034,9 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             if (isActive && expandMode === "click") setWorkspaceCollapsed(w.id, !collapsed);
           }
         }}
+        // Right-click anywhere on the row opens the same actions menu as
+        // the kebab button (which it anchors to).
+        onContextMenu={(e) => { e.preventDefault(); setMenuOpen(true); }}
         className={cn(
           "group/wsrow ml-3 flex items-center gap-1 rounded-md px-1 py-1 text-[13px] cursor-pointer select-none transition-colors",
           // Strong selection on the header when active AND no child row
@@ -1122,7 +1128,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               {hasAttention ? <TabBadge reason="attention" /> : hasDone ? <TabBadge reason="done" /> : <TabBadge reason="working" />}
             </span>
           )}
-          <DropdownRoot>
+          <DropdownRoot open={menuOpen} onOpenChange={setMenuOpen}>
             <Tip content="Workspace menu">
             <DropdownTrigger asChild>
               <button

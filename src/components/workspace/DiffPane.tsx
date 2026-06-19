@@ -18,6 +18,8 @@ import { langForPath } from "./EditorPane";
 import { resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
 import { reviewCommentsExtension, dispatchFileComment } from "./reviewCommentsExt";
 import { MessageSquarePlus } from "lucide-react";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
+import { CopyPathItems } from "./CopyPathItems";
 
 type Mode = "side" | "unified";
 const LS_DIFF_MODE = "diffMode";
@@ -225,7 +227,19 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
     // bleeds through any transparent ancestor.
     <div className="flex h-full flex-col bg-[var(--color-bg)]">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3">
-        <span className="font-mono text-[12.5px] text-[var(--color-fg-dim)] truncate">{tab.path}</span>
+        {/* Selectable + right-clickable so the path can be copied (GH #44).
+            `select-text` overrides the pane's default non-selectable chrome. */}
+        <ContextMenuRoot>
+          <ContextMenuTrigger asChild>
+            <span
+              title={tab.path}
+              className="font-mono text-[12.5px] text-[var(--color-fg-dim)] truncate cursor-text select-text"
+            >{tab.path}</span>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <CopyPathItems rel={tab.path} root={ws.path} />
+          </ContextMenuContent>
+        </ContextMenuRoot>
         <div className="flex items-center gap-1">
           {/* Side-by-side ⇄ Unified toggle. Persisted in localStorage
               so the user's preference sticks across launches. */}
