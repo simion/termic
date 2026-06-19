@@ -119,10 +119,32 @@ pub struct Project {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProjectMember {
-    pub project_id: String,
+    /// Canonical path to the member repo (or plain folder). This is the
+    /// member's identity within a multi-repo project — unique per project.
+    /// Members are self-contained: they no longer reference a registered
+    /// Project, so adding one never spawns a standalone sidebar project.
+    pub root_path: String,
+    /// Display name + default dir name inside the workspace wrapper.
+    pub name: String,
+    /// True when `root_path` is a plain folder (no git). Such a member
+    /// can only mount repo-root (a live symlink) — no worktree / branch.
+    pub non_git: bool,
+    /// Base ref worktree members branch from. Empty = the repo's default.
+    pub base_branch: String,
     pub setup_script: String,
     pub run_script: String,
     pub archive_script: String,
+    /// Sandbox lists unioned into the workspace's frozen sandbox at create.
+    #[serde(default)]
+    pub sandbox_rw_paths: Vec<String>,
+    #[serde(default)]
+    pub sandbox_allowed_hosts: Vec<String>,
+    /// LEGACY: pre-inline members referenced a Project by id. Retained so
+    /// projects.json written before this change still loads; migrated to
+    /// the inline fields above on first load (see migrate_legacy_members),
+    /// then dropped from disk on the next save.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
 }
 
 // Backwards-compatible deserializer: accepts both the legacy
@@ -361,11 +383,19 @@ impl Workspace {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct WorkspaceMember {
-    /// References Project.id. Resolves to the Project record for
-    /// sandbox-list union + display.
+    /// LEGACY: references Project.id for workspaces created before members
+    /// went inline. New workspaces leave this empty and use `repo_path`.
+    /// Kept so archive / sandbox code can still resolve old compositions.
+    #[serde(default)]
     pub project_id: String,
+    /// Canonical path to the member's SOURCE repo (or folder). Frozen at
+    /// create so archive can `git worktree remove` against it without
+    /// resolving a Project. Empty on legacy records — fall back to
+    /// `project_id` there.
+    #[serde(default)]
+    pub repo_path: String,
     /// Display name shown in the file tree / sidebar. Defaults to
-    /// the project's name; member dirs are created under this name
+    /// the member's name; member dirs are created under this name
     /// inside the wrapper (`<wrapper>/<dir_name>`).
     pub dir_name: String,
     /// Worktree branched off `base_branch`, or a plain symlink to
@@ -490,10 +520,103 @@ fn load_projects() -> Vec<Project> {
         Ok(p) => p,
         Err(_) => return Vec::new(),
     };
-    match fs::read_to_string(&f) {
+    let mut list: Vec<Project> = match fs::read_to_string(&f) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => Vec::new(),
+    };
+    // One-time migration: members used to reference a Project by id.
+    // Resolve those into the self-contained inline shape so adding a
+    // member never leaves a standalone project behind. Persist only when
+    // something actually changed (load_projects runs on nearly every IPC).
+    if migrate_legacy_members(&mut list) {
+        let _ = save_projects(&list);
     }
+    list
+}
+
+/// Migrate pre-inline multi-repo members (which referenced a Project by
+/// `project_id`) into the inline `ProjectMember` shape by copying the
+/// referenced project's path / name / git status / base / sandbox lists.
+/// Dangling references are dropped. Returns true if anything changed.
+fn migrate_legacy_members(list: &mut [Project]) -> bool {
+    use std::collections::HashMap;
+    // Snapshot id → resolvable fields up front (we mutate members below).
+    let lookup: HashMap<String, (String, String, bool, String, Vec<String>, Vec<String>)> = list
+        .iter()
+        .map(|p| {
+            (p.id.clone(), (
+                p.root_path.clone(), p.name.clone(), p.non_git,
+                p.base_branch.clone(), p.sandbox_rw_paths.clone(), p.sandbox_allowed_hosts.clone(),
+            ))
+        })
+        .collect();
+    let mut changed = false;
+    for p in list.iter_mut() {
+        if p.project_type != ProjectType::Multi { continue; }
+        let mut migrated = Vec::with_capacity(p.members.len());
+        for mut m in std::mem::take(&mut p.members) {
+            // Already inline (root_path set) — keep as-is.
+            if !m.root_path.is_empty() {
+                migrated.push(m);
+                continue;
+            }
+            if m.project_id.is_empty() { changed = true; continue; }
+            match lookup.get(&m.project_id) {
+                Some((rp, name, non_git, base, rw, hosts)) => {
+                    m.root_path = rp.clone();
+                    m.name = name.clone();
+                    m.non_git = *non_git;
+                    if m.base_branch.is_empty() { m.base_branch = base.clone(); }
+                    if m.sandbox_rw_paths.is_empty() { m.sandbox_rw_paths = rw.clone(); }
+                    if m.sandbox_allowed_hosts.is_empty() { m.sandbox_allowed_hosts = hosts.clone(); }
+                    m.project_id = String::new();
+                    changed = true;
+                    migrated.push(m);
+                }
+                // Dangling reference — drop the broken member.
+                None => { changed = true; }
+            }
+        }
+        p.members = migrated;
+    }
+    changed
+}
+
+/// Expand a leading `~/` to the user's home dir; otherwise return as-is.
+fn expand_tilde(path: &str) -> String {
+    let trimmed = path.trim();
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|h| h.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Normalize an inbound inline member: expand + canonicalize its path,
+/// detect git, fill name / base_branch defaults. The frontend may send a
+/// bare path; Rust is the source of truth for the stored fields.
+fn normalize_member(mut m: ProjectMember) -> Result<ProjectMember, String> {
+    let expanded = expand_tilde(&m.root_path);
+    if expanded.is_empty() { return Err("member path is required".into()); }
+    let pb = PathBuf::from(&expanded);
+    if !pb.exists() { return Err(format!("{} does not exist", expanded)); }
+    if !pb.is_dir() { return Err(format!("{} is not a directory", expanded)); }
+    let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
+    let is_git = git(&["rev-parse", "--git-dir"], &canon).is_ok();
+    m.non_git = !is_git;
+    m.root_path = canon.to_string_lossy().into_owned();
+    if m.name.trim().is_empty() {
+        m.name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
+    }
+    if is_git && m.base_branch.trim().is_empty() {
+        let base = detect_base_branch(&canon).unwrap_or_else(|_| "main".into());
+        let remote = detect_default_remote(&canon);
+        m.base_branch = format!("{remote}/{base}");
+    }
+    m.project_id = String::new();
+    Ok(m)
 }
 fn save_projects(list: &[Project]) -> Result<()> {
     fs::write(projects_file()?, serde_json::to_string_pretty(list)?)?;
@@ -690,20 +813,28 @@ fn live_sandbox_lists(ws: &Workspace) -> (Vec<String>, Vec<String>) {
     rw.extend(ws.sandbox_rw_paths.iter().cloned());
     hosts.extend(ws.sandbox_allowed_hosts.iter().cloned());
 
-    // Projects contributing to this workspace: the lone one for a
-    // single-project workspace, or every member of a multi-repo one.
-    let pids: Vec<String> = if ws.composition.is_empty() {
-        vec![ws.project_id.clone()]
-    } else {
-        ws.composition.iter().map(|m| m.project_id.clone()).collect()
-    };
-    for pid in pids {
-        if let Some(p) = projects.iter().find(|p| p.id == pid) {
+    // Repos contributing to this workspace.
+    if ws.composition.is_empty() {
+        // Single-repo: the project's committed `.termic.yaml` sandbox block
+        // (re-read live) + its personal projects.json overrides.
+        if let Some(p) = projects.iter().find(|p| p.id == ws.project_id) {
             let cfg = repo_config_for(p);
             rw.extend(cfg.sandbox.allowed_paths);
             hosts.extend(cfg.sandbox.allowed_hosts);
             rw.extend(p.sandbox_rw_paths.iter().cloned());
             hosts.extend(p.sandbox_allowed_hosts.iter().cloned());
+        }
+    } else {
+        // Multi-repo: each member's committed `.termic.yaml` sandbox block,
+        // re-read live from its source repo. (Member sandbox lists from the
+        // multi-repo project were frozen into the workspace's pinned arrays
+        // at create, so they're already covered above.)
+        for m in &ws.composition {
+            let rp = member_repo_path(m);
+            if rp.is_empty() { continue; }
+            let cfg = repo_config::load_or_default(Path::new(&rp));
+            rw.extend(cfg.sandbox.allowed_paths);
+            hosts.extend(cfg.sandbox.allowed_hosts);
         }
     }
     (dedup_strings(rw), dedup_strings(hosts))
@@ -1048,7 +1179,7 @@ fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, Stri
             return Err(format!("{} is not a directory", expanded));
         }
     } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
-        return Err(format!("{} is not a git repo. Tick \"Not a git repository\" to add it as a folder.", expanded));
+        return Err(format!("{} is not a git repo. Confirm adding it as a plain folder.", expanded));
     }
     let mut list = load_projects();
     let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
@@ -1223,7 +1354,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
                     return Err(format!("{} is not a directory", expanded));
                 }
             } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
-                return Err(format!("{} is not a git repo. Tick \"Host is not a git repo\" to use it as a plain folder.", expanded));
+                return Err(format!("{} is not a git repo. Confirm using it as a plain folder host.", expanded));
             }
             pb
         }
@@ -1235,14 +1366,21 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         return Err("a project at this path is already added".into());
     }
 
-    // Validate member references — fail fast if any id is unknown.
+    // Normalize each inline member (canonicalize path, detect git, fill
+    // defaults) and dedup by path. Members are self-contained — nothing is
+    // registered as a standalone project.
+    let host_path = canon.to_string_lossy().into_owned();
     let mut seen: HashSet<String> = HashSet::new();
+    let members: Vec<ProjectMember> = members
+        .into_iter()
+        .map(normalize_member)
+        .collect::<Result<Vec<_>, _>>()?;
     for m in &members {
-        if !seen.insert(m.project_id.clone()) {
-            return Err(format!("duplicate member: {}", m.project_id));
+        if m.root_path == host_path {
+            return Err("a multi-repo project can't list its own host as a member".into());
         }
-        if !list.iter().any(|p| p.id == m.project_id) {
-            return Err(format!("unknown member project id: {}", m.project_id));
+        if !seen.insert(m.root_path.clone()) {
+            return Err(format!("duplicate member: {}", m.root_path));
         }
     }
 
@@ -1286,20 +1424,29 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
 #[tauri::command]
 fn project_set_members(id: String, members: Vec<ProjectMember>) -> Result<(), String> {
     let mut list = load_projects();
-    let host_exists = list.iter().any(|p| p.id == id);
-    if !host_exists { return Err("no such project".into()); }
+    let host = match list.iter().find(|p| p.id == id) {
+        Some(p) => p.clone(),
+        None => return Err("no such project".into()),
+    };
+    if host.project_type != ProjectType::Multi {
+        return Err("only multi-repo projects have a members list".into());
+    }
+    // Normalize inbound inline members + dedup by path. No project lookup —
+    // members are self-contained.
     let mut seen: HashSet<String> = HashSet::new();
+    let members: Vec<ProjectMember> = members
+        .into_iter()
+        .map(normalize_member)
+        .collect::<Result<Vec<_>, _>>()?;
     for m in &members {
-        if m.project_id == id { return Err("a multi-repo project can't list itself as a member".into()); }
-        if !seen.insert(m.project_id.clone()) { return Err(format!("duplicate member: {}", m.project_id)); }
-        if !list.iter().any(|p| p.id == m.project_id) {
-            return Err(format!("unknown member project id: {}", m.project_id));
+        if m.root_path == host.root_path {
+            return Err("a multi-repo project can't list its own host as a member".into());
+        }
+        if !seen.insert(m.root_path.clone()) {
+            return Err(format!("duplicate member: {}", m.root_path));
         }
     }
     let p = list.iter_mut().find(|p| p.id == id).unwrap();
-    if p.project_type != ProjectType::Multi {
-        return Err("only multi-repo projects have a members list".into());
-    }
     p.members = members;
     save_projects(&list).map_err(|e| e.to_string())
 }
@@ -1408,7 +1555,6 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
     // as the workspace's responsibility. The host's .gitignore is
     // updated with a managed block so the new dirs don't show up as
     // untracked changes.
-    let projects = load_projects();
     let mut composition: Vec<WorkspaceMember> = Vec::new();
     if proj.project_type == ProjectType::Multi {
         let host_dir = Path::new(&proj.root_path);
@@ -1419,8 +1565,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         // PORT=$TERMIC_PORT npm run dev without colliding.
         let mut next_member_port = port + 1;
         for pm in &proj.members {
-            let Some(mp) = projects.iter().find(|p| p.id == pm.project_id) else { continue; };
-            let dir_name = mp.name.clone();
+            let dir_name = pm.name.clone();
             if dir_name.is_empty() || dir_name.contains('/') { continue; }
             if !seen.insert(dir_name.clone()) { continue; }
             let target = host_dir.join(&dir_name);
@@ -1429,27 +1574,26 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
             // a warning rather than clobbering user content.
             if target.symlink_metadata().is_ok() {
                 let link_target = fs::read_link(&target).ok();
-                if link_target.map(|p| p.to_string_lossy().into_owned()) != Some(mp.root_path.clone()) {
-                    eprintln!("workspace_open_repo: {} exists and isn't our symlink; skipping {}", target.display(), mp.name);
+                if link_target.map(|p| p.to_string_lossy().into_owned()) != Some(pm.root_path.clone()) {
+                    eprintln!("workspace_open_repo: {} exists and isn't our symlink; skipping {}", target.display(), pm.name);
                     continue;
                 }
-            } else if let Err(e) = std::os::unix::fs::symlink(&mp.root_path, &target) {
-                eprintln!("workspace_open_repo: symlink {} failed: {e}", mp.name);
+            } else if let Err(e) = std::os::unix::fs::symlink(&pm.root_path, &target) {
+                eprintln!("workspace_open_repo: symlink {} failed: {e}", pm.name);
                 continue;
             }
             let member_port = next_member_port;
             next_member_port = next_member_port.saturating_add(1);
             composition.push(WorkspaceMember {
-                project_id: mp.id.clone(),
+                project_id: String::new(),
+                repo_path: pm.root_path.clone(),
                 dir_name: dir_name.clone(),
                 mode: MemberMode::RepoRoot,
                 branch: String::new(),
-                path: mp.root_path.clone(),
+                path: pm.root_path.clone(),
                 port: member_port,
-                // Scripts come from the multi-repo project's per-
-                // member entry, NOT from the member project's own
-                // scripts. Multi-repo projects opt into different
-                // commands than standalone single-repo workspaces.
+                // Scripts come from the inline member's per-project entry,
+                // which may differ from the repo's standalone scripts.
                 setup_script:   pm.setup_script.clone(),
                 run_script:     pm.run_script.clone(),
                 archive_script: pm.archive_script.clone(),
@@ -1988,17 +2132,17 @@ pub struct CreateMultiArgs {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateMultiMember {
-    pub project_id: String,
-    /// Dir name inside the wrapper. Defaults to the member project's
-    /// `name` field — pinned at create time so renames don't break
-    /// the workspace layout.
+    /// Canonical path of the host member this per-workspace spec applies
+    /// to — matches an entry in `Project.members[].root_path`.
+    pub root_path: String,
+    /// Dir name inside the wrapper. Defaults to the member's `name` —
+    /// pinned at create time so renames don't break the workspace layout.
     pub dir_name: Option<String>,
     pub mode: MemberMode,
     /// Worktree mode only. Defaults to `branch` from CreateMultiArgs
     /// (i.e. all members branch off the same name).
     pub branch: Option<String>,
-    /// Worktree mode only. Defaults to the member project's
-    /// `base_branch`.
+    /// Worktree mode only. Defaults to the member's `base_branch`.
     pub base_branch: Option<String>,
 }
 
@@ -2034,20 +2178,21 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         .map(|b| b.to_string()).unwrap_or_else(|| host.base_branch.clone());
 
     // Validate members + freeze dir names. dir_name collisions inside
-    // the wrapper are a hard error — they'd silently overwrite.
-    let mut frozen: Vec<(Project, CreateMultiMember, String)> = Vec::new();
+    // the wrapper are a hard error — they'd silently overwrite. Each
+    // per-workspace spec resolves to an inline host member by path.
+    let mut frozen: Vec<(ProjectMember, CreateMultiMember, String)> = Vec::new();
     let mut seen_dirs: HashSet<String> = HashSet::new();
     for m in &args.members {
-        let p = projects.iter().find(|p| p.id == m.project_id)
-            .ok_or_else(|| format!("member project not found: {}", m.project_id))?.clone();
-        let dir_name = m.dir_name.clone().unwrap_or_else(|| p.name.clone());
+        let hm = host.members.iter().find(|hm| hm.root_path == m.root_path)
+            .ok_or_else(|| format!("member not found: {}", m.root_path))?.clone();
+        let dir_name = m.dir_name.clone().unwrap_or_else(|| hm.name.clone());
         if dir_name.contains('/') || dir_name.is_empty() {
             return Err(format!("invalid member dir name: {dir_name:?}"));
         }
         if !seen_dirs.insert(dir_name.clone()) {
             return Err(format!("duplicate member dir name: {dir_name}"));
         }
-        frozen.push((p, m.clone(), dir_name));
+        frozen.push((hm, m.clone(), dir_name));
     }
 
     // Wrapper dir = `<workspaces_root>/<host-slug>/<wsname>/`. The
@@ -2105,7 +2250,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     // Helper that tears down everything we've created so far on
     // failure. Order: members first (so the host worktree git still
     // knows about them), then the host. Best-effort.
-    let rollback = |members_done: &[(Project, CreateMultiMember, String, MemberMode, String)]| {
+    let rollback = |members_done: &[(ProjectMember, CreateMultiMember, String, MemberMode, String)]| {
         for (mp, _, _, mode, path) in members_done {
             match mode {
                 MemberMode::RepoRoot => {
@@ -2127,7 +2272,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     // Now create each member. members_done accumulates so rollback
     // can unwind a partial composition.
     let mut composition: Vec<WorkspaceMember> = Vec::new();
-    let mut done: Vec<(Project, CreateMultiMember, String, MemberMode, String)> = Vec::new();
+    let mut done: Vec<(ProjectMember, CreateMultiMember, String, MemberMode, String)> = Vec::new();
     // Per-member port counter — each member gets workspace.port+i+1
     // so two members running PORT=$TERMIC_PORT npm run dev don't
     // collide. We bumped 'port' below already by load_workspaces().len()
@@ -2144,22 +2289,20 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                     rollback(&done);
                     return Err(format!("symlink {dir_name}: {e}"));
                 }
-                // Scripts come from the MULTI-REPO PROJECT's
-                // per-member spec (host.members[i]), not from the
-                // member project's standalone scripts. This is the
+                // Scripts come from the inline member's own per-project
+                // spec (the multi-repo project's member entry), the
                 // "different commands per multi-repo project" model.
-                let proj_scripts = host.members.iter()
-                    .find(|pm| pm.project_id == mp.id);
                 composition.push(WorkspaceMember {
-                    project_id: mp.id.clone(),
+                    project_id: String::new(),
+                    repo_path: mp.root_path.clone(),
                     dir_name: dir_name.clone(),
                     mode: MemberMode::RepoRoot,
                     branch: String::new(),
                     path: mp.root_path.clone(),
                     port: member_port,
-                    setup_script:   proj_scripts.map(|s| s.setup_script.clone()).unwrap_or_default(),
-                    run_script:     proj_scripts.map(|s| s.run_script.clone()).unwrap_or_default(),
-                    archive_script: proj_scripts.map(|s| s.archive_script.clone()).unwrap_or_default(),
+                    setup_script:   mp.setup_script.clone(),
+                    run_script:     mp.run_script.clone(),
+                    archive_script: mp.archive_script.clone(),
                 });
                 done.push((mp.clone(), spec, dir_name, MemberMode::RepoRoot, target.to_string_lossy().into_owned()));
             }
@@ -2188,18 +2331,17 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                     rollback(&done);
                     return Err(format!("member {dir_name} worktree add failed: {e}"));
                 }
-                let proj_scripts = host.members.iter()
-                    .find(|pm| pm.project_id == mp.id);
                 composition.push(WorkspaceMember {
-                    project_id: mp.id.clone(),
+                    project_id: String::new(),
+                    repo_path: mp.root_path.clone(),
                     dir_name: dir_name.clone(),
                     mode: MemberMode::Worktree,
                     branch: mbranch,
                     path: target.to_string_lossy().into_owned(),
                     port: member_port,
-                    setup_script:   proj_scripts.map(|s| s.setup_script.clone()).unwrap_or_default(),
-                    run_script:     proj_scripts.map(|s| s.run_script.clone()).unwrap_or_default(),
-                    archive_script: proj_scripts.map(|s| s.archive_script.clone()).unwrap_or_default(),
+                    setup_script:   mp.setup_script.clone(),
+                    run_script:     mp.run_script.clone(),
+                    archive_script: mp.archive_script.clone(),
                 });
                 done.push((mp.clone(), spec, dir_name, MemberMode::Worktree, target.to_string_lossy().into_owned()));
             }
@@ -2261,11 +2403,10 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     extend_unique(&mut base_hosts, &globals.sandbox_default_allowed_hosts);
     extend_unique(&mut base_rw,    &host.sandbox_rw_paths);
     extend_unique(&mut base_hosts, &host.sandbox_allowed_hosts);
-    for m in &composition {
-        if let Some(mp) = projects.iter().find(|p| p.id == m.project_id) {
-            extend_unique(&mut base_rw,    &mp.sandbox_rw_paths);
-            extend_unique(&mut base_hosts, &mp.sandbox_allowed_hosts);
-        }
+    // Union each member's own sandbox lists (carried inline on the member).
+    for hm in &host.members {
+        extend_unique(&mut base_rw,    &hm.sandbox_rw_paths);
+        extend_unique(&mut base_hosts, &hm.sandbox_allowed_hosts);
     }
     let sandbox_rw_paths    = args.sandbox_rw_paths.unwrap_or(base_rw);
     let sandbox_allowed_hosts = args.sandbox_allowed_hosts.unwrap_or(base_hosts);
@@ -3000,6 +3141,16 @@ fn repo_config_load(project_id: String) -> Result<Option<repo_config::RepoConfig
     repo_config::load(Path::new(&p.root_path)).map_err(|e| e.to_string())
 }
 
+/// Load a repo's `.termic.yaml` directly by path — used for inline
+/// multi-repo members, which aren't registered as projects (so there's no
+/// id to resolve). Returns None when the file is absent.
+#[tauri::command]
+fn repo_config_load_at(path: String) -> Result<Option<repo_config::RepoConfig>, String> {
+    let expanded = expand_tilde(&path);
+    if expanded.is_empty() { return Ok(None); }
+    repo_config::load(Path::new(&expanded)).map_err(|e| e.to_string())
+}
+
 /// Write a project's `.termic.yaml` (full re-serialize — see
 /// `repo_config::save`). Backs the Repository settings' Scripts tab.
 #[tauri::command]
@@ -3316,12 +3467,20 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
                     }
                 }
                 MemberMode::Worktree => {
-                    if let Some(mp) = all_projects.iter().find(|p| p.id == m.project_id) {
-                        if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&mp.root_path)) {
+                    // Source repo to run `git worktree remove` against. New
+                    // records carry it inline (repo_path); legacy ones fall
+                    // back to resolving the old project_id reference.
+                    let repo_path = if !m.repo_path.is_empty() {
+                        Some(m.repo_path.clone())
+                    } else {
+                        all_projects.iter().find(|p| p.id == m.project_id).map(|mp| mp.root_path.clone())
+                    };
+                    if let Some(repo_path) = repo_path {
+                        if let Err(e) = git(&["worktree", "remove", "--force", &m.path], Path::new(&repo_path)) {
                             errs.push(format!("worktree remove {}: {e}", m.dir_name));
                         }
                         if delete_branch && !m.branch.is_empty() {
-                            if let Err(e) = git(&["branch", "-D", &m.branch], Path::new(&mp.root_path)) {
+                            if let Err(e) = git(&["branch", "-D", &m.branch], Path::new(&repo_path)) {
                                 errs.push(format!("branch delete {}: {e}", m.dir_name));
                             }
                         }
@@ -4081,10 +4240,10 @@ pub struct FileEntry {
 /// `exclude`. Invalid patterns are skipped; a trailing `/` is stripped so
 /// `build/` matches the `build` entry. Shared by the file tree and the ⌘P
 /// finder so "hidden files" means the same thing in both.
-fn compile_exclude_patterns(owner_pid: &str) -> Vec<glob::Pattern> {
+fn compile_exclude_patterns(repo_path: &str) -> Vec<glob::Pattern> {
     let mut raw = load_settings_inner().file_tree_exclude;
-    if let Some(p) = load_projects().into_iter().find(|p| p.id == owner_pid) {
-        raw.extend(repo_config_for(&p).exclude);
+    if !repo_path.is_empty() {
+        raw.extend(repo_config::load_or_default(Path::new(repo_path)).exclude);
     }
     raw.iter()
         .filter_map(|s| {
@@ -4092,6 +4251,15 @@ fn compile_exclude_patterns(owner_pid: &str) -> Vec<glob::Pattern> {
             if t.is_empty() { None } else { glob::Pattern::new(t).ok() }
         })
         .collect()
+}
+
+/// Source repo path for a composition member: inline `repo_path` on new
+/// records, or the legacy `project_id` reference resolved against
+/// projects.json for workspaces created before members went inline.
+fn member_repo_path(m: &WorkspaceMember) -> String {
+    if !m.repo_path.is_empty() { return m.repo_path.clone(); }
+    load_projects().into_iter().find(|p| p.id == m.project_id)
+        .map(|p| p.root_path).unwrap_or_default()
 }
 
 /// True if a repo-local path is hidden by the exclude globs: a match on ANY
@@ -4156,13 +4324,17 @@ fn workspace_dir_list_sync(id: String, rel: String) -> Result<Vec<FileEntry>, St
         safe_workspace_path(&base, &rel)?
     };
     // The repo that owns this directory + the path relative to its root.
-    let (owner_pid, local_rel): (&str, &str) = match &member_hit {
-        Some((m, remainder)) => (m.project_id.as_str(), remainder.as_str()),
-        None => (w.project_id.as_str(), rel.as_str()),
+    let (owner_repo_path, local_rel): (String, &str) = match &member_hit {
+        Some((m, remainder)) => (member_repo_path(m), remainder.as_str()),
+        None => (
+            load_projects().into_iter().find(|p| p.id == w.project_id)
+                .map(|p| p.root_path).unwrap_or_default(),
+            rel.as_str(),
+        ),
     };
     // Excludes: personal (global Settings) ∪ ONLY the owning repo's committed
     // `.termic.yaml`. A member repo's patterns must not hide sibling/host files.
-    let exclude_patterns = compile_exclude_patterns(owner_pid);
+    let exclude_patterns = compile_exclude_patterns(&owner_repo_path);
 
     let mut out = Vec::new();
     let rd = fs::read_dir(&canon_target).map_err(|e| e.to_string())?;
@@ -4240,10 +4412,12 @@ async fn workspace_list_files_for_finder(id: String) -> Result<Vec<String>, Stri
         };
         // Host repo first, then each multi-repo member (serially). Each repo's
         // excludes are compiled once (its own + the personal global list).
-        let mut files = ls(&w.path, "", &compile_exclude_patterns(&w.project_id));
+        let host_repo_path = load_projects().into_iter().find(|p| p.id == w.project_id)
+            .map(|p| p.root_path).unwrap_or_default();
+        let mut files = ls(&w.path, "", &compile_exclude_patterns(&host_repo_path));
         for m in &w.composition {
             if Path::new(&m.path).exists() {
-                let patterns = compile_exclude_patterns(&m.project_id);
+                let patterns = compile_exclude_patterns(&member_repo_path(m));
                 files.extend(ls(&m.path, &format!("{}/", m.dir_name), &patterns));
             }
         }
@@ -5436,6 +5610,25 @@ fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
 
+/// Does `path` resolve to a git repo? Same canonical check `project_add`
+/// uses (`git rev-parse --git-dir`), so it handles worktrees (`.git` is a
+/// FILE), bare repos, and stray-newline paths the naive `.git` dir check
+/// misses. Used by the Add Project dialog to decide whether to surface the
+/// "this is a plain folder" confirm after the user picks a directory —
+/// replacing the old manual "Not a git repository" checkbox. Returns false
+/// for a non-existent or non-directory path (the caller adds nothing then).
+#[tauri::command]
+fn path_is_git_repo(path: String) -> bool {
+    let trimmed = path.trim();
+    let expanded: String = if let Some(rest) = trimmed.strip_prefix("~/") {
+        dirs::home_dir().map(|h| h.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|| trimmed.to_string())
+    } else { trimmed.to_string() };
+    let pb = PathBuf::from(&expanded);
+    if !pb.is_dir() { return false; }
+    git(&["rev-parse", "--git-dir"], &pb).is_ok()
+}
+
 /// Copy a bundled notification sound into `~/Library/Sounds` so macOS can
 /// resolve it by name. `NSUserNotification.soundName` only searches the
 /// `Library/Sounds` directories plus the app bundle's Resources ROOT, and it
@@ -6543,7 +6736,7 @@ pub fn run() {
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
             workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_resume_override, workspace_set_sandbox, workspace_set_yolo,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, workspace_recent_denials,
-            repo_config_load, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
+            repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_set_tabs, workspace_set_tab_session_id,
             workspace_set_right_tabs, workspace_set_right_tab_session_id,
@@ -6554,7 +6747,7 @@ pub fn run() {
             workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, home_dir, default_shell, path_exists, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
+            notify, open_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,

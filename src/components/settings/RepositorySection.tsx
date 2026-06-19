@@ -6,9 +6,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { projectUpdate, projectRemove, projectSetMembers, projectAdd, repoConfigLoad, repoConfigSave, workspaceSpotlightStop } from "@/lib/ipc";
+import { projectUpdate, projectRemove, projectSetMembers, pathIsGitRepo, repoConfigLoad, repoConfigSave, workspaceSpotlightStop } from "@/lib/ipc";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { Project, RepoConfig } from "@/lib/types";
+import type { Project, ProjectMember, RepoConfig } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -813,8 +813,8 @@ function MultiMembersEditor({ project, onSaved }: {
 }) {
   const allProjects = useApp(s => s.projects);
   const pushToast = useUI(s => s.pushToast);
-  type Row = { project_id: string; setup_script: string; run_script: string; archive_script: string };
-  // Local working copy of the member list with their script overrides.
+  type Row = ProjectMember;
+  // Local working copy of the (self-contained, inline) member list.
   // Hydrated from project.members; saving fires project_set_members.
   const [rows, setRows] = useState<Row[]>(() => (project.members ?? []).map(m => ({ ...m })));
   const [busy, setBusy] = useState(false);
@@ -833,21 +833,35 @@ function MultiMembersEditor({ project, onSaved }: {
   const currentJson = JSON.stringify(rows);
   const dirty = initialJson !== currentJson;
 
-  function toggle(id: string) {
-    setRows(prev => {
-      const exists = prev.some(r => r.project_id === id);
-      if (exists) return prev.filter(r => r.project_id !== id);
-      const proj = allProjects.find(p => p.id === id);
-      return [...prev, {
-        project_id: id,
-        setup_script:   proj?.setup_script   ?? "",
-        run_script:     proj?.run_script     ?? "",
-        archive_script: proj?.archive_script ?? "",
-      }];
-    });
+  // Add a self-contained member by copying an existing project's path +
+  // config. The project is NOT referenced; nothing is registered.
+  function addFromProject(p: Project) {
+    setRows(prev => prev.some(r => r.root_path === p.root_path) ? prev : [...prev, {
+      root_path: p.root_path,
+      name: p.name,
+      non_git: p.non_git,
+      base_branch: p.base_branch,
+      setup_script:   p.setup_script   ?? "",
+      run_script:     p.run_script     ?? "",
+      archive_script: p.archive_script ?? "",
+      sandbox_rw_paths:      p.sandbox_rw_paths,
+      sandbox_allowed_hosts: p.sandbox_allowed_hosts,
+    }]);
   }
-  function update(id: string, patch: Partial<Row>) {
-    setRows(prev => prev.map(r => r.project_id === id ? { ...r, ...patch } : r));
+  // Add a member straight from a disk path (no project record). Rust
+  // canonicalizes + detects git on save; non_git here is provisional.
+  function addFromDisk(path: string, nonGit: boolean) {
+    const name = path.split("/").filter(Boolean).pop() || "repo";
+    setRows(prev => prev.some(r => r.root_path === path) ? prev : [...prev, {
+      root_path: path, name, non_git: nonGit,
+      base_branch: "", setup_script: "", run_script: "", archive_script: "",
+    }]);
+  }
+  function remove(rootPath: string) {
+    setRows(prev => prev.filter(r => r.root_path !== rootPath));
+  }
+  function update(rootPath: string, patch: Partial<Row>) {
+    setRows(prev => prev.map(r => r.root_path === rootPath ? { ...r, ...patch } : r));
   }
 
   async function save() {
@@ -883,13 +897,11 @@ function MultiMembersEditor({ project, onSaved }: {
           <span className="text-[var(--color-fg-dim)]">Env vars:</span>
           <Token>$TERMIC_PORT</Token>
           {rows.map(r => {
-            const c = allProjects.find(p => p.id === r.project_id);
-            if (!c) return null;
-            const sanitized = c.name
+            const sanitized = r.name
               .split("")
               .map(ch => (/[A-Za-z0-9]/.test(ch) ? ch.toUpperCase() : "_"))
               .join("");
-            return <Token key={r.project_id}>{`$TERMIC_PORT_${sanitized}`}</Token>;
+            return <Token key={r.root_path}>{`$TERMIC_PORT_${sanitized}`}</Token>;
           })}
           <Token>$TERMIC_WORKSPACE_NAME</Token>
         </div>
@@ -902,68 +914,51 @@ function MultiMembersEditor({ project, onSaved }: {
           done via the explicit Remove button. */}
       {rows.length === 0 ? (
         <div className="mt-2 rounded-md border border-dashed border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-6 text-center text-[12.5px] text-[var(--color-fg-faint)]">
-          No members yet. Click <b>Add member</b> below to pick repos to mount under this multi-repo project.
+          No members yet. Add repos below: pick from your existing projects or add any folder from disk.
         </div>
       ) : (
         <div className="mt-2 flex flex-col gap-2">
-          {rows.map(row => {
-            const c = allProjects.find(p => p.id === row.project_id);
-            if (!c) return null;
-            return (
-              <div key={row.project_id} className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)]">
-                <div className="flex items-center gap-3 px-3 py-2">
-                  <Layers className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{c.name}</div>
-                    <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{c.root_path}</div>
+          {rows.map(row => (
+            <div key={row.root_path} className="overflow-hidden rounded-md border border-l-2 border-[var(--color-accent-soft)] border-l-[var(--color-accent)] bg-[var(--color-accent-deep)]/[0.07]">
+              <div className="flex items-center gap-3 px-3 py-2">
+                <Layers className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{row.name}</span>
+                    {row.non_git && (
+                      <span className="shrink-0 rounded bg-[var(--color-bg-1)] px-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]">folder</span>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => toggle(c.id)}
-                    title="Remove from this multi-repo project"
-                    className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{row.root_path}</div>
                 </div>
-                <div className="flex flex-col gap-2 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2">
-                  <MemberScriptRow label="Setup"   value={row.setup_script}   placeholder={c.setup_script   || "docker compose up -d"}        onChange={v => update(c.id, { setup_script: v })} />
-                  <MemberScriptRow label="Run"     value={row.run_script}     placeholder={c.run_script     || "PORT=$TERMIC_PORT npm run dev"} onChange={v => update(c.id, { run_script: v })} />
-                  <MemberScriptRow label="Archive" value={row.archive_script} placeholder={c.archive_script || "docker compose down"}            onChange={v => update(c.id, { archive_script: v })} />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => remove(row.root_path)}
+                  title="Remove from this multi-repo project"
+                  className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
-            );
-          })}
+              <div className="flex flex-col gap-2 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2">
+                <MemberScriptRow label="Setup"   value={row.setup_script}   placeholder="docker compose up -d"        onChange={v => update(row.root_path, { setup_script: v })} />
+                <MemberScriptRow label="Run"     value={row.run_script}     placeholder="PORT=$TERMIC_PORT npm run dev" onChange={v => update(row.root_path, { run_script: v })} />
+                <MemberScriptRow label="Archive" value={row.archive_script} placeholder="docker compose down"            onChange={v => update(row.root_path, { archive_script: v })} />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Add-member picker: shows the list of available (not yet
-          added) repos when expanded. Collapses back to the button
-          after a row is clicked. Keeps the steady-state panel
-          short — only added members live there. */}
+      {/* Add-member picker: pick an existing project to copy in, or add
+          any folder from disk. Members are self-contained — nothing is
+          registered as a standalone project. */}
       <AddMemberPicker
-        candidates={candidates.filter(c => !rows.some(r => r.project_id === c.id))}
-        onAdd={(id) => toggle(id)}
+        candidates={candidates.filter(c => !rows.some(r => r.root_path === c.root_path))}
+        onAdd={addFromProject}
         onQuickAdd={async (path) => {
-          try {
-            const p = await projectAdd(path);
-            await useApp.getState().loadAll();
-            toggle(p.id);
-          } catch (e) {
-            // "project already added" → look it up in the refreshed
-            // list and add it as a member anyway (the user wanted it
-            // here, the duplicate guard at the IPC level is just for
-            // the standalone-projects list).
-            const msg = String(e);
-            if (!/already added/i.test(msg)) {
-              setError(msg);
-              return;
-            }
-            await useApp.getState().loadAll();
-            const all = useApp.getState().projects;
-            const found = all.find(p => p.root_path === path || p.root_path.endsWith(path));
-            if (found) toggle(found.id);
-          }
+          const isGit = await pathIsGitRepo(path).catch(() => false);
+          addFromDisk(path, !isGit);
         }}
       />
       {error && <div className="mt-2 text-[12.5px] text-[var(--color-err)]">{error}</div>}
@@ -1005,25 +1000,14 @@ function MemberScriptRow({ label, value, onChange, placeholder }: {
  *  state panel short. */
 function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
   candidates: Project[];
-  onAdd: (id: string) => void;
-  /** Folder-picker shortcut: skips the "register as project first"
-   *  detour by adding the repo as a standalone project on the fly and
-   *  immediately wiring it in as a member. */
+  onAdd: (p: Project) => void;
+  /** Add any folder from disk as a self-contained member (no project
+   *  registration). */
   onQuickAdd?: (path: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Auto-collapse only when neither path forward is available.
-  useEffect(() => {
-    if (candidates.length === 0 && !onQuickAdd) setOpen(false);
-  }, [candidates.length, onQuickAdd]);
-  if (candidates.length === 0 && !onQuickAdd && !open) {
-    return (
-      <div className="mt-3 text-[11.5px] text-[var(--color-fg-faint)]">
-        Every other repository is already a member.
-      </div>
-    );
-  }
+  const [diskPath, setDiskPath] = useState("");
   if (!open) {
     return (
       <button
@@ -1035,16 +1019,16 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
       </button>
     );
   }
-  const pickFolder = async () => {
-    if (!onQuickAdd || busy) return;
+  const browseDisk = async () => {
     const sel = await openDialog({ directory: true, multiple: false });
-    if (!sel || typeof sel !== "string") return;
+    if (typeof sel === "string") setDiskPath(sel);
+  };
+  const addDisk = async () => {
+    if (!onQuickAdd || busy) return;
+    const p = diskPath.trim();
+    if (!p) return;
     setBusy(true);
-    try {
-      await onQuickAdd(sel);
-    } finally {
-      setBusy(false);
-    }
+    try { await onQuickAdd(p); setDiskPath(""); } finally { setBusy(false); }
   };
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border-soft)]">
@@ -1060,15 +1044,15 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
         </button>
       </div>
       <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
-        Members come from your existing projects. Pick one below, or use “Add
-        repo from disk” to register a new project and wire it in here in one
-        step. Each member carries its own scripts and sandbox allow-lists.
+        Pick one of your existing projects to copy in, or use “Add repo from
+        disk” for any folder. Members are self-contained: each carries its own
+        scripts, and nothing is registered as a standalone project.
       </div>
       {candidates.map(c => (
         <button
           key={c.id}
           type="button"
-          onClick={() => onAdd(c.id)}
+          onClick={() => onAdd(c)}
           className="flex w-full items-center gap-3 border-t border-[var(--color-border-soft)] px-3 py-2 text-left hover:bg-[var(--color-hover)]"
         >
           <div className="min-w-0 flex-1">
@@ -1079,17 +1063,28 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
         </button>
       ))}
       {onQuickAdd && (
-        <button
-          type="button"
-          onClick={pickFolder}
-          disabled={busy}
-          className="flex w-full items-center gap-3 border-t border-[var(--color-border-soft)] px-3 py-2 text-left text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-60"
-        >
-          <span className="text-[13.5px]">{busy ? "Adding…" : "+ Add repo from disk…"}</span>
-          <span className="ml-auto truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">
-            registers a new project + adds it as a member
-          </span>
-        </button>
+        <div className="border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2.5">
+          <div className="mb-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+            Add repo from disk
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={diskPath}
+              onChange={e => setDiskPath(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addDisk(); } }}
+              placeholder="/path/to/repo"
+              className="flex-1"
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            />
+            <Button variant="secondary" size="lg" onClick={browseDisk} disabled={busy}>Browse…</Button>
+            <Button variant="primary" size="lg" onClick={addDisk} disabled={busy || !diskPath.trim()}>
+              {busy ? "Adding…" : "Add"}
+            </Button>
+          </div>
+          <p className="mt-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
+            Adds the folder as a member of this project only (no standalone project). A plain folder mounts repo-root only (no worktree).
+          </p>
+        </div>
       )}
     </div>
   );

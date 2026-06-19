@@ -356,6 +356,9 @@ Open an issue to push something up the list or pick one off.
 - **Send selection to the agent as a reference.** Select text in the
   editor, right-click or hover, and push it into the active agent terminal
   as an `@file:123` style reference so the agent picks it up as context.
+- **More coding agents.** First-class opencode, pi.dev, and cline support,
+  plus exploring other CLI coding agents as they land. Launch presets for
+  local models via ollama so an agent can run fully on-device.
 
 ---
 

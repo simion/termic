@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp, useActiveWorkspace } from "@/store/app";
 import { useUI } from "@/store/ui";
 import {
-  workspaceGitStatus, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad,
+  workspaceGitStatus, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad, repoConfigLoadAt,
   workspaceSpotlightStop, workspaceSpotlightResync,
 } from "@/lib/ipc";
 import { startSpotlight } from "@/lib/spotlight";
@@ -22,6 +22,11 @@ import { GitPanel } from "./GitPanel";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useScriptRuns, useRunState, type RunStatus } from "@/store/scriptRuns";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
+
+/** Stable key for a composition member's `.termic.yaml` config maps.
+ *  Inline members have no project id — key by their repo path (falling
+ *  back to dir_name for legacy records that predate `repo_path`). */
+const memberKey = (m: WorkspaceMember) => m.repo_path || m.dir_name;
 
 type FootTab = "setup" | "run" | "term" | "spotlight";
 
@@ -187,11 +192,12 @@ export function RightPanel() {
 
   // Resolve project so we can expand `preview_url` for the Open button.
   const project = useApp(s => (ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null));
-  // Fallback preview URLs + setup scripts from each project's committed
-  // .termic.yaml. Keyed by project_id so both single-repo and multi-repo
-  // members resolve. Setup-script presence drives whether the toolbar
-  // even shows a Setup button — projects with no setup configured (in
-  // either the in-app config or .termic.yaml) hide it entirely.
+  // Fallback preview URLs + setup scripts from each repo's committed
+  // .termic.yaml. Keyed by the host's project_id and, for multi-repo
+  // members, by `memberKey` (their repo path) — inline members aren't
+  // registered projects, so they load their `.termic.yaml` by path.
+  // Setup-script presence drives whether the toolbar even shows a Setup
+  // button — repos with no setup configured hide it entirely.
   const [yamlPreviewUrls, setYamlPreviewUrls] = useState<Record<string, string>>({});
   const [yamlSetupScripts, setYamlSetupScripts] = useState<Record<string, string>>({});
   const [yamlRunScripts, setYamlRunScripts] = useState<Record<string, string>>({});
@@ -200,19 +206,28 @@ export function RightPanel() {
   // behind the Settings overlay without needing a workspace switch.
   useEffect(() => {
     if (!ws) { setYamlPreviewUrls({}); setYamlSetupScripts({}); setYamlRunScripts({}); return; }
-    const ids = [ws.project_id, ...(ws.composition ?? []).map(m => m.project_id)];
-    const unique = [...new Set(ids)].filter(Boolean);
-    Promise.all(unique.map(id =>
-      repoConfigLoad(id)
-        .then(rc => [id, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? "", rc?.scripts?.run?.trim() ?? ""] as const)
-        .catch(() => [id, "", "", ""] as const),
-    )).then(entries => {
+    // Host loads by project id; each member loads its .termic.yaml by path.
+    const loaders: Array<Promise<readonly [string, string, string, string]>> = [
+      repoConfigLoad(ws.project_id)
+        .then(rc => [ws.project_id, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? "", rc?.scripts?.run?.trim() ?? ""] as const)
+        .catch(() => [ws.project_id, "", "", ""] as const),
+    ];
+    for (const m of ws.composition ?? []) {
+      const key = memberKey(m);
+      if (!m.repo_path) continue;
+      loaders.push(
+        repoConfigLoadAt(m.repo_path)
+          .then(rc => [key, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? "", rc?.scripts?.run?.trim() ?? ""] as const)
+          .catch(() => [key, "", "", ""] as const),
+      );
+    }
+    Promise.all(loaders).then(entries => {
       setYamlPreviewUrls(Object.fromEntries(entries.map(([id, url]) => [id, url])));
       setYamlSetupScripts(Object.fromEntries(entries.map(([id, , setup]) => [id, setup])));
       setYamlRunScripts(Object.fromEntries(entries.map(([id, , , run]) => [id, run])));
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.project_id, ws?.composition?.map(m => m.project_id).sort().join("|"), fileTreeNonce]);
+  }, [ws?.project_id, ws?.composition?.map(m => m.repo_path || m.dir_name).sort().join("|"), fileTreeNonce]);
   const footerTerm = useApp(s => (ws ? !!s.footerTerm[ws.id] : false));
   // Icon-only toolbar when the Terminal tab is open (the tab strip eats
   // horizontal room) OR the panel is simply narrow. ~380px is where the
@@ -540,9 +555,12 @@ export function RightPanel() {
               // member services are on 18104/18105/...).
               const memberIdx = ws.composition!.findIndex(m => m.dir_name === footTarget);
               const m = memberIdx >= 0 ? ws.composition![memberIdx] : null;
-              const memberProject = m
-                ? (useApp.getState().projects.find(p => p.id === m.project_id) ?? null)
-                : project;
+              // Inline members aren't registered projects — their preview
+              // URL comes from the member repo's .termic.yaml (keyed by
+              // memberKey), not a project record. Host falls back to its
+              // project for the personal preview_url template.
+              const memberProject = m ? null : project;
+              const mKey = m ? memberKey(m) : ws.project_id;
               const memberPort = m
                 ? (m.port && m.port > 0 ? m.port : ws.port + memberIdx + 1)
                 : ws.port;
@@ -562,8 +580,8 @@ export function RightPanel() {
                     />
                   )}
                   <RunToolbar
-                    ws={syntheticWs} project={memberProject} yamlPreviewUrl={yamlPreviewUrls[m?.project_id ?? ""]}
-                    hasSetup={!!(m?.setup_script?.trim() || memberProject?.setup_script?.trim() || yamlSetupScripts[m?.project_id ?? ""]?.trim())}
+                    ws={syntheticWs} project={memberProject} yamlPreviewUrl={yamlPreviewUrls[mKey]}
+                    hasSetup={!!(m?.setup_script?.trim() || yamlSetupScripts[mKey]?.trim())}
                     setupStatus={setupRunState.status} runStatus={runRunState.status}
                     compact={compactToolbar}
                     onSetupStart={() => startScript("setup")}
@@ -684,18 +702,21 @@ export function RightPanel() {
             )}
             {footTab !== "term" && !(spotlightAvailable && footTab === "spotlight") && showRunTab && (() => {
               const activeMember = ws.composition?.find(m => m.dir_name === footTarget);
-              const activeProjectId = activeMember?.project_id ?? ws.project_id;
+              // Inline members have no project id — key yaml + dismiss state
+              // by memberKey. Configure always opens the host project (where
+              // members + their scripts are edited).
+              const activeKey = activeMember ? memberKey(activeMember) : ws.project_id;
               const hasRunScript = !!((activeMember
                 ? activeMember.run_script?.trim()
                 : project?.run_script?.trim())
-                || yamlRunScripts[activeProjectId]?.trim());
+                || yamlRunScripts[activeKey]?.trim());
               return (
                 <ScriptStream
                   wsId={ws.id} kind={footTab as "setup" | "run"} run={footRun}
                   hasScript={footTab === "run"
                     ? hasRunScript
-                    : !!(project?.setup_script?.trim() || yamlSetupScripts[ws.project_id]?.trim())}
-                  dismissKey={footTab === "run" ? `hideRunPrompt:${activeProjectId}` : undefined}
+                    : !!((activeMember ? activeMember.setup_script?.trim() : project?.setup_script?.trim()) || yamlSetupScripts[activeKey]?.trim())}
+                  dismissKey={footTab === "run" ? `hideRunPrompt:${activeKey}` : undefined}
                   onStart={() => {
                     const kind = footTab as "setup" | "run";
                     useScriptRuns.getState().start(ws.id, kind, footTarget);
@@ -703,7 +724,7 @@ export function RightPanel() {
                       console.error("workspace_run_script_stream failed:", err));
                   }}
                   onConfigure={footTab === "run"
-                    ? () => useApp.getState().openSettings("repositories", activeProjectId)
+                    ? () => useApp.getState().openSettings("repositories", ws.project_id)
                     : undefined}
                   onDismiss={footTab === "run" ? () => setFootCollapsed(true) : undefined}
                 />
@@ -1247,9 +1268,6 @@ function AllMembersToolbar({ ws, project, yamlPreviewUrls, onExpand }: {
   yamlPreviewUrls: Record<string, string>;
   onExpand: () => void;
 }) {
-  // Project is the multi-repo HOST project. We need each member
-  // project to look up its own preview_url for "Open all".
-  const allProjects = useApp(s => s.projects);
   // Live run state across all members so the toolbar can decide
   // whether to show Run-all vs Stop-all when some/all are running.
   // For simplicity always show all three buttons; status badge on
@@ -1288,24 +1306,22 @@ function AllMembersToolbar({ ws, project, yamlPreviewUrls, onExpand }: {
     // members on PORT=$TERMIC_PORT npm run dev open the right URLs).
     for (let i = 0; i < members.length; i++) {
       const m = members[i];
-      const mp = allProjects.find(p => p.id === m.project_id);
       const port = m.port && m.port > 0 ? m.port : ws.port + i + 1;
       // Synthesize a Workspace-shaped object so expandPreviewUrl
       // can swap $TERMIC_PORT for the member's port instead of the
       // workspace's. Cheap; the function only reads .port + .name.
+      // Inline members have no project record — the preview URL comes
+      // from the member repo's .termic.yaml (keyed by memberKey).
       const synthetic: Workspace = { ...ws, port };
-      const url = expandPreviewUrl(mp ?? null, synthetic, yamlPreviewUrls[m.project_id]);
+      const url = expandPreviewUrl(null, synthetic, yamlPreviewUrls[memberKey(m)]);
       if (url) openPath(url).catch(err => console.error("openPath failed:", err));
     }
   };
   // Skip the OPEN button on workspaces where no member has a
-  // preview_url (personal or yaml) — avoids opening a wave of
+  // preview_url (yaml) — avoids opening a wave of
   // `http://localhost:<port>` defaults at the user.
   void project;
-  const anyPreview = members.some(m => {
-    const mp = allProjects.find(p => p.id === m.project_id);
-    return !!mp?.preview_url?.trim() || !!yamlPreviewUrls[m.project_id];
-  });
+  const anyPreview = members.some(m => !!yamlPreviewUrls[memberKey(m)]);
 
   // Toggle Run all ↔ Stop all based on whether any member is
   // currently running. Showing both at once doubles the toolbar

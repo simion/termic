@@ -71,15 +71,25 @@ export interface Project {
   members?: ProjectMember[];
 }
 
-/** Per-member entry on a multi-repo Project. The scripts are
- *  multi-repo-project-scoped, not member-project-scoped — different
- *  multi-repo projects can wire the same member to different
- *  commands. */
+/** Per-member entry on a multi-repo Project. Self-contained: a member is
+ *  defined by its own `root_path`, not a reference to a registered Project,
+ *  so adding one never leaves a standalone project in the sidebar. The
+ *  scripts are multi-repo-project-scoped — different multi-repo projects
+ *  can wire the same repo to different commands. `root_path` is the
+ *  member's identity within a project (unique). */
 export interface ProjectMember {
-  project_id: string;
+  root_path: string;
+  name: string;
+  non_git?: boolean;
+  base_branch?: string;
   setup_script: string;
   run_script: string;
   archive_script: string;
+  /** Sandbox lists unioned into the workspace sandbox at create. Only
+   *  populated when a member is seeded from an existing project; not
+   *  edited in the member dialogs. */
+  sandbox_rw_paths?: string[];
+  sandbox_allowed_hosts?: string[];
 }
 
 export type MemberMode = "worktree" | "repo_root";
@@ -88,7 +98,12 @@ export type MemberMode = "worktree" | "repo_root";
  *  workspace creation; the wrapper dir IS the host's worktree and
  *  member entries live at `<wrapper>/<dir_name>`. */
 export interface WorkspaceMember {
-  project_id: string;
+  /** Legacy reference (workspaces created before members went inline).
+   *  New records use `repo_path`. */
+  project_id?: string;
+  /** Source repo path, frozen at create (archive removes the worktree
+   *  against it). Empty on legacy records. */
+  repo_path?: string;
   dir_name: string;
   mode: MemberMode;
   branch: string;
@@ -202,9 +217,10 @@ export interface PersistedTab {
   session_id?: string | null;
 }
 
-/** Per-member input for `workspace_create_multi`. */
+/** Per-member input for `workspace_create_multi`. `root_path` matches a
+ *  member entry on the multi-repo project. */
 export interface CreateMultiMember {
-  project_id: string;
+  root_path: string;
   dir_name?: string;
   mode: MemberMode;
   branch?: string;

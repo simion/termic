@@ -231,6 +231,8 @@ export const repoConfigAddAllowedPath = (id: string, path: string) =>
  *  exists but is malformed. */
 export const repoConfigLoad = (projectId: string) =>
   invoke<RepoConfig | null>("repo_config_load", { projectId });
+export const repoConfigLoadAt = (path: string) =>
+  invoke<RepoConfig | null>("repo_config_load_at", { path });
 
 /** Write a project's `.termic.yaml` (full re-serialize — does not
  *  preserve hand-written comments). Backs the Repository settings. */
@@ -543,6 +545,7 @@ async function resolveCompletionSoundValue(
 export const openPath  = (path: string) => invoke<void>("open_path", { path });
 export const homeDir   = () => invoke<string>("home_dir");
 export const pathExists= (path: string) => invoke<boolean>("path_exists", { path });
+export const pathIsGitRepo = (path: string) => invoke<boolean>("path_is_git_repo", { path });
 export const logLine   = (msg: string) => invoke<void>("log_line", { msg });
 /** Append a line to a named file in the OS temp dir. Used by the ptyDebug
  *  logger in TerminalPane when `localStorage.ptyDebug = "1"`. */
