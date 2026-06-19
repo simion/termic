@@ -18,10 +18,15 @@ Both bump `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`,
 and `Cargo.lock` in lockstep, commit `release: vX`, and tag `vX`. The push of
 the tag triggers `.github/workflows/release.yml`.
 
-`changelog.json` (repo root) is the **single source of truth** for release
-notes — the in-app Update card (sidebar, latest `summary` only) and the
-Changelog dialog (every version's `summary` + `sections`, dated) render from it,
-and CI copies it verbatim to `termic.dev`.
+`CHANGELOG.md` (repo root, Keep a Changelog format) is the **single source of
+truth** for release notes. From it, `scripts/changelog.mjs` derives a slim
+`changelog.json` (`{version, date, summary}` per version) that the in-app Update
+card reads for its one-line summary. The full notes render straight from the
+markdown: the in-app Changelog dialog and the `/changelog` page on `termic.dev`
+both fetch/render `changelog.md`. CI copies both `CHANGELOG.md` and the derived
+`changelog.json` to `termic.dev`, and the GitHub Release notes are extracted
+from the new version's section. Never hand-edit `changelog.json` — it's
+generated; edit `CHANGELOG.md`.
 
 ## When invoked — what to confirm, what to infer
 
@@ -38,9 +43,9 @@ confirm them in a single question and then proceed:
 Infer everything else yourself, don't ask:
 - current version (`package.json`), the computed new version, today's date
   (the script stamps it);
-- the changelog `summary` + `sections` — draft them from the diff / commits and
+- the changelog summary + bullets — draft them from the diff / commits and
   show the user the entry for a quick yes before running. Obey the copy rule
-  (no em dashes) and keep `summary` ≤15 words.
+  (no em dashes) and keep the summary line ≤15 words.
 
 After cutting the tag, push it: `git push && git push --tags`. This kicks off
 the CI publish (build, sign, GitHub Release, tap + website bump) — it's the
@@ -53,7 +58,7 @@ that CI is running.
 
 ```sh
 # 1. Author the changelog entry for the new version (see "Changelog entry").
-#    Add a new object at the TOP of `versions` in changelog.json.
+#    Add a new "## [x.y.z] - " section at the TOP of CHANGELOG.md.
 # 2. Cut the release:
 make release                 # patch bump (0.4.4 → 0.4.5)
 make release BUMP=minor      # 0.4.4 → 0.5.0
@@ -65,14 +70,15 @@ git push && git push --tags
 
 `scripts/release.sh`:
 
-1. Refuses to run on a dirty tree (a dirty `changelog.json` is allowed — that's
-   the entry you just wrote) or off `main`.
-2. Gates on `changelog.json`: scaffolds a stub if the entry is missing, stamps
-   today's date, and aborts if `summary` is empty. (If you forget step 1, this
-   is what scaffolds the stub and stops — write its `summary`, then re-run.)
+1. Refuses to run on a dirty tree (dirty `CHANGELOG.md` / `changelog.json` are
+   allowed — that's the entry you just wrote + its derived file) or off `main`.
+2. Gates on `CHANGELOG.md` via `scripts/changelog.mjs release-gate`: scaffolds a
+   stub section if the top entry is missing, stamps today's date, regenerates
+   `changelog.json`, and aborts if the summary is empty. (If you forget step 1,
+   this is what scaffolds the stub and stops — write its summary, then re-run.)
 3. Bumps the four version files in lockstep.
-4. Commits the version files **+ `changelog.json`** as `release: vX` and tags
-   `vX`.
+4. Commits the version files **+ `CHANGELOG.md` + `changelog.json`** as
+   `release: vX` and tags `vX`.
 
 ---
 
@@ -88,9 +94,9 @@ tags it. The previous release commit and tag are left untouched (new commit on
 top, nothing rewritten).
 
 ```sh
-# 1. In changelog.json, edit the TOP (latest) entry in place:
-#      - bump its "version"  (e.g. 0.11.0 → 0.11.1)
-#      - append your change as a bullet to one of its existing "sections"
+# 1. In CHANGELOG.md, edit the TOP (latest) entry in place:
+#      - bump its heading version  (## [0.11.0] → ## [0.11.1])
+#      - append your change as a bullet under one of its existing ### subsections
 #        (do NOT add a new top entry — the change merges into the last release)
 # 2. Fold + cut:
 make release-patch
@@ -98,13 +104,14 @@ make release-patch
 git push && git push --tags
 ```
 
-`scripts/release.sh patch merge`:
+`scripts/release.sh patch merge` (via `changelog.mjs merge-gate`):
 
 1. Requires `main`. **Allows a dirty tree** — that change is the whole point.
-2. Gates on `changelog.json`: the top entry must already be bumped to the new
-   patch version with a non-empty summary and at least one section item. If it's
-   still on the previous version, it tells you to bump-in-place + append, then
-   re-run. It restamps the date but never scaffolds a new entry.
+2. Gates on `CHANGELOG.md`: the top entry must already be bumped to the new
+   patch version with a non-empty summary and at least one bullet. If it's still
+   on the previous version, it tells you to bump-in-place + append, then re-run.
+   It restamps the date and regenerates `changelog.json`, but never scaffolds a
+   new entry.
 3. Bumps the four version files.
 4. `git add -A` (sweeps your working change in too), commits `release: vX`, tags.
 
@@ -115,39 +122,41 @@ rejected. If you actually want a distinct release with its own notes, use Path A
 
 ## Changelog entry (Path A)
 
-Add a new object to the **top** of the `versions` array:
+Add a new section to the **top** of `CHANGELOG.md` (just under the `# Changelog`
+title + intro), newest first:
 
-```jsonc
-{
-  "version": "0.4.5",   // must match the version you're releasing
-  "date": "",           // leave empty — release.sh stamps it
-  "summary": "Short headline (≤15 words).",
-  "sections": [
-    { "label": "Features",  "items": ["First new thing.", "Second new thing."] },
-    { "label": "Bug fixes", "items": ["Something broken that is now fixed."] }
-  ]
-}
+```markdown
+## [0.4.5] - 
+
+Short headline that becomes the summary (≤15 words).
+
+### Features
+- First new thing.
+- Second new thing.
+
+### Bug fixes
+- Something broken that is now fixed.
 ```
 
-Common `label` values: `"Features"`, `"Bug fixes"`, `"Improvements"`,
-`"Sponsors"`. Use whatever fits — the renderer shows it as-is. Omit sections
-with no items.
+Format notes:
 
-Field notes:
+- **heading** — `## [<version>] - <date>`. The version must equal the version
+  being released (`make release` gates on it). Leave the date blank after the
+  `- `; `release.sh` stamps today's date.
+- **summary** — the lead paragraph, the first line under the heading before any
+  `###`. Required, ≤15 words; it's what `scripts/changelog.mjs` extracts into the
+  slim `changelog.json` for the sidebar Update card. `release.sh` warns if it
+  exceeds 15 words.
+- **subsections** — `### Features` / `### Bug fixes` / `### Improvements` /
+  `### Sponsors` (use whatever fits), each with `-` bullets. At least one bullet
+  is required. Inline `[text](url)` links are fine (markdown-native).
 
-- **`version`** — must equal the version being released. `make release` gates on
-  this: the top entry's `version` must match the computed new version.
-- **`date`** — leave empty; `release.sh` stamps today's date automatically.
-- **`summary`** — required, ≤15 words. Renders in a narrow sidebar card —
-  `release.sh` warns if it exceeds 15 words.
-- **`sections`** — required, at least one section with at least one item. Plain
-  strings, no markdown. Each item becomes a `<li>` under its section label.
-
-Newest entry first. Never reorder or delete old entries — the dialog shows the
-whole history.
+Newest entry first. Never reorder or delete old entries — the dialog + the
+website show the whole history. `changelog.json` is generated from this file;
+don't edit it by hand.
 
 **Copy rule:** no em dashes (—) anywhere in user-visible text, including
-`changelog.json`. Use a comma, period, parentheses, or colon.
+`CHANGELOG.md`. Use a comma, period, parentheses, or colon.
 
 ---
 
@@ -159,12 +168,14 @@ whole history.
 2. **build-mac** — universal (arm64 + x86_64) build, ad-hoc codesigned and
    ed25519-signed for the updater.
 3. **release** — creates the GitHub Release with the signed `.dmg` + updater
-   `.tar.gz`.
+   `.tar.gz`. Notes body leads with the new version's section (extracted from
+   `CHANGELOG.md` via `changelog.mjs notes`) followed by a short install footer.
 4. **bump-tap** — bumps the Homebrew cask in `simion/homebrew-termic`.
-5. **bump-website** — commits two files to `simion/termic.dev`:
+5. **bump-website** — commits three files to `simion/termic.dev`:
    - `public/updates/latest.json` — the Tauri updater manifest (version,
      signature, download URLs).
-   - `public/updates/changelog.json` — copied verbatim from this repo.
+   - `public/updates/changelog.md` — the full `CHANGELOG.md`, copied verbatim.
+   - `public/updates/changelog.json` — the slim derived summary file.
 
 ## How updates reach users
 
@@ -172,13 +183,15 @@ whole history.
   ed25519-verified). Running apps see a new release within ~5 min (the CF Pages
   cache TTL). The in-app Update card / pill surfaces it.
 - **Homebrew** users get it via `brew upgrade --cask`.
-- The **Update card** and **Changelog dialog** fetch
-  `termic.dev/updates/changelog.json` (WebView `fetch()` — the host is
-  allowlisted in `tauri.conf.json`'s CSP `connect-src`, served with
-  `Access-Control-Allow-Origin: *`).
+- The **Update card** fetches `termic.dev/updates/changelog.json` (slim summary)
+  and the **Changelog dialog** fetches `termic.dev/updates/changelog.md` (full
+  notes, rendered with the in-app markdown pipeline). Both are WebView `fetch()`
+  — the host is allowlisted in `tauri.conf.json`'s CSP `connect-src` and served
+  with `Access-Control-Allow-Origin: *`.
 
-`changelog.json` is also seeded directly in the `termic.dev` repo so the feature
-works before the first release that runs the updated CI.
+Both `changelog.md` and `changelog.json` are also seeded directly in the
+`termic.dev` repo so the feature works before the first release that runs the
+updated CI.
 
 ## Developing the update UI
 

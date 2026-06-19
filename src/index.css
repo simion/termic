@@ -405,7 +405,10 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
 .markdown-body table,
 .markdown-body pre { margin: 0 0 1em; }
 .markdown-body ul, .markdown-body ol { padding-left: 1.6em; }
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
 .markdown-body li { margin: 0.25em 0; }
+.markdown-body li::marker { color: var(--color-fg-faint); }
 .markdown-body li > ul, .markdown-body li > ol { margin: 0.25em 0; }
 .markdown-body a { color: var(--color-accent); text-decoration: none; cursor: pointer; }
 .markdown-body a:hover { text-decoration: underline; }

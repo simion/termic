@@ -4,9 +4,10 @@
 # the updater package, uploads to a GitHub Release, bumps the
 # homebrew tap and the website's update manifest + changelog.
 #
-# Before bumping versions this script gates on changelog.json: the
-# entry for the new version must exist with a summary (it's what the
-# in-app Update card and Changelog dialog render). A stub is
+# Before bumping versions this script gates on CHANGELOG.md (the
+# human-authored source of truth): the top entry must be the new version
+# with a summary and at least one bullet. The slim changelog.json (what
+# the in-app Update card reads) is regenerated from it. A stub is
 # scaffolded if missing — fill it in and re-run. See the `release` skill.
 #
 # Usage:
@@ -37,17 +38,17 @@ if [[ "$MODE" == "merge" && "$BUMP" != "patch" ]]; then
 fi
 
 # ─── preflight ──────────────────────────────────────────────────────
-# The changelog.json entry for the new version is authored right before
-# the release (it feeds the in-app Update card), so it's expected to be
-# uncommitted here — exempt it from the dirty check. release.sh commits
-# it together with the version bump below.
+# The CHANGELOG.md entry for the new version is authored right before the
+# release (and changelog.json is regenerated from it), so both are
+# expected to be uncommitted here — exempt them from the dirty check.
+# release.sh commits them together with the version bump below.
 #
 # Patch-merge mode is the exception: the whole point is to fold an
 # uncommitted working-tree change into the release, so any dirty tree is
 # allowed and `git add -A` sweeps it into the release commit.
 if [[ "$MODE" != "merge" ]]; then
-  if [[ -n "$(git status --porcelain | grep -v ' changelog\.json$' || true)" ]]; then
-    echo "✗ working tree dirty (other than changelog.json) — commit or stash first"
+  if [[ -n "$(git status --porcelain | grep -vE ' (CHANGELOG\.md|changelog\.json)$' || true)" ]]; then
+    echo "✗ working tree dirty (other than CHANGELOG.md) — commit or stash first"
     echo "  (to fold a change into a patch on the last release, use: make release-patch)"
     exit 1
   fi
@@ -80,91 +81,44 @@ echo "→ Bumping $CUR → $NEW"
 # ─── changelog gate ─────────────────────────────────────────────────
 if [[ "$MODE" == "merge" ]]; then
   # Patch-merge: the change folds into the LAST release's notes rather
-  # than getting its own entry. The top entry must already be bumped in
-  # place to $NEW (with the new bullet appended) before this runs — we do
-  # NOT scaffold a new entry here. Restamp the date and validate.
-  CL_STATUS="$(node -e '
-    const fs = require("fs");
-    const f = "changelog.json";
-    const v = process.argv[1];
-    const cur = process.argv[2];
-    const j = JSON.parse(fs.readFileSync(f, "utf8"));
-    const top = (j.versions || [])[0];
-    if (!top) { process.stdout.write("EMPTY"); process.exit(0); }
-    if (top.version === cur) { process.stdout.write("NOT_BUMPED"); process.exit(0); }
-    if (top.version !== v) { process.stdout.write("MISMATCH:" + top.version); process.exit(0); }
-    top.date = new Date().toISOString().slice(0, 10);
-    fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
-    const haveSummary = typeof top.summary === "string" && top.summary.trim().length > 0;
-    const haveSections = Array.isArray(top.sections) && top.sections.some(s => Array.isArray(s.items) && s.items.some(n => typeof n === "string" && n.trim().length > 0));
-    if (!haveSummary || !haveSections) { process.stdout.write("INCOMPLETE"); process.exit(0); }
-    process.stdout.write("OK");
-  ' "$NEW" "$CUR")"
+  # than getting its own entry. The top CHANGELOG.md entry must already be
+  # bumped in place to $NEW (with the new bullet appended) before this runs
+  # — we do NOT scaffold a new entry here. merge-gate restamps the date,
+  # validates, and regenerates changelog.json.
+  CL_STATUS="$(node scripts/changelog.mjs merge-gate "$NEW" "$CUR")"
   if [[ "$CL_STATUS" != "OK" ]]; then
     echo ""
-    echo "✗ patch-merge needs the top changelog.json entry bumped to $NEW."
+    echo "✗ patch-merge needs the top CHANGELOG.md entry bumped to $NEW."
     case "$CL_STATUS" in
       NOT_BUMPED)
-        echo "  The top entry is still $CUR. Bump its \"version\" to $NEW in place,"
-        echo "  append your change as a bullet to one of its existing \"sections\","
+        echo "  The top entry is still $CUR. Bump its heading to ## [$NEW] in place,"
+        echo "  append your change as a bullet under one of its ### subsections,"
         echo "  then re-run:  make release-patch" ;;
       MISMATCH:*)
         echo "  The top entry is ${CL_STATUS#MISMATCH:}, expected $NEW. Fix it and re-run." ;;
       *)
-        echo "  The top entry needs a non-empty summary and at least one section item." ;;
+        echo "  The top entry needs a non-empty summary and at least one bullet." ;;
     esac
     exit 1
   fi
-  echo "→ changelog.json top entry folded into $NEW: ok"
+  echo "→ CHANGELOG.md top entry folded into $NEW: ok"
 else
-# Every release must ship a filled-in changelog.json entry for $NEW —
-# it's the source the in-app Update card + Changelog dialog render, and
-# CI copies it verbatim to termic.dev. Scaffold a stub if the entry is
-# missing, stamp today's date onto it, and refuse to proceed until its
-# summary is written.
-CL_STATUS="$(node -e '
-  const fs = require("fs");
-  const f = "changelog.json";
-  const v = process.argv[1];
-  let j;
-  try {
-    j = JSON.parse(fs.readFileSync(f, "utf8"));
-  } catch (e) {
-    if (e.code === "ENOENT") {
-      j = { versions: [] };
-    } else {
-      console.error("✗ Failed to parse changelog.json. Please check for syntax errors:");
-      throw e;
-    }
-  }
-  if (!Array.isArray(j.versions)) j.versions = [];
-  let top = j.versions[0];
-  if (!top || top.version !== v) {
-    top = { version: v, date: "", summary: "", sections: [{ label: "Features", items: [""] }] };
-    j.versions.unshift(top);
-  }
-  top.date = new Date().toISOString().slice(0, 10);
-  fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
-  const haveSummary = typeof top.summary === "string" && top.summary.trim().length > 0;
-  const haveSections = Array.isArray(top.sections) && top.sections.some(s => Array.isArray(s.items) && s.items.some(n => typeof n === "string" && n.trim().length > 0));
-  const haveNotes = Array.isArray(top.notes) && top.notes.some(n => typeof n === "string" && n.trim().length > 0);
-  if (!haveSummary || (!haveSections && !haveNotes)) { process.stdout.write("INCOMPLETE"); process.exit(0); }
-  const words = top.summary.trim().split(/\s+/).length;
-  if (words > 15) {
-    process.stderr.write("  ⚠ summary is " + words + " words (target ≤15) — it renders in a narrow sidebar card.\n");
-  }
-  process.stdout.write("OK");
-' "$NEW")"
+# Every release must ship a filled-in CHANGELOG.md entry for $NEW — it's
+# the source the in-app Changelog dialog + termic.dev render, and the slim
+# changelog.json (the Update card's summary) is regenerated from it.
+# release-gate scaffolds a stub if the entry is missing, stamps today's
+# date, validates, and regenerates changelog.json on success.
+CL_STATUS="$(node scripts/changelog.mjs release-gate "$NEW")"
 if [[ "$CL_STATUS" != "OK" ]]; then
   echo ""
-  echo "✗ changelog.json needs the $NEW entry filled in."
-  echo "  A stub for $NEW is now at the top of changelog.json — write its"
-  echo "  short \"summary\" (≤15 words) and at least one \"notes\" bullet,"
+  echo "✗ CHANGELOG.md needs the $NEW entry filled in."
+  echo "  A stub for $NEW is now at the top of CHANGELOG.md — write its"
+  echo "  short summary line (≤15 words) and at least one bullet,"
   echo "  then re-run:"
   echo "      make release BUMP=$BUMP"
   exit 1
 fi
-echo "→ changelog.json entry for $NEW: ok"
+echo "→ CHANGELOG.md entry for $NEW: ok"
 fi
 
 # ─── bump the three version files in lockstep ──────────────────────
@@ -198,7 +152,7 @@ else
     package.json package-lock.json \
     src-tauri/Cargo.toml src-tauri/Cargo.lock \
     src-tauri/tauri.conf.json \
-    changelog.json
+    CHANGELOG.md changelog.json
 fi
 git commit -m "release: v$NEW"
 git tag "v$NEW"

@@ -30,6 +30,7 @@ env:
   WEBSITE_REPO: simion/termic.dev
   WEBSITE_MANIFEST_PATH: public/updates/latest.json
   WEBSITE_CHANGELOG_PATH: public/updates/changelog.json
+  WEBSITE_CHANGELOG_MD_PATH: public/updates/changelog.md
 
 jobs:
   # Cheap fast-fail: type-check the frontend on Ubuntu (~1 min) before
@@ -340,6 +341,11 @@ jobs:
     needs: [build-mac, build-linux]
     runs-on: ubuntu-latest
     steps:
+      # Checked out FIRST (before the artifacts land in mac/ and linux/) so
+      # the release-notes body can be extracted from CHANGELOG.md at the
+      # pushed tag. checkout cleans the workspace, so it has to precede the
+      # downloads.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: termic-${{ needs.build-mac.outputs.version }}-universal
@@ -354,63 +360,33 @@ jobs:
           VERSION: ${{ needs.build-mac.outputs.version }}
           LINUX_APPIMAGE: ${{ needs.build-linux.outputs.appimage_name }}
         run: |
-          # Notes body is the first thing direct-download users see.
-          # The recommended brew path goes first because it sidesteps
-          # quarantine; the xattr command is the escape hatch for
-          # non-brew users. Linux gets its own block with the
-          # AppImage one-liner (chmod + run; no installer step).
-          NOTES=$(cat <<EOF
+          # Lead with WHAT CHANGED (extracted verbatim from CHANGELOG.md),
+          # then a short install footer. Direct-download and email-notified
+          # users want the release notes, not an install wall (GH #39). The
+          # full per-platform install + update guide lives on termic.dev and
+          # in the README. The changelog body is piped through a file (not a
+          # shell var) so backticks in bullets like `.termic.yaml` stay
+          # literal instead of being command-substituted.
+          {
+          echo "## What's changed"
+          echo
+          node scripts/changelog.mjs notes "$VERSION"
+          echo
+          echo "---"
+          echo
+          cat <<'FOOTER'
           ## Install
 
-          ### macOS (universal — Apple Silicon + Intel)
+          - **macOS** (universal): `brew install --cask simion/termic/termic` (handles Gatekeeper), or download the `.dmg` below and run `xattr -dr com.apple.quarantine /Applications/Termic.app` to clear it.
+          - **Linux** (x86_64): download the `.AppImage` below, then `chmod +x` it and run. Sandbox is macOS-only; everything else works the same.
 
-          **Recommended — Homebrew** (handles Gatekeeper for you):
-
-          \`\`\`sh
-          brew install --cask simion/termic/termic
-          \`\`\`
-
-          **Direct .dmg** — download \`Termic_${VERSION}_universal.dmg\` below,
-          drag to /Applications, then strip the quarantine flag so macOS
-          Gatekeeper lets it launch (you'd otherwise see _"Termic can't be
-          opened because Apple cannot check it for malicious software"_):
-
-          \`\`\`sh
-          xattr -dr com.apple.quarantine /Applications/Termic.app
-          \`\`\`
-
-          ### Linux (x86_64 AppImage)
-
-          Download \`${LINUX_APPIMAGE}\` below, mark executable, run:
-
-          \`\`\`sh
-          chmod +x ${LINUX_APPIMAGE}
-          ./${LINUX_APPIMAGE}
-          \`\`\`
-
-          The sandbox feature is macOS-only on Linux: the workspace's
-          Shield toggle is disabled and agents run unsandboxed.
-          Everything else (worktrees, parallel tabs, find-in-files,
-          themes, in-app diff) works the same.
-
-          ## Updates
-
-          The app self-updates on both platforms: future releases land via the
-          in-app **Update** pill (top-right of the toolbar). For Homebrew installs,
-          \`brew upgrade --cask\` also works. For Linux AppImage installs, the
-          updater replaces the file in place — keep it somewhere writable
-          (\`~/Applications\` works well).
-
-          ## Changelog
-
-          See the [v${VERSION} tag](https://github.com/${{ github.repository }}/tree/v${VERSION})
-          for the commits in this release.
-          EOF
-          )
+          The app self-updates after install. Full install and update help: https://termic.dev
+          FOOTER
+          } > release-notes.md
           gh release create "v${VERSION}" \
             --repo "${{ github.repository }}" \
             --title "v${VERSION}" \
-            --notes "$NOTES" \
+            --notes-file release-notes.md \
             mac/dmg/*.dmg mac/macos/* \
             linux/*.AppImage linux/*.AppImage.sig
 
@@ -516,11 +492,15 @@ jobs:
             }
           }
           JSON
-          # changelog.json is copied verbatim — the termic repo is its
-          # single source of truth (authored by scripts/release.sh).
+          # Both changelog artifacts are copied verbatim from the termic
+          # repo (CHANGELOG.md is the source of truth; changelog.json is the
+          # slim derived summary file generated by scripts/release.sh). The
+          # in-app Changelog dialog + the /changelog page render the .md; the
+          # Update card reads the .json summary.
           cp ../app/changelog.json "${{ env.WEBSITE_CHANGELOG_PATH }}"
+          cp ../app/CHANGELOG.md    "${{ env.WEBSITE_CHANGELOG_MD_PATH }}"
           git config user.name  "termic-bot"
           git config user.email "termic-bot@users.noreply.github.com"
-          git add "${{ env.WEBSITE_MANIFEST_PATH }}" "${{ env.WEBSITE_CHANGELOG_PATH }}"
+          git add "${{ env.WEBSITE_MANIFEST_PATH }}" "${{ env.WEBSITE_CHANGELOG_PATH }}" "${{ env.WEBSITE_CHANGELOG_MD_PATH }}"
           git commit -m "updater: bump to $VERSION + changelog"
           git push
