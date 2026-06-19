@@ -4,6 +4,17 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.15.1] - 2026-06-19
+
+Release notes now show what changed, and markdown previews show list bullets again.
+
+### Improvements
+- Release notes (in the app and on GitHub) now lead with what changed in each version, instead of install instructions.
+- The in-app Changelog dialog renders formatted markdown.
+
+### Bug fixes
+- Markdown previews now show bullet and numbered list markers.
+
 ## [0.15.0] - 2026-06-19
 
 Right-click menus everywhere, file rename/remove, self-contained multi-repo members, clearer diffs.

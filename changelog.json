@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.15.1",
+      "date": "2026-06-19",
+      "summary": "Release notes now show what changed, and markdown previews show list bullets again."
+    },
+    {
       "version": "0.15.0",
       "date": "2026-06-19",
       "summary": "Right-click menus everywhere, file rename/remove, self-contained multi-repo members, clearer diffs."
