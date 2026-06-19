@@ -1,6 +1,38 @@
 {
   "versions": [
     {
+      "version": "0.15.0",
+      "date": "2026-06-19",
+      "summary": "Right-click menus everywhere, file rename/remove, self-contained multi-repo members, clearer diffs.",
+      "sections": [
+        {
+          "label": "Features",
+          "items": [
+            "Right-click context menus across the file surfaces: copy path (relative or absolute) and show in Finder from the All Files tree, the Git panel, the diff header, and the editor breadcrumb.",
+            "File tree: rename and remove files or folders straight from the right-click menu.",
+            "Right-click a workspace in the sidebar to open its actions menu.",
+            "Multi-repo projects: members are self-contained, so adding one no longer leaves a separate project in the sidebar. Pick from your existing projects or add any folder from disk.",
+            "Add a plain (non-git) folder as a project or multi-repo member: we confirm after you pick it, with no checkbox to set."
+          ]
+        },
+        {
+          "label": "Improvements",
+          "items": [
+            "Diff view contrast: softer change highlights and even add/remove line tints so syntax-colored code stays readable.",
+            "New Auto editor theme matches the app palette, so a light theme no longer shows light code on a light background."
+          ]
+        },
+        {
+          "label": "Bug fixes",
+          "items": [
+            "Diff view: the unchanged lines bar no longer renders as a solid black bar on light themes.",
+            "Right-clicking to dismiss a menu no longer leaves the UI unclickable.",
+            "The updater re-checks for a newer release before installing and refreshes a stale changelog."
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.14.4",
       "date": "2026-06-18",
       "summary": "Command palette (Cmd+K), quick project picker, worktree or repo-root toggle, right-click menus.",
