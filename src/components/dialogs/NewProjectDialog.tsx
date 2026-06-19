@@ -7,11 +7,29 @@ import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { projectAdd, projectAddMulti, discoverRepos, settingsLoad } from "@/lib/ipc";
-import type { DiscoveredRepo, Project } from "@/lib/types";
+import { projectAdd, projectAddMulti, discoverRepos, settingsLoad, pathIsGitRepo } from "@/lib/ipc";
+import type { DiscoveredRepo, Project, ProjectMember } from "@/lib/types";
 import { Folder, FolderPlus, Layers, X } from "lucide-react";
-import { Checkbox } from "@/components/ui/Checkbox";
 import { cn } from "@/lib/utils";
+
+// Where a non-git folder is being added — drives the confirm copy. We no
+// longer ask the user to pre-declare "not a git repo" with a checkbox;
+// instead we detect it after they pick a directory and confirm intent.
+type ConfirmKind = "project" | "host" | "member";
+const CONFIRM_COPY: Record<ConfirmKind, { title: string; body: string }> = {
+  project: {
+    title: "Add as a plain folder?",
+    body: "This folder isn't a git repository. You can still add it as a plain folder project: agents run at the folder root, but there are no worktrees or branches.",
+  },
+  host: {
+    title: "Add a non-git host?",
+    body: "This folder isn't a git repository. It will host the shared knowledge files as a plain folder. Member repos still get their own worktrees per workspace.",
+  },
+  member: {
+    title: "Add as a plain folder?",
+    body: "This folder isn't a git repository. It mounts repo-root only (a live symlink), with no worktree or branch.",
+  },
+};
 
 export function NewProjectDialog() {
   const open = useUI(s => s.newProjectOpen);
@@ -28,7 +46,12 @@ export function NewProjectDialog() {
   // Issue #4: add a plain folder (not a git repo). In repo mode the
   // folder becomes a repo-root-only project (agent runs at the folder).
   // In multi mode it becomes a non-git HOST for the member repos.
+  // No longer toggled by the user — set automatically once we detect the
+  // picked directory isn't a git repo (and they confirm via the dialog).
   const [nonGit, setNonGit] = useState(false);
+  // Pending non-git confirmation. We surface it as a Promise so the
+  // browse / add flows can `await` the user's decision inline.
+  const [confirm, setConfirm] = useState<{ kind: ConfirmKind; resolve: (ok: boolean) => void } | null>(null);
   const [discovered, setDiscovered] = useState<DiscoveredRepo[]>([]);
   const [reposDir, setReposDir] = useState("");
   const [busy, setBusy] = useState(false);
@@ -37,10 +60,10 @@ export function NewProjectDialog() {
   // dialog stays uncluttered for small repos folders. Case-insensitive
   // substring match against name + path.
   const [filter, setFilter] = useState("");
-  // Multi-repo: rich member rows (project_id + per-member scripts).
-  // Stored as an array (order = display order) keyed by project_id.
-  type MultiMember = { project_id: string; setup_script: string; run_script: string; archive_script: string };
-  const [memberRows, setMemberRows] = useState<MultiMember[]>([]);
+  // Multi-repo: self-contained inline member rows (order = display order),
+  // keyed by root_path. No project registration — a member is just a path
+  // plus its per-project scripts.
+  const [memberRows, setMemberRows] = useState<ProjectMember[]>([]);
   // Multi-repo: user-visible project name. Required (drives the
   // auto-created host dir name when no host path is given, and the
   // sidebar label always).
@@ -51,6 +74,7 @@ export function NewProjectDialog() {
     setMode("repo");
     setPath(""); setErr(null); setFilter("");
     setNonGit(false);
+    setConfirm(null);
     setMemberRows([]);
     setMultiName("");
     (async () => {
@@ -65,10 +89,28 @@ export function NewProjectDialog() {
     })();
   }, [open]);
 
-  async function add(p: string) {
+  // Resolve the pending confirm dialog with the user's decision.
+  function resolveConfirm(ok: boolean) {
+    confirm?.resolve(ok);
+    setConfirm(null);
+  }
+  // Open the non-git confirm dialog and resolve once the user decides.
+  function confirmNonGit(kind: ConfirmKind): Promise<boolean> {
+    return new Promise(resolve => setConfirm({ kind, resolve }));
+  }
+  // Decide how to treat a picked directory: a real git repo proceeds
+  // straight through; a plain folder pops the confirm. Returns the
+  // resolved non-git flag, or null if the user backed out.
+  async function classify(p: string, kind: ConfirmKind): Promise<boolean | null> {
+    const isGit = await pathIsGitRepo(p).catch(() => false);
+    if (isGit) return false;
+    return (await confirmNonGit(kind)) ? true : null;
+  }
+
+  async function add(p: string, asNonGit: boolean) {
     setBusy(true); setErr(null);
     try {
-      const proj = await projectAdd(p, nonGit);
+      const proj = await projectAdd(p, asNonGit);
       // Newly-added projects start expanded so the "+ Get started"
       // CTA is visible without an extra click — the empty-defaults-
       // to-collapsed fallback in Sidebar would otherwise hide it.
@@ -97,12 +139,21 @@ export function NewProjectDialog() {
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   }
 
-  async function addMulti() {
+  // Single-repo Add: detect git, confirm if it's a plain folder, then add.
+  async function handleAdd() {
+    const p = path.trim();
+    if (!p) return;
+    const ng = await classify(p, "project");
+    if (ng === null) return;
+    await add(path, ng);
+  }
+
+  async function addMulti(asNonGit: boolean) {
     setBusy(true); setErr(null);
     try {
       // Empty path tells Rust to auto-create + git-init the host
       // under ~/termic/projects/<slug>/. Name is required either way.
-      const proj = await projectAddMulti(path.trim(), multiName.trim(), memberRows, nonGit);
+      const proj = await projectAddMulti(path.trim(), multiName.trim(), memberRows, asNonGit);
       setProjectCollapsed(proj.id, false);
       await loadAll();
       pushToast(`Added multi-repo project “${proj.name}” (${memberRows.length} members)`, "success");
@@ -110,30 +161,61 @@ export function NewProjectDialog() {
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   }
 
-  function toggleMember(id: string) {
-    setMemberRows(prev => {
-      const exists = prev.some(m => m.project_id === id);
-      if (exists) return prev.filter(m => m.project_id !== id);
-      // Seed scripts from the member project's own defaults — the
-      // user can edit inline below. They are project-scoped on the
-      // new multi-repo project (independent of the member project's
-      // own scripts going forward).
-      const m = projects.find(p => p.id === id);
-      return [...prev, {
-        project_id: id,
-        setup_script:   m?.setup_script   ?? "",
-        run_script:     m?.run_script     ?? "",
-        archive_script: m?.archive_script ?? "",
-      }];
-    });
+  // Multi-repo Add: a host path is optional. When given, detect git and
+  // confirm if it's a plain folder; an auto-created host is always git.
+  async function handleAddMulti() {
+    const host = path.trim();
+    let ng = false;
+    if (host) {
+      const res = await classify(host, "host");
+      if (res === null) return;
+      ng = res;
+    }
+    await addMulti(ng);
   }
-  function updateMember(id: string, patch: Partial<MultiMember>) {
-    setMemberRows(prev => prev.map(m => m.project_id === id ? { ...m, ...patch } : m));
+
+  // Add an inline member from an existing project — copies its path /
+  // git status / base / scripts / sandbox lists into a self-contained
+  // member. The source project is NOT referenced; nothing is registered.
+  function addMemberFromProject(p: Project) {
+    setMemberRows(prev => prev.some(m => m.root_path === p.root_path) ? prev : [...prev, {
+      root_path: p.root_path,
+      name: p.name,
+      non_git: p.non_git,
+      base_branch: p.base_branch,
+      setup_script:   p.setup_script   ?? "",
+      run_script:     p.run_script     ?? "",
+      archive_script: p.archive_script ?? "",
+      sandbox_rw_paths:      p.sandbox_rw_paths,
+      sandbox_allowed_hosts: p.sandbox_allowed_hosts,
+    }]);
+  }
+  // Add an inline member straight from a disk path (no project record).
+  // Rust canonicalizes + detects git on submit; these are provisional.
+  function addMemberFromDisk(path: string, asNonGit: boolean) {
+    const name = path.split("/").filter(Boolean).pop() || "repo";
+    setMemberRows(prev => prev.some(m => m.root_path === path) ? prev : [...prev, {
+      root_path: path, name, non_git: asNonGit,
+      base_branch: "", setup_script: "", run_script: "", archive_script: "",
+    }]);
+  }
+  function removeMember(rootPath: string) {
+    setMemberRows(prev => prev.filter(m => m.root_path !== rootPath));
+  }
+  function updateMember(rootPath: string, patch: Partial<ProjectMember>) {
+    setMemberRows(prev => prev.map(m => m.root_path === rootPath ? { ...m, ...patch } : m));
   }
 
   async function browse() {
     const sel = await openDialog({ directory: true, multiple: false });
-    if (typeof sel === "string") setPath(sel);
+    if (typeof sel !== "string") return;
+    // Detect git right after the pick so the form reflects reality (and
+    // the "Folder" vs "Repository" label updates). A plain folder pops the
+    // confirm; backing out leaves the field untouched.
+    const ng = await classify(sel, mode === "multi" ? "host" : "project");
+    if (ng === null) return;
+    setPath(sel);
+    setNonGit(ng);
   }
 
   // List of projects eligible to be members (any already-added single
@@ -144,6 +226,7 @@ export function NewProjectDialog() {
   );
 
   return (
+    <>
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
@@ -224,7 +307,7 @@ export function NewProjectDialog() {
           <label className="mt-4 block text-[13.5px]">
             Host repository <span className="text-[var(--color-fg-faint)]">(optional)</span>
             <div className="mt-1.5 flex gap-2">
-              <Input value={path} onChange={e => setPath(e.target.value)} placeholder="~/Notes/team-knowledge" />
+              <Input value={path} onChange={e => { setPath(e.target.value); setNonGit(false); }} placeholder="~/Notes/team-knowledge" />
               <Button variant="secondary" size="lg" onClick={browse}>Browse…</Button>
             </div>
             <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
@@ -232,20 +315,8 @@ export function NewProjectDialog() {
               <code className="mono">AGENTS.md</code>, and{" "}
               <code className="mono">.claude/</code> live. Leave blank and Termic
               creates one at{" "}
-              <code className="mono">~/termic/projects/&lt;name&gt;/</code>.
-            </span>
-          </label>
-
-          {/* Issue #4: the host can be a plain folder of repos instead of
-              a git repo. Members still get their own worktrees; the host's
-              shared files are symlinked into each workspace. */}
-          <label className="mt-3 flex cursor-pointer items-start gap-2 text-[13px]">
-            <Checkbox checked={nonGit} onChange={setNonGit} className="mt-0.5" />
-            <span>
-              <span className="text-[var(--color-fg)]">Host is not a git repo</span>
-              <span className="mt-0.5 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-                Use a plain folder for the shared knowledge files. Member repos still get their own worktrees per workspace.
-              </span>
+              <code className="mono">~/termic/projects/&lt;name&gt;/</code>. A plain
+              folder works too: we'll confirm after you pick it.
             </span>
           </label>
 
@@ -256,85 +327,70 @@ export function NewProjectDialog() {
                 {memberRows.length} of {memberCandidates.length}
               </span>
             </div>
-            {memberCandidates.length === 0 ? (
-              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12.5px] text-[var(--color-fg-faint)]">
-                No projects added yet. Add at least one repository first, then
-                come back to create a multi-repo project that references it.
-              </div>
-            ) : (
-              <>
+            <>
                 {memberRows.length === 0 ? (
                   <div className="rounded-md border border-dashed border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-6 text-center text-[12.5px] text-[var(--color-fg-faint)]">
-                    No members yet. Click <b>Add member</b> below to pick repos to mount under this multi-repo project.
+                    No members yet. Add repos below: pick from your existing projects or add any folder from disk.
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    {memberRows.map(row => {
-                      const p = memberCandidates.find(x => x.id === row.project_id);
-                      if (!p) return null;
-                      return (
-                        <div key={row.project_id} className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)]">
-                          <div className="flex items-center gap-3 px-3 py-2">
-                            <Layers className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{p.name}</div>
-                              <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{p.root_path}</div>
+                    {memberRows.map(row => (
+                      <div key={row.root_path} className="overflow-hidden rounded-md border border-l-2 border-[var(--color-accent-soft)] border-l-[var(--color-accent)] bg-[var(--color-accent-deep)]/[0.07]">
+                        <div className="flex items-center gap-3 px-3 py-2">
+                          <Layers className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{row.name}</span>
+                              {row.non_git && (
+                                <span className="shrink-0 rounded bg-[var(--color-bg-1)] px-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]">folder</span>
+                              )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => toggleMember(p.id)}
-                              title="Remove from this multi-repo project"
-                              className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
+                            <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{row.root_path}</div>
                           </div>
-                          <div className="flex flex-col gap-2 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2">
-                            <ScriptInput
-                              label="Setup"
-                              value={row.setup_script}
-                              onChange={v => updateMember(p.id, { setup_script: v })}
-                              placeholder={p.setup_script || "docker compose up -d"}
-                            />
-                            <ScriptInput
-                              label="Run"
-                              value={row.run_script}
-                              onChange={v => updateMember(p.id, { run_script: v })}
-                              placeholder={p.run_script || "PORT=$TERMIC_PORT npm run dev"}
-                            />
-                            <ScriptInput
-                              label="Archive"
-                              value={row.archive_script}
-                              onChange={v => updateMember(p.id, { archive_script: v })}
-                              placeholder={p.archive_script || "docker compose down"}
-                            />
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeMember(row.root_path)}
+                            title="Remove from this multi-repo project"
+                            className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
                         </div>
-                      );
-                    })}
+                        <div className="flex flex-col gap-2 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2">
+                          <ScriptInput
+                            label="Setup"
+                            value={row.setup_script}
+                            onChange={v => updateMember(row.root_path, { setup_script: v })}
+                            placeholder="docker compose up -d"
+                          />
+                          <ScriptInput
+                            label="Run"
+                            value={row.run_script}
+                            onChange={v => updateMember(row.root_path, { run_script: v })}
+                            placeholder="PORT=$TERMIC_PORT npm run dev"
+                          />
+                          <ScriptInput
+                            label="Archive"
+                            value={row.archive_script}
+                            onChange={v => updateMember(row.root_path, { archive_script: v })}
+                            placeholder="docker compose down"
+                          />
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
 
                 <AvailableMembersPicker
-                  candidates={memberCandidates.filter(c => !memberRows.some(r => r.project_id === c.id))}
-                  onAdd={(id) => toggleMember(id)}
+                  candidates={memberCandidates.filter(c => !memberRows.some(r => r.root_path === c.root_path))}
+                  onAdd={addMemberFromProject}
                   onQuickAdd={async (path) => {
-                    try {
-                      const p = await projectAdd(path);
-                      await useApp.getState().loadAll();
-                      toggleMember(p.id);
-                    } catch (e) {
-                      const msg = String(e);
-                      if (!/already added/i.test(msg)) { setErr(msg); return; }
-                      await useApp.getState().loadAll();
-                      const all = useApp.getState().projects;
-                      const found = all.find(p => p.root_path === path || p.root_path.endsWith(path));
-                      if (found) toggleMember(found.id);
-                    }
+                    const asNonGit = await classify(path, "member");
+                    if (asNonGit === null) return;
+                    addMemberFromDisk(path, asNonGit);
                   }}
                 />
               </>
-            )}
           </div>
 
           {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
@@ -344,7 +400,7 @@ export function NewProjectDialog() {
             <Button
               variant="primary"
               disabled={!multiName.trim() || memberRows.length === 0 || busy}
-              onClick={addMulti}
+              onClick={handleAddMulti}
             >
               <Layers className="h-4 w-4" /> Add multi-repo
             </Button>
@@ -386,7 +442,7 @@ export function NewProjectDialog() {
                 No repos match "{filter}".
               </div>
             ) : filtered.map(r => (
-              <button key={r.path} onClick={() => setPath(r.path)} disabled={busy}
+              <button key={r.path} onClick={() => { setPath(r.path); setNonGit(false); }} disabled={busy}
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-2 text-left text-[14px] hover:bg-[var(--color-hover)] disabled:opacity-50",
                   path === r.path && "bg-[var(--color-accent-deep)]/10",
@@ -412,21 +468,15 @@ export function NewProjectDialog() {
       <label className="block text-[13.5px]">
         {nonGit ? "Folder" : "Repository root"}
         <div className="mt-1.5 flex gap-2">
-          <Input value={path} onChange={e => setPath(e.target.value)} placeholder={nonGit ? "/path/to/folder" : "/path/to/repo"} />
+          <Input value={path} onChange={e => { setPath(e.target.value); setNonGit(false); }} placeholder="/path/to/repo" />
           <Button variant="secondary" size="lg" onClick={browse}>Browse…</Button>
         </div>
-      </label>
-
-      {/* Issue #4: opt out of git. A plain folder (e.g. a parent dir of
-          several repos) becomes a repo-root-only project — the agent
-          runs at the folder and can see everything under it. */}
-      <label className="mt-3 flex cursor-pointer items-start gap-2 text-[13px]">
-        <Checkbox checked={nonGit} onChange={setNonGit} className="mt-0.5" />
-        <span>
-          <span className="text-[var(--color-fg)]">Not a git repository</span>
-          <span className="mt-0.5 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-            Add a plain folder (e.g. a parent dir containing several repos). Agents run at the folder; no worktrees or branches.
-          </span>
+        {/* Issue #4: a plain folder (e.g. a parent dir of several repos)
+            works too — it becomes a repo-root-only project (agents run at
+            the folder, no worktrees). We detect git after you pick the dir
+            and confirm before adding, so there's no checkbox to set. */}
+        <span className="mt-1 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
+          A git repo gets worktrees and branches. A plain folder works too: agents run at the folder root. We confirm after you pick it.
         </span>
       </label>
 
@@ -434,13 +484,37 @@ export function NewProjectDialog() {
 
       <div className="mt-2 flex justify-end gap-2">
         <Button variant="ghost" onClick={close}>Cancel</Button>
-        <Button variant="primary" disabled={!path || busy} onClick={() => add(path)}>
+        <Button variant="primary" disabled={!path || busy} onClick={handleAdd}>
           <FolderPlus className="h-4 w-4" /> Add
         </Button>
       </div>
       </>
       )}
     </AppDialog>
+
+    {/* Non-git confirm. Replaces the old "Not a git repository" checkboxes:
+        we detect a plain folder after the user picks it, then ask here. */}
+    <AppDialog
+      open={!!confirm}
+      onOpenChange={(v) => { if (!v) resolveConfirm(false); }}
+      title={confirm ? CONFIRM_COPY[confirm.kind].title : ""}
+      className="max-w-md"
+    >
+      {confirm && (
+        <>
+          <p className="text-[13.5px] leading-snug text-[var(--color-fg-dim)]">
+            {CONFIRM_COPY[confirm.kind].body}
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => resolveConfirm(false)}>Cancel</Button>
+            <Button variant="primary" onClick={() => resolveConfirm(true)}>
+              <FolderPlus className="h-4 w-4" /> Add as folder
+            </Button>
+          </div>
+        </>
+      )}
+    </AppDialog>
+    </>
   );
 }
 
@@ -474,17 +548,20 @@ function ScriptInput({ label, value, onChange, placeholder }: {
 
 /** Collapsible "+ Add member" picker — same pattern as the
  *  RepositorySection editor. Default = single dashed button;
- *  click → list of available candidates; clicking a row adds + stays
- *  open if more remain, otherwise collapses. `onQuickAdd` (optional)
- *  wires a "Add repo from disk" row that registers a new standalone
- *  project + adds it as a member in one click. */
+ *  click → list of available candidates; clicking a row copies that
+ *  project's path/config into a self-contained member. `onQuickAdd`
+ *  adds any folder from disk as a member (no project registration). */
 function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
   candidates: Project[];
-  onAdd: (id: string) => void;
+  onAdd: (p: Project) => void;
   onQuickAdd?: (path: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Path for the inline "Add repo from disk" row — same path + Browse
+  // shape as the host field above, just rendered as a member row. Git
+  // detection (and the non-git confirm) happens in onQuickAdd.
+  const [diskPath, setDiskPath] = useState("");
   useEffect(() => {
     if (candidates.length === 0 && !onQuickAdd) setOpen(false);
   }, [candidates.length, onQuickAdd]);
@@ -506,12 +583,16 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
       </button>
     );
   }
-  const pickFolder = async () => {
-    if (!onQuickAdd || busy) return;
+  const browseDisk = async () => {
     const sel = await openDialog({ directory: true, multiple: false });
-    if (!sel || typeof sel !== "string") return;
+    if (typeof sel === "string") setDiskPath(sel);
+  };
+  const addDisk = async () => {
+    if (!onQuickAdd || busy) return;
+    const p = diskPath.trim();
+    if (!p) return;
     setBusy(true);
-    try { await onQuickAdd(sel); } finally { setBusy(false); }
+    try { await onQuickAdd(p); setDiskPath(""); } finally { setBusy(false); }
   };
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border-soft)]">
@@ -527,15 +608,15 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
         </button>
       </div>
       <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
-        Members come from your existing projects. Pick one below, or use “Add
-        repo from disk” to register a new project and wire it in here in one
-        step. Each member carries its own scripts and sandbox allow-lists.
+        Pick one of your existing projects to copy in, or use “Add repo from
+        disk” for any folder. Members are self-contained: each carries its own
+        scripts, and nothing is registered as a standalone project.
       </div>
       {candidates.map(c => (
         <button
           key={c.id}
           type="button"
-          onClick={() => onAdd(c.id)}
+          onClick={() => onAdd(c)}
           className="flex w-full items-center gap-3 border-t border-[var(--color-border-soft)] px-3 py-2 text-left hover:bg-[var(--color-hover)]"
         >
           <div className="min-w-0 flex-1">
@@ -546,17 +627,28 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
         </button>
       ))}
       {onQuickAdd && (
-        <button
-          type="button"
-          onClick={pickFolder}
-          disabled={busy}
-          className="flex w-full items-center gap-3 border-t border-[var(--color-border-soft)] px-3 py-2 text-left text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-60"
-        >
-          <span className="text-[13.5px]">{busy ? "Adding…" : "+ Add repo from disk…"}</span>
-          <span className="ml-auto truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">
-            registers a new project + adds it as a member
-          </span>
-        </button>
+        <div className="border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2.5">
+          <div className="mb-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
+            Add repo from disk
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={diskPath}
+              onChange={e => setDiskPath(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addDisk(); } }}
+              placeholder="/path/to/repo"
+              className="flex-1"
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            />
+            <Button variant="secondary" size="lg" onClick={browseDisk} disabled={busy}>Browse…</Button>
+            <Button variant="primary" size="lg" onClick={addDisk} disabled={busy || !diskPath.trim()}>
+              {busy ? "Adding…" : "Add"}
+            </Button>
+          </div>
+          <p className="mt-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
+            Adds the folder as a member of this project only (no standalone project). A plain folder works too: we confirm after you pick it, then it mounts repo-root only (no worktree).
+          </p>
+        </div>
       )}
     </div>
   );

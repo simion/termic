@@ -83,13 +83,15 @@ export function NewWorkspaceDialog() {
   // behave normally (blank lines while typing don't fight the split).
   const [sbRw,    setSbRw]    = useState("");
   const [sbHosts, setSbHosts] = useState("");
-  // Multi-repo: per-member spec, indexed by member project id. Seeded
-  // when the dialog opens for a multi project from project.members.
-  // Per-member spec. Scripts are not per-workspace — they live on
-  // the multi-repo project itself and apply to every workspace under
-  // it. The dialog only collects mode + branch overrides here.
+  // Multi-repo: per-member spec, keyed by member root_path. Seeded when
+  // the dialog opens for a multi project from project.members (which are
+  // self-contained — no project lookup). Scripts are not per-workspace —
+  // they live on the multi-repo project itself. The dialog only collects
+  // mode + branch overrides here. name / non_git are carried for display.
   type MemberSpec = {
-    project_id: string;
+    root_path: string;
+    name: string;
+    non_git: boolean;
     mode: MemberMode;
     branch: string;
     base_branch: string;
@@ -178,17 +180,16 @@ export function NewWorkspaceDialog() {
     // safest default. User can flip per-member to Repo root or change
     // branches before submit.
     if ((p?.type ?? "single") === "multi") {
-      const all = useApp.getState().projects;
-      const seeded: MemberSpec[] = (p?.members ?? []).flatMap(pm => {
-        const m = all.find(x => x.id === pm.project_id);
-        if (!m) return [];
-        return [{
-          project_id: pm.project_id,
-          mode: "worktree" as MemberMode,
-          branch: "",
-          base_branch: m.base_branch || "",
-        }];
-      });
+      const seeded: MemberSpec[] = (p?.members ?? []).map(pm => ({
+        root_path: pm.root_path,
+        name: pm.name,
+        non_git: !!pm.non_git,
+        // Non-git members can't be worktreed (no branches) → force
+        // repo_root, same rule as a non-git single project / host.
+        mode: (pm.non_git ? "repo_root" : "worktree") as MemberMode,
+        branch: "",
+        base_branch: pm.base_branch || "",
+      }));
       setMembers(seeded);
     } else {
       setMembers([]);
@@ -203,23 +204,20 @@ export function NewWorkspaceDialog() {
         }
         return out.join("\n");
       };
-      // For multi-repo: union globals + host + every member project's
-      // sandbox lists. Same dedupe-preserving order as single-repo,
-      // just N+1 inputs instead of 2.
+      // For multi-repo: union globals + host + every member's own
+      // sandbox lists (carried inline on the member). Same dedupe-
+      // preserving order as single-repo, just N+1 inputs instead of 2.
       if ((p?.type ?? "single") === "multi") {
-        const all = useApp.getState().projects;
-        const memberLists = (p?.members ?? [])
-          .map(pm => all.find(x => x.id === pm.project_id))
-          .filter((x): x is NonNullable<typeof x> => !!x);
+        const mem = p?.members ?? [];
         setSbRw(merge(
           s.sandbox_default_rw_paths,
           p?.sandbox_rw_paths,
-          ...memberLists.map(m => m.sandbox_rw_paths),
+          ...mem.map(m => m.sandbox_rw_paths),
         ));
         setSbHosts(merge(
           s.sandbox_default_allowed_hosts,
           p?.sandbox_allowed_hosts,
-          ...memberLists.map(m => m.sandbox_allowed_hosts),
+          ...mem.map(m => m.sandbox_allowed_hosts),
         ));
       } else {
         setSbRw(merge(s.sandbox_default_rw_paths,      p?.sandbox_rw_paths));
@@ -402,7 +400,7 @@ export function NewWorkspaceDialog() {
           base_branch: base.trim() || undefined,
           branch: branch.trim(),
           members: members.map(m => ({
-            project_id: m.project_id,
+            root_path: m.root_path,
             mode: m.mode,
             // Worktree mode: blank branch falls back to the workspace's
             // top-level branch on the Rust side. base falls back to
@@ -663,29 +661,33 @@ export function NewWorkspaceDialog() {
             </div>
             <div className="flex flex-col gap-2">
               {members.map((m, idx) => {
-                const proj = useApp.getState().projects.find(p => p.id === m.project_id);
-                if (!proj) return null;
                 const update = (patch: Partial<MemberSpec>) =>
                   setMembers(prev => prev.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
                 return (
                   <div
-                    key={m.project_id}
+                    key={m.root_path}
                     className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2"
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{proj.name}</div>
-                        <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{proj.root_path}</div>
+                        <div className="truncate text-[13px] font-medium text-[var(--color-fg)]">{m.name}</div>
+                        <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
                       </div>
                       <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-[2px] text-[11.5px]">
                         <button
                           type="button"
+                          // Non-git members have no branches → worktree is
+                          // impossible; lock them to repo-root like a non-git
+                          // single project.
+                          disabled={m.non_git}
+                          title={m.non_git ? "Not a git repository, runs repo-root only" : undefined}
                           onClick={() => update({ mode: "worktree" })}
                           className={cn(
                             "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
                             m.mode === "worktree"
                               ? "bg-[var(--color-accent-deep)] text-white"
                               : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                            m.non_git && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
                           )}
                         >
                           <GitBranch className="h-3 w-3" /> Worktree
@@ -714,7 +716,7 @@ export function NewWorkspaceDialog() {
                         <Input
                           value={m.base_branch}
                           onChange={e => update({ base_branch: e.target.value })}
-                          placeholder={proj.base_branch || "branch from…"}
+                          placeholder={m.base_branch || "branch from…"}
                         />
                       </div>
                     ) : (
