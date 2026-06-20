@@ -195,6 +195,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
             {tabs.filter(t => t.panel !== "right").map(t => (
               <div
                 key={t.id}
+                data-main-tab-id={t.id}
                 className="absolute inset-0"
                 style={{ visibility: t.id === activeId ? "visible" : "hidden", zIndex: t.id === activeId ? 1 : 0 }}
               >

@@ -39,6 +39,7 @@ export type ShortcutId =
   | "clear-terminal"
   | "new-split-terminal"
   | "new-right-split-terminal"
+  | "toggle-terminal"
   | "terminal-copy"
   | "terminal-paste"
   | "new-workspace-quick"
@@ -113,6 +114,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("d", { cmd: true, shift: true }) },
   { id: "new-right-split-terminal", group: "Terminal", label: "New right-split terminal",
     defaultBinding: B("d", { cmd: true }) },
+  { id: "toggle-terminal", group: "Terminal", label: "Toggle terminal panel",
+    hint: "Show + focus the bottom split, or hide it and return to the agent",
+    defaultBinding: B("j", { cmd: true }) },
   // Copy / paste are LINUX/WINDOWS ONLY and handled locally in the terminal
   // panes (TerminalPane / AuxTerminal `attachCustomKeyEventHandler`), gated to
   // !IS_MAC, NOT by the global useShortcuts handler (like the Git ids below,

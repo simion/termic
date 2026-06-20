@@ -13,6 +13,7 @@
 //   ⌘W       → close the active tab
 //   ⌘D       → open a new right-split terminal in the active workspace
 //   ⇧⌘D      → open a new bottom-split terminal in the active workspace
+//   ⌘J       → toggle the bottom split: show + focus it, or hide + refocus agent
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
 //   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings
 import { useEffect } from "react";
@@ -20,6 +21,7 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { requestCloseTab } from "@/lib/closeTab";
+import { focusTerminalTab } from "@/lib/tabFocus";
 import { bindingMatches, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import type { TerminalTab } from "@/lib/types";
 
@@ -237,13 +239,9 @@ export function useShortcuts() {
               // AuxTerminal deliberately doesn't grab focus when it becomes
               // active (so opening the split / switching workspaces doesn't
               // steal focus from the agent). An explicit keyboard tab-switch
-              // SHOULD move focus, so focus the newly-active shell's textarea
-              // once the re-render makes it visible.
-              requestAnimationFrame(() => {
-                (document.querySelector(
-                  `[data-tab-id="${CSS.escape(nextId)}"] .xterm-helper-textarea`,
-                ) as HTMLElement | null)?.focus();
-              });
+              // SHOULD move focus, so focus the newly-active shell once the
+              // re-render makes it visible.
+              focusTerminalTab(nextId);
             }
             return;
           }
@@ -279,18 +277,22 @@ export function useShortcuts() {
           const splitOpen = !!state.terminalSplit[wsId];
           const hasTabs = (state.bottomTabs[wsId]?.length ?? 0) > 0;
           if (!splitOpen) state.toggleTerminalSplit(wsId);
+          // addBottomTab focuses the new shell itself; otherwise focus the one
+          // that's already active (it may need a few frames to mount).
           if (!hasTabs) state.addBottomTab(wsId);
-          // Poll briefly — the freshly-opened split needs a few frames before
-          // its xterm helper-textarea is in the DOM.
-          const tryFocus = (tries = 20) => {
-            const split = document.querySelector("[data-bottom-split]");
-            const active = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-            if (active) { active.focus(); return; }
-            if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
-          };
-          tryFocus();
+          else focusTerminalTab(state.activeBottomTab[wsId]);
           return;
         }
+
+        // ⌘J → toggle the bottom-split terminal, VS Code-style (issue #45).
+        // The whole show/hide + focus dance lives in the store so the command
+        // palette can share it. NO `isTyping` guard — must fire from inside any
+        // terminal (xterm's hidden textarea) and the editor (CodeMirror).
+        case "toggle-terminal":
+          if (!wsId) return;
+          e.preventDefault();
+          state.toggleBottomTerminal(wsId);
+          return;
 
         // ⌘D → open right split (if closed) or focus the active right terminal.
         case "new-right-split-terminal": {
