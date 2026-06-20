@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Search, Plus, FileText, Pencil, GitBranch, Archive, Zap, ShieldCheck,
-  PanelLeft, PanelRight, Palette, Keyboard, Settings as SettingsIcon,
+  PanelLeft, PanelRight, PanelBottom, Palette, Keyboard, Settings as SettingsIcon,
   FolderCog, RefreshCw, ScrollText, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, type LucideIcon,
 } from "lucide-react";
@@ -216,6 +216,13 @@ export function CommandPalette() {
       icon: PanelRight, shortcutId: "toggle-right-sidebar", keywords: "panel diff changes hide",
       run: act(() => useApp.getState().toggleRightPanel()),
     });
+    if (ws) {
+      cmds.push({
+        id: "toggle-terminal", section: "View", label: "Toggle terminal panel",
+        icon: PanelBottom, shortcutId: "toggle-terminal", keywords: "bottom split shell console hide show",
+        run: act(() => useApp.getState().toggleBottomTerminal(ws.id)),
+      });
+    }
     cmds.push({
       id: "change-theme", section: "View", label: "Change theme…",
       suffix: THEME_LABELS[themeMode], icon: Palette, keywords: "appearance color dark light",

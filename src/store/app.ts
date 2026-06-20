@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import type { Project, Workspace, Tab, TerminalTab, PersistedTab } from "@/lib/types";
 import * as ipc from "@/lib/ipc";
-import { focusTerminalTab } from "@/lib/tabFocus";
+import { focusTerminalTab, focusMainTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
 
 interface View {
@@ -128,6 +128,7 @@ interface AppState {
   setAllWorkspacesCollapsed: (collapsed: boolean) => void;
   setTerminalSplitHeight: (wsId: string, px: number) => void;
   toggleTerminalSplitCollapsed: (wsId: string) => void;
+  toggleBottomTerminal: (wsId: string) => void;
   /** Returns the id of the new bottom tab. `focus` (default true) marks the
    *  fresh shell to grab focus once it spawns; pass false for the auto-seed
    *  on split-open / launch-restore so it can't yank focus off the agent. */
@@ -522,6 +523,29 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem(LS_SPLITC, JSON.stringify(next)); } catch {}
     return { terminalSplitCollapsed: next };
   }),
+  // ⌘J / command palette: toggle the bottom-split terminal, VS Code-style.
+  // "Visible" = split open AND not collapsed. Hidden/collapsed → show, expand,
+  // seed a shell if empty, and focus it. Visible → collapse (not full close, so
+  // shells + PTYs stay mounted) and return focus to whichever pane was active —
+  // the right split or the main pane — rather than letting it fall to <body>.
+  toggleBottomTerminal: (wsId) => {
+    const s = get();
+    const splitOpen = !!s.terminalSplit[wsId];
+    const isCollapsed = !!s.terminalSplitCollapsed[wsId];
+    if (splitOpen && !isCollapsed) {
+      get().toggleTerminalSplitCollapsed(wsId);
+      const rightActive = !!s.rightSplit[wsId] && s.activePane[wsId] === "right";
+      if (rightActive) focusTerminalTab(s.activeRightTab[wsId]);
+      else focusMainTab(s.activeTab[wsId]);
+      return;
+    }
+    if (!splitOpen) get().toggleTerminalSplit(wsId);
+    if (isCollapsed) get().toggleTerminalSplitCollapsed(wsId);
+    // addBottomTab focuses the new shell itself; WorkspaceView's seed effect
+    // sees the non-empty list and won't double-add.
+    if ((get().bottomTabs[wsId]?.length ?? 0) === 0) get().addBottomTab(wsId);
+    else focusTerminalTab(get().activeBottomTab[wsId]);
+  },
   enableFooterTerm:  (wsId) => set(s => ({ footerTerm: { ...s.footerTerm, [wsId]: true } })),
   disableFooterTerm: (wsId) => set(s => {
     const { [wsId]: _, ...rest } = s.footerTerm; void _;
