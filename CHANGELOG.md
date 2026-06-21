@@ -4,6 +4,17 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.15.2] - 2026-06-21
+
+Keyboard shortcuts for the bottom terminal panel and jumping back to the agent.
+
+### Features
+- ⌘J toggles the bottom terminal panel: opens and focuses a scratch shell, or hides it and returns focus to where you were.
+- ⇧⌘D also toggles the bottom terminal, as a fixed shortcut that keeps working even if you rebind ⌘J.
+
+### Improvements
+- ⌘L now jumps focus to the main agent (its terminal, or the open editor) from any pane, including from inside another terminal.
+
 ## [0.15.1] - 2026-06-19
 
 Release notes now show what changed, and markdown previews show list bullets again.

@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.15.2",
+      "date": "2026-06-21",
+      "summary": "Keyboard shortcuts for the bottom terminal panel and jumping back to the agent."
+    },
+    {
       "version": "0.15.1",
       "date": "2026-06-19",
       "summary": "Release notes now show what changed, and markdown previews show list bullets again."
