@@ -54,7 +54,7 @@ export function ShortcutsSection() {
     for (const list of bySig.values()) {
       if (list.length <= 1) continue;
       // Skip groups that are co-bound on purpose and can't fire together
-      // (e.g. ⇧⌘D: new-split-terminal vs the context-scoped discard-file).
+      // by context (currently empty: see NON_CONFLICTING_GROUPS).
       const exempt = NON_CONFLICTING_GROUPS.some(g => list.every(id => g.includes(id)));
       if (exempt) continue;
       list.forEach(id => clashing.add(id));

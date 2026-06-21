@@ -37,7 +37,6 @@ export type ShortcutId =
   | "new-tab"
   | "close-tab"
   | "clear-terminal"
-  | "new-split-terminal"
   | "new-right-split-terminal"
   | "toggle-terminal"
   | "terminal-copy"
@@ -105,13 +104,12 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("w", { cmd: true }) },
 
   // Terminal
-  { id: "focus-terminal", group: "Terminal", label: "Focus active terminal",
+  { id: "focus-terminal", group: "Terminal", label: "Focus main agent",
+    hint: "Jump focus to the main pane (its agent terminal or the open editor) from anywhere",
     defaultBinding: B("l", { cmd: true }) },
   { id: "clear-terminal", group: "Terminal", label: "Clear focused terminal",
     hint: "Moved from ⌘K, which now opens the command palette.",
     defaultBinding: B("k", { cmd: true, shift: true }) },
-  { id: "new-split-terminal", group: "Terminal", label: "New bottom-split terminal",
-    defaultBinding: B("d", { cmd: true, shift: true }) },
   { id: "new-right-split-terminal", group: "Terminal", label: "New right-split terminal",
     defaultBinding: B("d", { cmd: true }) },
   { id: "toggle-terminal", group: "Terminal", label: "Toggle terminal panel",
@@ -165,14 +163,13 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
 
 export const GROUP_ORDER: ShortcutGroup[] = ["Navigation", "Tabs", "Terminal", "Git", "General"];
 
-/** Groups of commands that intentionally share a binding and can NEVER fire at
- *  the same time, so the Shortcuts settings page must not flag them as
- *  conflicts. `discard-file` only acts while the Git panel has a file selected;
- *  `new-split-terminal` is the global terminal command. They're mutually
- *  exclusive by context, so ⇧⌘D is safe to share. */
-export const NON_CONFLICTING_GROUPS: ShortcutId[][] = [
-  ["new-split-terminal", "discard-file"],
-];
+/** Groups of rebindable commands that intentionally share a binding and can
+ *  NEVER fire at the same time, so the Shortcuts settings page must not flag
+ *  them as conflicts. Empty for now: ⇧⌘D is a hard-coded alias for ⌘J
+ *  (toggle-terminal) handled outside the rebindable set, and `discard-file`
+ *  (also ⇧⌘D) only acts while the Git panel has a file selected, so neither
+ *  appears here. */
+export const NON_CONFLICTING_GROUPS: ShortcutId[][] = [];
 
 export type BindingMap = Record<ShortcutId, Binding>;
 

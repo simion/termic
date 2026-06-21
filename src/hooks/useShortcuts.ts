@@ -12,8 +12,9 @@
 //   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘])
 //   ⌘W       → close the active tab
 //   ⌘D       → open a new right-split terminal in the active workspace
-//   ⇧⌘D      → open a new bottom-split terminal in the active workspace
+//   ⇧⌘D      → hard-coded alias for ⌘J (toggle bottom split), not rebindable
 //   ⌘J       → toggle the bottom split: show + focus it, or hide + refocus agent
+//   ⌘L       → focus the main agent (its terminal or editor) from any pane
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
 //   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings
 import { useEffect } from "react";
@@ -21,8 +22,8 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { requestCloseTab } from "@/lib/closeTab";
-import { focusTerminalTab } from "@/lib/tabFocus";
-import { bindingMatches, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
+import { focusTerminalTab, focusMainTab } from "@/lib/tabFocus";
+import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import type { TerminalTab } from "@/lib/types";
 
 export function useShortcuts() {
@@ -35,6 +36,19 @@ export function useShortcuts() {
       // (not Cmd) is down and a terminal has focus, bail so the keystroke
       // reaches the shell/editor. App shortcuts still work via Cmd. (issue #10)
       if (IS_MAC && e.ctrlKey && !e.metaKey && inTermFocused()) return;
+
+      // ⇧⌘D is a HARD-CODED alias for ⌘J (toggle-terminal): it always toggles
+      // the bottom split, independent of the user's keymap. ⌘J is rebindable
+      // and people remap it; ⇧⌘D stays put as a stable iTerm-style fallback.
+      // Checked before the rebindable lookup so no custom binding can shadow it.
+      // The Git panel's discard-file (also ⇧⌘D) runs in a capture-phase listener
+      // and stopPropagation()s when a file is selected, so this never preempts
+      // it: by the time the event bubbles here, discard-file has already passed.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && eventKeyToken(e) === "d") {
+        const wsId = useApp.getState().activeWorkspaceId;
+        if (wsId) { e.preventDefault(); useApp.getState().toggleBottomTerminal(wsId); }
+        return;
+      }
 
       const binds = usePrefs.getState().shortcuts;
       // First binding (in registry order) whose combo the event satisfies.
@@ -56,8 +70,6 @@ export function useShortcuts() {
         t => t.panel !== "right",
       );
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable;
       const inBottom = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
       const inRight  = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-right-split]");
 
@@ -182,13 +194,16 @@ export function useShortcuts() {
           return;
         }
 
-        // ⌘L → focus the active terminal. The one command WITH an isTyping
-        // guard: it must not steal focus while the user types in a form field.
+        // ⌘L → jump focus to the MAIN agent, from anywhere. Scoped to the
+        // main pane's active tab (its agent terminal, or the editor if a file
+        // tab is active) via `focusMainTab` so it can't land on a right-split
+        // pane, a bottom-split shell, or a TabBar pill. NO `isTyping` guard:
+        // the whole point is to escape a terminal / editor / right / bottom
+        // pane back to the agent, and those all read as "typing".
         case "focus-terminal": {
-          if (!wsId || isTyping) return;
+          if (!wsId) return;
           e.preventDefault();
-          const el = document.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-          el?.focus();
+          focusMainTab(activeTabId);
           return;
         }
 
@@ -266,21 +281,6 @@ export function useShortcuts() {
             ? (fwd ? 0 : ws.length - 1)
             : fwd ? (idx + 1) % ws.length : (idx - 1 + ws.length) % ws.length;
           state.setActiveWorkspace(ws[nextIdx].id);
-          return;
-        }
-
-        // ⇧⌘D → new bottom-split terminal tab. Opens the split first if
-        // closed. NO `isTyping` guard (xterm's hidden textarea).
-        case "new-split-terminal": {
-          if (!wsId) return;
-          e.preventDefault();
-          const splitOpen = !!state.terminalSplit[wsId];
-          const hasTabs = (state.bottomTabs[wsId]?.length ?? 0) > 0;
-          if (!splitOpen) state.toggleTerminalSplit(wsId);
-          // addBottomTab focuses the new shell itself; otherwise focus the one
-          // that's already active (it may need a few frames to mount).
-          if (!hasTabs) state.addBottomTab(wsId);
-          else focusTerminalTab(state.activeBottomTab[wsId]);
           return;
         }
 
