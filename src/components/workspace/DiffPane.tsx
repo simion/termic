@@ -11,8 +11,10 @@ import { FolderOpen, Columns2, AlignJustify } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { MergeView, unifiedMergeView } from "@codemirror/merge";
-import { EditorState, type Extension } from "@codemirror/state";
+import { EditorState, Prec, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags as t } from "@lezer/highlight";
 import { cn } from "@/lib/utils";
 import { langForPath } from "./EditorPane";
 import { resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
@@ -23,6 +25,22 @@ import { CopyPathItems } from "./CopyPathItems";
 
 type Mode = "side" | "unified";
 const LS_DIFF_MODE = "diffMode";
+
+// Issue #40: syntax themes color comments dim by design (Atom One, the default
+// dark "auto" theme, uses #54636D), which de-emphasizes them while you write
+// code. In a DIFF you're reading what changed, so a changed comment block
+// renders as dim slate text on the green/red line wash, very low contrast.
+// Override comments to the app's `--color-fg-dim` (still subdued, but legible
+// on every palette and auto-adapting light/dark). Scoped to the diff only so
+// the editor keeps comments recessive. Prec.highest so it wins over the syntax
+// theme's own comment rule; other tags fall through (this styles comments only).
+const diffCommentContrast = Prec.highest(
+  syntaxHighlighting(
+    HighlightStyle.define([
+      { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: "var(--color-fg-dim)" },
+    ]),
+  ),
+);
 
 function readMode(): Mode {
   try { return (localStorage.getItem(LS_DIFF_MODE) as Mode) === "side" ? "side" : "unified"; }
@@ -89,6 +107,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
         // CSS vars. dimActiveLine=true — the diff's per-line red/green
         // tints carry the signal, the active-line wash would muddy it.
         resolveEditorTheme(editorThemeId, appIsLight),
+        diffCommentContrast, // issue #40: keep changed comments legible on the wash
         editorSurfaceTheme(editorFontSize, false, true),
         EditorView.theme({
           // @codemirror/merge styles "changed text" as a 2px
