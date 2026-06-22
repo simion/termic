@@ -4,6 +4,18 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.15.3] - 2026-06-22
+
+Linux AppImage fixes for python3 and Wayland, plus sandbox defaults and a sharper ⌘J.
+
+### Improvements
+- ⌘J is now three-state: from the agent it focuses the bottom terminal without hiding it, and only hides on a second press, so you stop closing it by accident.
+- Sandbox allows the hosts and self-update endpoints that Copilot, Grok, and Antigravity need out of the box, and no longer flags common shell startup files (oh-my-zsh, prezto, fish), so sandboxed agents need less manual allow-listing.
+
+### Bug fixes
+- Linux (AppImage): python3 and perl work in Termic terminals again. The bundle exported PYTHONHOME, PYTHONPATH, and PERLLIB pointing at directories it does not ship, which broke anything that shells out to python3. (#47)
+- Linux (AppImage): the GTK backend is overridable again. It still defaults to x11, but you can run `GDK_BACKEND=wayland termic` to use native Wayland, which avoids XWayland frame-stall freezes on some AMD/mutter setups. (#48)
+
 ## [0.15.2] - 2026-06-21
 
 Keyboard shortcuts for the bottom terminal panel and jumping back to the agent.

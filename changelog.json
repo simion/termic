@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.15.3",
+      "date": "2026-06-22",
+      "summary": "Linux AppImage fixes for python3 and Wayland, plus sandbox defaults and a sharper ⌘J."
+    },
+    {
       "version": "0.15.2",
       "date": "2026-06-21",
       "summary": "Keyboard shortcuts for the bottom terminal panel and jumping back to the agent."
