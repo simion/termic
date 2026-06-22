@@ -13,7 +13,7 @@
 //   ⌘W       → close the active tab
 //   ⌘D       → open a new right-split terminal in the active workspace
 //   ⇧⌘D      → hard-coded alias for ⌘J (toggle bottom split), not rebindable
-//   ⌘J       → toggle the bottom split: show + focus it, or hide + refocus agent
+//   ⌘J       → cycle the bottom split: show+focus → focus (if open but unfocused) → hide+refocus agent
 //   ⌘L       → focus the main agent (its terminal or editor) from any pane
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
 //   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings

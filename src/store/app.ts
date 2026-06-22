@@ -523,16 +523,26 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem(LS_SPLITC, JSON.stringify(next)); } catch {}
     return { terminalSplitCollapsed: next };
   }),
-  // ⌘J / command palette: toggle the bottom-split terminal, VS Code-style.
-  // "Visible" = split open AND not collapsed. Hidden/collapsed → show, expand,
-  // seed a shell if empty, and focus it. Visible → collapse (not full close, so
-  // shells + PTYs stay mounted) and return focus to whichever pane was active —
-  // the right split or the main pane — rather than letting it fall to <body>.
+  // ⌘J / command palette: VS Code-style 3-state cycle on the bottom-split
+  // terminal. "Visible" = split open AND not collapsed.
+  //   hidden/collapsed        → show, expand, seed a shell if empty, focus it.
+  //   visible but NOT focused → just move focus into it (don't hide — a first
+  //                             ⌘J from the agent should land you in the panel).
+  //   visible AND focused     → collapse (not full close, so shells + PTYs stay
+  //                             mounted) and return focus to whichever pane was
+  //                             active (right split or main), never <body>.
   toggleBottomTerminal: (wsId) => {
     const s = get();
     const splitOpen = !!s.terminalSplit[wsId];
     const isCollapsed = !!s.terminalSplitCollapsed[wsId];
     if (splitOpen && !isCollapsed) {
+      // Focus lives in the DOM (xterm textarea), not the store — the bottom
+      // split tags its container with `data-bottom-split`.
+      const bottomFocused = !!document.activeElement?.closest("[data-bottom-split]");
+      if (!bottomFocused) {
+        focusTerminalTab(s.activeBottomTab[wsId]);
+        return;
+      }
       get().toggleTerminalSplitCollapsed(wsId);
       const rightActive = !!s.rightSplit[wsId] && s.activePane[wsId] === "right";
       if (rightActive) focusTerminalTab(s.activeRightTab[wsId]);
