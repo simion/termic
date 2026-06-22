@@ -287,6 +287,40 @@ jobs:
           # the host copy is safe.
           rm -fv squashfs-root/usr/lib/libwayland-*.so*
 
+          # Issue #48: make the GTK backend overridable instead of forced.
+          # linuxdeploy-plugin-gtk.sh hard-codes `export GDK_BACKEND=x11`,
+          # so Termic always runs through XWayland on Wayland desktops. On
+          # AMD + mutter that triggers XWayland frame-presentation stalls
+          # that freeze the window while every process stays alive. We keep
+          # x11 as the DEFAULT (tauri-apps/tauri#8541) but honor a caller-
+          # provided value, so users on stacks where Wayland works can run
+          # `GDK_BACKEND=wayland termic`. Zero change for anyone who doesn't
+          # set it. Fail loud if the hard-coded line ever disappears.
+          GTK_HOOK=squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh
+          grep -q '^export GDK_BACKEND=x11' "$GTK_HOOK"
+          sed -i 's|^export GDK_BACKEND=x11|export GDK_BACKEND="${GDK_BACKEND:-x11}"|' "$GTK_HOOK"
+
+          # Issue #47: neutralize the bogus PYTHONHOME/PYTHONPATH/PERLLIB
+          # that AppRun.wrapped (AppImageKit's AppRun) exports on every
+          # launch. We bundle no Python or Perl, so those vars point into
+          # the AppDir's usr/ (which has neither) and break python3/perl in
+          # every shell Termic spawns. AppRun.wrapped sets them right before
+          # execvp'ing the Exec= target, AFTER the apprun-hooks run, so a
+          # hook can't undo them. Slip a thin wrapper in front of the real
+          # binary that unsets them, then exec the real one (APPDIR is
+          # exported by the GTK hook before AppRun execs AppRun.wrapped).
+          mv squashfs-root/usr/bin/termic squashfs-root/usr/bin/termic.bin
+          cat > squashfs-root/usr/bin/termic <<'WRAP'
+          #!/bin/sh
+          # Termic bundles no Python/Perl; AppRun.wrapped exports
+          # PYTHONHOME/PYTHONPATH/PERLLIB pointing at nonexistent dirs,
+          # which breaks python3 (and anything embedding it) in every
+          # shell Termic spawns. Drop them before launching the app.
+          unset PYTHONHOME PYTHONPATH PERLLIB
+          exec "${APPDIR:-$(dirname "$(readlink -f "$0")")}/usr/bin/termic.bin" "$@"
+          WRAP
+          chmod +x squashfs-root/usr/bin/termic
+
           # Rewrite every absolute symlink that points inside the build
           # AppDir to a relative one. Anything absolute pointing OUTSIDE
           # the AppDir is already broken today; warn so it shows in logs.
