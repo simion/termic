@@ -1314,6 +1314,19 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         format!("{home}/.bash_logout"),
         format!("{home}/.inputrc"),
         format!("{home}/.profile"),
+        // Shell completion frameworks. Every sandboxed PTY opens a
+        // login shell; oh-my-zsh / prezto / fish read their whole
+        // framework tree on startup (lib, plugins, themes, custom) and
+        // write a completion + log cache underneath. All non-secret
+        // shell machinery — denying it just fills the deny chip with
+        // read-data noise on every spawn and slows shell init. The
+        // genuine secret (shell *history*) lives in ~/.zsh_history /
+        // ~/.local/share/fish, which stay off the allow-list.
+        format!("{home}/.oh-my-zsh"),
+        format!("{home}/.zprezto"),
+        format!("{home}/.config/fish/completions"),
+        format!("{home}/.config/fish/functions"),
+        format!("{home}/.config/fish/conf.d"),
         // NOTE: ~/.ssh/known_hosts is NOT here — it's read-only (see
         // builtin_runtime_readonly_paths). Putting it in this list would
         // grant file-write* on a file under ~/.ssh, letting the agent
@@ -1406,6 +1419,23 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
             r"^auth\.openai\.com$".into(),
             r"^cdn\.openai\.com$".into(),
         ]),
+        // GitHub Copilot CLI. The completion API lives on the
+        // per-plan `individual.githubcopilot.com` subdomain
+        // (api.* for completions, telemetry.* for analytics). The
+        // wildcard covers both; telemetry is vendor-blessed for a CLI
+        // the user installed, same call we make for claude's Datadog.
+        // Device-flow auth itself rides github.com (in the baseline).
+        "copilot" => hosts.extend([
+            r"^api\.githubcopilot\.com$".into(),
+            r"^.+\.githubcopilot\.com$".into(),
+        ]),
+        // xAI Grok CLI. Auth (`auth.x.ai`) + API (`x.ai`) on the x.ai
+        // apex, chat traffic on the `cli-chat-proxy.grok.com` proxy.
+        "grok" => hosts.extend([
+            r"^x\.ai$".into(),
+            r"^.+\.x\.ai$".into(),
+            r"^.+\.grok\.com$".into(),
+        ]),
         // Antigravity (`agy`) is a Gemini-3-family Google CLI — it
         // talks to the same Google AI / Cloud Code backends gemini
         // does. Mirrors the gemini host set; if Antigravity uses a
@@ -1421,6 +1451,10 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
             r"^.+\.googleusercontent\.com$".into(),
             r"^antigravity-unleash\.goog$".into(),
             r"^.+\.antigravity-unleash\.goog$".into(),
+            // CLI self-update check (Cloud Run). Project number is
+            // baked into the hostname; scope to the updater service
+            // rather than opening all of *.run.app.
+            r"^antigravity-cli-auto-updater-.+\.run\.app$".into(),
         ]),
         _ => { /* custom agents: user must list hosts explicitly */ }
     }
