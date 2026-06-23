@@ -76,6 +76,12 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const stageGlyph = bindingGlyphs(stageBinding).join("");
 
   const [activeRepoDir, setActiveRepoDir] = useState<string>("");
+  // Dir of a repo the user just committed. Its pill stays visible and focused
+  // even once it goes clean, so a commit (or the slower commit-and-push, whose
+  // mid-push status poll would otherwise see the repo already clean) doesn't
+  // yank the pill away to a different changed repo. Cleared when the user
+  // picks another repo or the workspace switches.
+  const [pinnedRepoDir, setPinnedRepoDir] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(() => readView());
   const [hideUntracked, setHideUntracked] = useState<boolean>(() => readBool(LS_HIDE));
   const [ratio, setRatio] = useState<number>(() => readRatio());
@@ -93,24 +99,32 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
 
   const repos = status?.repos ?? [];
   const changedRepos = repos.filter(r => r.changed > 0);
+  // Pills show changed repos plus a pinned (just-committed) one, even at 0
+  // changes — so the pill the user committed in stays put. Preserves repo order.
+  const pinnedExists = !!pinnedRepoDir && repos.some(r => r.dir_name === pinnedRepoDir);
+  const visibleRepos = pinnedExists
+    ? repos.filter(r => r.changed > 0 || r.dir_name === pinnedRepoDir)
+    : changedRepos;
 
   // Keep the selection on a repo that actually has changes — the pills only
   // list changed repos now, so an activeRepoDir pointing at a clean repo
   // (fresh open, or one that just went clean after a commit) has no pill and
-  // must snap to the first changed repo so its files show immediately.
+  // must snap to the first changed repo so its files show immediately. The
+  // exception is a pinned repo the user just committed: hold focus there.
   useEffect(() => {
     if (repos.length === 0) return;
+    if (pinnedExists && activeRepoDir === pinnedRepoDir) return;
     const cur = changedRepos.find(r => r.dir_name === activeRepoDir);
     if (cur) return;
     const next = changedRepos[0] ?? repos[0];
     if (next && next.dir_name !== activeRepoDir) setActiveRepoDir(next.dir_name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, activeRepoDir]);
+  }, [status, activeRepoDir, pinnedExists]);
 
   // Reset transient form state on workspace switch.
   useEffect(() => {
     setSubject(""); setBody(""); setSearch("");
-    setActiveRepoDir(""); setSelected(null);
+    setActiveRepoDir(""); setSelected(null); setPinnedRepoDir(null);
   }, [ws.id]);
 
   const persist = (key: string, val: string) => { try { localStorage.setItem(key, val); } catch {} };
@@ -208,6 +222,10 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const doCommit = (push: boolean) => {
     if (!subject.trim() || committing) return;
     setCommitting(true);
+    // Pin BEFORE the IPC: commit-and-push leaves the repo clean the moment the
+    // commit lands (well before the push returns), so the 4s status poll could
+    // fire mid-push and snap the pill away unless the pin is already in place.
+    setPinnedRepoDir(dir);
     workspaceCommit(ws.id, dir, subject, body, false, push)
       .then(() => {
         setSubject(""); setBody("");
@@ -276,7 +294,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   if (!status) {
     return <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
   }
-  if (!repo || status.total_changed === 0) {
+  if (!repo || (status.total_changed === 0 && !pinnedExists)) {
     return (
       <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
         {nonGit
@@ -289,7 +307,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   // Show repo pills only for repos that actually have changes — even when
   // that's a single repo. Unchanged repos are noise here; the "All files"
   // tab is where you browse repos that aren't currently dirty.
-  const showSubTabs = repos.length > 1 && changedRepos.length > 0;
+  const showSubTabs = repos.length > 1 && visibleRepos.length > 0;
   const fileWord = stagedCount === 1 ? "File" : "Files";
   const commitDisabled = committing || !subject.trim() || stagedCount === 0;
   const commitLabel = `Commit ${stagedCount} ${fileWord}${pushDefault ? " and Push" : ""}`;
@@ -319,11 +337,14 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       {/* 1. Repo sub-tabs (wrapping pills) */}
       {showSubTabs && (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-[var(--color-border-soft)] px-2 py-1.5">
-          {changedRepos.map(r => (
+          {visibleRepos.map(r => (
             <button
               key={r.dir_name}
               onClick={() => {
                 if (r.dir_name === activeRepoDir) return;
+                // Picking another repo releases the just-committed pin, so the
+                // clean pill it was holding open can drop away.
+                setPinnedRepoDir(null);
                 setActiveRepoDir(r.dir_name);
                 // The open diff belongs to the previous repo — drop the
                 // selection and close the preview diff tab so we don't show

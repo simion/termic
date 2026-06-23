@@ -19,6 +19,22 @@ import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
+
+// Remember the user's last-used workspace type + sandbox mode across opens —
+// most people always work one way (always worktree, always enforce), so
+// re-deriving from project defaults every time fights their habit. Stored
+// globally (not per-project): the choice is about how the user works, not the
+// repo. Hard constraints still override at open time (non-git forces repo_root;
+// an unsupported OS forces sandbox off).
+const LS_LAST_MODE    = "newWorkspaceLastMode";
+const LS_LAST_SANDBOX = "newWorkspaceLastSandboxMode";
+function readLastMode(): "worktree" | "repo_root" | null {
+  try { const v = localStorage.getItem(LS_LAST_MODE); return v === "worktree" || v === "repo_root" ? v : null; } catch { return null; }
+}
+function readLastSandbox(): SandboxMode | null {
+  try { const v = localStorage.getItem(LS_LAST_SANDBOX); return v === "off" || v === "monitor" || v === "enforce" ? v : null; } catch { return null; }
+}
+function persistLast(key: string, val: string) { try { localStorage.setItem(key, val); } catch {} }
 // Branch names auto-fill as `<prefix>/<name>` where the prefix comes from
 // the customizable `branchPrefix` pref (Settings → General, default
 // "feature"). The user edits the resulting field freely from there.
@@ -169,8 +185,12 @@ export function NewWorkspaceDialog() {
     // three lists are seeded from the project's defaults; user
     // edits in this dialog land on the workspace ONLY, never on
     // the project.
+    // Last-used sandbox mode wins (the user's habit); fall back to the
+    // project / global default only before they've ever picked one.
     const globalDefault = usePrefs.getState().globalDefaultSandbox;
-    setSandboxMode(p?.default_sandbox_mode ?? ((!!p?.default_sandbox || globalDefault) ? "enforce" : "off"));
+    setSandboxMode(readLastSandbox()
+      ?? p?.default_sandbox_mode
+      ?? ((!!p?.default_sandbox || globalDefault) ? "enforce" : "off"));
     // Seed with project's lists immediately; once Settings loads,
     // merge global defaults on top (dedupe-preserving order).
     setSbRw((p?.sandbox_rw_paths ?? []).join("\n"));
@@ -232,8 +252,8 @@ export function NewWorkspaceDialog() {
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setImportMode(wantImport);
     // Non-git folders can't be worktreed → force repo_root. Everything else
-    // defaults to worktree (the safe, isolated default).
-    setMode(p?.non_git ? "repo_root" : "worktree");
+    // restores the user's last-used type (worktree by default).
+    setMode(p?.non_git ? "repo_root" : (readLastMode() ?? "worktree"));
     if (canImp) loadImportable(projectId);
     setPhase("form"); setSetupLog([]); setCreatedWsId(null);
     // CRITICAL: also reset `busy`. On a successful prior creation we
@@ -352,6 +372,11 @@ export function NewWorkspaceDialog() {
   }
 
   async function submit() {
+    // Remember how the user works for next time. Workspace type is a
+    // single-repo concept (multi has its own per-member toggle); sandbox mode
+    // is remembered whenever a worktree/multi create can carry one.
+    if (!isMulti) persistLast(LS_LAST_MODE, mode);
+    if (isMulti || mode === "worktree") persistLast(LS_LAST_SANDBOX, sandboxMode);
     if (mode === "repo_root" && !isMulti) { submitRepoRoot(); return; }
     if (importMode) { submitImport(); return; }
     if (!projectId || !name.trim() || !branch.trim()) return;

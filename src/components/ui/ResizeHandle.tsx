@@ -87,7 +87,10 @@ export function ResizeHandle({ direction, onDrag, onStart, onEnd, alwaysVisible,
         className={cn(
           "absolute",
           direction === "x"
-            ? "top-0 bottom-0 -left-2 -right-2"
+            // Keep a generous grab zone on the right, but barely overhang the
+            // left so it clears the adjacent pane's scrollbar (which sits right
+            // against the divider) — otherwise the handle eats scroll hovers.
+            ? "top-0 bottom-0 left-0 -right-2"
             : "left-0 right-0 -top-1 -bottom-1",
         )}
       />

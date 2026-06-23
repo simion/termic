@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EditTab, Workspace } from "@/lib/types";
-import { EditorState, Compartment, type Extension } from "@codemirror/state";
+import { EditorState, Compartment, Annotation, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { basicSetup } from "codemirror";
@@ -101,6 +101,10 @@ const noAutocorrectOnPanelInputs = ViewPlugin.define(view => {
   mo.observe(view.dom, { childList: true, subtree: true });
   return { destroy() { mo.disconnect(); } };
 });
+
+// Marks a doc-replacing transaction as an external reload (file changed on
+// disk), not a user edit — so the updateListener skips flipping the dirty dot.
+const ExternalReload = Annotation.define<boolean>();
 
 /** Scroll the editor to a 1-based line/col and place the cursor there.
  *  Centers the line vertically. Clamps line to the doc bounds so a stale
@@ -234,7 +238,14 @@ export function EditorPane({ ws, tab, onContent }: {
               indentUnit.of("  "),
               EditorState.tabSize.of(2),
               EditorView.updateListener.of(u => {
-                if (u.docChanged) { markDirty(); onContentRef.current?.(u.view); }
+                if (u.docChanged) {
+                  // A programmatic reload (file changed on disk) carries the
+                  // ExternalReload annotation — don't treat it as a user edit,
+                  // or the tab would sprout a phantom "modified" dot.
+                  if (!u.transactions.some(t => t.annotation(ExternalReload)))
+                    markDirty();
+                  onContentRef.current?.(u.view);
+                }
               }),
               langCompRef.current.of(lang ? [lang] : []),
               themeCompRef.current.of(
@@ -271,21 +282,52 @@ export function EditorPane({ ws, tab, onContent }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.id, tab.path]);
 
-  // Re-read the file from disk and swap it into the live view, but only if
-  // the buffer has no unsaved edits (we never clobber the user's typing) and
-  // the on-disk content actually differs (skip the dispatch otherwise so we
-  // don't reset the selection / re-render for a no-op).
+  // True-editor tabs surface a "file changed on disk" prompt instead of
+  // silently reloading. Pending until the user acts; rendered only while the
+  // tab is focused (see the banner in the return).
+  const [diskChanged, setDiskChanged] = useState(false);
+  // Focused = this workspace is up front AND this tab is the visible one in
+  // whichever pane holds it (main split or right split).
+  const isActive = useApp(s => s.activeWorkspaceId === ws.id
+    && (s.activeTab[ws.id] === tab.id || s.activeRightTab[ws.id] === tab.id));
+
+  // Swap fresh disk content into the live view, annotated so it doesn't flip
+  // the dirty dot. Used by both the silent preview-reload path and the user
+  // confirming the true-editor prompt.
+  const applyDiskContent = useCallback((content: string) => {
+    const v = viewRef.current;
+    if (!v) return;
+    if (content !== v.state.doc.toString())
+      v.dispatch({
+        changes: { from: 0, to: v.state.doc.length, insert: content },
+        annotations: ExternalReload.of(true),
+      });
+    setDiskChanged(false);
+  }, []);
+
+  // React to an external change. Preview (temporary, italic-title) tabs reload
+  // silently and never show "modified" — they're throwaway views of disk. A
+  // true editor tab is the user's working copy, so we never clobber it: just
+  // flag that disk diverged and let the focused-tab banner ask.
   const reloadFromDisk = useCallback(() => {
     const v = viewRef.current;
+    // Don't touch a buffer with unsaved edits — the dirty dot already signals
+    // the user has their own version; clobbering it would lose their typing.
     if (!v || dirtyRef.current) return;
     workspaceFileRead(ws.id, tab.path).then(content => {
       const v2 = viewRef.current;
       if (!v2 || dirtyRef.current) return;
-      if (content === v2.state.doc.toString()) return;
-      v2.dispatch({ changes: { from: 0, to: v2.state.doc.length, insert: content } });
-      onContentRef.current?.(v2);
+      if (content === v2.state.doc.toString()) { setDiskChanged(false); return; }
+      if (tab.preview) applyDiskContent(content);
+      else setDiskChanged(true);
     }).catch(() => {});
-  }, [ws.id, tab.path]);
+  }, [ws.id, tab.path, tab.preview, applyDiskContent]);
+
+  // User accepted the prompt: re-read (content may have moved on since the
+  // change was detected) and swap it in.
+  const acceptDiskReload = useCallback(() => {
+    workspaceFileRead(ws.id, tab.path).then(applyDiskContent).catch(() => {});
+  }, [ws.id, tab.path, applyDiskContent]);
 
   // Reload on window focus: covers external edits while away (another app,
   // a `git` in a real terminal, an agent in a different window).
@@ -332,9 +374,28 @@ export function EditorPane({ ws, tab, onContent }: {
     // file tree. The editor fills the whole pane. Opaque bg so nothing
     // bleeds through during the load frame (terminals stay mounted
     // underneath via the visibility-toggle keep-alive).
-    <div ref={hostRef} className="h-full overflow-hidden bg-[var(--color-bg)]">
+    <div ref={hostRef} className="relative h-full overflow-hidden bg-[var(--color-bg)]">
       {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
       {err && <div className="p-4 text-[14px] text-[var(--color-err)]">Error: {err}</div>}
+      {/* True-editor tabs: when disk diverges, ask before reloading (only
+          while focused — see `isActive`). Preview tabs reload silently. */}
+      {diskChanged && isActive && (
+        <div className="absolute right-3 top-3 z-30 flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-2 text-[13px] text-[var(--color-fg)] shadow-lg">
+          <span>This file changed on disk.</span>
+          <button
+            onClick={acceptDiskReload}
+            className="rounded bg-[var(--color-accent)] px-2 py-[3px] font-medium text-white hover:opacity-90"
+          >
+            Reload
+          </button>
+          <button
+            onClick={() => setDiskChanged(false)}
+            className="rounded px-2 py-[3px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+          >
+            Keep mine
+          </button>
+        </div>
+      )}
     </div>
   );
 }
