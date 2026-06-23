@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.15.4",
+      "date": "2026-06-23",
+      "summary": "Cleaner editor reloads, steadier Git repo pills, and New Workspace remembers how you work."
+    },
+    {
       "version": "0.15.3",
       "date": "2026-06-22",
       "summary": "Linux AppImage fixes for python3 and Wayland, plus sandbox defaults and a sharper ⌘J."

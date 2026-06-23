@@ -4,6 +4,19 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.15.4] - 2026-06-23
+
+Cleaner editor reloads, steadier Git repo pills, and New Workspace remembers how you work.
+
+### Improvements
+- New Workspace now remembers your last workspace type (worktree or repo root) and sandbox mode, so you do not re-pick them every time.
+
+### Bug fixes
+- Files opened in preview (temporary) mode now refresh quietly when an agent changes them on disk, instead of showing a false "modified" dot. A file you opened to edit asks before reloading, only when you focus its tab.
+- After committing in a multi-repo workspace, the repo's pill stays put instead of jumping to another repo while the commit or push is still finishing.
+- The vertical split divider no longer sits on top of the next pane's scrollbar, so you can grab and drag the scrollbar again.
+- Diff view: changed comments stay legible. Their dim syntax color no longer drops below readable contrast against the green and red line wash. (#40)
+
 ## [0.15.3] - 2026-06-22
 
 Linux AppImage fixes for python3 and Wayland, plus sandbox defaults and a sharper ⌘J.
