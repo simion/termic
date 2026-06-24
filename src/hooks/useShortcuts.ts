@@ -299,17 +299,17 @@ export function useShortcuts() {
           if (!wsId) return;
           e.preventDefault();
           const splitOpen = !!state.rightSplit[wsId];
-          const hasRightTabs = (state.tabs[wsId] ?? []).some(
-            t => t.type === "terminal" && (t as TerminalTab).panel === "right",
-          );
           if (!splitOpen) state.toggleRightSplit(wsId);
-          // On first open, ensureDefaultRightTabs runs via WorkspaceView's
-          // useEffect. If there are no persisted right tabs, add a fresh shell.
-          if (!hasRightTabs && splitOpen) state.addRightTab(wsId);
+          // No auto-spawn: an empty split shows the in-pane SplitLauncher,
+          // which autofocuses itself. When the split already has terminals,
+          // focus the active one's xterm textarea.
           const tryFocus = (tries = 20) => {
             const split = document.querySelector("[data-right-split]");
             const active = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
             if (active) { active.focus(); return; }
+            // Empty split: focus the launcher so arrow/Enter work right away.
+            const launcher = split?.querySelector("[data-split-launcher]") as HTMLElement | null;
+            if (launcher) { launcher.focus(); return; }
             if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
           };
           tryFocus();

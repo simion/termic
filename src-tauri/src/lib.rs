@@ -3829,6 +3829,31 @@ pub struct GitFile {
     /// for untracked.
     pub status: String,
     pub path: String,
+    /// Cheap content fingerprint (`mtime_nanos:len`) of the working-tree
+    /// file, empty when it can't be stat'd (e.g. a deletion). The frontend
+    /// stashes this when a file is marked "viewed" so it can auto-clear the
+    /// mark once the agent touches the file again (the fingerprint moves).
+    #[serde(default)]
+    pub fp: String,
+}
+
+/// Cheap working-tree fingerprint for change detection: modification time
+/// (nanos since the epoch) plus byte length. Empty when the path can't be
+/// stat'd (deleted file, permission error) — callers treat that as "no
+/// fingerprint", never as a match.
+fn file_fp(p: &Path) -> String {
+    match std::fs::metadata(p) {
+        Ok(m) => {
+            let mt = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!("{}:{}", mt, m.len())
+        }
+        Err(_) => String::new(),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3878,16 +3903,16 @@ fn parse_porcelain_line(line: &str) -> (Option<GitFile>, Option<GitFile>) {
 
     // Untracked: both columns are "?". Treat as a single unstaged add.
     if x == "?" {
-        return (None, Some(GitFile { status: "?".into(), path }));
+        return (None, Some(GitFile { status: "?".into(), path, fp: String::new() }));
     }
 
     let staged = if x != " " {
-        Some(GitFile { status: x.into(), path: path.clone() })
+        Some(GitFile { status: x.into(), path: path.clone(), fp: String::new() })
     } else {
         None
     };
     let unstaged = if y != " " {
-        Some(GitFile { status: y.into(), path })
+        Some(GitFile { status: y.into(), path, fp: String::new() })
     } else {
         None
     };
@@ -3916,10 +3941,12 @@ async fn workspace_git_status(id: String) -> Result<GitStatus, String> {
             let mut seen = std::collections::HashSet::new();
             for line in out.lines() {
                 let (s, u) = parse_porcelain_line(line);
-                if let Some(f) = &s { seen.insert(f.path.clone()); }
-                if let Some(f) = &u { seen.insert(f.path.clone()); }
-                if let Some(f) = s { staged.push(f); }
-                if let Some(f) = u { unstaged.push(f); }
+                // One stat per changed line (the set is small), reused for the
+                // staged + unstaged halves of the same path.
+                let rel = s.as_ref().or(u.as_ref()).map(|f| f.path.clone());
+                let fp = rel.as_deref().map(|r| file_fp(&p.join(r))).unwrap_or_default();
+                if let Some(mut f) = s { f.fp = fp.clone(); seen.insert(f.path.clone()); staged.push(f); }
+                if let Some(mut f) = u { f.fp = fp;          seen.insert(f.path.clone()); unstaged.push(f); }
             }
             GitRepo {
                 name, branch: branch_of(p), kind: kind.to_string(), dir_name,
@@ -4209,6 +4236,11 @@ struct FileDiffSides {
     /// misclassifying a truncated-to-empty file as "new or deleted".
     original_exists: bool,
     modified_exists: bool,
+    /// Working-tree fingerprint (`mtime_nanos:len`) of the modified file,
+    /// empty for a deletion. Lets the diff pane's "Viewed" toggle anchor to
+    /// the same fingerprint the Git panel rows use (store/fileViewed.ts).
+    #[serde(default)]
+    fp: String,
 }
 
 fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, String), String> {
@@ -4235,15 +4267,18 @@ fn workspace_file_diff_sides_for_workspace(w: &Workspace, path: &str) -> Result<
     // read_to_string fails for non-UTF8. Either way the side is
     // unrenderable → exists=false, content "".
     let original = git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
-    let modified = match safe_workspace_path(&cwd, &rel_path) {
-        Ok(p) if p.exists() => fs::read_to_string(&p).ok(),
+    let modified_path = safe_workspace_path(&cwd, &rel_path).ok();
+    let modified = match &modified_path {
+        Some(p) if p.exists() => fs::read_to_string(p).ok(),
         _ => None,
     };
+    let fp = modified_path.as_deref().map(file_fp).unwrap_or_default();
     Ok(FileDiffSides {
         original_exists: original.is_some(),
         modified_exists: modified.is_some(),
         original: original.unwrap_or_default(),
         modified: modified.unwrap_or_default(),
+        fp,
     })
 }
 

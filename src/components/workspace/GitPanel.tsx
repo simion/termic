@@ -18,13 +18,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Search, Trash2,
+  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Search, Trash2, MessageSquare,
 } from "lucide-react";
 import type { Workspace, GitStatus, GitRepo, GitFile } from "@/lib/types";
 import { workspaceStage, workspaceUnstage, workspaceCommit, workspaceDiscard } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
+import { useFileViewed, useIsViewed } from "@/store/fileViewed";
+import { useReviewComments } from "@/store/reviewComments";
 import { bindingMatches, bindingGlyphs } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
@@ -149,8 +151,31 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const staged   = useMemo(() => filt(repo?.staged   ?? []), [repo, hideUntracked, search]);
   const stagedCount = staged.length;
 
+  // "Viewed" marks (GH #42). Subscribe to this workspace's map so the per-pane
+  // "N/M viewed" header counts re-render when a row is ticked.
+  const viewedMap = useFileViewed(s => s.byWs[ws.id]);
+  const pruneViewed = useFileViewed(s => s.prune);
+  // Drop viewed marks for files that no longer have changes (committed /
+  // discarded) so localStorage doesn't accumulate dead paths. Keyed by the
+  // workspace-relative path (member files prefixed with their dir_name).
+  useEffect(() => {
+    if (!status) return;
+    const valid = new Set<string>();
+    for (const r of status.repos) {
+      const pfx = r.dir_name ? `${r.dir_name}/` : "";
+      for (const f of r.staged) valid.add(pfx + f.path);
+      for (const f of r.unstaged) valid.add(pfx + f.path);
+    }
+    pruneViewed(ws.id, valid);
+  }, [status, ws.id, pruneViewed]);
+
   // ── git mutations ──
   const dir = repo?.dir_name ?? "";
+  // Count of marked-viewed files in a pane, for its "N/M viewed" header. A
+  // file counts only while its stashed fingerprint still matches the live
+  // one (an agent edit moves fp and silently clears the mark).
+  const countViewed = (files: GitFile[]) =>
+    files.reduce((n, f) => n + (f.fp !== "" && viewedMap?.[dir ? `${dir}/${f.path}` : f.path] === f.fp ? 1 : 0), 0);
   // After a single file leaves its pane (stage / unstage / discard), move the
   // selection to the NEXT file in that pane's visual order so files can be
   // worked through in sequence — never linger on the file just acted on. If it
@@ -410,6 +435,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           title="Unstaged" files={unstaged} pane="unstaged" viewMode={viewMode}
           collapsed={collapsed} setCollapsed={setCollapsed}
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
+          wsId={ws.id} viewedCount={countViewed(unstaged)}
           headerAction={unstaged.length > 0 ? { label: "Stage all", onClick: () => doStage(unstaged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("unstaged", p)}
           onToggle={doStage}
@@ -425,6 +451,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           title="Staged" files={staged} pane="staged" viewMode={viewMode}
           collapsed={collapsed} setCollapsed={setCollapsed}
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
+          wsId={ws.id} viewedCount={countViewed(staged)}
           headerAction={staged.length > 0 ? { label: "Unstage all", onClick: () => doUnstage(staged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("staged", p)}
           onToggle={doUnstage}
@@ -519,6 +546,10 @@ interface PaneProps {
   selectedKey: string | null;
   /** Display glyph for the stage/unstage shortcut, e.g. "⌘S". */
   stageGlyph: string;
+  /** Owning workspace id — keys the per-file viewed marks + comment counts. */
+  wsId: string;
+  /** How many of this pane's files are currently marked viewed (header badge). */
+  viewedCount?: number;
   headerAction?: { label: string; onClick: () => void };
   onRowClick: (path: string) => void;
   /** Stage (unstaged pane) or unstage (staged pane) the given paths.
@@ -540,14 +571,20 @@ interface PaneProps {
 
 function Pane({
   title, files, pane, viewMode, collapsed, setCollapsed, clickable, selectedKey, stageGlyph,
-  headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, className, style,
+  wsId, viewedCount = 0, headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, className, style,
 }: PaneProps) {
   return (
     <div className={cn("flex flex-col overflow-hidden", className)} style={style}>
       <div className="flex h-7 shrink-0 items-center justify-between border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2.5">
-        <span className="text-[11.5px] font-medium uppercase tracking-[0.06em] text-[var(--color-fg-dim)]">
+        <span className="flex items-center gap-1.5 text-[11.5px] font-medium uppercase tracking-[0.06em] text-[var(--color-fg-dim)]">
           {title}
-          <span className="ml-1.5 tabular-nums text-[var(--color-fg-faint)]">{files.length}</span>
+          <span className="tabular-nums text-[var(--color-fg-faint)]">{files.length}</span>
+          {viewedCount > 0 && (
+            <span className="flex items-center gap-1 rounded-full bg-[var(--color-bg-3)] px-1.5 py-px text-[10px] font-medium normal-case tracking-normal text-[var(--color-fg-dim)]">
+              <Check className="h-2.5 w-2.5" />
+              <span className="tabular-nums">{viewedCount}/{files.length}</span>
+            </span>
+          )}
         </span>
         {headerAction && (
           <button
@@ -567,7 +604,7 @@ function Pane({
           <FileList
             files={files} pane={pane} viewMode={viewMode}
             collapsed={collapsed} setCollapsed={setCollapsed} clickable={clickable}
-            selectedKey={selectedKey} stageGlyph={stageGlyph}
+            selectedKey={selectedKey} stageGlyph={stageGlyph} wsId={wsId}
             onRowClick={onRowClick}
             onToggle={onToggle} onDiscard={onDiscard} rowActionIcon={rowActionIcon}
             root={root} repoDir={repoDir}
@@ -617,6 +654,7 @@ function rowProps(p: Omit<PaneProps, "title" | "headerAction" | "className" | "s
     pane: p.pane,
     selectedKey: p.selectedKey,
     stageGlyph: p.stageGlyph,
+    wsId: p.wsId,
     clickable: p.clickable,
     onClick: p.onRowClick,
     onToggle: p.onToggle,
@@ -746,13 +784,14 @@ function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" 
 // the diff preview. Double click stages / unstages (same as the trailing
 // arrow button). The arrow + the staging double-click work even on
 // non-clickable repo_root rows (no diff there, but staging is fine).
-function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clickable, onClick, onToggle, onDiscard, rowActionIcon, root, repoDir }: {
+function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, wsId, clickable, onClick, onToggle, onDiscard, rowActionIcon, root, repoDir }: {
   file: GitFile;
   label: string;
   depth?: number;
   pane: "unstaged" | "staged";
   selectedKey: string | null;
   stageGlyph: string;
+  wsId: string;
   clickable: boolean;
   onClick: (p: string) => void;
   onToggle: (paths: string[]) => void;
@@ -765,6 +804,26 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clicka
   const ActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
   const actionLabel = rowActionIcon === "down" ? "Stage" : "Unstage";
   const selected = selectedKey === `${pane} ${file.path}`;
+  // Workspace-relative path: how viewed marks + review comments key a file
+  // (matches the diff tab's path, prefixed for member repos).
+  const fullPath = repoDir ? `${repoDir}/${file.path}` : file.path;
+  const viewed = useIsViewed(wsId, fullPath, file.fp);
+  // Live count of pending inline comments left on this file (GH #28). A
+  // primitive return keeps the selector reference-stable.
+  const commentCount = useReviewComments(s => {
+    const arr = s.byWs[wsId];
+    if (!arr) return 0;
+    let n = 0;
+    for (const c of arr) if (c.file === fullPath) n++;
+    return n;
+  });
+  // A deletion has no working-tree file to fingerprint (fp === ""), so the
+  // viewed mark can't anchor to content — hide the checkbox there.
+  const canView = file.fp !== "";
+  const toggleViewed = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    useFileViewed.getState().toggle(wsId, fullPath, file.fp);
+  };
   return (
     <ContextMenuRoot>
       <ContextMenuTrigger asChild>
@@ -789,8 +848,37 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clicka
         className="inline-flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded px-0.5 text-[10.5px] font-semibold text-black"
         style={{ background: COL[key] || "var(--color-fg-dim)" }}
       >{SC[key] || key}</span>
-      <img src={fileIconUrl(label)} alt="" className="h-4 w-4 shrink-0 file-icon" />
-      <span className="truncate flex-1 font-mono text-[12px]">{label}</span>
+      <img src={fileIconUrl(label)} alt="" className={cn("h-4 w-4 shrink-0 file-icon", viewed && !selected && "opacity-50")} />
+      <span className={cn("truncate flex-1 font-mono text-[12px]", viewed && !selected && "text-[var(--color-fg-faint)] line-through decoration-[var(--color-fg-faint)]/40")}>{label}</span>
+      {commentCount > 0 && (
+        <Tip side="left" content={`${commentCount} inline ${commentCount === 1 ? "comment" : "comments"}`}>
+          <span className="flex shrink-0 items-center gap-0.5 rounded bg-[var(--color-bg-3)] px-1 text-[10.5px] tabular-nums text-[var(--color-fg-dim)]">
+            <MessageSquare className="h-2.5 w-2.5" />
+            {commentCount}
+          </span>
+        </Tip>
+      )}
+      {canView && (
+        <Tip side="left" content={viewed ? "Mark as not viewed" : "Mark as viewed"}>
+          <button
+            onClick={toggleViewed}
+            aria-pressed={viewed}
+            className={cn(
+              "flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[3px] border transition-colors",
+              viewed
+                ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+                : cn(
+                    "border-[var(--color-border)] text-transparent hover:border-[var(--color-fg-dim)]",
+                    // Faintly present so the feature is discoverable, but quiet
+                    // until the row is hovered/selected.
+                    selected ? "opacity-100" : "opacity-30 group-hover:opacity-100",
+                  ),
+            )}
+          >
+            <Check className="h-2.5 w-2.5" strokeWidth={3} />
+          </button>
+        </Tip>
+      )}
       <Tip
         side="left"
         content={
@@ -824,8 +912,14 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, clicka
           <Trash2 />
           Discard changes
         </ContextMenuItem>
+        {canView && (
+          <ContextMenuItem onSelect={() => useFileViewed.getState().toggle(wsId, fullPath, file.fp)}>
+            <Check />
+            {viewed ? "Mark as not viewed" : "Mark as viewed"}
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
-        <CopyPathItems rel={repoDir ? `${repoDir}/${file.path}` : file.path} root={root} />
+        <CopyPathItems rel={fullPath} root={root} />
       </ContextMenuContent>
     </ContextMenuRoot>
   );

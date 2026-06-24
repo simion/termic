@@ -295,7 +295,7 @@ export const terminalStageFile = (wsId: string, src: string) =>
   invoke<string>("terminal_stage_file", { wsId, src });
 export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
 export const workspaceFileDiffSides = (id: string, path: string) =>
-  invoke<{ original: string; modified: string; original_exists: boolean; modified_exists: boolean }>(
+  invoke<{ original: string; modified: string; original_exists: boolean; modified_exists: boolean; fp: string }>(
     "workspace_file_diff_sides", { id, path },
   );
 export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });

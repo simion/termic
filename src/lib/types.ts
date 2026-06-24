@@ -419,6 +419,10 @@ export interface GitFile {
    *  (unstaged), or "?" (untracked). */
   status: string;
   path: string;
+  /** Cheap working-tree fingerprint (`mtime_nanos:len`), empty for a
+   *  deletion. Used to auto-clear a file's "viewed" mark once the agent
+   *  touches it again. See store/fileViewed.ts. */
+  fp: string;
 }
 
 export interface GitRepo {

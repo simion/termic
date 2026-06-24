@@ -7,8 +7,9 @@ import { useEffect, useRef, useState } from "react";
 import type { DiffTab, Workspace } from "@/lib/types";
 import { workspaceFileDiffSides } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
-import { FolderOpen, Columns2, AlignJustify } from "lucide-react";
+import { FolderOpen, Columns2, AlignJustify, Check } from "lucide-react";
 import { useApp } from "@/store/app";
+import { useFileViewed, useIsViewed } from "@/store/fileViewed";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { MergeView, unifiedMergeView } from "@codemirror/merge";
 import { EditorState, Prec, type Extension } from "@codemirror/state";
@@ -60,6 +61,11 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   // True once a comment-bearing editor is mounted (either mode). Gates the
   // header "Comment" button so it never fires into a not-yet-built view.
   const [commentable, setCommentable] = useState(false);
+  // Working-tree fingerprint of this file (from the diff load), so the
+  // header's "Viewed" toggle anchors to the same fp the Git panel rows use
+  // (GH #42). Empty for a deletion → the toggle is hidden.
+  const [fp, setFp] = useState("");
+  const viewed = useIsViewed(ws.id, tab.path, fp);
   const hostRef = useRef<HTMLDivElement>(null);
   // Only one of these is mounted at a time depending on `mode`.
   const mergeRef = useRef<MergeView | null>(null);
@@ -89,6 +95,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       // truncated to 0 bytes still has two real sides to compare.
       const degenerate = !sides.original_exists || !sides.modified_exists;
       setOneSided(degenerate);
+      setFp(sides.fp);
       // Tear any prior view down before mounting the new one.
       mergeRef.current?.destroy();
       mergeRef.current = null;
@@ -299,6 +306,27 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
           <Button size="sm" variant="ghost" title="Open this file in the editor" onClick={() =>
             addTab(ws.id, { id: crypto.randomUUID(), type: "edit", path: tab.path, title: tab.path.split("/").pop() || tab.path })
           }><FolderOpen className="h-4 w-4" /> Open</Button>
+          {/* Mark-as-viewed (GH #42): mirrors the Git panel row checkbox.
+              Hidden for deletions (no working-tree file to fingerprint). */}
+          {fp !== "" && (
+            <Button
+              size="sm"
+              variant="ghost"
+              title={viewed ? "Mark as not viewed" : "Mark as viewed"}
+              onClick={() => useFileViewed.getState().toggle(ws.id, tab.path, fp)}
+              className={cn(viewed && "text-[var(--color-accent)]")}
+            >
+              <span className={cn(
+                "flex h-[15px] w-[15px] items-center justify-center rounded-[3px] border",
+                viewed
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+                  : "border-[var(--color-border)] text-transparent",
+              )}>
+                <Check className="h-2.5 w-2.5" strokeWidth={3} />
+              </span>
+              Viewed
+            </Button>
+          )}
         </div>
       </div>
       {err && <div className="p-4 font-mono text-[12.5px] text-[var(--color-err)]">Error: {err}</div>}

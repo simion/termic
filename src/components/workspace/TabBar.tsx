@@ -395,7 +395,7 @@ function RightSplitToggle({ wsId }: { wsId: string }) {
   const split = useApp(s => !!s.rightSplit[wsId]);
   const toggleSplit = useApp(s => s.toggleRightSplit);
   return (
-    <Tip content={split ? "Close right split" : "Split: open shell right (⌘D)"} side="bottom">
+    <Tip content={split ? "Close right split" : "Split right (⌘D)"} side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
         onClick={() => toggleSplit(wsId)}

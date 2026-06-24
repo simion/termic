@@ -12,6 +12,7 @@ import { workDoneCapable } from "@/lib/agents";
 import { usePrefs, currentTerminalTheme } from "@/store/prefs";
 import { TabBar, TabPill } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
+import { SplitLauncher } from "./SplitLauncher";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen } from "lucide-react";
@@ -120,11 +121,11 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   const setActiveBottom = useApp(s => s.setActiveBottomTab);
   const setBottomLiveTitle = useApp(s => s.setBottomTabLiveTitle);
 
+  const rightTabs = tabs.filter(t => t.panel === "right");
   const rightSplit       = useApp(s => !!s.rightSplit[ws.id]);
   const rightSplitRatio  = useApp(s => s.rightSplitRatio[ws.id] ?? 0.5);
   const setRightRatio    = useApp(s => s.setRightSplitRatio);
   const activeRight      = useApp(s => s.activeRightTab[ws.id]);
-  const addRightTab      = useApp(s => s.addRightTab);
   const ensureRightTabs  = useApp(s => s.ensureDefaultRightTabs);
 
   // Fade the bottom-strip queue button when a right-pane agent is focused —
@@ -158,17 +159,13 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
     if (split && (!bottomTabs || bottomTabs.length === 0)) addBottomTab(ws.id, { focus: false });
   }, [split, bottomTabs, ws.id, addBottomTab]);
 
-  // On first open of the right split, either restore persisted agent tabs
-  // (ensureDefaultRightTabs) or seed a fresh shell tab. The ensure call
-  // is a no-op when right_split_tabs is empty.
+  // On first open of the right split, restore any persisted right tabs
+  // (ensureDefaultRightTabs, a no-op when none were saved). We deliberately
+  // DON'T auto-seed a shell anymore: an empty split shows the in-pane
+  // SplitLauncher so the user picks what to launch (agent / terminal).
   useEffect(() => {
     if (!rightSplit) return;
     ensureRightTabs(ws.id);
-    const s = useApp.getState();
-    const hasRight = (s.tabs[ws.id] ?? []).some(
-      t => t.type === "terminal" && (t as TerminalTab).panel === "right",
-    );
-    if (!hasRight) addRightTab(ws.id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rightSplit, ws.id]);
 
@@ -234,7 +231,11 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   setRightRatio(ws.id, newRatio);
                 }}
               />
-              {tabs.filter(t => t.panel === "right").map(t => (
+              {rightTabs.length === 0 ? (
+                // Empty split: let the user pick what to launch (↑/↓ + ↵)
+                // instead of auto-spawning a shell.
+                <SplitLauncher ws={ws} />
+              ) : rightTabs.map(t => (
                 <div
                   key={t.id}
                   data-tab-id={t.id}
