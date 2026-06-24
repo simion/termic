@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.15.5",
+      "date": "2026-06-24",
+      "summary": "Mark files as viewed while reviewing, and pick what a split launches."
+    },
+    {
       "version": "0.15.4",
       "date": "2026-06-23",
       "summary": "Cleaner editor reloads, steadier Git repo pills, and New Workspace remembers how you work."

@@ -4,6 +4,15 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.15.5] - 2026-06-24
+
+Mark files as viewed while reviewing, and pick what a split launches.
+
+### Features
+- Mark changed files as viewed from the Git panel rows or the diff header, with a per-section viewed count. The mark clears itself the moment an agent edits the file again. (#42)
+- Files with inline review comments now show a comment count badge in the Git panel. (#42)
+- Opening a right split (⌘D) now shows a picker to choose what to launch (an agent or a terminal) instead of immediately starting a shell. Use the arrow keys and Enter.
+
 ## [0.15.4] - 2026-06-23
 
 Cleaner editor reloads, steadier Git repo pills, and New Workspace remembers how you work.
