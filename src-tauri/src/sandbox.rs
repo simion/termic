@@ -376,6 +376,12 @@ fn system_read_roots() -> &'static [&'static str] {
         "/usr", "/opt", "/bin", "/sbin",
         "/dev", "/private/etc", "/etc",
         "/System/Library", "/System/Volumes/Preboot/Cryptexes", "/private/var/db",
+        // Apple Command Line Tools toolchain. The system /usr/bin/git is an
+        // xcrun shim that dlopen()s .../CommandLineTools/usr/lib/libxcrun.dylib;
+        // without this read root that open() is blocked and git/clang/make/swift
+        // fail. Read-only (system roots never get file-write*), root-owned, no
+        // user secrets — same trust class as /usr and /System/Library.
+        "/Library/Developer/CommandLineTools",
         "/lib", "/lib32", "/lib64", "/libx32",
         "/proc", "/sys", "/run",
     ]
