@@ -4,10 +4,11 @@
 // unifiedMergeView in a single read-only editor.
 
 import { useEffect, useRef, useState } from "react";
-import type { DiffTab, Workspace } from "@/lib/types";
-import { workspaceFileDiffSides } from "@/lib/ipc";
+import type { DiffTab, Workspace, GitFile } from "@/lib/types";
+import { workspaceFileDiffSides, workspaceGitStatus } from "@/lib/ipc";
+import { orderedFiles, readView } from "./GitPanel";
 import { Button } from "@/components/ui/Button";
-import { FolderOpen, Columns2, AlignJustify, Check } from "lucide-react";
+import { FolderOpen, Columns2, AlignJustify, Eye } from "lucide-react";
 import { useApp } from "@/store/app";
 import { useFileViewed, useIsViewed } from "@/store/fileViewed";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -72,6 +73,53 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   const editorRef = useRef<EditorView | null>(null);
   const addTab = useApp(s => s.addTab);
   const editorFontSize = usePrefs(s => s.editorFontSize);
+
+  // Mark this file viewed and, when ticking it ON, walk to the next file you
+  // haven't looked at yet — the GitHub PR-review flow. Mirrors the Git panel's
+  // focusNext (advance after acting on a file) but skips files already viewed,
+  // since "what's next" in a review means the next UNSEEN diff. Un-viewing
+  // never navigates. Files are flattened to workspace-relative paths in the
+  // same alphabetical order the Git panel rows use.
+  const markViewedAndAdvance = async () => {
+    const wasViewed = viewed;
+    useFileViewed.getState().toggle(ws.id, tab.path, fp);
+    if (wasViewed) return; // un-viewing: stay put
+    try {
+      const status = await workspaceGitStatus(ws.id);
+      const seen = useFileViewed.getState().byWs[ws.id] ?? {};
+      // Match the sidebar exactly: it shows ONE repo at a time, stacked as
+      // Unstaged then Staged, each pane in the active view's render order
+      // (tree puts folders first — a flat path sort would jump around). So
+      // resolve this file's repo, then walk that repo's files in that order.
+      const viewMode = readView();
+      const hideUntracked = (() => { try { return localStorage.getItem("gitHideUntracked") === "1"; } catch { return false; } })();
+      for (const r of status.repos) {
+        const pfx = r.dir_name ? `${r.dir_name}/` : "";
+        if (pfx && !tab.path.startsWith(pfx)) continue;
+        const rel = pfx ? tab.path.slice(pfx.length) : tab.path;
+        const filt = (fs: GitFile[]) => hideUntracked ? fs.filter(f => f.status !== "?") : fs;
+        const ordered = [
+          ...orderedFiles(filt(r.unstaged), viewMode),
+          ...orderedFiles(filt(r.staged), viewMode),
+        ];
+        const idx = ordered.findIndex(f => f.path === rel);
+        if (idx === -1) continue; // file lives in a different repo
+        const next = ordered
+          .slice(idx + 1)
+          .find(f => f.fp !== "" && seen[pfx + f.path] !== f.fp);
+        if (next) {
+          useApp.getState().openPreviewTab(ws.id, {
+            type: "diff",
+            path: pfx + next.path,
+            title: `Δ ${next.path.split("/").pop()}`,
+          });
+        }
+        return;
+      }
+    } catch {
+      // Status fetch failed — leave the current (now-viewed) diff open.
+    }
+  };
   // Same syntax theme as the editor. A change re-renders → the effect
   // below rebuilds the diff view with the new palette. The "auto" syntax
   // theme also follows the app palette, so rebuild on theme switch too.
@@ -312,19 +360,12 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
             <Button
               size="sm"
               variant="ghost"
-              title={viewed ? "Mark as not viewed" : "Mark as viewed"}
-              onClick={() => useFileViewed.getState().toggle(ws.id, tab.path, fp)}
+              title={viewed ? "Mark as not viewed" : "Mark as viewed, then go to the next unviewed file"}
+              onClick={markViewedAndAdvance}
               className={cn(viewed && "text-[var(--color-accent)]")}
             >
-              <span className={cn(
-                "flex h-[15px] w-[15px] items-center justify-center rounded-[3px] border",
-                viewed
-                  ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
-                  : "border-[var(--color-border)] text-transparent",
-              )}>
-                <Check className="h-2.5 w-2.5" strokeWidth={3} />
-              </span>
-              Viewed
+              <Eye className="h-4 w-4" />
+              {viewed ? "Viewed" : "Mark as viewed"}
             </Button>
           )}
         </div>

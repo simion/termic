@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Search, Trash2, MessageSquare,
+  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare,
 } from "lucide-react";
 import type { Workspace, GitStatus, GitRepo, GitFile } from "@/lib/types";
 import { workspaceStage, workspaceUnstage, workspaceCommit, workspaceDiscard } from "@/lib/ipc";
@@ -43,14 +43,14 @@ const SC: Record<string, string>  = { M: "M", A: "+", "?": "+", D: "D", R: "R", 
 const COL: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", "?": "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", C: "var(--color-accent)", U: "var(--color-err)" };
 const LBL: Record<string, string> = { M: "modified", A: "added", "?": "untracked", D: "deleted", R: "renamed", C: "copied", U: "conflict" };
 
-type ViewMode = "tree" | "list" | "combined";
+export type ViewMode = "tree" | "list" | "combined";
 
 const LS_VIEW   = "gitViewMode";
 const LS_HIDE   = "gitHideUntracked";
 const LS_RATIO  = "gitSplitRatio";
 const LS_PUSH   = "gitPushDefault";
 
-function readView(): ViewMode {
+export function readView(): ViewMode {
   try { const v = localStorage.getItem(LS_VIEW); if (v === "tree" || v === "list" || v === "combined") return v; } catch {}
   return "tree";
 }
@@ -191,9 +191,8 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   }, [ws.id]);
 
   const focusNext = useCallback((pane: "unstaged" | "staged", path: string) => {
-    const list = (pane === "unstaged" ? unstaged : staged)
-      .map(f => f.path)
-      .sort((a, b) => a.localeCompare(b));
+    const list = orderedFiles(pane === "unstaged" ? unstaged : staged, viewMode)
+      .map(f => f.path);
     const idx = list.indexOf(path);
     const next = idx >= 0 ? list[idx + 1] : undefined;
     if (next) {
@@ -202,7 +201,33 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       return;
     }
     closePreviewDiff();
-  }, [unstaged, staged, clickable, onOpenDiff, dir, closePreviewDiff]);
+  }, [unstaged, staged, viewMode, clickable, onOpenDiff, dir, closePreviewDiff]);
+
+  // Keep the sidebar selection in lockstep with the open preview diff. The
+  // diff pane can move the preview tab on its own (Mark-as-viewed advances to
+  // the next file), and that path change must re-highlight the matching row —
+  // and switch the active repo sub-tab if the next file lives in another repo.
+  // Without this, the row highlight stays stuck on the file you started from.
+  const previewDiffPath = useApp(s => {
+    const t = (s.tabs[ws.id] || []).find(t => t.preview && t.type === "diff");
+    return t ? (t as any).path as string : null;
+  });
+  useEffect(() => {
+    if (!previewDiffPath) return;
+    for (const r of repos) {
+      const pfx = r.dir_name ? `${r.dir_name}/` : "";
+      if (pfx && !previewDiffPath.startsWith(pfx)) continue;
+      const rel = pfx ? previewDiffPath.slice(pfx.length) : previewDiffPath;
+      // Membership check (not just the prefix) disambiguates the host repo
+      // (empty dir_name, so its prefix matches everything) from members.
+      const pane = r.unstaged.some(f => f.path === rel) ? "unstaged"
+        : r.staged.some(f => f.path === rel) ? "staged" : null;
+      if (!pane) continue;
+      if (r.dir_name !== activeRepoDir) setActiveRepoDir(r.dir_name);
+      setSelected(`${pane} ${rel}`);
+      return;
+    }
+  }, [previewDiffPath, repos, activeRepoDir]);
 
   // Bulk "Stage all" / "Unstage all" leave the selection alone.
   const doStage = (paths: string[]) => {
@@ -680,6 +705,44 @@ function collectLeafPaths(node: TreeNode): string[] {
 // ── tree ──
 type TreeNode = { name: string; path: string; file?: GitFile; children: Map<string, TreeNode> };
 
+/** Flatten files into the exact top-to-bottom order the given view renders
+ *  them, so "go to the next file" (focusNext, diff-pane Mark-as-viewed)
+ *  follows what the eye sees. Tree view puts folders before files at each
+ *  level — a flat path sort would interleave them and make the next file
+ *  jump around (GH: diff-pane advance order). */
+export function orderedFiles(files: GitFile[], viewMode: ViewMode): GitFile[] {
+  if (viewMode === "list") {
+    return [...files].sort((a, b) => a.path.localeCompare(b.path));
+  }
+  if (viewMode === "combined") {
+    const groups = new Map<string, GitFile[]>();
+    for (const f of files) {
+      const slash = f.path.lastIndexOf("/");
+      const d = slash === -1 ? "" : f.path.slice(0, slash);
+      (groups.get(d) ?? groups.set(d, []).get(d)!).push(f);
+    }
+    return [...groups.keys()]
+      .sort((a, b) => a.localeCompare(b))
+      .flatMap(d => groups.get(d)!.sort((a, b) => a.path.localeCompare(b.path)));
+  }
+  // Tree: folders-first depth-first, mirroring TreeView's per-level sort.
+  const root = buildTree(files);
+  const out: GitFile[] = [];
+  const walk = (node: TreeNode) => {
+    const kids = [...node.children.values()].sort((a, b) => {
+      const ad = a.children.size > 0 ? 0 : 1;
+      const bd = b.children.size > 0 ? 0 : 1;
+      return ad !== bd ? ad - bd : a.name.localeCompare(b.name);
+    });
+    for (const k of kids) {
+      if (k.children.size > 0) walk(k);
+      else if (k.file) out.push(k.file);
+    }
+  };
+  walk(root);
+  return out;
+}
+
 function buildTree(files: GitFile[]): TreeNode {
   const root: TreeNode = { name: "", path: "", children: new Map() };
   for (const f of files) {
@@ -829,7 +892,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, wsId, 
       <ContextMenuTrigger asChild>
     <div
       className={cn(
-        "group flex h-[26px] w-full items-center gap-2 border-l-2 pr-1 text-[13px]",
+        "group flex h-[26px] w-full items-center gap-2 border-l-2 pr-2.5 text-[13px]",
         selected
           ? "border-[var(--color-accent)] bg-[var(--color-sel)] text-[var(--color-fg)]"
           : cn(
@@ -863,19 +926,22 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, wsId, 
           <button
             onClick={toggleViewed}
             aria-pressed={viewed}
+            // An eye, not a checkbox: a tickbox next to the stage arrow reads
+            // as "stage this" (every git client uses checkboxes for staging).
+            // The eye says "seen" and shares no vocabulary with staging.
             className={cn(
-              "flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[3px] border transition-colors",
+              "flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded transition-colors",
               viewed
-                ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+                ? "text-[var(--color-accent)]"
                 : cn(
-                    "border-[var(--color-border)] text-transparent hover:border-[var(--color-fg-dim)]",
+                    "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                     // Faintly present so the feature is discoverable, but quiet
                     // until the row is hovered/selected.
                     selected ? "opacity-100" : "opacity-30 group-hover:opacity-100",
                   ),
             )}
           >
-            <Check className="h-2.5 w-2.5" strokeWidth={3} />
+            <Eye className="h-3.5 w-3.5" />
           </button>
         </Tip>
       )}
