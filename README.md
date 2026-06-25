@@ -346,6 +346,15 @@ Open an issue to push something up the list or pick one off.
   `gh`. No OAuth.
 - **Sandbox parity on Linux + Windows.** macOS Seatbelt today; bubblewrap
   / landlock on Linux and AppContainer on Windows are the gap.
+- **Docker-based sandboxing.** An opt-in, more brutal alternative to
+  Seatbelt: run each agent inside a container off a default, editable
+  Dockerfile that ships the supported agents. Install whatever your agents
+  need in the image; they cannot escape it and only see the paths you mount
+  (just the project repo(s) by default, everything else installed but not
+  mounted). Cross-platform for free, and pairs well with per-agent
+  credential injection (or a single CLI login) so you need not mount secrets
+  at all. See [#49](https://github.com/simion/termic/issues/49) for the kind
+  of host-toolchain friction this sidesteps.
 - **Windows prebuilts.** AppImage CI is live for Linux; Windows MSI is
   the matching CI matrix entry.
 - **Code navigation via language servers.** Cmd-click go-to-definition,
