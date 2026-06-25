@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.15.7",
+      "version": "0.15.8",
       "date": "2026-06-25",
       "summary": "New filesystem-only sandbox mode, and copyable terminal output when an agent exits."
     },
