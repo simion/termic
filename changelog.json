@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.15.6",
+      "date": "2026-06-25",
+      "summary": "Sandbox git fixes for the Apple toolchain, plus a clearer mark-as-viewed and diff review navigation."
+    },
+    {
       "version": "0.15.5",
       "date": "2026-06-24",
       "summary": "Mark files as viewed while reviewing, and pick what a split launches."

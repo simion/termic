@@ -4,6 +4,16 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.15.6] - 2026-06-25
+
+Sandbox git fixes for the Apple toolchain, plus a clearer mark-as-viewed and diff review navigation.
+
+### Improvements
+- Mark-as-viewed is now an eye icon (Git panel rows and the diff header) so it's no longer mistaken for staging. Marking a file viewed from the diff header advances to the next unviewed file in the same order the sidebar shows, and the sidebar selection follows along. (#42)
+
+### Bug fixes
+- Sandboxed agents on the Apple Command Line Tools toolchain can run git, clang, make, and swift again (the CLT library path is now readable). (#49)
+
 ## [0.15.5] - 2026-06-24
 
 Mark files as viewed while reviewing, and pick what a split launches.
