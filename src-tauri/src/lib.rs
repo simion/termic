@@ -3437,8 +3437,26 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
         // not our symlink" guard. We only remove entries that are
         // STILL symlinks pointing where we expect — a user who
         // replaced the link with real content keeps their work.
+        //
+        // CRITICAL: every repo-root workspace on the same multi-repo
+        // project SHARES this host checkout (w.path == proj.root_path),
+        // and therefore the very same member symlinks. If another live
+        // (non-archived) repo-root workspace still points at this host,
+        // those links are its file tree — archiving THIS one must not
+        // yank them out from under it. Only unlink a member when no
+        // surviving sibling on the same host still lists it. (Excludes
+        // self by id; w.archived isn't set yet, so we'd otherwise match
+        // ourselves.) Without this, archiving one DPF repo-root session
+        // silently emptied another's repo list (no command ever ran).
+        let sibling_links: HashSet<String> = load_workspaces().into_iter()
+            .filter(|o| o.id != w.id && !o.archived && o.path == w.path)
+            .flat_map(|o| o.composition.into_iter()
+                .filter(|cm| cm.mode == MemberMode::RepoRoot)
+                .map(|cm| cm.dir_name))
+            .collect();
         for m in &w.composition {
             if m.mode != MemberMode::RepoRoot { continue; }
+            if sibling_links.contains(&m.dir_name) { continue; }
             let link = Path::new(&w.path).join(&m.dir_name);
             let Ok(meta) = link.symlink_metadata() else { continue; };
             if !meta.file_type().is_symlink() { continue; }
