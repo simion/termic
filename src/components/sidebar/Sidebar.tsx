@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Shield, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -19,7 +19,8 @@ import { confirmAndArchive } from "@/lib/archiveWorkspace";
 import { startSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Workspace, TerminalTab } from "@/lib/types";
-import { effectiveSandboxMode } from "@/lib/types";
+import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
+import { SandboxIcon, SANDBOX_VISUALS } from "@/components/SandboxIcon";
 
 /** Pick a default name for a freshly-created repo-root workspace.
  *  Format: "<agent>-N" where N is the next unused index for that CLI
@@ -1140,30 +1141,40 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                   // the button visible; unless the collapsed attention/done
                   // badge is active — it lives in the same slot and the
                   // status icon would cover it.
-                  (w.sandbox_enabled || (!!w.yolo && effectiveSandboxMode(w) !== "enforce")) && !(collapsed && (hasAttention || hasDone || hasWorking))
+                  (w.sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && !(collapsed && (hasAttention || hasDone || hasWorking))
                     ? "opacity-100 pointer-events-auto"
                     : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
                   wsRenaming !== null && "pointer-events-none",
                 )}
               >
                 {/* Idle badge, hidden on row hover so the cog shows through.
-                    Precedence: dangerous YOLO (red, no cage) → Enforcing
-                    (green shield) → Monitoring (amber eye). */}
-                {/* Outlined when no agent is launched here, filled once one
-                    is running (terminalTabCount > 0). */}
-                {(!!w.yolo && effectiveSandboxMode(w) !== "enforce") ? (
-                  <Zap
-                    className="absolute h-3.5 w-3.5 text-[var(--color-err)] transition-opacity group-hover/wsrow:opacity-0"
-                    fill={terminalTabs.length > 0 ? "currentColor" : "none"}
-                  />
-                ) : effectiveSandboxMode(w) === "monitor" ? (
-                  <Shield className="absolute h-3.5 w-3.5 text-[var(--color-warn)] transition-opacity group-hover/wsrow:opacity-0" />
-                ) : w.sandbox_enabled ? (
-                  <Shield
-                    className="absolute h-3.5 w-3.5 text-[var(--color-ok)] transition-opacity group-hover/wsrow:opacity-0"
-                    fill={terminalTabs.length > 0 ? "currentColor" : "none"}
-                  />
-                ) : null}
+                    Precedence: dangerous YOLO (red, no cage) → sandbox mode.
+                    Running state is shown via OPACITY (dim when idle, solid
+                    when an agent is running), so the icon's FILL is free to
+                    encode the MODE — full enforce = filled shield, FS-only /
+                    monitor = outline. That keeps the two enforce modes
+                    distinguishable even when no agent is running. */}
+                {(() => {
+                  const wMode = effectiveSandboxMode(w);
+                  const stateOpacity = terminalTabs.length > 0 ? "opacity-100" : "opacity-40";
+                  if (!!w.yolo && !isSandboxEnforced(wMode)) {
+                    return (
+                      <Zap
+                        className={cn("absolute h-3.5 w-3.5 text-[var(--color-err)] transition-opacity group-hover/wsrow:opacity-0", stateOpacity)}
+                        fill="currentColor"
+                      />
+                    );
+                  }
+                  if (wMode !== "off") {
+                    return (
+                      <SandboxIcon
+                        mode={wMode}
+                        className={cn("absolute h-3.5 w-3.5 transition-opacity group-hover/wsrow:opacity-0", stateOpacity)}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
                 {/* Kebab: always visible on hover (badge or not). A
                     "⋮" menu affordance, distinct from the project-level
                     Settings cog above so the two don't read as the same
@@ -1171,7 +1182,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 <MoreVertical
                   className={cn(
                     "h-3.5 w-3.5 text-[var(--color-fg-faint)] transition-opacity",
-                    (w.sandbox_enabled || (!!w.yolo && effectiveSandboxMode(w) !== "enforce")) && "opacity-0 group-hover/wsrow:opacity-100",
+                    (w.sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && "opacity-0 group-hover/wsrow:opacity-100",
                   )}
                 />
               </button>
@@ -1210,24 +1221,17 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 className="items-center [&>svg]:mt-0"
                 onSelect={() => useUI.getState().openSandbox(w.id)}
               >
-                <Shield
-                  className={cn(
-                    "h-4 w-4",
-                    effectiveSandboxMode(w) === "enforce" && "text-[var(--color-ok)]",
-                    effectiveSandboxMode(w) === "monitor" && "text-[var(--color-warn)]",
-                  )}
-                  fill={effectiveSandboxMode(w) === "enforce" ? "currentColor" : "none"}
-                />
-                <span>{effectiveSandboxMode(w) === "enforce" ? "Enforcing" : effectiveSandboxMode(w) === "monitor" ? "Monitoring" : "Sandbox settings"}</span>
+                <SandboxIcon mode={effectiveSandboxMode(w)} className="h-4 w-4" />
+                <span>{effectiveSandboxMode(w) === "off" ? "Sandbox settings" : SANDBOX_VISUALS[effectiveSandboxMode(w)].shortLabel}</span>
               </DropdownItem>
               {/* Per-workspace YOLO toggle. Disabled (auto-on) under
                   Enforcing — the seatbelt is the boundary there. Red when
                   on without a cage (dangerous). */}
               <DropdownItem
                 className="items-center [&>svg]:mt-0"
-                disabled={effectiveSandboxMode(w) === "enforce"}
+                disabled={isSandboxEnforced(effectiveSandboxMode(w))}
                 onSelect={() => {
-                  if (effectiveSandboxMode(w) === "enforce") return;
+                  if (isSandboxEnforced(effectiveSandboxMode(w))) return;
                   const next = !w.yolo;
                   setWorkspaceYolo(w.id, next);
                   void workspaceSetYolo(w.id, next);
@@ -1236,14 +1240,17 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 <Zap
                   className={cn(
                     "h-4 w-4 text-[var(--color-fg-faint)]",
-                    (!!w.yolo && effectiveSandboxMode(w) !== "enforce") && "text-[var(--color-err)]",
+                    (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w))) && "text-[var(--color-err)]",
                     effectiveSandboxMode(w) === "enforce" && "text-[var(--color-ok)]",
+                    effectiveSandboxMode(w) === "enforce-fs" && "text-[var(--color-ok)]",
                   )}
-                  fill={(effectiveSandboxMode(w) === "enforce" || !!w.yolo) ? "currentColor" : "none"}
+                  fill={(isSandboxEnforced(effectiveSandboxMode(w)) || !!w.yolo) ? "currentColor" : "none"}
                 />
                 <span>
                   {effectiveSandboxMode(w) === "enforce"
                     ? "YOLO: auto-on (Enforcing)"
+                    : effectiveSandboxMode(w) === "enforce-fs"
+                    ? "YOLO: auto-on (Enforcing FS)"
                     : w.yolo ? "YOLO: on" : "YOLO: off"}
                 </span>
               </DropdownItem>

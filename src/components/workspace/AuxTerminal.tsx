@@ -3,11 +3,12 @@
 // user has a scratch terminal for git/grep/etc. without touching the agent
 // CLI's PTY.
 //
-// When the shell exits (Ctrl+D, `exit`, crash) we surface an overlay with a
-// "New shell" button — clicking it bumps a generation counter that retears
-// down the xterm + spawns a fresh PTY.
+// When the shell exits (Ctrl+D, `exit`, crash) we surface a non-blocking
+// bottom banner with a "New shell" button — clicking it bumps a generation
+// counter that retears down the xterm + spawns a fresh PTY.
 
 import { useEffect, useRef, useState } from "react";
+import { Plus } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
@@ -22,6 +23,7 @@ import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
+import { TerminalExitedBanner } from "@/components/workspace/TerminalExitedBanner";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
@@ -284,22 +286,19 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
   }, [themeMode]);
 
   return (
-    <div className="relative h-full w-full">
-      <div ref={hostRef} className="h-full w-full" />
+    <div className="relative flex h-full w-full flex-col">
       {exited && (
-        // Overlay sits on top of the dead xterm. Click-through is disabled
-        // (own pointer events) so the user can't accidentally interact with
-        // the corpse below.
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-bg)]/85">
-          <div className="text-[13px] text-[var(--color-fg-dim)]">Shell exited.</div>
-          <button
-            onClick={() => setGen(g => g + 1)}
-            className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-1.5 text-[12.5px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)]"
-          >
-            New shell
-          </button>
-        </div>
+        // In-flow banner above the terminal: the dead xterm stays
+        // interactive so its scrollback is still selectable/copyable, and it
+        // isn't covered. `gen++` relaunches a fresh shell.
+        <TerminalExitedBanner
+          label="Shell exited."
+          actionLabel="New shell"
+          icon={Plus}
+          onAction={() => setGen(g => g + 1)}
+        />
       )}
+      <div ref={hostRef} className="min-h-0 w-full flex-1" />
     </div>
   );
 }

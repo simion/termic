@@ -188,9 +188,15 @@ pub enum ProjectType {
 /// value (`Monitor`) is additive — `Off` and `Enforce` keep their exact
 /// prior behavior; legacy records that only have the `sandbox_enabled`
 /// bool map to `Off`/`Enforce` via `Workspace::effective_sandbox_mode`.
-///   Off     — no cage (full filesystem + network).
-///   Monitor — allow everything but LOG every file op + network request.
-///   Enforce — the real cage (seatbelt deny-by-default + host allowlist).
+///   Off       — no cage (full filesystem + network).
+///   Monitor   — allow everything but LOG every file op + network request.
+///   Enforce   — the real cage (seatbelt deny-by-default + host allowlist).
+///   EnforceFs — the filesystem cage WITHOUT the network cage: same
+///               seatbelt deny-by-default file allow-list as `Enforce`,
+///               but network is fully unrestricted and NO proxy runs.
+///               For users who want write/read isolation but unfettered
+///               outbound (their own egress controls, VPN, non-HTTP
+///               traffic, etc.). `Enforce` is intentionally left untouched.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SandboxMode {
@@ -198,6 +204,10 @@ pub enum SandboxMode {
     Off,
     Monitor,
     Enforce,
+    /// Serialized as "enforce-fs" (kebab) so the JSON value reads as a
+    /// distinct mode rather than a run-together "enforcefs".
+    #[serde(rename = "enforce-fs")]
+    EnforceFs,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

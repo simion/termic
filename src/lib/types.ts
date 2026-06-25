@@ -3,9 +3,12 @@
 export type CLI = "claude" | "codex" | "agy" | "gemini" | "grok";
 
 /** Sandbox enforcement level. Mirrors Rust's `SandboxMode` (serialized
- *  lowercase). `off` = no cage; `monitor` = allow everything but log
- *  every file/network access; `enforce` = the real seatbelt cage. */
-export type SandboxMode = "off" | "monitor" | "enforce";
+ *  lowercase, except `enforce-fs` which is kebab). `off` = no cage;
+ *  `monitor` = allow everything but log every file/network access;
+ *  `enforce` = the real seatbelt cage (filesystem + network);
+ *  `enforce-fs` = the filesystem cage only, network fully unrestricted
+ *  (no proxy). */
+export type SandboxMode = "off" | "monitor" | "enforce" | "enforce-fs";
 
 /** Resolve a workspace's effective sandbox mode, bridging the legacy
  *  `sandbox_enabled` bool for records written before monitoring shipped.
@@ -16,6 +19,15 @@ export function effectiveSandboxMode(
   if (!ws) return "off";
   if (ws.sandbox_mode) return ws.sandbox_mode;
   return ws.sandbox_enabled ? "enforce" : "off";
+}
+
+/** True when the seatbelt FILESYSTEM cage is active (deny-by-default reads
+ *  outside the allow-list). Covers both `enforce` and `enforce-fs` — they
+ *  share the exact FS profile, so anything keyed off "the cage is the real
+ *  boundary" (YOLO auto-on, drag-drop staging, etc.) must treat them alike.
+ *  `enforce-fs` only differs in that the NETWORK sandbox is off. */
+export function isSandboxEnforced(mode: SandboxMode): boolean {
+  return mode === "enforce" || mode === "enforce-fs";
 }
 
 export interface Project {

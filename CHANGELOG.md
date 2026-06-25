@@ -4,11 +4,15 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.15.6] - 2026-06-25
+## [0.15.7] - 2026-06-25
 
-Sandbox git fixes for the Apple toolchain, plus a clearer mark-as-viewed and diff review navigation.
+New filesystem-only sandbox mode, and copyable terminal output when an agent exits.
+
+### Features
+- New "Enforcing (filesystem only)" sandbox mode: the full filesystem cage with the network sandbox off (no proxy, no host allow-list), for when your egress is controlled elsewhere or you need direct, non-HTTP traffic.
 
 ### Improvements
+- When an agent or shell exits, the terminal stays interactive so you can select and copy its final output (an error message, say). A restart banner now appears under the tab bar instead of a blocking overlay.
 - Mark-as-viewed is now an eye icon (Git panel rows and the diff header) so it's no longer mistaken for staging. Marking a file viewed from the diff header advances to the next unviewed file in the same order the sidebar shows, and the sidebar selection follows along. (#42)
 
 ### Bug fixes

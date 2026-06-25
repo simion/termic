@@ -32,7 +32,7 @@ function readLastMode(): "worktree" | "repo_root" | null {
   try { const v = localStorage.getItem(LS_LAST_MODE); return v === "worktree" || v === "repo_root" ? v : null; } catch { return null; }
 }
 function readLastSandbox(): SandboxMode | null {
-  try { const v = localStorage.getItem(LS_LAST_SANDBOX); return v === "off" || v === "monitor" || v === "enforce" ? v : null; } catch { return null; }
+  try { const v = localStorage.getItem(LS_LAST_SANDBOX); return v === "off" || v === "monitor" || v === "enforce" || v === "enforce-fs" ? v : null; } catch { return null; }
 }
 function persistLast(key: string, val: string) { try { localStorage.setItem(key, val); } catch {} }
 // Branch names auto-fill as `<prefix>/<name>` where the prefix comes from
@@ -812,15 +812,25 @@ export function NewWorkspaceDialog() {
               className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
             />
           </Field>
-          <Field label="Allowed hosts" hint="One per line. Use * as a wildcard. Per-CLI vendor + github + npm/pypi/crates are always allowed; these are extras.">
-            <textarea
-              value={sbHosts}
-              onChange={e => setSbHosts(e.target.value)}
-              rows={3}
-              placeholder={"*.mycompany.com\nbitbucket.org"}
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-            />
-          </Field>
+          {/* ENFORCING (FS) disables the network sandbox, so the host
+              allow-list is irrelevant — hide it in that mode. */}
+          {sandboxMode !== "enforce-fs" && (
+            <Field label="Allowed hosts" hint="One per line. Use * as a wildcard. Per-CLI vendor + github + npm/pypi/crates are always allowed; these are extras.">
+              <textarea
+                value={sbHosts}
+                onChange={e => setSbHosts(e.target.value)}
+                rows={3}
+                placeholder={"*.mycompany.com\nbitbucket.org"}
+                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+              />
+            </Field>
+          )}
+          {sandboxMode === "enforce-fs" && (
+            <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
+              Network is unrestricted in this mode (filesystem cage only). The
+              agent reaches any host directly, with no proxy or host allow-list.
+            </p>
+          )}
         </div>
       )}
 

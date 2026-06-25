@@ -3,7 +3,7 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RotateCcw, Shield, AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
+import { AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -24,7 +24,9 @@ import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import { sendMessageToPty } from "@/lib/agentSend";
 import type { TerminalTab, Workspace, SandboxMode } from "@/lib/types";
-import { effectiveSandboxMode } from "@/lib/types";
+import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
+import { SandboxIcon, SANDBOX_VISUALS } from "@/components/SandboxIcon";
+import { TerminalExitedBanner } from "@/components/workspace/TerminalExitedBanner";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
@@ -452,7 +454,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
       // entries are always uncaged (see the spawn gating). Only ENFORCING
       // denies reads (MONITORING just logs), so stage drops only for a caged
       // tab. A dropped path is otherwise readable directly.
-      sandboxed: () => effectiveSandboxMode(ws) === "enforce"
+      sandboxed: () => isSandboxEnforced(effectiveSandboxMode(ws))
         && tab.cli !== "shell" && !isTerminalCli(tab.cli),
     });
 
@@ -1106,11 +1108,12 @@ export function TerminalPane({ ws, tab, active }: Props) {
           // permission-prompt scaffolding is just friction. The user pref
           // still wins when sandbox is off, and the wizard / sandbox dialog
           // spell this out so nobody is surprised.
-          // Per-workspace YOLO flag, OR auto-on when ENFORCING (there the
-          // seatbelt is the real boundary, so the agent's own prompts are
-          // friction). In Off/Monitoring it's purely the saved per-
-          // workspace flag — no silent auto-approve in an uncaged ws.
-          yolo: effectiveSandboxMode(ws) === "enforce" || !!ws.yolo,
+          // Per-workspace YOLO flag, OR auto-on when ENFORCING / ENFORCING
+          // (FS) (there the seatbelt filesystem cage is the real boundary,
+          // so the agent's own prompts are friction). In Off/Monitoring
+          // it's purely the saved per-workspace flag — no silent auto-
+          // approve in an uncaged ws.
+          yolo: (() => { const m = effectiveSandboxMode(ws); return m === "enforce" || m === "enforce-fs" || !!ws.yolo; })(),
           resume: shouldResume,
           isPrimary: isPrimaryTab,
           sessionUuid,
@@ -1534,8 +1537,8 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // YOLO live toggle — for agents that support runtime mode switching (only
   // gemini today), send the appropriate slash command. For claude/codex this
   // is a no-op; the next spawn picks up the new flag.
-  const effYolo = effectiveSandboxMode(ws) === "enforce" || !!ws.yolo;
-  const enforced = effectiveSandboxMode(ws) === "enforce";
+  const effYolo = isSandboxEnforced(effectiveSandboxMode(ws)) || !!ws.yolo;
+  const enforced = isSandboxEnforced(effectiveSandboxMode(ws));
   const firstYoloRun = useRef(true);
   useEffect(() => {
     if (firstYoloRun.current) { firstYoloRun.current = false; return; }
@@ -1711,6 +1714,18 @@ export function TerminalPane({ ws, tab, active }: Props) {
         useApp.getState().setActivePane(ws.id, tab.panel === "right" ? "right" : "main")
       }
     >
+      {exited && (
+        // In-flow banner above the terminal (NOT a full-cover overlay): the
+        // dead xterm below stays interactive so the user can select + copy
+        // its scrollback (e.g. the crash message). `gen++` tears down the
+        // spawn effect and re-runs it with a fresh PTY; the pane's
+        // ResizeObserver refits the terminal when this strip appears/clears.
+        <TerminalExitedBanner
+          label={`${agentDisplayName(tab.cli)} exited.`}
+          actionLabel={`Restart ${agentDisplayName(tab.cli)}`}
+          onAction={() => { setExited(false); setGen(g => g + 1); }}
+        />
+      )}
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
       {searchOpen && (
         <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 shadow-lg">
@@ -1756,21 +1771,6 @@ export function TerminalPane({ ws, tab, active }: Props) {
               Sending "{tab.promptPendingTitle}" when it is ready.
             </div>
           </div>
-        </div>
-      )}
-      {exited && (
-        // Overlay on the dead xterm. The terminal underneath stays mounted
-        // so the user can still scroll through whatever the agent printed
-        // before it died — we just block input + offer a restart. `gen++`
-        // tears down the spawn effect and re-runs it with a fresh PTY.
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-bg)]/85">
-          <div className="text-[13px] text-[var(--color-fg-dim)]">{agentDisplayName(tab.cli)} exited.</div>
-          <button
-            onClick={() => { setExited(false); setGen(g => g + 1); }}
-            className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-1.5 text-[12.5px] text-[var(--color-fg)] hover:border-[var(--color-accent-soft)]"
-          >
-            <RotateCcw className="h-3.5 w-3.5" /> Restart {agentDisplayName(tab.cli)}
-          </button>
         </div>
       )}
     </div>
@@ -1820,7 +1820,8 @@ export function FooterBar({ ws, sandboxWarning }: {
     return () => { cancelled = true; window.clearInterval(id); };
   }, [ws.id, mode]);
 
-  // Sandbox half — four visual states (warning > monitor > enforce > off).
+  // Sandbox half — the "degraded" warning state, else the standard
+  // per-mode icon + label sourced from SANDBOX_VISUALS (see SandboxIcon).
   const sandboxNode = sandboxWarning ? (
     <>
       <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warn)]" />
@@ -1828,20 +1829,10 @@ export function FooterBar({ ws, sandboxWarning }: {
       <span className="text-[var(--color-fg-faint)]">·</span>
       <span className="truncate">{sandboxWarning}</span>
     </>
-  ) : mode === "enforce" ? (
-    <>
-      <Shield className="h-3.5 w-3.5 text-[var(--color-ok)]" fill="currentColor" />
-      <span>Sandbox: enforcing</span>
-    </>
-  ) : mode === "monitor" ? (
-    <>
-      <Shield className="h-3.5 w-3.5 text-[var(--color-warn)]" />
-      <span>Sandbox: monitoring</span>
-    </>
   ) : (
     <>
-      <Shield className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
-      <span>Sandbox: off</span>
+      <SandboxIcon mode={mode} className="h-3.5 w-3.5" />
+      <span>Sandbox: {SANDBOX_VISUALS[mode].shortLabel.toLowerCase()}</span>
     </>
   );
 
@@ -1923,6 +1914,11 @@ export function FooterBar({ ws, sandboxWarning }: {
 // agent under the new profile. Polls every 1.5s while open.
 function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: string; count: number; mode: SandboxMode }) {
   const monitor = mode === "monitor";
+  // ENFORCING (FS): the network sandbox is OFF, so there are no blocked
+  // hosts to ever show. Drop every network surface from this popover —
+  // we never fetch hosts, never render the hosts section, and the copy
+  // talks about paths only (no "+ domains").
+  const fsOnly = mode === "enforce-fs";
   // Scope for the Allow buttons — persisted app-wide, mandatory on first
   // use (radio starts unchosen). See prefs.allowScope.
   const allowScope = usePrefs(s => s.allowScope);
@@ -1997,6 +1993,11 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
           if (cancelled) return;
           setAccHosts(h); setAccPaths(p);
         });
+      } else if (fsOnly) {
+        // Filesystem-only enforce: no network sandbox, so only ever
+        // fetch path denies. Hosts stay empty → no network section.
+        ipc.sandboxRecentDeniedPaths(wsId).catch(() => [] as ipc.DenyPath[])
+          .then(p => { if (!cancelled) { setHosts([]); setPaths(p); } });
       } else {
         Promise.all([
           ipc.sandboxRecentDeniedHosts(wsId).catch(() => [] as ipc.DenyHost[]),
@@ -2010,7 +2011,7 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
     tick();
     const id = window.setInterval(tick, 1500);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [open, wsId, monitor]);
+  }, [open, wsId, monitor, fsOnly]);
 
   async function allow(host: string) {
     if (!allowScope) return; // radio is mandatory; buttons disabled until chosen
@@ -2111,7 +2112,9 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
                 "mb-1 flex items-center gap-1.5 text-[11px]",
                 scopeChosen ? "text-[var(--color-fg-faint)]" : "font-medium text-[var(--color-warn)]",
               )}>
-                <span>{scopeChosen ? "Save allowed paths + domains to:" : "Pick where to save allowed paths + domains:"}</span>
+                <span>{scopeChosen
+                  ? `Save allowed paths${fsOnly ? "" : " + domains"} to:`
+                  : `Pick where to save allowed paths${fsOnly ? "" : " + domains"}:`}</span>
               </div>
               {/* Radio list — one per line with a short explanation.
                   Picking a scope collapses this back to the summary row. */}
@@ -2252,7 +2255,7 @@ function DeniedHostsPopover({ wsId, cli, count, mode }: { wsId: string; cli: str
           )}
 
           <div className="mt-2 max-w-[460px] px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-            Clicking adds the path or host to this workspace's allow-list.
+            Clicking adds the {fsOnly ? "path" : "path or host"} to this workspace's allow-list.
             <br />
             Takes effect on next agent restart. The running agent keeps its current (narrower) permissions.
           </div>

@@ -1170,6 +1170,18 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     // header's `(deny default)` — including metadata/existence — so
     // there is nothing to "re-open" and nothing to back-stop.
 
+    if mode == SandboxMode::EnforceFs {
+        // FILESYSTEM-ONLY ENFORCE: the file cage above is identical to
+        // ENFORCE, but the network sandbox is deliberately disabled —
+        // full network access, no loopback-to-proxy pinning (provision()
+        // doesn't start a proxy in this mode, so proxy_port is 0 / unused).
+        // This is the whole point of the mode: isolate the filesystem,
+        // leave egress to the user's own controls.
+        out.push_str("\n;; --- Network: UNRESTRICTED (filesystem-only enforce) ---\n");
+        out.push_str("(allow network*)\n");
+        return Ok(out);
+    }
+
     out.push_str("\n;; --- Network: only loopback to our in-process proxy ---\n");
     out.push_str("(deny network*)\n");
     out.push_str("(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))\n");
@@ -1583,14 +1595,23 @@ pub fn provision(workspace: &Workspace, agent_override: Option<&str>, mode: Sand
     if path_watcher.is_some() {
         dlog(&format!("[sandbox/{}] path {} watcher started", workspace.id, if monitor { "access" } else { "deny" }));
     }
-    let proxy = match proxy::start(patterns, workspace.id.clone(), monitor) {
-        Ok(p) => {
-            dlog(&format!("[sandbox/{}] proxy up on port {}", workspace.id, p.port));
-            Some(p)
-        }
-        Err(e) => {
-            dlog(&format!("[sandbox/{}] proxy failed to start: {e}", workspace.id));
-            None
+    // EnforceFs disables the network sandbox entirely: no proxy, no
+    // hostname allow-list, no http_proxy injection (wrap_command only
+    // injects it when `proxy` is Some). The seatbelt profile allows all
+    // network directly. Every other mode runs the filtering/logging proxy.
+    let proxy = if mode == SandboxMode::EnforceFs {
+        dlog(&format!("[sandbox/{}] network sandbox OFF (enforce-fs); no proxy", workspace.id));
+        None
+    } else {
+        match proxy::start(patterns, workspace.id.clone(), monitor) {
+            Ok(p) => {
+                dlog(&format!("[sandbox/{}] proxy up on port {}", workspace.id, p.port));
+                Some(p)
+            }
+            Err(e) => {
+                dlog(&format!("[sandbox/{}] proxy failed to start: {e}", workspace.id));
+                None
+            }
         }
     };
     let port = proxy.as_ref().map(|p| p.port).unwrap_or(0);
@@ -2419,5 +2440,39 @@ mod tests {
         // Dots in hostnames must be regex-escaped as \. not bare .
         assert!(filter.contains(r"anthropic\.com"),
             "dots in hostnames must be regex-escaped as \\.");
+    }
+
+    #[test]
+    fn enforce_fs_allows_all_network_and_keeps_fs_cage() {
+        use crate::{Workspace, SandboxMode};
+        let ws = Workspace { cli: "claude".into(), ..Default::default() };
+        // proxy_port is irrelevant in EnforceFs (no proxy runs); pass 0.
+        let profile = render_profile(&ws, 0, None, SandboxMode::EnforceFs).unwrap();
+        // Network sandbox is OFF: full allow, and NONE of the proxy-pinning.
+        assert!(profile.contains("(allow network*)"),
+            "enforce-fs must allow all network");
+        assert!(!profile.contains("(deny network*)"),
+            "enforce-fs must NOT deny network");
+        assert!(!profile.contains("localhost:0"),
+            "enforce-fs must not pin to a loopback proxy");
+        // Filesystem cage is still the real deny-by-default allow-list.
+        assert!(profile.contains("(deny default)") || profile.contains(SBPL_HEADER.trim()),
+            "enforce-fs must keep the deny-by-default filesystem header");
+        assert!(profile.contains("file-write*"),
+            "enforce-fs must still emit the file write allow-list");
+    }
+
+    #[test]
+    fn enforce_still_denies_network() {
+        use crate::{Workspace, SandboxMode};
+        let ws = Workspace { cli: "claude".into(), ..Default::default() };
+        let profile = render_profile(&ws, 12345, None, SandboxMode::Enforce).unwrap();
+        // Regression guard: full Enforce must remain the network cage.
+        assert!(profile.contains("(deny network*)"),
+            "enforce must keep denying network");
+        assert!(profile.contains("localhost:12345"),
+            "enforce must pin outbound to the loopback proxy port");
+        assert!(!profile.contains("\n(allow network*)"),
+            "enforce must NOT blanket-allow network");
     }
 }

@@ -21,7 +21,7 @@ import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
 import { bindingGlyphs, type ShortcutId } from "@/lib/shortcuts";
 import { confirmAndArchive } from "@/lib/archiveWorkspace";
 import { workspaceSetYolo, openPath } from "@/lib/ipc";
-import { effectiveSandboxMode } from "@/lib/types";
+import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // New-issue page for the project repo. Opened via the OS browser (open_path).
@@ -183,7 +183,7 @@ export function CommandPalette() {
 
     // ── Agent ──────────────────────────────────────────────────────────
     if (ws) {
-      const enforced = effectiveSandboxMode(ws) === "enforce";
+      const enforced = isSandboxEnforced(effectiveSandboxMode(ws));
       cmds.push({
         id: "toggle-yolo", section: "Agent",
         label: enforced ? "YOLO is forced on (Enforcing)" : ws.yolo ? "Disable YOLO" : "Enable YOLO",

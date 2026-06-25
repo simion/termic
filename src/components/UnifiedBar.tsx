@@ -12,12 +12,13 @@ import { Tip } from "@/components/ui/Tooltip";
 import * as HoverCard from "@radix-ui/react-hover-card";
 import { Check } from "lucide-react";
 import {
-  PanelLeft, PanelRight, FolderOpen, Archive, Shield,
+  PanelLeft, PanelRight, FolderOpen, Archive,
   Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Eye,
   MessageSquareText, Library, Plus,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { effectiveSandboxMode } from "@/lib/types";
+import { SandboxIcon } from "@/components/SandboxIcon";
 import type { TerminalTab } from "@/lib/types";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { openPath, workspaceSendDiffToMain } from "@/lib/ipc";
@@ -366,17 +367,17 @@ export function UnifiedBar() {
             {(() => {
               const sbMode = effectiveSandboxMode(ws);
               const tip = sbMode === "enforce" ? "Sandbox: Enforcing"
+                : sbMode === "enforce-fs" ? "Sandbox: Enforcing filesystem (network open)"
                 : sbMode === "monitor" ? "Sandbox: Monitoring (logging access)"
                 : "Sandbox: off — click to enable";
               return (
                 <Tip content={tip} side="bottom">
                   <Button size="icon" variant="icon"
                     onClick={() => useUI.getState().openSandbox(ws.id)}
-                    className={sbMode === "enforce" ? "text-[var(--color-ok)]" : sbMode === "monitor" ? "text-[var(--color-warn)]" : undefined}
                   >
-                    {sbMode === "monitor"
-                      ? <Eye className="h-4 w-4" />
-                      : <Shield className="h-4 w-4" fill={sbMode === "enforce" ? "currentColor" : "none"} />}
+                    {/* Color + fill come from SANDBOX_VISUALS; the toolbar
+                        just swaps the glyph to an Eye for monitoring. */}
+                    <SandboxIcon mode={sbMode} className="h-4 w-4" icon={sbMode === "monitor" ? Eye : undefined} />
                   </Button>
                 </Tip>
               );

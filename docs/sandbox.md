@@ -6,10 +6,19 @@
 
 ONLY the agent CLI's PTY is sandboxed. AuxTerminal, setup script, run script, and archive script run unsandboxed by design — they're user-authored shell needing full reach. The carve-out is enforced by not passing `workspace_id` in `pty_spawn` / routing scripts through `run_script` which never calls `sandbox::provision`.
 
+## Modes (`SandboxMode`)
+
+Four states, set per-workspace at create + editable later. `Enforce` is the full cage and is intentionally never weakened.
+
+- **Off** — no cage.
+- **Monitor** — allow everything, LOG every file op + network request.
+- **Enforce** — full cage: seatbelt FS allow-list **and** network pinned to the loopback proxy.
+- **EnforceFs** (serialized `"enforce-fs"`, UI "ENFORCING (FS)") — the **filesystem cage only**. Identical FS allow-list to `Enforce`, but the network sandbox is OFF: `render_profile` emits `(allow network*)` and `provision` starts **no proxy** (so `wrap_command` injects no `http_proxy`). For users who want write/read isolation but unrestricted egress (their own egress controls, VPN, non-HTTP traffic). UI consequence: every network surface is hidden in this mode (host allow-list field in both dialogs, "Blocked hosts" section + "+ domains" copy in the footer activity popover) — only FS rows show. YOLO auto-on (the FS seatbelt is still the real boundary), accent-colored shield.
+
 ## Layered model
 
-1. `sandbox-exec -f <profile.sb>` — kernel seatbelt. Profile rendered to `$TMPDIR/termic-sandbox-<wsId>.sb`. Allows broad `file-read*`, narrow `file-write*` on workspace + agent dirs + caches. Secrets (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, `~/.config/gh/hosts.yml`, Keychains) ALWAYS denied. `(deny network*)` except loopback to the proxy.
-2. Per-workspace **in-process CONNECT proxy** on an OS-assigned port (Rust thread inside Tauri binary). Regex hostname allowlist per CLI: claude→anthropic, gemini→google, codex→openai + baseline (github, npmjs, pypi, crates.io, CA OCSP) + workspace extras. Non-matching → HTTP 403. Stopped via `SandboxBundle::Drop` on PTY teardown.
+1. `sandbox-exec -f <profile.sb>` — kernel seatbelt. Profile rendered to `$TMPDIR/termic-sandbox-<wsId>.sb`. Allows broad `file-read*`, narrow `file-write*` on workspace + agent dirs + caches. Secrets (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, `~/.config/gh/hosts.yml`, Keychains) ALWAYS denied. `(deny network*)` except loopback to the proxy — UNLESS `EnforceFs`, which emits `(allow network*)` instead.
+2. Per-workspace **in-process CONNECT proxy** on an OS-assigned port (Rust thread inside Tauri binary). Regex hostname allowlist per CLI: claude→anthropic, gemini→google, codex→openai + baseline (github, npmjs, pypi, crates.io, CA OCSP) + workspace extras. Non-matching → HTTP 403. Stopped via `SandboxBundle::Drop` on PTY teardown. **Not started in `EnforceFs`** (no network sandbox).
 
 ## Key behaviors
 

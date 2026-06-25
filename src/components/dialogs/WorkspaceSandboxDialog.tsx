@@ -40,6 +40,10 @@ export function WorkspaceSandboxDialog() {
   // of the form (lists, presets) shows whenever the cage is on; a few
   // bits are enforce-only (self-test, YOLO note).
   const enabled = mode !== "off";
+  // ENFORCING (FS): filesystem cage with the network sandbox OFF. The
+  // host allow-list + any network-only copy are irrelevant, so they're
+  // hidden in this mode.
+  const fsOnly = mode === "enforce-fs";
   const [rwText,    setRwText]    = useState("");
   const [hostsText, setHostsText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -203,7 +207,7 @@ export function WorkspaceSandboxDialog() {
             users should know this is happening, not stumble onto it.
             Honors the Settings → General "Bypass permissions in sandboxed
             workspaces" toggle. */}
-        {mode === "enforce" && sandboxBypassPermissions && (
+        {(mode === "enforce" || mode === "enforce-fs") && sandboxBypassPermissions && (
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-ok)]/25 bg-[var(--color-ok)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
             <span>
@@ -332,28 +336,41 @@ export function WorkspaceSandboxDialog() {
             </DefaultsPanel>
           </div>
         </Field>
-        <Field label="Add allowed hosts" hint="One per line. Use * as a wildcard. Examples: *.mycompany.com, bitbucket.org">
-          <div className="grid grid-cols-2 items-stretch gap-3">
-            <AutoGrowTextarea
-              value={hostsText}
-              onChange={e => setHostsText(e.target.value)}
-              rows={3}
-              placeholder={"*.mycompany.com\nbitbucket.org"}
-              className="h-full min-h-[100px] w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
-              disabled={!enabled}
-            />
-            <DefaultsPanel className="h-full">
-              <ChipGroup tone="allow" label="Always reachable">
-                <Chip tone="allow">vendor API for {ws?.cli ?? "this CLI"}</Chip>
-                <Chip tone="allow">github.com</Chip>
-                <Chip tone="allow">npmjs.org</Chip>
-                <Chip tone="allow">pypi.org</Chip>
-                <Chip tone="allow">crates.io</Chip>
-                <Chip tone="allow" muted>CA OCSP</Chip>
-              </ChipGroup>
-            </DefaultsPanel>
+        {fsOnly ? (
+          <div className="flex items-start gap-2 rounded-md border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
+            <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
+            <span>
+              <b className="text-[var(--color-fg)]">Network is unrestricted in this mode.</b>{" "}
+              The filesystem cage above is fully enforced, but the agent can
+              reach any host directly (no proxy, no host allow-list). Use this
+              when your egress is controlled elsewhere, or you need non-HTTP
+              traffic. Switch to Enforcing for the host allow-list.
+            </span>
           </div>
-        </Field>
+        ) : (
+          <Field label="Add allowed hosts" hint="One per line. Use * as a wildcard. Examples: *.mycompany.com, bitbucket.org">
+            <div className="grid grid-cols-2 items-stretch gap-3">
+              <AutoGrowTextarea
+                value={hostsText}
+                onChange={e => setHostsText(e.target.value)}
+                rows={3}
+                placeholder={"*.mycompany.com\nbitbucket.org"}
+                className="h-full min-h-[100px] w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] [field-sizing:content]"
+                disabled={!enabled}
+              />
+              <DefaultsPanel className="h-full">
+                <ChipGroup tone="allow" label="Always reachable">
+                  <Chip tone="allow">vendor API for {ws?.cli ?? "this CLI"}</Chip>
+                  <Chip tone="allow">github.com</Chip>
+                  <Chip tone="allow">npmjs.org</Chip>
+                  <Chip tone="allow">pypi.org</Chip>
+                  <Chip tone="allow">crates.io</Chip>
+                  <Chip tone="allow" muted>CA OCSP</Chip>
+                </ChipGroup>
+              </DefaultsPanel>
+            </div>
+          </Field>
+        )}
         </>)}
 
         {/* "Recent denies" panel removed — the TerminalPane footer
@@ -361,16 +378,8 @@ export function WorkspaceSandboxDialog() {
             is the discoverable surface. Detailed log lookups belong
             in the debug.log path, not buried in the dialog. */}
 
-        {/* Restart warning. Always visible (not error-state) so the
-            user has it in view BEFORE they hit save. */}
-        <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
-          <span>
-            Saving terminates any running agent in this workspace. The terminal
-            shows a "Restart" overlay; click it to relaunch under the new sandbox.
-          </span>
-        </div>
-
+        {/* No restart warning here — the two Save buttons (with/without
+            restart) make the behavior obvious on their own. */}
         {err && <p className="text-[13px] text-[var(--color-err)]">{err}</p>}
         </div>
 
