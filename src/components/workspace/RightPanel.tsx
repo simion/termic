@@ -451,7 +451,7 @@ export function RightPanel() {
           scrolling so it gets the bare flex-1 height with no overflow. */}
       {view === "files" ? (
         <div className="min-h-0 flex-1 overflow-auto py-1">
-          <FileTree wsId={ws.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision} />
+          <FileTree wsId={ws.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision} refreshToken={fileTreeReload} />
         </div>
       ) : (
         <div className="min-h-0 flex-1">

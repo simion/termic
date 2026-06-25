@@ -21,6 +21,11 @@ interface Props {
    *  Preserves the expanded folder set: root + every open dir is
    *  re-fetched, the rest of the cache is dropped. */
   reloadToken?: number;
+  /** The manual-refresh counter alone (a subset of `reloadToken`). When it
+   *  changes, the root re-read also restores any missing repo-root member
+   *  symlink. Agent-settle reloads bump `reloadToken` but not this, so they
+   *  skip the heal. */
+  refreshToken?: number;
 }
 
 // Compare a freshly re-fetched listing against the cached one. `next` holds
@@ -43,7 +48,7 @@ function sameChildren(
   return true;
 }
 
-export function FileTree({ wsId, reloadToken = 0 }: Props) {
+export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
   // Absolute workspace root, used to build the "Copy path" (absolute) item.
   // Tree `rel` paths are workspace-root-relative, so absolute = root/rel.
   const root = useApp(s => s.workspaces.find(w => w.id === wsId)?.path ?? "");
@@ -77,7 +82,8 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
   // workspace has a different file tree.
   useEffect(() => {
     setRootEntries(null); setChildren({}); setExpanded(new Set()); setErr(null);
-    workspaceDirList(wsId, "")
+    // Launch is an intentional moment — heal missing member symlinks here.
+    workspaceDirList(wsId, "", true)
       // Merge (not replace) so a reveal-in-tree that expanded ancestor dirs
       // while this mount's root load was in flight doesn't get its children
       // clobbered. The synchronous reset above already dropped stale entries.
@@ -88,12 +94,17 @@ export function FileTree({ wsId, reloadToken = 0 }: Props) {
   // Manual refresh: re-read root + every expanded dir from disk, keeping
   // the expansion state. Skips the initial render (token starts at 0).
   const firstRef = useRef(true);
+  const prevRefresh = useRef(refreshToken);
   useEffect(() => {
     if (firstRef.current) { firstRef.current = false; return; }
     let alive = true;
+    // Heal member symlinks only when THIS reload was the manual refresh
+    // button (refreshToken bumped), not an agent-settle / settings re-read.
+    const heal = refreshToken !== prevRefresh.current;
+    prevRefresh.current = refreshToken;
     const toLoad = ["", ...Array.from(expandedRef.current)];
     Promise.all(toLoad.map(rel =>
-      workspaceDirList(wsId, rel).then(list => [rel, list] as const).catch(() => [rel, null] as const),
+      workspaceDirList(wsId, rel, heal && rel === "").then(list => [rel, list] as const).catch(() => [rel, null] as const),
     )).then(results => {
       if (!alive) return;
       const next: Record<string, FileEntry[]> = {};

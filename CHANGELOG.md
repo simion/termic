@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.15.7] - 2026-06-25
+## [0.15.8] - 2026-06-25
 
 New filesystem-only sandbox mode, and copyable terminal output when an agent exits.
 
@@ -17,6 +17,7 @@ New filesystem-only sandbox mode, and copyable terminal output when an agent exi
 
 ### Bug fixes
 - Sandboxed agents on the Apple Command Line Tools toolchain can run git, clang, make, and swift again (the CLT library path is now readable). (#49)
+- Multi-repo workspaces no longer lose their member repos from the file tree when a stray `git clean -fdx` in the host checkout wipes the git-ignored member links. The links are now restored automatically on workspace launch or a manual refresh.
 
 ## [0.15.5] - 2026-06-24
 

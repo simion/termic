@@ -4405,13 +4405,13 @@ fn path_is_excluded(patterns: &[glob::Pattern], repo_local_path: &str) -> bool {
 /// doesn't have to guess by extension. Async + spawn_blocking: it reads
 /// settings/projects/.termic.yaml off the IPC/WebView thread.
 #[tauri::command]
-async fn workspace_dir_list(id: String, rel: String) -> Result<Vec<FileEntry>, String> {
-    tauri::async_runtime::spawn_blocking(move || workspace_dir_list_sync(id, rel))
+async fn workspace_dir_list(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace_dir_list_sync(id, rel, heal))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn workspace_dir_list_sync(id: String, rel: String) -> Result<Vec<FileEntry>, String> {
+fn workspace_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
     let base = PathBuf::from(&w.path);
     // Multi-repo: when the relative path enters a composition member
@@ -4495,6 +4495,35 @@ fn workspace_dir_list_sync(id: String, rel: String) -> Result<Vec<FileEntry>, St
             Err(_) => false,
         };
         out.push(FileEntry { name, is_dir });
+    }
+    // Self-heal missing repo-root member symlinks. They're git-ignored and
+    // live in the (often live, for is_repo_root workspaces) host checkout,
+    // so a stray `git clean -fdx` run there can wipe them while the frozen
+    // composition stays intact — leaving the tree showing only the bare host
+    // repo. Only the caller's intentional re-reads opt in (`heal`): workspace
+    // launch and the manual refresh button, not every agent-settle reload.
+    // Detection is then free: we already listed the root, so a member whose
+    // dir_name is absent from `out` is the missing case, and a `symlink()`
+    // write fires solely for it. Worktree members are real git worktrees, not
+    // symlinks, so relinking can't recover them — left alone.
+    if heal && rel.is_empty() && !w.composition.is_empty() {
+        let present: HashSet<String> = out.iter().map(|e| e.name.clone()).collect();
+        for m in &w.composition {
+            if m.mode != MemberMode::RepoRoot { continue; }
+            if m.dir_name.is_empty() || m.dir_name.contains('/') { continue; }
+            if present.contains(&m.dir_name) { continue; }
+            // Absent from the listing. Only relink when the slot is truly
+            // empty (never clobber real user content sharing the name) and
+            // the target repo still exists. Mirrors workspace_open_repo's guard.
+            let target = base.join(&m.dir_name);
+            if target.symlink_metadata().is_ok() { continue; }
+            let src = member_repo_path(m);
+            if src.is_empty() || !Path::new(&src).exists() { continue; }
+            match std::os::unix::fs::symlink(&src, &target) {
+                Ok(()) => out.push(FileEntry { name: m.dir_name.clone(), is_dir: true }),
+                Err(e) => eprintln!("heal member link {} → {src} failed: {e}", target.display()),
+            }
+        }
     }
     // Directories first, then files; alphabetic within each group.
     out.sort_by(|a, b| match (a.is_dir, b.is_dir) {

@@ -302,7 +302,10 @@ export const workspaceFileRead = (id: string, path: string) => invoke<string>("w
 export const workspaceFileWrite = (id: string, path: string, content: string) =>
   invoke<void>("workspace_file_write", { id, path, content });
 export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
-export const workspaceDirList  = (id: string, rel: string) => invoke<FileEntry[]>("workspace_dir_list", { id, rel });
+// `heal` restores any missing repo-root member symlink while listing the
+// root — only worth doing at intentional moments (workspace launch, manual
+// refresh), not on every agent-settle reload, so the caller opts in.
+export const workspaceDirList  = (id: string, rel: string, heal = false) => invoke<FileEntry[]>("workspace_dir_list", { id, rel, heal });
 /** Rename a file/dir in place (new bare name). Returns the new ws-relative path. */
 export const workspacePathRename = (id: string, path: string, newName: string) =>
   invoke<string>("workspace_path_rename", { id, path, newName });
