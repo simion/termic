@@ -640,18 +640,20 @@ ENV PATH="/root/.local/bin:${PATH}"
 # refuses every op with "dubious ownership".
 RUN git config --global --add safe.directory '*'
 
-# Agents via npm
-# claude  https://www.npmjs.com/package/@anthropic-ai/claude-code
-# codex   https://www.npmjs.com/package/@openai/codex
-# gemini  https://www.npmjs.com/package/@google/gemini-cli
-# copilot https://www.npmjs.com/package/@github/copilot
-RUN npm install -g \
-      @anthropic-ai/claude-code @openai/codex \
-      @google/gemini-cli @github/copilot
-
-# Agents via official curl installers (-> ~/.grok, ~/.local; on PATH)
-RUN curl -fsSL https://x.ai/cli/install.sh | bash          # docs https://docs.x.ai/build/cli
-RUN curl -fsSL https://antigravity.google/cli/install.sh | bash  # docs https://antigravity.google/docs/cli-install
+# Agents: one per line, each preceded by its source / docs page
+# (can't comment inside a `\`-continued RUN).
+# https://www.npmjs.com/package/@anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code
+# https://www.npmjs.com/package/@openai/codex
+RUN npm install -g @openai/codex
+# https://www.npmjs.com/package/@google/gemini-cli
+RUN npm install -g @google/gemini-cli
+# https://www.npmjs.com/package/@github/copilot
+RUN npm install -g @github/copilot
+# grok -> ~/.grok/bin   https://docs.x.ai/build/cli
+RUN curl -fsSL https://x.ai/cli/install.sh | bash
+# agy -> ~/.local/bin   https://antigravity.google/docs/cli-install
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # ── Add MCP servers here ──   # RUN npm install -g @some/mcp-server
 # ── Add CLI tools here ──     # RUN apt-get update && apt-get install -y <pkg>

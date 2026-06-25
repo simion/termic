@@ -31,23 +31,19 @@ ENV PATH="/root/.local/bin:${PATH}"
 # this throwaway cage are the user's own mounted worktrees.
 RUN git config --global --add safe.directory '*'
 
-# ── Agents installed via npm (claude, codex, gemini, copilot) ───────────
-# claude  : https://www.npmjs.com/package/@anthropic-ai/claude-code
-# codex   : https://www.npmjs.com/package/@openai/codex
-# gemini  : https://www.npmjs.com/package/@google/gemini-cli
-# copilot : https://www.npmjs.com/package/@github/copilot
-RUN npm install -g \
-      @anthropic-ai/claude-code \
-      @openai/codex \
-      @google/gemini-cli \
-      @github/copilot
-
-# ── Agents installed via official curl one-liners (grok, agy) ───────────
-# grok = xAI Grok Build (native binary -> ~/.grok/bin)
-# docs: https://docs.x.ai/build/cli
+# ── Agents (one per line, each preceded by its source / docs page) ──────
+# Can't comment inside a `\`-continued RUN, so one install per line.
+# https://www.npmjs.com/package/@anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code
+# https://www.npmjs.com/package/@openai/codex
+RUN npm install -g @openai/codex
+# https://www.npmjs.com/package/@google/gemini-cli
+RUN npm install -g @google/gemini-cli
+# https://www.npmjs.com/package/@github/copilot
+RUN npm install -g @github/copilot
+# grok (xAI Grok Build, native binary -> ~/.grok/bin) https://docs.x.ai/build/cli
 RUN curl -fsSL https://x.ai/cli/install.sh | bash
-# agy = Google Antigravity (native binary -> ~/.local/bin)
-# docs: https://antigravity.google/docs/cli-install
+# agy (Google Antigravity, native binary -> ~/.local/bin) https://antigravity.google/docs/cli-install
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # ── Add your MCP servers here (installed into the image) ────────────────
