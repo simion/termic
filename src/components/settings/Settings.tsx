@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { useApp } from "@/store/app";
 import { Button } from "@/components/ui/Button";
-import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library } from "lucide-react";
+import { X, Palette, FolderGit2, Settings as SettingsIcon, Keyboard, Terminal, Layers, Library, Container } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AppearanceSection } from "./AppearanceSection";
 import { RepositorySection } from "./RepositorySection";
@@ -13,6 +13,7 @@ import { GeneralSection } from "./GeneralSection";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { AgentsSection } from "./AgentsSection";
 import { PromptLibrarySection } from "./PromptLibrarySection";
+import { DockerSection } from "./DockerSection";
 
 export function Settings() {
   const view = useApp(s => s.view);
@@ -72,6 +73,8 @@ export function Settings() {
           active={tab === "prompts"} onClick={() => openSettings("prompts")} />
         <RailItem icon={<Keyboard className="h-4 w-4" />} label="Shortcuts"
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />
+        <RailItem icon={<Container className="h-4 w-4" />} label="Docker sandbox"
+          active={tab === "docker"} onClick={() => openSettings("docker")} />
 
         <div className="mt-5 px-2 pb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
           Projects
@@ -106,6 +109,7 @@ export function Settings() {
           {tab === "agents"      && <AgentsSection />}
           {tab === "prompts"     && <PromptLibrarySection />}
           {tab === "shortcuts"   && <ShortcutsSection />}
+          {tab === "docker"      && <DockerSection />}
           {tab === "repositories" && (
             isRepoSelected
               ? <RepositorySection projectId={repoId!} />

@@ -31,6 +31,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 mod sandbox;
+mod docker;
 mod proxy;
 mod repo_config;
 mod shell_env;
@@ -326,6 +327,20 @@ pub struct Workspace {
     /// semantics. Shell tabs are excluded (no session to resume).
     #[serde(default)]
     pub right_split_tabs: Vec<PersistedTab>,
+    /// Docker sandbox mode for this workspace. Mutually exclusive with the
+    /// Seatbelt sandbox: when true, the agent PTY runs inside `docker run`
+    /// (the container is the isolation boundary) instead of `sandbox-exec`,
+    /// and the Seatbelt path is forced off. Only meaningful when the global
+    /// `Settings::docker_sandbox_enabled` master switch is on AND the image
+    /// is built. See docs/plans/docker-sandbox/design.md.
+    #[serde(default)]
+    pub docker_sandbox_enabled: bool,
+    /// User-appended `docker run` args for this workspace (e.g. `--memory
+    /// 4g`, `-e FOO=bar`, an extra `-v`). Inserted at a fixed point in the
+    /// rendered argv. Phase 1 offers extra-args only (no full override); the
+    /// computed mounts/workdir/config-dir stay termic-owned.
+    #[serde(default)]
+    pub docker_extra_args: Vec<String>,
 }
 
 /// One durable agent tab. `session_id` is termic's own per-tab session
@@ -898,12 +913,44 @@ fn pty_spawn(
         })
         .map_err(|e| e.to_string())?;
 
+    // ── Docker sandbox branch ──────────────────────────────────────
+    // If the workspace is in Docker mode (and the global master switch is
+    // on), the container is the isolation boundary: rewrite the spawn to
+    // `docker run ...` and skip the Seatbelt path entirely (the two are
+    // mutually exclusive). Build is NEVER triggered here — if no usable
+    // image is built, refuse loudly rather than spawning unsandboxed.
+    let docker_ws = args
+        .workspace_id
+        .as_deref()
+        .and_then(|wid| load_workspaces().into_iter().find(|w| w.id == wid))
+        .filter(|w| w.docker_sandbox_enabled && load_settings_inner().docker_sandbox_enabled);
+    let docker_argv: Option<Vec<String>> = if let Some(ws) = docker_ws {
+        let agent = args.agent_id.clone().unwrap_or_else(|| ws.cli.clone());
+        let image = docker::spawn_image_tag().ok_or_else(|| {
+            "Docker image not built. Open Settings → Docker sandbox and build it first.".to_string()
+        })?;
+        // Belt-and-suspenders: remove any stale same-named container left
+        // by an unclean shutdown so `--name` doesn't collide on respawn.
+        docker::cleanup_workspace(&ws.id);
+        let spec = docker::build_spec(&ws, &agent, &image, &args.cwd, ws.docker_extra_args.clone());
+        let argv = docker::render_argv(&spec, &args.cmd, &args.args);
+        dlog(&format!("[pty_spawn] docker ws={} agent={} image={} argv={argv:?}", ws.id, agent, image));
+        Some(argv)
+    } else {
+        None
+    };
+    let is_docker = docker_argv.is_some();
+
     // ── Sandbox wrap, if applicable ────────────────────────────────
     // If the workspace is flagged sandbox_enabled, provision a fresh
     // seatbelt profile + network proxy and rewrite (cmd, args) to go through
     // `sandbox-exec`. The bundle gets parked on the PtySlot so its
     // Drop impl SIGKILLs the proxy when the PTY closes.
-    let (effective_cmd, effective_args, sandbox_bundle) = match args
+    // Docker mode short-circuits this: the container IS the cage, so the
+    // program becomes `docker` with the rendered run-argv, no seatbelt bundle.
+    let (effective_cmd, effective_args, sandbox_bundle) = if let Some(argv) = docker_argv {
+        ("docker".to_string(), argv, None)
+    } else { match args
         .workspace_id
         .as_deref()
         .and_then(|wid| load_workspaces().into_iter().find(|w| w.id == wid))
@@ -940,7 +987,7 @@ fn pty_spawn(
             dlog(&format!("[pty_spawn] sandbox=OFF cmd={} args={:?}", args.cmd, args.args));
             (args.cmd.clone(), args.args.clone(), None)
         },
-    };
+    } };
 
     let mut cmd = CommandBuilder::new(&effective_cmd);
     for a in &effective_args {
@@ -970,7 +1017,10 @@ fn pty_spawn(
     // tabs, or sandbox=off agents) the CLI is exec'd directly, so without
     // this it would miss $EDITOR etc. (#17). The per-spawn overlay below
     // still wins, so explicit overrides hold.
-    if sandbox_bundle.is_none() {
+    // Skip for Docker too: the host `docker` process doesn't need the
+    // secret-bearing login delta (the container only sees what we pass via
+    // `-e`, which is TERM + config-dir relocation, never secrets).
+    if sandbox_bundle.is_none() && !is_docker {
         for (k, v) in shell_env::login_env() {
             cmd.env(k, v);
         }
@@ -1020,7 +1070,9 @@ fn pty_spawn(
     // path watcher uses this to filter system-wide deny noise: only
     // denies whose PID (or some ancestor) is in this set get counted
     // against this workspace.
-    if let (Some(pid), Some(wid)) = (child_pid, args.workspace_id.as_deref()) {
+    // Docker isolates by namespace, not PID ancestry — the seatbelt path
+    // watcher doesn't apply, so skip registration in Docker mode.
+    if let (Some(pid), Some(wid), false) = (child_pid, args.workspace_id.as_deref(), is_docker) {
         sandbox::register_root_pid(wid, pid);
     }
 
@@ -1663,6 +1715,8 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        docker_sandbox_enabled: false,
+        docker_extra_args: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1846,6 +1900,8 @@ fn workspace_import_worktree(
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        docker_sandbox_enabled: false,
+        docker_extra_args: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -2083,6 +2139,8 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        docker_sandbox_enabled: false,
+        docker_extra_args: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2448,6 +2506,8 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        docker_sandbox_enabled: false,
+        docker_extra_args: Vec::new(),
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -3310,6 +3370,30 @@ fn workspace_set_yolo(id: String, yolo: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Persist a workspace's Docker sandbox choice + extra args. Mutually
+/// exclusive with the Seatbelt cage: enabling Docker forces the Seatbelt
+/// mode off (and vice versa) so the two never co-apply. On disable, any
+/// live container for this workspace is removed.
+#[tauri::command]
+fn workspace_set_docker(id: String, enabled: bool, extra_args: Vec<String>) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    w.docker_sandbox_enabled = enabled;
+    w.docker_extra_args = extra_args;
+    if enabled {
+        // Docker is the cage now — turn the Seatbelt path off so the two
+        // are never both active (effective_sandbox_mode / pty_spawn both
+        // key off these).
+        w.sandbox_enabled = false;
+        w.sandbox_mode = Some(SandboxMode::Off);
+    } else {
+        // No longer in Docker mode — tear down any container we left.
+        docker::cleanup_workspace(&id);
+    }
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Increment + persist the workspace's `spawn_count`. Historical metric
 /// only — resume gating now uses `has_resumable_history` instead.
 #[tauri::command]
@@ -3385,6 +3469,11 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
     // Stop spotlight for this workspace before tearing down — otherwise the
     // polling thread will keep trying to sync a worktree that no longer exists.
     spotlight_stop_for_ws(&id);
+
+    // Remove any Docker containers for this workspace (non-fatal). `--rm`
+    // handles the clean-exit case; this covers crashes / kills where it
+    // never fired, before we tear down the worktree the container mounts.
+    docker::cleanup_workspace(&id);
 
     let mut list = load_workspaces();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("workspace not found")?;
@@ -5978,6 +6067,12 @@ pub struct Settings {
     /// tree across every project. Unioned with each project's committed
     /// `.termic.yaml` `exclude` list. `.git` is always hidden regardless.
     pub file_tree_exclude: Vec<String>,
+    /// Master switch for the experimental Docker sandbox mode. While off,
+    /// no Docker UI appears anywhere and Docker is never invoked. A
+    /// workspace's `docker_sandbox_enabled` only takes effect when this is
+    /// also on. See docs/plans/docker-sandbox/design.md.
+    #[serde(default)]
+    pub docker_sandbox_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -6491,6 +6586,146 @@ fn settings_save(s: Settings) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ─────────────────────────── Docker sandbox ────────────────────────────
+
+/// Probe for the `docker` binary + a running daemon. Cheap; no build.
+#[tauri::command]
+fn docker_check() -> docker::DockerStatus {
+    docker::check()
+}
+
+/// Current image build state (current/last-built tags, stale flag,
+/// dropdown availability). Drives the Settings section + cage dropdown.
+#[tauri::command]
+fn docker_image_status() -> docker::DockerImageStatus {
+    docker::image_status()
+}
+
+/// The editable Dockerfile (falls back to the shipped default on first run).
+#[tauri::command]
+fn docker_get_dockerfile() -> String {
+    docker::read_dockerfile()
+}
+
+/// The shipped default Dockerfile (for "Reset to default").
+#[tauri::command]
+fn docker_default_dockerfile() -> String {
+    docker::DEFAULT_DOCKERFILE.to_string()
+}
+
+/// Persist an edited Dockerfile. Does NOT build — build is an explicit,
+/// separate action so the (slow, 2.8GB) build never blocks the UI.
+#[tauri::command]
+fn docker_set_dockerfile(contents: String) -> Result<(), String> {
+    docker::write_dockerfile(&contents)
+}
+
+/// Build the image in the background. Streams build output line-by-line as
+/// `docker-build://log` and emits `docker-build://done` with `{ success,
+/// tag, error }` when finished. Returns immediately. `no_cache` =>
+/// `--no-cache --pull` ("Update agents": refresh base + re-fetch agents).
+///
+/// IO-heavy + slow, so it runs on a background thread (NEVER the sync Tauri
+/// path, which would freeze WKWebView per CLAUDE.md).
+#[tauri::command]
+fn docker_build_image(app: AppHandle, no_cache: bool) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let dockerfile = docker::read_dockerfile();
+    let (mut cmd, tag) = docker::build_command(&dockerfile, no_cache)?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    thread::spawn(move || {
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = if e.kind() == std::io::ErrorKind::NotFound {
+                    "docker binary not found".to_string()
+                } else {
+                    e.to_string()
+                };
+                let _ = app.emit("docker-build://log", serde_json::json!({ "line": format!("[spawn error] {msg}") }));
+                let _ = app.emit("docker-build://done", serde_json::json!({ "success": false, "tag": tag, "error": msg }));
+                return;
+            }
+        };
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let app_o = app.clone();
+        let t_out = stdout.map(|s| thread::spawn(move || {
+            for line in BufReader::new(s).lines().map_while(|r| r.ok()) {
+                let _ = app_o.emit("docker-build://log", serde_json::json!({ "line": line }));
+            }
+        }));
+        let app_e = app.clone();
+        let t_err = stderr.map(|s| thread::spawn(move || {
+            // `docker build` writes its progress to stderr — stream it too.
+            for line in BufReader::new(s).lines().map_while(|r| r.ok()) {
+                let _ = app_e.emit("docker-build://log", serde_json::json!({ "line": line }));
+            }
+        }));
+        let status = child.wait();
+        if let Some(t) = t_out { let _ = t.join(); }
+        if let Some(t) = t_err { let _ = t.join(); }
+        let success = status.map(|s| s.success()).unwrap_or(false);
+        if success {
+            docker::record_built_tag(&tag);
+        }
+        let _ = app.emit("docker-build://done", serde_json::json!({
+            "success": success,
+            "tag": tag,
+            "error": if success { serde_json::Value::Null } else { serde_json::Value::String("build failed (see log)".into()) },
+        }));
+    });
+    Ok(())
+}
+
+/// Render the exact `docker run` argv + the pretty multi-line preview for a
+/// workspace + agent, without spawning. Preview == the real spawn (same
+/// `render_argv`), so the dialog is honest.
+#[tauri::command]
+fn docker_preview_command(workspace_id: String, agent_id: Option<String>) -> Result<DockerPreview, String> {
+    let ws = load_workspaces()
+        .into_iter()
+        .find(|w| w.id == workspace_id)
+        .ok_or_else(|| "workspace not found".to_string())?;
+    let settings = load_settings_inner();
+    let agent = resolve_agent_id(&settings, &agent_id, &ws);
+    let (cmd, args) = agent_spawn_cmd(&settings, &agent);
+    let image = docker::spawn_image_tag().unwrap_or_else(|| "termic-sandbox:<not-built>".to_string());
+    let spec = docker::build_spec(&ws, &agent, &image, &ws.path, ws.docker_extra_args.clone());
+    Ok(DockerPreview {
+        argv: docker::render_argv(&spec, &cmd, &args),
+        preview: docker::render_preview(&spec, &cmd, &args),
+        mounts: spec.mounts.clone(),
+        image_built: docker::spawn_image_tag().is_some(),
+    })
+}
+
+#[derive(Serialize)]
+struct DockerPreview {
+    argv: Vec<String>,
+    preview: String,
+    mounts: Vec<docker::Mount>,
+    image_built: bool,
+}
+
+/// Resolve the agent id to actually run for a workspace (explicit override,
+/// else the workspace's `cli`).
+fn resolve_agent_id(_settings: &Settings, agent_id: &Option<String>, ws: &Workspace) -> String {
+    agent_id.clone().unwrap_or_else(|| ws.cli.clone())
+}
+
+/// The base (cmd, args) for an agent id from the registry. Representative
+/// for the preview; the live spawn adds resume args on top.
+fn agent_spawn_cmd(settings: &Settings, agent_id: &str) -> (String, Vec<String>) {
+    settings
+        .agents
+        .iter()
+        .find(|a| a.id == agent_id)
+        .map(|a| (a.command.clone(), a.args.clone()))
+        .unwrap_or_else(|| (agent_id.to_string(), Vec::new()))
+}
+
 /// Replace just the agents list, preserving the rest of settings (repos_dir,
 /// welcomed, etc.). Used by the Settings → Agents page so the user can edit
 /// CLI commands, args, and YOLO flags without us shipping a new release every
@@ -6933,6 +7168,7 @@ pub fn run() {
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, reveal_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
+            docker_check, docker_image_status, docker_get_dockerfile, docker_default_dockerfile, docker_set_dockerfile, docker_build_image, docker_preview_command, workspace_set_docker,
             automation::automation_result,
             automation::automation_armed,
             list_monospace_fonts,
@@ -6959,6 +7195,10 @@ pub fn run() {
 /// so main is left clean.
 fn cleanup_children(app: &tauri::AppHandle) {
     use tauri::Manager;
+    // 0a. Docker containers — `docker rm -f` every termic-labeled container
+    //     (non-fatal). Belt-and-suspenders for the `--rm`-never-fired case
+    //     (crash / SIGKILL) so quitting never orphans a container.
+    docker::cleanup_all();
     // 0. Spotlight sessions — revert main for every active session so the
     //    user's repo is left in a clean state after the app exits.
     //    Drop each session (which stops its polling thread) and revert.

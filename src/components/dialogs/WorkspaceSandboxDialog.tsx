@@ -12,11 +12,12 @@ import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
-import { settingsLoad, workspaceSetSandbox, sandboxAvailable } from "@/lib/ipc";
+import { settingsLoad, workspaceSetSandbox, workspaceSetDocker, dockerImageStatus, sandboxAvailable } from "@/lib/ipc";
 import { effectiveSandboxMode, type SandboxMode } from "@/lib/types";
-import { AlertTriangle, Shield, Zap, Save, RotateCw } from "lucide-react";
+import { AlertTriangle, Shield, Zap, Save, RotateCw, Container } from "lucide-react";
 import { SandboxModeSelector } from "@/components/SandboxModeSelector";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
+import { WorkspaceDockerPanel } from "./WorkspaceDockerPanel";
 
 export function WorkspaceSandboxDialog() {
   const wsId = useUI(s => s.sandboxForWsId);
@@ -56,11 +57,33 @@ export function WorkspaceSandboxDialog() {
     sandboxAvailable().then(setOsSandboxOk).catch(() => setOsSandboxOk(false));
   }, []);
 
+  // ── Docker cage state ─────────────────────────────────────────────
+  // The Seatbelt|Docker choice is only OFFERED when the global master
+  // switch is on AND a usable image is built (image-exists gating, so the
+  // user can never pick Docker and then hit a spawn-time "no image"
+  // refusal). `cage` is the active top-level choice.
+  const [dockerOffered, setDockerOffered] = useState(false);
+  const [cage, setCage] = useState<"seatbelt" | "docker">("seatbelt");
+  const [dockerExtra, setDockerExtra] = useState("");
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s = await settingsLoad();
+        const img = await dockerImageStatus();
+        if (alive) setDockerOffered(!!s.docker_sandbox_enabled && img.available);
+      } catch { if (alive) setDockerOffered(false); }
+    })();
+    return () => { alive = false; };
+  }, [wsId]);
+
   useEffect(() => {
     if (!ws) return;
     setMode(effectiveSandboxMode(ws));
     setRwText((ws.sandbox_rw_paths ?? []).join("\n"));
     setHostsText((ws.sandbox_allowed_hosts ?? []).join("\n"));
+    setCage(ws.docker_sandbox_enabled ? "docker" : "seatbelt");
+    setDockerExtra((ws.docker_extra_args ?? []).join(" "));
     setErr(null);
     setBusy(false);
   }, [ws?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -76,14 +99,54 @@ export function WorkspaceSandboxDialog() {
     s.split("\n").map(l => l.trim()).filter(Boolean);
   const arrEq = (a: string[], b: string[]) =>
     a.length === b.length && a.every((v, i) => v === b[i]);
-  const dirty = ws ? (
-    mode !== effectiveSandboxMode(ws) ||
-    !arrEq(splitLines(rwText),    ws.sandbox_rw_paths      ?? []) ||
-    !arrEq(splitLines(hostsText), ws.sandbox_allowed_hosts ?? [])
+  const splitArgs = (s: string) => s.split(/\s+/).map(t => t.trim()).filter(Boolean);
+  const wasDocker = !!ws?.docker_sandbox_enabled;
+  const dirty = ws ? (cage === "docker"
+    ? (!wasDocker ||
+       !arrEq(splitArgs(dockerExtra), ws.docker_extra_args ?? []))
+    : (wasDocker ||
+       mode !== effectiveSandboxMode(ws) ||
+       !arrEq(splitLines(rwText),    ws.sandbox_rw_paths      ?? []) ||
+       !arrEq(splitLines(hostsText), ws.sandbox_allowed_hosts ?? []))
   ) : false;
 
   async function save(restart: boolean) {
     if (!ws || busy) return;
+
+    // ── Docker cage save path ──────────────────────────────────────
+    // Mutually exclusive with Seatbelt: workspace_set_docker forces the
+    // Seatbelt mode off when enabling (and the Rust side cleans up any
+    // container when disabling). Killing live PTYs so the next spawn
+    // lands in the container reuses the existing pending-restart plumbing.
+    if (cage === "docker") {
+      const ok = await useUI.getState().askConfirm({
+        title: `Switch "${ws.name}" to the Docker sandbox?`,
+        message: restart
+          ? "The agent will be terminated and AUTO-restarted inside a Docker container. It logs in separately from your normal agent (run /login once inside it)."
+          : "Saved. Any agent currently running keeps its current cage until it next respawns; new tabs launch in Docker.",
+        confirmLabel: restart ? "Save & restart" : "Save without restart",
+      });
+      if (!ok) return;
+      setBusy(true); setErr(null);
+      try {
+        if (restart) useUI.getState().markPendingPtyRestart(ws.id);
+        await workspaceSetDocker(ws.id, true, splitArgs(dockerExtra));
+        await loadAll();
+        close();
+      } catch (e) {
+        setErr(String(e));
+        setBusy(false);
+      }
+      return;
+    }
+
+    // Switching FROM Docker back to a Seatbelt mode: clear the docker
+    // flag first (removes any container), then fall through to the
+    // normal Seatbelt save below.
+    if (wasDocker) {
+      try { await workspaceSetDocker(ws.id, false, []); } catch {}
+    }
+
     // Pre-flight confirm. We don't have a live PTY count on the
     // frontend (the Rust side will tell us when the IPC returns),
     // so the dialog text is generic. The user is explicitly asking
@@ -166,6 +229,47 @@ export function WorkspaceSandboxDialog() {
             the focus ring off the top row of mode cards. A few px of inset
             gives the ring room to render. */}
         <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-0.5 pt-1 pr-1">
+        {/* Cage selector: Seatbelt | Docker. Only shown when the global
+            Docker master switch is on AND a usable image is built (so the
+            user can never pick Docker then hit a spawn-time "no image"
+            refusal). Picking Docker hides the Seatbelt selector + lists. */}
+        {dockerOffered && (
+          <div>
+            <div className="mb-1.5 text-[13px] font-medium text-[var(--color-fg)]">Cage</div>
+            <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+              {([
+                ["seatbelt", "Seatbelt", <Shield key="s" className="h-3.5 w-3.5" />],
+                ["docker",   "Docker",   <Container key="d" className="h-3.5 w-3.5" />],
+              ] as const).map(([id, label, icon]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setCage(id)}
+                  className={cn(
+                    "flex h-7 items-center gap-1.5 rounded-[5px] px-3 text-[12.5px] transition-colors",
+                    cage === id
+                      ? "bg-[var(--color-accent-deep)] text-white"
+                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  {icon}{label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {cage === "docker" && ws && (
+          <WorkspaceDockerPanel
+            workspaceId={ws.id}
+            agentId={ws.cli}
+            agentName={agent?.display_name || ws.cli}
+            extraArgs={dockerExtra}
+            onExtraArgsChange={setDockerExtra}
+          />
+        )}
+
+        {cage === "seatbelt" && (<>
         {/* On/off panel. Big, color-coded, unambiguous - the prior
             "Unsandboxed" checkbox was a double-negative trap: users
             saw the box checked and assumed the cage was ON. State now
@@ -371,6 +475,7 @@ export function WorkspaceSandboxDialog() {
             </div>
           </Field>
         )}
+        </>)}
         </>)}
 
         {/* "Recent denies" panel removed — the TerminalPane footer

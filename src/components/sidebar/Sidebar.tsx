@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Container } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
@@ -1141,7 +1141,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                   // the button visible; unless the collapsed attention/done
                   // badge is active — it lives in the same slot and the
                   // status icon would cover it.
-                  (w.sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && !(collapsed && (hasAttention || hasDone || hasWorking))
+                  (w.sandbox_enabled || w.docker_sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && !(collapsed && (hasAttention || hasDone || hasWorking))
                     ? "opacity-100 pointer-events-auto"
                     : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
                   wsRenaming !== null && "pointer-events-none",
@@ -1157,6 +1157,16 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 {(() => {
                   const wMode = effectiveSandboxMode(w);
                   const stateOpacity = terminalTabs.length > 0 ? "opacity-100" : "opacity-40";
+                  // Docker mode is its own cage (mutually exclusive with
+                  // Seatbelt) — a distinct whale/container glyph so it's
+                  // obvious at a glance which cage the workspace is in.
+                  if (w.docker_sandbox_enabled) {
+                    return (
+                      <Container
+                        className={cn("absolute h-3.5 w-3.5 text-[var(--color-accent)] transition-opacity group-hover/wsrow:opacity-0", stateOpacity)}
+                      />
+                    );
+                  }
                   if (!!w.yolo && !isSandboxEnforced(wMode)) {
                     return (
                       <Zap
@@ -1182,7 +1192,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 <MoreVertical
                   className={cn(
                     "h-3.5 w-3.5 text-[var(--color-fg-faint)] transition-opacity",
-                    (w.sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && "opacity-0 group-hover/wsrow:opacity-100",
+                    (w.sandbox_enabled || w.docker_sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && "opacity-0 group-hover/wsrow:opacity-100",
                   )}
                 />
               </button>

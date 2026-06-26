@@ -1821,7 +1821,7 @@ fn compute_home_denies(home: &str, user_allowed: &[String], runtime: &[String]) 
 /// Resolve symlinks so the SBPL rules match what the kernel sees.
 /// Seatbelt evaluates the *canonical* path; a worktree symlinked
 /// somewhere else would otherwise fail writes through the symlink.
-fn canonicalize_or_keep(p: &str) -> String {
+pub(crate) fn canonicalize_or_keep(p: &str) -> String {
     fs::canonicalize(p)
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|_| p.to_string())
@@ -1838,7 +1838,7 @@ fn canonicalize_or_keep(p: &str) -> String {
 ///   2. Expect `gitdir: <abs path to /<parent>/.git/worktrees/<name>>`.
 ///   3. Walk up to `<parent>/.git` (i.e. trim `/worktrees/<name>` suffix).
 ///   4. Canonicalize and return.
-fn parent_git_dir_for_worktree(workspace_root: &str) -> Option<String> {
+pub(crate) fn parent_git_dir_for_worktree(workspace_root: &str) -> Option<String> {
     let dot_git = std::path::Path::new(workspace_root).join(".git");
     // For a regular checkout (is_repo_root), `.git` is a directory and
     // we don't need to widen — the workspace allow already covers it

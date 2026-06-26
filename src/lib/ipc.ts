@@ -282,6 +282,45 @@ export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff"
 export const workspaceSendDiffToMain = (id: string) =>
   invoke<{ tracked_files: number; untracked_files: number }>("workspace_send_diff_to_main", { id });
 
+// ─────────────────────────── docker sandbox ──────────────────────────
+
+export interface DockerStatus { binary: boolean; daemon: boolean; version: string | null }
+export interface DockerImageStatus {
+  current_tag: string;
+  current_built: boolean;
+  last_built_tag: string | null;
+  last_built_exists: boolean;
+  stale: boolean;
+  is_default: boolean;
+  available: boolean;
+}
+export interface DockerMount {
+  host: string; container: string; read_only: boolean;
+  provenance: "implicit" | "user"; why: string; load_bearing: boolean;
+}
+export interface DockerPreview {
+  argv: string[]; preview: string; mounts: DockerMount[]; image_built: boolean;
+}
+
+export const dockerCheck            = () => invoke<DockerStatus>("docker_check");
+export const dockerImageStatus      = () => invoke<DockerImageStatus>("docker_image_status");
+export const dockerGetDockerfile    = () => invoke<string>("docker_get_dockerfile");
+export const dockerDefaultDockerfile = () => invoke<string>("docker_default_dockerfile");
+export const dockerSetDockerfile    = (contents: string) => invoke<void>("docker_set_dockerfile", { contents });
+/** Kicks off a background build; stream output via onDockerBuildLog / onDockerBuildDone. */
+export const dockerBuildImage       = (noCache: boolean) => invoke<void>("docker_build_image", { noCache });
+export const dockerPreviewCommand   = (workspaceId: string, agentId?: string) =>
+  invoke<DockerPreview>("docker_preview_command", { workspaceId, agentId });
+export const workspaceSetDocker     = (id: string, enabled: boolean, extraArgs: string[]) =>
+  invoke<void>("workspace_set_docker", { id, enabled, extraArgs });
+
+export function onDockerBuildLog(cb: (line: string) => void): Promise<UnlistenFn> {
+  return listen<{ line: string }>("docker-build://log", e => cb(e.payload.line));
+}
+export function onDockerBuildDone(cb: (d: { success: boolean; tag: string; error: string | null }) => void): Promise<UnlistenFn> {
+  return listen<{ success: boolean; tag: string; error: string | null }>("docker-build://done", e => cb(e.payload));
+}
+
 // ───────────────────────────── spotlight ─────────────────────────────
 
 export const workspaceSpotlightStart   = (id: string) => invoke<void>("workspace_spotlight_start",   { id });

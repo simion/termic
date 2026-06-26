@@ -17,7 +17,7 @@ interface View {
    *  and panel state all stay intact while it's open. */
   settingsOpen?: boolean;
   /** When the Settings overlay is open, which section is selected. */
-  settingsTab?: "general" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts";
+  settingsTab?: "general" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts" | "docker";
   /** When viewing a repository's settings, which project id is active. */
   settingsRepoId?: string;
 }

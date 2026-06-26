@@ -211,6 +211,14 @@ export interface Workspace {
   persisted_tabs?: PersistedTab[];
   /** Same as `persisted_tabs` but for right-split panel agents. */
   right_split_tabs?: PersistedTab[];
+  /** Docker sandbox mode for this workspace. Mutually exclusive with the
+   *  Seatbelt sandbox: when true, the agent PTY runs inside `docker run`
+   *  instead of `sandbox-exec`. Only effective when the global
+   *  `Settings.docker_sandbox_enabled` is on and the image is built. */
+  docker_sandbox_enabled?: boolean;
+  /** User-appended `docker run` args (e.g. `--memory 4g`, `-e FOO=bar`).
+   *  Inserted at a fixed point in the rendered argv. */
+  docker_extra_args?: string[];
 }
 
 /** One durable agent tab persisted on a workspace. Mirror of
@@ -372,6 +380,10 @@ export interface Settings {
    *  tree across every project. Unioned with each project's committed
    *  `.termic.yaml` `exclude`. `.git` is always hidden regardless. */
   file_tree_exclude?: string[];
+  /** Master switch for the experimental Docker sandbox mode. While off,
+   *  no Docker UI appears and Docker is never invoked. A workspace's
+   *  `docker_sandbox_enabled` only takes effect when this is also on. */
+  docker_sandbox_enabled?: boolean;
 }
 
 export interface DiscoveredRepo {
