@@ -3631,6 +3631,15 @@ fn workspace_restore_sync(app: AppHandle, id: String) -> Result<Workspace, Strin
         .find(|p| p.id == list[idx].project_id)
         .ok_or("project not found")?;
 
+    // Repo-root workspaces have no dedicated worktree to recreate — the workspace
+    // IS the main checkout. Just unarchive the record and return.
+    if list[idx].is_repo_root {
+        list[idx].archived = false;
+        list[idx].archived_at = None;
+        save_workspace(&list[idx]).map_err(|e| e.to_string())?;
+        return Ok(list[idx].clone());
+    }
+
     let wt_path = PathBuf::from(&list[idx].path);
     let repo = PathBuf::from(&proj.root_path);
 
