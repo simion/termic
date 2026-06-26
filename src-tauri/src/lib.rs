@@ -3604,6 +3604,209 @@ async fn workspace_delete(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn workspace_restore(app: AppHandle, id: String) -> Result<Workspace, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace_restore_sync(app, id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn workspace_restore_sync(app: AppHandle, id: String) -> Result<Workspace, String> {
+    let mut list = load_workspaces();
+    let idx = list.iter().position(|w| w.id == id).ok_or("workspace not found")?;
+    if !list[idx].archived {
+        return Err("workspace is not archived".into());
+    }
+
+    let proj = load_projects().into_iter()
+        .find(|p| p.id == list[idx].project_id)
+        .ok_or("project not found")?;
+
+    let wt_path = PathBuf::from(&list[idx].path);
+    let repo = PathBuf::from(&proj.root_path);
+
+    if list[idx].composition.is_empty() {
+        // ── Single-repo workspace ──────────────────────────────────────────
+        if !proj.non_git {
+            let _ = git(&["worktree", "prune"], &repo);
+
+            // Guard: path already claimed by a live worktree.
+            if wt_path.exists() {
+                let listed = git(&["worktree", "list", "--porcelain"], &repo)
+                    .unwrap_or_default();
+                let path_str = wt_path.to_string_lossy();
+                let registered = listed.lines()
+                    .any(|l| l.strip_prefix("worktree ").map(|p| p == path_str).unwrap_or(false));
+                if registered {
+                    return Err(format!("a worktree already lives at {}", wt_path.display()));
+                }
+                // Orphan directory — remove before adding the worktree.
+                fs::remove_dir_all(&wt_path)
+                    .map_err(|e| format!("orphan dir at {}: {e}", wt_path.display()))?;
+            }
+
+            let branch = list[idx].branch.clone();
+            let base_branch = list[idx].base_branch.clone();
+
+            // git-crypt detection (mirrors workspace_create_sync).
+            let common_gitdir = git(&["rev-parse", "--git-common-dir"], &repo)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .map(|s| {
+                    let p = PathBuf::from(&s);
+                    if p.is_absolute() { p } else { repo.join(p) }
+                });
+            let has_git_crypt = common_gitdir.as_ref()
+                .map(|p| p.join("git-crypt").exists())
+                .unwrap_or(false);
+
+            let wt_arg = wt_path.to_str().unwrap();
+            let add_flags: &[&str] = if has_git_crypt {
+                &["worktree", "add", "--no-checkout"]
+            } else {
+                &["worktree", "add"]
+            };
+            let mut add_args: Vec<&str> = add_flags.to_vec();
+            add_args.push(wt_arg);
+            add_args.push(&branch);
+
+            let branch_exists = git(&["rev-parse", "--verify", &branch], &repo).is_ok();
+            if branch_exists {
+                git(&add_args, &repo).map_err(|e| e.to_string())?;
+            } else {
+                // Branch was deleted at archive time — recreate from base.
+                git(&["branch", "--no-track", &branch, &base_branch], &repo)
+                    .map_err(|e| format!("recreate branch '{branch}' from '{base_branch}': {e}"))?;
+                git(&add_args, &repo).map_err(|e| e.to_string())?;
+            }
+
+            // git-crypt: bridge the key dir into the new worktree's gitdir.
+            if has_git_crypt {
+                let wt_gitdir_raw = git(&["rev-parse", "--git-dir"], &wt_path)
+                    .map_err(|e| format!("git-crypt setup: resolve gitdir: {e}"))?;
+                let wt_gitdir = {
+                    let p = PathBuf::from(wt_gitdir_raw.trim());
+                    if p.is_absolute() { p } else { wt_path.join(p) }
+                };
+                let key_target = common_gitdir.as_ref().unwrap().join("git-crypt");
+                let key_link  = wt_gitdir.join("git-crypt");
+                if !key_link.exists() {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&key_target, &key_link)
+                        .map_err(|e| format!("git-crypt setup: symlink: {e}"))?;
+                }
+                git(&["reset", "--hard", "HEAD"], &wt_path)
+                    .map_err(|e| format!("git-crypt setup: post-symlink checkout: {e}"))?;
+            }
+
+            // Copy files_to_copy globs (same as creation).
+            for pat in &effective_files_to_copy(&proj) {
+                copy_matching(&repo, &wt_path, pat);
+            }
+        } else {
+            // Non-git project: just recreate the folder.
+            fs::create_dir_all(&wt_path).map_err(|e| e.to_string())?;
+        }
+    } else {
+        // ── Multi-repo workspace ───────────────────────────────────────────
+        let _ = git(&["worktree", "prune"], &repo);
+
+        if wt_path.exists() {
+            return Err(format!("workspace wrapper already exists at {}", wt_path.display()));
+        }
+
+        // Recreate host worktree.
+        if proj.non_git {
+            fs::create_dir_all(&wt_path)
+                .map_err(|e| format!("create wrapper dir: {e}"))?;
+            for shared in &["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude", ".gemini", ".codex"] {
+                let src = repo.join(shared);
+                if src.exists() {
+                    let dst = wt_path.join(shared);
+                    if !dst.exists() {
+                        let _ = std::os::unix::fs::symlink(&src, &dst);
+                    }
+                }
+            }
+        } else {
+            let host_branch = list[idx].branch.clone();
+            let host_base   = list[idx].base_branch.clone();
+            let branch_exists = git(&["rev-parse", "--verify", &host_branch], &repo).is_ok();
+            if branch_exists {
+                git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
+                    .map_err(|e| format!("host worktree add: {e}"))?;
+            } else {
+                git(&["branch", "--no-track", &host_branch, &host_base], &repo)
+                    .map_err(|e| format!("recreate host branch: {e}"))?;
+                git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
+                    .map_err(|e| format!("host worktree add: {e}"))?;
+            }
+        }
+
+        // Recreate each member (best-effort — errors don't abort the restore).
+        let all_projects = load_projects();
+        let composition = list[idx].composition.clone();
+        let base_branch = list[idx].base_branch.clone();
+        for m in &composition {
+            match m.mode {
+                MemberMode::RepoRoot => {
+                    // Recreate symlink: <wrapper>/<dir_name> → m.path
+                    let link = wt_path.join(&m.dir_name);
+                    if !link.exists() {
+                        let _ = std::os::unix::fs::symlink(&m.path, &link);
+                    }
+                }
+                MemberMode::Worktree => {
+                    let member_repo = if !m.repo_path.is_empty() {
+                        Some(m.repo_path.clone())
+                    } else {
+                        all_projects.iter()
+                            .find(|p| p.id == m.project_id)
+                            .map(|mp| mp.root_path.clone())
+                    };
+                    if let Some(mr) = member_repo {
+                        let mr_path = PathBuf::from(&mr);
+                        let _ = git(&["worktree", "prune"], &mr_path);
+                        let branch_exists = git(&["rev-parse", "--verify", &m.branch], &mr_path).is_ok();
+                        if !branch_exists {
+                            let _ = git(&["branch", "--no-track", &m.branch, &base_branch], &mr_path);
+                        }
+                        let _ = git(&["worktree", "add", &m.path, &m.branch], &mr_path);
+                    }
+                }
+            }
+        }
+    }
+
+    // Unarchive and persist.
+    list[idx].archived = false;
+    save_workspace(&list[idx]).map_err(|e| e.to_string())?;
+    let ws = list[idx].clone();
+
+    // Run setup script(s) fire-and-forget, same as creation.
+    if ws.composition.is_empty() {
+        let (setup, _, _) = effective_scripts(&proj);
+        if !setup.trim().is_empty() {
+            run_script_streaming(setup, wt_path, ws.port, ws.name.clone(), app, ws.id.clone());
+        }
+    } else {
+        for m in &ws.composition {
+            if !m.setup_script.trim().is_empty() {
+                run_script_streaming(
+                    m.setup_script.clone(),
+                    PathBuf::from(&m.path),
+                    if m.port > 0 { m.port } else { ws.port },
+                    ws.name.clone(),
+                    app.clone(),
+                    ws.id.clone(),
+                );
+            }
+        }
+    }
+
+    Ok(ws)
+}
+
+#[tauri::command]
 fn workspace_run_script(id: String, which: String) -> Result<String, String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such ws")?;
     let p = load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
@@ -6963,7 +7166,7 @@ pub fn run() {
             workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_resume_override, workspace_set_sandbox, workspace_set_yolo,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, workspace_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
-            workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
+            workspace_restore, workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_set_tabs, workspace_set_tab_session_id,
             workspace_set_right_tabs, workspace_set_right_tab_session_id,
             workspace_grep_start, workspace_grep_cancel,
