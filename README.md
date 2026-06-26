@@ -4,7 +4,7 @@
 
 ### One window, many parallel coding agents. Each in its own git worktree.
 
-**`claude` · `codex` · `gemini` · `grok` · `agy` — the real CLIs, your own Pro / Max plan, no vendor backend.**
+**`claude` · `codex` · `grok` · `agy` — the real CLIs, your own Pro / Max plan, no vendor backend.**
 
 [![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
@@ -23,7 +23,7 @@
 
 Termic is a free, open-source desktop app that runs your AI coding-agent CLIs
 side by side, each isolated in its own git worktree, with an optional per-workspace
-macOS sandbox cage. It spawns the **real** `claude` / `codex` / `gemini` / `grok` /
+macOS sandbox cage. It spawns the **real** `claude` / `codex` / `grok` /
 `agy` binaries (not the vendor SDKs), so inference rides on the Pro / Max plan you
 already pay for. Spin up four agents on the same branch, broadcast one prompt to
 all of them, watch a reliable work-done indicator tell you the moment each finishes.
@@ -228,7 +228,7 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   allowlist. Lets the agent run with `--dangerously-skip-permissions`
   safely — the cage is the boundary, not the prompt.
 - **Sidebar Cockpit.** Expand any workspace in the sidebar to see all its active agents, their live work-done indicators, and their agent-managed titles at a glance.
-- **Work-done indicator** that's actually reliable. Per-CLI title classifier (Claude spinner, Gemini's `◇`, etc.) plus OSC 9;4, gated by byte-quiet and content-hash checks. This reliability enabled **opt-in desktop notifications** that only fire when an agent actually finishes a turn.
+- **Work-done indicator** that's actually reliable. Per-CLI title classifier (Claude spinner, etc.) plus OSC 9;4, gated by byte-quiet and content-hash checks. This reliability enabled **opt-in desktop notifications** that only fire when an agent actually finishes a turn.
 - **Message Queues.** Built on top of work-done detection: queue N messages (with optional repeats) to run autonomous "Ralph loop" sessions.
 - **Auto-Resume Everything.** Termic auto-resumes sessions even for repo-root workspaces. The latest update now auto-resumes ALL agent tabs in a workspace, not just the primary one.
 - **Spotlight.** Mirror one worktree's changes — committed, uncommitted, and untracked — into your repo root in real time, so your editor, dev server, and browser see the agent's work live. It runs on a detached HEAD and never commits to your branch; disabling it cleanly restores the checkout. (Conductor checkpoints your branch; Spotlight doesn't touch it.)
@@ -246,7 +246,7 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   busy.
 - **Bring your own agent.** Settings → Agents is an editable registry.
   Drop in aider, opencode, ollama, a shell script — 30 seconds. Claude,
-  Codex, Antigravity, Gemini, and Grok ship as built-ins.
+  Codex, Antigravity, and Grok ship as built-ins.
 - **Keyboard-first.** ⌘K command palette, ⌘1..9 swaps tabs, ⌥↑/↓ walks the
   visible sidebar tree, ⌥⌘↑/↓ hops workspace-only, ⌘D / ⇧⌘D split right /
   bottom, ⌘T spawns a new tab, ⌘W closes one. Every shortcut is rebindable in
@@ -269,7 +269,7 @@ enforced from the moment the agent spawns.
 The cage:
 
 - **Writes restricted** to the worktree, agent config dirs (`~/.claude`,
-  `~/.gemini`, `~/.codex`), package caches (`~/.npm`, `~/.cache`,
+  `~/.codex`), package caches (`~/.npm`, `~/.cache`,
   `~/.cargo/registry`), and TMPDIR. Always-denied: `~/.ssh`, `~/.aws`,
   `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, Keychains.
 - **Network restricted** via an in-process CONNECT proxy with a regex
@@ -314,7 +314,6 @@ The honest pitch — see [termic.dev/vs/conductor](https://termic.dev/vs/conduct
 | Parallel agents in git worktrees | ✓ | ✓ |
 | Attach an agent to the repo root (no worktree) | ✓ | ✗ (worktree per workspace only) |
 | Runs `claude` | ✓ | ✓ |
-| Runs `gemini` | ✓ | ✗ |
 | Runs `codex` | ✓ | ✓ |
 | Bring your own agent (PTY-based) | ✓ — opencode, aider, ollama, anything that runs in a terminal | ✗ |
 | Multi-repo workspaces | ✓ — N repos under one wrapper, shared CLAUDE.md, per-member ports | ✗ |
