@@ -112,10 +112,9 @@ export function HistoryView() {
                     key={w.id}
                     onMouseEnter={() => setHoveredId(w.id)}
                     onMouseLeave={() => setHoveredId(null)}
-                    onClick={() => !isRestoring && restore(w.id)}
                     className={cn(
                       "flex items-center gap-3 rounded-md px-3 py-2 text-[13px] select-none",
-                      isRestoring ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+                      isRestoring ? "opacity-50" : "",
                       isHovered ? "bg-[var(--color-hover)]" : "",
                     )}
                   >
@@ -146,16 +145,24 @@ export function HistoryView() {
                       <span className="shrink-0 text-[var(--color-fg-faint)]">· {w.branch}</span>
                     ) : null}
 
-                    {/* Right: date / restore action */}
-                    <div className="ml-auto shrink-0 pl-6 text-right">
+                    {/* Right: date + restore button */}
+                    <div className="ml-auto shrink-0 pl-6 flex items-center gap-3">
                       {isRestoring ? (
                         <span className="text-[12.5px] text-[var(--color-fg-dim)]">Restoring…</span>
-                      ) : isHovered ? (
-                        <span className="text-[12.5px] font-medium text-[var(--color-accent)]">Restore →</span>
                       ) : (
-                        <span className="text-[12.5px] tabular-nums text-[var(--color-fg-faint)]">
-                          {fmtDate(w.archived_at ?? w.created)}
-                        </span>
+                        <>
+                          <span className="text-[12.5px] tabular-nums text-[var(--color-fg-faint)]">
+                            {fmtDate(w.archived_at ?? w.created)}
+                          </span>
+                          {isHovered && (
+                            <button
+                              onClick={() => restore(w.id)}
+                              className="text-[12.5px] font-medium text-[var(--color-accent)] hover:underline"
+                            >
+                              Restore →
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
