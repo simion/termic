@@ -1,20 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { workspaceRestore } from "@/lib/ipc";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { cn } from "@/lib/utils";
-import { RotateCcw } from "lucide-react";
-import { Tip } from "@/components/ui/Tooltip";
+import { ChevronRight, Search } from "lucide-react";
+import type { Workspace } from "@/lib/types";
 
-function fmtArchived(iso: string): string {
+function groupLabel(iso: string): string {
+  const diffDays = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7)  return `${diffDays} days ago`;
+  if (diffDays < 14) return "Last week";
+  if (diffDays < 21) return "2 weeks ago";
+  if (diffDays < 28) return "3 weeks ago";
+  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date(iso));
+}
+
+function fmtDate(iso: string): string {
   const d = new Date(iso);
-  const now = new Date();
-  const sameYear = d.getFullYear() === now.getFullYear();
   return new Intl.DateTimeFormat(undefined, {
     month: "short", day: "numeric",
-    ...(sameYear ? {} : { year: "numeric" }),
-    hour: "2-digit", minute: "2-digit",
+    ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
   }).format(d);
 }
 
@@ -25,17 +33,35 @@ export function HistoryView() {
   const loadAll   = useApp(s => s.loadAll);
   const setActive = useApp(s => s.setActiveWorkspace);
 
-  // Refresh the workspace list each time the History view is opened so
-  // newly archived workspaces appear without requiring an app restart.
   useEffect(() => { void loadAll(); }, []);
 
-  const archived = [...workspaces.filter(w => w.archived)].sort((a, b) => {
-    const ta = a.archived_at ?? a.created;
-    const tb = b.archived_at ?? b.created;
-    return tb.localeCompare(ta);
-  });
-
+  const [query, setQuery]       = useState("");
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [restoring, setRestoring] = useState<Set<string>>(new Set());
+
+  const archived = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return [...workspaces.filter(w => {
+      if (!w.archived) return false;
+      if (!q) return true;
+      const p = projects.find(x => x.id === w.project_id);
+      return (
+        w.name.toLowerCase().includes(q) ||
+        w.branch.toLowerCase().includes(q) ||
+        (p?.name ?? "").toLowerCase().includes(q)
+      );
+    })].sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created));
+  }, [workspaces, projects, query]);
+
+  const groups = useMemo(() => {
+    const map = new Map<string, Workspace[]>();
+    for (const w of archived) {
+      const key = groupLabel(w.archived_at ?? w.created);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(w);
+    }
+    return [...map.entries()];
+  }, [archived]);
 
   async function restore(id: string) {
     setRestoring(prev => new Set(prev).add(id));
@@ -44,60 +70,100 @@ export function HistoryView() {
       await loadAll();
       setActive(ws.id);
     } catch (err) {
-      useUI.getState().pushToast(
-        typeof err === "string" ? err : "Restore failed",
-        "error",
-      );
+      useUI.getState().pushToast(typeof err === "string" ? err : "Restore failed", "error");
     } finally {
       setRestoring(prev => { const s = new Set(prev); s.delete(id); return s; });
     }
   }
 
   return (
-    <div className="flex-1 overflow-auto p-6">
-      <div className="mx-auto max-w-2xl">
-        <h1 className="text-[15px] font-medium mb-4">
-          History <span className="text-[var(--color-fg-faint)]">({archived.length})</span>
-        </h1>
-        {archived.length === 0 ? (
-          <p className="text-[14px] text-[var(--color-fg-dim)]">No archived workspaces.</p>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {archived.map(w => {
-              const p = projects.find(x => x.id === w.project_id);
-              const isRestoring = restoring.has(w.id);
-              return (
-                <div key={w.id} className={cn(
-                  "flex items-center gap-3 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3 py-2.5",
-                  isRestoring ? "opacity-50" : "opacity-70 hover:opacity-100 transition-opacity",
-                )}>
-                  <span className={cn("shrink-0", CLI_BRAND_COLOR[resolveIconId(w.cli, agents)] || "text-[var(--color-fg-dim)]")}>
-                    <CliIcon cli={resolveIconId(w.cli, agents)} className="h-4 w-4" />
-                  </span>
-                  <span className="font-medium text-[13px]">{w.name}</span>
-                  <span className="text-[13.5px] text-[var(--color-fg-faint)]">in {p?.name}</span>
-                  <div className="ml-auto flex items-center gap-2">
-                    <Tip content={(w.archived_at ?? w.created)}>
-                      <span className="text-[12px] tabular-nums text-[var(--color-fg-faint)]">
-                        {fmtArchived(w.archived_at ?? w.created)}
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Search bar */}
+      <div className="shrink-0 flex items-center gap-2.5 border-b border-[var(--color-border-soft)] px-6 py-3 text-[var(--color-fg-faint)]">
+        <Search className="h-4 w-4 shrink-0" />
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Filter workspaces..."
+          className="flex-1 bg-transparent text-[13.5px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] outline-none"
+        />
+      </div>
+
+      {/* List */}
+      <div className="flex-1 overflow-auto px-6 py-4">
+        <div className="mx-auto max-w-3xl">
+          {archived.length === 0 ? (
+            <p className="py-8 text-[13.5px] text-[var(--color-fg-dim)]">
+              {query ? "No workspaces match your filter." : "No archived workspaces."}
+            </p>
+          ) : groups.map(([label, ws]) => (
+            <div key={label} className="mb-2">
+              <div className="flex items-baseline gap-2 px-3 py-2">
+                <span className="text-[12px] font-medium text-[var(--color-fg-dim)]">{label}</span>
+                <span className="text-[12px] text-[var(--color-fg-faint)]">{ws.length}</span>
+              </div>
+              {ws.map(w => {
+                const proj        = projects.find(x => x.id === w.project_id);
+                const isRestoring = restoring.has(w.id);
+                const isHovered   = hoveredId === w.id && !isRestoring;
+                const iconId      = resolveIconId(w.cli, agents);
+                return (
+                  <div
+                    key={w.id}
+                    onMouseEnter={() => setHoveredId(w.id)}
+                    onMouseLeave={() => setHoveredId(null)}
+                    onClick={() => !isRestoring && restore(w.id)}
+                    className={cn(
+                      "flex items-center gap-3 rounded-md px-3 py-2 text-[13px] select-none",
+                      isRestoring ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+                      isHovered ? "bg-[var(--color-hover)]" : "",
+                    )}
+                  >
+                    {/* CLI icon */}
+                    <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-faint)]")}>
+                      <CliIcon cli={iconId} className="h-4 w-4" />
+                    </span>
+
+                    {/* Project name */}
+                    <span className="w-[130px] shrink-0 truncate text-[var(--color-fg-dim)]">
+                      {proj?.name ?? "—"}
+                    </span>
+
+                    {/* Separator */}
+                    <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />
+
+                    {/* Workspace name */}
+                    <span className="min-w-0 truncate font-medium text-[var(--color-fg)]">
+                      {w.name}
+                    </span>
+
+                    {/* Branch / kind */}
+                    {w.is_repo_root ? (
+                      <span className="shrink-0 rounded px-1 py-px text-[10.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-faint)]">
+                        repo root
                       </span>
-                    </Tip>
-                    <Tip content="Restore workspace">
-                      <button
-                        disabled={isRestoring}
-                        onClick={() => restore(w.id)}
-                        className="flex items-center gap-1.5 rounded px-2 py-1 text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed transition-colors"
-                      >
-                        <RotateCcw className={cn("h-3.5 w-3.5", isRestoring && "animate-spin")} />
-                        {isRestoring ? "Restoring…" : "Restore"}
-                      </button>
-                    </Tip>
+                    ) : w.branch ? (
+                      <span className="shrink-0 text-[var(--color-fg-faint)]">· {w.branch}</span>
+                    ) : null}
+
+                    {/* Right: date / restore action */}
+                    <div className="ml-auto shrink-0 pl-6 text-right">
+                      {isRestoring ? (
+                        <span className="text-[12.5px] text-[var(--color-fg-dim)]">Restoring…</span>
+                      ) : isHovered ? (
+                        <span className="text-[12.5px] font-medium text-[var(--color-accent)]">Restore →</span>
+                      ) : (
+                        <span className="text-[12.5px] tabular-nums text-[var(--color-fg-faint)]">
+                          {fmtDate(w.archived_at ?? w.created)}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
