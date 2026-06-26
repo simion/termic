@@ -380,10 +380,6 @@ Open an issue to push something up the list or pick one off.
   — horizontal, vertical, and nested — so multiple terminals, agents, or
   aux sessions can live side by side in the same workspace view without
   switching tabs.
-- **Terminal performance with large files.** The terminal renderer slows
-  down noticeably with high-volume output or large file content. Better
-  scrollback buffer management, virtual rendering, and output throttling
-  so the terminal stays responsive regardless of output size.
 
 ---
 
