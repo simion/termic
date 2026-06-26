@@ -16,7 +16,7 @@ import { visibleCliIds, agentDisplayName, isTerminalEntry } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
-const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
+const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
 /** Registry entries rendered as dropdown rows — shared by the main strip's
  *  and the right strip's + menus (both their "New terminal" custom entries

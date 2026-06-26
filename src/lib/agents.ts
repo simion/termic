@@ -69,18 +69,36 @@ function workspaceVars(ws: Workspace | undefined, sessionUuid?: string): Record<
   return base;
 }
 
-/** True iff the agent supports termic-owned deterministic sessions
- *  (both session_id_args + resume_id_args configured). */
+/** True iff the agent supports termic-minted deterministic sessions
+ *  (both session_id_args + resume_id_args configured — e.g. claude). */
 export function cliSupportsIdSession(cli: string): boolean {
   const { caps } = findAgent(cli);
   return (caps.session_id_args?.length ?? 0) > 0
       && (caps.resume_id_args?.length ?? 0) > 0;
 }
 
-/** Hard-coded fallback for the four built-ins. Used only when the
- *  registry doesn't have an entry for `cli` yet (pre-load) or when the
- *  registry is empty. The registry is the source of truth in steady state. */
-const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
+/** True iff the agent uses post-exit capture for its session ID:
+ *  has resume_id_args but NO session_id_args (opencode). First spawn
+ *  is fresh; on exit, post_launch_capture runs and stores the ID so
+ *  subsequent spawns use resume_id_args to resume that specific session. */
+export function cliSupportsCaptureResume(cli: string): boolean {
+  const { caps } = findAgent(cli);
+  return (caps.session_id_args?.length ?? 0) === 0
+      && (caps.resume_id_args?.length ?? 0) > 0;
+}
+
+/** Post-launch capture config for a CLI, or undefined if not configured. */
+export function postLaunchCaptureForCli(cli: string): Agent["post_launch_capture"] {
+  const registry = useApp.getState().agents;
+  const a = registry.find(x => x.id === cli);
+  if (a) return a.post_launch_capture;
+  return BUILTIN_FALLBACK[cli]?.post_launch_capture;
+}
+
+/** Hard-coded fallback for the built-ins. Used only when the registry
+ *  doesn't have an entry for `cli` yet (pre-load) or when the registry
+ *  is empty. The registry is the source of truth in steady state. */
+const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_launch_capture"> & {
   capabilities: NonNullable<Agent["capabilities"]>;
 }> = {
   claude: {
@@ -106,18 +124,6 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
       name_args: ["--name", "{WORKSPACE_SLUG}"],
     },
   },
-  gemini: {
-    command: "gemini", args: [],
-    capabilities: {
-      yolo_args: ["--yolo"],
-      runtime_yolo_command: "/approval-mode yolo",
-      runtime_default_command: "/approval-mode default",
-      // Legacy fallback for workspaces without a stored uuid yet.
-      resume_args: ["--resume", "latest"],
-      session_id_args: ["--session-id", "{UUID}"],
-      resume_id_args:  ["--resume",     "{UUID}"],
-    },
-  },
   codex: {
     command: "codex", args: [],
     capabilities: {
@@ -137,6 +143,27 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args"> & {
       resume_args: ["--continue"],
     },
   },
+  opencode: {
+    command: "opencode", args: [],
+    capabilities: {
+      // opencode creates sessions lazily (only after the first message),
+      // so termic can't mint or pass a UUID at spawn time. Instead:
+      //   - worktrees: `--continue` resumes the most-recent CWD session
+      //     (safe because each worktree has its own directory).
+      //   - after first message: post_launch_capture fires, captures the
+      //     session ID from `opencode session list`, stores it on the tab.
+      //   - subsequent spawns: `--session <captured-id>` via resume_id_args.
+      resume_args: ["--continue"],
+      resume_id_args: ["--session", "{UUID}"],
+      yolo_args: [],
+      runtime_yolo_command: "",
+    },
+    post_launch_capture: {
+      // Run on first PTY exit when no session ID is stored yet. stdout
+      // (trimmed) becomes the tab's resume session ID for subsequent spawns.
+      command: "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1",
+    },
+  },
 };
 
 /** Helper to get an agent's display name by its id. Consulting the registry first,
@@ -154,12 +181,12 @@ export function agentDisplayName(cli: string, agents: Agent[] = useApp.getState(
   // Fallback for built-ins if the registry is not yet loaded or empty
   switch (cli) {
     case "claude": return "Claude";
-    case "gemini": return "Gemini";
     case "codex":  return "Codex";
-    case "agy":    return "Antigravity";
-    case "shell":  return "Terminal";
-    case "custom": return "Command";
-    default:       return cli;
+    case "agy":      return "Antigravity";
+    case "opencode": return "opencode";
+    case "shell":    return "Terminal";
+    case "custom":   return "Command";
+    default:         return cli;
   }
 }
 
@@ -291,8 +318,12 @@ export type ResumeDecision =
 export function decideResume(opts: {
   /** Is this an agent tab at all (false for shell / custom — those are fresh). */
   isAgent: boolean;
-  /** `cliSupportsIdSession(cli)` — claude / gemini true, codex / agy false. */
+  /** `cliSupportsIdSession(cli)` — true when the agent has both session_id_args and resume_id_args. */
   idCapable: boolean;
+  /** `cliSupportsCaptureResume(cli)` — opencode true. Has resume_id_args but
+   *  no session_id_args: first spawn is fresh, subsequent spawns (after
+   *  post_launch_capture stores the ID) use resume_id_args. */
+  captureCapable?: boolean;
   /** Primary = the auto-created default tab OR the first tab of its cli.
    *  Gates the override + cwd-resume paths (see above). */
   isPrimary: boolean;
@@ -426,7 +457,7 @@ export function spawnArgsForCli(
 }
 
 /** Send the live YOLO toggle command if the agent supports it. Today only
- *  gemini does (`/approval-mode <mode>`); others need a respawn. */
+ *  Some agents support a live toggle command; others need a respawn. */
 export async function tryToggleYoloLive(cli: string, ptyId: string, yolo: boolean): Promise<boolean> {
   const { caps } = findAgent(cli);
   // Two explicit commands now (into-YOLO / back-to-default). A legacy

@@ -255,9 +255,9 @@ pub struct Workspace {
     #[serde(default)]
     pub has_resumable_history: bool,
     /// Per-CLI session UUIDs we own. Lazily minted on first spawn for
-    /// an id-capable CLI (claude / gemini today). Reused on every
-    /// subsequent spawn via the agent's `resume_id_args`. Keyed by
-    /// agent id ("claude", "gemini"). Survives termic restarts; lets
+    /// an id-capable CLI (e.g. claude). Reused on every subsequent
+    /// spawn via the agent's `resume_id_args`. Keyed by agent id.
+    /// Survives termic restarts; lets
     /// repo-root workspaces auto-resume without cross-pollinating with
     /// the user's external sessions in the same cwd.
     #[serde(default)]
@@ -2678,7 +2678,7 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 
 #[tauri::command]
 fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
-    if !["claude", "codex", "agy", "gemini", "grok", "copilot"].contains(&cli.as_str()) {
+    if !["claude", "codex", "agy", "grok", "copilot", "opencode"].contains(&cli.as_str()) {
         return Err(format!("unknown cli: {cli}"));
     }
     let mut list = load_workspaces();
@@ -6317,10 +6317,22 @@ pub struct Agent {
     /// "New terminal" section. `#[serde(default)]` → "agent" for old files.
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// Shell command run on the first normal PTY exit when no session ID is
+    /// stored yet. stdout (trimmed) is saved as the tab's resume session ID
+    /// so subsequent spawns can use `resume_id_args` (e.g. `--session <id>`).
+    /// Used for CLIs that create sessions lazily (e.g. opencode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_launch_capture: Option<PostLaunchCapture>,
 }
 
 fn default_true() -> bool { true }
 fn default_kind() -> String { "agent".into() }
+
+/// Shell command run on first PTY exit to capture the CLI's session ID.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PostLaunchCapture {
+    pub command: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -6419,6 +6431,7 @@ fn default_agents() -> Vec<Agent> {
             work_done: true,
             extends: None,
             kind: "agent".into(),
+            post_launch_capture: None,
         },
         Agent {
             id: "codex".into(),
@@ -6453,6 +6466,7 @@ fn default_agents() -> Vec<Agent> {
             work_done: true,
             extends: None,
             kind: "agent".into(),
+            post_launch_capture: None,
         },
         Agent {
             // Google Antigravity CLI (`agy`), launched 2025-11-18 — a
@@ -6505,6 +6519,7 @@ fn default_agents() -> Vec<Agent> {
             work_done: true,
             extends: None,
             kind: "agent".into(),
+            post_launch_capture: None,
         },
         Agent {
             // GitHub Copilot CLI (`copilot`). Launched 2025; supports
@@ -6544,42 +6559,7 @@ fn default_agents() -> Vec<Agent> {
             work_done: true,
             extends: None,
             kind: "agent".into(),
-        },
-        Agent {
-            id: "gemini".into(),
-            display_name: "gemini".into(),
-            command: "gemini".into(),
-            args: vec![],
-            icon_id: "gemini".into(),
-            color: "#4c8bf5".into(),
-            builtin: true,
-            disabled: false,
-            capabilities: AgentCapabilities {
-                yolo_args: vec!["--yolo".into()],
-                // gemini's live approval-mode switch — one command per
-                // direction (the form exposes both as separate fields).
-                runtime_yolo_command: "/approval-mode yolo".into(),
-                runtime_default_command: "/approval-mode default".into(),
-                // Legacy fallback for workspaces with no stored uuid.
-                resume_args: vec!["--resume".into(), "latest".into()],
-                // Gemini matches claude here — `--session-id <uuid>` to
-                // mint, `--resume <uuid>` to pick it up later.
-                session_id_args: vec!["--session-id".into(), "{UUID}".into()],
-                resume_id_args:  vec!["--resume".into(),     "{UUID}".into()],
-                name_args: vec![],
-            },
-            env: std::collections::HashMap::new(),
-            sandbox_allowed_paths: vec![
-                "$HOME/.gemini".into(),
-                "$HOME/.config/gemini".into(),
-                "$HOME/.local/share/gemini".into(),
-                "$HOME/.local/state/gemini".into(),
-                "$HOME/Library/Application Support/Gemini".into(),
-            ],
-            sandbox_allowed_hosts: vec![],
-            work_done: true,
-            extends: None,
-            kind: "agent".into(),
+            post_launch_capture: None,
         },
         Agent {
             // xAI's Grok Build TUI. Help text confirmed:
@@ -6616,6 +6596,48 @@ fn default_agents() -> Vec<Agent> {
             work_done: true,
             extends: None,
             kind: "agent".into(),
+            post_launch_capture: None,
+        },
+        Agent {
+            // opencode — SST's open-source agentic coding CLI. Sessions are
+            // created lazily (only after the first user message), so termic
+            // can't mint a UUID at spawn time. Resume strategy:
+            //   - worktrees: `--continue` resumes the last CWD session
+            //     (safe because each worktree has its own unique directory).
+            //   - on first PTY exit: post_launch_capture runs
+            //     `opencode session list | grep … | cut …`, stores the ID.
+            //   - subsequent spawns: `--session <captured-id>` via resume_id_args.
+            id: "opencode".into(),
+            display_name: "opencode".into(),
+            command: "opencode".into(),
+            args: vec![],
+            icon_id: "opencode".into(),
+            color: "#cfcecd".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                yolo_args: vec![],
+                runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
+                resume_args: vec!["--continue".into()],
+                session_id_args: vec![],
+                resume_id_args: vec!["--session".into(), "{UUID}".into()],
+                name_args: vec![],
+            },
+            env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                "$HOME/.config/opencode".into(),
+                "$HOME/.local/share/opencode".into(),
+                "$HOME/.local/state/opencode".into(),
+                "$HOME/Library/Application Support/opencode".into(),
+            ],
+            sandbox_allowed_hosts: vec![],
+            work_done: true,
+            extends: None,
+            kind: "agent".into(),
+            post_launch_capture: Some(PostLaunchCapture {
+                command: "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1".into(),
+            }),
         },
     ]
 }
@@ -6748,6 +6770,18 @@ fn settings_load() -> Settings { load_settings_inner() }
 /// from `--continue` to `--resume <name>`).
 #[tauri::command]
 fn agents_defaults() -> Vec<Agent> { default_agents() }
+
+/// Run a shell command in `cwd` via `sh -lc` and return trimmed stdout.
+/// Used by post_launch_capture to harvest the CLI's session ID after exit.
+#[tauri::command]
+fn run_capture_command(cmd: String, cwd: String) -> Result<String, String> {
+    let out = std::process::Command::new("sh")
+        .args(["-lc", &cmd])
+        .current_dir(&cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
 
 #[tauri::command]
 fn settings_save(s: Settings) -> Result<(), String> {
@@ -7197,7 +7231,7 @@ pub fn run() {
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, reveal_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
-            settings_load, settings_save, agents_save, agents_defaults, discover_repos, detect_clis,
+            settings_load, settings_save, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
             list_monospace_fonts,

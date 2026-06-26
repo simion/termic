@@ -18,7 +18,7 @@ import { SandboxModeSelector } from "@/components/SandboxModeSelector";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
-const CLIS = ["claude", "codex", "agy", "gemini", "grok"] as const;
+const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
 // Remember the user's last-used workspace type + sandbox mode across opens —
 // most people always work one way (always worktree, always enforce), so

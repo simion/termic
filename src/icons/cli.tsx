@@ -14,13 +14,6 @@ export function ClaudeIcon({ className }: Props) {
   );
 }
 
-export function GeminiIcon({ className }: Props) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={cn("inline-block", className)} aria-hidden>
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/>
-    </svg>
-  );
-}
 
 export function CodexIcon({ className }: Props) {
   return (
@@ -69,6 +62,17 @@ export function CopilotIcon({ className }: Props) {
   );
 }
 
+// opencode CLI (`opencode`). Paths adapted from the official logo
+// (viewBox 0 0 240 300 → scaled to 24×30 to preserve aspect ratio).
+export function OpencodeIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 30" fill="currentColor" className={cn("inline-block", className)} aria-hidden>
+      <path d="M6 12h12v12H6z" opacity="0.45" />
+      <path fillRule="evenodd" d="M0 0h24v30H0zM6 6h12v18H6z" />
+    </svg>
+  );
+}
+
 // Plain shell / terminal tabs (cli: "shell"). Boxed terminal glyph
 // (lucide square-terminal), stroke style to match the generic default.
 export function ShellIcon({ className }: Props) {
@@ -100,10 +104,10 @@ export function CustomCommandIcon({ className }: Props) {
 export function CliIcon({ cli, className }: { cli: string; className?: string }) {
   switch (cli) {
     case "claude":  return <ClaudeIcon className={className} />;
-    case "gemini":  return <GeminiIcon className={className} />;
     case "codex":   return <CodexIcon  className={className} />;
-    case "agy":     return <AntigravityIcon className={className} />;
-    case "grok":    return <GrokIcon className={className} />;
+    case "agy":      return <AntigravityIcon className={className} />;
+    case "grok":     return <GrokIcon className={className} />;
+    case "opencode": return <OpencodeIcon className={className} />;
     case "copilot": return <CopilotIcon className={className} />;
     case "shell":  return <ShellIcon className={className} />;
     case "custom": return <CustomCommandIcon className={className} />;
@@ -118,11 +122,11 @@ export function CliIcon({ cli, className }: { cli: string; className?: string })
 
 export const CLI_BRAND_COLOR: Record<string, string> = {
   claude:  "text-[var(--color-cli-claude)]",
-  gemini:  "text-[var(--color-cli-gemini)]",
   codex:   "text-[var(--color-cli-codex)]",
   agy:     "text-[var(--color-cli-agy)]",
   grok:    "text-[var(--color-cli-grok)]",
-  copilot: "text-[var(--color-cli-copilot)]",
+  copilot:  "text-[var(--color-cli-copilot)]",
+  opencode: "text-[var(--color-cli-opencode)]",
 };
 
 /** Resolve an agent's stable ID to its icon_id using the live agent registry.
@@ -136,6 +140,7 @@ export function resolveIconId(agentId: string, agents: Agent[]): string {
  *  ("agy" — the binary name) while the menu shows the recognizable
  *  brand name. Anything not listed falls back to the id itself. */
 export const CLI_LABEL: Record<string, string> = {
-  agy:  "Antigravity",
-  grok: "Grok",
+  agy:      "Antigravity",
+  grok:     "Grok",
+  opencode: "opencode",
 };
