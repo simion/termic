@@ -119,6 +119,8 @@ UX around the Dockerfile + the exact command we run. Nothing else.
   agents** (see below); per-agent images are a possible later refinement.
 - Live/persisted skills/MCP customization beyond Dockerfile-baked (decided
   against a managed overlay; see "Persisting customizations").
+- **Home dir profiles** (tool persistence across workspaces). Design locked
+  below; implementation is Phase 2.
 
 ## UX
 
@@ -558,6 +560,119 @@ Plus a short in-UI note next to the Dockerfile editor stating the split:
 "Install tools, MCP servers, and baked skills here. Personal logins (agent
 auth, MCP OAuth) are NOT set up here - just run the agent and log in once;
 those persist via your mounted config directory."
+
+## Home dir profiles (tool persistence across workspaces)
+
+**Phase 2. Design locked here; not built in Phase 1.**
+
+The persistent config-dir mount covers login, MCPs, and sessions. It does
+not cover user-installed tools: anything you `pip install --user`,
+`cargo install`, add to `.bashrc`, etc. is lost when the `--rm` container
+exits. Home dir profiles close this gap.
+
+A **profile** is a named, host-side directory
+(`~/.termic/profiles/{name}/`) whose subdirectories are selectively
+bind-mounted into the container's HOME, surviving teardown and shared
+across any workspaces that reference it. Install a tool once; it is there
+on every subsequent spawn of every workspace using that profile.
+
+### What a profile persists
+
+Profiles target user-space locations under HOME:
+
+| Mount target | What lands here |
+| --- | --- |
+| `~/.local/lib/` | `pip install --user`, pipx, custom libs |
+| `~/.local/bin/` | user-installed binaries (see seeding below) |
+| `~/.local/share/` | app data, some tool state |
+| `~/.config/` | tool configs (git, nvim, ripgrep, etc.) |
+| shell dotfiles (`.bashrc`, `.zshrc`, `.profile`) | aliases, PATH, env |
+
+System packages (`apt install`, `npm install -g` to `/usr/local/`) are NOT
+persisted by profiles - they belong in the Dockerfile. Profiles are the
+user-space complement to the Dockerfile's system layer: volatile user
+installs live in the profile, reproducible shared installs go in the image.
+
+### Profile seeding (solving the agy conflict)
+
+The general rule from findings.md is "never mount the whole HOME" - an
+empty overlay breaks binaries baked into HOME at image build time (notably
+`agy` in `~/.local/bin`). The same risk applies to individual subdirs if
+they are mounted empty over non-empty image content.
+
+**Solution: profile seeding.** On first use of a profile (or when the
+image hash has changed since the last seed), termic runs a short-lived
+init container before the main spawn:
+
+```
+docker run --rm \
+  -v ~/.termic/profiles/{name}:/profile \
+  termic-sandbox:{hash} \
+  sh -c 'cp -a ~/.local/bin/. /profile/.local/bin/ 2>/dev/null; cp -a ...'
+```
+
+This copies the image's existing content into the empty profile directories
+so the bind mount never shadows built-in binaries. Subsequent runs mount the
+now-populated profile on top of the image. User installs accumulate in the
+profile alongside the seeded content. Re-seeding on image rebuild merges
+new image content into the profile without clobbering user additions.
+
+Seeding is skipped when the profile already contains content and the image
+hash matches the stored seed-hash.
+
+### Cross-workspace sharing
+
+A profile is referenced by **name**, not by workspace ID. Multiple
+workspaces declare the same profile and mount the same host-side directory:
+
+```
+Workspace A (profile: python-dev) ─┐
+                                    ├─> ~/.termic/profiles/python-dev/
+Workspace B (profile: python-dev) ─┘
+```
+
+Install a package in workspace A; it is available in workspace B on next
+spawn. This is the right model for environment personas ("data science",
+"Rust toolchain", "frontend") that should be consistent across workspaces.
+
+Profiles are per-agent (parallel to the config-dir design): a profile
+named "python-dev" for claude is a distinct host directory from one for
+codex. The config-dir mount is always present alongside profile mounts and
+does not overlap.
+
+### Concrete mounts
+
+```
+docker run ... \
+  # profile mounts (one per selected subdir, provenance "profile: python-dev")
+  -v ~/.termic/profiles/python-dev/.local/lib:/root/.local/lib \    # user libs
+  -v ~/.termic/profiles/python-dev/.local/bin:/root/.local/bin \    # user bins (seeded)
+  -v ~/.termic/profiles/python-dev/.config:/root/.config \          # tool configs
+  -v ~/.termic/profiles/python-dev/bashrc:/root/.bashrc \           # shell env
+  # config dir (always present, separate from profile)
+  -e CLAUDE_CONFIG_DIR=/home/agent/.claude \
+  -v ~/.termic/docker-agents/claude:/home/agent/.claude \
+  # worktree mounts (as today)
+  -v /Users/x/r/proj:/Users/x/r/proj \
+  -v /Users/x/r/proj/.git:/Users/x/r/proj/.git \
+  ...
+```
+
+Profile mounts appear in the mount list annotated with "profile: {name}"
+provenance (distinct from the auto-implicit worktree mounts and the
+user-added mounts). Each row shows the persisted host path, the container
+target, and rw.
+
+### UI surface
+
+- **Profile selector** in the workspace Docker dialog, below the mount
+  list. Options: "None (ephemeral)" | named profiles | "New profile...".
+- Selecting a profile inserts its mounts into the list with the "profile"
+  badge and updates the command preview.
+- **Profile management** in Settings (alongside the Dockerfile editor):
+  create, rename, delete, inspect disk usage, force re-seed.
+- On image rebuild: nudge "Profile {name} was seeded from the previous
+  image. Re-seed to pick up new built-in content?" with a single action.
 
 ## Image build lifecycle
 
