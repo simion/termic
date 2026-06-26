@@ -6,15 +6,16 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
-import { workspaceRename, projectRename, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop, workspaceSetYolo } from "@/lib/ipc";
+import { workspaceRename, projectRename, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop, workspaceSetYolo, projectRemove, projectUpdate } from "@/lib/ipc";
 import { confirmAndArchive } from "@/lib/archiveWorkspace";
 import { startSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
@@ -388,11 +389,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // something underneath wants attention (attention > done).
             const projAttention = compact && collapsed && wsList.some(w => needsAttention(w.id));
             const projDone = compact && collapsed && !projAttention && wsList.some(w => isWorkDone(w.id));
+            const isMulti = (p.type ?? "single") === "multi";
             return (
               <div
                 key={p.id}
                 className="rounded-md"
               >
+                <ContextMenuRoot>
+                <ContextMenuTrigger className="contents">
                 <Tip content={compact ? p.name : ""}>
                   <div
                     // data-project-id lives on the HEADER (not the
@@ -573,6 +577,72 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     )}
                   </div>
                 </Tip>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuLabel>{p.name}</ContextMenuLabel>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem
+                    disabled={!!p.non_git}
+                    onSelect={() => requestAnimationFrame(() => openNewWorkspace(p.id))}
+                  >
+                    <GitBranchPlus />
+                    New workspace
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onSelect={() => openSettings("repositories", p.id)}>
+                    <Cog />
+                    Settings
+                  </ContextMenuItem>
+                  {!compact && (
+                    <ContextMenuItem onSelect={() => {
+                      setProjectCollapsed(p.id, false);
+                      setRenaming({ kind: "proj", id: p.id, value: p.name });
+                    }}>
+                      <Pencil />
+                      Rename
+                    </ContextMenuItem>
+                  )}
+                  {isMulti && (
+                    <ContextMenuItem onSelect={async () => {
+                      await projectUpdate({ ...p, spotlight_enabled: !p.spotlight_enabled });
+                      await loadAll();
+                    }}>
+                      <Radio />
+                      {p.spotlight_enabled ? "Disable spotlight" : "Enable spotlight"}
+                    </ContextMenuItem>
+                  )}
+                  <ContextMenuItem onSelect={() => openPath(p.root_path).catch(() => {})}>
+                    <FolderOpen />
+                    Reveal in Finder
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => navigator.clipboard.writeText(p.root_path).catch(() => {})}>
+                    <Copy />
+                    Copy path
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem destructive onSelect={async () => {
+                    const ui = useUI.getState();
+                    const ok = await ui.askConfirm({
+                      title: `Remove "${p.name}"?`,
+                      message: "All workspaces will be archived and their worktrees removed from disk. The repo folder is kept. This cannot be undone from inside Termic.",
+                      confirmLabel: "Remove",
+                      destructive: true,
+                    });
+                    const confirmed = typeof ok === "boolean" ? ok : ok.confirmed;
+                    if (!confirmed) return;
+                    ui.setBusy(`Removing "${p.name}"…`);
+                    try {
+                      await projectRemove(p.id);
+                      await loadAll();
+                    } finally {
+                      ui.setBusy(null);
+                    }
+                  }}>
+                    <Trash2 />
+                    Remove project
+                  </ContextMenuItem>
+                </ContextMenuContent>
+                </ContextMenuRoot>
 
                 {/* Empty expanded project — single placeholder CTA that
                     opens the SAME dropdown as the row's `+` icon (one
