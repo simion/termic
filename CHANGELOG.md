@@ -4,6 +4,24 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.16.0] - 2026-06-26
+
+Restore archived workspaces, project context menu, opencode agent, terminal performance.
+
+### Features
+- History: restore archived workspaces from the History panel with one click.
+- History: redesigned as a grouped table with search, branch, and workspace kind columns.
+- History: shows archive date on each row; auto-refreshes when opened.
+- Sidebar: right-click a project for quick actions: new workspace, settings, rename, reveal in Finder, copy path, remove.
+- Agents: opencode added as a built-in agent with icon, session capture, and resume support (worktrees via --continue, other workspaces via captured session ID).
+- Agents: gemini CLI removed (Google is retiring it).
+
+### Bug fixes
+- History: repo-root workspaces now appear in History after being archived.
+- History: restore is triggered by the button only, not the entire row.
+- History: worktree operations are skipped when restoring a repo-root workspace.
+- Terminal: eliminated a 1-2 minute freeze when printing large files (was caused by JSON-serializing thousands of PTY events individually).
+
 ## [0.15.9] - 2026-06-25
 
 New filesystem-only sandbox mode, and copyable terminal output when an agent exits.
