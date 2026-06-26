@@ -1,6 +1,6 @@
 // Mirrors the Serde structs in src-tauri/src/lib.rs. Keep in sync.
 
-export type CLI = "claude" | "codex" | "agy" | "gemini" | "grok";
+export type CLI = "claude" | "codex" | "agy" | "grok" | "opencode";
 
 /** Sandbox enforcement level. Mirrors Rust's `SandboxMode` (serialized
  *  lowercase, except `enforce-fs` which is kebab). `off` = no cage;
@@ -158,8 +158,8 @@ export interface Workspace {
    *  doomed resume attempt. Flipped false on a confirmed failure. */
   has_resumable_history?: boolean;
   /** Per-CLI session UUIDs we own. Lazily minted on first spawn for an
-   *  id-capable CLI (claude / gemini today). Reused on every subsequent
-   *  spawn via `resume_id_args`. Keyed by agent id ("claude", "gemini").
+   *  id-capable CLI (e.g. claude). Reused on every subsequent spawn via
+   *  `resume_id_args`. Keyed by agent id.
    *  Survives across termic restarts; lets us auto-resume in repo-root
    *  workspaces too without cross-pollinating with the user's external
    *  sessions in the same cwd. */
@@ -287,7 +287,7 @@ export interface Agent {
    *  invalidate existing workspaces. */
   command: string;
   args: string[];
-  /** Icon identifier. Either a brand id ("claude" / "gemini" / "codex") or
+  /** Icon identifier. Either a brand id ("claude", "codex", "opencode", …) or
    *  a generic key prefixed with "lucide:" (e.g. "lucide:terminal"). */
   icon_id: string;
   /** Hex color string for the icon tint. */
@@ -350,6 +350,12 @@ export interface Agent {
   /** ID of the agent this one was cloned from. Purely informational,
    *  surfaced as "extends: <name>" in the Settings card header. */
   extends?: string;
+  /** One-shot session-ID capture after the agent's first user interaction.
+   *  For CLIs that create sessions lazily (e.g. opencode): on the first
+   *  Enter keypress with no stored session ID, termic waits `delay_ms`,
+   *  runs `command` in the workspace CWD on first PTY exit, and stores
+   *  stdout as the tab's resume session ID for subsequent spawns. */
+  post_launch_capture?: { command: string };
   /** "agent" (default) or "terminal". Terminal entries live in the same
    *  registry (env, sandbox lists, enable toggle all apply) but spawn with
    *  shell semantics: command + args joined into one line and run through

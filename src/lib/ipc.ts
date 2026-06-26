@@ -279,6 +279,11 @@ export const workspaceSetRightTabs = (id: string, tabs: import("@/lib/types").Pe
 export const workspaceSetRightTabSessionId = (id: string, tabId: string, uuid: string) =>
   invoke<void>("workspace_set_right_tab_session_id", { id, tabId, uuid });
 export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agents_defaults");
+/** Run a shell command in `cwd` via `sh -lc` and return trimmed stdout.
+ *  Used by post_launch_capture to harvest the CLI's session ID after the
+ *  agent creates its first session. */
+export const runCaptureCommand = (cmd: string, cwd: string) =>
+  invoke<string>("run_capture_command", { cmd, cwd });
 export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
 export const workspaceSendDiffToMain = (id: string) =>
   invoke<{ tracked_files: number; untracked_files: number }>("workspace_send_diff_to_main", { id });

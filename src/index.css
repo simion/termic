@@ -55,11 +55,11 @@
   --color-err:       #ef5350;
 
   --color-cli-claude:  #d97757;
-  --color-cli-gemini:  #4c8bf5;
   --color-cli-codex:   #16a34a;
   --color-cli-agy:     #8b5cf6;
   --color-cli-grok:    #cbd5e1;
   --color-cli-copilot: #54aeff;
+  --color-cli-opencode: #cfcecd;
 
   --radius-pill: 999px;
   /* Default mono. Overridden at runtime by the font picker (writes the
@@ -127,6 +127,7 @@
     /* Grok's mark is neutral, not a vivid brand hue — bump to a darker
        slate in light mode so it doesn't disappear against the cream bg. */
     --color-cli-grok:    #64748b;
+    --color-cli-opencode: #6b6965;
     color-scheme: light;
   }
 

@@ -30,7 +30,7 @@ import { TerminalExitedBanner } from "@/components/workspace/TerminalExitedBanne
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 
@@ -205,6 +205,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
   // late OSC 9 "waiting for input" arriving tens of seconds after the
   // user already saw the answer.
   const doneFiredSinceSubmitRef = useRef(false);
+const captureArmedRef = useRef(false);
 
   // Holds the latest sendNextQueued so fireDone (defined first) can call it.
   // fireDone is the single completion funnel; draining the message queue from
@@ -655,6 +656,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // Reset sender classification so signal-silent agents (agy, custom CLIs)
     // get submit-window working detection on every respawn, not just the first.
     senderStateRef.current = null;
+    captureArmedRef.current = false;
     // Fresh PTY → no done has fired yet for the (eventual) first submit.
     doneFiredSinceSubmitRef.current = false;
     // Reset workState for this (re)spawn — stale "done" from a prior
@@ -797,12 +799,6 @@ export function TerminalPane({ ws, tab, active }: Props) {
         if (/^\s*✳/.test(t)) return "idle";
         // Any leading non-✳ glyph → assume spinner = working.
         if (/^\s*\S/.test(t) && !/^\s*[A-Za-z0-9]/.test(t)) return "busy";
-        return null;
-      }
-      if (cli === "gemini") {
-        if (t.startsWith("✋") || /Action Required/i.test(t)) return "attention";
-        if (t.startsWith("◇") || /^\s*Ready\b/.test(t)) return "idle";
-        if (t.startsWith("✦") || t.startsWith("⏲") || /Working/i.test(t)) return "busy";
         return null;
       }
       if (cli === "codex") {
@@ -1011,6 +1007,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
     const isRegistryTerminal = !isShell && !isCustom && isTerminalCli(tab.cli);
     const isAgent = !isShell && !isCustom && !isRegistryTerminal;
     const idCapable = isAgent && cliSupportsIdSession(tab.cli);
+    const captureCapable = isAgent && cliSupportsCaptureResume(tab.cli);
     const wsTabsNow = useApp.getState().tabs[ws.id] || [];
     const firstAgentOfCli = wsTabsNow.find(
       t => t.type === "terminal" && (t as TerminalTab).cli === tab.cli,
@@ -1028,6 +1025,10 @@ export function TerminalPane({ ws, tab, active }: Props) {
     // out of this effect's deps (respawning on every tab edit is far worse).
     const tabNow = wsTabsNow.find(t => t.id === tab.id) as TerminalTab | undefined;
     const storedUuid = tabNow?.sessionId;
+    // Capture-resume agents (opencode): inject the captured session ID as a
+    // resumeOverride so spawnArgsForCli uses it without touching decideResume.
+    const captureResumeOverride = captureCapable && storedUuid
+      ? `--session ${storedUuid}` : undefined;
     const decision = decideResume({
       isAgent,
       idCapable,
@@ -1038,7 +1039,7 @@ export function TerminalPane({ ws, tab, active }: Props) {
       resumeOverride: ws.resume_override ?? undefined,
       failedResume: failedResumeRef.current,
     });
-    const resumeOverride = decision.kind === "override" ? decision.override : undefined;
+    const resumeOverride = captureResumeOverride ?? (decision.kind === "override" ? decision.override : undefined);
     const useIdResume = decision.kind === "resume-id" || decision.kind === "mint";
     const sessionUuid =
       decision.kind === "mint" ? crypto.randomUUID()
@@ -1332,6 +1333,20 @@ export function TerminalPane({ ws, tab, active }: Props) {
             return;
           }
           markAttention(ws.id, tab.id, "exit");
+          // Capture-based session resume (opencode): on the first normal exit
+          // when no session ID is stored, run the capture command so the next
+          // spawn can use --session <id> instead of starting fresh.
+          if (captureCapable) {
+            const liveTab = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id) as import("@/lib/types").TerminalTab | undefined;
+            if (!liveTab?.sessionId) {
+              const capture = postLaunchCaptureForCli(tab.cli);
+              if (capture) {
+                ipc.runCaptureCommand(capture.command, ws.path)
+                  .then(id => { if (id) useApp.getState().setTabSessionId(ws.id, tab.id, id); })
+                  .catch(() => {});
+              }
+            }
+          }
           // Clear the PTY id — the process is gone. Otherwise the dead
           // id lingers on the tab and features that enumerate live PTYs
           // (Broadcast) would target a corpse. A Restart respawns and
@@ -1384,6 +1399,23 @@ export function TerminalPane({ ws, tab, active }: Props) {
             doneFiredSinceSubmitRef.current = false;
             wdlog(`submit detected (Enter) → 5s working window armed`);
             dbg("user-submit", `Enter → 5s window armed preHash=0x${preSubmitHashRef.current.toString(16)}`);
+            // Capture-based resume (opencode): on the first Enter with no
+            // stored session ID, wait 5s then harvest the session ID the
+            // CLI just created. Strictly one-shot per spawn.
+            if (captureCapable && !captureArmedRef.current) {
+              const liveTab = useApp.getState().tabs[ws.id]?.find(t => t.id === tab.id) as import("@/lib/types").TerminalTab | undefined;
+              if (!liveTab?.sessionId) {
+                const capture = postLaunchCaptureForCli(tab.cli);
+                if (capture) {
+                  captureArmedRef.current = true;
+                  window.setTimeout(() => {
+                    ipc.runCaptureCommand(capture.command, ws.path)
+                      .then(id => { if (id) useApp.getState().setTabSessionId(ws.id, tab.id, id); })
+                      .catch(() => {});
+                  }, 5000);
+                }
+              }
+            }
           }
           const bytes = new TextEncoder().encode(data);
           ipc.ptyWrite(ptyId, Array.from(bytes)).catch(() => {});
