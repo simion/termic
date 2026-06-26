@@ -7,6 +7,17 @@ import { cn } from "@/lib/utils";
 import { RotateCcw } from "lucide-react";
 import { Tip } from "@/components/ui/Tooltip";
 
+function fmtArchived(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+    hour: "2-digit", minute: "2-digit",
+  }).format(d);
+}
+
 export function HistoryView() {
   const projects  = useApp(s => s.projects);
   const workspaces = useApp(s => s.workspaces);
@@ -66,7 +77,11 @@ export function HistoryView() {
                   <span className="font-medium text-[13px]">{w.name}</span>
                   <span className="text-[13.5px] text-[var(--color-fg-faint)]">in {p?.name}</span>
                   <div className="ml-auto flex items-center gap-2">
-                    <span className="text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">archived</span>
+                    <Tip content={(w.archived_at ?? w.created)}>
+                      <span className="text-[12px] tabular-nums text-[var(--color-fg-faint)]">
+                        {fmtArchived(w.archived_at ?? w.created)}
+                      </span>
+                    </Tip>
                     <Tip content="Restore workspace">
                       <button
                         disabled={isRestoring}
