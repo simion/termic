@@ -372,6 +372,10 @@ Open an issue to push something up the list or pick one off.
 - **Restore workspace from archive.** Unarchive a workspace and bring it
   back as a live worktree — restoring the agent session, sandbox config,
   and all workspace state — without having to recreate it from scratch.
+- **Project right-click context menu.** Right-clicking a project in the
+  sidebar should surface common actions (rename, duplicate, open in Finder,
+  copy path, delete) directly — delete in particular is currently buried in
+  Settings and hard to find.
 - **Flexible terminal splits.** iTerm-style pane splitting in any direction
   — horizontal, vertical, and nested — so multiple terminals, agents, or
   aux sessions can live side by side in the same workspace view without
