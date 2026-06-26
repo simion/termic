@@ -357,11 +357,12 @@ Open an issue to push something up the list or pick one off.
   of host-toolchain friction this sidesteps.
 - **Windows prebuilts.** AppImage CI is live for Linux; Windows MSI is
   the matching CI matrix entry.
-- **Code navigation via language servers.** Cmd-click go-to-definition,
-  find class / symbol, hover types. Pluggable LSP servers (rust-analyzer,
-  typescript-language-server, pyright, gopls), pulled / detected from the
-  user's toolchain first. Likely a fast heuristic (ripgrep + tree-sitter)
-  pass for all languages, then real LSP where a server is present.
+- **Code intelligence via language server plugins.** Cmd-click
+  go-to-definition, find class / symbol, hover types, inline diagnostics.
+  Pluggable language server plugins (rust-analyzer, typescript-language-server,
+  pyright, gopls and others) resolved from the user's toolchain automatically.
+  A fast heuristic (ripgrep + tree-sitter) pass for all languages, then real
+  LSP where a server is present.
 - **Send selection to the agent as a reference.** Select text in the
   editor, right-click or hover, and push it into the active agent terminal
   as an `@file:123` style reference so the agent picks it up as context.
@@ -371,6 +372,10 @@ Open an issue to push something up the list or pick one off.
 - **Restore workspace from archive.** Unarchive a workspace and bring it
   back as a live worktree — restoring the agent session, sandbox config,
   and all workspace state — without having to recreate it from scratch.
+- **Terminal performance with large files.** The terminal renderer slows
+  down noticeably with high-volume output or large file content. Better
+  scrollback buffer management, virtual rendering, and output throttling
+  so the terminal stays responsive regardless of output size.
 
 ---
 
