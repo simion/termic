@@ -368,6 +368,9 @@ Open an issue to push something up the list or pick one off.
 - **More coding agents.** First-class opencode, pi.dev, and cline support,
   plus exploring other CLI coding agents as they land. Launch presets for
   local models via ollama so an agent can run fully on-device.
+- **Restore workspace from archive.** Unarchive a workspace and bring it
+  back as a live worktree — restoring the agent session, sandbox config,
+  and all workspace state — without having to recreate it from scratch.
 
 ---
 
