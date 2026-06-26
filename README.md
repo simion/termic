@@ -372,6 +372,10 @@ Open an issue to push something up the list or pick one off.
 - **Restore workspace from archive.** Unarchive a workspace and bring it
   back as a live worktree — restoring the agent session, sandbox config,
   and all workspace state — without having to recreate it from scratch.
+- **Flexible terminal splits.** iTerm-style pane splitting in any direction
+  — horizontal, vertical, and nested — so multiple terminals, agents, or
+  aux sessions can live side by side in the same workspace view without
+  switching tabs.
 - **Terminal performance with large files.** The terminal renderer slows
   down noticeably with high-volume output or large file content. Better
   scrollback buffer management, virtual rendering, and output throttling
