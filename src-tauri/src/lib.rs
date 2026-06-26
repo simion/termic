@@ -26,7 +26,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
@@ -1029,22 +1031,56 @@ fn pty_spawn(
     let mut reader = master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = master.take_writer().map_err(|e| e.to_string())?;
 
-    // Reader thread → emits chunks as "pty://<id>"
-    let app_r = app.clone();
+    // Reader → shared buffer → flusher → Tauri event.
+    //
+    // Emitting one event per 4 KB read is the naive path but catastrophic for
+    // bulk output (e.g. `cat large.txt`): 6 MB produces ~1 500 events, each
+    // serialising bytes as a JSON number array (~4× overhead = 24 MB of JSON).
+    // The flusher coalesces those into ~8-16 events at 60 fps, cutting IPC
+    // load by ~100× for large writes while adding ≤8 ms latency to interactive
+    // responses (imperceptible in practice).
+    let pty_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let reader_done: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
+    // Reader thread: drain PTY bytes into the shared buffer.
+    let buf_r = pty_buf.clone();
+    let done_r = reader_done.clone();
+    let app_final = app.clone();
+    let id_final = id.clone();
     let id_r = id.clone();
     thread::spawn(move || {
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 65536];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let chunk = PtyChunk { data: buf[..n].to_vec() };
-                    let _ = app_r.emit(&format!("pty://{}", id_r), chunk);
+                    buf_r.lock().extend_from_slice(&buf[..n]);
                 }
-                Err(e) => {
-                    dlog(&format!("[pty/{id_r}] read error: {e}"));
-                    break;
-                }
+            }
+        }
+        // Emit any bytes the flusher hasn't picked up yet, then signal done
+        // so the waiter can fire pty-exit after all output is on the wire.
+        let remaining = std::mem::take(&mut *buf_r.lock());
+        if !remaining.is_empty() {
+            let _ = app_final.emit(&format!("pty://{}", id_final), PtyChunk { data: remaining });
+        }
+        done_r.store(true, Ordering::Release);
+    });
+
+    // Flusher thread: drain the shared buffer and emit at most every 8 ms.
+    let buf_f = pty_buf.clone();
+    let done_f = reader_done.clone();
+    let app_f = app.clone();
+    thread::spawn(move || {
+        let interval = Duration::from_millis(8);
+        loop {
+            thread::sleep(interval);
+            let data = std::mem::take(&mut *buf_f.lock());
+            if !data.is_empty() {
+                let _ = app_f.emit(&format!("pty://{}", id_r), PtyChunk { data });
+            }
+            if done_f.load(Ordering::Acquire) {
+                break;
             }
         }
     });
@@ -1057,10 +1093,17 @@ fn pty_spawn(
     let state_w = state.inner.clone();
     let ws_for_waiter = args.workspace_id.clone();
     let pid_for_waiter = child_pid;
+    let done_w = reader_done.clone();
     thread::spawn(move || {
         let status = child.wait().ok();
         let code = status.and_then(|s| i32::try_from(s.exit_code()).ok());
         dlog(&format!("[pty/{id_w}] child exited code={code:?}"));
+        // Wait for the reader to drain and emit all remaining PTY output
+        // before firing pty-exit. Without this the frontend could process
+        // exit before the last bytes arrive and tear down the listener.
+        while !done_w.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
         let _ = app_w.emit(&format!("pty-exit://{}", id_w), PtyExit { code });
         // Drop this PID from the sandbox's PID set so the path watcher
         // stops counting denies from anything that happened to inherit
