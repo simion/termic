@@ -3521,7 +3521,6 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
         w.archived = true;
         w.archived_at = Some(chrono::Utc::now().to_rfc3339());
         save_workspace(w).map_err(|e| e.to_string())?;
-        delete_workspace_file(&id).map_err(|e| e.to_string())?;
         if !errs.is_empty() { return Err(errs.join("; ")); }
         return Ok(());
     }
