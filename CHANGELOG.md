@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.15.10] - 2026-06-26
+## [0.16.0] - 2026-06-26
 
 Restore archived workspaces, project context menu, opencode agent, terminal performance.
 
