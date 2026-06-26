@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { workspaceRestore } from "@/lib/ipc";
@@ -13,9 +13,17 @@ export function HistoryView() {
   const agents    = useApp(s => s.agents);
   const loadAll   = useApp(s => s.loadAll);
   const setActive = useApp(s => s.setActiveWorkspace);
-  const archived  = workspaces.filter(w => w.archived);
 
-  // Per-row loading state: set of workspace IDs currently being restored.
+  // Refresh the workspace list each time the History view is opened so
+  // newly archived workspaces appear without requiring an app restart.
+  useEffect(() => { void loadAll(); }, []);
+
+  const archived = [...workspaces.filter(w => w.archived)].sort((a, b) => {
+    const ta = a.archived_at ?? a.created;
+    const tb = b.archived_at ?? b.created;
+    return tb.localeCompare(ta);
+  });
+
   const [restoring, setRestoring] = useState<Set<string>>(new Set());
 
   async function restore(id: string) {

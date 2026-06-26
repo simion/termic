@@ -225,6 +225,11 @@ pub struct Workspace {
     pub port: u16,
     pub created: String,
     pub archived: bool,
+    /// RFC3339 timestamp written the moment `workspace_archive` marks this
+    /// workspace archived. Used by the History view to order most-recently-
+    /// archived first. `None` on workspaces archived before this field existed.
+    #[serde(default)]
+    pub archived_at: Option<String>,
     /// True when this workspace points at the project's main repo checkout
     /// (no git worktree created). Used by the "open repo directly" feature:
     /// archive skips `git worktree remove`, and the UI shows a distinct icon.
@@ -1706,6 +1711,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -1889,6 +1895,7 @@ fn workspace_import_worktree(
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
     Ok(ws)
@@ -2126,6 +2133,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -2491,6 +2499,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+        archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
 
@@ -3510,6 +3519,7 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
             }
         }
         w.archived = true;
+        w.archived_at = Some(chrono::Utc::now().to_rfc3339());
         save_workspace(w).map_err(|e| e.to_string())?;
         delete_workspace_file(&id).map_err(|e| e.to_string())?;
         if !errs.is_empty() { return Err(errs.join("; ")); }
@@ -3588,6 +3598,7 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
     }
 
     w.archived = true;
+    w.archived_at = Some(chrono::Utc::now().to_rfc3339());
     save_workspace(w).map_err(|e| e.to_string())?;
     if errs.is_empty() { Ok(()) } else { Err(errs.join("; ")) }
 }

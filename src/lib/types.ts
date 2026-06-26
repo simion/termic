@@ -144,6 +144,7 @@ export interface Workspace {
   port: number;
   created: string;
   archived: boolean;
+  archived_at?: string;
   /** True when this workspace points at the project's main repo checkout
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
