@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.16.0] - 2026-06-26
+## [0.16.1] - 2026-06-27
 
 Restore archived workspaces, project context menu, opencode agent, terminal performance.
 
@@ -16,6 +16,7 @@ Restore archived workspaces, project context menu, opencode agent, terminal perf
 
 ### Bug fixes
 - Terminal: eliminated a 1-2 minute freeze when printing large files (was caused by JSON-serializing thousands of PTY events individually).
+- Terminal: Cmd+Delete now kills the line to the beginning (sends Ctrl+U), matching macOS Terminal.app and iTerm2.
 
 ## [0.15.9] - 2026-06-25
 

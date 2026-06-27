@@ -562,6 +562,17 @@ const captureArmedRef = useRef(false);
         e.stopPropagation();
         return false;
       }
+      // Cmd+Backspace → kill line to beginning (\x15, Ctrl+U), matching
+      // macOS Terminal.app and iTerm2. xterm.js does not translate this
+      // combo on its own; without the override WKWebView may also navigate
+      // back, so both preventDefault and return false are required.
+      if (IS_MAC && e.type === "keydown" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === "Backspace") {
+        const pid = ptyRef.current;
+        if (pid) ipc.ptyWrite(pid, [0x15]).catch(() => {});
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
       return true;
     });
 

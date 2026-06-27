@@ -130,6 +130,14 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
           return false;
         }
       }
+      // Cmd+Backspace → kill line to beginning (\x15, Ctrl+U). Mirrors TerminalPane.
+      if (IS_MAC && e.type === "keydown" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === "Backspace") {
+        const pid = ptyRef.current;
+        if (pid) ipc.ptyWrite(pid, [0x15]).catch(() => {});
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
       return true;
     });
     const disposeImeBridge = setupImeReplacementBridge(hostRef.current, () => ptyRef.current, ipc.ptyWrite);
