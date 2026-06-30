@@ -4,6 +4,18 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.17.1] - 2026-06-30
+
+Split pane layout persists across relaunches; TabBar buttons are now split-pane shortcuts.
+
+### Features
+- Split pane layout (tree, ratios, and all pane tabs including shells) is saved and fully restored on relaunch.
+- Both TabBar shortcut buttons now open split panes: split right (Cmd+D) and split below (Shift+Cmd+D). The old bottom-shell toggle is replaced.
+
+### Bug fixes
+- Splitting from the main agent while other panes exist now places the new pane directly adjacent to main, not in the far corner.
+- Splitting from the main agent via TabBar buttons now always targets main regardless of which pane was last focused.
+
 ## [0.17.0] - 2026-06-30
 
 iTerm-style split panes: drag to rearrange, keyboard shortcuts, auto-close on exit.

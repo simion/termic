@@ -269,6 +269,7 @@ export function SplitNodeView({ ws, node, activePaneId, xtermBg, drag, onDragSta
                 const newRatio = Math.max(0.05, Math.min(0.95, liveSplit.ratio + delta / nodeSize));
                 setSplitRatio(ws.id, sn.id, newRatio);
               }}
+              onEnd={() => useApp.getState().saveSplitLayout(ws.id)}
             />
           </div>
         );

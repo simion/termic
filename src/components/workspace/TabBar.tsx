@@ -213,7 +213,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
           </Button>
         </Tip>
 
-        <SplitToggle wsId={ws.id} />
+        <SplitBelowToggle wsId={ws.id} />
         <SplitPaneToggle wsId={ws.id} />
       </div>
       </div>
@@ -237,17 +237,17 @@ function SplitPaneToggle({ wsId }: { wsId: string }) {
   );
 }
 
-/** Toggle a horizontal split with a scratch shell on the bottom half. */
-function SplitToggle({ wsId }: { wsId: string }) {
-  const split = useApp(s => !!s.terminalSplit[wsId]);
-  const toggleSplit = useApp(s => s.toggleTerminalSplit);
+/** Split the focused pane below (horizontal divider, ⇧⌘D). */
+function SplitBelowToggle({ wsId }: { wsId: string }) {
+  const hasSplit = useApp(s => !!s.splitTree[s.activeTab[wsId]]);
+  const splitPane = useApp(s => s.splitPane);
   return (
-    <Tip content={split ? "Close shell below" : "Toggle shell below (⌘J)"} side="bottom">
+    <Tip content="Split below (⇧⌘D)" side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
-        onClick={() => toggleSplit(wsId)}
+        onClick={() => splitPane(wsId, 'h')}
       >
-        <SquareSplitVertical className={cn("h-4 w-4", split && "text-[var(--color-accent)]")} />
+        <SquareSplitVertical className={cn("h-4 w-4", hasSplit && "text-[var(--color-accent)]")} />
       </Button>
     </Tip>
   );

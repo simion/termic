@@ -333,6 +333,10 @@ pub struct Workspace {
     /// semantics. Shell tabs are excluded (no session to resume).
     #[serde(default)]
     pub right_split_tabs: Vec<PersistedTab>,
+    /// JSON-encoded SplitTree for the active tab's pane layout.
+    /// Persisted so relaunch can restore the split configuration.
+    #[serde(default)]
+    pub split_layout: Option<String>,
 }
 
 /// One durable agent tab. `session_id` is termic's own per-tab session
@@ -359,6 +363,9 @@ pub struct PersistedTab {
     /// clobbers a freshly minted session.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Leaf ID of the split pane this tab belongs to (None for main panel tabs).
+    #[serde(default)]
+    pub pane_leaf_id: Option<String>,
 }
 
 /// Frontend payload for `workspace_set_tabs`. `session_id` is only honored
@@ -380,6 +387,8 @@ pub struct PersistedTabInput {
     pub command: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub pane_leaf_id: Option<String>,
 }
 
 impl Workspace {
@@ -1711,6 +1720,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+                split_layout: None,
         archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
@@ -1895,6 +1905,7 @@ fn workspace_import_worktree(
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+                split_layout: None,
         archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
@@ -2133,6 +2144,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+                split_layout: None,
         archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
@@ -2499,6 +2511,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
+                split_layout: None,
         archived_at: None,
     };
     save_workspace(&ws).map_err(|e| e.to_string())?;
@@ -2753,6 +2766,7 @@ fn workspace_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), St
             custom_title: t.custom_title,
             is_default: t.is_default,
             command: t.command,
+            pane_leaf_id: t.pane_leaf_id,
         })
         .collect();
     // No-op when nothing actually changed (compare the serialized shape;
@@ -2767,6 +2781,7 @@ fn workspace_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), St
                 && a.is_default == b.is_default
                 && a.command == b.command
                 && a.session_id == b.session_id
+                && a.pane_leaf_id == b.pane_leaf_id
         });
     if same {
         return Ok(());
@@ -2802,6 +2817,20 @@ fn workspace_set_tab_session_id(id: String, tab_id: String, uuid: String) -> Res
     Ok(())
 }
 
+/// Persist the JSON-encoded SplitTree for a workspace so the split layout
+/// can be restored on the next relaunch. Pass `None` to clear (no splits).
+#[tauri::command]
+fn workspace_set_split_layout(id: String, layout: Option<String>) -> Result<(), String> {
+    let mut list = load_workspaces();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    if w.split_layout == layout {
+        return Ok(());
+    }
+    w.split_layout = layout;
+    save_workspace(w).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Mirror of `workspace_set_tabs` for the right-split panel. Rewrites
 /// `right_split_tabs` with the same merge semantics (stored session_ids
 /// carry forward by tab id so a layout rewrite never wipes a minted uuid).
@@ -2824,6 +2853,7 @@ fn workspace_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<
             custom_title: t.custom_title,
             is_default: t.is_default,
             command: t.command,
+            pane_leaf_id: None,
         })
         .collect();
     let same = next.len() == w.right_split_tabs.len()
@@ -7221,6 +7251,7 @@ pub fn run() {
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
             workspace_restore, workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
             workspace_set_tabs, workspace_set_tab_session_id,
+            workspace_set_split_layout,
             workspace_set_right_tabs, workspace_set_right_tab_session_id,
             workspace_grep_start, workspace_grep_cancel,
             workspace_spotlight_start, workspace_spotlight_stop, workspace_spotlight_resync, workspace_spotlight_status,

@@ -171,6 +171,9 @@ interface AppState {
    *  after any add / close / reorder / rename so quit-restore stays accurate
    *  and an X-close is durably forgotten. */
   syncDurableTabs: (wsId: string) => void;
+  /** Persist the active split-tree JSON for `wsId` to disk so the layout
+   *  survives a relaunch. No-op when the layout hasn't changed. */
+  saveSplitLayout: (wsId: string) => void;
   /** Explicit "close & forget": close the tab AND drop the agent from the
    *  durable set so it does NOT auto-resume on reopen. For secondary tabs
    *  plain closeTab already forgets; this exists for the one case closeTab
@@ -267,15 +270,19 @@ const initialSBW = numOrDefault(LS_SBW, 280);
 const initialRPW = numOrDefault(LS_RPW, 280);
 const initialRFH = numOrDefault(LS_RFH, 260);
 
-/** The durable subset of a workspace's MAIN-PANEL tabs: agent and
- *  custom-command tabs (these relaunch / resume), but NOT shell / scratch
- *  terminals and NOT split-pane tabs (ephemeral per session). */
+/** The durable subset of a workspace's tabs:
+ *  - Main panel: agent and custom-command tabs only (no shell — no session to resume).
+ *  - Split-pane tabs: all of them including shells (they re-spawn fresh on restore).
+ *  Pane tabs carry `pane_leaf_id` so they restore into the correct leaf. */
 function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
   return (tabs ?? [])
     .filter((t): t is TerminalTab =>
-      t.type === "terminal" &&
-      (t as TerminalTab).cli !== "shell" &&
-      !(t as TerminalTab).paneId,
+      t.type === "terminal" && (
+        // Main panel: skip shell/scratch (no session to restore)
+        (!(t as TerminalTab).paneId && (t as TerminalTab).cli !== "shell") ||
+        // Split-pane tabs: all persist (shells re-spawn, agents resume)
+        !!(t as TerminalTab).paneId
+      ),
     )
     .map(t => ({
       id: t.id,
@@ -285,6 +292,7 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       is_default: !!t.is_default,
       command: t.command ?? null,
       session_id: t.sessionId ?? null,
+      pane_leaf_id: t.paneId ?? null,
     }));
 }
 
@@ -651,7 +659,18 @@ export const useApp = create<AppState>((set, get) => ({
     const s = get();
     const tabKey = s.activeTab[wsId];
     if (!tabKey) return "";
-    const activePaneId = paneIdArg ?? s.activePaneId[tabKey];
+    // Determine target pane via DOM focus rather than the store's activePaneId,
+    // which can be stale when the user clicked back to main without moving the
+    // tracked active-pane pointer. If DOM focus is inside an extra split leaf,
+    // target it; otherwise fall through to main (the !targetLeaf branch below).
+    let activePaneId = paneIdArg;
+    if (activePaneId === undefined) {
+      const el = (document.activeElement as HTMLElement | null)
+        ?.closest?.("[data-split-leaf]") as HTMLElement | null;
+      if (el && !el.hasAttribute("data-main-content")) {
+        activePaneId = el.getAttribute("data-pane-id") ?? undefined;
+      }
+    }
     const newLeafId = crypto.randomUUID();
     const newLeaf: PaneLeaf = { type: 'pane', id: newLeafId, tabId: null };
 
@@ -670,14 +689,21 @@ export const useApp = create<AppState>((set, get) => ({
       if (!targetLeaf || targetLeaf.isMain) {
         // Focused on main: new pane goes in the requested direction relative to main.
         // Set root.dir = dir so "split right" (v) puts pane right of main, "split
-        // below" (h) puts it below. Existing extras stay in a sub-split using the
+        // below" (h) puts it below. Existing extras are folded into root.b using the
         // old direction so their internal layout is preserved.
+        // When the direction CHANGES (e.g. had bottom-terminal, now split right), put
+        // the new pane at position `a` (top/left of the new root.b) so it lands
+        // directly adjacent to main rather than in the far corner.
         const innerDir = rootSplit.dir;
+        const dirChanged = !!rootSplit.b && innerDir !== dir;
         newTree = {
           ...rootSplit,
           dir,
           b: rootSplit.b
-            ? { type: 'split', id: crypto.randomUUID(), dir: innerDir, ratio: 0.5, a: rootSplit.b, b: newLeaf }
+            ? { type: 'split', id: crypto.randomUUID(), dir: innerDir, ratio: 0.5,
+                a: dirChanged ? newLeaf : rootSplit.b,
+                b: dirChanged ? rootSplit.b : newLeaf,
+              }
             : newLeaf,
         };
       } else {
@@ -709,6 +735,7 @@ export const useApp = create<AppState>((set, get) => ({
       if (tries > 0) setTimeout(() => tryFocus(tries - 1), 20);
     };
     tryFocus();
+    get().saveSplitLayout(wsId);
     return newLeafId;
   },
 
@@ -776,6 +803,8 @@ export const useApp = create<AppState>((set, get) => ({
 
     if (focusTabId) focusTerminalTab(focusTabId);
     else if (focusOnMain) focusMainTab(get().activeTab[wsId]);
+    get().syncDurableTabs(wsId);
+    get().saveSplitLayout(wsId);
   },
 
   setActivePaneId: (wsId, paneId) => set(s => {
@@ -844,6 +873,7 @@ export const useApp = create<AppState>((set, get) => ({
       const newTree = replaceNode(treeWithout, targetPaneId, newSplit);
       return { splitTree: { ...s.splitTree, [tabKey]: newTree } };
     });
+    get().saveSplitLayout(wsId);
   },
 
   addPaneTab: (wsId, paneId, cli) => {
@@ -866,6 +896,8 @@ export const useApp = create<AppState>((set, get) => ({
       };
     });
     focusTerminalTab(tabId);
+    get().syncDurableTabs(wsId);
+    get().saveSplitLayout(wsId);
     return tabId;
   },
 
@@ -884,6 +916,11 @@ export const useApp = create<AppState>((set, get) => ({
     // so id-capable agents resume independently. This is the "quit the app,
     // reopen the workspace, everything is back" behavior.
     if (persisted.length) {
+      // Separate main-panel tabs from split-pane tabs; each group is restored
+      // differently (pane tabs get paneId set and link into the split tree).
+      const persistedMain = persisted.filter(pt => !pt.pane_leaf_id);
+      const persistedPane = persisted.filter(pt => !!pt.pane_leaf_id);
+
       // Repair corruption from older builds: a buggy close path could wipe
       // then re-seed the default tab, leaving SEVERAL entries all flagged
       // is_default (each a phantom "main agent"). Restoring all of them spawns
@@ -892,7 +929,7 @@ export const useApp = create<AppState>((set, get) => ({
       // (real secondary agents are is_default:false and are kept).
       const seenIds = new Set<string>();
       let keptDefault = false;
-      const clean = persisted.filter(pt => {
+      const clean = persistedMain.filter(pt => {
         if (seenIds.has(pt.id)) return false;
         seenIds.add(pt.id);
         if (pt.is_default) {
@@ -901,10 +938,10 @@ export const useApp = create<AppState>((set, get) => ({
         }
         return true;
       });
-      const wasCorrupt = clean.length !== persisted.length;
-      const restored: TerminalTab[] = clean.map(pt => ({
+      const wasCorrupt = clean.length !== persistedMain.length;
+      const restoredMain: TerminalTab[] = clean.map(pt => ({
         id: pt.id,
-        type: "terminal",
+        type: "terminal" as const,
         cli: pt.cli,
         // Honor a user rename; otherwise re-derive the display name (the
         // agent's configured name may have changed since last launch).
@@ -914,14 +951,46 @@ export const useApp = create<AppState>((set, get) => ({
         ...(pt.command ? { command: pt.command } : {}),
         ...(pt.session_id ? { sessionId: pt.session_id } : {}),
       }));
-      const active = restored.find(t => t.is_default) ?? restored[0];
+      const active = restoredMain.find(t => t.is_default) ?? restoredMain[0];
+
+      // Restore the split tree and pane tabs if a layout was saved.
+      let restoredTree: SplitTree | undefined;
+      let restoredMainLeafId: string | undefined;
+      const restoredPaneTabs: TerminalTab[] = [];
+      if (ws?.split_layout) {
+        try {
+          restoredTree = JSON.parse(ws.split_layout) as SplitTree;
+          restoredMainLeafId = getAllLeaves(restoredTree).find(l => (l as PaneLeaf).isMain)?.id;
+          for (const pt of persistedPane) {
+            restoredPaneTabs.push({
+              id: pt.id, type: "terminal" as const,
+              cli: pt.cli,
+              title: pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli, s.agents),
+              customTitle: !!pt.custom_title,
+              paneId: pt.pane_leaf_id!,
+              ...(pt.command ? { command: pt.command } : {}),
+              ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+            });
+          }
+        } catch {
+          restoredTree = undefined;
+        }
+      }
+
+      const allRestored = [...restoredMain, ...restoredPaneTabs];
       // When we repaired corruption, overwrite persisted_tabs DIRECTLY with
       // the cleaned set — can't go through syncDurableTabs, whose merge would
       // re-add the dropped phantom tabs as "closed-but-durable".
-      const cleaned = wasCorrupt ? durablePersistedTabs(restored) : null;
+      const cleaned = wasCorrupt ? durablePersistedTabs(allRestored) : null;
       set(state => ({
-        tabs: { ...state.tabs, [wsId]: restored },
+        tabs: { ...state.tabs, [wsId]: allRestored },
         activeTab: { ...state.activeTab, [wsId]: active?.id ?? "" },
+        ...(restoredTree && active
+          ? { splitTree: { ...state.splitTree, [active.id]: restoredTree } }
+          : {}),
+        ...(restoredMainLeafId && active
+          ? { activePaneId: { ...state.activePaneId, [active.id]: restoredMainLeafId } }
+          : {}),
         ...(cleaned ? {
           workspaces: state.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: cleaned } : w),
         } : {}),
@@ -975,6 +1044,20 @@ export const useApp = create<AppState>((set, get) => ({
       workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: next } : w),
     }));
     ipc.workspaceSetTabs(wsId, next).catch(() => {});
+  },
+
+  saveSplitLayout: (wsId) => {
+    const s = get();
+    const tabKey = s.activeTab[wsId];
+    const tree = tabKey ? s.splitTree[tabKey] : undefined;
+    const ws = s.workspaces.find(w => w.id === wsId);
+    if (!ws) return;
+    const layout = tree ? JSON.stringify(tree) : null;
+    if ((ws.split_layout ?? null) === layout) return;
+    set(st => ({
+      workspaces: st.workspaces.map(w => w.id === wsId ? { ...w, split_layout: layout } : w),
+    }));
+    ipc.workspaceSetSplitLayout(wsId, layout).catch(() => {});
   },
 
   forgetTab: (wsId, tabId) => {

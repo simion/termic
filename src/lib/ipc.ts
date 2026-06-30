@@ -272,12 +272,9 @@ export const workspaceSetTabs = (id: string, tabs: import("@/lib/types").Persist
  *  Keyed by tab id so several agents in a workspace resume independently. */
 export const workspaceSetTabSessionId = (id: string, tabId: string, uuid: string) =>
   invoke<void>("workspace_set_tab_session_id", { id, tabId, uuid });
-/** Mirror of workspaceSetTabs for right-split panel agent tabs. */
-export const workspaceSetRightTabs = (id: string, tabs: import("@/lib/types").PersistedTab[]) =>
-  invoke<void>("workspace_set_right_tabs", { id, tabs });
-/** Mirror of workspaceSetTabSessionId for right-split panel tabs. */
-export const workspaceSetRightTabSessionId = (id: string, tabId: string, uuid: string) =>
-  invoke<void>("workspace_set_right_tab_session_id", { id, tabId, uuid });
+/** Persist the JSON-encoded SplitTree for a workspace. Pass null to clear. */
+export const workspaceSetSplitLayout = (id: string, layout: string | null) =>
+  invoke<void>("workspace_set_split_layout", { id, layout });
 export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agents_defaults");
 /** Run a shell command in `cwd` via `sh -lc` and return trimmed stdout.
  *  Used by post_launch_capture to harvest the CLI's session ID after the

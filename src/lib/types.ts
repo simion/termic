@@ -210,8 +210,8 @@ export interface Workspace {
    *  its X drops it from this list (forget); quitting the app leaves it
    *  intact (restore). */
   persisted_tabs?: PersistedTab[];
-  /** Same as `persisted_tabs` but for right-split panel agents. */
-  right_split_tabs?: PersistedTab[];
+  /** JSON-encoded SplitTree for the active tab's pane layout. Restored on relaunch. */
+  split_layout?: string | null;
 }
 
 /** One durable agent tab persisted on a workspace. Mirror of
@@ -228,6 +228,8 @@ export interface PersistedTab {
    *  (claude / gemini). Null for cwd-resume agents (codex) and tabs that
    *  have not minted a session yet. Owned by `workspaceSetTabSessionId`. */
   session_id?: string | null;
+  /** Leaf ID of the split pane this tab belongs to (absent for main panel tabs). */
+  pane_leaf_id?: string | null;
 }
 
 /** Per-member input for `workspace_create_multi`. `root_path` matches a

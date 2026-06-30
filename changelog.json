@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.17.1",
+      "date": "2026-06-30",
+      "summary": "Split pane layout persists across relaunches; TabBar buttons are now split-pane shortcuts."
+    },
+    {
       "version": "0.17.0",
       "date": "2026-06-30",
       "summary": "iTerm-style split panes: drag to rearrange, keyboard shortcuts, auto-close on exit."
