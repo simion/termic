@@ -44,6 +44,8 @@ const LS_MD_VIEW       = "markdownDefaultView";
 const LS_BRANCH_PREFIX = "branchPrefix";
 const LS_QUEUE_MIN_INTERVAL = "queueMinIntervalMs";
 const LS_SHORTCUTS     = "shortcutBindings";
+const LS_PANE_DIM      = "splitPaneDim";
+const LS_PANE_DIM_AMT  = "splitPaneDimAmount";
 
 /** Markdown edit-tab view: source editor, rendered preview, or both. */
 export type MarkdownView = "source" | "preview" | "split";
@@ -388,6 +390,10 @@ interface PrefsState {
    *  overrides). Read live by `useShortcuts`; edited from the Shortcuts
    *  settings page. */
   shortcuts: BindingMap;
+  /** Dim inactive split panes. ON by default. */
+  splitPaneDim: boolean;
+  /** Dimming intensity 0–100 (percentage of black overlay). Default 30. */
+  splitPaneDimAmount: number;
 
   setEditorFontId:    (id: string) => void;
   setEditorThemeId:   (id: string) => void;
@@ -420,6 +426,8 @@ interface PrefsState {
   setMarkdownDefaultView: (v: MarkdownView) => void;
   setBranchPrefix: (v: string) => void;
   setQueueMinIntervalMs: (ms: number) => void;
+  setSplitPaneDim: (v: boolean) => void;
+  setSplitPaneDimAmount: (v: number) => void;
   /** Rebind a single shortcut. */
   setShortcut: (id: ShortcutId, binding: Binding) => void;
   /** Restore one shortcut to its factory binding. */
@@ -557,6 +565,8 @@ export const usePrefs = create<PrefsState>(set => ({
   branchPrefix: initialBranchPrefix,
   queueMinIntervalMs: initialQueueMinInterval,
   shortcuts: loadShortcuts(),
+  splitPaneDim: lsGetBool(LS_PANE_DIM, true),
+  splitPaneDimAmount: Math.max(0, Math.min(100, Math.round(lsGetNum(LS_PANE_DIM_AMT, 10)))),
 
   setEditorFontId: (id) => {
     try { localStorage.setItem(LS_EDITOR_FONT, id); } catch {}
@@ -684,6 +694,15 @@ export const usePrefs = create<PrefsState>(set => ({
     const clamped = Math.max(0, Math.min(120000, Math.round(ms)));
     try { localStorage.setItem(LS_QUEUE_MIN_INTERVAL, String(clamped)); } catch {}
     set({ queueMinIntervalMs: clamped });
+  },
+  setSplitPaneDim: (v) => {
+    try { localStorage.setItem(LS_PANE_DIM, v ? "1" : "0"); } catch {}
+    set({ splitPaneDim: v });
+  },
+  setSplitPaneDimAmount: (v) => {
+    const clamped = Math.max(0, Math.min(100, Math.round(v)));
+    try { localStorage.setItem(LS_PANE_DIM_AMT, String(clamped)); } catch {}
+    set({ splitPaneDimAmount: clamped });
   },
   setShortcut: (id, binding) => {
     const next = { ...usePrefs.getState().shortcuts, [id]: binding };

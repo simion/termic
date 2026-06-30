@@ -154,12 +154,12 @@ export function ShortcutsSection() {
                       <button
                         onClick={() => { setRecordError(null); setRecordingId(isRecording ? null : def.id); }}
                         className={cn(
-                          "flex min-h-[28px] min-w-[72px] items-center justify-center gap-1 rounded-md border px-2 py-1",
+                          "flex min-h-[28px] min-w-[80px] items-center justify-center gap-1 rounded-md px-2 py-1 hover:bg-[var(--color-hover)]",
                           isRecording
-                            ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                            ? "ring-1 ring-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
                             : isConflict
-                              ? "border-[var(--color-accent)] hover:bg-[var(--color-hover)]"
-                              : "border-[var(--color-border)] hover:bg-[var(--color-hover)]",
+                              ? "ring-1 ring-[var(--color-accent)]"
+                              : "",
                         )}
                       >
                         {isRecording
@@ -179,12 +179,15 @@ export function ShortcutsSection() {
 }
 
 function Key({ glyph }: { glyph: string }) {
-  // Platform-aware human name (Cmd/Ctrl, Option/Alt, Up, …); letters, digits,
-  // brackets and the 1…9 range render as themselves. The mac symbols alone
-  // read like hieroglyphs to anyone who hasn't memorized them.
   const name = glyphLabel(glyph);
   return (
-    <kbd className="inline-flex items-center rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-[1px] font-mono text-[11.5px] leading-none text-[var(--color-fg)]">
+    <kbd
+      style={{
+        background: "color-mix(in srgb, var(--color-fg) 9%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-fg) 18%, transparent)",
+      }}
+      className="inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[12.5px] leading-none text-[var(--color-fg)]"
+    >
       {name}
     </kbd>
   );

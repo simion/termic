@@ -171,6 +171,44 @@ export function AppearanceSection() {
         <span className="text-[#d97757]">{"〉"}</span> npm test <span className="text-[#7cd57e]">✓</span><br/>
         <span className="text-[#a7f3a0]">└─▶ All tests passed!</span>
       </div>)}
+
+      <PanesSection />
+    </div>
+  );
+}
+
+function PanesSection() {
+  const splitPaneDim = usePrefs(s => s.splitPaneDim);
+  const setSplitPaneDim = usePrefs(s => s.setSplitPaneDim);
+  const splitPaneDimAmount = usePrefs(s => s.splitPaneDimAmount);
+  const setSplitPaneDimAmount = usePrefs(s => s.setSplitPaneDimAmount);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <h2 className="text-[15px] font-medium">Panes</h2>
+      <Toggle
+        label="Dim inactive split panes"
+        hint="Overlay a dark mask over split panes that do not have keyboard focus."
+        value={splitPaneDim}
+        onChange={setSplitPaneDim}
+      />
+      {splitPaneDim && (
+        <Field
+          label="Dimming amount"
+          hint={`${splitPaneDimAmount}%`}
+          control={
+            <input
+              type="range"
+              min={0}
+              max={80}
+              step={1}
+              value={splitPaneDimAmount}
+              onChange={e => setSplitPaneDimAmount(Number(e.target.value))}
+              className="w-32"
+            />
+          }
+        />
+      )}
     </div>
   );
 }

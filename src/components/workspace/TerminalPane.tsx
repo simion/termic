@@ -1336,11 +1336,17 @@ const captureArmedRef = useRef(false);
           // (and custom-command workspaces), where an unexpected death is
           // worth surfacing.
           if (tab.cli === "shell" || isRegistryTerminal) {
-            if (tab.panel === "right") {
-              useApp.getState().closeRightTab(ws.id, tab.id);
+            if (tab.paneId) {
+              useApp.getState().closePane(ws.id, tab.paneId);
             } else {
               useApp.getState().closeTab(ws.id, tab.id);
             }
+            return;
+          }
+          // Non-main split panes (agents): close the pane on exit rather than
+          // showing the "exited / Restart" banner — the pane's job is done.
+          if (tab.paneId) {
+            useApp.getState().closePane(ws.id, tab.paneId);
             return;
           }
           markAttention(ws.id, tab.id, "exit");
@@ -1753,9 +1759,9 @@ const captureArmedRef = useRef(false);
       // Clicking into either pane's terminal makes that pane the focused one,
       // so the single-active-tab cue and file-open routing follow the cursor.
       // Capture phase so it fires before xterm grabs the mousedown.
-      onMouseDownCapture={() =>
-        useApp.getState().setActivePane(ws.id, tab.panel === "right" ? "right" : "main")
-      }
+      onMouseDownCapture={() => {
+        if (tab.paneId) useApp.getState().setActivePaneId(ws.id, tab.paneId);
+      }}
     >
       {exited && (
         // In-flow banner above the terminal (NOT a full-cover overlay): the
@@ -1829,21 +1835,7 @@ export function FooterBar({ ws, sandboxWarning }: {
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
   const mode = effectiveSandboxMode(ws);
 
-  // Right-split queue affordance: when the user is focused on a right-pane
-  // AGENT (not a plain shell), fade the main/left queue button and surface a
-  // right-aligned one targeting that agent — so the queue follows the pane.
-  const rightSplitOpen = useApp(s => !!s.rightSplit[ws.id]);
-  const footerActivePane = useApp(s => s.activePane[ws.id] ?? "main");
-  const rightActiveId = useApp(s => s.activeRightTab[ws.id]);
-  const agentsReg = useApp(s => s.agents);
-  const rightActiveCli = useApp(s => {
-    const id = s.activeRightTab[ws.id];
-    const t = (s.tabs[ws.id] ?? []).find(x => x.id === id);
-    return t && t.type === "terminal" ? t.cli : null;
-  });
-  const rightHasAgent =
-    rightSplitOpen && rightActiveCli != null && workDoneCapable(rightActiveCli, agentsReg);
-  const rightAgentFocused = rightHasAgent && footerActivePane === "right";
+  // no right-split agent queue state needed; split panes show their own queue via SplitView
 
   // Live counter. ENFORCING polls the deny counter ("N blocked");
   // MONITORING polls the access counter ("N accesses"). Cheap (one
@@ -1896,12 +1888,7 @@ export function FooterBar({ ws, sandboxWarning }: {
       {/* Queue + Terminal sit on the LEFT (only while the split/aux terminal
           is closed — when open the queue moves into that strip, see
           WorkspaceView). The sandbox status is pushed to the RIGHT. */}
-      {!splitOpen && (
-        <MessageQueueButton
-          wsId={ws.id}
-          className={cn(rightAgentFocused && "opacity-40 transition-opacity")}
-        />
-      )}
+      {!splitOpen && <MessageQueueButton wsId={ws.id} />}
       {/* Pending inline review comments (#28). Self-hides when there are none,
           so it's safe to render unconditionally — keeps the "N comments · Send"
           affordance reachable from any tab regardless of split state. */}
@@ -1925,15 +1912,6 @@ export function FooterBar({ ws, sandboxWarning }: {
           bubble to "open Edit dialog." Chip only shows when sandboxed + we've
           actually seen denies. */}
       <div className="ml-auto flex items-center gap-1.5">
-        {/* Right-pane agent queue button, right-aligned by the sandbox status.
-            Only while no bottom split is open (then it lives in that strip). */}
-        {!splitOpen && rightHasAgent && rightActiveId && (
-          <MessageQueueButton
-            wsId={ws.id}
-            preferTabId={rightActiveId}
-            className={cn(footerActivePane !== "right" && "opacity-40 transition-opacity")}
-          />
-        )}
         {mode !== "off" && total > 0 && (
           <DeniedHostsPopover wsId={ws.id} cli={ws.cli ?? "claude"} count={total} mode={mode} />
         )}

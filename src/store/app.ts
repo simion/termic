@@ -2,7 +2,12 @@
 // updates (immutable replacements, not in-place mutations).
 
 import { create } from "zustand";
-import type { Project, Workspace, Tab, TerminalTab, PersistedTab } from "@/lib/types";
+import type { Project, Workspace, Tab, TerminalTab, PersistedTab, SplitTree, PaneLeaf, SplitDir } from "@/lib/types";
+import type { SplitNode as _SplitNode } from "@/lib/splitTree";
+import {
+  findLeaf, getAllLeaves, countLeaves, replaceNode, removeLeaf,
+  updateLeafTabId, updateSplitRatio, findAdjacentPane, equalizeSplitsOnAxis,
+} from "@/lib/splitTree";
 import * as ipc from "@/lib/ipc";
 import { focusTerminalTab, focusMainTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
@@ -55,19 +60,19 @@ interface AppState {
   bottomTabs: Record<string, { id: string; title: string; liveTitle?: string; autoFocus?: boolean }[]>;
   /** Per-workspace: id of the active bottom-terminal tab. */
   activeBottomTab: Record<string, string>;
-  /** Per-workspace: whether the main pane is split vertically (agent on
-   *  left, scratch shell on the right). Persisted in localStorage. */
-  rightSplit: Record<string, boolean>;
-  /** Per-workspace: right split width as a fraction 0–1 of the container.
-   *  Persisted in localStorage so window resizes keep the same proportion. */
-  rightSplitRatio: Record<string, number>;
-  /** Per-workspace: id of the active right-panel tab. */
-  activeRightTab: Record<string, string>;
-  /** Per-workspace: which split pane currently has focus ("main" | "right").
-   *  Drives the single-active-tab visual cue (only the focused pane's active
-   *  tab reads as fully active) and routes file-opens to the last-focused
-   *  pane. Session-only, defaults to "main". */
-  activePane: Record<string, "main" | "right">;
+  /** Per-workspace: the iTerm-like split-pane tree for the main content area.
+   *  Absent = single pane (legacy/simple mode). A SplitNode at the root means
+   *  at least two panes are showing. Session-only — not persisted. */
+  splitTree: Record<string, SplitTree>;
+  /** Per-workspace: id of the leaf pane node that has keyboard focus.
+   *  Absent = main pane is active (no splits or main leaf focused). */
+  activePaneId: Record<string, string>;
+  /** Per-workspace: the pane that was focused just before the current one.
+   *  Used to restore focus on close and to prefer the origin pane on
+   *  reverse navigation. */
+  /** Per-tab focus history stack (newest first, capped at 10).
+   *  Used to restore focus to the last-used pane when the active one is closed. */
+  paneHistory: Record<string, string[]>;
   /** Workspaces the user has activated this session. We keep them rendered
    *  (hidden) after switching away so terminals + PTYs stay alive. Cleared
    *  on app restart — survival is intentionally per-session. */
@@ -139,26 +144,21 @@ interface AppState {
    *  e.g. the running command or cwd). Falls back to the base "shell N" when
    *  empty. Idempotent. */
   setBottomTabLiveTitle: (wsId: string, tabId: string, liveTitle: string) => void;
-  toggleRightSplit: (wsId: string) => void;
-  setRightSplitRatio: (wsId: string, ratio: number) => void;
-  /** Returns the id of the new right-panel shell tab. */
-  addRightTab: (wsId: string) => string;
-  /** Add an agent tab to the right-panel split. */
-  addRightAgentTab: (wsId: string, cli: string) => void;
-  closeRightTab: (wsId: string, tabId: string) => void;
-  setActiveRightTab: (wsId: string, tabId: string) => void;
-  /** Mark which split pane has focus. Called on tab activation and on
-   *  mousedown into a pane's terminal. */
-  setActivePane: (wsId: string, pane: "main" | "right") => void;
-  /** Move a terminal tab between the main and right split panes (drag-to-move).
-   *  Opens the right split if moving into it; closes the right split (and
-   *  forgets its ratio) if the move empties it. Never empties the main pane. */
-  moveTabToPane: (wsId: string, tabId: string, toPane: "main" | "right") => void;
-  /** Restore right-split agent tabs from `right_split_tabs` if any. Opens
-   *  the split and populates tabs. No-op if already populated. */
-  ensureDefaultRightTabs: (wsId: string) => void;
-  /** Sync the right-split's durable agent-tab list to disk. */
-  syncDurableRightTabs: (wsId: string) => void;
+  /** Split the currently focused pane (or `paneId`) in the given direction.
+   *  dir 'v' = add new pane to the right; 'h' = add new pane below.
+   *  Returns the new leaf pane's id. */
+  splitPane: (wsId: string, dir: SplitDir, paneId?: string) => string;
+  /** Close a split pane (its sibling takes the freed space). Kills the pane's tab PTY. */
+  closePane: (wsId: string, paneId: string) => void;
+  /** Set which split-pane leaf has keyboard focus. */
+  setActivePaneId: (wsId: string, paneId: string) => void;
+  /** Adjust the ratio of a SplitNode (called from the resize handle). */
+  setSplitRatio: (wsId: string, splitId: string, ratio: number) => void;
+  /** Drag-to-rearrange: move source leaf to a drop zone adjacent to target. */
+  movePaneTo: (wsId: string, sourcePaneId: string, targetPaneId: string, zone: 'left' | 'right' | 'top' | 'bottom') => void;
+  /** Once the SplitLauncher in an empty leaf has chosen a cli, create the tab
+   *  and wire it into the leaf. Returns the new tab id. */
+  addPaneTab: (wsId: string, paneId: string, cli: string) => string;
 
   /** Restore the workspace's durable agent tabs from `persisted_tabs` if
    *  any (quit → reopen → everything back, each id-capable tab resuming its
@@ -242,10 +242,8 @@ const LS_RPANEL  = "rightPanelHidden";
 const LS_SPLIT   = "terminalSplit";       // Record<wsId, boolean>
 const LS_SPLITH  = "terminalSplitHeight"; // Record<wsId, number>
 const LS_SPLITC  = "terminalSplitCollapsed"; // Record<wsId, boolean>
-const LS_RSPLIT    = "rightTerminalSplit";     // Record<wsId, boolean>
-// rightSplitRatio is intentionally NOT persisted: it resets to 0.5 each time
-// the split is opened. Storing it across sessions felt wrong when the window
-// has been resized or a different workspace opened at a different size.
+// Note: split tree (splitTree, activePaneId) is session-only, not persisted.
+// Split pane layout always starts fresh; PTYs are ephemeral across launches.
 const LS_SBW     = "sidebarWidth";
 const LS_RPW     = "rightPanelWidth";
 const LS_RFH     = "rightFooterHeight";
@@ -259,7 +257,6 @@ const initialHidden  = (() => { try { return localStorage.getItem(LS_RPANEL)  ==
 const initialSplit   = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLIT)  || "{}"); } catch { return {}; } })();
 const initialSplitH  = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLITH) || "{}"); } catch { return {}; } })();
 const initialSplitC  = (() => { try { return JSON.parse(localStorage.getItem(LS_SPLITC) || "{}"); } catch { return {}; } })();
-const initialRSplit = (() => { try { return JSON.parse(localStorage.getItem(LS_RSPLIT) || "{}"); } catch { return {}; } })();
 const numOrDefault = (k: string, fallback: number) => {
   // Math.round on read too — protects against any older saved fractional
   // value sneaking through and re-blurring the layout on next launch.
@@ -272,13 +269,13 @@ const initialRFH = numOrDefault(LS_RFH, 260);
 
 /** The durable subset of a workspace's MAIN-PANEL tabs: agent and
  *  custom-command tabs (these relaunch / resume), but NOT shell / scratch
- *  terminals and NOT right-panel tabs (those go through durableRightPersistedTabs). */
+ *  terminals and NOT split-pane tabs (ephemeral per session). */
 function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
   return (tabs ?? [])
     .filter((t): t is TerminalTab =>
       t.type === "terminal" &&
       (t as TerminalTab).cli !== "shell" &&
-      !(t as TerminalTab).panel,
+      !(t as TerminalTab).paneId,
     )
     .map(t => ({
       id: t.id,
@@ -291,24 +288,6 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
     }));
 }
 
-/** Durable subset of right-panel tabs (agents only, no shells). */
-function durableRightPersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
-  return (tabs ?? [])
-    .filter((t): t is TerminalTab =>
-      t.type === "terminal" &&
-      (t as TerminalTab).panel === "right" &&
-      (t as TerminalTab).cli !== "shell",
-    )
-    .map(t => ({
-      id: t.id,
-      cli: t.cli,
-      title: t.customTitle ? t.title : null,
-      custom_title: !!t.customTitle,
-      is_default: false,
-      command: t.command ?? null,
-      session_id: t.sessionId ?? null,
-    }));
-}
 
 export const useApp = create<AppState>((set, get) => ({
   projects: [],
@@ -328,10 +307,9 @@ export const useApp = create<AppState>((set, get) => ({
   terminalSplitCollapsed: initialSplitC,
   bottomTabs: {},
   activeBottomTab: {},
-  rightSplit: initialRSplit,
-  rightSplitRatio: {},
-  activeRightTab: {},
-  activePane: {},
+  splitTree: {},
+  activePaneId: {},
+  paneHistory: {},
   mountedWorkspaces: new Set<string>(),
   footerTerm: {},
   collapsedProjects:   initialCollapsed   as Record<string, boolean>,
@@ -544,8 +522,12 @@ export const useApp = create<AppState>((set, get) => ({
         return;
       }
       get().toggleTerminalSplitCollapsed(wsId);
-      const rightActive = !!s.rightSplit[wsId] && s.activePane[wsId] === "right";
-      if (rightActive) focusTerminalTab(s.activeRightTab[wsId]);
+      // Return focus to the active split pane or main pane.
+      const tabKey = s.activeTab[wsId];
+      const tree = tabKey ? s.splitTree[tabKey] : undefined;
+      const activePaneId = tree ? s.activePaneId[tabKey!] : null;
+      const activePaneLeaf = (activePaneId && tree) ? findLeaf(tree, activePaneId) : null;
+      if (activePaneLeaf?.tabId) focusTerminalTab(activePaneLeaf.tabId);
       else focusMainTab(s.activeTab[wsId]);
       return;
     }
@@ -665,237 +647,234 @@ export const useApp = create<AppState>((set, get) => ({
     return changed ? { bottomTabs: { ...s.bottomTabs, [wsId]: next } } : s;
   }),
 
-  toggleRightSplit: (wsId) => set(s => {
-    const opening = !s.rightSplit[wsId];
-    const next = { ...s.rightSplit, [wsId]: opening };
-    try { localStorage.setItem(LS_RSPLIT, JSON.stringify(next)); } catch {}
-    if (opening) return { rightSplit: next };
-    // Closing: forget the ratio so next open starts at 0.5, and hand focus
-    // back to the main pane so its active tab reads as fully active again.
-    const { [wsId]: _, ...ratioRest } = s.rightSplitRatio; void _;
-    return { rightSplit: next, rightSplitRatio: ratioRest, activePane: { ...s.activePane, [wsId]: "main" } };
-  }),
-  setRightSplitRatio: (wsId, ratio) => set(s => ({
-    rightSplitRatio: { ...s.rightSplitRatio, [wsId]: Math.max(0.1, Math.min(0.9, ratio)) },
-  })),
-  addRightTab: (wsId) => {
-    const id = crypto.randomUUID();
-    set(s => {
-      const rightCount = (s.tabs[wsId] ?? []).filter(
-        t => t.type === "terminal" && (t as TerminalTab).panel === "right",
-      ).length;
-      const tab: TerminalTab = {
-        id, type: "terminal",
-        title: `shell ${rightCount + 1}`,
-        cli: "shell", panel: "right",
-      };
-      return {
-        tabs:          { ...s.tabs, [wsId]: [...(s.tabs[wsId] ?? []), tab] },
-        activeRightTab: { ...s.activeRightTab, [wsId]: id },
-        activePane:     { ...s.activePane, [wsId]: "right" },
-      };
-    });
-    focusTerminalTab(id);
-    return id;
-  },
-  addRightAgentTab: (wsId, cli) => {
+  splitPane: (wsId, dir, paneIdArg) => {
     const s = get();
-    const id = crypto.randomUUID();
-    const tab: TerminalTab = {
-      id, type: "terminal",
-      title: agentDisplayName(cli, s.agents),
-      cli,
-      panel: "right",
-    };
-    set(state => ({
-      tabs:          { ...state.tabs, [wsId]: [...(state.tabs[wsId] ?? []), tab] },
-      activeRightTab: { ...state.activeRightTab, [wsId]: id },
-      activePane:     { ...state.activePane, [wsId]: "right" },
-    }));
-    get().syncDurableRightTabs(wsId);
-    focusTerminalTab(id);
-  },
-  closeRightTab: (wsId, tabId) => {
-    let focusId = "";
-    set(s => {
-      const allTabs = s.tabs[wsId] ?? [];
-      const tabIdx = allTabs.findIndex(t => t.id === tabId);
-      if (tabIdx < 0) return s;
-      const closing = allTabs[tabIdx];
-      if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
-      const nextAll = allTabs.filter(t => t.id !== tabId);
-      // Right pane holds terminals AND file (edit/diff) tabs — count by panel,
-      // not type, so closing a terminal while a file tab remains keeps the
-      // split open (and vice versa).
-      const rightNext = nextAll.filter(t => t.panel === "right");
-      const wasActive = s.activeRightTab[wsId] === tabId;
-      let activeRight = s.activeRightTab[wsId];
-      if (wasActive) {
-        const prevRight = allTabs.filter(t => t.panel === "right");
-        const prevIdx = prevRight.findIndex(t => t.id === tabId);
-        activeRight = rightNext[Math.max(0, prevIdx - 1)]?.id || rightNext[0]?.id || "";
-      }
-      if (rightNext.length === 0) {
-        if (wasActive) focusId = s.activeTab[wsId] || "";
-        const nextRS = { ...s.rightSplit, [wsId]: false };
-        try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
-        // Forget the ratio so next open starts fresh at 0.5.
-        const { [wsId]: _, ...ratioRest } = s.rightSplitRatio; void _;
-        return {
-          tabs:           { ...s.tabs, [wsId]: nextAll },
-          activeRightTab: { ...s.activeRightTab, [wsId]: "" },
-          activePane:     { ...s.activePane, [wsId]: "main" },
-          rightSplit:     nextRS,
-          rightSplitRatio: ratioRest,
+    const tabKey = s.activeTab[wsId];
+    if (!tabKey) return "";
+    const activePaneId = paneIdArg ?? s.activePaneId[tabKey];
+    const newLeafId = crypto.randomUUID();
+    const newLeaf: PaneLeaf = { type: 'pane', id: newLeafId, tabId: null };
+
+    let newTree: SplitTree;
+    const currentTree = s.splitTree[tabKey];
+
+    if (!currentTree) {
+      // First split: main leaf is always root.a; new pane is root.b.
+      const mainLeafId = crypto.randomUUID();
+      const mainLeaf: PaneLeaf = { type: 'pane', id: mainLeafId, isMain: true, tabId: null };
+      newTree = { type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5, a: mainLeaf, b: newLeaf };
+    } else {
+      const targetLeaf = findLeaf(currentTree, activePaneId!);
+      const rootSplit = currentTree as _SplitNode;
+
+      if (!targetLeaf || targetLeaf.isMain) {
+        // Focused on main: new pane goes in the requested direction relative to main.
+        // Set root.dir = dir so "split right" (v) puts pane right of main, "split
+        // below" (h) puts it below. Existing extras stay in a sub-split using the
+        // old direction so their internal layout is preserved.
+        const innerDir = rootSplit.dir;
+        newTree = {
+          ...rootSplit,
+          dir,
+          b: rootSplit.b
+            ? { type: 'split', id: crypto.randomUUID(), dir: innerDir, ratio: 0.5, a: rootSplit.b, b: newLeaf }
+            : newLeaf,
         };
+      } else {
+        // Focused on an extra pane: split that pane's space.
+        newTree = replaceNode(currentTree, targetLeaf.id, {
+          type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5, a: targetLeaf, b: newLeaf,
+        });
       }
-      if (wasActive) focusId = activeRight;
+      // Equalize all same-axis columns/rows so splits remain visually even.
+      // Perpendicular subtrees count as 1 slot so mixed layouts aren't distorted.
+      newTree = equalizeSplitsOnAxis(newTree, dir);
+    }
+
+    set(s2 => {
+      const cur = s2.activePaneId[tabKey];
+      const prevStack = s2.paneHistory[tabKey] ?? [];
       return {
-        tabs:          { ...s.tabs, [wsId]: nextAll },
-        activeRightTab: { ...s.activeRightTab, [wsId]: activeRight },
+        splitTree: { ...s2.splitTree, [tabKey]: newTree },
+        activePaneId: { ...s2.activePaneId, [tabKey]: newLeafId },
+        paneHistory: cur
+          ? { ...s2.paneHistory, [tabKey]: [cur, ...prevStack.filter(id => id !== cur)].slice(0, 10) }
+          : s2.paneHistory,
       };
     });
-    get().syncDurableRightTabs(wsId);
-    if (focusId) focusTerminalTab(focusId);
+
+    const tryFocus = (tries = 30) => {
+      const el = document.querySelector(`[data-split-launcher][data-pane-id="${newLeafId}"]`) as HTMLElement | null;
+      if (el) { el.focus({ preventScroll: true }); return; }
+      if (tries > 0) setTimeout(() => tryFocus(tries - 1), 20);
+    };
+    tryFocus();
+    return newLeafId;
   },
-  setActiveRightTab: (wsId, tabId) => set(s => {
-    const list = s.tabs[wsId] || [];
-    const now = Date.now();
-    const next = list.map(t => {
-      if (t.id !== tabId) return t;
-      if (t.type !== "terminal") return t;
-      const patch: Partial<TerminalTab> = {};
-      if (t.unread) patch.unread = null;
-      if (t.workState === "done" || t.workState === "working") {
-        patch.workState = "idle";
-        patch.workProgress = null;
-        patch.workProgressKind = null;
-        patch.workClearedAt = now;
+
+  closePane: (wsId, paneId) => {
+    let focusOnMain = false;
+    let focusTabId = "";
+    const tabKey = get().activeTab[wsId];
+    if (!tabKey) return;
+    set(s => {
+      const tree = s.splitTree[tabKey];
+      if (!tree) return s;
+      const leaf = findLeaf(tree, paneId);
+      const tabId = leaf?.tabId ?? null;
+
+      // Kill the tab's PTY if there is one.
+      if (tabId) {
+        const tab = (s.tabs[wsId] ?? []).find(t => t.id === tabId);
+        if (tab?.type === 'terminal' && tab.ptyId) ipc.ptyKill(tab.ptyId).catch(() => {});
       }
-      return Object.keys(patch).length ? { ...t, ...patch } : t;
+
+      // removeLeaf collapses the parent split: the sibling takes the freed space.
+      // Equalize BOTH axes so mixed v/h layouts stay even regardless of which
+      // pane was closed (rootDir alone misses the perpendicular axis).
+      const removedTree = removeLeaf(tree, paneId);
+      const newTree = removedTree && removedTree.type === 'split'
+        ? equalizeSplitsOnAxis(equalizeSplitsOnAxis(removedTree, 'v'), 'h')
+        : removedTree;
+
+      // Build a new tabs list without the closed pane's tab.
+      const nextTabs = tabId
+        ? (s.tabs[wsId] ?? []).filter(t => t.id !== tabId)
+        : s.tabs[wsId] ?? [];
+
+      const patch: Partial<AppState> = { tabs: { ...s.tabs, [wsId]: nextTabs } };
+
+      if (!newTree || newTree.type === 'pane') {
+        // Collapsed to 0 or 1 leaves → no more splits.
+        const { [tabKey]: _t, ...treeRest } = s.splitTree; void _t;
+        const { [tabKey]: _p, ...paneRest } = s.activePaneId; void _p;
+        const { [tabKey]: _ph2, ...histRest } = s.paneHistory; void _ph2;
+        patch.splitTree = treeRest;
+        patch.activePaneId = paneRest;
+        patch.paneHistory = histRest;
+        focusOnMain = true;
+      } else {
+        const remaining = getAllLeaves(newTree);
+        const remainingIds = new Set(remaining.map(l => l.id));
+        // Walk history stack to find the most recently focused surviving pane.
+        const history = s.paneHistory[tabKey] ?? [];
+        const newActive =
+          history.find(id => id !== paneId && remainingIds.has(id)) ||
+          remaining.find(l => l.id !== paneId)?.id ||
+          remaining[0].id;
+        // Remove the closed pane from history; rest of the stack is preserved.
+        const newHistory = history.filter(id => id !== paneId).slice(0, 10);
+        patch.splitTree = { ...s.splitTree, [tabKey]: newTree };
+        patch.activePaneId = { ...s.activePaneId, [tabKey]: newActive };
+        patch.paneHistory = { ...s.paneHistory, [tabKey]: newHistory };
+        const newActiveLeaf = remaining.find(l => l.id === newActive);
+        if (newActiveLeaf?.tabId) focusTabId = newActiveLeaf.tabId;
+        else focusOnMain = true;
+      }
+      return patch as any;
     });
+
+    if (focusTabId) focusTerminalTab(focusTabId);
+    else if (focusOnMain) focusMainTab(get().activeTab[wsId]);
+  },
+
+  setActivePaneId: (wsId, paneId) => set(s => {
+    const tabKey = s.activeTab[wsId];
+    if (!tabKey || s.activePaneId[tabKey] === paneId) return s;
+    const cur = s.activePaneId[tabKey];
+    if (!cur) return { activePaneId: { ...s.activePaneId, [tabKey]: paneId } };
+    const prevStack = s.paneHistory[tabKey] ?? [];
     return {
-      activeRightTab: { ...s.activeRightTab, [wsId]: tabId },
-      activePane:     { ...s.activePane, [wsId]: "right" },
-      tabs: { ...s.tabs, [wsId]: next },
+      activePaneId: { ...s.activePaneId, [tabKey]: paneId },
+      paneHistory: { ...s.paneHistory, [tabKey]: [cur, ...prevStack.filter(id => id !== cur)].slice(0, 10) },
     };
   }),
-  setActivePane: (wsId, pane) => set(s =>
-    s.activePane[wsId] === pane ? s : { activePane: { ...s.activePane, [wsId]: pane } },
-  ),
-  moveTabToPane: (wsId, tabId, toPane) => {
-    let focusId = "";
+
+  setSplitRatio: (wsId, splitId, ratio) => set(s => {
+    const tabKey = s.activeTab[wsId];
+    const tree = tabKey ? s.splitTree[tabKey] : undefined;
+    if (!tree || !tabKey) return s;
+    return { splitTree: { ...s.splitTree, [tabKey]: updateSplitRatio(tree, splitId, ratio) } };
+  }),
+
+  movePaneTo: (wsId, sourcePaneId, targetPaneId, zone) => {
     set(s => {
-      const list = s.tabs[wsId] ?? [];
-      const tab = list.find(t => t.id === tabId);
-      // Any tab type can move between panes — both render terminals AND
-      // edit/diff file tabs now.
-      if (!tab) return s;
-      const fromPane: "main" | "right" = tab.panel === "right" ? "right" : "main";
-      if (fromPane === toPane) return s;
+      const tabKey = s.activeTab[wsId];
+      const tree = tabKey ? s.splitTree[tabKey] : undefined;
+      if (!tree || !tabKey) return s;
+      const sourceLeaf = findLeaf(tree, sourcePaneId);
+      if (!sourceLeaf) return s;
 
-      // Flip the panel discriminator on the moved tab. Stripping the key
-      // (vs setting panel: undefined) keeps the durable-tab serializers
-      // from emitting a spurious `panel` field.
-      const next = list.map(t => {
-        if (t.id !== tabId) return t;
-        const { panel: _p, ...rest } = t; void _p;
-        return toPane === "right"
-          ? ({ ...rest, panel: "right" } as Tab)
-          : ({ ...rest } as Tab);
-      });
-      const mainTabs = next.filter(t => t.panel !== "right");
-      const rightTabs = next.filter(t => t.panel === "right");
-      // Never strand the main pane with no content.
-      if (toPane === "right" && mainTabs.length === 0) return s;
+      // Remove source from tree.
+      const treeWithout = removeLeaf(tree, sourcePaneId);
+      if (!treeWithout) return s; // last pane — nothing to rearrange
 
-      const patch: Partial<AppState> = {
-        tabs: { ...s.tabs, [wsId]: next },
-        activePane: { ...s.activePane, [wsId]: toPane },
-      };
+      const targetInNew = findLeaf(treeWithout, targetPaneId);
+      if (!targetInNew) return s;
 
-      if (toPane === "right") {
-        patch.activeRightTab = { ...s.activeRightTab, [wsId]: tabId };
-        if (s.activeTab[wsId] === tabId) {
-          patch.activeTab = { ...s.activeTab, [wsId]: mainTabs[mainTabs.length - 1]?.id ?? "" };
+      const dir: SplitDir = zone === 'left' || zone === 'right' ? 'v' : 'h';
+      const aFirst = zone === 'left' || zone === 'top';
+
+      // Main pane must always remain at root.a — using replaceNode would corrupt
+      // the tree. Instead: change root.dir to match the drop zone (so "drop on
+      // main's right zone" reorients to a vertical root), and insert source
+      // adjacent to main within root.b.
+      if (targetInNew.isMain) {
+        if (treeWithout.type === 'pane') {
+          // Only main remains (source was the only extra). Rebuild as a fresh
+          // 2-pane split in the requested direction so the layout reorients.
+          return { splitTree: { ...s.splitTree, [tabKey]: {
+            type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5,
+            a: treeWithout, b: sourceLeaf,
+          }}};
         }
-        if (!s.rightSplit[wsId]) {
-          const nextRS = { ...s.rightSplit, [wsId]: true };
-          try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
-          patch.rightSplit = nextRS;
-        }
-      } else {
-        patch.activeTab = { ...s.activeTab, [wsId]: tabId };
-        if (rightTabs.length === 0) {
-          // Move emptied the right pane → close the split + forget its ratio.
-          const nextRS = { ...s.rightSplit, [wsId]: false };
-          try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
-          patch.rightSplit = nextRS;
-          const { [wsId]: _r, ...ratioRest } = s.rightSplitRatio; void _r;
-          patch.rightSplitRatio = ratioRest;
-          patch.activeRightTab = { ...s.activeRightTab, [wsId]: "" };
-        } else if (s.activeRightTab[wsId] === tabId) {
-          patch.activeRightTab = { ...s.activeRightTab, [wsId]: rightTabs[rightTabs.length - 1]?.id ?? "" };
-        }
+        const rootSplit = treeWithout as _SplitNode;
+        const newB: SplitTree = {
+          type: 'split', id: crypto.randomUUID(), dir: rootSplit.dir, ratio: 0.5,
+          a: sourceLeaf, b: rootSplit.b,
+        };
+        return { splitTree: { ...s.splitTree, [tabKey]: { ...rootSplit, dir, b: newB } } };
       }
-      focusId = tabId;
-      return patch;
+
+      const newSplit: SplitTree = {
+        type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5,
+        a: aFirst ? sourceLeaf : targetInNew,
+        b: aFirst ? targetInNew : sourceLeaf,
+      };
+      const newTree = replaceNode(treeWithout, targetPaneId, newSplit);
+      return { splitTree: { ...s.splitTree, [tabKey]: newTree } };
     });
-    get().syncDurableRightTabs(wsId);
-    get().syncDurableTabs(wsId);
-    if (focusId) focusTerminalTab(focusId);
   },
-  ensureDefaultRightTabs: (wsId) => {
+
+  addPaneTab: (wsId, paneId, cli) => {
     const s = get();
-    const ws = s.workspaces.find(w => w.id === wsId);
-    const persisted = ws?.right_split_tabs ?? [];
-    if (!persisted.length) return;
-    // Already have right-panel tabs in memory — leave them alone.
-    const existingRight = (s.tabs[wsId] ?? []).filter(
-      t => t.type === "terminal" && (t as TerminalTab).panel === "right",
-    );
-    if (existingRight.length) return;
-    const restored: TerminalTab[] = persisted.map(pt => ({
-      id: pt.id,
-      type: "terminal",
-      cli: pt.cli,
-      panel: "right" as const,
-      title: pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli, s.agents),
-      customTitle: !!pt.custom_title,
-      is_default: false,
-      ...(pt.command ? { command: pt.command } : {}),
-      ...(pt.session_id ? { sessionId: pt.session_id } : {}),
-    }));
-    const firstRight = restored[0];
-    set(state => {
-      const nextRS = { ...state.rightSplit, [wsId]: true };
-      try { localStorage.setItem(LS_RSPLIT, JSON.stringify(nextRS)); } catch {}
+    const tabId = crypto.randomUUID();
+    const tab: TerminalTab = {
+      id: tabId, type: 'terminal',
+      title: cli === 'shell' ? 'shell' : agentDisplayName(cli, s.agents),
+      cli,
+      paneId,
+    };
+    set(s2 => {
+      const tabKey2 = s2.activeTab[wsId];
+      const tree = tabKey2 ? s2.splitTree[tabKey2] : undefined;
+      const newTree = tree ? updateLeafTabId(tree, paneId, tabId) : tree;
       return {
-        tabs: { ...state.tabs, [wsId]: [...(state.tabs[wsId] ?? []), ...restored] },
-        activeRightTab: { ...state.activeRightTab, [wsId]: firstRight.id },
-        rightSplit: nextRS,
+        tabs: { ...s2.tabs, [wsId]: [...(s2.tabs[wsId] ?? []), tab] },
+        ...(newTree && tabKey2 ? { splitTree: { ...s2.splitTree, [tabKey2]: newTree } } : {}),
+        ...(tabKey2 ? { activePaneId: { ...s2.activePaneId, [tabKey2]: paneId } } : {}),
       };
     });
-  },
-  syncDurableRightTabs: (wsId) => {
-    const st = get();
-    const ws = st.workspaces.find(w => w.id === wsId);
-    if (!ws) return;
-    const live = durableRightPersistedTabs(st.tabs[wsId]);
-    const prev = ws.right_split_tabs ?? [];
-    if (JSON.stringify(prev) === JSON.stringify(live)) return;
-    set(s => ({
-      workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, right_split_tabs: live } : w),
-    }));
-    ipc.workspaceSetRightTabs(wsId, live).catch(() => {});
+    focusTerminalTab(tabId);
+    return tabId;
   },
 
   ensureDefaultTab: (wsId, cli) => {
     const s = get();
     // Already mounted (visited this session) → leave the live tabs alone.
-    // Count only MAIN-panel tabs — right-panel tabs live in the same array
-    // but should not prevent seeding the main agent tab on first visit.
-    const mainTabs = (s.tabs[wsId] || []).filter(t => t.panel !== "right");
+    // Count only MAIN tabs — split-pane tabs live in the same array but should
+    // not prevent seeding the main agent tab on first visit.
+    const mainTabs = (s.tabs[wsId] || []).filter(t => !(t as TerminalTab).paneId);
     if (mainTabs.length) return;
     const ws = s.workspaces.find(w => w.id === wsId);
     const persisted = ws?.persisted_tabs ?? [];
@@ -1003,61 +982,37 @@ export const useApp = create<AppState>((set, get) => ({
     // does NOT come back on reopen, then close it. Order matters — remove from
     // persisted BEFORE close's syncDurable* runs, so the merge can't re-add it.
     const tab = (get().tabs[wsId] ?? []).find(t => t.id === tabId);
-    const isRight = tab?.type === "terminal" && (tab as TerminalTab).panel === "right";
+    const isPaneTab = tab?.type === "terminal" && !!(tab as TerminalTab).paneId;
     const ws = get().workspaces.find(w => w.id === wsId);
-    if (isRight) {
-      if (ws) {
-        const next = (ws.right_split_tabs ?? []).filter(t => t.id !== tabId);
-        set(s => ({ workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, right_split_tabs: next } : w) }));
-        ipc.workspaceSetRightTabs(wsId, next).catch(() => {});
-      }
-      get().closeRightTab(wsId, tabId);
-    } else {
-      if (ws) {
-        const next = (ws.persisted_tabs ?? []).filter(t => t.id !== tabId);
-        set(s => ({ workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: next } : w) }));
-        ipc.workspaceSetTabs(wsId, next).catch(() => {});
-      }
-      get().closeTab(wsId, tabId);
+    if (!isPaneTab && ws) {
+      const next = (ws.persisted_tabs ?? []).filter(t => t.id !== tabId);
+      set(s => ({ workspaces: s.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: next } : w) }));
+      ipc.workspaceSetTabs(wsId, next).catch(() => {});
     }
+    get().closeTab(wsId, tabId);
   },
 
   setTabSessionId: (wsId, tabId, uuid) => {
     const val = uuid || undefined;
-    const tab = (get().tabs[wsId] ?? []).find(t => t.id === tabId);
-    const isRight = tab?.type === "terminal" && (tab as TerminalTab).panel === "right";
     set(s => {
       const list = s.tabs[wsId];
       const nextTabs = list
         ? list.map(t => (t.id === tabId && t.type === "terminal" ? { ...t, sessionId: val } as Tab : t))
         : list;
-      const wsUpdate = isRight
-        ? {
-            workspaces: s.workspaces.map(w => w.id !== wsId ? w : {
-              ...w,
-              right_split_tabs: (w.right_split_tabs ?? []).map(pt =>
-                pt.id === tabId ? { ...pt, session_id: uuid || null } : pt,
-              ),
-            }),
-          }
-        : {
-            workspaces: s.workspaces.map(w => w.id !== wsId ? w : {
-              ...w,
-              persisted_tabs: (w.persisted_tabs ?? []).map(pt =>
-                pt.id === tabId ? { ...pt, session_id: uuid || null } : pt,
-              ),
-            }),
-          };
+      const wsUpdate = {
+        workspaces: s.workspaces.map(w => w.id !== wsId ? w : {
+          ...w,
+          persisted_tabs: (w.persisted_tabs ?? []).map(pt =>
+            pt.id === tabId ? { ...pt, session_id: uuid || null } : pt,
+          ),
+        }),
+      };
       return {
         ...(nextTabs ? { tabs: { ...s.tabs, [wsId]: nextTabs } } : {}),
         ...wsUpdate,
       };
     });
-    if (isRight) {
-      ipc.workspaceSetRightTabSessionId(wsId, tabId, uuid).catch(() => {});
-    } else {
-      ipc.workspaceSetTabSessionId(wsId, tabId, uuid).catch(() => {});
-    }
+    ipc.workspaceSetTabSessionId(wsId, tabId, uuid).catch(() => {});
   },
 
   setWorkspaceYolo: (wsId, yolo) => set(s => ({
@@ -1091,7 +1046,7 @@ export const useApp = create<AppState>((set, get) => ({
   addTab: (wsId, tab) => {
     set(s => {
       const next = [...(s.tabs[wsId] || []), tab];
-      return { tabs: { ...s.tabs, [wsId]: next }, activeTab: { ...s.activeTab, [wsId]: tab.id }, activePane: { ...s.activePane, [wsId]: "main" } };
+      return { tabs: { ...s.tabs, [wsId]: next }, activeTab: { ...s.activeTab, [wsId]: tab.id } };
     });
     // Persist the new durable set (a `+` agent tab is restorable; a shell
     // tab is filtered out by syncDurableTabs).
@@ -1131,26 +1086,30 @@ export const useApp = create<AppState>((set, get) => ({
     if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
     const next = list.filter(t => t.id !== tabId);
     const wasActive = s.activeTab[wsId] === tabId;
-    // Active-tab replacement considers only other MAIN-panel tabs — right-panel
-    // tabs are always present in the list but not shown in the main strip.
-    // Use mainIdx (position in the main-only list) not idx (full-array position)
-    // so "go to previous" is correct when right-panel tabs sit before the closing tab.
-    const mainList = list.filter(t => t.panel !== "right");
+    // Active-tab replacement considers only main tabs (no paneId).
+    // Use mainIdx so "go to previous" is correct when pane tabs sit before the closing tab.
+    const mainList = list.filter(t => !(t as TerminalTab).paneId);
     const mainIdx = mainList.findIndex(t => t.id === tabId);
     const mainNext = mainList.filter(t => t.id !== tabId);
     let active = s.activeTab[wsId];
     if (wasActive) active = mainNext[Math.max(0, mainIdx - 1)]?.id || mainNext[0]?.id || "";
-    // Last MAIN-panel tab closed → put the workspace to sleep. Right-panel tabs
-    // are not counted: they are managed separately and should not keep the
-    // workspace alive with an empty left pane.
+    // Last main tab closed → put the workspace to sleep. Pane tabs
+    // are managed separately and should not keep the workspace alive with an empty main pane.
     const isLast = mainNext.length === 0;
     // Closed the focused tab and another tab survives → focus follows
     // to the tab that takes over (the previous one), so ⌘W-ing through
     // tabs keeps keyboard focus in the main pane.
     if (wasActive && !isLast) focusId = active;
+    // Clean up the closed tab's split state (keyed by tabId, not wsId).
+    const { [tabId]: _st, ...splitTreeRest } = s.splitTree;   void _st;
+    const { [tabId]: _ap, ...activePaneRest } = s.activePaneId; void _ap;
+    const { [tabId]: _ph, ...paneHistoryRest } = s.paneHistory; void _ph;
     const update: Partial<typeof s> = {
       tabs: { ...s.tabs, [wsId]: next },
       activeTab: { ...s.activeTab, [wsId]: active },
+      splitTree: _st ? splitTreeRest : s.splitTree,
+      activePaneId: _ap ? activePaneRest : s.activePaneId,
+      paneHistory: _ph ? paneHistoryRest : s.paneHistory,
     };
     if (isLast) {
       // Evict from mountedWorkspaces → WorkspaceView unmounts → xterm
@@ -1209,7 +1168,6 @@ export const useApp = create<AppState>((set, get) => ({
     });
     return {
       activeTab: { ...s.activeTab, [wsId]: tabId },
-      activePane: { ...s.activePane, [wsId]: "main" },
       tabs: { ...s.tabs, [wsId]: next },
     };
   }),
@@ -1267,29 +1225,16 @@ export const useApp = create<AppState>((set, get) => ({
   }),
 
   openPreviewTab: (wsId, data) => set(s => {
+    // File/edit/diff tabs always open in the main pane.
     const list = s.tabs[wsId] || [];
-    const paneOf = (t: Tab): "main" | "right" => (t.panel === "right" ? "right" : "main");
-    // The preview (italic-title temporary) tab is a singleton across both
-    // splits. If one already exists, reuse it wherever it lives, regardless
-    // of which pane was last focused, and move focus to that pane. Only when
-    // no preview tab exists do we fall back to the last-focused pane: the
-    // right split if it's up and was last interacted with, else main.
-    const previewTab = list.find(t => t.preview);
-    const lastFocused: "main" | "right" =
-      s.rightSplit[wsId] && (s.activePane[wsId] ?? "main") === "right" ? "right" : "main";
-    const target: "main" | "right" = previewTab ? paneOf(previewTab) : lastFocused;
-    const inTarget = (t: Tab) => paneOf(t) === target;
-    const panelTag = target === "right" ? { panel: "right" as const } : {};
-    const setActive = (id: string): Partial<AppState> =>
-      target === "right"
-        ? { activeRightTab: { ...s.activeRightTab, [wsId]: id }, activePane: { ...s.activePane, [wsId]: "right" } }
-        : { activeTab: { ...s.activeTab, [wsId]: id }, activePane: { ...s.activePane, [wsId]: "main" } };
+    const mainList = list.filter(t => !(t as TerminalTab).paneId);
+    const previewTab = mainList.find(t => t.preview);
 
-    const existing = list.find(t => t.type === data.type && (t as any).path === data.path && inTarget(t));
+    const setActive = (id: string): Partial<AppState> =>
+      ({ activeTab: { ...s.activeTab, [wsId]: id } });
+
+    const existing = mainList.find(t => t.type === data.type && (t as any).path === data.path);
     if (existing) {
-      // If a revealAt was requested (Find-in-Files click), refresh it on
-      // the existing tab so EditorPane scrolls to the new line. Otherwise
-      // leave the tab as-is.
       const next = data.revealAt && existing.type === "edit"
         ? list.map(t => t.id === existing.id ? { ...t, revealAt: data.revealAt } as Tab : t)
         : list;
@@ -1306,7 +1251,6 @@ export const useApp = create<AppState>((set, get) => ({
         customTitle: false,
         dirty: false,
         preview: true,
-        ...panelTag,
         ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
       } as Tab : t);
       return { tabs: { ...s.tabs, [wsId]: next }, ...setActive(previewTab.id) };
@@ -1318,7 +1262,6 @@ export const useApp = create<AppState>((set, get) => ({
       title: data.title,
       path: data.path,
       preview: true,
-      ...panelTag,
       ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
     } as any;
     return { tabs: { ...s.tabs, [wsId]: [...list, newTab] }, ...setActive(newTab.id) };
@@ -1344,9 +1287,7 @@ export const useApp = create<AppState>((set, get) => ({
       const next = list.map(t => t.id === tabId ? { ...t, title: trimmed, customTitle: true } as Tab : t);
       return { tabs: { ...s.tabs, [wsId]: next } };
     });
-    // Persist the renamed title so it survives restart (both panels).
     get().syncDurableTabs(wsId);
-    get().syncDurableRightTabs(wsId);
   },
 
   clearTabCustomTitle: (wsId, tabId) => {
@@ -1356,7 +1297,6 @@ export const useApp = create<AppState>((set, get) => ({
       return { tabs: { ...s.tabs, [wsId]: next } };
     });
     get().syncDurableTabs(wsId);
-    get().syncDurableRightTabs(wsId);
   },
 
   setTabLiveTitle: (wsId, tabId, liveTitle) => set(s => {
@@ -1418,8 +1358,11 @@ export const useApp = create<AppState>((set, get) => ({
     //     OUTSIDE the grace window, working applies normally — so the
     //     spinner + progress bar show right after a fresh submit.
     let effective = state;
+    const tKey = s.activeTab[wsId];
+    const tree = tKey ? s.splitTree[tKey] : undefined;
+    const activePaneLeaf = tree ? findLeaf(tree, s.activePaneId[tKey!]) : null;
     const isFocused = s.activeWorkspaceId === wsId &&
-      (s.activeTab[wsId] === tabId || s.activeRightTab[wsId] === tabId);
+      (s.activeTab[wsId] === tabId || activePaneLeaf?.tabId === tabId);
     if (isFocused) {
       if (effective === "done") {
         effective = "idle";
@@ -1484,7 +1427,7 @@ export const useActiveWorkspace = () => useApp(s => {
   if (!id) return null;
   return s.workspaces.find(w => w.id === id) ?? null;
 });
-/** All tabs for a workspace (main panel + right panel). */
+/** All tabs for a workspace (main pane + split panes). */
 export const useWorkspaceTabs = (wsId: string | null | undefined) =>
   useApp(s => (wsId ? (s.tabs[wsId] ?? EMPTY_TABS) : EMPTY_TABS));
 export const useActiveTabId = (wsId: string | null | undefined) =>

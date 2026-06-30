@@ -7,12 +7,12 @@
 //   ⌘L       → focus the active workspace's terminal
 //   ⌘[, ⌘]   → previous / next workspace (cycles AWAKE ones in sidebar order)
 //   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded tabs)
-//   ⌥⌘↑, ⌥⌘↓ → previous / next workspace (skip expanded tabs)
+//   ⌥⌘↑, ⌥⌘↓ → pane up/down (when splits exist) or previous/next agent tab
 //   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
 //   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘])
-//   ⌘W       → close the active tab
-//   ⌘D       → open a new right-split terminal in the active workspace
-//   ⇧⌘D      → hard-coded alias for ⌘J (toggle bottom split), not rebindable
+//   ⌘W       → close the active tab (or close split pane when focus is inside one)
+//   ⌘D       → split focused pane right (rebindable: split-pane-right)
+//   ⇧⌘D      → split focused pane below (rebindable: split-pane-below; shares binding with Git discard-file)
 //   ⌘J       → cycle the bottom split: show+focus → focus (if open but unfocused) → hide+refocus agent
 //   ⌘L       → focus the main agent (its terminal or editor) from any pane
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
@@ -25,6 +25,56 @@ import { requestCloseTab } from "@/lib/closeTab";
 import { focusTerminalTab, focusMainTab } from "@/lib/tabFocus";
 import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import type { TerminalTab } from "@/lib/types";
+import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves } from "@/lib/splitTree";
+import type { NavDir } from "@/lib/splitTree";
+
+/**
+ * Pick the next pane to focus in `dir`, preferring the most recently visited
+ * pane (from paneHistory) that is a valid candidate in that direction.
+ * This lets reverse navigation snap back to the pane the user came from.
+ */
+function navigatePane(
+  state: { splitTree: Record<string, import("@/lib/types").SplitTree>; activePaneId: Record<string, string>; paneHistory: Record<string, string[]>; activeTab: Record<string, string> },
+  wsId: string,
+  dir: NavDir,
+): string | null {
+  const tabKey = state.activeTab[wsId];
+  const tree = tabKey ? state.splitTree[tabKey] : undefined;
+  if (!tree) return null;
+  // Fall back to the main leaf when no active pane has been clicked yet.
+  let curId = tabKey ? state.activePaneId[tabKey] ?? "" : "";
+  if (!curId && tree.type === 'split') {
+    const mainLeaf = getAllLeaves(tree).find(l => l.isMain);
+    if (mainLeaf) curId = mainLeaf.id;
+  }
+  if (!curId) return null;
+
+  const geometric = findAdjacentPane(tree, curId, dir);
+  if (!geometric) return null;
+
+  // If the most recently visited pane is a valid candidate in this direction,
+  // prefer it so "go back" feels like retracing steps, not jumping to a stranger.
+  const history = tabKey ? (state.paneHistory[tabKey] ?? []) : [];
+  const prev = history[0];
+  if (prev && prev !== curId) {
+    const all = computeLeafBounds(tree);
+    const curr = all.get(curId);
+    const pb = all.get(prev);
+    if (curr && pb) {
+      const EPS = 0.005;
+      const pbCx = pb.x + pb.w / 2;
+      const pbCy = pb.y + pb.h / 2;
+      const qualifies =
+        (dir === 'right' && pb.x >= curr.x + curr.w - EPS && pbCy >= curr.y - EPS && pbCy <= curr.y + curr.h + EPS) ||
+        (dir === 'left'  && pb.x + pb.w <= curr.x + EPS    && pbCy >= curr.y - EPS && pbCy <= curr.y + curr.h + EPS) ||
+        (dir === 'down'  && pb.y >= curr.y + curr.h - EPS  && pbCx >= curr.x - EPS && pbCx <= curr.x + curr.w + EPS) ||
+        (dir === 'up'    && pb.y + pb.h <= curr.y + EPS    && pbCx >= curr.x - EPS && pbCx <= curr.x + curr.w + EPS);
+      if (qualifies) return prev;
+    }
+  }
+
+  return geometric;
+}
 
 export function useShortcuts() {
   useEffect(() => {
@@ -37,18 +87,7 @@ export function useShortcuts() {
       // reaches the shell/editor. App shortcuts still work via Cmd. (issue #10)
       if (IS_MAC && e.ctrlKey && !e.metaKey && inTermFocused()) return;
 
-      // ⇧⌘D is a HARD-CODED alias for ⌘J (toggle-terminal): it always toggles
-      // the bottom split, independent of the user's keymap. ⌘J is rebindable
-      // and people remap it; ⇧⌘D stays put as a stable iTerm-style fallback.
-      // Checked before the rebindable lookup so no custom binding can shadow it.
-      // The Git panel's discard-file (also ⇧⌘D) runs in a capture-phase listener
-      // and stopPropagation()s when a file is selected, so this never preempts
-      // it: by the time the event bubbles here, discard-file has already passed.
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && eventKeyToken(e) === "d") {
-        const wsId = useApp.getState().activeWorkspaceId;
-        if (wsId) { e.preventDefault(); useApp.getState().toggleBottomTerminal(wsId); }
-        return;
-      }
+
 
       const binds = usePrefs.getState().shortcuts;
       // First binding (in registry order) whose combo the event satisfies.
@@ -63,15 +102,14 @@ export function useShortcuts() {
 
       const state = useApp.getState();
       const wsId = state.activeWorkspaceId;
-      // Right-panel tabs live in the same array but must not appear in
-      // main-strip navigation (⌘1..9, ⇧⌘[/], ⌥⌘←/→) — those shortcuts
-      // target the left agent strip only.
+      // Pane tabs live in the same array but must not appear in main-strip
+      // navigation (⌘1..9, ⇧⌘[/], ⌥⌘←/→) — those shortcuts target the main pane.
       const tabs = (wsId ? state.tabs[wsId] || [] : []).filter(
-        t => t.panel !== "right",
+        t => !(t as TerminalTab).paneId,
       );
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
       const inBottom = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
-      const inRight  = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-right-split]");
+      const inSplitPane = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-split-leaf]");
 
       // Workspace nav cycles only AWAKE workspaces — ones the user has opened
       // at least once + still has tabs in. Order MUST match the sidebar's
@@ -96,10 +134,9 @@ export function useShortcuts() {
               if (w.project_id !== p.id || w.archived) continue;
               rows.push({ wsId: w.id });
               const wsTabs = state.tabs[w.id] ?? [];
-              // Exclude right-panel tabs from sidebar rows — they live in the
-              // right split and are not navigable via sidebar-prev/next.
+              // Exclude pane tabs from sidebar rows — they live in split panes.
               const terminalTabs = wsTabs.filter(
-                t => t.type === "terminal" && !(t as TerminalTab).panel,
+                t => t.type === "terminal" && !(t as TerminalTab).paneId,
               );
               const explicit = state.collapsedWorkspaces[w.id];
               const collapsed = explicit ?? (terminalTabs.length <= 1);
@@ -159,7 +196,7 @@ export function useShortcuts() {
           state.openSettings();
           return;
 
-        // ⌘/ → open the read-only shortcuts cheat-sheet modal (issue #7).
+        // ⇧? → open the read-only shortcuts cheat-sheet modal.
         // It has its own search + an Edit button that jumps to Settings →
         // Shortcuts for rebinding.
         case "open-shortcuts":
@@ -207,24 +244,57 @@ export function useShortcuts() {
           return;
         }
 
-        // ⌥⌘↑ / ⌥⌘↓ → previous / next AWAKE workspace (arrow-key alt for ⌘[/]).
+        // ⌥⌘↑ / ⌥⌘↓ → navigate panes vertically (when splits exist) or cycle agent tabs.
         case "workspace-prev-arrow":
         case "workspace-next-arrow": {
-          const ws = awakeWorkspaces();
-          if (ws.length <= 1) return;
-          e.preventDefault();
-          const fwd = cmd === "workspace-next-arrow";
-          const idx = ws.findIndex(w => w.id === wsId);
-          const nextIdx = idx < 0
-            ? (fwd ? 0 : ws.length - 1)
-            : fwd ? (idx + 1) % ws.length : (idx - 1 + ws.length) % ws.length;
-          state.setActiveWorkspace(ws[nextIdx].id);
+          if (wsId && state.splitTree[state.activeTab[wsId]]) {
+            // Tab has splits — navigate panes up/down.
+            e.preventDefault();
+            const dir = cmd === "workspace-next-arrow" ? 'down' : 'up';
+            const next = navigatePane(state, wsId, dir);
+            if (next) {
+              state.setActivePaneId(wsId, next);
+              const leaf = findLeaf(state.splitTree[state.activeTab[wsId]]!, next);
+              if (leaf?.isMain) focusMainTab(activeTabId);
+              else if (leaf?.tabId) focusTerminalTab(leaf.tabId);
+              else {
+                const el = document.querySelector(`[data-split-launcher][data-pane-id="${next}"]`) as HTMLElement | null;
+                el?.focus();
+              }
+            }
+            return;
+          }
+          // No splits: cycle through agent tabs (same dual-role as ⌥⌘←/→).
+          if (wsId && tabs.length > 1) {
+            e.preventDefault();
+            const fwd = cmd === "workspace-next-arrow";
+            const idx = tabs.findIndex(t => t.id === activeTabId);
+            const nextIdx = fwd ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
+            state.setActiveTabId(wsId, tabs[nextIdx].id);
+          }
           return;
         }
 
-        // ⌥⌘← / ⌥⌘→ → previous / next tab within the active workspace.
+        // ⌥⌘← / ⌥⌘→ → navigate panes left/right (when splits exist) or prev/next tab.
         case "tab-prev-arrow":
         case "tab-next-arrow": {
+          if (wsId && state.splitTree[state.activeTab[wsId]]) {
+            // Tab has splits — arrows are pane-only, never fall through to tab switch.
+            e.preventDefault();
+            const dir = cmd === "tab-next-arrow" ? 'right' : 'left';
+            const next = navigatePane(state, wsId, dir);
+            if (next) {
+              state.setActivePaneId(wsId, next);
+              const leaf = findLeaf(state.splitTree[state.activeTab[wsId]]!, next);
+              if (leaf?.isMain) focusMainTab(activeTabId);
+              else if (leaf?.tabId) focusTerminalTab(leaf.tabId);
+              else {
+                const el = document.querySelector(`[data-split-launcher][data-pane-id="${next}"]`) as HTMLElement | null;
+                el?.focus();
+              }
+            }
+            return;
+          }
           if (wsId && tabs.length > 1) {
             e.preventDefault();
             const fwd = cmd === "tab-next-arrow";
@@ -294,25 +364,17 @@ export function useShortcuts() {
           state.toggleBottomTerminal(wsId);
           return;
 
-        // ⌘D → open right split (if closed) or focus the active right terminal.
-        case "new-right-split-terminal": {
+        // ⌘D → split focused pane right; ⇧⌘D → split focused pane below.
+        case "split-pane-right": {
           if (!wsId) return;
           e.preventDefault();
-          const splitOpen = !!state.rightSplit[wsId];
-          if (!splitOpen) state.toggleRightSplit(wsId);
-          // No auto-spawn: an empty split shows the in-pane SplitLauncher,
-          // which autofocuses itself. When the split already has terminals,
-          // focus the active one's xterm textarea.
-          const tryFocus = (tries = 20) => {
-            const split = document.querySelector("[data-right-split]");
-            const active = split?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-            if (active) { active.focus(); return; }
-            // Empty split: focus the launcher so arrow/Enter work right away.
-            const launcher = split?.querySelector("[data-split-launcher]") as HTMLElement | null;
-            if (launcher) { launcher.focus(); return; }
-            if (tries > 0) setTimeout(() => tryFocus(tries - 1), 25);
-          };
-          tryFocus();
+          state.splitPane(wsId, 'v');
+          return;
+        }
+        case "split-pane-below": {
+          if (!wsId) return;
+          e.preventDefault();
+          state.splitPane(wsId, 'h');
           return;
         }
 
@@ -330,11 +392,8 @@ export function useShortcuts() {
           e.preventDefault();
           if (inBottom()) {
             state.addBottomTab(wsId);
-          } else if (inRight()) {
-            window.dispatchEvent(new CustomEvent("termic-new-right-tab-menu", { detail: { wsId } }));
           } else {
-            // Main pane: open the "+" tab menu so the user can pick an agent
-            // with the keyboard. The active workspace's TabBar listens.
+            // Main pane: open the "+" tab menu.
             window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { wsId } }));
           }
           return;
@@ -359,12 +418,11 @@ export function useShortcuts() {
             if (bottomId) state.closeBottomTab(wsId, bottomId);
             return;
           }
-          if (inRight() && wsId) {
-            const rightId = state.activeRightTab[wsId];
-            if (rightId) state.closeRightTab(wsId, rightId);
+          if (inSplitPane() && wsId) {
+            const paneId = state.activePaneId[state.activeTab[wsId]];
+            if (paneId) state.closePane(wsId, paneId);
             return;
           }
-          // requestCloseTab confirms first if it's a dirty edit tab.
           if (wsId && activeTabId) requestCloseTab(wsId, activeTabId);
           return;
         }

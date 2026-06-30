@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Workspace, Tab, TerminalTab, Agent } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
+import { getAllLeaves } from "@/lib/splitTree";
 import { useTabStripDrag } from "./useTabStripDrag";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
@@ -50,62 +51,47 @@ function ShellTerminalItem({ onSelect }: { onSelect: () => void }) {
 
 export function TabBar({ ws }: { ws: Workspace }) {
   const allTabsRaw = useWorkspaceTabs(ws.id);
-  // Main strip shows only non-right-panel tabs.
-  const tabs = allTabsRaw.filter(t => t.panel !== "right");
+  // Main strip shows only non-pane tabs (split-pane tabs live in SplitView).
+  const tabs = allTabsRaw.filter(t => !(t as import("@/lib/types").TerminalTab).paneId);
   const activeId = useActiveTabId(ws.id);
   const setActive = useApp(s => s.setActiveTabId);
   const addTab = useApp(s => s.addTab);
   const reorderTab = useApp(s => s.reorderTab);
   const renameTab = useApp(s => s.renameTab);
-  // Drag-to-reorder + cross-pane move lives in a shared hook (see
-  // useTabStripDrag) so the main and right strips behave identically and any
-  // tab type drags the same way. The hook is wired up after the right-split
-  // subscriptions below (it needs moveTabToPane).
   const stripRef = useRef<HTMLDivElement>(null);
 
   // Hide disabled / not-installed agents from the + (new agent) menu.
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const visibleClis = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
-  // Custom terminals (Settings → kind: "terminal", #27) join the "New
-  // terminal" section. Disabled toggle only — no PATH detection, their
-  // command is a free-form shell line `which` can't probe. Memoized (and
-  // passed down to the right strip) — the strip re-renders on every tab
-  // state change and the list only depends on the registry.
   const customTerminals = useMemo(
     () => registry.filter(a => isTerminalEntry(a) && !a.disabled),
     [registry],
   );
   const openBroadcast = useUI(s => s.openBroadcast);
   const [open, setOpen] = useState(false);
-  // When spawnTab fires, suppress Radix's auto focus-return so it
-  // doesn't yank focus back to the '+' trigger before our terminal-
-  // focus call lands.
   const suppressDropdownReturn = useRef(false);
-  // Inline rename state: which tab id is being renamed + its draft value.
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
 
-  const rightSplit      = useApp(s => !!s.rightSplit[ws.id]);
-  const rightSplitRatio = useApp(s => s.rightSplitRatio[ws.id] ?? 0.5);
-  const activeRight     = useApp(s => s.activeRightTab[ws.id]);
-  const activePane      = useApp(s => s.activePane[ws.id] ?? "main");
-  const moveTabToPane   = useApp(s => s.moveTabToPane);
-  // The main strip is the "focused" pane when there's no right split, or
-  // when the user last interacted with the main pane. Only the focused
-  // pane's active tab shows the full accent-underline cue.
-  const mainFocused = !rightSplit || activePane === "main";
-  const addRightTab     = useApp(s => s.addRightTab);
-  const addRightAgentTab = useApp(s => s.addRightAgentTab);
-  const closeRightTab   = useApp(s => s.closeRightTab);
-  const setActiveRight  = useApp(s => s.setActiveRightTab);
-  const toggleRightSplit = useApp(s => s.toggleRightSplit);
-  // Right-panel tabs derived from the unified tab list — terminals AND the
-  // edit/diff file tabs opened while the right pane was focused.
-  const rightTabs = allTabsRaw.filter(t => t.panel === "right");
+  // Main strip shows the accent underline on the active tab when the main
+  // pane is focused (or there are no splits). When a secondary pane is
+  // focused, the active tab dims to border-border so only one thing reads
+  // as "current" across the whole layout.
+  const hasSplitTree = useApp(s => !!s.splitTree[s.activeTab[ws.id]]);
+  const activePaneId = useApp(s => {
+    const tabId = s.activeTab[ws.id];
+    return s.activePaneId[tabId] ?? "";
+  });
+  const mainPaneId = useApp(s => {
+    const tabId = s.activeTab[ws.id];
+    const t = s.splitTree[tabId];
+    if (!t) return "";
+    return getAllLeaves(t).find(l => l.isMain)?.id ?? "";
+  });
+  const mainFocused = !hasSplitTree || !activePaneId || activePaneId === mainPaneId;
 
-  // Shared drag (reorder + cross-pane move) for the main strip.
   const { dragId, dragTx, suppressClickRef, startDrag } = useTabStripDrag({
-    wsId: ws.id, pane: "main", stripRef, stripTabs: tabs, allTabs: allTabsRaw, reorderTab, moveTabToPane,
+    wsId: ws.id, stripRef, stripTabs: tabs, allTabs: allTabsRaw, reorderTab,
   });
 
   // ⌘T from the main pane (handled in useShortcuts) opens this menu so
@@ -190,13 +176,12 @@ export function TabBar({ ws }: { ws: Workspace }) {
             onStartDrag={(e) => startDrag(t.id, e)}
           />
         ))}
-      </div>
 
-      {/* Fixed control cluster — never scrolls; always reachable on the right. */}
-      <div className="flex shrink-0 items-center gap-1 pl-1 pr-2">
+        {/* New tab button — right after the last tab. When scrolling lands,
+            move this back to the sticky right cluster. */}
         <DropdownRoot open={open} onOpenChange={setOpen}>
           <DropdownTrigger asChild>
-            <Button size="icon" variant="icon" className="h-8 w-8 shrink-0"><Plus className="h-4 w-4" /></Button>
+            <Button size="icon" variant="icon" className="ml-1 h-8 w-8 shrink-0 self-center"><Plus className="h-4 w-4" /></Button>
           </DropdownTrigger>
           <DropdownMenu
             align="start"
@@ -215,7 +200,10 @@ export function TabBar({ ws }: { ws: Workspace }) {
             <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={spawnTab} />
           </DropdownMenu>
         </DropdownRoot>
+      </div>
 
+      {/* Fixed control cluster — never scrolls; always reachable on the right. */}
+      <div className="flex shrink-0 items-center gap-1 pl-1 pr-2">
         <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
           <Button
             size="icon" variant="icon" className="h-8 w-8"
@@ -226,194 +214,35 @@ export function TabBar({ ws }: { ws: Workspace }) {
         </Tip>
 
         <SplitToggle wsId={ws.id} />
-        <RightSplitToggle wsId={ws.id} />
+        <SplitPaneToggle wsId={ws.id} />
       </div>
-      </div>
-
-      {/* Right portion: agent/shell tabs for the right split. Width matches
-          the right panel so the tab strip aligns with the content below. */}
-      {rightSplit && (
-        <RightStrip
-          ws={ws}
-          rightTabs={rightTabs}
-          allTabsRaw={allTabsRaw}
-          activeRight={activeRight}
-          rightFocused={activePane === "right"}
-          rightSplitRatio={rightSplitRatio}
-          registry={registry}
-          visibleClis={visibleClis}
-          customTerminals={customTerminals}
-          setActiveRight={setActiveRight}
-          closeRightTab={closeRightTab}
-          addRightTab={addRightTab}
-          addRightAgentTab={addRightAgentTab}
-          toggleRightSplit={toggleRightSplit}
-          moveTabToPane={moveTabToPane}
-          reorderTab={reorderTab}
-        />
-      )}
-    </div>
-  );
-}
-
-/** Tab strip for the right-split panel. Shows agent+shell tabs with the same
- *  "+" dropdown as the main strip so the user can spawn agents in the right
- *  panel too. */
-function RightStrip({ ws, rightTabs, allTabsRaw, activeRight, rightFocused, rightSplitRatio, registry, visibleClis, customTerminals,
-  setActiveRight, closeRightTab, addRightTab, addRightAgentTab, toggleRightSplit, moveTabToPane, reorderTab }: {
-  ws: Workspace;
-  rightTabs: Tab[];
-  allTabsRaw: Tab[];
-  activeRight: string | undefined;
-  rightFocused: boolean;
-  rightSplitRatio: number;
-  registry: Agent[];
-  visibleClis: Set<string>;
-  customTerminals: Agent[];
-  setActiveRight: (wsId: string, tabId: string) => void;
-  closeRightTab: (wsId: string, tabId: string) => void;
-  addRightTab: (wsId: string, sandboxed?: boolean) => string;
-  addRightAgentTab: (wsId: string, cli: string) => void;
-  toggleRightSplit: (wsId: string) => void;
-  moveTabToPane: (wsId: string, tabId: string, toPane: "main" | "right") => void;
-  reorderTab: (wsId: string, tabId: string, toIndex: number) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const suppressReturn = useRef(false);
-
-  // Inline rename state — double-click a non-preview tab to rename, same as
-  // the main strip (handled inside the shared TabPill).
-  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
-  const renameTab = useApp(s => s.renameTab);
-  function commitRename() {
-    if (!renaming) return;
-    renameTab(ws.id, renaming.id, renaming.value);
-    setRenaming(null);
-  }
-
-  // Shared drag (reorder + cross-pane move) — identical to the main strip via
-  // the same hook, so any tab (terminal / edit / diff) drags the same way.
-  const stripRef = useRef<HTMLDivElement>(null);
-  const { dragId, dragTx, suppressClickRef, startDrag } = useTabStripDrag({
-    wsId: ws.id, pane: "right", stripRef, stripTabs: rightTabs, allTabs: allTabsRaw, reorderTab, moveTabToPane,
-  });
-
-  useEffect(() => {
-    const onMenu = (e: Event) => {
-      if ((e as CustomEvent<{ wsId?: string }>).detail?.wsId === ws.id) setOpen(true);
-    };
-    window.addEventListener("termic-new-right-tab-menu", onMenu);
-    return () => window.removeEventListener("termic-new-right-tab-menu", onMenu);
-  }, [ws.id]);
-
-  function spawnRightAgent(cli: string) {
-    suppressReturn.current = true;
-    addRightAgentTab(ws.id, cli);
-    setOpen(false);
-  }
-  function spawnRightShell() {
-    suppressReturn.current = true;
-    addRightTab(ws.id);
-    setOpen(false);
-  }
-
-  return (
-    <div
-      data-right-strip=""
-      className="flex shrink-0 items-stretch overflow-visible border-l-2 border-[var(--color-border-soft)]"
-      style={{ width: `${rightSplitRatio * 100}%` }}
-    >
-      <div
-        ref={stripRef}
-        className={cn(
-          "flex min-w-0 flex-1 items-stretch gap-0 pl-2 no-scrollbar",
-          // While dragging, unclip + elevate so the pill stays visible as it
-          // crosses into the main pane (see the main strip for the rationale).
-          dragId ? "relative z-30 overflow-visible" : "overflow-x-auto overflow-y-hidden",
-        )}
-      >
-        {rightTabs.map(t => (
-        <TabPill
-          key={t.id} ws={ws} tab={t} active={t.id === activeRight} paneFocused={rightFocused} compact
-          onSelect={() => { if (suppressClickRef.current) return; setActiveRight(ws.id, t.id); }}
-          onClose={() => closeRightTab(ws.id, t.id)}
-          renaming={renaming?.id === t.id ? renaming.value : null}
-          onStartRename={() => setRenaming({ id: t.id, value: t.title })}
-          onChangeRename={(v) => setRenaming(r => r ? { ...r, value: v } : r)}
-          onCommitRename={commitRename}
-          onCancelRename={() => setRenaming(null)}
-          dragging={dragId === t.id}
-          dragTx={dragId === t.id ? dragTx : 0}
-          onStartDrag={(e) => startDrag(t.id, e)}
-        />
-        ))}
-      </div>
-
-      {/* Fixed controls — new-tab + close-split, never scroll. */}
-      <div className="flex shrink-0 items-center pl-1 pr-1">
-      <DropdownRoot open={open} onOpenChange={setOpen}>
-        <DropdownTrigger asChild>
-          <button
-            title="New tab in right split"
-            className="shrink-0 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-          ><Plus className="h-4 w-4" /></button>
-        </DropdownTrigger>
-        <DropdownMenu
-          align="start"
-          onCloseAutoFocus={(e) => {
-            if (suppressReturn.current) { suppressReturn.current = false; e.preventDefault(); }
-          }}
-        >
-          <DropdownLabel>New terminal</DropdownLabel>
-          <ShellTerminalItem onSelect={spawnRightShell} />
-          <CliMenuItems entries={customTerminals} onSpawn={spawnRightAgent} />
-          <DropdownSeparator />
-          <DropdownLabel>New agent</DropdownLabel>
-          <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={spawnRightAgent} />
-        </DropdownMenu>
-      </DropdownRoot>
-
-      <button
-        title="Close right split"
-        onClick={() => {
-          if (rightTabs.length > 0) {
-            const s = useApp.getState();
-            for (const t of [...rightTabs]) s.closeRightTab(ws.id, t.id);
-          } else {
-            toggleRightSplit(ws.id);
-          }
-        }}
-        className="shrink-0 rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-      ><X className="h-4 w-4" /></button>
       </div>
     </div>
   );
 }
 
-/** Toggle a vertical split with a scratch shell to the right of the main pane. */
-function RightSplitToggle({ wsId }: { wsId: string }) {
-  const split = useApp(s => !!s.rightSplit[wsId]);
-  const toggleSplit = useApp(s => s.toggleRightSplit);
+/** Button that creates a new vertical split pane to the right (⌘D). */
+function SplitPaneToggle({ wsId }: { wsId: string }) {
+  const hasSplit = useApp(s => !!s.splitTree[s.activeTab[wsId]]);
+  const splitPane = useApp(s => s.splitPane);
   return (
-    <Tip content={split ? "Close right split" : "Split right (⌘D)"} side="bottom">
+    <Tip content="Split right (⌘D)" side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
-        onClick={() => toggleSplit(wsId)}
+        onClick={() => splitPane(wsId, 'v')}
       >
-        <SquareSplitHorizontal className={cn("h-4 w-4", split && "text-[var(--color-accent)]")} />
+        <SquareSplitHorizontal className={cn("h-4 w-4", hasSplit && "text-[var(--color-accent)]")} />
       </Button>
     </Tip>
   );
 }
 
-/** Toggle a horizontal split with a scratch shell on the bottom half of the
- *  main pane. State is per-workspace (so each workspace remembers its own
- *  split preference) and persists via the app store. */
+/** Toggle a horizontal split with a scratch shell on the bottom half. */
 function SplitToggle({ wsId }: { wsId: string }) {
   const split = useApp(s => !!s.terminalSplit[wsId]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
   return (
-    <Tip content={split ? "Close split terminal" : "Split: open shell below (⇧⌘D)"} side="bottom">
+    <Tip content={split ? "Close shell below" : "Toggle shell below (⌘J)"} side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
         onClick={() => toggleSplit(wsId)}

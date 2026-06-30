@@ -1,13 +1,11 @@
-// In-pane "what should I launch?" picker for an empty right split.
+// In-pane "what should I launch?" picker for an empty split pane.
 //
-// ⌘D opens the right split WITHOUT immediately spawning a shell (the old
-// behaviour). Instead the empty pane shows this picker, mirroring the tab
-// bar's "+" dropdown: a "New terminal" group (plain Terminal + any custom
-// terminals) and a "New agent" group (the visible CLI agents). The first
-// row is autoselected; ↑/↓ (or j/k) move, ↵ launches, Esc closes the split.
+// ⌘D opens a new split WITHOUT immediately spawning a shell. Instead the
+// empty leaf shows this picker: "New terminal" group + "New agent" group.
+// ↑/↓ (or j/k) navigate, ↵ launches, Esc closes the pane.
 //
-// Once a choice spawns a right tab the launcher unmounts on its own — the
-// split now has a tab to render, so WorkspaceView stops showing the picker.
+// Once a choice is made, addPaneTab wires the tab into the leaf and the
+// launcher unmounts automatically (the leaf now has a tabId to render).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Workspace } from "@/lib/types";
@@ -17,23 +15,18 @@ import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cn } from "@/lib/utils";
 
 interface LauncherItem {
-  /** "shell" → plain terminal; otherwise a registry agent / custom terminal id. */
   cli: string;
   label: string;
   iconId: string;
   section: "terminal" | "agent";
 }
 
-export function SplitLauncher({ ws }: { ws: Workspace }) {
+export function SplitLauncher({ ws, paneId }: { ws: Workspace; paneId: string }) {
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
-  const addRightTab = useApp(s => s.addRightTab);
-  const addRightAgentTab = useApp(s => s.addRightAgentTab);
-  const toggleRightSplit = useApp(s => s.toggleRightSplit);
+  const addPaneTab = useApp(s => s.addPaneTab);
+  const closePane = useApp(s => s.closePane);
   const activeWsId = useApp(s => s.activeWorkspaceId);
-
-  // Same lists the "+" dropdown builds (see TabBar), flattened for arrow-key
-  // navigation. Plain "Terminal" leads the terminal group.
   const items = useMemo<LauncherItem[]>(() => {
     const visible = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
     const out: LauncherItem[] = [
@@ -52,18 +45,13 @@ export function SplitLauncher({ ws }: { ws: Workspace }) {
   useEffect(() => { setSel(s => Math.min(Math.max(s, 0), Math.max(0, items.length - 1))); }, [items.length]);
 
   const rootRef = useRef<HTMLDivElement>(null);
-  // Grab keyboard focus when this is the active workspace's launcher — every
-  // workspace stays mounted (MainArea visibility toggle), so an unfocused
-  // background launcher must NOT steal focus. Re-focus when switching back to
-  // this workspace too.
   useEffect(() => {
-    if (activeWsId === ws.id) rootRef.current?.focus();
+    if (activeWsId === ws.id) rootRef.current?.focus({ preventScroll: true });
   }, [activeWsId, ws.id]);
 
   const choose = (it: LauncherItem | undefined) => {
     if (!it) return;
-    if (it.cli === "shell") addRightTab(ws.id);
-    else addRightAgentTab(ws.id, it.cli);
+    addPaneTab(ws.id, paneId, it.cli);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -80,7 +68,7 @@ export function SplitLauncher({ ws }: { ws: Workspace }) {
       choose(items[sel]);
     } else if (k === "Escape") {
       e.preventDefault(); e.stopPropagation();
-      toggleRightSplit(ws.id);
+      closePane(ws.id, paneId);
     }
   };
 
@@ -88,6 +76,7 @@ export function SplitLauncher({ ws }: { ws: Workspace }) {
     <div
       ref={rootRef}
       data-split-launcher=""
+      data-pane-id={paneId}
       tabIndex={0}
       onKeyDown={onKeyDown}
       className="absolute inset-0 flex flex-col items-center justify-center gap-3 outline-none pointer-events-none"

@@ -469,6 +469,10 @@ export interface FileEntry {
   is_dir: boolean;
 }
 
+// ───────────────────────── split-pane tree (frontend only) ──────────────────────────
+// Re-exported from splitTree.ts so consumers only need one import.
+export type { SplitDir, SplitNode, PaneLeaf, SplitTree } from "@/lib/splitTree";
+
 // ───────────────────────────── tab model (frontend only) ─────────────────────────────
 
 export type TabType = "terminal" | "diff" | "edit";
@@ -505,11 +509,10 @@ export interface BaseTab {
    *  close-without-saving confirm. termic never auto-saves — this is
    *  cleared only by an explicit ⌘S. */
   dirty?: boolean;
-  /** When set, this tab lives in a split panel rather than the main pane.
-   *  `"right"` = right-split panel. Absent/undefined = main panel. Applies
-   *  to every tab type: terminals run there, and files opened while the
-   *  right pane is focused open there too. */
-  panel?: "right";
+  /** When set, this tab lives inside a split pane (leaf node id). Absent =
+   *  main pane tab (shown in the workspace tab bar). Split-pane tabs are
+   *  ephemeral — they are not persisted across launches. */
+  paneId?: string;
 }
 
 export interface TerminalTab extends BaseTab {

@@ -77,7 +77,7 @@ export function ResizeHandle({ direction, onDrag, onStart, onEnd, alwaysVisible,
       <div
         className={cn(
           "h-full w-full transition-colors group-hover:bg-[var(--color-accent-soft)] group-active:bg-[var(--color-accent)]",
-          alwaysVisible && "bg-[var(--color-border-soft)]",
+          alwaysVisible && "bg-[var(--color-border)]",
         )}
       />
       {/* Invisible wider hit area for easier grabbing — 4px on each side of

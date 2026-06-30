@@ -5,18 +5,20 @@
 // Per-tab content stays mounted across tab switches (we toggle visibility
 // instead of unmount) — terminals MUST keep their xterm instances alive.
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Workspace, TerminalTab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
-import { workDoneCapable } from "@/lib/agents";
 import { usePrefs, currentTerminalTheme } from "@/store/prefs";
 import { TabBar, TabPill } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
-import { SplitLauncher } from "./SplitLauncher";
+import { SplitNodeView, detectZone, zoneStyle } from "./SplitView";
+import type { DragState, DropZone } from "./SplitView";
+import { PaneHeader } from "./PaneHeader";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getAllLeaves } from "@/lib/splitTree";
 import { openPath } from "@/lib/ipc";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
@@ -121,132 +123,251 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   const setActiveBottom = useApp(s => s.setActiveBottomTab);
   const setBottomLiveTitle = useApp(s => s.setBottomTabLiveTitle);
 
-  const rightTabs = tabs.filter(t => t.panel === "right");
-  const rightSplit       = useApp(s => !!s.rightSplit[ws.id]);
-  const rightSplitRatio  = useApp(s => s.rightSplitRatio[ws.id] ?? 0.5);
-  const setRightRatio    = useApp(s => s.setRightSplitRatio);
-  const activeRight      = useApp(s => s.activeRightTab[ws.id]);
-  const ensureRightTabs  = useApp(s => s.ensureDefaultRightTabs);
-
-  // Fade the bottom-strip queue button when a right-pane agent is focused —
-  // the right footer button (see FooterBar) takes over for that agent.
-  const wvActivePane = useApp(s => s.activePane[ws.id] ?? "main");
-  const wvAgents = useApp(s => s.agents);
-  const wvRightCli = useApp(s => {
-    const id = s.activeRightTab[ws.id];
-    const t = (s.tabs[ws.id] ?? []).find(x => x.id === id);
-    return t && t.type === "terminal" ? t.cli : null;
-  });
-  const rightHasAgent =
-    rightSplit && wvRightCli != null && workDoneCapable(wvRightCli, wvAgents);
-  const rightAgentFocused = rightHasAgent && wvActivePane === "right";
-
   // Subscribe to themeMode so the terminals-area bg recomputes when the
-  // user switches themes — currentTerminalTheme() reads the live store but
-  // doesn't trigger a re-render on its own.
+  // user switches themes.
   usePrefs(s => s.themeMode);
   const xtermBg = currentTerminalTheme().background as string;
 
+  // Per-tab split tree: root is always split(main_leaf, extra_subtree).
+  // main_leaf stays at root.a; we render root.b's subtree alongside the tab stack.
+  const splitPaneDim       = usePrefs(s => s.splitPaneDim);
+  const splitPaneDimAmount = usePrefs(s => s.splitPaneDimAmount);
+
+  // Active tab's split tree (for layout of the main pane width and resize handle).
+  const splitRoot = useApp(s => {
+    const t = s.splitTree[s.activeTab[ws.id]];
+    return (t && t.type === 'split') ? t : null;
+  });
+  const splitActivePaneId = useApp(s => s.activePaneId[s.activeTab[ws.id]] ?? "");
+  const setActivePaneId = useApp(s => s.setActivePaneId);
+  const setSplitRatio = useApp(s => s.setSplitRatio);
+  const movePaneTo = useApp(s => s.movePaneTo);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  dragRef.current = drag;
+
+  // ALL split trees for this workspace's tabs — so we can keep extra-pane
+  // terminals mounted (visibility-toggled) even when the active tab has no splits.
+  const allSplitTrees = useApp(s => s.splitTree);
+  const tabsWithSplits = tabs
+    .map(t => ({ tabId: t.id, tree: allSplitTrees[t.id] }))
+    .filter((e): e is { tabId: string; tree: import("@/lib/splitTree").SplitNode } =>
+      !!e.tree && e.tree.type === 'split'
+    );
+
   useEffect(() => { ensureDefaultTab(ws.id, ws.cli); }, [ws.id, ws.cli, ensureDefaultTab]);
 
-  // Seed the first bottom tab the moment the split opens, so the user has
-  // something to type into immediately (no empty state).
+  // Seed the first bottom tab the moment the split opens.
   useEffect(() => {
-    // Seed without focus: this fires on split-open AND on launch-restore of
-    // a persisted split, where stealing focus off the agent terminal would
-    // be wrong. Explicit creation (⇧⌘D, +, ⌘T) focuses via addBottomTab's
-    // default.
     if (split && (!bottomTabs || bottomTabs.length === 0)) addBottomTab(ws.id, { focus: false });
   }, [split, bottomTabs, ws.id, addBottomTab]);
 
-  // On first open of the right split, restore any persisted right tabs
-  // (ensureDefaultRightTabs, a no-op when none were saved). We deliberately
-  // DON'T auto-seed a shell anymore: an empty split shows the in-pane
-  // SplitLauncher so the user picks what to launch (agent / terminal).
-  useEffect(() => {
-    if (!rightSplit) return;
-    ensureRightTabs(ws.id);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rightSplit, ws.id]);
-
-  // Default ratio to 0.5 on first open (no persisted ratio yet).
-  useEffect(() => {
-    if (!rightSplit) return;
-    const stored = useApp.getState().rightSplitRatio[ws.id];
-    if (stored == null) setRightRatio(ws.id, 0.5);
-  }, [rightSplit, ws.id, setRightRatio]);
-
   const containerRef = useRef<HTMLDivElement>(null);
   const hRowRef      = useRef<HTMLDivElement>(null);
+
+  // Mask the one-frame "stretched text" artifact that appears when the main
+  // pane resizes between split and non-split tabs. A useLayoutEffect fires
+  // synchronously before the browser paints, so we can put an opaque overlay
+  // (same color as the terminal bg) over the main pane for 2 rAFs — hiding
+  // the stretched canvas — then remove it once xterm has re-fitted.
+  const [maskingResize, setMaskingResize] = useState(false);
+  const prevSplitStatus = useRef(!!splitRoot);
+  useLayoutEffect(() => {
+    const hadSplits = prevSplitStatus.current;
+    const hasSplits = !!splitRoot;
+    prevSplitStatus.current = hasSplits;
+    if (hadSplits === hasSplits) return;
+    setMaskingResize(true);
+    let r1 = 0, r2 = 0;
+    r1 = requestAnimationFrame(() => { r2 = requestAnimationFrame(() => setMaskingResize(false)); });
+    return () => { cancelAnimationFrame(r1); cancelAnimationFrame(r2); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, !!splitRoot]);
+
+  // Drag-to-rearrange. elementsFromPoint skips visibility:hidden panes so only
+  // the visible (active-tab) leaves can be targeted — no need to filter by tabId.
+  const updateDragTarget = useCallback((x: number, y: number) => {
+    const els = document.elementsFromPoint(x, y);
+    const leafEl = els.find(
+      (el): el is HTMLElement => el instanceof HTMLElement && el.hasAttribute('data-split-leaf') && el.hasAttribute('data-pane-id'),
+    );
+    let targetPaneId: string | null = null;
+    let zone: DropZone | null = null;
+    if (leafEl) {
+      const pid = leafEl.getAttribute('data-pane-id')!;
+      if (pid !== dragRef.current?.sourcePaneId) {
+        targetPaneId = pid;
+        zone = detectZone(leafEl.getBoundingClientRect(), x, y);
+      }
+    }
+    // Update ref synchronously so onUp always reads the latest target even if
+    // the React re-render hasn't flushed yet when the user releases quickly.
+    const next = dragRef.current ? { ...dragRef.current, x, y, targetPaneId, zone } : null;
+    dragRef.current = next;
+    setDrag(next);
+  }, []);
+
+  const onPaneDragStart = useCallback((paneId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    const initial: DragState = { sourcePaneId: paneId, x: e.clientX, y: e.clientY, targetPaneId: null, zone: null };
+    setDrag(initial);
+    dragRef.current = initial;
+    const onMove = (me: MouseEvent) => updateDragTarget(me.clientX, me.clientY);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      const d = dragRef.current;
+      if (d?.targetPaneId && d.zone) movePaneTo(ws.id, d.sourcePaneId, d.targetPaneId, d.zone);
+      setDrag(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [ws.id, movePaneTo, updateDragTarget]);
+
+  useEffect(() => {
+    if (!drag) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDrag(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drag]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <TabBar ws={ws} />
       <EditorBreadcrumb ws={ws} />
       <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
-        {/* Horizontal row: main tab content + optional right split. */}
-        <div ref={hRowRef} className="flex min-h-0 flex-1">
-          {/* Left: main-panel tab content (agent terminal / editor / diff).
-              Right-panel tabs are rendered in the right split below. */}
-          <div data-main-content="" className="relative min-h-0 flex-1 min-w-0">
-            {tabs.filter(t => t.panel !== "right").map(t => (
+        {/* hRow: main tab-stack always mounted; one always-mounted extra-panes
+            container per tab-with-splits (visibility-toggled, never unmounted).
+            This prevents xterm instances from dying on tab switch. */}
+        <div
+          ref={hRowRef}
+          className={cn("relative flex min-h-0 flex-1", splitRoot?.dir === 'h' ? "flex-col" : "flex-row")}
+        >
+          {/* ── Main pane (always alive, never unmounts) ── */}
+          {(() => {
+            const mainLeaf = splitRoot ? getAllLeaves(splitRoot).find(l => l.isMain) : null;
+            const mainLeafId = mainLeaf?.id ?? "";
+            const isMainActive = !splitRoot || !splitActivePaneId || splitActivePaneId === mainLeafId;
+            const mainDimOpacity = (splitPaneDim && splitRoot && !isMainActive) ? splitPaneDimAmount / 100 : 0;
+            return (
               <div
-                key={t.id}
-                data-main-tab-id={t.id}
-                className="absolute inset-0"
-                style={{ visibility: t.id === activeId ? "visible" : "hidden", zIndex: t.id === activeId ? 1 : 0 }}
+                data-main-content=""
+                data-split-leaf=""
+                data-pane-id={mainLeafId || "main"}
+                className="relative flex min-h-0 min-w-0 flex-col overflow-hidden"
+                style={splitRoot
+                  ? (splitRoot.dir === 'v' ? { width: `${splitRoot.ratio * 100}%` } : { height: `${splitRoot.ratio * 100}%` })
+                  : { flex: 1 }}
+                onMouseDown={() => {
+                  if (mainLeafId) setActivePaneId(ws.id, mainLeafId);
+                }}
               >
-                {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeId} />}
-                {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
-                {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
+                {splitRoot && (
+                  <PaneHeader
+                    title={(() => {
+                      const t = tabs.find(t => t.id === activeId);
+                      return t ? ((t as TerminalTab).liveTitle?.trim() || t.title) : "Main";
+                    })()}
+                    paneId={mainLeafId || "main"}
+                    wsId={ws.id}
+                    onClose={() => {}}
+                    onDragStart={() => {}}
+                    isDragging={false}
+                    isMainPane
+                  />
+                )}
+                <div className="relative min-h-0 flex-1 min-w-0">
+                  {tabs.filter(t => !(t as TerminalTab).paneId).map(t => (
+                    <div
+                      key={t.id}
+                      data-main-tab-id={t.id}
+                      className="absolute inset-0"
+                      style={{ visibility: t.id === activeId ? "visible" : "hidden", zIndex: t.id === activeId ? 1 : 0 }}
+                    >
+                      {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeId} />}
+                      {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
+                      {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
+                    </div>
+                  ))}
+                </div>
+                {mainDimOpacity > 0 && (
+                  <div
+                    className="pointer-events-none absolute inset-0"
+                    style={{ backgroundColor: `rgba(128,128,128,${mainDimOpacity})`, zIndex: 10 }}
+                  />
+                )}
+                {maskingResize && (
+                  <div
+                    className="pointer-events-none absolute inset-0"
+                    style={{ backgroundColor: xtermBg, zIndex: 200 }}
+                  />
+                )}
+                {/* Drop-zone preview when another pane is dragged over main. */}
+                {drag?.targetPaneId === mainLeafId && drag.zone && mainLeafId && (
+                  <div
+                    className="pointer-events-none absolute"
+                    style={{ zIndex: 210, backgroundColor: 'rgba(239,68,68,0.35)', ...zoneStyle(drag.zone) }}
+                  />
+                )}
               </div>
-            ))}
-          </div>
+            );
+          })()}
 
-          {/* Optional right split: agent or shell tabs to the right of the
-              agent. The tab strip lives in TabBar (same row as agent tabs).
-              Uses TerminalPane so agents can be placed here with full
-              session-resume and attention-tracking support. */}
-          {rightSplit && (
+          {/* ── Extra split panes: one container per tab-with-splits, always mounted.
+               Active tab's container is a normal flex child.
+               All others are position:absolute/visibility:hidden so their xterm
+               instances stay alive (ResizeObserver still fires, PTYs keep running). ── */}
+          {tabsWithSplits.map(({ tabId, tree }) => {
+            const isActiveTab = tabId === activeId && !!splitRoot;
+            return (
+              <div
+                key={tabId}
+                className="relative flex min-h-0 min-w-0 flex-col overflow-hidden"
+                style={isActiveTab
+                  ? { flex: 1 }
+                  : { position: 'absolute', inset: 0, visibility: 'hidden', pointerEvents: 'none' }}
+              >
+                <SplitNodeView
+                  ws={ws}
+                  node={tree.b}
+                  activePaneId={isActiveTab ? splitActivePaneId : ""}
+                  xtermBg={xtermBg}
+                  drag={isActiveTab ? drag : null}
+                  onDragStart={isActiveTab ? onPaneDragStart : () => {}}
+                  dimAmount={splitPaneDimAmount}
+                  dimActive={splitPaneDim && getAllLeaves(tree).length > 1}
+                />
+              </div>
+            );
+          })}
+
+          {/* Root split separator: zero-size wrapper at the seam inside hRow (no
+              overflow-hidden) so the 2px handle is never clipped. Same pattern
+              as SplitNodeView's internal handles. */}
+          {splitRoot && (
             <div
-              data-right-split=""
-              // 1px border-l (tab-separator color) mirrors the right tab strip
-              // in TabBar so the separator is continuous AND crisp — a wider
-              // 3px band at this low opacity sat on a sub-pixel boundary and
-              // read as fuzzy. With box-sizing: border-box the ResizeHandle's
-              // `left-0` resolves inside this border, so `-ml-px` lands the
-              // visible 1px handle exactly on it (and aligned with the strip).
-              className="relative flex shrink-0 flex-col border-l-2 border-[var(--color-border-soft)]"
-              style={{ width: `${rightSplitRatio * 100}%`, backgroundColor: xtermBg }}
+              className="absolute z-20"
+              style={splitRoot.dir === 'v'
+                ? { left: `${splitRoot.ratio * 100}%`, top: 0, bottom: 0, width: 0 }
+                : { top: `${splitRoot.ratio * 100}%`, left: 0, right: 0, height: 0 }
+              }
             >
               <ResizeHandle
-                direction="x"
-                className="left-0"
+                direction={splitRoot.dir === 'v' ? 'x' : 'y'}
                 alwaysVisible
-                onDrag={(dx) => {
-                  const containerW = hRowRef.current?.clientWidth ?? 800;
-                  if (containerW === 0) return;
-                  const cur = useApp.getState().rightSplitRatio[ws.id] ?? 0.5;
-                  const newRatio = (cur * containerW - dx) / containerW;
-                  setRightRatio(ws.id, newRatio);
+                onDrag={(delta) => {
+                  const hRow = hRowRef.current;
+                  if (!hRow) return;
+                  const st = useApp.getState();
+                  const tabKey = st.activeTab[ws.id];
+                  const liveTree = tabKey ? st.splitTree[tabKey] : null;
+                  if (!liveTree || liveTree.type !== 'split') return;
+                  const size = liveTree.dir === 'v' ? hRow.clientWidth : hRow.clientHeight;
+                  if (size === 0) return;
+                  const newRatio = Math.max(0.05, Math.min(0.95, liveTree.ratio + delta / size));
+                  setSplitRatio(ws.id, liveTree.id, newRatio);
                 }}
               />
-              {rightTabs.length === 0 ? (
-                // Empty split: let the user pick what to launch (↑/↓ + ↵)
-                // instead of auto-spawning a shell.
-                <SplitLauncher ws={ws} />
-              ) : rightTabs.map(t => (
-                <div
-                  key={t.id}
-                  data-tab-id={t.id}
-                  className="absolute inset-0"
-                  style={{ visibility: t.id === activeRight ? "visible" : "hidden", zIndex: t.id === activeRight ? 1 : 0 }}
-                >
-                  {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeRight} />}
-                  {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
-                  {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
-                </div>
-              ))}
             </div>
           )}
         </div>
@@ -297,7 +418,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 {/* Queue affordance pinned far LEFT so it's always seen; the
                     shell tabs start after a separator. The bottom status-bar
                     copy is hidden while the split is open — see FooterBar. */}
-                <MessageQueueButton wsId={ws.id} compact className={cn("self-center", rightAgentFocused && "opacity-40 transition-opacity")} />
+                <MessageQueueButton wsId={ws.id} compact className="self-center" />
                 <div className="mx-1.5 h-5 w-px shrink-0 self-center bg-[var(--color-border-soft)]" />
                 {/* Tabs + New scroll horizontally (no scrollbar) so the queue
                     button on the left and the collapse toggle on the right stay
@@ -332,18 +453,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                     className="ml-1 shrink-0 self-center rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                   ><Plus className="h-4 w-4" /></button>
                 </div>
-                {/* Right group, pushed far right: the right-pane agent's queue
-                    button (dimmed unless that pane is focused) sits next to the
-                    collapse toggle. */}
                 <div className="ml-auto flex items-center gap-0.5">
-                  {rightHasAgent && (
-                    <MessageQueueButton
-                      wsId={ws.id}
-                      preferTabId={activeRight}
-                      compact
-                      className={cn(wvActivePane !== "right" && "opacity-40 transition-opacity")}
-                    />
-                  )}
                   <button
                     title={collapsed ? "Expand terminal" : "Collapse terminal"}
                     onClick={() => toggleCollapsed(ws.id)}
@@ -403,6 +513,14 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
             type is active. Always rendered. */}
         <FooterBar ws={ws} sandboxWarning={null} />
       </div>
+      {/* Full-screen drag capture overlay — prevents the webview / xterm textarea
+          from stealing mousemove/mouseup events while a pane drag is in progress. */}
+      {drag && (
+        <div
+          className="pointer-events-auto fixed inset-0"
+          style={{ zIndex: 9999, cursor: "grabbing" }}
+        />
+      )}
     </div>
   );
 }

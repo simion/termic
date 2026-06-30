@@ -37,7 +37,8 @@ export type ShortcutId =
   | "new-tab"
   | "close-tab"
   | "clear-terminal"
-  | "new-right-split-terminal"
+  | "split-pane-right"
+  | "split-pane-below"
   | "toggle-terminal"
   | "terminal-copy"
   | "terminal-paste"
@@ -82,9 +83,11 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("[", { cmd: true }) },
   { id: "workspace-next", group: "Navigation", label: "Next workspace",
     defaultBinding: B("]", { cmd: true }) },
-  { id: "workspace-prev-arrow", group: "Navigation", label: "Previous workspace (arrow)",
+  { id: "workspace-prev-arrow", group: "Navigation", label: "Pane up / previous agent",
+    hint: "When splits are open: focus the pane above. Otherwise: cycle to the previous agent tab.",
     defaultBinding: B("ArrowUp", { cmd: true, alt: true }) },
-  { id: "workspace-next-arrow", group: "Navigation", label: "Next workspace (arrow)",
+  { id: "workspace-next-arrow", group: "Navigation", label: "Pane down / next agent",
+    hint: "When splits are open: focus the pane below. Otherwise: cycle to the next agent tab.",
     defaultBinding: B("ArrowDown", { cmd: true, alt: true }) },
 
   // Tabs
@@ -92,9 +95,11 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("[", { cmd: true, shift: true }) },
   { id: "tab-next", group: "Tabs", label: "Next tab",
     defaultBinding: B("]", { cmd: true, shift: true }) },
-  { id: "tab-prev-arrow", group: "Tabs", label: "Previous tab (arrow)",
+  { id: "tab-prev-arrow", group: "Tabs", label: "Pane left / previous tab",
+    hint: "When splits are open: focus the pane to the left. Otherwise: switch to the previous tab.",
     defaultBinding: B("ArrowLeft", { cmd: true, alt: true }) },
-  { id: "tab-next-arrow", group: "Tabs", label: "Next tab (arrow)",
+  { id: "tab-next-arrow", group: "Tabs", label: "Pane right / next tab",
+    hint: "When splits are open: focus the pane to the right. Otherwise: switch to the next tab.",
     defaultBinding: B("ArrowRight", { cmd: true, alt: true }) },
   { id: "jump-to-tab", group: "Tabs", label: "Jump to tab 1…9",
     hint: "Modifier + a number key", defaultBinding: B("1-9", { cmd: true }) },
@@ -110,8 +115,12 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: "clear-terminal", group: "Terminal", label: "Clear focused terminal",
     hint: "Moved from ⌘K, which now opens the command palette.",
     defaultBinding: B("k", { cmd: true, shift: true }) },
-  { id: "new-right-split-terminal", group: "Terminal", label: "New right-split terminal",
+  { id: "split-pane-right", group: "Terminal", label: "Split pane right",
+    hint: "Open a new pane to the right of the focused pane (vertical divider).",
     defaultBinding: B("d", { cmd: true }) },
+  { id: "split-pane-below", group: "Terminal", label: "Split pane below",
+    hint: "Open a new pane below the focused pane (horizontal divider). Also: ⇧⌘D by default.",
+    defaultBinding: B("d", { cmd: true, shift: true }) },
   { id: "toggle-terminal", group: "Terminal", label: "Toggle terminal panel",
     hint: "Show + focus the bottom split, or hide it and return to the agent",
     defaultBinding: B("j", { cmd: true }) },
@@ -136,7 +145,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: "open-settings", group: "General", label: "Open settings",
     defaultBinding: B(",", { cmd: true }) },
   { id: "open-shortcuts", group: "General", label: "Open keyboard shortcuts",
-    hint: "Jump straight to this list", defaultBinding: B("/", { cmd: true }) },
+    hint: "Jump straight to this list", defaultBinding: B("?", { shift: true }) },
   { id: "file-finder", group: "General", label: "Open file finder",
     defaultBinding: B("p", { cmd: true }) },
   { id: "find-in-files", group: "General", label: "Find in files",
@@ -165,11 +174,12 @@ export const GROUP_ORDER: ShortcutGroup[] = ["Navigation", "Tabs", "Terminal", "
 
 /** Groups of rebindable commands that intentionally share a binding and can
  *  NEVER fire at the same time, so the Shortcuts settings page must not flag
- *  them as conflicts. Empty for now: ⇧⌘D is a hard-coded alias for ⌘J
- *  (toggle-terminal) handled outside the rebindable set, and `discard-file`
- *  (also ⇧⌘D) only acts while the Git panel has a file selected, so neither
- *  appears here. */
-export const NON_CONFLICTING_GROUPS: ShortcutId[][] = [];
+ *  them as conflicts. `split-pane-below` and `discard-file` share ⇧⌘D:
+ *  the Git panel captures the key only when a file is selected and
+ *  stopPropagation()s, so the terminal handler never sees it in that case. */
+export const NON_CONFLICTING_GROUPS: ShortcutId[][] = [
+  ["split-pane-below", "discard-file"],
+];
 
 export type BindingMap = Record<ShortcutId, Binding>;
 
@@ -217,10 +227,12 @@ export function bindingFromEvent(e: KeyboardEvent, digitMode = false): Binding |
   return { cmd: e.metaKey || e.ctrlKey, shift: e.shiftKey, alt: e.altKey, key };
 }
 
-/** At least one of Cmd/Ctrl or Option must be present, otherwise the binding
- *  would swallow ordinary typing (or Shift+letter = capitals) everywhere. */
+/** At least one of Cmd/Ctrl, Option, or Shift+non-alphanumeric must be present.
+ *  Pure Shift+letter = capitals (normal typing) — always rejected. */
 export function isValidBinding(b: Binding): boolean {
-  return b.cmd || b.alt;
+  if (b.cmd || b.alt) return true;
+  // Shift+punctuation (e.g. ⇧?) is a valid shortcut; Shift+letter is not.
+  return b.shift && !/^[a-z0-9]$/i.test(b.key);
 }
 
 /** True on macOS. The handler folds Cmd≡Ctrl so shortcuts FIRE on every

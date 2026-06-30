@@ -286,10 +286,9 @@ export function EditorPane({ ws, tab, onContent }: {
   // silently reloading. Pending until the user acts; rendered only while the
   // tab is focused (see the banner in the return).
   const [diskChanged, setDiskChanged] = useState(false);
-  // Focused = this workspace is up front AND this tab is the visible one in
-  // whichever pane holds it (main split or right split).
-  const isActive = useApp(s => s.activeWorkspaceId === ws.id
-    && (s.activeTab[ws.id] === tab.id || s.activeRightTab[ws.id] === tab.id));
+  // Focused = this workspace is up front AND this tab is the active main-pane tab
+  // (edit/diff tabs only open in the main pane, not in split panes).
+  const isActive = useApp(s => s.activeWorkspaceId === ws.id && s.activeTab[ws.id] === tab.id);
 
   // Swap fresh disk content into the live view, annotated so it doesn't flip
   // the dirty dot. Used by both the silent preview-reload path and the user

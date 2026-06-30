@@ -907,9 +907,6 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const activeWsId = useApp(s => s.activeWorkspaceId);
   const setActive = useApp(s => s.setActiveWorkspace);
   const setActiveTabId = useApp(s => s.setActiveTabId);
-  const setActiveRightTab = useApp(s => s.setActiveRightTab);
-  const activeRightTabId = useApp(s => s.activeRightTab[w.id]);
-  const activePane = useApp(s => s.activePane[w.id] ?? "main");
   const loadAll = useApp(s => s.loadAll);
   const terminalTabCount = useApp(s => (s.tabs[w.id] ?? []).filter(t => t.type === "terminal").length);
   const agents = useApp(s => s.agents);
@@ -941,17 +938,15 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const spotlightAvailable = !w.is_repo_root && !!project?.spotlight_enabled && project?.type !== "multi" && !project?.non_git;
 
   const isActive = activeWsId === w.id;
-  // Include right-panel tabs — they're treated like any other agent tab in the sidebar.
-  // Click routing below distinguishes main vs right via tab.panel.
-  const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal");
+  // Sidebar only shows main-pane terminal tabs; split-pane tabs live in SplitView.
+  const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
   const isLoaded = terminalTabs.some(t => t.ptyId);
   // The sidebar only renders terminal tabs as child rows; edit/diff tabs
   // are transient file views with no row. When the active tab is one of
   // those (or there's no active tab), no child row carries the selection,
-  // so the workspace HEADER must show it instead — otherwise an open file
-  // or git diff leaves the workspace looking inactive in the tree.
+  // so the workspace HEADER must show it instead.
   const activeTabIsTerminalChild = terminalTabs.some(
-    t => t.id === activeTabId || t.id === activeRightTabId,
+    t => t.id === activeTabId,
   );
 
   // Workspace actions menu — controlled so a right-click on the row can
@@ -1405,14 +1400,8 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
 
       {/* Tab children — terminal tabs only; edit/diff are transient file views */}
       {!collapsed && terminalTabs.map(tab => {
-        const isRight = !!tab.panel;
-        // A tab is the active one in its pane; but only the FOCUSED pane's
-        // active tab reads as fully active (terracotta). The other pane's
-        // active tab gets a muted highlight, so exactly one tab is "hot".
-        const isActiveInPane = isRight ? tab.id === activeRightTabId : tab.id === activeTabId;
-        const isFocusedPane = activePane === (isRight ? "right" : "main");
-        const isTabActive = isActive && isActiveInPane;
-        const isTabHot = isTabActive && isFocusedPane;
+        const isTabActive = isActive && tab.id === activeTabId;
+        const isTabHot = isTabActive;
         const title = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const showBell    = settledHighlight && tab.unread?.reason === "attention";
         const showDone    = settledHighlight && !showBell && tab.workState === "done";
@@ -1424,8 +1413,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             key={tab.id}
             onClick={() => {
               setActive(w.id);
-              if (isRight) setActiveRightTab(w.id, tab.id);
-              else setActiveTabId(w.id, tab.id);
+              setActiveTabId(w.id, tab.id);
             }}
             onDoubleClick={(e) => {
               e.stopPropagation();

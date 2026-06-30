@@ -118,14 +118,10 @@ export function Dashboard() {
                             )}>
                               <CliIcon cli={resolveIconId(w.cli, agents)} className="h-4 w-4" />
                             </span>
-                            {/* Hide the workspace name on repo rows — it's
-                                always just the project name shown above. */}
-                            {!w.is_repo_root && <span className="font-medium text-[13px]">{w.name}</span>}
-                            {w.is_repo_root && (
-                              <span className="rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">
-                                repo
-                              </span>
-                            )}
+                            <span className="font-medium text-[13px]">{w.name}</span>
+                            <span className="rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">
+                              {w.is_repo_root ? "repo" : "worktree"}
+                            </span>
                             <span className="text-[12.5px] text-[var(--color-fg-faint)]">on</span>
                             <span className="font-mono text-[12px] text-[var(--color-fg-dim)] truncate">{w.branch}</span>
                           </button>

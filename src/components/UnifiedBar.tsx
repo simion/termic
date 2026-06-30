@@ -20,6 +20,7 @@ import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { effectiveSandboxMode } from "@/lib/types";
 import { SandboxIcon } from "@/components/SandboxIcon";
 import type { TerminalTab } from "@/lib/types";
+import { findLeaf } from "@/lib/splitTree";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { openPath, workspaceSendDiffToMain } from "@/lib/ipc";
 import { archiveAndRefresh } from "@/lib/archiveWorkspace";
@@ -57,8 +58,13 @@ export function UnifiedBar() {
   );
   const focusedAgentId = useApp(s => {
     if (!ws) return undefined;
-    const pane = s.activePane[ws.id] ?? "main";
-    return pane === "right" ? s.activeRightTab[ws.id] : s.activeTab[ws.id];
+    const tabKey = s.activeTab[ws.id];
+    const tree = tabKey ? s.splitTree[tabKey] : undefined;
+    if (tree) {
+      const leaf = findLeaf(tree, s.activePaneId[tabKey!] ?? "");
+      if (leaf?.tabId) return leaf.tabId;
+    }
+    return s.activeTab[ws.id];
   });
   // Picking a prompt opens a destination modal (running agents + new-agent
   // CLIs) instead of a submenu, which flipped to the wrong side near the edge.
