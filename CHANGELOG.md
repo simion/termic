@@ -4,6 +4,22 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.17.0] - 2026-06-30
+
+iTerm-style split panes: drag to rearrange, keyboard shortcuts, auto-close on exit.
+
+### Features
+- Split the main agent pane right (Cmd+D) or below (Shift+Cmd+D) into multiple panes, each running its own agent or shell.
+- Drag pane headers to rearrange, with a red drop-zone preview showing exactly where the pane will land.
+- Drop onto the main agent pane to reorient the layout (vertical or horizontal split).
+- Non-main split panes close automatically when their agent exits.
+- Dim inactive panes setting with adjustable opacity (Appearance settings).
+- Dashboard workspace rows now show the workspace name and an explicit repo/worktree badge.
+
+### Bug fixes
+- Cmd+W now closes the active tab when no split pane is focused (regression from drag-target attribute added to main pane).
+- Shift+? (was Cmd+/) opens the keyboard shortcut cheat-sheet.
+
 ## [0.16.1] - 2026-06-27
 
 Restore archived workspaces, project context menu, opencode agent, terminal performance.
