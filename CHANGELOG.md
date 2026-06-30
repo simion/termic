@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.17.1] - 2026-06-30
+## [0.17.2] - 2026-06-30
 
 Split pane layout persists across relaunches; TabBar buttons are now split-pane shortcuts.
 
@@ -15,6 +15,7 @@ Split pane layout persists across relaunches; TabBar buttons are now split-pane 
 ### Bug fixes
 - Splitting from the main agent while other panes exist now places the new pane directly adjacent to main, not in the far corner.
 - Splitting from the main agent via TabBar buttons now always targets main regardless of which pane was last focused.
+- Pane navigation (Option+Cmd+arrows) now reaches panes that don't share a center-aligned edge with the current pane (e.g. navigating left from a small bottom-right pane now finds the full-height main pane).
 
 ## [0.17.0] - 2026-06-30
 

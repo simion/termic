@@ -269,22 +269,22 @@ export function findAdjacentPane(
 
     if (dir === 'right') {
       qualifies = b.x >= curr.x + curr.w - EPS &&
-        bCy >= curr.y - EPS && bCy <= curr.y + curr.h + EPS;
+        b.y + b.h >= curr.y - EPS && b.y <= curr.y + curr.h + EPS;
       dist = b.x - (curr.x + curr.w);
       perp = Math.abs(bCy - currCy);
     } else if (dir === 'left') {
       qualifies = b.x + b.w <= curr.x + EPS &&
-        bCy >= curr.y - EPS && bCy <= curr.y + curr.h + EPS;
+        b.y + b.h >= curr.y - EPS && b.y <= curr.y + curr.h + EPS;
       dist = curr.x - (b.x + b.w);
       perp = Math.abs(bCy - currCy);
     } else if (dir === 'down') {
       qualifies = b.y >= curr.y + curr.h - EPS &&
-        bCx >= curr.x - EPS && bCx <= curr.x + curr.w + EPS;
+        b.x + b.w >= curr.x - EPS && b.x <= curr.x + curr.w + EPS;
       dist = b.y - (curr.y + curr.h);
       perp = Math.abs(bCx - currCx);
     } else { // up
       qualifies = b.y + b.h <= curr.y + EPS &&
-        bCx >= curr.x - EPS && bCx <= curr.x + curr.w + EPS;
+        b.x + b.w >= curr.x - EPS && b.x <= curr.x + curr.w + EPS;
       dist = curr.y - (b.y + b.h);
       perp = Math.abs(bCx - currCx);
     }
