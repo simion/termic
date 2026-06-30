@@ -17,6 +17,7 @@
 //   ⌘L       → focus the main agent (its terminal or editor) from any pane
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
 //   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings
+//   Shortcuts cheat-sheet: icon-only, no keyboard binding
 import { useEffect } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
@@ -200,14 +201,6 @@ export function useShortcuts() {
         case "open-settings":
           e.preventDefault();
           state.openSettings();
-          return;
-
-        // ⇧? → open the read-only shortcuts cheat-sheet modal.
-        // Guard: terminal focused — let "?" reach the PTY instead of opening the dialog.
-        case "open-shortcuts":
-          if (inTermFocused()) return;
-          e.preventDefault();
-          useUI.getState().openShortcutsHelp();
           return;
 
         // ⌘P → file finder. NO `isTyping` guard — xterm's hidden textarea
@@ -444,3 +437,4 @@ export function useShortcuts() {
 function inTermFocused() {
   return !!(document.activeElement as HTMLElement | null)?.closest?.(".xterm");
 }
+
