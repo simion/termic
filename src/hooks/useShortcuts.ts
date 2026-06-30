@@ -109,7 +109,13 @@ export function useShortcuts() {
       );
       const activeTabId = wsId ? state.activeTab[wsId] : undefined;
       const inBottom = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
-      const inSplitPane = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-split-leaf]");
+      // Only true when focus is inside an EXTRA split-pane leaf (not the main pane).
+      // The main pane also has data-split-leaf (for drag targeting) but it also has
+      // data-main-content, so we exclude it here.
+      const inSplitPane = () => {
+        const el = (document.activeElement as HTMLElement | null)?.closest?.("[data-split-leaf]") as HTMLElement | null;
+        return !!el && !el.hasAttribute("data-main-content");
+      };
 
       // Workspace nav cycles only AWAKE workspaces — ones the user has opened
       // at least once + still has tabs in. Order MUST match the sidebar's
@@ -420,8 +426,10 @@ export function useShortcuts() {
           }
           if (inSplitPane() && wsId) {
             const paneId = state.activePaneId[state.activeTab[wsId]];
-            if (paneId) state.closePane(wsId, paneId);
-            return;
+            if (paneId) {
+              state.closePane(wsId, paneId);
+              return;
+            }
           }
           if (wsId && activeTabId) requestCloseTab(wsId, activeTabId);
           return;
