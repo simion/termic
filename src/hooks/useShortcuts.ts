@@ -203,9 +203,9 @@ export function useShortcuts() {
           return;
 
         // ⇧? → open the read-only shortcuts cheat-sheet modal.
-        // It has its own search + an Edit button that jumps to Settings →
-        // Shortcuts for rebinding.
+        // Guard: terminal focused — let "?" reach the PTY instead of opening the dialog.
         case "open-shortcuts":
+          if (inTermFocused()) return;
           e.preventDefault();
           useUI.getState().openShortcutsHelp();
           return;
