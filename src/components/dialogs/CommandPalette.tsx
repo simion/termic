@@ -235,7 +235,7 @@ export function CommandPalette() {
     });
     cmds.push({
       id: "shortcuts", section: "View", label: "Keyboard shortcuts",
-      icon: Keyboard, shortcutId: "open-shortcuts", keywords: "keys bindings cheat sheet",
+      icon: Keyboard, keywords: "keys bindings cheat sheet",
       run: act(() => useUI.getState().openShortcutsHelp()),
     });
 

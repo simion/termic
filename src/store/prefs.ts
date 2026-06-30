@@ -455,6 +455,11 @@ function loadShortcuts(): BindingMap {
     const raw = localStorage.getItem(LS_SHORTCUTS);
     if (raw) {
       const parsed = JSON.parse(raw) as Record<string, Partial<Binding>>;
+      // "open-shortcuts" was removed as a bindable shortcut in 0.17.4 — wipe any stored binding.
+      if ("open-shortcuts" in parsed) {
+        delete parsed["open-shortcuts"];
+        try { localStorage.setItem(LS_SHORTCUTS, JSON.stringify(parsed)); } catch {}
+      }
       for (const id of Object.keys(merged) as ShortcutId[]) {
         const b = parsed[id];
         if (b && typeof b.key === "string"
