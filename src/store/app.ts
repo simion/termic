@@ -691,18 +691,15 @@ export const useApp = create<AppState>((set, get) => ({
         // Set root.dir = dir so "split right" (v) puts pane right of main, "split
         // below" (h) puts it below. Existing extras are folded into root.b using the
         // old direction so their internal layout is preserved.
-        // When the direction CHANGES (e.g. had bottom-terminal, now split right), put
-        // the new pane at position `a` (top/left of the new root.b) so it lands
-        // directly adjacent to main rather than in the far corner.
+        // New pane always goes at position `a` (directly adjacent to main) so it
+        // lands next to main regardless of how many existing panes are in root.b.
         const innerDir = rootSplit.dir;
-        const dirChanged = !!rootSplit.b && innerDir !== dir;
         newTree = {
           ...rootSplit,
           dir,
           b: rootSplit.b
             ? { type: 'split', id: crypto.randomUUID(), dir: innerDir, ratio: 0.5,
-                a: dirChanged ? newLeaf : rootSplit.b,
-                b: dirChanged ? rootSplit.b : newLeaf,
+                a: newLeaf, b: rootSplit.b,
               }
             : newLeaf,
         };
