@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.17.6",
+      "version": "0.17.7",
       "date": "2026-07-01",
       "summary": "Split pane layout persists across relaunches; TabBar buttons are now split-pane shortcuts."
     },

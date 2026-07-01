@@ -23,6 +23,7 @@ import { useShortcuts } from "@/hooks/useShortcuts";
 import { useAttentionNotifier } from "@/hooks/useAttentionNotifier";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
 import { useUpdate } from "@/store/update";
+import { focusMainTab } from "@/lib/tabFocus";
 
 export function App() {
   const loadAll = useApp(s => s.loadAll);
@@ -31,6 +32,20 @@ export function App() {
   const activeWs = useApp(s => s.activeWorkspaceId);
   const view = useApp(s => s.view.page);
   const settingsOpen = useApp(s => !!s.view.settingsOpen);
+
+  // Track the last terminal or editor element that had keyboard focus so we
+  // can restore to the exact pane (main, split, bottom, editor) when the
+  // window regains focus. Only track terminal/editor — not buttons, dialogs,
+  // or inputs, which either don't need restoring or handle it themselves.
+  const lastTermFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest(".xterm, .cm-editor")) lastTermFocusRef.current = t;
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, []);
 
   // macOS native full-screen hides the traffic lights, so the Settings modal
   // doesn't need to reserve the top-left titlebar gap there.
@@ -60,7 +75,31 @@ export function App() {
       "spotlight://status",
       ev => useApp.getState().setSpotlight(ev.payload.project_id, ev.payload.ws_id),
     );
-    const onFocus = () => loadAll();
+    const onFocus = () => {
+      loadAll();
+      // Restore focus to whichever terminal/editor was last active when the
+      // window lost focus. One rAF lets the click event settle first so we
+      // don't race with elements that capture focus from the triggering click.
+      // Guard: if the click already landed on a focusable interactive element
+      // (terminal, editor, input, button, dialog) leave it alone.
+      requestAnimationFrame(() => {
+        const ae = document.activeElement as HTMLElement | null;
+        const alreadyCaptured = ae && (
+          ae.closest(".xterm, .cm-editor") ||
+          ae.closest("input, textarea, button, a, [contenteditable]") ||
+          ae.closest('[role="dialog"]')
+        );
+        if (alreadyCaptured) return;
+        // Restore to last focused terminal/editor, or fall back to main tab.
+        const last = lastTermFocusRef.current;
+        if (last && document.contains(last)) {
+          last.focus();
+        } else {
+          const s = useApp.getState();
+          if (s.activeWorkspaceId) focusMainTab(s.activeTab[s.activeWorkspaceId]);
+        }
+      });
+    };
     window.addEventListener("focus", onFocus);
     return () => {
       window.removeEventListener("focus", onFocus);

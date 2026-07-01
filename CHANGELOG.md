@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.17.6] - 2026-07-01
+## [0.17.7] - 2026-07-01
 
 Split pane layout persists across relaunches; TabBar buttons are now split-pane shortcuts.
 
@@ -20,6 +20,7 @@ Split pane layout persists across relaunches; TabBar buttons are now split-pane 
 - Option+Cmd+Up/Down now navigates workspaces when no horizontal split is open (previously cycled agent tabs). When a horizontal split exists, it still focuses the pane above or below.
 - Option+Cmd+Left/Right now does nothing when no vertical split is open (previously switched tabs). It only navigates panes when a vertical split exists.
 - Cmd+Left/Right in the terminal now moves to the beginning/end of line (Ctrl+A / Ctrl+E), matching macOS Terminal.app and iTerm2. (issue #51)
+- Clicking back on the app window now reliably restores keyboard focus to whichever terminal or editor was last active, without requiring a second click.
 
 ## [0.17.0] - 2026-06-30
 
