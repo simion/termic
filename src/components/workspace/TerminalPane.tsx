@@ -573,6 +573,18 @@ const captureArmedRef = useRef(false);
         e.stopPropagation();
         return false;
       }
+      // Cmd+Left → beginning of line (\x01, Ctrl+A); Cmd+Right → end of line
+      // (\x05, Ctrl+E). macOS Terminal.app / iTerm2 convention. xterm.js does
+      // not send these on its own for Cmd+Arrow on macOS.
+      if (IS_MAC && e.type === "keydown" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          const pid = ptyRef.current;
+          if (pid) ipc.ptyWrite(pid, [e.key === "ArrowLeft" ? 0x01 : 0x05]).catch(() => {});
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+      }
       return true;
     });
 
