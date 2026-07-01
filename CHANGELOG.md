@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.17.4] - 2026-06-30
+## [0.17.5] - 2026-07-01
 
 Split pane layout persists across relaunches; TabBar buttons are now split-pane shortcuts.
 
@@ -17,6 +17,8 @@ Split pane layout persists across relaunches; TabBar buttons are now split-pane 
 - Splitting from the main agent via TabBar buttons now always targets main regardless of which pane was last focused.
 - Pane navigation (Option+Cmd+arrows) now reaches panes that don't share a center-aligned edge with the current pane (e.g. navigating left from a small bottom-right pane now finds the full-height main pane).
 - Keyboard shortcuts cheat-sheet no longer has a keyboard binding (was Shift+?), eliminating the "?" key being intercepted in the terminal. Open it from the icon or via the command palette. (issue #53)
+- Option+Cmd+Up/Down now navigates workspaces when no horizontal split is open (previously cycled agent tabs). When a horizontal split exists, it still focuses the pane above or below.
+- Option+Cmd+Left/Right now does nothing when no vertical split is open (previously switched tabs). It only navigates panes when a vertical split exists.
 
 ## [0.17.0] - 2026-06-30
 

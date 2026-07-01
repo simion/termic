@@ -49,6 +49,12 @@ export function countLeaves(tree: SplitTree): number {
   return countLeaves(tree.a) + countLeaves(tree.b);
 }
 
+/** True if any split node in the tree has the given direction. */
+export function treeHasDir(tree: SplitTree, dir: SplitDir): boolean {
+  if (tree.type === 'pane') return false;
+  return tree.dir === dir || treeHasDir(tree.a, dir) || treeHasDir(tree.b, dir);
+}
+
 // ── mutations (return new tree, do not mutate input) ─────────────────────────
 
 export function replaceNode(

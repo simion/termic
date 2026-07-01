@@ -7,7 +7,7 @@
 //   ⌘L       → focus the active workspace's terminal
 //   ⌘[, ⌘]   → previous / next workspace (cycles AWAKE ones in sidebar order)
 //   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded tabs)
-//   ⌥⌘↑, ⌥⌘↓ → pane up/down (when splits exist) or previous/next agent tab
+//   ⌥⌘↑, ⌥⌘↓ → pane up/down (when horizontal split exists) or previous/next workspace
 //   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
 //   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘])
 //   ⌘W       → close the active tab (or close split pane when focus is inside one)
@@ -26,7 +26,7 @@ import { requestCloseTab } from "@/lib/closeTab";
 import { focusTerminalTab, focusMainTab } from "@/lib/tabFocus";
 import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import type { TerminalTab } from "@/lib/types";
-import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves } from "@/lib/splitTree";
+import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
 
 /**
@@ -243,11 +243,13 @@ export function useShortcuts() {
           return;
         }
 
-        // ⌥⌘↑ / ⌥⌘↓ → navigate panes vertically (when splits exist) or cycle agent tabs.
+        // ⌥⌘↑ / ⌥⌘↓ → navigate panes up/down when a horizontal split exists;
+        // otherwise cycle through workspaces (same role as ⌘[/⌘]).
         case "workspace-prev-arrow":
         case "workspace-next-arrow": {
-          if (wsId && state.splitTree[state.activeTab[wsId]]) {
-            // Tab has splits — navigate panes up/down.
+          const _tree = wsId ? state.splitTree[state.activeTab[wsId]] : undefined;
+          const hasHSplit = _tree ? treeHasDir(_tree, 'h') : false;
+          if (wsId && hasHSplit) {
             e.preventDefault();
             const dir = cmd === "workspace-next-arrow" ? 'down' : 'up';
             const next = navigatePane(state, wsId, dir);
@@ -263,43 +265,37 @@ export function useShortcuts() {
             }
             return;
           }
-          // No splits: cycle through agent tabs (same dual-role as ⌥⌘←/→).
-          if (wsId && tabs.length > 1) {
-            e.preventDefault();
-            const fwd = cmd === "workspace-next-arrow";
-            const idx = tabs.findIndex(t => t.id === activeTabId);
-            const nextIdx = fwd ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
-            state.setActiveTabId(wsId, tabs[nextIdx].id);
-          }
+          // No horizontal split — navigate workspaces.
+          const _ws = awakeWorkspaces();
+          if (_ws.length <= 1) return;
+          e.preventDefault();
+          const _fwd = cmd === "workspace-next-arrow";
+          const _idx = _ws.findIndex(w => w.id === wsId);
+          const _next = _idx < 0
+            ? (_fwd ? 0 : _ws.length - 1)
+            : _fwd ? (_idx + 1) % _ws.length : (_idx - 1 + _ws.length) % _ws.length;
+          state.setActiveWorkspace(_ws[_next].id);
           return;
         }
 
-        // ⌥⌘← / ⌥⌘→ → navigate panes left/right (when splits exist) or prev/next tab.
+        // ⌥⌘← / ⌥⌘→ → navigate panes left/right when a vertical split exists; no-op otherwise.
         case "tab-prev-arrow":
         case "tab-next-arrow": {
-          if (wsId && state.splitTree[state.activeTab[wsId]]) {
-            // Tab has splits — arrows are pane-only, never fall through to tab switch.
-            e.preventDefault();
-            const dir = cmd === "tab-next-arrow" ? 'right' : 'left';
-            const next = navigatePane(state, wsId, dir);
-            if (next) {
-              state.setActivePaneId(wsId, next);
-              const leaf = findLeaf(state.splitTree[state.activeTab[wsId]]!, next);
-              if (leaf?.isMain) focusMainTab(activeTabId);
-              else if (leaf?.tabId) focusTerminalTab(leaf.tabId);
-              else {
-                const el = document.querySelector(`[data-split-launcher][data-pane-id="${next}"]`) as HTMLElement | null;
-                el?.focus();
-              }
+          const _tree2 = wsId ? state.splitTree[state.activeTab[wsId]] : undefined;
+          const hasVSplit = _tree2 ? treeHasDir(_tree2, 'v') : false;
+          if (!wsId || !hasVSplit) return;
+          e.preventDefault();
+          const dir = cmd === "tab-next-arrow" ? 'right' : 'left';
+          const next = navigatePane(state, wsId, dir);
+          if (next) {
+            state.setActivePaneId(wsId, next);
+            const leaf = findLeaf(state.splitTree[state.activeTab[wsId]]!, next);
+            if (leaf?.isMain) focusMainTab(activeTabId);
+            else if (leaf?.tabId) focusTerminalTab(leaf.tabId);
+            else {
+              const el = document.querySelector(`[data-split-launcher][data-pane-id="${next}"]`) as HTMLElement | null;
+              el?.focus();
             }
-            return;
-          }
-          if (wsId && tabs.length > 1) {
-            e.preventDefault();
-            const fwd = cmd === "tab-next-arrow";
-            const idx = tabs.findIndex(t => t.id === activeTabId);
-            const nextIdx = fwd ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
-            state.setActiveTabId(wsId, tabs[nextIdx].id);
           }
           return;
         }
