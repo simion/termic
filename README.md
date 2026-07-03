@@ -372,6 +372,9 @@ Open an issue to push something up the list or pick one off.
   — horizontal, vertical, and nested — so multiple terminals, agents, or
   aux sessions can live side by side in the same workspace view without
   switching tabs.
+- **Quick-jump to next waiting agent.** A keyboard shortcut to instantly
+  focus the next agent that is waiting for input, so you can cycle through
+  a multi-agent session without hunting for the right tab by eye.
 
 ---
 
