@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "0.18.0",
+      "version": "0.18.1",
       "date": "2026-07-06",
       "summary": "Runs always open as terminal tabs; spotlighted workspaces run at the repository root."
     },

@@ -61,6 +61,16 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
     let unlistenData: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
 
+    // Clickable links — same model as TerminalPane: always loaded so URLs
+    // underline on hover, opening gated on Cmd/Ctrl so a plain click still
+    // selects. Routes through `open_path` for the system browser (#14).
+    const openLink = (via: string) => (uri: string) => {
+      ipc.logLine(`[link] scratch activate via=${via} uri=${uri}`).catch(() => {});
+      openUrl(uri)
+        .then(() => ipc.logLine("[link] scratch open ok").catch(() => {}))
+        .catch((e) => ipc.logLine(`[link] scratch open FAILED: ${e}`).catch(() => {}));
+    };
+
     const term = new Terminal({
       cursorBlink: true,
       fontFamily: currentTerminalStack(),
@@ -76,6 +86,11 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
       scrollback: Math.round(usePrefs.getState().terminalScrollback / 2),
       // Option-as-Meta for terminal editors. See TerminalPane. (issue #11)
       macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
+      // OSC 8 hyperlinks (anchor text like "Learn more"). Same Cmd/Ctrl gate;
+      // without a linkHandler xterm parses them but activates nothing.
+      linkHandler: {
+        activate: (ev, uri) => { if (ev.metaKey || ev.ctrlKey) openLink("osc8")(uri); },
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -83,15 +98,6 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
     term.loadAddon(new ClipboardAddon(new Osc52Base64()));
     const disposeCopyOnSelect = attachCopyOnSelect(term, host);
     term.loadAddon(new ImageAddon());
-    // Clickable links — same model as TerminalPane: always loaded so URLs
-    // underline on hover, opening gated on Cmd/Ctrl so a plain click still
-    // selects. Routes through `open_path` for the system browser (#14).
-    const openLink = (via: string) => (uri: string) => {
-      ipc.logLine(`[link] scratch activate via=${via} uri=${uri}`).catch(() => {});
-      openUrl(uri)
-        .then(() => ipc.logLine("[link] scratch open ok").catch(() => {}))
-        .catch((e) => ipc.logLine(`[link] scratch open FAILED: ${e}`).catch(() => {}));
-    };
     term.loadAddon(new WebLinksAddon((event, uri) => {
       if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
     }));

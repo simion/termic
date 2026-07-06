@@ -357,6 +357,16 @@ const captureArmedRef = useRef(false);
       patchTab(ws.id, tab.id, { queueActive: false });
     }
 
+    // Shared link opener (WebLinksAddon, OSC 8 linkHandler, capture-phase
+    // opener below). Routes through the opener plugin so the system browser
+    // opens, not the WKWebView (window.open silently no-ops).
+    const openLink = (via: string) => (uri: string) => {
+      ipc.logLine(`[link] agent activate via=${via} uri=${uri}`).catch(() => {});
+      openUrl(uri)
+        .then(() => ipc.logLine("[link] agent open ok").catch(() => {}))
+        .catch((e) => ipc.logLine(`[link] agent open FAILED: ${e}`).catch(() => {}));
+    };
+
     const term = new Terminal({
       cursorBlink: true,
       fontFamily: currentTerminalStack(),
@@ -378,6 +388,12 @@ const captureArmedRef = useRef(false);
       // Option-as-Meta for terminal editors (vim/emacs/nano). Off by default;
       // pref lives in Appearance. (issue #11)
       macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
+      // OSC 8 hyperlinks (anchor text like "Learn more" with the URL only in
+      // the escape sequence). Same Cmd/Ctrl gate as visible URLs; without a
+      // linkHandler xterm parses these links but activates nothing.
+      linkHandler: {
+        activate: (ev, uri) => { if (ev.metaKey || ev.ctrlKey) openLink("osc8")(uri); },
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -396,18 +412,11 @@ const captureArmedRef = useRef(false);
     // loaded the whole time, so URLs are detected up front and underline
     // on hover. Opening is gated on Cmd/Ctrl inside the handler, so a
     // plain click still selects/positions normally and only a deliberate
-    // Cmd+click navigates. Open routes through the opener plugin so the
-    // system browser opens, not the WKWebView (window.open silently no-ops).
+    // Cmd+click navigates.
     //
     // The previous design loaded the addon ONLY while Cmd was held, but
     // loading it mid-hold didn't re-linkify the already-visible buffer, so
     // Cmd+clicking a URL that was already on screen did nothing (#14).
-    const openLink = (via: string) => (uri: string) => {
-      ipc.logLine(`[link] agent activate via=${via} uri=${uri}`).catch(() => {});
-      openUrl(uri)
-        .then(() => ipc.logLine("[link] agent open ok").catch(() => {}))
-        .catch((e) => ipc.logLine(`[link] agent open FAILED: ${e}`).catch(() => {}));
-    };
     term.loadAddon(new WebLinksAddon((event, uri) => {
       if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
     }));

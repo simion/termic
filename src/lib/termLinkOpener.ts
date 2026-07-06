@@ -19,6 +19,25 @@ import type { Terminal } from "@xterm/xterm";
 const URL_RE = /https?:\/\/[^\s"'`<>{}|\\^\[\]]+/g;
 const TRAILING_PUNCT_RE = /[.,;:!?)\]}>'"]+$/;
 
+/** OSC 8 hyperlink at a buffer cell, or null. Anchor-text links ("Learn
+ *  more") carry their URL only in the escape sequence, never in the visible
+ *  buffer text, so the regex scrape below can't see them. xterm's public API
+ *  doesn't expose the cell's link either, so this reads the internal
+ *  extended-attributes + OscLinkService pair; every access is optional so an
+ *  xterm upgrade degrades to "no OSC 8 support" instead of throwing. */
+function osc8LinkAt(term: Terminal, absRow: number, col: number): string | null {
+  try {
+    const cell = term.buffer.active.getLine(absRow)?.getCell(col) as
+      { extended?: { urlId?: number } } | undefined;
+    const urlId = cell?.extended?.urlId;
+    if (!urlId) return null;
+    const core = (term as unknown as { _core?: { _oscLinkService?: { getLinkData?: (id: number) => { uri?: string } | undefined } } })._core;
+    return core?._oscLinkService?.getLinkData?.(urlId)?.uri ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** URL in the terminal buffer at the mouse position, or null. */
 function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): string | null {
   const screen = host.querySelector(".xterm-screen") as HTMLElement | null;
@@ -28,6 +47,11 @@ function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): string | nul
   const col = Math.floor((ev.clientX - rect.left) / (rect.width / term.cols));
   const row = Math.floor((ev.clientY - rect.top) / (rect.height / term.rows));
   if (col < 0 || col >= term.cols || row < 0 || row >= term.rows) return null;
+
+  // OSC 8 first: if the clicked cell carries an explicit hyperlink, that
+  // beats any text-scrape guess.
+  const osc8 = osc8LinkAt(term, term.buffer.active.viewportY + row, col);
+  if (osc8) return osc8;
 
   // Reconstruct the LOGICAL line under the click (soft-wrapped rows joined),
   // tracking the clicked cell's character index. translateToString(false)
