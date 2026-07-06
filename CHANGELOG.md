@@ -4,6 +4,23 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.18.0] - 2026-07-06
+
+Runs always open as terminal tabs; spotlighted workspaces run at the repository root.
+
+### Features
+- Run and Setup always launch as terminal tabs with play, restart, and stop controls in the tab pill. The bottom-right run log is gone.
+- Top bar Run controls: Run/Stop plus a dropdown with per-repo run targets, setup, preview URL, and configure.
+- Spotlight: the run executes at the repository root while a workspace is spotlighted, and moving the spotlight stops the old run and restarts it on the new workspace.
+- The right panel footer starts collapsed as a slim Spotlight strip and expands when spotlight starts.
+- Dragging tabs shows a ghost with drop overlays; dropping near a pane edge splits it in half.
+- Cmd+click opens links from terminals reliably (#58).
+- Files changed on disk reload automatically when the editor has no unsaved edits (#57).
+
+### Bug fixes
+- Restarting a run no longer flips the controls to idle while the new process is alive; restarts wait for the old process to exit so dev servers keep their port.
+- Voice input: the microphone permission prompt now works in release builds.
+
 ## [0.17.7] - 2026-07-01
 
 Split pane layout persists across relaunches; TabBar buttons are now split-pane shortcuts.
