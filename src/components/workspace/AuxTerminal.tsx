@@ -16,6 +16,7 @@ import { Osc52Base64 } from "@/lib/osc52";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { attachCmdClickLinkOpener } from "@/lib/termLinkOpener";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { loadTerminalRenderer } from "@/lib/terminalRenderer";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
@@ -85,22 +86,23 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
     // Clickable links — same model as TerminalPane: always loaded so URLs
     // underline on hover, opening gated on Cmd/Ctrl so a plain click still
     // selects. Routes through `open_path` for the system browser (#14).
+    const openLink = (via: string) => (uri: string) => {
+      ipc.logLine(`[link] scratch activate via=${via} uri=${uri}`).catch(() => {});
+      openUrl(uri)
+        .then(() => ipc.logLine("[link] scratch open ok").catch(() => {}))
+        .catch((e) => ipc.logLine(`[link] scratch open FAILED: ${e}`).catch(() => {}));
+    };
     term.loadAddon(new WebLinksAddon((event, uri) => {
-      if (event.metaKey || event.ctrlKey) {
-        // #14 diagnostics — see TerminalPane. The scratch shell has no TUI
-        // mouse reporting, so this is the control case: links here should
-        // always open. Compare its log lines against the agent terminal's.
-        ipc.logLine(`[link] scratch activate meta=${event.metaKey} ctrl=${event.ctrlKey} uri=${uri}`).catch(() => {});
-        // Official opener plugin (OS-native), matching terax-ai — see TerminalPane (#14).
-        openUrl(uri)
-          .then(() => ipc.logLine("[link] scratch open ok").catch(() => {}))
-          .catch((e) => ipc.logLine(`[link] scratch open FAILED: ${e}`).catch(() => {}));
-      }
+      if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
     }));
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
     term.open(hostRef.current);
+    // GH #58: mouse-reporting-proof Cmd/Ctrl+click opener — the user can run
+    // a TUI in the scratch shell too (htop, an agent CLI by hand). See
+    // TerminalPane / lib/termLinkOpener.
+    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, openLink("capture"));
     // Korean/CJK IME (WKWebView). WebKit composes via textarea `input` events
     // (insertText + insertReplacementText), not compositionstart/end, and
     // xterm drops the replacement events — so input gets mangled (안녕 → ㅇㄴ).
@@ -232,6 +234,7 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
       cancelled = true;
       ro.disconnect();
       disposeCopyOnSelect();
+      disposeLinkOpener();
       unregisterDrop();
       disposeImeBridge();
       unlistenData?.(); unlistenExit?.();

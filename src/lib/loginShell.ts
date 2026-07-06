@@ -44,9 +44,15 @@ export function shellName(shellPath: string): string {
  *  PATH (nvm, mise, etc.) in their interactive rc, which a
  *  non-interactive shell skips. fish/zsh/bash all accept `-i`; we omit
  *  it for `sh`, whose `-i` semantics are flakier and which has no
- *  interactive rc worth sourcing here. */
-export function loginShellArgs(shellPath: string, command?: string): string[] {
+ *  interactive rc worth sourcing here.
+ *
+ *  `exitWhenDone` (Run/Setup pop-out tabs, GH #54) skips the trailing
+ *  `exec` so the PTY exits WITH the script — the pill controls and the
+ *  top-bar run status key off "PTY alive", so a finished setup must not
+ *  linger at an interactive prompt reading as "still running". */
+export function loginShellArgs(shellPath: string, command?: string, exitWhenDone = false): string[] {
   if (!command) return ["-l"];
   const interactive = shellName(shellPath) === "sh" ? [] : ["-i"];
+  if (exitWhenDone) return ["-l", ...interactive, "-c", command];
   return ["-l", ...interactive, "-c", `${command}; exec ${shellPath} -l`];
 }

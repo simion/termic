@@ -126,9 +126,12 @@ function revealLine(view: EditorView, line: number, col?: number) {
   requestAnimationFrame(() => view.focus());
 }
 
-export function EditorPane({ ws, tab, onContent }: {
+export function EditorPane({ ws, tab, active, onContent }: {
   ws: Workspace;
   tab: EditTab;
+  /** True when this tab is the active main tab — mirrors TerminalPane's
+   *  `active` prop so the editor self-focuses on tab switch, closing, etc. */
+  active?: boolean;
   /** Called with the live EditorView on load and after every edit. The
    *  markdown split/preview wrapper uses this to render live without
    *  re-reading disk; it reads `view.state.doc` lazily (inside its own
@@ -304,29 +307,34 @@ export function EditorPane({ ws, tab, onContent }: {
     setDiskChanged(false);
   }, []);
 
-  // React to an external change. Preview (temporary, italic-title) tabs reload
-  // silently and never show "modified" — they're throwaway views of disk. A
-  // true editor tab is the user's working copy, so we never clobber it: just
-  // flag that disk diverged and let the focused-tab banner ask.
+  // React to an external change (GH #57). An UNTOUCHED buffer (no unsaved
+  // edits) just mirrors disk silently — preview tab or not, source or
+  // markdown-preview mode; asking about a file the user never modified was
+  // noise, and in markdown preview mode the banner lived inside the hidden
+  // editor so nothing visibly refreshed at all. Only a DIRTY buffer gets the
+  // banner: reloading would discard real typing, so the user decides.
   const reloadFromDisk = useCallback(() => {
     const v = viewRef.current;
-    // Don't touch a buffer with unsaved edits — the dirty dot already signals
-    // the user has their own version; clobbering it would lose their typing.
-    if (!v || dirtyRef.current) return;
+    if (!v) return;
     workspaceFileRead(ws.id, tab.path).then(content => {
       const v2 = viewRef.current;
-      if (!v2 || dirtyRef.current) return;
+      if (!v2) return;
       if (content === v2.state.doc.toString()) { setDiskChanged(false); return; }
-      if (tab.preview) applyDiskContent(content);
-      else setDiskChanged(true);
+      if (dirtyRef.current) { setDiskChanged(true); return; }
+      applyDiskContent(content);
     }).catch(() => {});
-  }, [ws.id, tab.path, tab.preview, applyDiskContent]);
+  }, [ws.id, tab.path, applyDiskContent]);
 
   // User accepted the prompt: re-read (content may have moved on since the
-  // change was detected) and swap it in.
+  // change was detected) and swap it in, discarding the buffer's edits — so
+  // the dirty flag must clear too or the dot would lie.
   const acceptDiskReload = useCallback(() => {
-    workspaceFileRead(ws.id, tab.path).then(applyDiskContent).catch(() => {});
-  }, [ws.id, tab.path, applyDiskContent]);
+    workspaceFileRead(ws.id, tab.path).then(content => {
+      applyDiskContent(content);
+      dirtyRef.current = false;
+      useApp.getState().patchTab(ws.id, tab.id, { dirty: false });
+    }).catch(() => {});
+  }, [ws.id, tab.path, tab.id, applyDiskContent]);
 
   // Reload on window focus: covers external edits while away (another app,
   // a `git` in a real terminal, an agent in a different window).
@@ -334,6 +342,17 @@ export function EditorPane({ ws, tab, onContent }: {
     window.addEventListener("focus", reloadFromDisk);
     return () => window.removeEventListener("focus", reloadFromDisk);
   }, [reloadFromDisk]);
+
+  // Mirror TerminalPane's active-focus pattern: when this tab becomes the
+  // active main tab, focus the editor. Belt-and-suspenders alongside
+  // focusMainTab() — ensures focus lands even when DOM timing is tricky
+  // (split panes, Radix dialogs, visibility toggling).
+  useEffect(() => {
+    if (!active) return;
+    const view = viewRef.current;
+    if (!view) return;
+    requestAnimationFrame(() => view.focus());
+  }, [active]);
 
   // Reload when an agent terminal in this workspace settles. Skip the first
   // run (the mount effect already loaded fresh content); thereafter every
@@ -376,11 +395,11 @@ export function EditorPane({ ws, tab, onContent }: {
     <div ref={hostRef} className="relative h-full overflow-hidden bg-[var(--color-bg)]">
       {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
       {err && <div className="p-4 text-[14px] text-[var(--color-err)]">Error: {err}</div>}
-      {/* True-editor tabs: when disk diverges, ask before reloading (only
-          while focused — see `isActive`). Preview tabs reload silently. */}
+      {/* Dirty buffers only: disk diverged while the user has unsaved edits,
+          so ask before clobbering (clean buffers reload silently, GH #57). */}
       {diskChanged && isActive && (
         <div className="absolute right-3 top-3 z-30 flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-2 text-[13px] text-[var(--color-fg)] shadow-lg">
-          <span>This file changed on disk.</span>
+          <span>This file changed on disk. Reload discards your edits.</span>
           <button
             onClick={acceptDiskReload}
             className="rounded bg-[var(--color-accent)] px-2 py-[3px] font-medium text-white hover:opacity-90"

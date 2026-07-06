@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 // scrollback, e.g. an error message). Render it as the first flex child of
 // a `flex-col` pane. Shared by the agent pane (TerminalPane) and the aux
 // shell (AuxTerminal) so the two can't drift.
-export function TerminalExitedBanner({ label, actionLabel, onAction, icon: Icon = RotateCcw, className }: {
+export function TerminalExitedBanner({ label, actionLabel, onAction, icon: Icon = RotateCcw, tone = "warning", className }: {
   /** e.g. "codex exited." */
   label: string;
   /** e.g. "Restart codex" / "New shell". */
@@ -16,31 +16,44 @@ export function TerminalExitedBanner({ label, actionLabel, onAction, icon: Icon 
   onAction: () => void;
   /** Action button glyph. Defaults to a restart arrow. */
   icon?: LucideIcon;
+  /** Run tabs use a muted state; agent exits stay warning-tinted. */
+  tone?: "warning" | "muted";
   className?: string;
 }) {
+  const muted = tone === "muted";
   return (
     <div
       // Background via inline style: Tailwind arbitrary values with nested
       // color-mix(...) commas don't reliably compile, which left the orange
       // strip invisible. Inline guarantees it renders.
       style={{
-        background: "color-mix(in srgb, var(--color-warn) 16%, var(--color-bg-1))",
+        background: muted
+          ? "color-mix(in srgb, var(--color-fg) 5%, var(--color-bg-1))"
+          : "color-mix(in srgb, var(--color-warn) 16%, var(--color-bg-1))",
       }}
       className={cn(
-        // Warn-tinted strip (no border) so a dead agent is unmissable.
+        // Warn-tinted for dead agents; muted for managed Run/Setup tabs.
         // In-flow + shrink-0 so it pushes the terminal down.
         "flex shrink-0 items-center justify-between gap-3 px-3 py-1.5",
         className,
       )}
     >
-      <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] font-medium text-[var(--color-warn)]">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+      <span className={cn(
+        "flex min-w-0 items-center gap-1.5 text-[12.5px] font-medium",
+        muted ? "text-[var(--color-fg-dim)]" : "text-[var(--color-warn)]",
+      )}>
+        {!muted && <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
         <span className="truncate">{label}</span>
       </span>
       <button
         type="button"
         onClick={onAction}
-        className="flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-warn)]/50 bg-[var(--color-bg-2)] px-2.5 py-1 text-[12px] font-medium text-[var(--color-fg)] hover:border-[var(--color-warn)] hover:bg-[var(--color-warn)]/10"
+        className={cn(
+          "flex shrink-0 items-center gap-1.5 rounded-md border bg-[var(--color-bg-2)] px-2.5 py-1 text-[12px] font-medium text-[var(--color-fg)]",
+          muted
+            ? "border-[var(--color-border)] hover:border-[var(--color-accent)] hover:bg-[var(--color-hover)]"
+            : "border-[var(--color-warn)]/50 hover:border-[var(--color-warn)] hover:bg-[var(--color-warn)]/10",
+        )}
       >
         <Icon className="h-3.5 w-3.5" /> {actionLabel}
       </button>

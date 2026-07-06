@@ -8,11 +8,13 @@ import { useTabStripDrag } from "./useTabStripDrag";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL, resolveIconId } from "@/icons/cli";
-import { Plus, X, GitCompare, FileText, SquareSplitVertical, SquareSplitHorizontal, TerminalSquare, Bell, Megaphone, Repeat, Loader2 } from "lucide-react";
+import { Plus, X, GitCompare, FileText, SquareSplitVertical, SquareSplitHorizontal, TerminalSquare, Bell, Megaphone, Repeat, Loader2, RotateCw, Square, Play } from "lucide-react";
+import { ptyKill } from "@/lib/ipc";
 import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
 import { useUI } from "@/store/ui";
 import { requestCloseTab } from "@/lib/closeTab";
+import { focusMainTab } from "@/lib/tabFocus";
 import { visibleCliIds, agentDisplayName, isTerminalEntry } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
@@ -77,21 +79,22 @@ export function TabBar({ ws }: { ws: Workspace }) {
   // pane is focused (or there are no splits). When a secondary pane is
   // focused, the active tab dims to border-border so only one thing reads
   // as "current" across the whole layout.
-  const hasSplitTree = useApp(s => !!s.splitTree[s.activeTab[ws.id]]);
-  const activePaneId = useApp(s => {
-    const tabId = s.activeTab[ws.id];
-    return s.activePaneId[tabId] ?? "";
-  });
+  const hasSplitTree = useApp(s => !!s.splitTree[ws.id]);
+  const activePaneId = useApp(s => s.activePaneId[ws.id] ?? "");
   const mainPaneId = useApp(s => {
-    const tabId = s.activeTab[ws.id];
-    const t = s.splitTree[tabId];
+    const t = s.splitTree[ws.id];
     if (!t) return "";
     return getAllLeaves(t).find(l => l.isMain)?.id ?? "";
   });
   const mainFocused = !hasSplitTree || !activePaneId || activePaneId === mainPaneId;
 
+  const moveTabToPane = useApp(s => s.moveTabToPane);
+
   const { dragId, dragTx, suppressClickRef, startDrag } = useTabStripDrag({
     wsId: ws.id, stripRef, stripTabs: tabs, allTabs: allTabsRaw, reorderTab,
+    currentPaneId: null,
+    onDropToPane: (tabId, toPaneId) => moveTabToPane(ws.id, tabId, toPaneId),
+    onDropToSplit: (tabId, toPaneId, zone) => useApp.getState().moveTabToSplit(ws.id, tabId, toPaneId, zone),
   });
 
   // ⌘T from the main pane (handled in useShortcuts) opens this menu so
@@ -164,7 +167,10 @@ export function TabBar({ ws }: { ws: Workspace }) {
         {tabs.map(t => (
           <TabPill
             key={t.id} ws={ws} tab={t} active={t.id === activeId} paneFocused={mainFocused}
-            onSelect={() => { if (suppressClickRef.current) return; setActive(ws.id, t.id); }}
+            // focusMainTab: keyboard focus must follow the click into the tab's
+            // content (terminal / editor) — otherwise the previously focused
+            // pane keeps DOM focus and ⌘W acts on the wrong pane.
+            onSelect={() => { if (suppressClickRef.current) return; setActive(ws.id, t.id); focusMainTab(t.id); }}
             onClose={() => requestCloseTab(ws.id, t.id)}
             renaming={renaming?.id === t.id ? renaming.value : null}
             onStartRename={() => setRenaming({ id: t.id, value: t.title })}
@@ -223,7 +229,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
 
 /** Button that creates a new vertical split pane to the right (⌘D). */
 function SplitPaneToggle({ wsId }: { wsId: string }) {
-  const hasSplit = useApp(s => !!s.splitTree[s.activeTab[wsId]]);
+  const hasSplit = useApp(s => !!s.splitTree[wsId]);
   const splitPane = useApp(s => s.splitPane);
   return (
     <Tip content="Split right (⌘D)" side="bottom">
@@ -239,7 +245,7 @@ function SplitPaneToggle({ wsId }: { wsId: string }) {
 
 /** Split the focused pane below (horizontal divider, ⇧⌘D). */
 function SplitBelowToggle({ wsId }: { wsId: string }) {
-  const hasSplit = useApp(s => !!s.splitTree[s.activeTab[wsId]]);
+  const hasSplit = useApp(s => !!s.splitTree[wsId]);
   const splitPane = useApp(s => s.splitPane);
   return (
     <Tip content="Split below (⇧⌘D)" side="bottom">
@@ -294,6 +300,17 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
   const color = tab.type === "terminal" ? CLI_BRAND_COLOR[iconId] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
 
+  // Reveal the pill when it becomes active — keyboard tab switches (⇧⌘[/],
+  // ⌘1..9, cross-pane cycling) can land on a tab scrolled out of the strip's
+  // viewport. inline:'nearest' only scrolls the horizontal strip when needed;
+  // block:'nearest' keeps ancestors from scrolling vertically.
+  const pillRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (active && !dragging) {
+      pillRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [active, dragging]);
+
   let fileIcon: string | null = null;
   if ((tab.type === "edit" || tab.type === "diff") && (tab as any).path) {
     const path = (tab as any).path;
@@ -303,6 +320,7 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
 
   return (
     <div
+      ref={pillRef}
       data-tab-id={tab.id}
       // Start a pointer-drag for reordering, except while renaming (so the
       // inline input handles text selection / caret normally).
@@ -397,6 +415,47 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
           {tab.customTitle ? tab.title : (tab.liveTitle || tab.title)}
         </span>
       )}
+      {/* Run tabs (GH #54): inline run controls, always visible — the pill IS
+          the run toolbar. ptyId is cleared on process exit, so its presence ≈
+          "running": running → restart + red stop; stopped → a single play.
+          <button> elements are skipped by the drag guards, so these never
+          start a tab drag. */}
+      {!isRenaming && tab.type === "terminal" && (tab as TerminalTab).runTab && (() => {
+        const running = !!(tab as TerminalTab).ptyId;
+        const rerun = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          window.dispatchEvent(new CustomEvent("termic-run-tab-restart", { detail: { tabId: tab.id } }));
+        };
+        return (
+          <span className="flex shrink-0 items-center gap-0.5">
+            {running ? (
+              <>
+                <button
+                  title="Restart run"
+                  onClick={rerun}
+                  className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+                ><RotateCw className="h-3 w-3" /></button>
+                {/* Stop matches the footer toolbar's Stop: error-red. */}
+                <button
+                  title="Stop"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const ptyId = (tab as TerminalTab).ptyId;
+                    if (ptyId) ptyKill(ptyId).catch(() => {});
+                  }}
+                  className="rounded p-0.5 text-[var(--color-err)] hover:bg-[var(--color-bg-3)] hover:opacity-80"
+                ><Square className="h-3 w-3" fill="currentColor" /></button>
+              </>
+            ) : (
+              <button
+                title="Run"
+                onClick={rerun}
+                className="rounded p-0.5 text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
+              ><Play className="h-3 w-3" /></button>
+            )}
+          </span>
+        );
+      })()}
       {/* Trailing slot — iTerm2 convention: status badge / dirty dot
           by default; close × on hover. Fixed cell so the pill never
           jiggles. Priority: attention > done > dirty > none. */}

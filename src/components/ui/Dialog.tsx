@@ -17,10 +17,14 @@ interface Props {
    *  `"bg-transparent"` so two backdrops don't compose into double-
    *  dimming + flicker. */
   overlayClassName?: string;
+  /** Override Radix's default focus-restoration on close. Pass
+   *  `(e) => e.preventDefault()` when the caller handles focus itself
+   *  (e.g. ConfirmDialog, where closeTab moves focus to the next tab). */
+  onCloseAutoFocus?: (e: Event) => void;
   children: ReactNode;
 }
 
-export function AppDialog({ open, onOpenChange, title, description, className, hideClose, overlayClassName, children }: Props) {
+export function AppDialog({ open, onOpenChange, title, description, className, hideClose, overlayClassName, onCloseAutoFocus, children }: Props) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -52,6 +56,7 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
             inside the dialog renders blurry. DO NOT remove the translate3d. */}
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
           <Dialog.Content
+            onCloseAutoFocus={onCloseAutoFocus}
             className={cn(
               "relative grid w-full max-w-md gap-2 pointer-events-auto",
               "rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-1)] p-5 shadow-2xl",

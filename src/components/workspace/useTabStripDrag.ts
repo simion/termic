@@ -4,6 +4,8 @@
 
 import { useLayoutEffect, useEffect, useRef, useState } from "react";
 import type { Tab } from "@/lib/types";
+import { showDragGhost, moveDragGhost, hideDragGhost } from "@/lib/dragGhost";
+import { detectDropZone, setDropHighlight, clearDropHighlight, type DropZone } from "@/lib/dropZones";
 
 interface DragBookkeeping {
   id: string;
@@ -22,14 +24,73 @@ export function useTabStripDrag(opts: {
   /** The full per-workspace tab array — reorderTab indexes into this. */
   allTabs: Tab[];
   reorderTab: (wsId: string, tabId: string, toIndex: number) => void;
+  /** ID of the pane owning this strip. null/undefined = main TabBar. */
+  currentPaneId?: string | null;
+  /** Called when the user drops a tab onto a different pane's header. */
+  onDropToPane?: (tabId: string, toPaneId: string) => void;
+  /** Called on an edge drop: split the target pane (null = main) in half. */
+  onDropToSplit?: (tabId: string, toPaneId: string | null, zone: "left" | "right" | "top" | "bottom") => void;
 }) {
-  const { wsId, stripRef, stripTabs, allTabs, reorderTab } = opts;
+  const { wsId, stripRef, stripTabs, allTabs, reorderTab, currentPaneId, onDropToPane, onDropToSplit } = opts;
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragTx, setDragTx] = useState(0);
   const suppressClickRef = useRef(false);
   const dragRef = useRef<DragBookkeeping | null>(null);
   const stripTabsRef = useRef(stripTabs); stripTabsRef.current = stripTabs;
   const allTabsRef = useRef(allTabs); allTabsRef.current = allTabs;
+  // Track the currently highlighted drop-target pane header element.
+  const prevDropTargetRef = useRef<HTMLElement | null>(null);
+
+  function clearDropTarget() {
+    if (prevDropTargetRef.current) {
+      clearDropHighlight(prevDropTargetRef.current);
+      prevDropTargetRef.current = null;
+    }
+  }
+
+  // Drop target under the pointer. A tab can be dropped anywhere IN a pane
+  // (headers and pane bodies both resolve to the pane), and near a pane edge
+  // (outer 20%) the drop proposes a SPLIT instead of a move. For the main
+  // strip's own drag, main is target-able only via its edges (center = plain
+  // reorder); toPaneId null = the main pane.
+  function hitTestDropTarget(clientX: number, clientY: number): { el: HTMLElement | null; toPaneId: string | null; zone: DropZone } | null {
+    const raw = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    const paneHighlight = (id: string) =>
+      document.querySelector(`[data-split-leaf][data-pane-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+    const zoneOf = (el: HTMLElement | null): DropZone =>
+      el ? detectDropZone(el.getBoundingClientRect(), clientX, clientY) : "center";
+
+    const header = raw?.closest("[data-pane-header]") as HTMLElement | null;
+    let paneId = header?.getAttribute("data-pane-id") ?? null;
+    let zone: DropZone = "center";
+    if (!paneId) {
+      const leaf = raw?.closest("[data-split-leaf]") as HTMLElement | null;
+      if (leaf && !leaf.hasAttribute("data-main-content")) {
+        paneId = leaf.getAttribute("data-pane-id");
+        if (paneId) zone = zoneOf(paneHighlight(paneId));
+      } else if (onDropToSplit && raw?.closest("[data-main-content]")) {
+        // Over the main pane's own surface: an edge proposes splitting main.
+        const el = document.querySelector("[data-main-content][data-split-leaf]") as HTMLElement | null;
+        const z = zoneOf(el);
+        return z === "center" ? null : { el, toPaneId: null, zone: z };
+      }
+    }
+    if (!paneId) return null;
+    const samePane = paneId === (currentPaneId ?? null);
+    // Same-pane center drops are no-ops, but same-pane EDGE drops split the
+    // current pane and move the dragged tab into the new half.
+    if (samePane && zone === "center") return null;
+    return { el: paneHighlight(paneId), toPaneId: paneId, zone };
+  }
+
+  function updateDropHighlight(clientX: number, clientY: number) {
+    clearDropTarget();
+    const target = hitTestDropTarget(clientX, clientY);
+    if (target?.el) {
+      setDropHighlight(target.el, target.zone);
+      prevDropTargetRef.current = target.el;
+    }
+  }
 
   function computeTx(clientX: number): number {
     const strip = stripRef.current; const d = dragRef.current;
@@ -77,23 +138,59 @@ export function useTabStripDrag(opts: {
     if (!d.started) {
       if (Math.abs(e.clientX - d.startX) < 5) return;
       d.started = true; setDragId(d.id);
+      // Belt-and-suspenders vs. WebKit: drop any selection that still
+      // sneaked in between mousedown and the drag threshold.
+      window.getSelection()?.removeAllRanges();
+      // Cursor-following ghost so the drag is visibly "carrying" the tab.
+      const t = stripTabsRef.current.find(tt => tt.id === d.id);
+      showDragGhost(t ? ((t as { liveTitle?: string }).liveTitle || t.title) : "Tab", e.clientX, e.clientY);
     }
+    moveDragGhost(e.clientX, e.clientY);
     setDragTx(computeTx(e.clientX));
     maybeReorder(e.clientX);
+    // Cross-pane / split drop highlight.
+    if (onDropToPane || onDropToSplit) updateDropHighlight(e.clientX, e.clientY);
   }
-  function onPointerUp() {
+  function onPointerUp(e: PointerEvent) {
     const d = dragRef.current;
+    const target = d?.started ? hitTestDropTarget(e.clientX, e.clientY) : null;
+    hideDragGhost();
+    clearDropTarget();
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerCancel);
     if (d?.started) {
+      if (target) {
+        if (target.zone !== "center" && onDropToSplit) {
+          onDropToSplit(d.id, target.toPaneId, target.zone);
+        } else if (target.toPaneId && onDropToPane) {
+          onDropToPane(d.id, target.toPaneId);
+        }
+      }
       suppressClickRef.current = true;
       setTimeout(() => { suppressClickRef.current = false; }, 0);
     }
     dragRef.current = null; setDragId(null); setDragTx(0);
   }
+  // Abort without dropping — WKWebView can cancel a pointer stream mid-drag
+  // (gesture interruption); without this the listeners leak and the pill
+  // stays in dragging styling (pointer-events:none) until a stray pointerup.
+  function onPointerCancel() {
+    hideDragGhost();
+    clearDropTarget();
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerCancel);
+    dragRef.current = null; setDragId(null); setDragTx(0);
+  }
   function startDrag(tabId: string, e: React.PointerEvent) {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button, input, [data-no-drag]")) return;
+    // Kill the browser's native text selection: without this, dragging the
+    // pill across the terminal/editor below sweeps a huge blue selection
+    // (the pill is select-none, but the selection ANCHORS on mousedown and
+    // extends into whatever selectable content the pointer crosses).
+    e.preventDefault();
     const pill = e.currentTarget as HTMLElement;
     dragRef.current = {
       id: tabId,
@@ -103,6 +200,7 @@ export function useTabStripDrag(opts: {
     };
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
   }
 
   useLayoutEffect(() => {
@@ -111,8 +209,11 @@ export function useTabStripDrag(opts: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stripTabs]);
   useEffect(() => () => {
+    hideDragGhost();
+    clearDropTarget();
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerCancel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

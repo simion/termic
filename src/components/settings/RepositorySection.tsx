@@ -6,7 +6,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { projectUpdate, projectRemove, projectSetMembers, pathIsGitRepo, repoConfigLoad, repoConfigSave, workspaceSpotlightStop } from "@/lib/ipc";
+import { projectUpdate, projectRemove, projectSetMembers, pathIsGitRepo, repoConfigLoad, repoConfigSave } from "@/lib/ipc";
+import { stopSpotlight } from "@/lib/spotlight";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Project, ProjectMember, RepoConfig } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
@@ -538,7 +539,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                         </span>
                         <button
                           type="button"
-                          onClick={() => workspaceSpotlightStop(spotlightWsId!).catch(e =>
+                          onClick={() => stopSpotlight(spotlightWsId!).catch(e =>
                             useUI.getState().pushToast(String(e), "error")
                           )}
                           className="rounded px-2.5 py-1 text-[12px] font-medium bg-[var(--color-bg-3)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:bg-[var(--color-hover)]"

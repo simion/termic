@@ -366,6 +366,10 @@ pub struct PersistedTab {
     /// Leaf ID of the split pane this tab belongs to (None for main panel tabs).
     #[serde(default)]
     pub pane_leaf_id: Option<String>,
+    /// Run pop-out tab marker (GH #54): Some(member_dir) when this tab hosts
+    /// the run script ("" = host project). Restores the RunPane in its pane.
+    #[serde(default)]
+    pub run_member: Option<String>,
 }
 
 /// Frontend payload for `workspace_set_tabs`. `session_id` is only honored
@@ -389,6 +393,8 @@ pub struct PersistedTabInput {
     pub session_id: Option<String>,
     #[serde(default)]
     pub pane_leaf_id: Option<String>,
+    #[serde(default)]
+    pub run_member: Option<String>,
 }
 
 impl Workspace {
@@ -2767,6 +2773,7 @@ fn workspace_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), St
             is_default: t.is_default,
             command: t.command,
             pane_leaf_id: t.pane_leaf_id,
+            run_member: t.run_member,
         })
         .collect();
     // No-op when nothing actually changed (compare the serialized shape;
@@ -2782,6 +2789,7 @@ fn workspace_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), St
                 && a.command == b.command
                 && a.session_id == b.session_id
                 && a.pane_leaf_id == b.pane_leaf_id
+                && a.run_member == b.run_member
         });
     if same {
         return Ok(());
@@ -2854,6 +2862,7 @@ fn workspace_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<
             is_default: t.is_default,
             command: t.command,
             pane_leaf_id: None,
+            run_member: None,
         })
         .collect();
     let same = next.len() == w.right_split_tabs.len()
@@ -4679,6 +4688,9 @@ pub struct FileEntry {
 /// finder so "hidden files" means the same thing in both.
 fn compile_exclude_patterns(repo_path: &str) -> Vec<glob::Pattern> {
     let mut raw = load_settings_inner().file_tree_exclude;
+    // OS filesystem junk nobody browses: always hidden, like `.git`. Baked in
+    // here (not the settings default) so it applies to existing installs too.
+    raw.push(".DS_Store".to_string());
     if !repo_path.is_empty() {
         raw.extend(repo_config::load_or_default(Path::new(repo_path)).exclude);
     }
@@ -5115,6 +5127,38 @@ fn running_scripts_insert(key: String, pid: i32) {
 fn running_scripts_remove(key: &str) -> Option<i32> {
     let mut g = RUNNING_SCRIPTS.lock().unwrap();
     g.as_mut().and_then(|m| m.remove(key))
+}
+
+fn script_topic_member(member: &str) -> String {
+    if member.is_empty() {
+        String::new()
+    } else {
+        use std::fmt::Write;
+        let mut out = String::with_capacity(member.len() * 2);
+        for b in member.as_bytes() {
+            let _ = write!(&mut out, "{:02x}", b);
+        }
+        out
+    }
+}
+
+/// Called by a run's waiter thread when its child exits. Returns whether
+/// this instance still owns the key and should emit `script-done`:
+/// - entry == our pid → normal exit; remove it, emit.
+/// - entry == some OTHER pid → a restart replaced us while we were dying;
+///   leave the replacement's entry alone and do NOT emit (a stale done
+///   would flip the UI to idle while the new instance is running).
+/// - no entry → explicit stop already deregistered us; still emit so
+///   listeners that didn't initiate the stop (e.g. another workspace's
+///   panel) settle out of "running".
+fn running_scripts_finish(key: &str, pid: i32) -> bool {
+    let mut g = RUNNING_SCRIPTS.lock().unwrap();
+    let Some(m) = g.as_mut() else { return true };
+    match m.get(key) {
+        Some(&p) if p == pid => { m.remove(key); true }
+        Some(_) => false,
+        None => true,
+    }
 }
 
 // ─────────────────────────── spotlight ───────────────────────────
@@ -5663,8 +5707,8 @@ fn workspace_run_script_stream(
 
     // Spotlight override: when this workspace is spotlighted and we're
     // running the "run" script (not setup, not a member), execute at the
-    // main checkout so the server sees the synced files. The user starts
-    // and stops the run manually from the Spotlight tab.
+    // main checkout so the server sees the synced files. Mirrors the
+    // spawn-time cwd decision the Run TABS make in TerminalPane.
     let cwd = if kind == "run" && member_dir.is_none() {
         match spotlight_get(&p.id) {
             Some(active_id) if active_id == id => PathBuf::from(&p.root_path),
@@ -5674,11 +5718,14 @@ fn workspace_run_script_stream(
         cwd
     };
 
-    // Event-channel topic + RUNNING_SCRIPTS key include the member
-    // dir so multiple members can run in parallel without colliding.
-    // Host uses an empty member component for back-compat.
-    let topic_member = member_dir.clone().unwrap_or_default();
-    let map_key = format!("{id}:{topic_member}:{kind}");
+    // Event-channel topic + RUNNING_SCRIPTS key include the member dir so
+    // multiple members can run in parallel without colliding. The map key
+    // keeps the raw dir_name; the Tauri event topic hex-encodes it because
+    // event names reject dots and other punctuation. Host uses an empty
+    // member component for back-compat.
+    let map_member = member_dir.clone().unwrap_or_default();
+    let topic_member = script_topic_member(&map_member);
+    let map_key = format!("{id}:{map_member}:{kind}");
     let emit_done = format!("script-done://{id}:{topic_member}:{kind}");
     let emit_out  = format!("script-output://{id}:{topic_member}:{kind}");
 
@@ -5687,12 +5734,6 @@ fn workspace_run_script_stream(
         let _ = app.emit(&emit_done,
             serde_json::json!({ "code": 0, "success": true }));
         return Ok(());
-    }
-
-    // Kill any prior instance for (ws, member, kind) — sends SIGTERM
-    // to the whole process group so children die too.
-    if let Some(prev) = running_scripts_remove(&map_key) {
-        unsafe { libc::kill(-prev, libc::SIGTERM); }
     }
 
     let port = target_port;
@@ -5718,6 +5759,20 @@ fn workspace_run_script_stream(
         .collect();
 
     thread::spawn(move || {
+        // Kill any prior instance for (ws, member, kind) — SIGTERM to the
+        // whole process group so children die too — then wait (bounded) for
+        // the group to actually die: spawning immediately would race the
+        // dying server for the port and fail with EADDRINUSE. Deregistering
+        // and re-registering on the same thread keeps the window where the
+        // key maps to neither pid tiny; running_scripts_finish's pid check
+        // covers the old waiter racing us.
+        if let Some(prev) = running_scripts_remove(&map_key_o) {
+            unsafe { libc::kill(-prev, libc::SIGTERM); }
+            for _ in 0..50 {
+                if unsafe { libc::kill(-prev, 0) } != 0 { break; }
+                thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
         // `process_group(0)` puts the child in its own group so we can kill
         // the whole tree later via `kill(-pgid, SIGTERM)`.
         let mut cmd = Command::new("bash");
@@ -5784,11 +5839,12 @@ fn workspace_run_script_stream(
         let status = child.wait();
         if let Some(t) = t_out { let _ = t.join(); }
         if let Some(t) = t_err { let _ = t.join(); }
-        running_scripts_remove(&map_key_o);
-        let code = status.as_ref().ok().and_then(|s| s.code());
-        let success = status.map(|s| s.success()).unwrap_or(false);
-        let _ = app_o.emit(&emit_done_o,
-            serde_json::json!({ "code": code, "success": success }));
+        if running_scripts_finish(&map_key_o, pid) {
+            let code = status.as_ref().ok().and_then(|s| s.code());
+            let success = status.map(|s| s.success()).unwrap_or(false);
+            let _ = app_o.emit(&emit_done_o,
+                serde_json::json!({ "code": code, "success": success }));
+        }
     });
     Ok(())
 }

@@ -15,9 +15,9 @@ import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
-import { workspaceRename, projectRename, workspaceOpenRepo, openPath, projectReorder, workspaceSpotlightStop, workspaceSetYolo, projectRemove, projectUpdate } from "@/lib/ipc";
+import { workspaceRename, projectRename, workspaceOpenRepo, openPath, projectReorder, workspaceSetYolo, projectRemove, projectUpdate } from "@/lib/ipc";
 import { confirmAndArchive } from "@/lib/archiveWorkspace";
-import { startSpotlight } from "@/lib/spotlight";
+import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Workspace, TerminalTab } from "@/lib/types";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
@@ -1266,7 +1266,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                   className="items-center [&>svg]:mt-0"
                   onSelect={async () => {
                     if (isSpotlighted) {
-                      try { await workspaceSpotlightStop(w.id); }
+                      try { await stopSpotlight(w.id); }
                       catch (e) { useUI.getState().pushToast(String(e), "error"); }
                     } else {
                       try {

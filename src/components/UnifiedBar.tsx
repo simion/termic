@@ -34,6 +34,7 @@ import { runPrompt } from "@/lib/runPrompt";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
+import { RunControls } from "@/components/workspace/RunControls";
 import { cn } from "@/lib/utils";
 
 // Reserve enough room for the 3 traffic lights + breathing room before the
@@ -58,11 +59,10 @@ export function UnifiedBar() {
   );
   const focusedAgentId = useApp(s => {
     if (!ws) return undefined;
-    const tabKey = s.activeTab[ws.id];
-    const tree = tabKey ? s.splitTree[tabKey] : undefined;
+    const tree = s.splitTree[ws.id];
     if (tree) {
-      const leaf = findLeaf(tree, s.activePaneId[tabKey!] ?? "");
-      if (leaf?.tabId) return leaf.tabId;
+      const leaf = findLeaf(tree, s.activePaneId[ws.id] ?? "");
+      if (leaf?.activeTabId) return leaf.activeTabId;
     }
     return s.activeTab[ws.id];
   });
@@ -216,6 +216,9 @@ export function UnifiedBar() {
       >
         {ws && proj && (
           <>
+            {/* Popped-out run controls (GH #54): Setup + Run/Stop live up
+                here, next to Prompts, while runs open as terminal tabs. */}
+            <RunControls ws={ws} />
             <DropdownRoot>
               <DropdownTrigger asChild>
                 <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag>

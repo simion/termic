@@ -75,6 +75,7 @@ export function ConfirmDialog() {
       // wash instead so the layering reads as "this is a different,
       // more urgent prompt" rather than "another card in the same flow."
       overlayClassName={isAnotherDialogOpen ? "bg-[var(--color-warn)]/12" : undefined}
+      onCloseAutoFocus={(e) => e.preventDefault()}
     >
       <div className="flex flex-col gap-3.5 pt-1">
         <div className="flex items-start gap-3">

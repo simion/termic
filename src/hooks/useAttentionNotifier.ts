@@ -15,6 +15,7 @@ import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { notify, onNotifyClick } from "@/lib/ipc";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { TerminalTab } from "@/lib/types";
 
 const DEBOUNCE_MS = 8000;
 const ROUTE_WINDOW_MS = 15_000;
@@ -38,6 +39,10 @@ export function useAttentionNotifier() {
         const tabs = state.tabs[wsId] || [];
         const prevTabs = prev.tabs[wsId] || [];
         for (const t of tabs) {
+          // Run/Setup tabs are managed dev-server surfaces, not agents.
+          // Stopping one intentionally (including Spotlight handoff) should
+          // never produce the generic "agent exited" OS notification.
+          if (t.type === "terminal" && !!(t as TerminalTab).runTab) continue;
           if (!t.unread) continue;
           const wasUnread = prevTabs.find(p => p.id === t.id)?.unread;
           if (wasUnread) continue;

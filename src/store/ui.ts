@@ -115,7 +115,7 @@ interface UIState {
    *  owns the footer's collapse/tab state plus the spotlight/members nuance,
    *  so rather than duplicate `startScript("run")` we bump a nonce here and
    *  let the matching RightPanel react. null = nothing pending. */
-  runScriptRequest: { wsId: string; nonce: number } | null;
+  runScriptRequest: { wsId: string; nonce: number; kind: "run" | "setup" } | null;
   /** Bumped to force the "All files" tree to re-read from disk — e.g. after
    *  the user edits exclude patterns in Settings (the tree is behind the
    *  Settings overlay, so it can't refresh itself). RightPanel folds this
@@ -191,10 +191,11 @@ interface UIState {
    *  live inside the hook. */
   notifyRoute: { wsId: string; tabId: string; firedAt: number } | null;
   setNotifyRoute: (route: { wsId: string; tabId: string } | null) => void;
-  /** Ask the workspace's RightPanel to start its run-script (used by the
-   *  UnifiedBar's top-right Run button). No-op if that workspace isn't
-   *  mounted. */
-  requestRunScript: (wsId: string) => void;
+  /** Ask the workspace's RightPanel to start its run-script (or setup
+   *  script) — used by chrome outside the RightPanel: the UnifiedBar's Run
+   *  button and the TabBar's popped-out RunControls. No-op if that
+   *  workspace isn't mounted. */
+  requestRunScript: (wsId: string, kind?: "run" | "setup") => void;
 }
 
 export type ToastKind = "success" | "info" | "error";
@@ -270,8 +271,8 @@ export const useUI = create<UIState>(set => ({
   setNotifyRoute:    (route) => set({
     notifyRoute: route ? { ...route, firedAt: Date.now() } : null,
   }),
-  requestRunScript:  (wsId) => set(s => ({
-    runScriptRequest: { wsId, nonce: (s.runScriptRequest?.nonce ?? 0) + 1 },
+  requestRunScript:  (wsId, kind = "run") => set(s => ({
+    runScriptRequest: { wsId, nonce: (s.runScriptRequest?.nonce ?? 0) + 1, kind },
   })),
   askConfirm: (req: any) =>
     // Defer mounting the confirm dialog by a macrotask. When a Radix

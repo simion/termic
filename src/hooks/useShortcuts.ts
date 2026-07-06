@@ -22,8 +22,8 @@ import { useEffect } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
-import { requestCloseTab } from "@/lib/closeTab";
-import { focusTerminalTab, focusMainTab } from "@/lib/tabFocus";
+import { requestCloseTab, requestClosePaneTab } from "@/lib/closeTab";
+import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import type { TerminalTab } from "@/lib/types";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
@@ -35,15 +35,14 @@ import type { NavDir } from "@/lib/splitTree";
  * This lets reverse navigation snap back to the pane the user came from.
  */
 function navigatePane(
-  state: { splitTree: Record<string, import("@/lib/types").SplitTree>; activePaneId: Record<string, string>; paneHistory: Record<string, string[]>; activeTab: Record<string, string> },
+  state: { splitTree: Record<string, import("@/lib/types").SplitTree>; activePaneId: Record<string, string>; paneHistory: Record<string, string[]> },
   wsId: string,
   dir: NavDir,
 ): string | null {
-  const tabKey = state.activeTab[wsId];
-  const tree = tabKey ? state.splitTree[tabKey] : undefined;
+  const tree = state.splitTree[wsId];
   if (!tree) return null;
   // Fall back to the main leaf when no active pane has been clicked yet.
-  let curId = tabKey ? state.activePaneId[tabKey] ?? "" : "";
+  let curId = state.activePaneId[wsId] ?? "";
   if (!curId && tree.type === 'split') {
     const mainLeaf = getAllLeaves(tree).find(l => l.isMain);
     if (mainLeaf) curId = mainLeaf.id;
@@ -55,7 +54,7 @@ function navigatePane(
 
   // If the most recently visited pane is a valid candidate in this direction,
   // prefer it so "go back" feels like retracing steps, not jumping to a stranger.
-  const history = tabKey ? (state.paneHistory[tabKey] ?? []) : [];
+  const history = state.paneHistory[wsId] ?? [];
   const prev = history[0];
   if (prev && prev !== curId) {
     const all = computeLeafBounds(tree);
@@ -117,6 +116,9 @@ export function useShortcuts() {
         const el = (document.activeElement as HTMLElement | null)?.closest?.("[data-split-leaf]") as HTMLElement | null;
         return !!el && !el.hasAttribute("data-main-content");
       };
+      // True only when focus is inside the main content area — prevents ⌘W from
+      // firing when focus lands in the sidebar, file tree, right panel, etc.
+      const inMainPane = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-main-content]");
 
       // Workspace nav cycles only AWAKE workspaces — ones the user has opened
       // at least once + still has tabs in. Order MUST match the sidebar's
@@ -225,7 +227,18 @@ export function useShortcuts() {
           if (wsId && tabs.length > 0) {
             const n = Number(e.key) - 1;
             const t = tabs[n];
-            if (t) { e.preventDefault(); state.setActiveTabId(wsId, t.id); }
+            // Focus must follow an explicit keyboard tab switch — otherwise
+            // the previous (now visibility:hidden) tab keeps DOM focus and
+            // still receives keystrokes. Sync activePaneId too: ⌘N targets
+            // the MAIN pane, and a stale pointer keeps it dimmed.
+            if (t) {
+              e.preventDefault();
+              state.setActiveTabId(wsId, t.id);
+              const tree = state.splitTree[wsId];
+              const mainLeafId = tree ? getAllLeaves(tree).find(l => l.isMain)?.id : undefined;
+              if (mainLeafId) state.setActivePaneId(wsId, mainLeafId);
+              focusMainTab(t.id);
+            }
           }
           return;
         }
@@ -239,6 +252,11 @@ export function useShortcuts() {
         case "focus-terminal": {
           if (!wsId) return;
           e.preventDefault();
+          // Keep the store's active-pane pointer in step with the focus jump,
+          // or the main pane stays dimmed / underline stays muted.
+          const tree = state.splitTree[wsId];
+          const mainLeafId = tree ? getAllLeaves(tree).find(l => l.isMain)?.id : undefined;
+          if (mainLeafId) state.setActivePaneId(wsId, mainLeafId);
           focusMainTab(activeTabId);
           return;
         }
@@ -247,7 +265,7 @@ export function useShortcuts() {
         // otherwise cycle through workspaces (same role as ⌘[/⌘]).
         case "workspace-prev-arrow":
         case "workspace-next-arrow": {
-          const _tree = wsId ? state.splitTree[state.activeTab[wsId]] : undefined;
+          const _tree = wsId ? state.splitTree[wsId] : undefined;
           const hasHSplit = _tree ? treeHasDir(_tree, 'h') : false;
           if (wsId && hasHSplit) {
             e.preventDefault();
@@ -255,9 +273,11 @@ export function useShortcuts() {
             const next = navigatePane(state, wsId, dir);
             if (next) {
               state.setActivePaneId(wsId, next);
-              const leaf = findLeaf(state.splitTree[state.activeTab[wsId]]!, next);
+              const leaf = findLeaf(state.splitTree[wsId]!, next);
               if (leaf?.isMain) focusMainTab(activeTabId);
-              else if (leaf?.tabId) focusTerminalTab(leaf.tabId);
+              // focusPaneTab (not focusTerminalTab): the pane's visible tab can
+              // be an editor — the terminal-only selector would drop focus.
+              else if (leaf?.activeTabId) focusPaneTab(leaf.activeTabId);
               else {
                 const el = document.querySelector(`[data-split-launcher][data-pane-id="${next}"]`) as HTMLElement | null;
                 el?.focus();
@@ -281,7 +301,7 @@ export function useShortcuts() {
         // ⌥⌘← / ⌥⌘→ → navigate panes left/right when a vertical split exists; no-op otherwise.
         case "tab-prev-arrow":
         case "tab-next-arrow": {
-          const _tree2 = wsId ? state.splitTree[state.activeTab[wsId]] : undefined;
+          const _tree2 = wsId ? state.splitTree[wsId] : undefined;
           const hasVSplit = _tree2 ? treeHasDir(_tree2, 'v') : false;
           if (!wsId || !hasVSplit) return;
           e.preventDefault();
@@ -289,9 +309,10 @@ export function useShortcuts() {
           const next = navigatePane(state, wsId, dir);
           if (next) {
             state.setActivePaneId(wsId, next);
-            const leaf = findLeaf(state.splitTree[state.activeTab[wsId]]!, next);
+            const leaf = findLeaf(state.splitTree[wsId]!, next);
             if (leaf?.isMain) focusMainTab(activeTabId);
-            else if (leaf?.tabId) focusTerminalTab(leaf.tabId);
+            // focusPaneTab: same editor-vs-terminal reasoning as above.
+            else if (leaf?.activeTabId) focusPaneTab(leaf.activeTabId);
             else {
               const el = document.querySelector(`[data-split-launcher][data-pane-id="${next}"]`) as HTMLElement | null;
               el?.focus();
@@ -325,11 +346,60 @@ export function useShortcuts() {
             }
             return;
           }
-          if (tabs.length > 1) {
+          // Global tab cycle across ALL panes (Sublime-style): the order is
+          // main-pane tabs, then each split pane's tabs in tree order. Going
+          // next off a pane's last tab continues into the next pane; going
+          // prev off a pane's first tab jumps to the previous pane's last tab.
+          {
+            const tree = state.splitTree[wsId];
+            type Entry = { paneId: string | null; tabId: string }; // null = main pane
+            const entries: Entry[] = [];
+            let mainLeafId: string | null = null;
+            if (tree) {
+              for (const leaf of getAllLeaves(tree)) {
+                if (leaf.isMain) {
+                  mainLeafId = leaf.id;
+                  for (const t of tabs) entries.push({ paneId: null, tabId: t.id });
+                } else {
+                  for (const id of (leaf.tabIds ?? [])) entries.push({ paneId: leaf.id, tabId: id });
+                }
+              }
+            } else {
+              for (const t of tabs) entries.push({ paneId: null, tabId: t.id });
+            }
+            if (entries.length <= 1) return;
             e.preventDefault();
-            const idx = tabs.findIndex(t => t.id === activeTabId);
-            const nextIdx = fwd ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
-            state.setActiveTabId(wsId, tabs[nextIdx].id);
+
+            // Current position: DOM focus decides the pane; that pane's active
+            // tab decides the entry. Falls back to the main active tab.
+            let curIdx = -1;
+            if (inSplitPane()) {
+              const focusedEl = (document.activeElement as HTMLElement | null)
+                ?.closest?.("[data-split-leaf]") as HTMLElement | null;
+              const pid = focusedEl?.getAttribute("data-pane-id") ?? null;
+              const leaf = pid && tree ? findLeaf(tree, pid) : null;
+              const curTab = leaf?.activeTabId;
+              if (pid && curTab) curIdx = entries.findIndex(en => en.paneId === pid && en.tabId === curTab);
+            }
+            if (curIdx < 0 && activeTabId) {
+              curIdx = entries.findIndex(en => en.paneId === null && en.tabId === activeTabId);
+            }
+            const nextIdx = curIdx < 0
+              ? 0
+              : fwd ? (curIdx + 1) % entries.length : (curIdx - 1 + entries.length) % entries.length;
+            const next = entries[nextIdx];
+
+            // Focus follows the switch (terminal or editor) so ⌘W and further
+            // ⇧⌘[/] keep targeting the pane we landed in.
+            if (next.paneId === null) {
+              state.setActiveTabId(wsId, next.tabId);
+              if (mainLeafId) state.setActivePaneId(wsId, mainLeafId);
+              focusMainTab(next.tabId);
+            } else {
+              state.setPaneActiveTab(wsId, next.paneId, next.tabId);
+              state.setActivePaneId(wsId, next.paneId);
+              focusPaneTab(next.tabId);
+            }
           }
           return;
         }
@@ -387,6 +457,11 @@ export function useShortcuts() {
           e.preventDefault();
           if (inBottom()) {
             state.addBottomTab(wsId);
+          } else if (inSplitPane()) {
+            const focusedLeaf = (document.activeElement as HTMLElement | null)
+              ?.closest?.("[data-split-leaf]") as HTMLElement | null;
+            const paneId = focusedLeaf?.getAttribute("data-pane-id") ?? null;
+            if (paneId) window.dispatchEvent(new CustomEvent("termic-pane-new-tab-menu", { detail: { wsId, paneId } }));
           } else {
             // Main pane: open the "+" tab menu.
             window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { wsId } }));
@@ -414,13 +489,53 @@ export function useShortcuts() {
             return;
           }
           if (inSplitPane() && wsId) {
-            const paneId = state.activePaneId[state.activeTab[wsId]];
+            // Always derive pane from DOM focus — activePaneId[wsId] is only updated
+            // on mouse clicks and can be stale after keyboard navigation.
+            const focusedEl = (document.activeElement as HTMLElement | null)
+              ?.closest?.("[data-split-leaf]") as HTMLElement | null;
+            const paneId = focusedEl?.getAttribute("data-pane-id") ?? null;
             if (paneId) {
-              state.closePane(wsId, paneId);
+              const tree = state.splitTree[wsId];
+              const leaf = tree ? findLeaf(tree, paneId) : null;
+              const activeTabIdInPane = leaf?.activeTabId ?? (leaf as any)?.tabId ?? null;
+              if (activeTabIdInPane && leaf) {
+                // Confirm-gated (dirty editor / live agent), same as the main
+                // path. Only collapse the emptied pane if the close went through.
+                const wasLastTab = (leaf.tabIds?.length ?? 1) <= 1;
+                void requestClosePaneTab(wsId, paneId, activeTabIdInPane).then(closed => {
+                  if (closed && wasLastTab) useApp.getState().closePane(wsId, paneId);
+                });
+              } else {
+                state.closePane(wsId, paneId);
+              }
               return;
             }
           }
-          if (wsId && activeTabId) requestCloseTab(wsId, activeTabId);
+          if (wsId && activeTabId && inMainPane()) { requestCloseTab(wsId, activeTabId); return; }
+          // Focus outside every pane (file tree / sidebar): still close a
+          // PREVIEW tab. Previews open from a single click in the tree, so
+          // focus never enters the pane — without this, ⌘W right after
+          // previewing a file is a silent no-op. Regular tabs keep the
+          // inMainPane guard (⌘W from the sidebar must not eat real tabs).
+          if (wsId) {
+            // Prefer the pane the preview actually lives in: openPreviewTab
+            // targets the focused split pane, tracked by activePaneId.
+            const tree = state.splitTree[wsId];
+            const paneId = state.activePaneId[wsId];
+            const leaf = tree && paneId ? findLeaf(tree, paneId) : null;
+            if (leaf && !leaf.isMain && leaf.activeTabId) {
+              const paneTab = (state.tabs[wsId] ?? []).find(t => t.id === leaf.activeTabId);
+              if (paneTab?.preview) {
+                const wasLastTab = (leaf.tabIds?.length ?? 1) <= 1;
+                void requestClosePaneTab(wsId, leaf.id, paneTab.id).then(closed => {
+                  if (closed && wasLastTab) useApp.getState().closePane(wsId, leaf.id);
+                });
+                return;
+              }
+            }
+            const mainTab = activeTabId ? tabs.find(t => t.id === activeTabId) : undefined;
+            if (mainTab?.preview) requestCloseTab(wsId, mainTab.id);
+          }
           return;
         }
       }

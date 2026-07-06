@@ -18,10 +18,12 @@ export interface PaneLeaf {
   type: 'pane';
   id: string;
   /** true = the original workspace pane; its content mirrors activeTab[wsId].
-   *  false/absent = a split pane with its own tab (or empty SplitLauncher). */
+   *  false/absent = a split pane with its own tabs (or empty SplitLauncher). */
   isMain?: boolean;
-  /** null = empty (shows SplitLauncher). non-null = owns a specific tab. */
-  tabId: string | null;
+  /** Ordered list of tab ids this pane holds. Empty = shows SplitLauncher. */
+  tabIds: string[];
+  /** The currently visible tab. null when tabIds is empty. */
+  activeTabId: string | null;
 }
 
 export type SplitTree = SplitNode | PaneLeaf;
@@ -80,18 +82,54 @@ export function removeLeaf(tree: SplitTree, targetId: string): SplitTree | null 
   return { ...tree, a: newA, b: newB };
 }
 
-export function updateLeafTabId(
-  tree: SplitTree,
-  leafId: string,
-  tabId: string,
-): SplitTree {
+/** Add a tab to a leaf's tabIds (appends) and set it as active. */
+export function addLeafTab(tree: SplitTree, leafId: string, tabId: string): SplitTree {
   if (tree.type === 'pane') {
-    return tree.id === leafId ? { ...tree, tabId } : tree;
+    if (tree.id !== leafId) return tree;
+    return { ...tree, tabIds: [...tree.tabIds, tabId], activeTabId: tabId };
+  }
+  return { ...tree, a: addLeafTab(tree.a, leafId, tabId), b: addLeafTab(tree.b, leafId, tabId) };
+}
+
+/** Remove a tab from a leaf's tabIds; updates activeTabId to the neighbour. */
+export function removeLeafTab(tree: SplitTree, leafId: string, tabId: string): SplitTree {
+  if (tree.type === 'pane') {
+    if (tree.id !== leafId) return tree;
+    const tabIds = tree.tabIds.filter(id => id !== tabId);
+    const oldIdx = tree.tabIds.indexOf(tabId);
+    const activeTabId = tree.activeTabId === tabId
+      ? (tabIds[Math.max(0, oldIdx - 1)] ?? tabIds[0] ?? null)
+      : tree.activeTabId;
+    return { ...tree, tabIds, activeTabId };
+  }
+  return { ...tree, a: removeLeafTab(tree.a, leafId, tabId), b: removeLeafTab(tree.b, leafId, tabId) };
+}
+
+/** Drop tab ids that don't exist anymore. Used on split-layout restore: the
+ *  saved tree can reference tabs that weren't restored (edit/diff tabs are
+ *  session-only; only terminals persist), and a ghost activeTabId would leave
+ *  the pane rendering nothing (all-hidden wrappers, no launcher). */
+export function pruneLeafTabs(tree: SplitTree, validIds: Set<string>): SplitTree {
+  if (tree.type === 'pane') {
+    if (tree.isMain) return tree;
+    const tabIds = (tree.tabIds ?? []).filter(id => validIds.has(id));
+    const activeTabId = tree.activeTabId && tabIds.includes(tree.activeTabId)
+      ? tree.activeTabId
+      : (tabIds[0] ?? null);
+    return { ...tree, tabIds, activeTabId };
+  }
+  return { ...tree, a: pruneLeafTabs(tree.a, validIds), b: pruneLeafTabs(tree.b, validIds) };
+}
+
+/** Set the active tab within a pane leaf (does not change tabIds). */
+export function setLeafActiveTabId(tree: SplitTree, leafId: string, tabId: string): SplitTree {
+  if (tree.type === 'pane') {
+    return tree.id === leafId ? { ...tree, activeTabId: tabId } : tree;
   }
   return {
     ...tree,
-    a: updateLeafTabId(tree.a, leafId, tabId),
-    b: updateLeafTabId(tree.b, leafId, tabId),
+    a: setLeafActiveTabId(tree.a, leafId, tabId),
+    b: setLeafActiveTabId(tree.b, leafId, tabId),
   };
 }
 

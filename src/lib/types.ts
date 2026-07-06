@@ -230,6 +230,9 @@ export interface PersistedTab {
   session_id?: string | null;
   /** Leaf ID of the split pane this tab belongs to (absent for main panel tabs). */
   pane_leaf_id?: string | null;
+  /** Run pop-out tab marker (GH #54): the member dir ("" = host project)
+   *  when this tab hosts the run script. Restores as a RunPane. */
+  run_member?: string | null;
 }
 
 /** Per-member input for `workspace_create_multi`. `root_path` matches a
@@ -527,6 +530,19 @@ export interface TerminalTab extends BaseTab {
    *  shell (`zsh -lc`). Seeded from the workspace's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */
   command?: string;
+  /** Set on Run pop-out tabs (GH #54): the tab hosts the project/member run
+   *  (or setup) script with pill controls (play / restart / stop). `member`
+   *  is the composition dir name ("" = host project); `previewUrl` resolved
+   *  at launch. kind "setup" tabs are one-shot and never persisted; "run"
+   *  (default) tabs persist with their pane position. */
+  runTab?: {
+    member: string;
+    kind?: "run" | "setup";
+    previewUrl?: string | null;
+    /** Restored-from-persistence marker: the tab comes back in its pane but
+     *  does NOT auto-run the script — the user hits play. */
+    idle?: boolean;
+  };
   ptyId?: string;
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;

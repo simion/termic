@@ -15,6 +15,8 @@ vi.mock("@/lib/ipc", () => ({
 
 vi.mock("@/lib/tabFocus", () => ({
   focusTerminalTab: vi.fn(),
+  focusMainTab: vi.fn(),
+  focusPaneTab: vi.fn(),
 }));
 
 vi.mock("@/lib/agents", () => ({

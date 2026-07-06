@@ -332,10 +332,11 @@ export const workspaceDiscard = (id: string, dirName: string, paths: string[]) =
 export const workspaceRunScript= (id: string, which: "setup" | "run" = "run") =>
   invoke<string>("workspace_run_script", { id, which });
 /** Kick off a streaming run. Subscribe to:
- *    `script-output://<id>:<member>:<kind>`  (per-line stdout/stderr)
- *    `script-done://<id>:<member>:<kind>`    (completion)
+ *    `script-output://<id>:<topic-member>:<kind>`  (per-line stdout/stderr)
+ *    `script-done://<id>:<topic-member>:<kind>`    (completion)
  *  where `<member>` is empty for the host (single-repo + multi-host
- *  scripts) or the composition member's `dir_name`. */
+ *  scripts) or the composition member's `dir_name`, hex-encoded for the
+ *  event topic because Tauri rejects dots and other punctuation. */
 export const workspaceRunScriptStream = (id: string, kind: "setup" | "run", member?: string) =>
   invoke<void>("workspace_run_script_stream", { id, kind, member: member ?? null });
 export const workspaceStopScript = (id: string, kind: "setup" | "run", member?: string) =>

@@ -7,33 +7,42 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp, useActiveWorkspace } from "@/store/app";
 import { useUI } from "@/store/ui";
 import {
-  workspaceGitStatus, workspaceRunScriptStream, workspaceStopScript, openPath, repoConfigLoad, repoConfigLoadAt,
-  workspaceSpotlightStop, workspaceSpotlightResync,
+  workspaceGitStatus, workspaceRunScriptStream, openPath, repoConfigLoad, repoConfigLoadAt,
+  workspaceSpotlightResync,
 } from "@/lib/ipc";
-import { startSpotlight } from "@/lib/spotlight";
-import type { GitStatus, Workspace, WorkspaceMember, Project } from "@/lib/types";
+import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
+import { launchRunTabs, expandPreviewUrl } from "@/lib/runTabs";
+import type { GitStatus, Workspace, WorkspaceMember, Project, TerminalTab } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Play, ChevronDown, ChevronUp, Square, Globe, X, AudioWaveform, RefreshCw, Wrench, Copy, Check, Settings } from "lucide-react";
+import { Play, ChevronDown, ChevronUp, Square, Globe, X, AudioWaveform, RefreshCw, Copy, Check, Settings, SquareArrowOutUpRight, PanelBottom } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { AuxTerminal } from "./AuxTerminal";
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
-import { useScriptRuns, useRunState, type RunStatus } from "@/store/scriptRuns";
-import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem } from "@/components/ui/Dropdown";
+import { useScriptRuns, useRunState } from "@/store/scriptRuns";
 
 /** Stable key for a composition member's `.termic.yaml` config maps.
  *  Inline members have no project id — key by their repo path (falling
  *  back to dir_name for legacy records that predate `repo_path`). */
 const memberKey = (m: WorkspaceMember) => m.repo_path || m.dir_name;
 
+/** Tauri event names reject dots and other punctuation. Keep the app's
+ *  user-facing member dir_name unchanged, but hex-encode it inside event
+ *  topics so members like `phohanoi.ro` can stream setup/run output. */
+function scriptTopicMember(member: string): string {
+  if (!member) return "";
+  return Array.from(new TextEncoder().encode(member))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 type FootTab = "setup" | "run" | "term" | "spotlight";
 
 // Footer collapse persists across launches. Component-local (no other
 // component reads it) so it's localStorage-backed directly rather than
 // pushed through the app store — same pattern as DiffPane's view mode.
-const LS_FOOT_COLLAPSED = "rightFooterCollapsed";
 
 export function RightPanel() {
   const ws = useActiveWorkspace();
@@ -76,16 +85,10 @@ export function RightPanel() {
   // Footer holds Setup / Run status only. Scratch shells live in the
   // bottom-split (⇧⌘D) — having a second terminal slot here was redundant.
   const [footTab, setFootTab] = useState<FootTab>("run");
-  // Expanded by default on a fresh install: the Setup / Run tabs are
-  // useless when collapsed, and the bottom split is the dedicated
-  // scratch-shell surface — nothing gained by hiding the footer on
-  // first open. After that, the user's choice persists across launches.
-  const [footCollapsed, setFootCollapsed] = useState(() => {
-    try { return localStorage.getItem(LS_FOOT_COLLAPSED) === "1"; } catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem(LS_FOOT_COLLAPSED, footCollapsed ? "1" : "0"); } catch {}
-  }, [footCollapsed]);
+  // ALWAYS starts collapsed: runs live in terminal tabs now, so the footer
+  // is mostly the Spotlight strip. It auto-expands when spotlight starts
+  // (see the isSpotlighted effect) or when the user clicks a tab.
+  const [footCollapsed, setFootCollapsed] = useState(true);
   // Footer height + right-panel width come from the persistent app store so
   // values survive reloads and can be set by the two drag handles below.
   const footHeight        = useApp(s => s.rightFooterHeight);
@@ -172,11 +175,12 @@ export function RightPanel() {
     const targets: string[] = ["", ...(ws.composition ?? []).map(m => m.dir_name)];
     (async () => {
       for (const member of targets) {
+        const topicMember = scriptTopicMember(member);
         for (const kind of ["setup", "run"] as const) {
-          const u1 = await listen<{ line: string }>(`script-output://${wsId}:${member}:${kind}`, ev => {
+          const u1 = await listen<{ line: string }>(`script-output://${wsId}:${topicMember}:${kind}`, ev => {
             if (!cancelled) appendLine(wsId, kind, ev.payload.line, member);
           });
-          const u2 = await listen<{ code: number | null; success: boolean }>(`script-done://${wsId}:${member}:${kind}`, ev => {
+          const u2 = await listen<{ code: number | null; success: boolean }>(`script-done://${wsId}:${topicMember}:${kind}`, ev => {
             if (!cancelled) finish(wsId, kind, ev.payload.code, ev.payload.success, member);
           });
           unlisteners.push(u1, u2);
@@ -235,7 +239,6 @@ export function RightPanel() {
   // Run / Setup tabs) stop fitting; below it the labels clip off the edge.
   const compactToolbar = footerTerm || (asideWidth > 0 && asideWidth < 380);
   const setupRunState = useRunState(ws?.id, "setup", footTarget);
-  const runRunState   = useRunState(ws?.id, "run",   footTarget);
   // The Setup tab is transient: it only appears once Setup has been
   // invoked for this (workspace, target). Closing it resets the run
   // state back to idle and the tab disappears again.
@@ -299,35 +302,19 @@ export function RightPanel() {
     return () => { cancelled = true; unlisteners.forEach(u => u()); };
   }, [ws?.id, ws?.project_id]);
 
-  // Run tab visibility:
-  //   - non-spotlight projects: always (normal worktree run).
-  //   - spotlight projects: ONLY while spotlight is active (run executes at
-  //     repo root). When not spotlighted, there's no Run tab.
-  const showRunTab = !spotlightAvailable || isSpotlighted;
-
   // When spotlight starts: clear stale log, jump to Spotlight tab, expand.
-  // When it stops: if we were on the (now-gone) Run tab, fall back.
   const prevSpotlightedRef = useRef(false);
   useEffect(() => {
     if (isSpotlighted && !prevSpotlightedRef.current) {
       setSpotlightLog([]);          // fresh log — events after this point fill it
       setFootTab("spotlight");
       setFootCollapsed(false);
-    } else if (!isSpotlighted && prevSpotlightedRef.current && footTab === "run") {
-      // Run tab disappears when spotlight stops — go back to Spotlight.
-      setFootTab("spotlight");
     }
     prevSpotlightedRef.current = isSpotlighted;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpotlighted]);
 
-  // When spotlight is available, the Run tab is hidden. If footTab is still
-  // "run" (the initial default), redirect to "spotlight" immediately.
-  useEffect(() => {
-    if (spotlightAvailable && footTab === "run") setFootTab("spotlight");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spotlightAvailable]);
-  // Inverse: spotlight is worktree-only. If a "spotlight" tab carried over
+  // Spotlight is worktree-only. If a "spotlight" tab carried over
   // from a worktree workspace and we land on one where it's NOT available
   // (repo-root, multi-repo, non-git), snap back to Run so the spotlight
   // panel can't leak onto a workspace it makes no sense for.
@@ -335,6 +322,17 @@ export function RightPanel() {
     if (!spotlightAvailable && footTab === "spotlight") setFootTab("run");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spotlightAvailable]);
+  // The footer Run area only renders when NO run script is configured (runs
+  // live in terminal tabs). footTab defaults to "run", so on spotlight
+  // workspaces with a script that combination would expand into an empty
+  // void — snap to the Spotlight tab instead.
+  useEffect(() => {
+    if (!ws || !spotlightAvailable || footTab !== "run") return;
+    if (project?.run_script?.trim() || yamlRunScripts[ws.project_id]?.trim()) {
+      setFootTab("spotlight");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws?.id, spotlightAvailable, footTab, project?.run_script, yamlRunScripts]);
 
   // If the Setup tab vanishes, fall back to Spotlight (if available) or Run.
   useEffect(() => {
@@ -345,25 +343,82 @@ export function RightPanel() {
 
   if (!ws) return null;
 
+  const hasComposition = (ws.composition?.length ?? 0) > 0;
+
+  // Resolve the footer target's app key (host project or composition
+  // member). Shared by the setup launch and the ScriptStream render below.
+  const footMember = ws.composition?.find(m => m.dir_name === footTarget);
+  const footAppKey = footMember ? memberKey(footMember) : ws.project_id;
+  // Runs/setups ALWAYS live in terminal tabs now (GH #54) — the footer log
+  // mode is gone; tabs + splits give full placement control. Launching is
+  // shared logic in lib/runTabs (also used by RunControls + spotlight).
+  const runsInTerminal = true;
+  // Run targets known locally: only used to decide whether the footer shows
+  // the "configure a run script" prompt (the sole remaining Run footer use).
+  const runTargets = (() => {
+    const targets: { member: string; script: string }[] = [];
+    const hostScript = (project?.run_script || yamlRunScripts[ws.project_id] || "").trim();
+    if (hostScript) targets.push({ member: "", script: hostScript });
+    for (const m of ws.composition ?? []) {
+      const script = (m.run_script || yamlRunScripts[memberKey(m)] || "").trim();
+      if (script) targets.push({ member: m.dir_name, script });
+    }
+    return targets;
+  })();
+  // Footer Run area: runs NEVER stream down here — it only appears when no
+  // run script is configured, to host the "configure a run script" prompt.
+  const showRunLog = !runsInTerminal || runTargets.length === 0;
+  // Multi-repo run controls moved to the UnifiedBar ("Run all" / "Stop all").
+  // Do not keep the old member target strip alive at the bottom of the right
+  // panel; show the footer only for non-run surfaces.
+  const showFooter =
+    !runsInTerminal ||
+    showSetupTab ||
+    footerTerm ||
+    spotlightAvailable ||
+    (!hasComposition && showRunLog);
+  const onlySpotlightFooter =
+    spotlightAvailable && !showRunLog && !showSetupTab && !footerTerm;
+  const spotlightSelected =
+    spotlightAvailable && (onlySpotlightFooter || footTab === "spotlight");
+
   // Shared start/stop. Setup auto-switches the footer view to the Setup
   // tab (which the user can close once they're done reading the log).
-  // When spotlight is active and kind="run", the Rust side runs the script
-  // at project.root_path instead of the worktree path.
   const startScript = (kind: "setup" | "run") => {
-    useScriptRuns.getState().start(ws.id, kind, footTarget);
-    setFootCollapsed(false);
-    // Spotlight: stay on the spotlight tab when starting run so the user
-    // sees the synced-run output there. For setup, snap to setup tab.
-    if (kind === "setup") setFootTab("setup");
-    else if (!isSpotlighted) setFootTab("run");
-    // (when spotlighted + kind=run: stay on spotlight tab)
-    workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
-      console.error("workspace_run_script_stream failed:", err));
-  };
-  const stopScript = (kind: "setup" | "run") => {
-    useScriptRuns.getState().finish(ws.id, kind, null, false, footTarget);
-    workspaceStopScript(ws.id, kind, footTarget || undefined).catch(err =>
-      console.error("workspace_stop_script failed:", err));
+    if (kind === "setup") {
+      // Setup runs as a one-shot terminal tab (host or the selected member).
+      const setupScript = ((footMember ? footMember.setup_script : project?.setup_script)
+        || yamlSetupScripts[footAppKey] || "").trim();
+      if (setupScript) {
+        const st = useApp.getState();
+        const existing = (st.tabs[ws.id] ?? []).find(
+          (t): t is TerminalTab => t.type === "terminal"
+            && (t as TerminalTab).runTab?.kind === "setup"
+            && (t as TerminalTab).runTab?.member === footTarget,
+        );
+        if (existing) {
+          window.dispatchEvent(new CustomEvent("termic-run-tab-restart", { detail: { tabId: existing.id } }));
+        } else {
+          st.addTabToActivePane(ws.id, {
+            id: crypto.randomUUID(),
+            type: "terminal",
+            title: footTarget ? `Setup · ${footTarget}` : "Setup",
+            cli: "custom",
+            command: footTarget
+              ? `cd "${ws.path.replace(/"/g, '\\"')}/${footTarget}"\n${setupScript}`
+              : setupScript,
+            runTab: { member: footTarget, kind: "setup" },
+          });
+        }
+        return;
+      }
+      useUI.getState().pushToast("No setup script configured. Set one in Settings, Repositories.", "error");
+      return;
+    }
+    // Run: ALWAYS terminal tabs, every project the same (GH #54) — runs
+    // never stream into the footer. Spotlight-enabled projects' host tab
+    // cd's to the repo root inside the tab command (see lib/runTabs).
+    void launchRunTabs(ws.id);
   };
 
   // The UnifiedBar's top-right Run button can't drive the footer's
@@ -378,7 +433,7 @@ export function RightPanel() {
     if (runReq.nonce === lastRunNonce.current) return;
     lastRunNonce.current = runReq.nonce;
     if (runReq.wsId !== ws.id) return;
-    startScript("run");
+    startScript(runReq.kind ?? "run");
   }, [runReq, ws?.id]);
 
   const handleSpotlightStart = () => {
@@ -390,8 +445,9 @@ export function RightPanel() {
     );
   };
   const handleSpotlightStop = () => {
-    if (runRunState.status === "running") stopScript("run");
-    workspaceSpotlightStop(ws.id)
+    // stopSpotlight also stops the root run (its Run tab stays, exited —
+    // it can only be restarted from a spotlighted workspace).
+    stopSpotlight(ws.id)
       .then(() => addSpotlightLog("Spotlight stopped"))
       .catch(err => {
         const msg = String(err);
@@ -472,7 +528,11 @@ export function RightPanel() {
       )}
 
       {/* Footer: Setup / Run / Terminal tabs + Run action. Collapsible.
-          Height is store-backed + drag-resizable from the top edge. */}
+          Height is store-backed + drag-resizable from the top edge.
+          Fully hidden when the run is popped out (GH #54) and nothing else
+          lives down here — an empty strip with a lone chevron + wrench was
+          just confusing chrome. */}
+      {showFooter && (
       <footer
         className="relative flex shrink-0 flex-col bg-[var(--color-bg-1)]"
         style={{ height: footCollapsed ? "var(--bottom-bar-h)" : footHeight }}
@@ -493,107 +553,6 @@ export function RightPanel() {
             }}
           />
         )}
-        {(ws.composition?.length ?? 0) > 0 ? (
-          // Multi-repo: NESTED tab strip.
-          //   Row 1 = REPO targets (pydpf, shopilo, ...) + terminal.
-          //   Row 2 = SETUP / RUN sub-tabs for the selected repo +
-          //           Open / Run-Stop actions on the right.
-          // Splitting into two thin rows keeps each item readable;
-          // jamming all of it on one row was the prior "too crowded"
-          // complaint.
-          <>
-            <div className={cn(
-              "flex h-[var(--bottom-bar-h)] min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-t border-[var(--color-border-soft)] px-1.5",
-              // border-b separates the strip from the content below it.
-              // Collapsed → no content below → drop it, else it stacks
-              // with the footer's own border-t into a doubled line.
-              !footCollapsed && "border-b border-[var(--color-border-soft)]",
-            )}>
-              <button
-                onClick={() => setFootCollapsed(c => !c)}
-                title={footCollapsed ? "Expand" : "Collapse"}
-                className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-              >
-                {footCollapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-              </button>
-              {/* Member targets. Tabs that fit render inline; the rest
-                  collapse into a "+N" overflow menu so the strip never
-                  spills and the Run-all / Open-all toolbar is never
-                  clipped off the right edge. The active member is always
-                  kept inline. */}
-              <MemberTabStrip
-                members={ws.composition!}
-                wsId={ws.id}
-                activeDir={footTab !== "term" ? footTarget : null}
-                onSelect={(dir) => { setFootTab(footTab === "term" ? "run" : footTab); setFootTarget(dir); setFootCollapsed(false); }}
-              />
-              {footerTerm && (
-                <FTab
-                  label="Terminal"
-                  active={footTab === "term"}
-                  onClick={() => { setFootTab("term"); setFootCollapsed(false); }}
-                  onClose={() => {
-                    useApp.getState().disableFooterTerm(ws.id);
-                    setFootTab("run");
-                  }}
-                />
-              )}
-              {/* Stack-level actions: Run all / Stop all / Open all
-                  across every member at once. Lives on the right of
-                  the target tab strip — same row as the targets so
-                  the relationship is obvious ("these buttons
-                  affect those tabs"). */}
-              <AllMembersToolbar ws={ws} project={project} yamlPreviewUrls={yamlPreviewUrls} onExpand={() => setFootCollapsed(false)} />
-            </div>
-            {/* Row 2 — only for non-terminal targets (terminal has
-                no setup/run, just the shell). */}
-            {footTab !== "term" && !footCollapsed && (() => {
-              // For Open: substitute the MEMBER's project + the
-              // member's actual port into RunToolbar's context, so
-              // expandPreviewUrl uses the right URL (otherwise it
-              // falls back to ws.port = the host's 18103 even though
-              // member services are on 18104/18105/...).
-              const memberIdx = ws.composition!.findIndex(m => m.dir_name === footTarget);
-              const m = memberIdx >= 0 ? ws.composition![memberIdx] : null;
-              // Inline members aren't registered projects — their preview
-              // URL comes from the member repo's .termic.yaml (keyed by
-              // memberKey), not a project record. Host falls back to its
-              // project for the personal preview_url template.
-              const memberProject = m ? null : project;
-              const mKey = m ? memberKey(m) : ws.project_id;
-              const memberPort = m
-                ? (m.port && m.port > 0 ? m.port : ws.port + memberIdx + 1)
-                : ws.port;
-              const syntheticWs: Workspace = { ...ws, port: memberPort };
-              return (
-                <div className="flex h-[var(--bottom-bar-h)] min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-1.5">
-                  <FTab label="Run"   active={footTab === "run"}   onClick={() => setFootTab("run")} />
-                  {showSetupTab && (
-                    <FTab
-                      label="Setup"
-                      active={footTab === "setup"}
-                      onClick={() => setFootTab("setup")}
-                      onClose={() => {
-                        useScriptRuns.getState().reset(ws.id, "setup", footTarget);
-                        setFootTab("run");
-                      }}
-                    />
-                  )}
-                  <RunToolbar
-                    ws={syntheticWs} project={memberProject} yamlPreviewUrl={yamlPreviewUrls[mKey]}
-                    hasSetup={!!(m?.setup_script?.trim() || yamlSetupScripts[mKey]?.trim())}
-                    setupStatus={setupRunState.status} runStatus={runRunState.status}
-                    compact={compactToolbar}
-                    onSetupStart={() => startScript("setup")}
-                    onSetupStop={()  => stopScript("setup")}
-                    onRunStart={()   => startScript("run")}
-                    onRunStop={()    => stopScript("run")}
-                  />
-                </div>
-              );
-            })()}
-          </>
-        ) : (
         <div className={cn(
           "flex h-[var(--bottom-bar-h)] min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-t border-[var(--color-border-soft)] px-1.5",
           // Collapsed → nothing below the strip → drop border-b so it
@@ -607,20 +566,21 @@ export function RightPanel() {
           >
             {footCollapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
-          {/* Spotlight tab: always present for spotlight-enabled worktrees.
-              Shows idle (start) or active (logs + run) state based on isSpotlighted. */}
-          {spotlightAvailable && (
+          {/* Spotlight is toolbar-only when it is the footer's only surface;
+              keep a real tab only when it is competing with Run/Setup/Terminal. */}
+          {spotlightAvailable && !onlySpotlightFooter && (
             <FTab
               label="Spotlight"
               icon={isSpotlighted
                 ? <AudioWaveform className="termic-spotlight-wave h-3 w-3 text-[var(--color-accent)]" />
                 : undefined}
-              active={footTab === "spotlight"}
+              active={spotlightSelected}
               onClick={() => { setFootTab("spotlight"); setFootCollapsed(false); }}
             />
           )}
-          {/* Run tab: only for non-spotlight projects and repo-root workspaces. */}
-          {showRunTab && (
+          {/* Run tab: only for non-spotlight projects and repo-root workspaces,
+              and hidden while the run is popped out into a RunPane tab. */}
+          {showRunLog && (
             <FTab label="Run" active={footTab === "run"} onClick={() => { setFootTab("run"); setFootCollapsed(false); }} />
           )}
           {showSetupTab && (
@@ -646,7 +606,7 @@ export function RightPanel() {
             />
           )}
           {/* Right-side controls depend on tab + spotlight state */}
-          {spotlightAvailable && footTab === "spotlight" && isSpotlighted ? (
+          {spotlightSelected && isSpotlighted ? (
             // Active: Resync + Stop
             <div className="ml-auto flex shrink-0 items-center gap-1">
               <button
@@ -664,7 +624,7 @@ export function RightPanel() {
                 Stop
               </button>
             </div>
-          ) : spotlightAvailable && footTab === "spotlight" && !isSpotlighted ? (
+          ) : spotlightSelected && !isSpotlighted ? (
             // Idle: CTA Start button on the right
             <div className="ml-auto flex shrink-0 items-center">
               <button
@@ -675,32 +635,25 @@ export function RightPanel() {
                 Spotlight
               </button>
             </div>
-          ) : footTab !== "term" && showRunTab ? (
+          ) : footTab !== "term" ? (
             <RunToolbar
               ws={ws} project={project} yamlPreviewUrl={yamlPreviewUrls[ws.project_id]}
-              hasSetup={!!(project?.setup_script?.trim() || yamlSetupScripts[ws.project_id]?.trim())}
-              setupStatus={setupRunState.status} runStatus={runRunState.status}
               compact={compactToolbar}
-              onSetupStart={() => startScript("setup")}
-              onSetupStop={()  => stopScript("setup")}
-              onRunStart={()   => startScript("run")}
-              onRunStop={()    => stopScript("run")}
             />
           ) : null}
         </div>
-        )}
 
         {!footCollapsed && (
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {/* Spotlight content — idle (start button) or active (log + run) */}
-            {spotlightAvailable && footTab === "spotlight" && (
+            {spotlightSelected && (
               <SpotlightContent
                 isSpotlighted={isSpotlighted}
                 log={spotlightLog}
                 onStart={handleSpotlightStart}
               />
             )}
-            {footTab !== "term" && !(spotlightAvailable && footTab === "spotlight") && showRunTab && (() => {
+            {footTab !== "term" && !spotlightSelected && showRunLog && (() => {
               const activeMember = ws.composition?.find(m => m.dir_name === footTarget);
               // Inline members have no project id — key yaml + dismiss state
               // by memberKey. Configure always opens the host project (where
@@ -749,6 +702,7 @@ export function RightPanel() {
           </div>
         )}
       </footer>
+      )}
     </aside>
   );
 }
@@ -781,221 +735,11 @@ function FTab({ label, icon, active, onClick, onClose }: {
   );
 }
 
-// Width reserved for the "+N" overflow trigger when some members don't
-// fit. Slightly generous so a two-digit count never re-spills the strip.
-const OVERFLOW_BTN_W = 50;
-// gap-0.5 between strip children = 2px. Folded into each tab's effective
-// width so the fit math accounts for inter-tab spacing.
-const STRIP_GAP = 2;
-
-/** Live run/setup status for a composition member, collapsed to one
- *  value for the status dot. Running and error are the only states worth
- *  surfacing; done/idle read as quiet. */
-function memberRunStatus(runs: Record<string, { status: RunStatus }>, wsId: string, dir: string): RunStatus {
-  const r = runs[`${wsId}:${dir}:run`]?.status;
-  const s = runs[`${wsId}:${dir}:setup`]?.status;
-  if (r === "running" || s === "running") return "running";
-  if (r === "error" || s === "error") return "error";
-  if (r === "done" || s === "done") return "done";
-  return "idle";
-}
-
-/** Fixed-width status dot. Always occupies the same box (transparent when
- *  idle/done) so a tab's measured width never changes as scripts start or
- *  stop — keeps the overflow math from churning on every status change. */
-function StatusDot({ status }: { status: RunStatus }) {
-  const color = status === "running" ? "var(--color-ok)"
-    : status === "error" ? "var(--color-err)"
-    : "transparent";
-  return (
-    <span
-      className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status === "running" && "animate-pulse")}
-      style={{ background: color }}
-    />
-  );
-}
-
-/** A single member target tab with a leading status dot. */
-function MemberTab({ label, status, active, onClick }: {
-  label: string; status: RunStatus; active: boolean; onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-b-2 px-1.5 py-1 text-[12.5px] transition-colors",
-        active ? "text-[var(--color-fg)] border-[var(--color-accent)]" : "text-[var(--color-fg-dim)] border-transparent hover:text-[var(--color-fg)]",
-      )}
-      style={active ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : undefined}
-    >
-      <StatusDot status={status} />
-      {label}
-    </button>
-  );
-}
-
-/** Member target strip with overflow handling.
- *
- *  Measures each member tab's natural width from an invisible layer, then
- *  greedily fills the strip's available width left-to-right. Members that
- *  don't fit drop into a "+N" dropdown. The active member is always kept
- *  inline (forced into the visible set first) so the user never loses
- *  sight of what they're targeting. Recomputes on panel resize via a
- *  ResizeObserver and re-measures when the member set or fonts change. */
-function MemberTabStrip({ members, wsId, activeDir, onSelect }: {
-  members: WorkspaceMember[];
-  wsId: string;
-  activeDir: string | null;
-  onSelect: (dir: string) => void;
-}) {
-  const runs = useScriptRuns(s => s.runs);
-  const stripRef = useRef<HTMLDivElement>(null);
-  const measureRef = useRef<HTMLDivElement>(null);
-  const [availW, setAvailW] = useState(0);
-  const [tabWidths, setTabWidths] = useState<number[]>([]);
-
-  // Track the strip's available width (already excludes the chevron,
-  // Terminal tab, and Run-all toolbar — they're flex siblings, this is
-  // flex-1 with min-w-0 so it gets exactly the leftover space).
-  useEffect(() => {
-    const el = stripRef.current; if (!el) return;
-    setAvailW(el.clientWidth);
-    const ro = new ResizeObserver(() => setAvailW(el.clientWidth));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // Measure each tab's natural width from the hidden layer. The dot slot
-  // is fixed-width so status changes never alter these — re-measure only
-  // when the member set changes (or once fonts settle, since glyph widths
-  // shift between the fallback and Inter).
-  const memberKey = members.map(m => m.dir_name).join("|");
-  useEffect(() => {
-    const measure = () => {
-      const layer = measureRef.current; if (!layer) return;
-      setTabWidths(Array.from(layer.children).map(c => (c as HTMLElement).offsetWidth));
-    };
-    measure();
-    document.fonts?.ready.then(measure).catch(() => {});
-  }, [memberKey]);
-
-  const n = members.length;
-  const activeIdx = activeDir ? members.findIndex(m => m.dir_name === activeDir) : -1;
-  const ready = tabWidths.length === n && availW > 0;
-
-  let visibleIdx = members.map((_, i) => i);
-  let overflowIdx: number[] = [];
-  if (ready) {
-    const eff = tabWidths.map(w => w + STRIP_GAP);
-    const total = eff.reduce((a, b) => a + b, 0);
-    if (total > availW) {
-      const budget = availW - OVERFLOW_BTN_W;
-      const chosen = new Set<number>();
-      let used = 0;
-      // Reserve the active tab first so it always stays inline.
-      if (activeIdx >= 0) { chosen.add(activeIdx); used += eff[activeIdx]; }
-      for (let i = 0; i < n; i++) {
-        if (chosen.has(i)) continue;
-        if (used + eff[i] <= budget) { chosen.add(i); used += eff[i]; }
-        else break; // keep the visible run contiguous from the left
-      }
-      visibleIdx = [...chosen].sort((a, b) => a - b);
-      overflowIdx = members.map((_, i) => i).filter(i => !chosen.has(i));
-    }
-  }
-
-  return (
-    <div ref={stripRef} className="relative flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
-      {/* Hidden measurement layer — identical markup to the real tabs so
-          offsetWidth matches. h-0 + invisible keeps it out of layout and
-          paint; the strip's overflow-hidden clips it. */}
-      <div ref={measureRef} aria-hidden className="pointer-events-none invisible absolute left-0 top-0 flex h-0 items-center gap-0.5 whitespace-nowrap">
-        {members.map(m => (
-          <MemberTab key={m.dir_name} label={m.dir_name} status="idle" active={false} onClick={() => {}} />
-        ))}
-      </div>
-      {visibleIdx.map(i => {
-        const m = members[i];
-        return (
-          <MemberTab
-            key={m.dir_name}
-            label={m.dir_name}
-            status={memberRunStatus(runs, wsId, m.dir_name)}
-            active={activeIdx === i}
-            onClick={() => onSelect(m.dir_name)}
-          />
-        );
-      })}
-      {overflowIdx.length > 0 && (
-        <DropdownRoot>
-          <DropdownTrigger asChild>
-            <button
-              title={`${overflowIdx.length} more`}
-              className="flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-[12.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-            >
-              +{overflowIdx.length}<ChevronDown className="h-3 w-3" />
-            </button>
-          </DropdownTrigger>
-          <DropdownMenu align="start">
-            {overflowIdx.map(i => {
-              const m = members[i];
-              return (
-                <DropdownItem key={m.dir_name} onSelect={() => onSelect(m.dir_name)} className="items-center gap-2">
-                  <StatusDot status={memberRunStatus(runs, wsId, m.dir_name)} />
-                  <span className="font-mono text-[12.5px]">{m.dir_name}</span>
-                </DropdownItem>
-              );
-            })}
-          </DropdownMenu>
-        </DropdownRoot>
-      )}
-    </div>
-  );
-}
-
-/** Resolve a project's preview_url template against a workspace's port +
- *  path. Supports `$TERMIC_PORT`, `${TERMIC_PORT}`, `$PORT` (legacy), and
- *  `${TERMIC_WORKSPACE_NAME}`. Returns null if no template is set so the
- *  toolbar can hide the Open button. */
-function expandPreviewUrl(project: Project | null, ws: Workspace, yamlUrl = ""): string | null {
-  const tmpl = project?.preview_url?.trim() || yamlUrl.trim();
-  // No preview URL configured → no Open/Copy buttons. We deliberately don't
-  // guess `http://localhost:<port>`: many projects have no web server, and a
-  // dead Open button is worse than none.
-  if (!tmpl) return null;
-  // Expand `$VAR` and `${VAR}` for the variables we set in run_script env.
-  // Includes legacy `$CONDUCTOR_*` aliases so preview_url templates saved
-  // under the old name keep working after the rename.
-  const port = String(ws.port);
-  return tmpl
-    .replaceAll("${TERMIC_PORT}",            port)
-    .replaceAll("$TERMIC_PORT",              port)
-    .replaceAll("${CONDUCTOR_PORT}",         port)
-    .replaceAll("$CONDUCTOR_PORT",           port)
-    .replaceAll("${PORT}",                   port)
-    .replaceAll("$PORT",                     port)
-    .replaceAll("${TERMIC_WORKSPACE_NAME}",  ws.name)
-    .replaceAll("$TERMIC_WORKSPACE_NAME",    ws.name)
-    .replaceAll("${CONDUCTOR_WORKSPACE_NAME}", ws.name)
-    .replaceAll("$CONDUCTOR_WORKSPACE_NAME",   ws.name);
-}
-
-/** Right-aligned toolbar group: Setup / Run / Open. Setup and Run each toggle
- *  to Stop when their script is running; Open is always enabled when a preview
- *  URL is known so users can hit the dev server preview the moment they want.
- *  Setup is one-shot in practice (run at create-time) but kept available for
- *  re-runs after dep bumps or script edits — its output streams into a
- *  transient Setup tab that only appears post-invocation. */
-function RunToolbar({ ws, project, yamlPreviewUrl = "", hasSetup, setupStatus, runStatus, onSetupStart, onSetupStop, onRunStart, onRunStop, compact }: {
+/** Right-aligned toolbar group: preview-URL actions only. Run/Stop live in
+ *  the UnifiedBar (RunControls) and Setup in its dropdown — runs and setups
+ *  are terminal tabs now (GH #54), so the footer carries no script buttons. */
+function RunToolbar({ ws, project, yamlPreviewUrl = "", compact }: {
   ws: Workspace; project: Project | null; yamlPreviewUrl?: string;
-  /** Whether a setup script is configured for this project/member — gates
-   *  the Setup button entirely. Projects without setup (e.g. simple
-   *  scratch repos) get a tidier toolbar. */
-  hasSetup: boolean;
-  setupStatus: "idle" | "running" | "done" | "error";
-  runStatus: "idle" | "running" | "done" | "error";
-  onSetupStart: () => void; onSetupStop: () => void;
-  onRunStart: () => void; onRunStop: () => void;
   /** When the footer is cramped (Terminal tab open, panel narrow),
    *  collapse buttons to icon-only with the label moved to the title.
    *  Saves ~50px per button which is enough to keep everything in the
@@ -1003,10 +747,7 @@ function RunToolbar({ ws, project, yamlPreviewUrl = "", hasSetup, setupStatus, r
   compact?: boolean;
 }) {
   const url = expandPreviewUrl(project, ws, yamlPreviewUrl);
-  const setupRunning = setupStatus === "running";
-  const runRunning = runStatus === "running";
   const btnCls = compact ? "h-6 w-6 p-0" : "h-6 gap-1 px-1.5 text-[12px]";
-  const stopCls = cn(btnCls, "text-[var(--color-err)] hover:text-[var(--color-err)]");
   // In compact (icon-only) mode the inline label is gone, so the action name
   // moves to an INSTANT app tooltip (Tip, delay 0) instead of a slow native
   // `title`. Non-compact keeps the visible label and needs no tooltip.
@@ -1014,48 +755,6 @@ function RunToolbar({ ws, project, yamlPreviewUrl = "", hasSetup, setupStatus, r
     compact ? <Tip content={tip} side="top">{node}</Tip> : node;
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1">
-      {hasSetup && (setupRunning
-        ? tipWrap("Stop setup",
-            <Button size="sm" variant="secondary" onClick={onSetupStop} className={stopCls}>
-              <Square className="h-3 w-3 fill-current" />
-              {!compact && <span>Stop setup</span>}
-            </Button>)
-        : tipWrap("Run setup",
-            <Button size="sm" variant="secondary" onClick={onSetupStart} className={btnCls}>
-              <Wrench className="h-3 w-3" />
-              {!compact && <span>Setup</span>}
-            </Button>)
-      )}
-      {/* Run / Stop, with a chevron split-button menu (Configure for now). */}
-      <div className="flex items-center">
-        {runRunning
-          ? tipWrap("Stop",
-              <Button size="sm" variant="secondary" onClick={onRunStop} className={cn(stopCls, project && "rounded-r-none")}>
-                <Square className="h-3 w-3 fill-current" />
-                {!compact && <span>Stop</span>}
-              </Button>)
-          : tipWrap("Run",
-              <Button size="sm" variant="secondary" onClick={onRunStart} className={cn(btnCls, project && "rounded-r-none")}>
-                <Play className="h-3 w-3" />
-                {!compact && <span>Run</span>}
-              </Button>)
-        }
-        {project && (
-          <DropdownRoot>
-            <DropdownTrigger asChild>
-              <Button size="sm" variant="secondary" title="Run options" className="h-6 rounded-l-none border-l border-[var(--color-border)] px-1">
-                <ChevronDown className="h-3 w-3" />
-              </Button>
-            </DropdownTrigger>
-            <DropdownMenu align="end">
-              <DropdownItem onSelect={() => useApp.getState().openSettings("repositories", project.id)}>
-                <Settings className="h-4 w-4" />
-                <span>Configure</span>
-              </DropdownItem>
-            </DropdownMenu>
-          </DropdownRoot>
-        )}
-      </div>
       {url && tipWrap(`Open ${url}`,
         <Button
           size="sm" variant="secondary"
@@ -1251,121 +950,6 @@ function RTab({ label, active, badge, repoBadge, onClick }: { label: string; act
         </span>
       )}
     </button>
-  );
-}
-
-// TargetSelector was the previous pill-style chooser; replaced by
-// per-target FTabs in the footer top row for multi-repo workspaces.
-
-/** Stack-level toolbar for multi-repo workspaces: fires Run, Stop,
- *  and Open across every member at once. Lives next to the per-
- *  member tab strip so the relationship is visible ("these buttons
- *  control all of those tabs"). Per-member RunToolbar (Row 2) stays
- *  for individual control. */
-function AllMembersToolbar({ ws, project, yamlPreviewUrls, onExpand }: {
-  ws: Workspace;
-  project: Project | null;
-  yamlPreviewUrls: Record<string, string>;
-  onExpand: () => void;
-}) {
-  // Live run state across all members so the toolbar can decide
-  // whether to show Run-all vs Stop-all when some/all are running.
-  // For simplicity always show all three buttons; status badge on
-  // each member tab (future) handles "which is running".
-  const members = ws.composition ?? [];
-  if (members.length === 0) return null;
-
-  const fireOne = (kind: "setup" | "run", dir: string) => {
-    useScriptRuns.getState().start(ws.id, kind, dir);
-    workspaceRunScriptStream(ws.id, kind, dir).catch(err =>
-      console.error("workspace_run_script_stream failed:", err));
-  };
-  const stopOne = (kind: "setup" | "run", dir: string) => {
-    useScriptRuns.getState().finish(ws.id, kind, null, false, dir);
-    workspaceStopScript(ws.id, kind, dir).catch(err =>
-      console.error("workspace_stop_script failed:", err));
-  };
-
-  const runAll = () => {
-    onExpand();
-    for (const m of members) {
-      if (m.run_script && m.run_script.trim()) fireOne("run", m.dir_name);
-    }
-  };
-  const stopAll = () => {
-    for (const m of members) {
-      stopOne("run", m.dir_name);
-      // Also try the setup lane in case a long-running setup is
-      // still going (rare but cheap to be safe).
-      stopOne("setup", m.dir_name);
-    }
-  };
-  const openAll = () => {
-    // Each member's preview URL uses its own project's preview_url
-    // template, expanded with the member's per-member port (so two
-    // members on PORT=$TERMIC_PORT npm run dev open the right URLs).
-    for (let i = 0; i < members.length; i++) {
-      const m = members[i];
-      const port = m.port && m.port > 0 ? m.port : ws.port + i + 1;
-      // Synthesize a Workspace-shaped object so expandPreviewUrl
-      // can swap $TERMIC_PORT for the member's port instead of the
-      // workspace's. Cheap; the function only reads .port + .name.
-      // Inline members have no project record — the preview URL comes
-      // from the member repo's .termic.yaml (keyed by memberKey).
-      const synthetic: Workspace = { ...ws, port };
-      const url = expandPreviewUrl(null, synthetic, yamlPreviewUrls[memberKey(m)]);
-      if (url) openPath(url).catch(err => console.error("openPath failed:", err));
-    }
-  };
-  // Skip the OPEN button on workspaces where no member has a
-  // preview_url (yaml) — avoids opening a wave of
-  // `http://localhost:<port>` defaults at the user.
-  void project;
-  const anyPreview = members.some(m => !!yamlPreviewUrls[memberKey(m)]);
-
-  // Toggle Run all ↔ Stop all based on whether any member is
-  // currently running. Showing both at once doubles the toolbar
-  // width and lets the user click Stop with nothing running.
-  const runsMap = useScriptRuns(s => s.runs);
-  const anyRunning = members.some(m =>
-    ["run", "setup"].some(kind => runsMap[`${ws.id}:${m.dir_name}:${kind}`]?.status === "running"),
-  );
-  return (
-    <div className="ml-auto flex shrink-0 items-center gap-0.5 border-l border-[var(--color-border-soft)] pl-1.5">
-      {!anyRunning && (
-      <Tip content="Run all members' run scripts in parallel" side="top">
-        <button
-          type="button"
-          onClick={runAll}
-          className="flex h-6 items-center gap-1 rounded px-1.5 text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-        >
-          <Play className="h-3 w-3" /> Run all
-        </button>
-      </Tip>
-      )}
-      {anyRunning && (
-      <Tip content="SIGTERM every member's running script (setup + run)" side="top">
-        <button
-          type="button"
-          onClick={stopAll}
-          className="flex h-6 items-center gap-1 rounded px-1.5 text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-err)]"
-        >
-          <Square className="h-3 w-3 fill-current" /> Stop all
-        </button>
-      </Tip>
-      )}
-      {anyPreview && (
-        <Tip content="Open every member's preview URL in the browser" side="top">
-          <button
-            type="button"
-            onClick={openAll}
-            className="flex h-6 items-center gap-1 rounded px-1.5 text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-          >
-            <Globe className="h-3 w-3" /> Open all
-          </button>
-        </Tip>
-      )}
-    </div>
   );
 }
 

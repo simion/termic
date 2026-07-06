@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { attachCmdClickLinkOpener } from "@/lib/termLinkOpener";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Osc52Base64 } from "@/lib/osc52";
@@ -395,30 +396,29 @@ const captureArmedRef = useRef(false);
     // loaded the whole time, so URLs are detected up front and underline
     // on hover. Opening is gated on Cmd/Ctrl inside the handler, so a
     // plain click still selects/positions normally and only a deliberate
-    // Cmd+click navigates. Open routes through `open_path` so the system
-    // browser opens, not the WKWebView (window.open would silently no-op).
+    // Cmd+click navigates. Open routes through the opener plugin so the
+    // system browser opens, not the WKWebView (window.open silently no-ops).
     //
     // The previous design loaded the addon ONLY while Cmd was held, but
     // loading it mid-hold didn't re-linkify the already-visible buffer, so
     // Cmd+clicking a URL that was already on screen did nothing (#14).
+    const openLink = (via: string) => (uri: string) => {
+      ipc.logLine(`[link] agent activate via=${via} uri=${uri}`).catch(() => {});
+      openUrl(uri)
+        .then(() => ipc.logLine("[link] agent open ok").catch(() => {}))
+        .catch((e) => ipc.logLine(`[link] agent open FAILED: ${e}`).catch(() => {}));
+    };
     term.loadAddon(new WebLinksAddon((event, uri) => {
-      if (event.metaKey || event.ctrlKey) {
-        // #14 diagnostics: the agent TUI may enable xterm mouse reporting,
-        // which can swallow the modified click before this handler runs (so
-        // hover-underline works but nothing opens). Log that we DID fire +
-        // the open result — if a link won't open and this line is ABSENT
-        // from termic-debug.log, the click was consumed upstream.
-        ipc.logLine(`[link] agent activate meta=${event.metaKey} ctrl=${event.ctrlKey} uri=${uri}`).catch(() => {});
-        // Use the official opener plugin (OS-native) rather than termic's
-        // `open_path` shell-out to `/usr/bin/open`, which can silently no-op
-        // from a packaged / hardened-runtime .app. This is how terax-ai opens
-        // terminal links, and the plugin is already wired in termic (#14).
-        openUrl(uri)
-          .then(() => ipc.logLine("[link] agent open ok").catch(() => {}))
-          .catch((e) => ipc.logLine(`[link] agent open FAILED: ${e}`).catch(() => {}));
-      }
+      if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
     }));
     term.open(host);
+    // GH #58: when the agent TUI enables xterm mouse reporting, the modified
+    // click is consumed by the mouse pipeline before the addon's activation
+    // runs — links "randomly" die inside agents. The capture-phase opener
+    // sees the gesture first, resolves the URL from the buffer itself, and
+    // swallows the click so nothing double-fires. Must attach AFTER
+    // term.open (it reads .xterm-screen geometry).
+    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, openLink("capture"));
     termRef.current = term;
     fitRef.current = fit;
 
@@ -631,13 +631,16 @@ const captureArmedRef = useRef(false);
     const ptyDebugOn = (() => { try { return localStorage.getItem("ptyDebug") === "1"; } catch { return false; } })();
     const dbg = (tag: string, content: string) => debugLogRef.current?.(tag, content);
 
+    const isRunTab = !!(tab as TerminalTab).runTab;
+
     // Work-done detection: respect per-agent opt-out. When disabled, skip
     // the entire state machine — no OSC handlers, no submit-window
     // promotion, no badge, no bell. Shell tabs and registry terminal
     // entries (kind: "terminal") always skip — a raw shell never emits
-    // the OSC signals, so detection would only produce noise. ONE rule,
-    // shared with the queue/right-split UIs via workDoneCapable.
-    const workDoneEnabled = workDoneCapable(tab.cli);
+    // the OSC signals, so detection would only produce noise. Managed
+    // Run/Setup tabs also skip: a stopped dev server is not an agent event.
+    // ONE rule, shared with the queue/right-split UIs via workDoneCapable.
+    const workDoneEnabled = !isRunTab && workDoneCapable(tab.cli);
 
     // ── State machine ──
     //
@@ -774,6 +777,7 @@ const captureArmedRef = useRef(false);
     //   Title: "Session ⁂ <workspace> (<cli>)"
     //   Body:  <agent's verbatim message>
     const forwardNotification = (msg: string) => {
+      if (isRunTab) return;
       const trimmed = msg.trim();
       if (!trimmed) return;
       try {
@@ -1121,11 +1125,28 @@ const captureArmedRef = useRef(false);
         // skips. loginShellArgs handles the cross-shell argv
         // (zsh/bash/fish/sh). Shell: plain login shell. Agent:
         // registry-resolved argv.
-        const launchCmd = isCustom && tab.command ? tab.command
+        let launchCmd = isCustom && tab.command ? tab.command
           : isRegistryTerminal ? terminalLaunchCommand(tab.cli, ws)
           : undefined;
+        // Spotlight: the host Run tab executes at the REPO ROOT while this
+        // workspace is spotlighted (the root serves the synced changes).
+        // Decided at spawn time, not tab-creation time, so restarting after
+        // a spotlight start/stop picks up the right cwd automatically.
+        {
+          const rt = (tab as TerminalTab).runTab;
+          if (launchCmd && rt && (rt.kind ?? "run") === "run" && rt.member === "" && !ws.is_repo_root) {
+            const st = useApp.getState();
+            const project = st.projects.find(p => p.id === ws.project_id);
+            if (project?.spotlight_enabled && st.spotlightWsId[ws.project_id] === ws.id) {
+              launchCmd = `cd "${project.root_path.replace(/"/g, '\\"')}"\n${launchCmd}`;
+            }
+          }
+        }
         const spawnArgs = !isAgent
-          ? loginShellArgs(userShell, launchCmd)
+          // Run/Setup pop-out tabs: PTY lifetime = script lifetime (no
+          // exec-back-into-shell tail), so "PTY alive" ≈ "script running"
+          // for the pill / top-bar controls.
+          ? loginShellArgs(userShell, launchCmd, !!(tab as TerminalTab).runTab)
           : spawnArgsForCli(tab.cli, {
           // YOLO auto-on whenever the workspace is sandboxed: the seatbelt
           // cage is the real security boundary, so the agent's own
@@ -1342,12 +1363,15 @@ const captureArmedRef = useRef(false);
             setGen(g => g + 1);
             return;
           }
+          // Run pop-out tabs stay alive on exit — Stop / a crashed dev server
+          // shows the "exited / Restart" overlay in place, keeping the tab's
+          // spot in the layout. Only an explicit ✕ closes it (GH #54).
           // Plain shell tabs AND registry terminal entries close on exit
           // (Ctrl+D / `exit`) — a shell that's done is done. The "exited /
           // Restart" overlay and the unread "exit" badge are for agents
           // (and custom-command workspaces), where an unexpected death is
           // worth surfacing.
-          if (tab.cli === "shell" || isRegistryTerminal) {
+          if ((tab.cli === "shell" || isRegistryTerminal) && !isRunTab) {
             if (tab.paneId) {
               useApp.getState().closePane(ws.id, tab.paneId);
             } else {
@@ -1357,11 +1381,12 @@ const captureArmedRef = useRef(false);
           }
           // Non-main split panes (agents): close the pane on exit rather than
           // showing the "exited / Restart" banner — the pane's job is done.
-          if (tab.paneId) {
+          if (tab.paneId && !isRunTab) {
             useApp.getState().closePane(ws.id, tab.paneId);
             return;
           }
-          markAttention(ws.id, tab.id, "exit");
+          if (isRunTab) useApp.getState().clearAttention(ws.id, tab.id);
+          else markAttention(ws.id, tab.id, "exit");
           // Capture-based session resume (opencode): on the first normal exit
           // when no session ID is stored, run the capture command so the next
           // spawn can use --session <id> instead of starting fresh.
@@ -1478,6 +1503,7 @@ const captureArmedRef = useRef(false);
       cancelled = true;
       ro.disconnect();
       disposeCopyOnSelect();
+      disposeLinkOpener();
       unregisterDrop();
       disposeImeBridge();
       unlistenDataRef.current?.();
@@ -1764,6 +1790,9 @@ const captureArmedRef = useRef(false);
     return () => window.clearInterval(id);
   }, [ws.id, tab.id, fireDone]);
 
+  const exitedRunTab = !!tab.runTab;
+  const exitedRunKind = tab.runTab?.kind ?? "run";
+
   return (
     <div
       className="relative flex h-full w-full flex-col"
@@ -1782,8 +1811,13 @@ const captureArmedRef = useRef(false);
         // spawn effect and re-runs it with a fresh PTY; the pane's
         // ResizeObserver refits the terminal when this strip appears/clears.
         <TerminalExitedBanner
-          label={`${agentDisplayName(tab.cli)} exited.`}
-          actionLabel={`Restart ${agentDisplayName(tab.cli)}`}
+          label={exitedRunTab
+            ? (exitedRunKind === "setup" ? "Setup finished." : "Run stopped.")
+            : `${agentDisplayName(tab.cli)} exited.`}
+          actionLabel={exitedRunTab
+            ? (exitedRunKind === "setup" ? "Run setup again" : "Run again")
+            : `Restart ${agentDisplayName(tab.cli)}`}
+          tone={exitedRunTab ? "muted" : "warning"}
           onAction={() => { setExited(false); setGen(g => g + 1); }}
         />
       )}

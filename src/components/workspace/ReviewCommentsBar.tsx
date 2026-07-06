@@ -136,9 +136,7 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
               )}
             >
               <MessagesSquare className="h-3.5 w-3.5 shrink-0" />
-              <span className="tabular-nums">{count} comment{count === 1 ? "" : "s"}</span>
-              <span className="opacity-60">·</span>
-              <span className="inline-flex items-center gap-1">Send <Send className="h-3 w-3 shrink-0" /></span>
+              <span className="tabular-nums">{count} pending comment{count === 1 ? "" : "s"}</span>
             </button>
           </PopoverTrigger>
         </span>

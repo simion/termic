@@ -3,13 +3,13 @@
 
 import { create } from "zustand";
 import type { Project, Workspace, Tab, TerminalTab, PersistedTab, SplitTree, PaneLeaf, SplitDir } from "@/lib/types";
-import type { SplitNode as _SplitNode } from "@/lib/splitTree";
 import {
   findLeaf, getAllLeaves, countLeaves, replaceNode, removeLeaf,
-  updateLeafTabId, updateSplitRatio, findAdjacentPane, equalizeSplitsOnAxis,
+  addLeafTab, removeLeafTab, setLeafActiveTabId, pruneLeafTabs,
+  updateSplitRatio, findAdjacentPane, equalizeSplitsOnAxis,
 } from "@/lib/splitTree";
 import * as ipc from "@/lib/ipc";
-import { focusTerminalTab, focusMainTab } from "@/lib/tabFocus";
+import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
 
 interface View {
@@ -154,11 +154,23 @@ interface AppState {
   setActivePaneId: (wsId: string, paneId: string) => void;
   /** Adjust the ratio of a SplitNode (called from the resize handle). */
   setSplitRatio: (wsId: string, splitId: string, ratio: number) => void;
-  /** Drag-to-rearrange: move source leaf to a drop zone adjacent to target. */
-  movePaneTo: (wsId: string, sourcePaneId: string, targetPaneId: string, zone: 'left' | 'right' | 'top' | 'bottom') => void;
   /** Once the SplitLauncher in an empty leaf has chosen a cli, create the tab
    *  and wire it into the leaf. Returns the new tab id. */
   addPaneTab: (wsId: string, paneId: string, cli: string) => string;
+  /** Switch which tab is visible in a split pane's mini tab strip. */
+  setPaneActiveTab: (wsId: string, paneId: string, tabId: string) => void;
+  /** Close a specific tab within a split pane (kills PTY if terminal). */
+  closePaneTab: (wsId: string, paneId: string, tabId: string) => void;
+  /** Move an existing tab (from main pool or another pane) into a split pane.
+   *  Updates paneId on the tab, rewires the split tree, and focuses the target pane. */
+  moveTabToPane: (wsId: string, tabId: string, toPaneId: string) => void;
+  /** Move a tab out of its split pane back into the main pane (drag onto the
+   *  main tab strip). Clears paneId, activates it in main, focuses it. */
+  moveTabToMain: (wsId: string, tabId: string) => void;
+  /** Drop-to-split (edge drop): split the target pane in half along `zone`
+   *  and put the dragged tab in the new half. `targetPaneId` null = the main
+   *  pane. Creates the first split tree when none exists yet. */
+  moveTabToSplit: (wsId: string, tabId: string, targetPaneId: string | null, zone: 'left' | 'right' | 'top' | 'bottom') => void;
 
   /** Restore the workspace's durable agent tabs from `persisted_tabs` if
    *  any (quit → reopen → everything back, each id-capable tab resuming its
@@ -196,6 +208,10 @@ interface AppState {
    *  persists via ipc.workspaceSetYolo. */
   setWorkspaceYolo: (wsId: string, yolo: boolean) => void;
   addTab: (wsId: string, tab: Tab) => void;
+  /** Add a terminal tab to whichever pane is active: the focused split pane
+   *  (wired into its tab strip) or the main pane. Used by the Run pop-out
+   *  (GH #54) so the run terminal lands where the user is looking. */
+  addTabToActivePane: (wsId: string, tab: TerminalTab) => void;
   /** Move `tabId` to `toIndex` — its final position in the list AFTER the
    *  tab is pulled out (i.e. an index into the other tabs, 0..length-1).
    *  No-op if the order is unchanged. */
@@ -270,6 +286,20 @@ const initialSBW = numOrDefault(LS_SBW, 280);
 const initialRPW = numOrDefault(LS_RPW, 280);
 const initialRFH = numOrDefault(LS_RFH, 260);
 
+/** Migrate old split tree JSON (pre-multi-tab era: `tabId: string | null`)
+ *  to the new shape (`tabIds: string[], activeTabId: string | null`). */
+function migrateSplitTree(tree: any): any {
+  if (!tree) return tree;
+  if (tree.type === 'pane') {
+    if ('tabId' in tree && !('tabIds' in tree)) {
+      const tabId = tree.tabId as string | null;
+      return { ...tree, tabIds: tabId ? [tabId] : [], activeTabId: tabId };
+    }
+    return tree;
+  }
+  return { ...tree, a: migrateSplitTree(tree.a), b: migrateSplitTree(tree.b) };
+}
+
 /** The durable subset of a workspace's tabs:
  *  - Main panel: agent and custom-command tabs only (no shell — no session to resume).
  *  - Split-pane tabs: all of them including shells (they re-spawn fresh on restore).
@@ -277,7 +307,11 @@ const initialRFH = numOrDefault(LS_RFH, 260);
 function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
   return (tabs ?? [])
     .filter((t): t is TerminalTab =>
-      t.type === "terminal" && (
+      t.type === "terminal"
+      // One-shot setup tabs are session-only — restoring one would re-run
+      // the setup script on every workspace wake.
+      && (t as TerminalTab).runTab?.kind !== "setup"
+      && (
         // Main panel: skip shell/scratch (no session to restore)
         (!(t as TerminalTab).paneId && (t as TerminalTab).cli !== "shell") ||
         // Split-pane tabs: all persist (shells re-spawn, agents resume)
@@ -293,6 +327,9 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       command: t.command ?? null,
       session_id: t.sessionId ?? null,
       pane_leaf_id: t.paneId ?? null,
+      // Run pop-out tabs persist WITH their marker so the RunPane comes back
+      // in its pane on relaunch (the run script re-fires, like custom tabs).
+      run_member: t.runTab ? t.runTab.member : null,
     }));
 }
 
@@ -531,11 +568,10 @@ export const useApp = create<AppState>((set, get) => ({
       }
       get().toggleTerminalSplitCollapsed(wsId);
       // Return focus to the active split pane or main pane.
-      const tabKey = s.activeTab[wsId];
-      const tree = tabKey ? s.splitTree[tabKey] : undefined;
-      const activePaneId = tree ? s.activePaneId[tabKey!] : null;
+      const tree = s.splitTree[wsId];
+      const activePaneId = tree ? s.activePaneId[wsId] : null;
       const activePaneLeaf = (activePaneId && tree) ? findLeaf(tree, activePaneId) : null;
-      if (activePaneLeaf?.tabId) focusTerminalTab(activePaneLeaf.tabId);
+      if (activePaneLeaf?.activeTabId) focusPaneTab(activePaneLeaf.activeTabId);
       else focusMainTab(s.activeTab[wsId]);
       return;
     }
@@ -657,8 +693,6 @@ export const useApp = create<AppState>((set, get) => ({
 
   splitPane: (wsId, dir, paneIdArg) => {
     const s = get();
-    const tabKey = s.activeTab[wsId];
-    if (!tabKey) return "";
     // Determine target pane via DOM focus rather than the store's activePaneId,
     // which can be stale when the user clicked back to main without moving the
     // tracked active-pane pointer. If DOM focus is inside an extra split leaf,
@@ -672,56 +706,39 @@ export const useApp = create<AppState>((set, get) => ({
       }
     }
     const newLeafId = crypto.randomUUID();
-    const newLeaf: PaneLeaf = { type: 'pane', id: newLeafId, tabId: null };
+    const newLeaf: PaneLeaf = { type: 'pane', id: newLeafId, tabIds: [], activeTabId: null };
 
     let newTree: SplitTree;
-    const currentTree = s.splitTree[tabKey];
+    const currentTree = s.splitTree[wsId];
 
     if (!currentTree) {
       // First split: main leaf is always root.a; new pane is root.b.
       const mainLeafId = crypto.randomUUID();
-      const mainLeaf: PaneLeaf = { type: 'pane', id: mainLeafId, isMain: true, tabId: null };
+      const mainLeaf: PaneLeaf = { type: 'pane', id: mainLeafId, isMain: true, tabIds: [], activeTabId: null };
       newTree = { type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5, a: mainLeaf, b: newLeaf };
     } else {
-      const targetLeaf = findLeaf(currentTree, activePaneId!);
-      const rootSplit = currentTree as _SplitNode;
-
-      if (!targetLeaf || targetLeaf.isMain) {
-        // Focused on main: new pane goes in the requested direction relative to main.
-        // Set root.dir = dir so "split right" (v) puts pane right of main, "split
-        // below" (h) puts it below. Existing extras are folded into root.b using the
-        // old direction so their internal layout is preserved.
-        // New pane always goes at position `a` (directly adjacent to main) so it
-        // lands next to main regardless of how many existing panes are in root.b.
-        const innerDir = rootSplit.dir;
-        newTree = {
-          ...rootSplit,
-          dir,
-          b: rootSplit.b
-            ? { type: 'split', id: crypto.randomUUID(), dir: innerDir, ratio: 0.5,
-                a: newLeaf, b: rootSplit.b,
-              }
-            : newLeaf,
-        };
-      } else {
-        // Focused on an extra pane: split that pane's space.
-        newTree = replaceNode(currentTree, targetLeaf.id, {
-          type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5, a: targetLeaf, b: newLeaf,
-        });
-      }
+      // Split the focused pane's own cell — MAIN INCLUDED. Main is just a
+      // leaf in the tree (the renderer positions it by its tree rect), so
+      // "split main below" nests main in a quadrant instead of restructuring
+      // the root and shoving the new pane under every other column.
+      const targetLeaf = findLeaf(currentTree, activePaneId ?? "")
+        ?? getAllLeaves(currentTree).find(l => l.isMain)!;
+      newTree = replaceNode(currentTree, targetLeaf.id, {
+        type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5, a: targetLeaf, b: newLeaf,
+      });
       // Equalize all same-axis columns/rows so splits remain visually even.
       // Perpendicular subtrees count as 1 slot so mixed layouts aren't distorted.
       newTree = equalizeSplitsOnAxis(newTree, dir);
     }
 
     set(s2 => {
-      const cur = s2.activePaneId[tabKey];
-      const prevStack = s2.paneHistory[tabKey] ?? [];
+      const cur = s2.activePaneId[wsId];
+      const prevStack = s2.paneHistory[wsId] ?? [];
       return {
-        splitTree: { ...s2.splitTree, [tabKey]: newTree },
-        activePaneId: { ...s2.activePaneId, [tabKey]: newLeafId },
+        splitTree: { ...s2.splitTree, [wsId]: newTree },
+        activePaneId: { ...s2.activePaneId, [wsId]: newLeafId },
         paneHistory: cur
-          ? { ...s2.paneHistory, [tabKey]: [cur, ...prevStack.filter(id => id !== cur)].slice(0, 10) }
+          ? { ...s2.paneHistory, [wsId]: [cur, ...prevStack.filter(id => id !== cur)].slice(0, 10) }
           : s2.paneHistory,
       };
     });
@@ -739,16 +756,14 @@ export const useApp = create<AppState>((set, get) => ({
   closePane: (wsId, paneId) => {
     let focusOnMain = false;
     let focusTabId = "";
-    const tabKey = get().activeTab[wsId];
-    if (!tabKey) return;
     set(s => {
-      const tree = s.splitTree[tabKey];
+      const tree = s.splitTree[wsId];
       if (!tree) return s;
       const leaf = findLeaf(tree, paneId);
-      const tabId = leaf?.tabId ?? null;
+      const tabIds = leaf?.tabIds ?? [];
 
-      // Kill the tab's PTY if there is one.
-      if (tabId) {
+      // Kill all PTYs in the pane.
+      for (const tabId of tabIds) {
         const tab = (s.tabs[wsId] ?? []).find(t => t.id === tabId);
         if (tab?.type === 'terminal' && tab.ptyId) ipc.ptyKill(tab.ptyId).catch(() => {});
       }
@@ -761,18 +776,19 @@ export const useApp = create<AppState>((set, get) => ({
         ? equalizeSplitsOnAxis(equalizeSplitsOnAxis(removedTree, 'v'), 'h')
         : removedTree;
 
-      // Build a new tabs list without the closed pane's tab.
-      const nextTabs = tabId
-        ? (s.tabs[wsId] ?? []).filter(t => t.id !== tabId)
+      // Build a new tabs list without the closed pane's tabs.
+      const tabIdSet = new Set(tabIds);
+      const nextTabs = tabIdSet.size > 0
+        ? (s.tabs[wsId] ?? []).filter(t => !tabIdSet.has(t.id))
         : s.tabs[wsId] ?? [];
 
       const patch: Partial<AppState> = { tabs: { ...s.tabs, [wsId]: nextTabs } };
 
       if (!newTree || newTree.type === 'pane') {
         // Collapsed to 0 or 1 leaves → no more splits.
-        const { [tabKey]: _t, ...treeRest } = s.splitTree; void _t;
-        const { [tabKey]: _p, ...paneRest } = s.activePaneId; void _p;
-        const { [tabKey]: _ph2, ...histRest } = s.paneHistory; void _ph2;
+        const { [wsId]: _t, ...treeRest } = s.splitTree; void _t;
+        const { [wsId]: _p, ...paneRest } = s.activePaneId; void _p;
+        const { [wsId]: _ph2, ...histRest } = s.paneHistory; void _ph2;
         patch.splitTree = treeRest;
         patch.activePaneId = paneRest;
         patch.paneHistory = histRest;
@@ -781,121 +797,326 @@ export const useApp = create<AppState>((set, get) => ({
         const remaining = getAllLeaves(newTree);
         const remainingIds = new Set(remaining.map(l => l.id));
         // Walk history stack to find the most recently focused surviving pane.
-        const history = s.paneHistory[tabKey] ?? [];
+        const history = s.paneHistory[wsId] ?? [];
         const newActive =
           history.find(id => id !== paneId && remainingIds.has(id)) ||
           remaining.find(l => l.id !== paneId)?.id ||
           remaining[0].id;
         // Remove the closed pane from history; rest of the stack is preserved.
         const newHistory = history.filter(id => id !== paneId).slice(0, 10);
-        patch.splitTree = { ...s.splitTree, [tabKey]: newTree };
-        patch.activePaneId = { ...s.activePaneId, [tabKey]: newActive };
-        patch.paneHistory = { ...s.paneHistory, [tabKey]: newHistory };
+        patch.splitTree = { ...s.splitTree, [wsId]: newTree };
+        patch.activePaneId = { ...s.activePaneId, [wsId]: newActive };
+        patch.paneHistory = { ...s.paneHistory, [wsId]: newHistory };
         const newActiveLeaf = remaining.find(l => l.id === newActive);
-        if (newActiveLeaf?.tabId) focusTabId = newActiveLeaf.tabId;
+        if (newActiveLeaf?.activeTabId) focusTabId = newActiveLeaf.activeTabId;
         else focusOnMain = true;
       }
       return patch as any;
     });
 
-    if (focusTabId) focusTerminalTab(focusTabId);
+    // focusPaneTab: the surviving pane's visible tab may be an editor, which
+    // the terminal-only selector never matches.
+    if (focusTabId) focusPaneTab(focusTabId);
     else if (focusOnMain) focusMainTab(get().activeTab[wsId]);
     get().syncDurableTabs(wsId);
     get().saveSplitLayout(wsId);
   },
 
   setActivePaneId: (wsId, paneId) => set(s => {
-    const tabKey = s.activeTab[wsId];
-    if (!tabKey || s.activePaneId[tabKey] === paneId) return s;
-    const cur = s.activePaneId[tabKey];
-    if (!cur) return { activePaneId: { ...s.activePaneId, [tabKey]: paneId } };
-    const prevStack = s.paneHistory[tabKey] ?? [];
+    if (s.activePaneId[wsId] === paneId) return s;
+    const cur = s.activePaneId[wsId];
+    if (!cur) return { activePaneId: { ...s.activePaneId, [wsId]: paneId } };
+    const prevStack = s.paneHistory[wsId] ?? [];
     return {
-      activePaneId: { ...s.activePaneId, [tabKey]: paneId },
-      paneHistory: { ...s.paneHistory, [tabKey]: [cur, ...prevStack.filter(id => id !== cur)].slice(0, 10) },
+      activePaneId: { ...s.activePaneId, [wsId]: paneId },
+      paneHistory: { ...s.paneHistory, [wsId]: [cur, ...prevStack.filter(id => id !== cur)].slice(0, 10) },
     };
   }),
 
   setSplitRatio: (wsId, splitId, ratio) => set(s => {
-    const tabKey = s.activeTab[wsId];
-    const tree = tabKey ? s.splitTree[tabKey] : undefined;
-    if (!tree || !tabKey) return s;
-    return { splitTree: { ...s.splitTree, [tabKey]: updateSplitRatio(tree, splitId, ratio) } };
+    const tree = s.splitTree[wsId];
+    if (!tree) return s;
+    return { splitTree: { ...s.splitTree, [wsId]: updateSplitRatio(tree, splitId, ratio) } };
   }),
-
-  movePaneTo: (wsId, sourcePaneId, targetPaneId, zone) => {
-    set(s => {
-      const tabKey = s.activeTab[wsId];
-      const tree = tabKey ? s.splitTree[tabKey] : undefined;
-      if (!tree || !tabKey) return s;
-      const sourceLeaf = findLeaf(tree, sourcePaneId);
-      if (!sourceLeaf) return s;
-
-      // Remove source from tree.
-      const treeWithout = removeLeaf(tree, sourcePaneId);
-      if (!treeWithout) return s; // last pane — nothing to rearrange
-
-      const targetInNew = findLeaf(treeWithout, targetPaneId);
-      if (!targetInNew) return s;
-
-      const dir: SplitDir = zone === 'left' || zone === 'right' ? 'v' : 'h';
-      const aFirst = zone === 'left' || zone === 'top';
-
-      // Main pane must always remain at root.a — using replaceNode would corrupt
-      // the tree. Instead: change root.dir to match the drop zone (so "drop on
-      // main's right zone" reorients to a vertical root), and insert source
-      // adjacent to main within root.b.
-      if (targetInNew.isMain) {
-        if (treeWithout.type === 'pane') {
-          // Only main remains (source was the only extra). Rebuild as a fresh
-          // 2-pane split in the requested direction so the layout reorients.
-          return { splitTree: { ...s.splitTree, [tabKey]: {
-            type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5,
-            a: treeWithout, b: sourceLeaf,
-          }}};
-        }
-        const rootSplit = treeWithout as _SplitNode;
-        const newB: SplitTree = {
-          type: 'split', id: crypto.randomUUID(), dir: rootSplit.dir, ratio: 0.5,
-          a: sourceLeaf, b: rootSplit.b,
-        };
-        return { splitTree: { ...s.splitTree, [tabKey]: { ...rootSplit, dir, b: newB } } };
-      }
-
-      const newSplit: SplitTree = {
-        type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5,
-        a: aFirst ? sourceLeaf : targetInNew,
-        b: aFirst ? targetInNew : sourceLeaf,
-      };
-      const newTree = replaceNode(treeWithout, targetPaneId, newSplit);
-      return { splitTree: { ...s.splitTree, [tabKey]: newTree } };
-    });
-    get().saveSplitLayout(wsId);
-  },
 
   addPaneTab: (wsId, paneId, cli) => {
     const s = get();
     const tabId = crypto.randomUUID();
     const tab: TerminalTab = {
       id: tabId, type: 'terminal',
-      title: cli === 'shell' ? 'shell' : agentDisplayName(cli, s.agents),
+      title: cli === 'shell' ? 'Terminal' : agentDisplayName(cli, s.agents),
       cli,
       paneId,
     };
     set(s2 => {
-      const tabKey2 = s2.activeTab[wsId];
-      const tree = tabKey2 ? s2.splitTree[tabKey2] : undefined;
-      const newTree = tree ? updateLeafTabId(tree, paneId, tabId) : tree;
+      const tree = s2.splitTree[wsId];
+      const newTree = tree ? addLeafTab(tree, paneId, tabId) : tree;
       return {
         tabs: { ...s2.tabs, [wsId]: [...(s2.tabs[wsId] ?? []), tab] },
-        ...(newTree && tabKey2 ? { splitTree: { ...s2.splitTree, [tabKey2]: newTree } } : {}),
-        ...(tabKey2 ? { activePaneId: { ...s2.activePaneId, [tabKey2]: paneId } } : {}),
+        ...(newTree ? { splitTree: { ...s2.splitTree, [wsId]: newTree } } : {}),
+        activePaneId: { ...s2.activePaneId, [wsId]: paneId },
       };
     });
     focusTerminalTab(tabId);
     get().syncDurableTabs(wsId);
     get().saveSplitLayout(wsId);
     return tabId;
+  },
+
+  setPaneActiveTab: (wsId, paneId, tabId) => {
+    set(s => {
+      const tree = s.splitTree[wsId];
+      if (!tree) return s;
+      return { splitTree: { ...s.splitTree, [wsId]: setLeafActiveTabId(tree, paneId, tabId) } };
+    });
+  },
+
+  closePaneTab: (wsId, paneId, tabId) => {
+    let focusId = "";
+    set(s => {
+      const tree = s.splitTree[wsId];
+      if (!tree) return s;
+      const leaf = findLeaf(tree, paneId);
+      if (!leaf || leaf.isMain) return s;
+
+      // Kill PTY if terminal.
+      const tab = (s.tabs[wsId] ?? []).find(t => t.id === tabId);
+      if (tab?.type === 'terminal' && (tab as TerminalTab).ptyId) {
+        ipc.ptyKill((tab as TerminalTab).ptyId!).catch(() => {});
+      }
+
+      // Update the leaf.
+      const wasActive = (leaf.activeTabId ?? (leaf as any).tabId) === tabId;
+      const newTree = removeLeafTab(tree, paneId, tabId);
+      const updatedLeaf = findLeaf(newTree, paneId);
+      // Focus follows the close ONLY when the pane's visible tab was closed —
+      // X-ing a background pill must not yank keyboard focus across panes.
+      if (wasActive && updatedLeaf?.activeTabId) focusId = updatedLeaf.activeTabId;
+
+      return {
+        tabs: { ...s.tabs, [wsId]: (s.tabs[wsId] ?? []).filter(t => t.id !== tabId) },
+        splitTree: { ...s.splitTree, [wsId]: newTree },
+        // Keep the store's active-pane pointer on the pane the user is acting
+        // in, so pane-focused rendering (accent underline) and ⌘W agree with
+        // where focus actually lands.
+        ...(wasActive ? { activePaneId: { ...s.activePaneId, [wsId]: paneId } } : {}),
+      };
+    });
+    // focusPaneTab, not focusTerminalTab: the surviving tab can be an editor
+    // (CodeMirror .cm-content), which the terminal-only selector never matches —
+    // focus would fall to <body> and the next ⌘W would be a no-op.
+    if (focusId) focusPaneTab(focusId);
+    get().syncDurableTabs(wsId);
+    get().saveSplitLayout(wsId);
+  },
+
+  moveTabToPane: (wsId, tabId, toPaneId) => {
+    set(s => {
+      const tree = s.splitTree[wsId];
+      if (!tree) return s;
+      const toLeaf = findLeaf(tree, toPaneId);
+      if (!toLeaf || toLeaf.isMain) return s;
+
+      // Find source pane (if tab is already in a split pane).
+      const fromLeaf = getAllLeaves(tree).find(l => !l.isMain && l.tabIds.includes(tabId));
+      if (fromLeaf?.id === toPaneId) return s;
+
+      const tab = (s.tabs[wsId] ?? []).find(t => t.id === tabId);
+      if (!tab) return s;
+
+      let newTree = tree;
+      if (fromLeaf) newTree = removeLeafTab(newTree, fromLeaf.id, tabId);
+      newTree = addLeafTab(newTree, toPaneId, tabId);
+
+      // Moving the LAST tab out leaves the source pane empty (launcher) —
+      // the user was moving, not asking for a new pane. Collapse it. The
+      // target pane still exists, so the tree stays a split.
+      let removedPaneId: string | null = null;
+      if (fromLeaf) {
+        const emptied = findLeaf(newTree, fromLeaf.id);
+        if (emptied && !emptied.isMain && (emptied.tabIds?.length ?? 0) === 0) {
+          const pruned = removeLeaf(newTree, fromLeaf.id);
+          if (pruned && pruned.type === 'split') {
+            newTree = equalizeSplitsOnAxis(equalizeSplitsOnAxis(pruned, 'v'), 'h');
+            removedPaneId = fromLeaf.id;
+          }
+        }
+      }
+
+      const updatedTabs = (s.tabs[wsId] ?? []).map(t =>
+        t.id !== tabId ? t : { ...t, paneId: toPaneId },
+      );
+
+      // Moving the ACTIVE main tab out: hand the main pane to its neighbor
+      // (same previous-tab rule as closeTab) — otherwise activeTab points at
+      // a tab no longer in the main pool and the main pane renders blank.
+      let nextActive = s.activeTab[wsId];
+      if (!fromLeaf && nextActive === tabId) {
+        const mainList = (s.tabs[wsId] ?? []).filter(t => !(t as TerminalTab).paneId);
+        const idx = mainList.findIndex(t => t.id === tabId);
+        const mainNext = mainList.filter(t => t.id !== tabId);
+        nextActive = mainNext[Math.max(0, idx - 1)]?.id || mainNext[0]?.id || "";
+      }
+
+      return {
+        tabs: { ...s.tabs, [wsId]: updatedTabs },
+        splitTree: { ...s.splitTree, [wsId]: newTree },
+        activeTab: { ...s.activeTab, [wsId]: nextActive },
+        activePaneId: { ...s.activePaneId, [wsId]: toPaneId },
+        ...(removedPaneId ? {
+          paneHistory: { ...s.paneHistory, [wsId]: (s.paneHistory[wsId] ?? []).filter(id => id !== removedPaneId) },
+        } : {}),
+      };
+    });
+    // The moved tab becomes the target pane's visible tab — focus follows the
+    // drop so the user can type immediately (terminal or editor).
+    focusPaneTab(tabId);
+    // The durable set changes shape on a move (pane tabs persist with their
+    // pane_leaf_id) — without a sync, quit-right-after-drag restores the tab
+    // in its old home while the saved split layout references the new one.
+    get().syncDurableTabs(wsId);
+    get().saveSplitLayout(wsId);
+  },
+
+  moveTabToMain: (wsId, tabId) => {
+    let moved = false;
+    set(s => {
+      const tree = s.splitTree[wsId];
+      if (!tree) return s;
+      const fromLeaf = getAllLeaves(tree).find(l => !l.isMain && (l.tabIds ?? []).includes(tabId));
+      if (!fromLeaf) return s;
+      const tab = (s.tabs[wsId] ?? []).find(t => t.id === tabId);
+      if (!tab) return s;
+      moved = true;
+
+      let newTree: SplitTree | null = removeLeafTab(tree, fromLeaf.id, tabId);
+      // Collapse the source pane if this was its last tab — an empty
+      // launcher pane the user didn't ask for. Can dissolve the whole split
+      // (only main left) → drop the tree state entirely, like closePane.
+      const emptied = findLeaf(newTree, fromLeaf.id);
+      if (emptied && (emptied.tabIds?.length ?? 0) === 0) {
+        const pruned = removeLeaf(newTree, fromLeaf.id);
+        newTree = pruned && pruned.type === 'split'
+          ? equalizeSplitsOnAxis(equalizeSplitsOnAxis(pruned, 'v'), 'h')
+          : pruned;
+      }
+      const mainLeaf = newTree ? getAllLeaves(newTree).find(l => l.isMain) : null;
+      // Clearing paneId puts the tab back in the main strip's filter.
+      const updatedTabs = (s.tabs[wsId] ?? []).map(t =>
+        t.id !== tabId ? t : { ...t, paneId: undefined },
+      );
+
+      if (!newTree || newTree.type === 'pane') {
+        // Splits fully dissolved — clear all split state for the workspace.
+        const { [wsId]: _t, ...treeRest } = s.splitTree; void _t;
+        const { [wsId]: _p, ...paneRest } = s.activePaneId; void _p;
+        const { [wsId]: _h, ...histRest } = s.paneHistory; void _h;
+        return {
+          tabs: { ...s.tabs, [wsId]: updatedTabs },
+          splitTree: treeRest,
+          activePaneId: paneRest,
+          paneHistory: histRest,
+          activeTab: { ...s.activeTab, [wsId]: tabId },
+        };
+      }
+      return {
+        tabs: { ...s.tabs, [wsId]: updatedTabs },
+        splitTree: { ...s.splitTree, [wsId]: newTree },
+        activeTab: { ...s.activeTab, [wsId]: tabId },
+        paneHistory: { ...s.paneHistory, [wsId]: (s.paneHistory[wsId] ?? []).filter(id => id !== fromLeaf.id) },
+        ...(mainLeaf ? { activePaneId: { ...s.activePaneId, [wsId]: mainLeaf.id } } : {}),
+      };
+    });
+    if (moved) {
+      focusMainTab(tabId);
+      get().syncDurableTabs(wsId);
+      get().saveSplitLayout(wsId);
+    }
+  },
+
+  moveTabToSplit: (wsId, tabId, targetPaneId, zone) => {
+    const newLeafId = crypto.randomUUID();
+    let moved = false;
+    set(s => {
+      const tab = (s.tabs[wsId] ?? []).find(t => t.id === tabId);
+      if (!tab) return s;
+      // Main must keep at least one tab — splitting away its only tab would
+      // leave a blank main pane (no launcher renders there).
+      if (!(tab as TerminalTab).paneId) {
+        const mainCount = (s.tabs[wsId] ?? []).filter(t => !(t as TerminalTab).paneId).length;
+        if (mainCount <= 1) return s;
+      }
+      const dir: SplitDir = zone === 'left' || zone === 'right' ? 'v' : 'h';
+      const newFirst = zone === 'left' || zone === 'top';
+      const newLeaf: PaneLeaf = { type: 'pane', id: newLeafId, tabIds: [tabId], activeTabId: tabId };
+
+      let tree: SplitTree | null = s.splitTree[wsId] ?? null;
+      if (!tree) {
+        // First split ever (dragged from the main strip to a main-pane edge):
+        // build the root with a fresh main leaf, halved along the drop zone.
+        const mainLeaf: PaneLeaf = { type: 'pane', id: crypto.randomUUID(), isMain: true, tabIds: [], activeTabId: null };
+        tree = {
+          type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5,
+          a: newFirst ? newLeaf : mainLeaf,
+          b: newFirst ? mainLeaf : newLeaf,
+        };
+      } else {
+        const targetId = targetPaneId ?? getAllLeaves(tree).find(l => l.isMain)?.id;
+        if (!targetId) return s;
+        const fromLeaf = getAllLeaves(tree).find(l => !l.isMain && (l.tabIds ?? []).includes(tabId));
+        let targetLeaf: PaneLeaf | null = null;
+        if (fromLeaf?.id === targetId) {
+          // Same-pane edge split only makes sense when another tab remains
+          // behind. A single-tab pane would create an empty launcher half.
+          if ((fromLeaf.tabIds?.length ?? 0) <= 1) return s;
+          tree = removeLeafTab(tree, fromLeaf.id, tabId);
+          targetLeaf = findLeaf(tree, targetId);
+        } else {
+          if (fromLeaf) {
+            tree = removeLeafTab(tree, fromLeaf.id, tabId);
+            const emptied = findLeaf(tree, fromLeaf.id);
+            if (emptied && (emptied.tabIds?.length ?? 0) === 0) {
+              const pruned = removeLeaf(tree, fromLeaf.id);
+              if (pruned) tree = pruned;
+            }
+          }
+          targetLeaf = findLeaf(tree, targetId);
+        }
+        if (!targetLeaf) return s;
+        // ratio 0.5 on the target's own cell = "resize that pane at half";
+        // deliberately NOT equalized across the axis — only the target halves.
+        tree = replaceNode(tree, targetId, {
+          type: 'split', id: crypto.randomUUID(), dir, ratio: 0.5,
+          a: newFirst ? newLeaf : targetLeaf,
+          b: newFirst ? targetLeaf : newLeaf,
+        });
+      }
+      moved = true;
+
+      const updatedTabs = (s.tabs[wsId] ?? []).map(t =>
+        t.id !== tabId ? t : { ...t, paneId: newLeafId },
+      );
+      // Moving the ACTIVE main tab out: hand main to its neighbor (same rule
+      // as closeTab / moveTabToPane).
+      let nextActive = s.activeTab[wsId];
+      if (!(tab as TerminalTab).paneId && nextActive === tabId) {
+        const mainList = (s.tabs[wsId] ?? []).filter(t => !(t as TerminalTab).paneId);
+        const idx = mainList.findIndex(t => t.id === tabId);
+        const mainNext = mainList.filter(t => t.id !== tabId);
+        nextActive = mainNext[Math.max(0, idx - 1)]?.id || mainNext[0]?.id || "";
+      }
+      return {
+        tabs: { ...s.tabs, [wsId]: updatedTabs },
+        splitTree: { ...s.splitTree, [wsId]: tree },
+        activeTab: { ...s.activeTab, [wsId]: nextActive },
+        activePaneId: { ...s.activePaneId, [wsId]: newLeafId },
+      };
+    });
+    if (moved) {
+      focusPaneTab(tabId);
+      get().syncDurableTabs(wsId);
+      get().saveSplitLayout(wsId);
+    }
   },
 
   ensureDefaultTab: (wsId, cli) => {
@@ -941,12 +1162,19 @@ export const useApp = create<AppState>((set, get) => ({
         type: "terminal" as const,
         cli: pt.cli,
         // Honor a user rename; otherwise re-derive the display name (the
-        // agent's configured name may have changed since last launch).
-        title: pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli, s.agents),
+        // agent's configured name may have changed since last launch). Run
+        // tabs keep their "Run" title — the generic custom-tab fallback
+        // would label them "Command".
+        title: pt.custom_title && pt.title ? pt.title
+          : pt.run_member != null ? (pt.run_member ? `Run · ${pt.run_member}` : "Run")
+          : agentDisplayName(pt.cli, s.agents),
         customTitle: !!pt.custom_title,
         is_default: !!pt.is_default,
         ...(pt.command ? { command: pt.command } : {}),
         ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+        // idle: restored run tabs keep their spot but never auto-fire the
+        // script — the user presses play (RunPane placeholder / pill).
+        ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
       }));
       const active = restoredMain.find(t => t.is_default) ?? restoredMain[0];
 
@@ -956,19 +1184,28 @@ export const useApp = create<AppState>((set, get) => ({
       const restoredPaneTabs: TerminalTab[] = [];
       if (ws?.split_layout) {
         try {
-          restoredTree = JSON.parse(ws.split_layout) as SplitTree;
+          restoredTree = migrateSplitTree(JSON.parse(ws.split_layout)) as SplitTree;
           restoredMainLeafId = getAllLeaves(restoredTree).find(l => (l as PaneLeaf).isMain)?.id;
           for (const pt of persistedPane) {
             restoredPaneTabs.push({
               id: pt.id, type: "terminal" as const,
               cli: pt.cli,
-              title: pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli, s.agents),
+              // Same Run-title rule as the main restore above.
+              title: pt.custom_title && pt.title ? pt.title
+                : pt.run_member != null ? (pt.run_member ? `Run · ${pt.run_member}` : "Run")
+                : agentDisplayName(pt.cli, s.agents),
               customTitle: !!pt.custom_title,
               paneId: pt.pane_leaf_id!,
               ...(pt.command ? { command: pt.command } : {}),
               ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+              ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
             });
           }
+          // The saved tree can reference tabs that weren't restored (edit /
+          // diff tabs are session-only; only terminals persist). Prune ghost
+          // ids so a leaf's activeTabId always points at a real tab — a ghost
+          // would render the pane blank (all wrappers hidden, no launcher).
+          restoredTree = pruneLeafTabs(restoredTree, new Set(restoredPaneTabs.map(t => t.id)));
         } catch {
           restoredTree = undefined;
         }
@@ -982,11 +1219,11 @@ export const useApp = create<AppState>((set, get) => ({
       set(state => ({
         tabs: { ...state.tabs, [wsId]: allRestored },
         activeTab: { ...state.activeTab, [wsId]: active?.id ?? "" },
-        ...(restoredTree && active
-          ? { splitTree: { ...state.splitTree, [active.id]: restoredTree } }
+        ...(restoredTree
+          ? { splitTree: { ...state.splitTree, [wsId]: restoredTree } }
           : {}),
-        ...(restoredMainLeafId && active
-          ? { activePaneId: { ...state.activePaneId, [active.id]: restoredMainLeafId } }
+        ...(restoredMainLeafId
+          ? { activePaneId: { ...state.activePaneId, [wsId]: restoredMainLeafId } }
           : {}),
         ...(cleaned ? {
           workspaces: state.workspaces.map(w => w.id === wsId ? { ...w, persisted_tabs: cleaned } : w),
@@ -1045,8 +1282,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   saveSplitLayout: (wsId) => {
     const s = get();
-    const tabKey = s.activeTab[wsId];
-    const tree = tabKey ? s.splitTree[tabKey] : undefined;
+    const tree = s.splitTree[wsId];
     const ws = s.workspaces.find(w => w.id === wsId);
     if (!ws) return;
     const layout = tree ? JSON.stringify(tree) : null;
@@ -1136,6 +1372,29 @@ export const useApp = create<AppState>((set, get) => ({
     if (tab.type === "terminal") focusTerminalTab(tab.id);
   },
 
+  addTabToActivePane: (wsId, tab) => {
+    const s = get();
+    const tree = s.splitTree[wsId];
+    const paneId = s.activePaneId[wsId];
+    const leaf = tree && paneId ? findLeaf(tree, paneId) : null;
+    if (leaf && !leaf.isMain) {
+      const paneTab = { ...tab, paneId: leaf.id };
+      set(s2 => {
+        const tree2 = s2.splitTree[wsId];
+        if (!tree2) return s2;
+        return {
+          tabs: { ...s2.tabs, [wsId]: [...(s2.tabs[wsId] ?? []), paneTab] },
+          splitTree: { ...s2.splitTree, [wsId]: addLeafTab(tree2, leaf.id, paneTab.id) },
+        };
+      });
+      focusTerminalTab(tab.id);
+      get().syncDurableTabs(wsId);
+      get().saveSplitLayout(wsId);
+      return;
+    }
+    get().addTab(wsId, tab);
+  },
+
   reorderTab: (wsId, tabId, toIndex) => {
     let changed = false;
     set(s => {
@@ -1209,7 +1468,18 @@ export const useApp = create<AppState>((set, get) => ({
    // workspace wakes — see the merge rule in syncDurableTabs. No-op if
    // nothing changed.
    get().syncDurableTabs(wsId);
-   if (focusId) focusTerminalTab(focusId);
+   if (focusId) {
+     // Sync activePaneId to the main pane so the store agrees with where
+     // focus is going. Without this, activePaneId still points to the split
+     // pane (last mouse interaction), the split terminal stays isActive=true,
+     // its useEffect can re-focus it, and inMainPane() breaks for ⌘W.
+     const tree = get().splitTree[wsId];
+     if (tree) {
+       const mainLeaf = getAllLeaves(tree).find(l => l.isMain);
+       if (mainLeaf) get().setActivePaneId(wsId, mainLeaf.id);
+     }
+     focusMainTab(focusId);
+   }
   },
 
   setActiveTabId: (wsId, tabId) => set(s => {
@@ -1305,11 +1575,59 @@ export const useApp = create<AppState>((set, get) => ({
   }),
 
   openPreviewTab: (wsId, data) => set(s => {
-    // File/edit/diff tabs always open in the main pane.
     const list = s.tabs[wsId] || [];
+    const tree = s.splitTree[wsId];
+    const activePaneIdVal = s.activePaneId[wsId];
+    const activePaneLeaf = (activePaneIdVal && tree) ? findLeaf(tree, activePaneIdVal) : null;
+
+    // If a non-main split pane is focused, open the file there.
+    if (activePaneLeaf && !activePaneLeaf.isMain && tree) {
+      const paneTabIds = activePaneLeaf.tabIds;
+      const paneTabs = list.filter(t => paneTabIds.includes(t.id));
+      const setActiveInPane = (tid: string, updatedTree: SplitTree) => ({
+        tabs: { ...s.tabs, [wsId]: list.map(t => t) },
+        splitTree: { ...s.splitTree, [wsId]: updatedTree },
+      });
+
+      // Already open in this pane?
+      const existing = paneTabs.find(t => t.type === data.type && (t as any).path === data.path);
+      if (existing) {
+        const next = data.revealAt && existing.type === "edit"
+          ? list.map(t => t.id === existing.id ? { ...t, revealAt: data.revealAt } as Tab : t)
+          : list;
+        const newTree = setLeafActiveTabId(tree, activePaneLeaf.id, existing.id);
+        return { tabs: { ...s.tabs, [wsId]: next }, splitTree: { ...s.splitTree, [wsId]: newTree } };
+      }
+
+      // Replace existing preview tab in this pane?
+      const previewTab = paneTabs.find(t => t.preview);
+      if (previewTab) {
+        const next = list.map(t => t.id === previewTab.id ? {
+          ...t, type: data.type, path: data.path, title: data.title,
+          liveTitle: undefined, customTitle: false, dirty: false, preview: true,
+          ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
+        } as Tab : t);
+        const newTree = setLeafActiveTabId(tree, activePaneLeaf.id, previewTab.id);
+        return { tabs: { ...s.tabs, [wsId]: next }, splitTree: { ...s.splitTree, [wsId]: newTree } };
+      }
+
+      // Add new tab to split pane.
+      const newTab: Tab = {
+        id: crypto.randomUUID(), type: data.type, title: data.title,
+        path: data.path, preview: true, paneId: activePaneLeaf.id,
+        ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
+      } as any;
+      const newTree = replaceNode(tree, activePaneLeaf.id, {
+        ...activePaneLeaf,
+        tabIds: [...activePaneLeaf.tabIds, newTab.id],
+        activeTabId: newTab.id,
+      });
+      return { ...setActiveInPane(newTab.id, newTree), tabs: { ...s.tabs, [wsId]: [...list, newTab] } };
+    }
+
+    // Default: open in the main pane.
     const mainList = list.filter(t => !(t as TerminalTab).paneId);
     const previewTab = mainList.find(t => t.preview);
-
     const setActive = (id: string): Partial<AppState> =>
       ({ activeTab: { ...s.activeTab, [wsId]: id } });
 
@@ -1323,25 +1641,16 @@ export const useApp = create<AppState>((set, get) => ({
 
     if (previewTab) {
       const next = list.map(t => t.id === previewTab.id ? {
-        ...t,
-        type: data.type,
-        path: data.path,
-        title: data.title,
-        liveTitle: undefined,
-        customTitle: false,
-        dirty: false,
-        preview: true,
+        ...t, type: data.type, path: data.path, title: data.title,
+        liveTitle: undefined, customTitle: false, dirty: false, preview: true,
         ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
       } as Tab : t);
       return { tabs: { ...s.tabs, [wsId]: next }, ...setActive(previewTab.id) };
     }
 
     const newTab: Tab = {
-      id: crypto.randomUUID(),
-      type: data.type,
-      title: data.title,
-      path: data.path,
-      preview: true,
+      id: crypto.randomUUID(), type: data.type, title: data.title,
+      path: data.path, preview: true,
       ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
     } as any;
     return { tabs: { ...s.tabs, [wsId]: [...list, newTab] }, ...setActive(newTab.id) };
@@ -1438,11 +1747,10 @@ export const useApp = create<AppState>((set, get) => ({
     //     OUTSIDE the grace window, working applies normally — so the
     //     spinner + progress bar show right after a fresh submit.
     let effective = state;
-    const tKey = s.activeTab[wsId];
-    const tree = tKey ? s.splitTree[tKey] : undefined;
-    const activePaneLeaf = tree ? findLeaf(tree, s.activePaneId[tKey!]) : null;
+    const tree = s.splitTree[wsId];
+    const activePaneLeaf = tree ? findLeaf(tree, s.activePaneId[wsId]) : null;
     const isFocused = s.activeWorkspaceId === wsId &&
-      (s.activeTab[wsId] === tabId || activePaneLeaf?.tabId === tabId);
+      (s.activeTab[wsId] === tabId || activePaneLeaf?.activeTabId === tabId);
     if (isFocused) {
       if (effective === "done") {
         effective = "idle";

@@ -183,7 +183,16 @@ class ComposerWidget extends WidgetType {
       e.stopPropagation(); // keep keystrokes out of CodeMirror's keymap
     });
 
-    setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); autoGrow(); }, 0);
+    setTimeout(() => {
+      // The composer can mount outside the visible viewport — a file-level
+      // comment anchors at doc start (pos 0), which is scrolled away whenever
+      // the user is deep in the diff. Reveal it before focusing: focus() on
+      // an off-screen child of the CM scroller does not scroll it in.
+      wrap.scrollIntoView({ block: "nearest" });
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      autoGrow();
+    }, 0);
     return wrap;
   }
 
@@ -509,7 +518,16 @@ export function reviewCommentsExtension(wsId: string, file: string) {
 
 /** Open a whole-file comment composer programmatically (DiffPane header). */
 export function dispatchFileComment(view: EditorView) {
-  view.dispatch({ effects: openComposer.of({ mode: "new", startLine: null, endLine: null, quote: "", initialBody: "" }) });
+  view.dispatch({
+    effects: [
+      openComposer.of({ mode: "new", startLine: null, endLine: null, quote: "", initialBody: "" }),
+      // The composer anchors at doc start; when the user is scrolled down,
+      // pos 0 is outside CM's rendered viewport, so the widget's DOM never
+      // even mounts (no toDOM → no self-focus). Scroll there in the same
+      // transaction so the composer materializes and its focus can land.
+      EditorView.scrollIntoView(0),
+    ],
+  });
 }
 
 // ── Styling (self-contained; only CSS vars, no hard-coded hex) ───────────────

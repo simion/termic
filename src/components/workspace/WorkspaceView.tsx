@@ -5,20 +5,20 @@
 // Per-tab content stays mounted across tab switches (we toggle visibility
 // instead of unmount) — terminals MUST keep their xterm instances alive.
 
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Workspace, TerminalTab } from "@/lib/types";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { Workspace, Tab, TerminalTab } from "@/lib/types";
 import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs, currentTerminalTheme } from "@/store/prefs";
 import { TabBar, TabPill } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
-import { SplitNodeView, detectZone, zoneStyle } from "./SplitView";
-import type { DragState, DropZone } from "./SplitView";
-import { PaneHeader } from "./PaneHeader";
+import { RunPane } from "./RunPane";
+import { SplitNodeView } from "./SplitView";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getAllLeaves } from "@/lib/splitTree";
+import { getAllLeaves, computeLeafBounds } from "@/lib/splitTree";
+import type { PaneLeaf, Rect } from "@/lib/splitTree";
 import { openPath } from "@/lib/ipc";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
@@ -128,32 +128,20 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   usePrefs(s => s.themeMode);
   const xtermBg = currentTerminalTheme().background as string;
 
-  // Per-tab split tree: root is always split(main_leaf, extra_subtree).
-  // main_leaf stays at root.a; we render root.b's subtree alongside the tab stack.
+  // Workspace split tree: the main pane is an ordinary leaf (isMain flag) that
+  // can sit anywhere in the tree — splitting main nests it deeper, like any
+  // pane. All geometry comes from computeLeafBounds over the full tree.
   const splitPaneDim       = usePrefs(s => s.splitPaneDim);
   const splitPaneDimAmount = usePrefs(s => s.splitPaneDimAmount);
 
-  // Active tab's split tree (for layout of the main pane width and resize handle).
+  // Workspace-level split tree (for layout of the main pane width and resize handle).
   const splitRoot = useApp(s => {
-    const t = s.splitTree[s.activeTab[ws.id]];
+    const t = s.splitTree[ws.id];
     return (t && t.type === 'split') ? t : null;
   });
-  const splitActivePaneId = useApp(s => s.activePaneId[s.activeTab[ws.id]] ?? "");
+  const splitActivePaneId = useApp(s => s.activePaneId[ws.id] ?? "");
   const setActivePaneId = useApp(s => s.setActivePaneId);
   const setSplitRatio = useApp(s => s.setSplitRatio);
-  const movePaneTo = useApp(s => s.movePaneTo);
-  const [drag, setDrag] = useState<DragState | null>(null);
-  const dragRef = useRef<DragState | null>(null);
-  dragRef.current = drag;
-
-  // ALL split trees for this workspace's tabs — so we can keep extra-pane
-  // terminals mounted (visibility-toggled) even when the active tab has no splits.
-  const allSplitTrees = useApp(s => s.splitTree);
-  const tabsWithSplits = tabs
-    .map(t => ({ tabId: t.id, tree: allSplitTrees[t.id] }))
-    .filter((e): e is { tabId: string; tree: import("@/lib/splitTree").SplitNode } =>
-      !!e.tree && e.tree.type === 'split'
-    );
 
   useEffect(() => { ensureDefaultTab(ws.id, ws.cli); }, [ws.id, ws.cli, ensureDefaultTab]);
 
@@ -163,7 +151,6 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   }, [split, bottomTabs, ws.id, addBottomTab]);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const hRowRef      = useRef<HTMLDivElement>(null);
 
   // Mask the one-frame "stretched text" artifact that appears when the main
   // pane resizes between split and non-split tabs. A useLayoutEffect fires
@@ -184,192 +171,176 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, !!splitRoot]);
 
-  // Drag-to-rearrange. elementsFromPoint skips visibility:hidden panes so only
-  // the visible (active-tab) leaves can be targeted — no need to filter by tabId.
-  const updateDragTarget = useCallback((x: number, y: number) => {
-    const els = document.elementsFromPoint(x, y);
-    const leafEl = els.find(
-      (el): el is HTMLElement => el instanceof HTMLElement && el.hasAttribute('data-split-leaf') && el.hasAttribute('data-pane-id'),
-    );
-    let targetPaneId: string | null = null;
-    let zone: DropZone | null = null;
-    if (leafEl) {
-      const pid = leafEl.getAttribute('data-pane-id')!;
-      if (pid !== dragRef.current?.sourcePaneId) {
-        targetPaneId = pid;
-        zone = detectZone(leafEl.getBoundingClientRect(), x, y);
+  // ── Content-layer geometry ─────────────────────────────────────────────
+  // EVERY tab's content (main + split panes) renders in ONE flat layer over
+  // hRow, keyed by tab id (see the layer below). Moving a tab between panes
+  // (or main ↔ pane) is then just an inline-style change — React never
+  // reparents the subtree, so terminals keep their PTY/xterm instance and
+  // editors keep their (possibly dirty) buffer. The chrome (tab strips, pane
+  // headers, launchers, dim overlays, resize handles) stays where it was.
+  const mainLeaf = splitRoot ? getAllLeaves(splitRoot).find(l => l.isMain) : null;
+  const mainLeafId = mainLeaf?.id ?? "";
+  const isMainActive = !splitRoot || !splitActivePaneId || splitActivePaneId === mainLeafId;
+  const mainDimOpacity = (splitPaneDim && splitRoot && !isMainActive) ? splitPaneDimAmount / 100 : 0;
+  const mainTabs = tabs.filter(t => !(t as TerminalTab).paneId);
+
+  // Chrome heights the content must sit below. When there's no split, the
+  // TabBar + breadcrumb render ABOVE hRow, so main content fills hRow whole.
+  // With a split they render inside the main wrapper: TabBar h-9 (36px) plus
+  // the breadcrumb h-7 (28px) when it's visible — same condition as
+  // EditorBreadcrumb's own null-return. Pane headers are always h-9.
+  const activeMainTab = tabs.find(t => t.id === activeId);
+  const bcVisible = !!activeMainTab
+    && (activeMainTab.type === "edit" || activeMainTab.type === "diff")
+    && !!activeMainTab.path;
+  const mainTopPx = splitRoot ? 36 + (bcVisible ? 28 : 0) : 0;
+
+  // One computeLeafBounds over the FULL tree positions everything: the main
+  // pane is just another leaf, so it can live anywhere in the tree (e.g.
+  // "split main below" nests it in a quadrant) — no root-slice special case.
+  const fullBounds: Map<string, Rect> | null = splitRoot ? computeLeafBounds(splitRoot) : null;
+  const mainRect = fullBounds?.get(mainLeafId) ?? null;
+
+  const paneEntries: { tab: Tab; leaf: PaneLeaf }[] = [];
+  if (splitRoot) {
+    for (const leaf of getAllLeaves(splitRoot)) {
+      if (leaf.isMain) continue;
+      for (const id of leaf.tabIds ?? []) {
+        const t = tabs.find(tt => tt.id === id);
+        if (t) paneEntries.push({ tab: t, leaf });
       }
     }
-    // Update ref synchronously so onUp always reads the latest target even if
-    // the React re-render hasn't flushed yet when the user releases quickly.
-    const next = dragRef.current ? { ...dragRef.current, x, y, targetPaneId, zone } : null;
-    dragRef.current = next;
-    setDrag(next);
-  }, []);
-
-  const onPaneDragStart = useCallback((paneId: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    const initial: DragState = { sourcePaneId: paneId, x: e.clientX, y: e.clientY, targetPaneId: null, zone: null };
-    setDrag(initial);
-    dragRef.current = initial;
-    const onMove = (me: MouseEvent) => updateDragTarget(me.clientX, me.clientY);
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      const d = dragRef.current;
-      if (d?.targetPaneId && d.zone) movePaneTo(ws.id, d.sourcePaneId, d.targetPaneId, d.zone);
-      setDrag(null);
+  }
+  // Content rect for a leaf: its tree rect, dropped below its chrome strip
+  // (main: TabBar + optional breadcrumb; panes: the h-9 PaneHeader).
+  const contentStyle = (leafId: string | null): React.CSSProperties | null => {
+    if (!splitRoot || !fullBounds) {
+      return leafId === null ? { left: 0, top: 0, width: "100%", height: "100%" } : null;
+    }
+    const r = fullBounds.get(leafId ?? mainLeafId);
+    if (!r) return null;
+    const chromePx = leafId === null ? mainTopPx : 36;
+    return {
+      left:   `${r.x * 100}%`,
+      top:    `calc(${r.y * 100}% + ${chromePx}px)`,
+      width:  `${r.w * 100}%`,
+      height: `calc(${r.h * 100}% - ${chromePx}px)`,
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [ws.id, movePaneTo, updateDragTarget]);
-
-  useEffect(() => {
-    if (!drag) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDrag(null); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [drag]);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <TabBar ws={ws} />
-      <EditorBreadcrumb ws={ws} />
+      {!splitRoot && <TabBar ws={ws} />}
+      {!splitRoot && <EditorBreadcrumb ws={ws} />}
       <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
-        {/* hRow: main tab-stack always mounted; one always-mounted extra-panes
-            container per tab-with-splits (visibility-toggled, never unmounted).
-            This prevents xterm instances from dying on tab switch. */}
-        <div
-          ref={hRowRef}
-          className={cn("relative flex min-h-0 flex-1", splitRoot?.dir === 'h' ? "flex-col" : "flex-row")}
-        >
-          {/* ── Main pane (always alive, never unmounts) ── */}
-          {(() => {
-            const mainLeaf = splitRoot ? getAllLeaves(splitRoot).find(l => l.isMain) : null;
-            const mainLeafId = mainLeaf?.id ?? "";
-            const isMainActive = !splitRoot || !splitActivePaneId || splitActivePaneId === mainLeafId;
-            const mainDimOpacity = (splitPaneDim && splitRoot && !isMainActive) ? splitPaneDimAmount / 100 : 0;
-            return (
+        {/* hRow: main tab-stack always mounted alongside the workspace-level
+            extra-pane container (visibility-toggled when splitRoot is null). */}
+        <div className="relative flex min-h-0 flex-1">
+          {/* ── Main pane chrome (always alive, never unmounts). Tab CONTENT
+               lives in the flat layer below, not here. Positioned at the main
+               leaf's rect in the FULL tree, so main can live in any cell
+               (e.g. a quadrant after "split main below"). ── */}
+          <div
+            data-main-content=""
+            data-split-leaf=""
+            data-pane-id={mainLeafId || "main"}
+            className={cn(
+              "flex min-h-0 min-w-0 flex-col overflow-hidden",
+              splitRoot && mainRect ? "absolute" : "relative",
+            )}
+            style={splitRoot && mainRect
+              ? {
+                  left:   `${mainRect.x * 100}%`,
+                  top:    `${mainRect.y * 100}%`,
+                  width:  `${mainRect.w * 100}%`,
+                  height: `${mainRect.h * 100}%`,
+                }
+              : { flex: 1 }}
+            onMouseDown={() => {
+              if (mainLeafId) setActivePaneId(ws.id, mainLeafId);
+            }}
+          >
+            {splitRoot && <TabBar ws={ws} />}
+            {splitRoot && <EditorBreadcrumb ws={ws} />}
+            {mainDimOpacity > 0 && (
               <div
-                data-main-content=""
-                data-split-leaf=""
-                data-pane-id={mainLeafId || "main"}
-                className="relative flex min-h-0 min-w-0 flex-col overflow-hidden"
-                style={splitRoot
-                  ? (splitRoot.dir === 'v' ? { width: `${splitRoot.ratio * 100}%` } : { height: `${splitRoot.ratio * 100}%` })
-                  : { flex: 1 }}
-                onMouseDown={() => {
-                  if (mainLeafId) setActivePaneId(ws.id, mainLeafId);
-                }}
-              >
-                {splitRoot && (
-                  <PaneHeader
-                    title={(() => {
-                      const t = tabs.find(t => t.id === activeId);
-                      return t ? ((t as TerminalTab).liveTitle?.trim() || t.title) : "Main";
-                    })()}
-                    paneId={mainLeafId || "main"}
-                    wsId={ws.id}
-                    onClose={() => {}}
-                    onDragStart={() => {}}
-                    isDragging={false}
-                    isMainPane
-                  />
-                )}
-                <div className="relative min-h-0 flex-1 min-w-0">
-                  {tabs.filter(t => !(t as TerminalTab).paneId).map(t => (
-                    <div
-                      key={t.id}
-                      data-main-tab-id={t.id}
-                      className="absolute inset-0"
-                      style={{ visibility: t.id === activeId ? "visible" : "hidden", zIndex: t.id === activeId ? 1 : 0 }}
-                    >
-                      {t.type === "terminal" && <TerminalPane ws={ws} tab={t} active={t.id === activeId} />}
-                      {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} />}</Suspense>}
-                      {t.type === "diff"     && <Suspense fallback={null}><DiffPane   ws={ws} tab={t} /></Suspense>}
-                    </div>
-                  ))}
-                </div>
-                {mainDimOpacity > 0 && (
-                  <div
-                    className="pointer-events-none absolute inset-0"
-                    style={{ backgroundColor: `rgba(128,128,128,${mainDimOpacity})`, zIndex: 10 }}
-                  />
-                )}
-                {maskingResize && (
-                  <div
-                    className="pointer-events-none absolute inset-0"
-                    style={{ backgroundColor: xtermBg, zIndex: 200 }}
-                  />
-                )}
-                {/* Drop-zone preview when another pane is dragged over main. */}
-                {drag?.targetPaneId === mainLeafId && drag.zone && mainLeafId && (
-                  <div
-                    className="pointer-events-none absolute"
-                    style={{ zIndex: 210, backgroundColor: 'rgba(239,68,68,0.35)', ...zoneStyle(drag.zone) }}
-                  />
-                )}
-              </div>
-            );
-          })()}
-
-          {/* ── Extra split panes: one container per tab-with-splits, always mounted.
-               Active tab's container is a normal flex child.
-               All others are position:absolute/visibility:hidden so their xterm
-               instances stay alive (ResizeObserver still fires, PTYs keep running). ── */}
-          {tabsWithSplits.map(({ tabId, tree }) => {
-            const isActiveTab = tabId === activeId && !!splitRoot;
-            return (
+                className="pointer-events-none absolute inset-0"
+                style={{ backgroundColor: `rgba(128,128,128,${mainDimOpacity})`, zIndex: 10 }}
+              />
+            )}
+            {maskingResize && (
               <div
-                key={tabId}
-                className="relative flex min-h-0 min-w-0 flex-col overflow-hidden"
-                style={isActiveTab
-                  ? { flex: 1 }
-                  : { position: 'absolute', inset: 0, visibility: 'hidden', pointerEvents: 'none' }}
-              >
-                <SplitNodeView
-                  ws={ws}
-                  node={tree.b}
-                  activePaneId={isActiveTab ? splitActivePaneId : ""}
-                  xtermBg={xtermBg}
-                  drag={isActiveTab ? drag : null}
-                  onDragStart={isActiveTab ? onPaneDragStart : () => {}}
-                  dimAmount={splitPaneDimAmount}
-                  dimActive={splitPaneDim && getAllLeaves(tree).length > 1}
-                />
-              </div>
-            );
-          })}
+                className="pointer-events-none absolute inset-0"
+                style={{ backgroundColor: xtermBg, zIndex: 200 }}
+              />
+            )}
+          </div>
 
-          {/* Root split separator: zero-size wrapper at the seam inside hRow (no
-              overflow-hidden) so the 2px handle is never clipped. Same pattern
-              as SplitNodeView's internal handles. */}
+          {/* ── Split pane chrome for the whole tree (headers, launchers,
+               dims, ALL resize handles — including the seams around main;
+               the main leaf itself is skipped, its chrome is above). The
+               container is pointer-events-none so the main chrome underneath
+               stays clickable; leaf/handle children opt back in. ── */}
           {splitRoot && (
-            <div
-              className="absolute z-20"
-              style={splitRoot.dir === 'v'
-                ? { left: `${splitRoot.ratio * 100}%`, top: 0, bottom: 0, width: 0 }
-                : { top: `${splitRoot.ratio * 100}%`, left: 0, right: 0, height: 0 }
-              }
-            >
-              <ResizeHandle
-                direction={splitRoot.dir === 'v' ? 'x' : 'y'}
-                alwaysVisible
-                onDrag={(delta) => {
-                  const hRow = hRowRef.current;
-                  if (!hRow) return;
-                  const st = useApp.getState();
-                  const tabKey = st.activeTab[ws.id];
-                  const liveTree = tabKey ? st.splitTree[tabKey] : null;
-                  if (!liveTree || liveTree.type !== 'split') return;
-                  const size = liveTree.dir === 'v' ? hRow.clientWidth : hRow.clientHeight;
-                  if (size === 0) return;
-                  const newRatio = Math.max(0.05, Math.min(0.95, liveTree.ratio + delta / size));
-                  setSplitRatio(ws.id, liveTree.id, newRatio);
-                }}
+            <div className="pointer-events-none absolute inset-0">
+              <SplitNodeView
+                ws={ws}
+                node={splitRoot}
+                activePaneId={splitActivePaneId}
+                xtermBg={xtermBg}
+                dimAmount={splitPaneDimAmount}
+                dimActive={splitPaneDim && getAllLeaves(splitRoot).length > 1}
               />
             </div>
           )}
+
+          {/* ── Flat content layer: ONE stable parent for every tab's content,
+               keyed by tab id, positioned over its pane's content area. A tab
+               moving main ↔ pane or pane ↔ pane only changes this div's inline
+               style + data attributes — no reparent, no unmount, PTY/xterm and
+               editor buffers survive. Dim overlays (z 10) and the resize
+               handles (z 20) paint above this layer's z ≤ 1 content; the layer
+               itself is pointer-events-none so chrome stays clickable. The
+               data attributes keep all DOM-focus-derived logic working: main
+               content carries data-main-content + data-main-tab-id, pane
+               content carries data-split-leaf + data-pane-id + data-tab-id.
+               tabIndex=-1 makes the wrapper the focus fallback for tabs with
+               unfocusable content (diff / markdown preview). ── */}
+          <div className="pointer-events-none absolute inset-0">
+            {[
+              ...mainTabs.map(t => ({ t, leaf: null as PaneLeaf | null })),
+              ...paneEntries.map(pe => ({ t: pe.tab, leaf: pe.leaf as PaneLeaf | null })),
+            ].map(({ t, leaf }) => {
+              const style = contentStyle(leaf ? leaf.id : null);
+              if (!style) return null;
+              const visible = leaf ? t.id === leaf.activeTabId : t.id === activeId;
+              const tabActive = leaf
+                ? splitActivePaneId === leaf.id && t.id === leaf.activeTabId
+                : t.id === activeId;
+              const attrs = leaf
+                ? { "data-split-leaf": "", "data-pane-id": leaf.id, "data-tab-id": t.id }
+                : { "data-main-content": "", "data-main-tab-id": t.id };
+              return (
+                <div
+                  key={t.id}
+                  {...attrs}
+                  tabIndex={-1}
+                  className="pointer-events-auto absolute overflow-hidden outline-none"
+                  style={{ ...style, visibility: visible ? "visible" : "hidden", zIndex: visible ? 1 : 0 }}
+                  onMouseDown={() => {
+                    const target = leaf ? leaf.id : mainLeafId;
+                    if (target && splitActivePaneId !== target) setActivePaneId(ws.id, target);
+                  }}
+                >
+                  {t.type === "terminal" && ((t as TerminalTab).runTab
+                    ? <RunPane ws={ws} tab={t as TerminalTab} active={tabActive} />
+                    : <TerminalPane ws={ws} tab={t as TerminalTab} active={tabActive} />)}
+                  {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} active={tabActive} />}</Suspense>}
+                  {t.type === "diff"     && <Suspense fallback={null}><DiffPane ws={ws} tab={t} /></Suspense>}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Optional bottom split: drag handle + tab strip + scratch shells. */}
@@ -513,14 +484,6 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
             type is active. Always rendered. */}
         <FooterBar ws={ws} sandboxWarning={null} />
       </div>
-      {/* Full-screen drag capture overlay — prevents the webview / xterm textarea
-          from stealing mousemove/mouseup events while a pane drag is in progress. */}
-      {drag && (
-        <div
-          className="pointer-events-auto fixed inset-0"
-          style={{ zIndex: 9999, cursor: "grabbing" }}
-        />
-      )}
     </div>
   );
 }

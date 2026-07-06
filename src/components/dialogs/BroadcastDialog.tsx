@@ -98,7 +98,7 @@ export function BroadcastDialog() {
       onOpenChange={(v) => (v ? null : close())}
       title="Broadcast message"
       description="Send one message to several open agents at once."
-      className="max-w-lg"
+      className="max-w-2xl"
     >
       {targets.length === 0 ? (
         <p className="mt-2 text-[13.5px] text-[var(--color-fg-dim)]">
