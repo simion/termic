@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.18.1] - 2026-07-06
+## [0.18.2] - 2026-07-06
 
 Runs always open as terminal tabs; spotlighted workspaces run at the repository root.
 
@@ -21,6 +21,7 @@ Runs always open as terminal tabs; spotlighted workspaces run at the repository 
 - Restarting a run no longer flips the controls to idle while the new process is alive; restarts wait for the old process to exit so dev servers keep their port.
 - Voice input: the microphone permission prompt now works in release builds.
 - Cmd+click now opens hyperlink-style terminal links (anchor text like "Learn more") even inside TUIs with mouse reporting on, and plain clicks on them no longer pop a confirm dialog.
+- Run and Setup tabs no longer show up as destinations for reusable prompts or broadcast messages.
 
 ## [0.17.7] - 2026-07-01
 

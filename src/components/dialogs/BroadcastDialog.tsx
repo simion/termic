@@ -28,10 +28,11 @@ export function BroadcastDialog() {
 
   // Targets = live terminal tabs (have a spawned PTY). Plain shells are
   // offered too but default to unchecked — broadcasts are usually for
-  // agents.
+  // agents. Run/Setup tabs are excluded outright: text typed into a dev
+  // server's stdin is never what a broadcast means.
   const targets = useMemo<TerminalTab[]>(
     () => (tabsForWs || []).filter(
-      (t): t is TerminalTab => t.type === "terminal" && !!t.ptyId,
+      (t): t is TerminalTab => t.type === "terminal" && !!t.ptyId && !(t as TerminalTab).runTab,
     ),
     [tabsForWs],
   );

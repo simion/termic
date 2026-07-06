@@ -53,9 +53,11 @@ export function UnifiedBar() {
   const openSettings = useApp(s => s.openSettings);
   const enabledPrompts = usePromptLibrary(s => s.prompts).filter(p => p.enabled);
   // Live agents in the active workspace = the prompt destinations (+ New agent).
+  // Run/Setup tabs are terminals with live PTYs too, but a dev server is not
+  // a prompt destination — exclude them.
   const wsTabs = useApp(s => (ws ? s.tabs[ws.id] : undefined));
   const liveAgents = (wsTabs ?? []).filter(
-    (t): t is TerminalTab => t.type === "terminal" && !!t.ptyId,
+    (t): t is TerminalTab => t.type === "terminal" && !!t.ptyId && !(t as TerminalTab).runTab,
   );
   const focusedAgentId = useApp(s => {
     if (!ws) return undefined;
