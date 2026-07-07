@@ -48,24 +48,41 @@ export function RunControls({ ws }: { ws: Workspace }) {
         : "Run (opens the run terminal tabs)";
   // ptyId is cleared on process exit, so its presence ≈ "running".
   const running = runTabs.some(t => !!t.ptyId);
-  const previewUrl = runTabs.find(
-    t => t.runTab?.member === "" && (t.runTab?.kind ?? "run") === "run",
-  )?.runTab?.previewUrl;
+  // Host preview URL resolved from CURRENT config (Settings / `.termic.yaml`),
+  // not the run tab's launch-time snapshot — otherwise configuring preview
+  // after a run started, or a single-repo workspace (no baked target), would
+  // leave the URL empty. The URL is a local dev server, so the browser button
+  // is still gated on `running` to avoid opening a connection-refused page.
+  const previewUrl = targets.find(t => t.member === "")?.previewUrl ?? null;
 
+  // Resolve run targets (incl. host preview URL) for EVERY workspace, not just
+  // multi-repo — single-repo needs the host target too. One `.termic.yaml`
+  // read per workspace switch (RunControls renders only for the active
+  // workspace), so the cost is negligible.
   useEffect(() => {
     let cancelled = false;
-    if (!isMultiRepo) {
-      setTargets([]);
-      return;
-    }
     resolveRunTargets(ws.id)
       .then(next => { if (!cancelled) setTargets(next); })
       .catch(() => { if (!cancelled) setTargets([]); });
     return () => { cancelled = true; };
-  }, [isMultiRepo, ws.id, ws.composition, project?.run_script, project?.preview_url]);
+  }, [ws.id, ws.composition, project?.run_script, project?.preview_url, ws.port, ws.name]);
 
   return (
     <>
+      {/* Icon-only shortcut to open the preview in the browser. Shown only
+          while running (the dev server is up) and a preview URL is set. The
+          full URL still lives (with text) in the chevron dropdown below. */}
+      {running && previewUrl && (
+        <Tip content={`Open preview (${previewUrl})`} side="bottom">
+          <Button
+            size="sm" variant="ghost" className="px-1.5" data-no-drag
+            aria-label="Open preview in browser"
+            onClick={() => { openPath(previewUrl).catch(() => {}); }}
+          >
+            <Globe className="h-3.5 w-3.5" />
+          </Button>
+        </Tip>
+      )}
       {running ? (
         <Tip content={stopTip} side="bottom">
           <Button

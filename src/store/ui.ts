@@ -57,8 +57,8 @@ interface UIState {
    *  closed. Lives in UI store so opening doesn't churn the workspace
    *  tree. */
   resumeOverrideWsId: string | null;
-  /** Read-only "Keyboard shortcuts" cheat-sheet modal (⌘/). Distinct
-   *  from Settings → Shortcuts (which edits them). */
+  /** Read-only "Keyboard shortcuts" cheat-sheet modal (opened from the
+   *  sidebar footer). Distinct from Settings → Shortcuts (which edits them). */
   shortcutsHelpOpen: boolean;
   welcomeOpen: boolean;
   /** Changelog dialog — full per-version release notes. */

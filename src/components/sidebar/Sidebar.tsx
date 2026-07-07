@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen, Megaphone } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen, Megaphone, Keyboard } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -816,6 +816,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               openMailto("contact@termic.dev", "Hello from Termic", "")
             }>
               <Mail className={iconSize(compact)} />
+            </Button>
+          </Tip>
+          <Tip content="Keyboard shortcuts">
+            <Button size="icon" variant="icon" onClick={() => useUI.getState().openShortcutsHelp()}>
+              <Keyboard className={iconSize(compact)} />
             </Button>
           </Tip>
           {/* Right cluster: Add project, then Settings rightmost.

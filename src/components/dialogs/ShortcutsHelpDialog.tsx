@@ -1,6 +1,6 @@
-// Read-only keyboard-shortcuts cheat sheet (⌘/). A searchable, grouped
-// list of every binding. Editing lives in Settings → Shortcuts; the
-// "Edit" button in the header closes this and jumps straight there.
+// Read-only keyboard-shortcuts cheat sheet (opened from the sidebar footer).
+// A searchable, grouped list of every binding. Editing lives in Settings →
+// Shortcuts; the "Edit" button in the header closes this and jumps there.
 
 import { useEffect, useMemo, useState } from "react";
 import { useUI } from "@/store/ui";

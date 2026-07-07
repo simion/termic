@@ -28,6 +28,7 @@ export type ShortcutId =
   | "workspace-next"
   | "workspace-prev-arrow"
   | "workspace-next-arrow"
+  | "jump-next-waiting"
   | "tab-prev"
   | "tab-next"
   | "tab-prev-arrow"
@@ -88,6 +89,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: "workspace-next-arrow", group: "Navigation", label: "Pane down / next workspace",
     hint: "With a horizontal split: focus the pane below. Otherwise: go to the next workspace.",
     defaultBinding: B("ArrowDown", { cmd: true, alt: true }) },
+  { id: "jump-next-waiting", group: "Navigation", label: "Jump to next waiting agent",
+    hint: "Cycle to the next workspace whose agent is waiting on you (finished a turn or blocked on input). Visiting clears the signal, so repeated presses walk your whole queue.",
+    defaultBinding: B("a", { cmd: true, shift: true }) },
 
   // Tabs
   { id: "tab-prev", group: "Tabs", label: "Previous tab",
