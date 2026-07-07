@@ -1,9 +1,9 @@
 {
   "versions": [
     {
-      "version": "0.18.2",
-      "date": "2026-07-06",
-      "summary": "Runs always open as terminal tabs; spotlighted workspaces run at the repository root."
+      "version": "0.18.3",
+      "date": "2026-07-07",
+      "summary": "A Sublime-style split-pane rewrite, plus Run now lives in the main window."
     },
     {
       "version": "0.17.7",

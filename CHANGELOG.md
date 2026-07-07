@@ -4,23 +4,24 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.18.2] - 2026-07-06
+## [0.18.3] - 2026-07-07
 
-Runs always open as terminal tabs; spotlighted workspaces run at the repository root.
+A Sublime-style split-pane rewrite, plus Run now lives in the main window.
 
 ### Features
-- Run and Setup always launch as terminal tabs with play, restart, and stop controls in the tab pill. The bottom-right run log is gone.
-- Top bar Run controls: Run/Stop plus a dropdown with per-repo run targets, setup, preview URL, and configure.
+- Split panes, reimagined: every pane now has its own tab strip. Drag tabs between panes, resize panes, and split in any direction by dropping a tab near a pane edge. A drag ghost with drop overlays shows exactly where the tab will land.
+- Files now open in the active pane instead of always taking over the main one, and git diffs open there too. Open a file on one side while an agent keeps working on the other.
+- Run and Setup now run in the main window, as a tab or a split of your choosing, with play, restart, and stop controls right in the tab pill. The bottom-right run log is gone.
+- Top bar Run controls: Run/Stop plus a dropdown for per-repo run targets, setup, preview URL, and configure.
 - Spotlight: the run executes at the repository root while a workspace is spotlighted, and moving the spotlight stops the old run and restarts it on the new workspace.
-- The right panel footer starts collapsed as a slim Spotlight strip and expands when spotlight starts.
-- Dragging tabs shows a ghost with drop overlays; dropping near a pane edge splits it in half.
-- Cmd+click opens links from terminals reliably (#58).
 - Files changed on disk reload automatically when the editor has no unsaved edits (#57).
+- Broadcast to a project's main agents: right-click a project and pick "Broadcast message" to send one message to the main agent of every workspace at once.
+- Run setup tabs tidy themselves away a few seconds after the script finishes, with a countdown button in the "Setup finished" bar that closes it right away.
 
 ### Bug fixes
+- Cmd+click opens links from terminals reliably, including hyperlink-style links (anchor text like "Learn more") inside TUIs with mouse reporting on, and plain clicks on them no longer pop a confirm dialog (#58).
 - Restarting a run no longer flips the controls to idle while the new process is alive; restarts wait for the old process to exit so dev servers keep their port.
 - Voice input: the microphone permission prompt now works in release builds.
-- Cmd+click now opens hyperlink-style terminal links (anchor text like "Learn more") even inside TUIs with mouse reporting on, and plain clicks on them no longer pop a confirm dialog.
 - Run and Setup tabs no longer show up as destinations for reusable prompts or broadcast messages.
 
 ## [0.17.7] - 2026-07-01

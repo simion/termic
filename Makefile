@@ -33,12 +33,14 @@ setup: ## One-shot dev env bootstrap (brew/rust/node + npm install + cargo check
 	    exit 1; \
 	fi
 	@echo "→ Checking Rust toolchain"
-	@if ! command -v cargo >/dev/null 2>&1; then \
-	    echo "  installing via rustup-init"; \
-	    brew install rustup-init && rustup-init -y --no-modify-path; \
-	    source "$$HOME/.cargo/env"; \
-	else \
+	@if command -v cargo >/dev/null 2>&1; then \
 	    echo "  ✓ cargo present ($$(cargo --version))"; \
+	elif command -v rustup >/dev/null 2>&1; then \
+	    echo "  rustup present but no cargo, installing the stable toolchain"; \
+	    rustup default stable; \
+	else \
+	    echo "  installing rustup + stable toolchain"; \
+	    brew install rustup && rustup default stable; \
 	fi
 	@echo "→ Checking Node"
 	@if ! command -v node >/dev/null 2>&1; then \
@@ -49,9 +51,25 @@ setup: ## One-shot dev env bootstrap (brew/rust/node + npm install + cargo check
 	@echo "→ Installing npm packages"
 	@npm install
 	@echo "→ Pre-fetching Rust crate index (cargo check)"
-	@(cd src-tauri && cargo check) >/dev/null
+	@# Homebrew's rustup is keg-only, so cargo AND rustc live in its keg bin
+	@# (not on PATH). Prepend it so cargo can find rustc; a normal (official
+	@# rustup) install already has cargo on PATH and skips this.
+	@if command -v cargo >/dev/null 2>&1; then \
+	    (cd src-tauri && cargo check) >/dev/null; \
+	else \
+	    PATH="$$(brew --prefix rustup)/bin:$$PATH" sh -c 'cd src-tauri && cargo check' >/dev/null; \
+	fi
 	@echo ""
 	@echo "✓ Setup complete. Try: make dev"
+	@# Homebrew's rustup is keg-only: cargo lives in its keg bin, not on PATH.
+	@# make targets fall back to `rustup run`, but `make dev` shells out to
+	@# cargo directly, so point the user at the one line that fixes their shell.
+	@if ! command -v cargo >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then \
+	    echo ""; \
+	    echo "  Note: cargo is not on your PATH (Homebrew rustup is keg-only)."; \
+	    echo "  To run 'make dev', add rustup to your shell, then restart it:"; \
+	    echo "    echo 'export PATH=\"\$$(brew --prefix rustup)/bin:\$$PATH\"' >> ~/.zshrc"; \
+	fi
 .PHONY: setup
 
 doctor: ## Verify the dev env without installing anything (CI-friendly, exits nonzero on first missing dep).
@@ -93,7 +111,11 @@ run: dev ## Alias for `make dev`.
 .PHONY: run
 
 check: ## Type-check the Rust backend (fast — no codegen, no link).
-	@cd src-tauri && cargo check
+	@if command -v cargo >/dev/null 2>&1; then \
+	    cd src-tauri && cargo check; \
+	else \
+	    PATH="$$(brew --prefix rustup)/bin:$$PATH" sh -c 'cd src-tauri && cargo check'; \
+	fi
 .PHONY: check
 
 check-web: ## Type-check the frontend (no Vite bundle — fast).

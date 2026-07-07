@@ -46,6 +46,9 @@ interface Props { ws: Workspace; tab: TerminalTab; active: boolean; }
 // stale spinner after a real finish.
 const SAMPLE_MS = 3000;
 const SETTLE_SAMPLES = 2;
+// Seconds a finished "Run setup" tab lingers before auto-closing (counter in
+// the "Setup finished." banner; click closes immediately).
+const SETUP_AUTO_CLOSE_S = 5;
 
 /** FNV-1a 32-bit hash of the visible viewport's text content. Cheap enough
  *  to run every 3s on every live terminal; the cost is one pass over ~3K
@@ -1802,6 +1805,22 @@ const captureArmedRef = useRef(false);
   const exitedRunTab = !!tab.runTab;
   const exitedRunKind = tab.runTab?.kind ?? "run";
 
+  // Setup is one-shot: once its script finishes, tidy the tab away after a
+  // short countdown. The "Setup finished." banner hosts a live counter button
+  // (right of "Run setup again") that closes now on click; "Run setup again"
+  // clears `exited`, which disarms the countdown.
+  const setupDone = exited && exitedRunTab && exitedRunKind === "setup";
+  const [closeIn, setCloseIn] = useState<number | null>(null);
+  useEffect(() => {
+    setCloseIn(setupDone ? SETUP_AUTO_CLOSE_S : null);
+  }, [setupDone]);
+  useEffect(() => {
+    if (closeIn == null) return;
+    if (closeIn <= 0) { useApp.getState().closeTab(ws.id, tab.id); return; }
+    const t = setTimeout(() => setCloseIn(n => (n == null ? null : n - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [closeIn, ws.id, tab.id]);
+
   return (
     <div
       className="relative flex h-full w-full flex-col"
@@ -1828,6 +1847,12 @@ const captureArmedRef = useRef(false);
             : `Restart ${agentDisplayName(tab.cli)}`}
           tone={exitedRunTab ? "muted" : "warning"}
           onAction={() => { setExited(false); setGen(g => g + 1); }}
+          secondary={setupDone && closeIn != null ? {
+            label: `Close (${closeIn})`,
+            title: `Closing in ${closeIn}s. Click to close now.`,
+            icon: X,
+            onAction: () => useApp.getState().closeTab(ws.id, tab.id),
+          } : undefined}
         />
       )}
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />

@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen, Megaphone } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -588,6 +588,26 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     <GitBranchPlus />
                     New workspace
                   </ContextMenuItem>
+                  {/* Broadcast to the MAIN agent of every workspace in this
+                      project. Count = live main agents; disabled when there is
+                      nothing to fan out to (0 or 1). Computed here so it only
+                      runs when the menu is actually open. */}
+                  {(() => {
+                    const n = wsList.filter(w => (tabs[w.id] ?? []).some(
+                      t => t.type === "terminal" && !!(t as TerminalTab).is_default
+                        && !(t as TerminalTab).paneId && !(t as TerminalTab).runTab
+                        && !!(t as TerminalTab).ptyId,
+                    )).length;
+                    return (
+                      <ContextMenuItem
+                        disabled={n <= 1}
+                        onSelect={() => requestAnimationFrame(() => useUI.getState().openProjectBroadcast(p.id))}
+                      >
+                        <Megaphone />
+                        Broadcast message ({n})
+                      </ContextMenuItem>
+                    );
+                  })()}
                   <ContextMenuSeparator />
                   <ContextMenuItem onSelect={() => openSettings("repositories", p.id)}>
                     <Cog />

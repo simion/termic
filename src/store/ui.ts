@@ -67,6 +67,10 @@ interface UIState {
    *  workspace at once. null = closed. UI-store (not app) so opening it
    *  doesn't churn the workspace tree. */
   broadcastForWsId: string | null;
+  /** Project-scoped broadcast: the same dialog, but targeting the MAIN agent
+   *  of every workspace in this project. null = closed. Mutually exclusive
+   *  with broadcastForWsId (both cleared by closeBroadcast). */
+  broadcastForProjectId: string | null;
   /** Open the Edit Sandbox dialog for a specific workspace. null = closed.
    *  Lives in UI store (not app) so flipping it doesn't churn the
    *  workspace tree on every re-render. */
@@ -140,6 +144,7 @@ interface UIState {
   openChangelog: () => void;
   closeChangelog: () => void;
   openBroadcast: (wsId: string) => void;
+  openProjectBroadcast: (projectId: string) => void;
   closeBroadcast: () => void;
   openSandbox: (wsId: string) => void;
   closeSandbox: () => void;
@@ -220,6 +225,7 @@ export const useUI = create<UIState>(set => ({
   welcomeOpen: false,
   changelogOpen: false,
   broadcastForWsId: null,
+  broadcastForProjectId: null,
   sandboxForWsId: null,
   fileFinderWsId: null,
   findInFilesWsId: null,
@@ -251,8 +257,9 @@ export const useUI = create<UIState>(set => ({
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),
   closeChangelog:    () => set({ changelogOpen: false }),
-  openBroadcast:     (wsId) => set({ broadcastForWsId: wsId }),
-  closeBroadcast:    () => set({ broadcastForWsId: null }),
+  openBroadcast:     (wsId) => set({ broadcastForWsId: wsId, broadcastForProjectId: null }),
+  openProjectBroadcast: (projectId) => set({ broadcastForProjectId: projectId, broadcastForWsId: null }),
+  closeBroadcast:    () => set({ broadcastForWsId: null, broadcastForProjectId: null }),
   openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
   closeSandbox:      () => set({ sandboxForWsId: null }),
   openFileFinder:    (wsId) => set({ fileFinderWsId: wsId }),
