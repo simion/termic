@@ -25,6 +25,7 @@ import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { requestCloseTab, requestClosePaneTab } from "@/lib/closeTab";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
+import { jumpToNextWaiting } from "@/lib/waitingAgents";
 import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import type { TerminalTab } from "@/lib/types";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
@@ -421,35 +422,11 @@ export function useShortcuts() {
         }
 
         // ⇧⌘A → jump to the next agent that's waiting on you (issue #56).
-        // "Waiting" = the same signal the sidebar highlights: a terminal tab
-        // that's `done` (finished its turn) or `attention` (explicitly blocked
-        // on input). Gated on `settledHighlight` so it's inert when that UI is
-        // off. Activating a workspace clears its attention (setActiveWorkspace),
-        // so pressing this repeatedly walks the whole waiting queue — no per-
-        // item bookkeeping. Scans forward from the current workspace with
-        // wraparound; lands on the specific waiting tab (attention over done).
+        // Logic (order, "waiting" definition, queue-walk) is shared with the
+        // top-bar jump pill in `@/lib/waitingAgents`. Only swallow the chord
+        // when it actually jumped — otherwise let ⇧⌘A fall through.
         case "jump-next-waiting": {
-          if (!usePrefs.getState().settledHighlight) return;
-          const isWaiting = (w: { id: string }) =>
-            (state.tabs[w.id] ?? []).some(
-              t => t.type === "terminal" &&
-                ((t as TerminalTab).unread?.reason === "attention" ||
-                 (t as TerminalTab).workState === "done"),
-            );
-          const ws = awakeWorkspaces();
-          if (!ws.some(isWaiting)) return;
-          e.preventDefault();
-          const start = ws.findIndex(w => w.id === wsId);
-          // Order the scan to begin AFTER the current workspace, wrapping around.
-          const ordered = start < 0 ? ws : [...ws.slice(start + 1), ...ws.slice(0, start + 1)];
-          const target = ordered.find(isWaiting);
-          if (!target) return;
-          state.setActiveWorkspace(target.id);
-          const tTabs = state.tabs[target.id] ?? [];
-          const tab =
-            tTabs.find(t => t.type === "terminal" && (t as TerminalTab).unread?.reason === "attention") ??
-            tTabs.find(t => t.type === "terminal" && (t as TerminalTab).workState === "done");
-          if (tab) state.setActiveTabId(target.id, tab.id);
+          if (jumpToNextWaiting()) e.preventDefault();
           return;
         }
 

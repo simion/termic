@@ -27,7 +27,7 @@ interface View {
   settingsRepoId?: string;
 }
 
-interface AppState {
+export interface AppState {
   projects: Project[];
   workspaces: Workspace[];
   activeWorkspaceId: string | null;

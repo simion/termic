@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.18.3] - 2026-07-07
+## [0.18.4] - 2026-07-08
 
 A Sublime-style split-pane rewrite, plus Run now lives in the main window.
 
@@ -17,6 +17,9 @@ A Sublime-style split-pane rewrite, plus Run now lives in the main window.
 - Files changed on disk reload automatically when the editor has no unsaved edits (#57).
 - Broadcast to a project's main agents: right-click a project and pick "Broadcast message" to send one message to the main agent of every workspace at once.
 - Run setup tabs tidy themselves away a few seconds after the script finishes, with a countdown button in the "Setup finished" bar that closes it right away.
+- Jump to the next waiting agent: press Shift+Cmd+A, or click the bell pill in the top bar (it shows how many agents are waiting), to cycle to the next workspace whose agent finished a turn or is blocked on you. (#56)
+- Open your app's preview URL in the browser from a new button in the top bar run controls, shown while a run is active.
+- A keyboard shortcuts icon in the sidebar footer opens the shortcuts cheat-sheet.
 
 ### Bug fixes
 - Cmd+click opens links from terminals reliably, including hyperlink-style links (anchor text like "Learn more") inside TUIs with mouse reporting on, and plain clicks on them no longer pop a confirm dialog (#58).
