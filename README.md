@@ -2,9 +2,9 @@
 
 <img src="./docs/termic-wordmark.svg" alt="termic" width="420" />
 
-### One window, many parallel coding agents. Each in its own git worktree.
+### Run `claude`, `codex`, `antigravity`, `opencode` and more in parallel. Each in its own git worktree.
 
-**`claude` · `codex` · `grok` · `agy` — the real CLIs, your own Pro / Max plan, no vendor backend.**
+**Every new feature the day they ship it: the real CLIs on your own Pro / Max plan, no vendor backend.**
 
 [![Latest release](https://img.shields.io/github/v/release/simion/termic?label=release&color=d97757)](https://github.com/simion/termic/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-d97757)](./LICENSE)
@@ -23,8 +23,8 @@
 
 Termic is a free, open-source desktop app that runs your AI coding-agent CLIs
 side by side, each isolated in its own git worktree, with an optional per-workspace
-macOS sandbox cage. It spawns the **real** `claude` / `codex` / `grok` /
-`agy` binaries (not the vendor SDKs), so inference rides on the Pro / Max plan you
+macOS sandbox cage. It spawns the **real** `claude`, `codex`, `agy` (Antigravity),
+`copilot` and `grok` binaries (not the vendor SDKs), so inference rides on the Pro / Max plan you
 already pay for. Spin up four agents on the same branch, broadcast one prompt to
 all of them, watch a reliable work-done indicator tell you the moment each finishes.
 
@@ -245,8 +245,8 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   review, Explain changes, and Commit; queues automatically if the agent is
   busy.
 - **Bring your own agent.** Settings → Agents is an editable registry.
-  Drop in aider, opencode, ollama, a shell script — 30 seconds. Claude,
-  Codex, Antigravity, and Grok ship as built-ins.
+  Drop in aider, ollama, a shell script — 30 seconds. Claude, Codex,
+  Antigravity, Copilot, Grok, and opencode ship as built-ins.
 - **Keyboard-first.** ⌘K command palette, ⌘1..9 swaps tabs, ⌥↑/↓ walks the
   visible sidebar tree, ⌥⌘↑/↓ hops workspace-only, ⌘D / ⇧⌘D split right /
   bottom, ⌘T spawns a new tab, ⌘W closes one. Every shortcut is rebindable in
