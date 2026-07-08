@@ -28,6 +28,12 @@ interface Props {
   refreshToken?: number;
 }
 
+// Expanded folders, kept per workspace across switches. FileTree is a single
+// shared instance (lives under RightPanel, not per-workspace), so its local
+// `expanded` state would be wiped every time `wsId` changes. This module-level
+// map survives the swap so re-selecting a workspace restores its open folders.
+const expandedByWs = new Map<string, Set<string>>();
+
 // Compare a freshly re-fetched listing against the cached one. `next` holds
 // only the dirs we re-read (root + expanded), which are exactly the ones the
 // tree renders, so it's the source of truth for keys: if every dir in `next`
@@ -55,8 +61,9 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   // Per-dir cache of children, keyed by rel-path ("" = root).
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
-  // Expanded set keyed by rel-path.
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  // Expanded set keyed by rel-path. Seeded from (and mirrored back to) the
+  // per-workspace map so switching away and back keeps the tree open.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(expandedByWs.get(wsId)));
   // Tracks in-flight dir loads so we don't double-fetch.
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
   const [err, setErr] = useState<string | null>(null);
@@ -78,17 +85,31 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
   const revealFile = useApp(s => s.revealFile);
   const clearReveal = useApp(s => s.clearReveal);
 
-  // Load root on mount / wsId change. Reset everything else — different
-  // workspace has a different file tree.
+  // Load root on mount / wsId change. Restore this workspace's previously
+  // expanded folders (empty on first visit) and re-fetch them so they show
+  // their contents; the stale cache for the old workspace is dropped.
   useEffect(() => {
-    setRootEntries(null); setChildren({}); setExpanded(new Set()); setErr(null);
+    const saved = new Set(expandedByWs.get(wsId));
+    setRootEntries(null); setChildren({}); setExpanded(saved); setErr(null);
+    let alive = true;
     // Launch is an intentional moment — heal missing member symlinks here.
-    workspaceDirList(wsId, "", true)
+    const toLoad = ["", ...saved];
+    Promise.all(toLoad.map(rel =>
+      workspaceDirList(wsId, rel, rel === "")
+        .then(list => [rel, list] as const)
+        .catch(() => [rel, null] as const),
+    )).then(results => {
+      if (!alive) return;
+      const patch: Record<string, FileEntry[]> = {};
+      for (const [rel, list] of results) if (list) patch[rel] = list;
+      if (!patch[""]) { setErr("Failed to read workspace files"); return; }
+      setRootEntries(patch[""]);
       // Merge (not replace) so a reveal-in-tree that expanded ancestor dirs
-      // while this mount's root load was in flight doesn't get its children
-      // clobbered. The synchronous reset above already dropped stale entries.
-      .then(list => { setRootEntries(list); setChildren(c => ({ ...c, "": list })); })
-      .catch(e => setErr(String(e)));
+      // while this load was in flight doesn't get its children clobbered.
+      // The synchronous reset above already dropped stale entries.
+      setChildren(c => ({ ...c, ...patch }));
+    });
+    return () => { alive = false; };
   }, [wsId]);
 
   // Manual refresh: re-read root + every expanded dir from disk, keeping
@@ -144,9 +165,10 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
     setExpanded(s => {
       const n = new Set(s);
       if (n.has(rel)) n.delete(rel); else { n.add(rel); ensureLoaded(rel); }
+      expandedByWs.set(wsId, n);
       return n;
     });
-  }, [ensureLoaded]);
+  }, [ensureLoaded, wsId]);
 
   // Reveal-in-tree: expand the path's ancestors, scroll to it, highlight it.
   // Driven by the store (set by the editor breadcrumb / locate button) so it
@@ -166,7 +188,7 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
       }));
       if (!alive) return;
       if (Object.keys(patch).length) setChildren(c => ({ ...c, ...patch }));
-      setExpanded(s => { const n = new Set(s); dirs.forEach(d => n.add(d)); return n; });
+      setExpanded(s => { const n = new Set(s); dirs.forEach(d => n.add(d)); expandedByWs.set(wsId, n); return n; });
       setRevealedRel(path);
       // Two rAFs so the freshly-expanded rows have laid out before scrolling.
       requestAnimationFrame(() => requestAnimationFrame(() => {
