@@ -4428,7 +4428,11 @@ async fn workspace_discard(id: String, dir_name: String, paths: Vec<String>) -> 
 /// **MUST** be used for every renderer → filesystem read inside a workspace
 /// (file_read, file_diff, future watchers). Without it, untrusted paths
 /// from the webview could read arbitrary text files on disk.
-fn safe_workspace_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
+/// Structural validation shared by every workspace-relative path resolver:
+/// rejects absolute paths and literal `..` segments up front, before any
+/// filesystem call. Attempts like `/etc/passwd` or `../../foo` fail loudly
+/// instead of being silently joined.
+fn reject_escaping_segments(rel: &str) -> Result<PathBuf, String> {
     let pb = Path::new(rel);
     if pb.is_absolute() {
         return Err(format!("absolute paths not allowed: {rel}"));
@@ -4436,13 +4440,113 @@ fn safe_workspace_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
     if pb.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err(format!("`..` segments not allowed: {rel}"));
     }
-    let target = ws_path.join(pb);
+    Ok(pb.to_path_buf())
+}
+
+/// Resolve a renderer-supplied path against a workspace root and verify the
+/// result is contained within it. Canonicalizes both ends so a symlink
+/// pointing outside the worktree also fails the contains check.
+///
+/// **MUST** be used for every renderer → filesystem read inside a workspace
+/// (file_read, file_diff, future watchers). Without it, untrusted paths
+/// from the webview could read arbitrary text files on disk.
+fn safe_workspace_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
+    let pb = reject_escaping_segments(rel)?;
+    let target = ws_path.join(&pb);
     let canon_base = fs::canonicalize(ws_path).map_err(|e| e.to_string())?;
     let canon_target = fs::canonicalize(&target).map_err(|e| e.to_string())?;
     if !canon_target.starts_with(&canon_base) {
         return Err(format!("path escapes workspace: {rel}"));
     }
     Ok(canon_target)
+}
+
+#[derive(Serialize)]
+struct PathStat {
+    exists: bool,
+    is_dir: bool,
+}
+
+/// Does a workspace-relative path exist, and is it a directory? Used by the
+/// markdown preview's link click handler before opening a tab or revealing
+/// in the file manager, so a dead link shows a visible "not found" instead
+/// of a blank/broken tab, and a directory link reveals instead of trying to
+/// open as text.
+///
+/// `fs::canonicalize` errors on any path that doesn't exist, so a missing
+/// target (the exact case this command exists to report) can't be
+/// containment-checked the way `safe_workspace_path` does. This resolves the
+/// containment check AND the final exists/is_dir answer from the SAME
+/// canonicalized path in one pass — critically, the is_dir metadata call
+/// below stats the canonical (symlink-resolved, already-verified) path, not
+/// the original possibly-symlinked one, so a symlink swapped in between the
+/// two calls can't smuggle an out-of-workspace answer past the check that
+/// just ran (the TOCTOU pattern `read_capped_file` is careful to avoid).
+/// When the target doesn't exist, walks up to the nearest EXISTING ancestor
+/// and canonicalizes THAT instead — sufficient to catch a symlink escape (a
+/// symlink has to actually exist to redirect anything), and the walk always
+/// terminates at `ws_path` itself, which does exist.
+fn check_workspace_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat, String> {
+    let pb = reject_escaping_segments(rel)?;
+    let target = ws_path.join(&pb);
+    let canon_base = fs::canonicalize(ws_path).map_err(|e| e.to_string())?;
+    if let Ok(canon) = fs::canonicalize(&target) {
+        if !canon.starts_with(&canon_base) {
+            return Err(format!("path escapes workspace: {rel}"));
+        }
+        let is_dir = fs::metadata(&canon).map(|m| m.is_dir()).unwrap_or(false);
+        return Ok(PathStat { exists: true, is_dir });
+    }
+    let mut probe: &Path = &target;
+    loop {
+        match probe.parent() {
+            Some(p) if !p.as_os_str().is_empty() && p != probe => probe = p,
+            _ => break, // exhausted ancestors without finding one that exists (shouldn't happen: ws_path itself always exists)
+        }
+        if probe.exists() {
+            let canon = fs::canonicalize(probe).map_err(|e| e.to_string())?;
+            if !canon.starts_with(&canon_base) {
+                return Err(format!("path escapes workspace: {rel}"));
+            }
+            break;
+        }
+    }
+    Ok(PathStat { exists: false, is_dir: false })
+}
+
+#[tauri::command]
+fn workspace_path_stat(id: String, path: String) -> Result<PathStat, String> {
+    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+    // Unlike a diff/read, "is this a directory" is a sensible question for a
+    // path that's exactly a composition member's own root (e.g. a markdown
+    // link's `..`/`/` resolves there per resolveWorkspaceHref's member-floor
+    // scoping) — allow it rather than erroring.
+    let (cwd, rel) = resolve_workspace_git_path_ex(&w, &path, true)?;
+    check_workspace_path_existence(&cwd, &rel)
+}
+
+/// Read `abs` capped at `cap` bytes, TOCTOU-safe: the size/type check runs
+/// against an `fstat` on the already-OPEN handle (not a separate path-based
+/// `metadata()` call), so a swap between the check and the read (symlink
+/// retarget, truncate-and-replace) can't smuggle a larger or non-regular
+/// file past the cap. `Read::take(cap + 1)` bounds the actual read
+/// regardless of what fstat reported, so a file that grows mid-read past
+/// the point fstat saw still gets capped rather than fully buffered.
+fn read_capped_file(abs: &Path, cap: u64) -> Result<Vec<u8>, String> {
+    let f = fs::File::open(abs).map_err(|e| format!("open failed: {e}"))?;
+    let meta = f.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err(format!("not a file: {}", abs.display()));
+    }
+    if meta.len() > cap {
+        return Err(format!("file too large to preview ({} bytes)", meta.len()));
+    }
+    let mut buf = Vec::with_capacity((meta.len() as usize).min(cap as usize));
+    f.take(cap + 1).read_to_end(&mut buf).map_err(|e| format!("read failed: {e}"))?;
+    if buf.len() as u64 > cap {
+        return Err(format!("file too large to preview (>{cap} bytes)"));
+    }
+    Ok(buf)
 }
 
 #[tauri::command]
@@ -4454,11 +4558,91 @@ fn workspace_file_read(id: String, path: String) -> Result<String, String> {
     let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
     let abs = safe_workspace_path(&cwd, &rel)?;
     // Refuse binary or huge files for now — viewer is text-only.
-    let meta = fs::metadata(&abs).map_err(|e| e.to_string())?;
-    if meta.len() > 2_000_000 {
-        return Err(format!("file too large to preview ({} bytes)", meta.len()));
+    let bytes = read_capped_file(&abs, 2_000_000)?;
+    String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8".to_string())
+}
+
+/// Mime type by extension for images the markdown preview may embed. Kept in
+/// sync by hand with `BINARY_LINK_RE` in markdownPaths.ts (the frontend link
+/// handler's "editor can't render this, reveal it in the file manager
+/// instead" list) — that list is broader (adds archives/media), this one is
+/// the image-only subset the base64 channel accepts. Unknown extensions are
+/// rejected here so this stays an image channel, not a generic binary read
+/// wider than the preview needs. SVG is safe in this context: the preview
+/// only ever renders it via `<img src="data:...">`, where embedded scripts
+/// never execute.
+fn image_mime_for_ext(p: &Path) -> Option<&'static str> {
+    match p.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        "avif" => Some("image/avif"),
+        _ => None,
     }
-    fs::read_to_string(&abs).map_err(|e| format!("read failed: {e}"))
+}
+
+/// Result of `workspace_file_read_base64`. `unchanged` short-circuits the
+/// common case (an agent settle re-validating every image in every mounted
+/// preview): when the caller's `known_fp` still matches the file's current
+/// `mtime:len` fingerprint, `mime`/`data` are omitted entirely — the
+/// frontend keeps its cached bytes instead of paying for a full read +
+/// base64 encode of an unchanged multi-MB image. `fp` is always populated
+/// (even on a fresh read) so the frontend has something to send next time.
+#[derive(Serialize)]
+struct Base64Read {
+    unchanged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<String>,
+    fp: String,
+}
+
+/// Read a workspace image as base64 for the markdown preview, or confirm
+/// it's unchanged since `known_fp` (see `Base64Read`). Same member-aware
+/// resolution + worktree containment as `workspace_file_read`, plus an
+/// image-extension whitelist and a 10 MB cap. Async + spawn_blocking because
+/// a multi-MB read IS the heavy-IO case the IPC discipline targets (unlike
+/// the 2 MB-capped text read above).
+#[tauri::command]
+async fn workspace_file_read_base64(id: String, path: String, known_fp: Option<String>) -> Result<Base64Read, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
+        let abs = safe_workspace_path(&cwd, &rel)?;
+        let mime = image_mime_for_ext(&abs).ok_or_else(|| format!("not an image: {path}"))?;
+        // Cheap pre-read stat: if it matches what the caller already has
+        // cached, skip the read + base64 encode entirely. Only bother when
+        // there's a known_fp to compare against — a first load (no cache
+        // yet) has nothing to match, so skip this stat rather than pay for
+        // one that can never short-circuit anything. An empty current fp
+        // means the file is missing/unreadable — always fall through to the
+        // real read below so its error path (not a silent "unchanged") fires.
+        if let Some(known) = known_fp.as_deref() {
+            let current_fp = file_fp(&abs);
+            if !current_fp.is_empty() && known == current_fp {
+                return Ok(Base64Read { unchanged: true, mime: None, data: None, fp: current_fp });
+            }
+        }
+        let bytes = read_capped_file(&abs, 10_000_000)?;
+        // Re-stat AFTER the read so `fp` is correlated with the bytes just
+        // returned (not the pre-read snapshot, which a concurrent write
+        // could have already invalidated).
+        let fp = file_fp(&abs);
+        Ok(Base64Read {
+            unchanged: false,
+            mime: Some(mime.to_string()),
+            data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            fp,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Overwrite a workspace file with new contents (editor save). The
@@ -4527,7 +4711,9 @@ fn workspace_path_delete(id: String, path: String) -> Result<(), String> {
 #[tauri::command]
 fn workspace_reveal_path(id: String, path: String) -> Result<(), String> {
     let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
+    // Revealing a directory (including a composition member's own root) is
+    // meaningful here, unlike for a diff/read — allow the bare-member-root case.
+    let (cwd, rel) = resolve_workspace_git_path_ex(&w, &path, true)?;
     let abs = safe_workspace_path(&cwd, &rel)?;
     let target = abs.to_string_lossy().into_owned();
     let (program, args) = reveal_command(std::env::consts::OS, &target);
@@ -4575,7 +4761,14 @@ struct FileDiffSides {
     fp: String,
 }
 
-fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, String), String> {
+/// Resolve a workspace-relative path to (member cwd, path relative to that
+/// cwd), member-aware: a `<dir_name>/…` path resolves inside that member's
+/// own repo (which may live outside the wrapper for repo_root members). A
+/// path equal to exactly `dir_name` (no remainder) is the member's OWN
+/// root — diff/read callers reject that (a diff/read needs a file, not a
+/// directory); `allow_bare_member_root` lets a caller that's fine with a
+/// directory (stat, reveal-in-file-manager) opt in instead.
+fn resolve_workspace_git_path_ex(w: &Workspace, path: &str, allow_bare_member_root: bool) -> Result<(PathBuf, String), String> {
     if let Some((member, remainder)) = w.composition.iter().find_map(|m| {
         if path == m.dir_name {
             Some((m, ""))
@@ -4585,12 +4778,16 @@ fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, Str
             None
         }
     }) {
-        if remainder.is_empty() {
+        if remainder.is_empty() && !allow_bare_member_root {
             return Err(format!("diff path must point to a file inside member '{}': {path}", member.dir_name));
         }
         return Ok((PathBuf::from(&member.path), remainder.to_string()));
     }
     Ok((PathBuf::from(&w.path), path.to_string()))
+}
+
+fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, String), String> {
+    resolve_workspace_git_path_ex(w, path, false)
 }
 
 fn workspace_file_diff_sides_for_workspace(w: &Workspace, path: &str) -> Result<FileDiffSides, String> {
@@ -7313,7 +7510,7 @@ pub fn run() {
             workspace_spotlight_start, workspace_spotlight_stop, workspace_spotlight_resync, workspace_spotlight_status,
             workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
             workspace_changes, workspace_git_status, workspace_stage, workspace_unstage, workspace_commit, workspace_discard,
-            workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_write, workspace_dir_list,
+            workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_read_base64, workspace_file_write, workspace_dir_list, workspace_path_stat,
             workspace_path_rename, workspace_path_delete, workspace_reveal_path,
             workspace_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
@@ -7606,6 +7803,134 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn safe_workspace_path_allows_contained_files() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/a.png"), b"x").unwrap();
+        let p = safe_workspace_path(dir.path(), "docs/a.png").unwrap();
+        assert!(p.ends_with("docs/a.png"));
+    }
+
+    #[test]
+    fn safe_workspace_path_rejects_absolute_and_parent_segments() {
+        let dir = tempdir().unwrap();
+        assert!(safe_workspace_path(dir.path(), "/etc/passwd").is_err());
+        assert!(safe_workspace_path(dir.path(), "../outside.txt").is_err());
+        assert!(safe_workspace_path(dir.path(), "docs/../../outside.txt").is_err());
+    }
+
+    #[test]
+    fn safe_workspace_path_rejects_symlink_escape() {
+        // A symlink INSIDE the worktree pointing OUTSIDE must fail the
+        // canonicalized containment check (the markdown preview reads
+        // whatever path a hostile README references).
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("secret.png"), b"x").unwrap();
+        let ws = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), ws.path().join("link.png")).unwrap();
+        assert!(safe_workspace_path(ws.path(), "link.png").is_err());
+    }
+
+    #[test]
+    fn check_workspace_path_existence_reports_missing_for_nonexistent_contained_path() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        let stat = check_workspace_path_existence(dir.path(), "docs/missing.png").unwrap();
+        assert!(!stat.exists);
+        assert!(!stat.is_dir);
+    }
+
+    #[test]
+    fn check_workspace_path_existence_handles_missing_parent_dirs_too() {
+        // The whole ancestor chain (not just the leaf) can be missing —
+        // the walk-up must reach ws_path itself, not just the immediate parent.
+        let dir = tempdir().unwrap();
+        let stat = check_workspace_path_existence(dir.path(), "a/b/c/missing.png").unwrap();
+        assert!(!stat.exists);
+    }
+
+    #[test]
+    fn check_workspace_path_existence_reports_existing_file_and_dir() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/a.png"), b"x").unwrap();
+        let file_stat = check_workspace_path_existence(dir.path(), "docs/a.png").unwrap();
+        assert!(file_stat.exists);
+        assert!(!file_stat.is_dir);
+        let dir_stat = check_workspace_path_existence(dir.path(), "docs").unwrap();
+        assert!(dir_stat.exists);
+        assert!(dir_stat.is_dir);
+    }
+
+    #[test]
+    fn check_workspace_path_existence_rejects_absolute_and_parent_segments() {
+        let dir = tempdir().unwrap();
+        assert!(check_workspace_path_existence(dir.path(), "/etc/passwd").is_err());
+        assert!(check_workspace_path_existence(dir.path(), "../outside.txt").is_err());
+        assert!(check_workspace_path_existence(dir.path(), "docs/../../outside.txt").is_err());
+    }
+
+    #[test]
+    fn check_workspace_path_existence_rejects_symlink_escape_for_existing_file() {
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("secret.png"), b"x").unwrap();
+        let ws = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), ws.path().join("link.png")).unwrap();
+        assert!(check_workspace_path_existence(ws.path(), "link.png").is_err());
+    }
+
+    #[test]
+    fn check_workspace_path_existence_rejects_symlink_escape_for_missing_leaf() {
+        // A symlinked directory INSIDE the worktree pointing OUTSIDE must
+        // still fail containment even though the LEAF file itself doesn't
+        // exist — the escaping symlink is the existing ancestor the walk-up
+        // finds and canonicalizes.
+        let outside = tempdir().unwrap();
+        let ws = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), ws.path().join("escape")).unwrap();
+        assert!(check_workspace_path_existence(ws.path(), "escape/missing.png").is_err());
+    }
+
+    #[test]
+    fn read_capped_file_reads_within_cap() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("a.bin");
+        fs::write(&p, b"hello").unwrap();
+        assert_eq!(read_capped_file(&p, 10).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn read_capped_file_rejects_over_cap() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("a.bin");
+        fs::write(&p, vec![0u8; 100]).unwrap();
+        assert!(read_capped_file(&p, 10).is_err());
+    }
+
+    #[test]
+    fn read_capped_file_rejects_directory() {
+        let dir = tempdir().unwrap();
+        assert!(read_capped_file(dir.path(), 10).is_err());
+    }
+
+    #[test]
+    fn image_mime_for_ext_known_extensions() {
+        assert_eq!(image_mime_for_ext(Path::new("a/b.png")), Some("image/png"));
+        assert_eq!(image_mime_for_ext(Path::new("shot.JPG")), Some("image/jpeg"));
+        assert_eq!(image_mime_for_ext(Path::new("d.svg")), Some("image/svg+xml"));
+        assert_eq!(image_mime_for_ext(Path::new("p.avif")), Some("image/avif"));
+    }
+
+    #[test]
+    fn image_mime_for_ext_rejects_non_images() {
+        // The base64 read must not become a generic binary-file channel.
+        assert_eq!(image_mime_for_ext(Path::new("id_rsa")), None);
+        assert_eq!(image_mime_for_ext(Path::new("a.pdf")), None);
+        assert_eq!(image_mime_for_ext(Path::new("script.sh")), None);
+        assert_eq!(image_mime_for_ext(Path::new("noext")), None);
+    }
+
+    #[test]
     fn open_command_macos_uses_open() {
         assert_eq!(open_command("macos", "https://x.com"),
             ("open", vec!["https://x.com".to_string()]));
@@ -7719,6 +8044,55 @@ mod tests {
         let (cwd, rel) = resolve_workspace_git_path(&ws, "frontend/src/App.tsx").unwrap();
         assert_eq!(cwd, member.path());
         assert_eq!(rel, "src/App.tsx");
+    }
+
+    fn workspace_with_member(dir_name: &str, host: &Path, member: &Path) -> Workspace {
+        Workspace {
+            path: host.to_string_lossy().into_owned(),
+            composition: vec![WorkspaceMember {
+                dir_name: dir_name.into(),
+                mode: MemberMode::RepoRoot,
+                path: member.to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_workspace_git_path_rejects_bare_member_root_by_default() {
+        // A diff/read needs a FILE inside the member, not the member's own
+        // root directory — the default (used by diff/read/write commands)
+        // keeps rejecting this.
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        let ws = workspace_with_member("frontend", host.path(), member.path());
+        assert!(resolve_workspace_git_path(&ws, "frontend").is_err());
+    }
+
+    #[test]
+    fn resolve_workspace_git_path_ex_allows_bare_member_root_when_opted_in() {
+        // A markdown link's `..`/`/` can legitimately resolve to exactly a
+        // member's own root (resolveWorkspaceHref's member-floor scoping) —
+        // workspace_path_stat/workspace_reveal_path need to answer for it
+        // (is this a directory?) rather than erroring.
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        let ws = workspace_with_member("frontend", host.path(), member.path());
+        let (cwd, rel) = resolve_workspace_git_path_ex(&ws, "frontend", true).unwrap();
+        assert_eq!(cwd, member.path());
+        assert_eq!(rel, "");
+    }
+
+    #[test]
+    fn workspace_path_stat_reports_a_bare_member_root_as_an_existing_directory() {
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        let ws = workspace_with_member("frontend", host.path(), member.path());
+        let (cwd, rel) = resolve_workspace_git_path_ex(&ws, "frontend", true).unwrap();
+        let stat = check_workspace_path_existence(&cwd, &rel).unwrap();
+        assert!(stat.exists);
+        assert!(stat.is_dir);
     }
 
     #[test]

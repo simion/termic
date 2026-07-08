@@ -4,7 +4,7 @@
 // undo history, cursor, and any unsaved buffer survive a mode switch — and so
 // it can keep feeding live text to the preview via onContent.
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorView } from "@codemirror/view";
 import type { EditTab, Workspace } from "@/lib/types";
 import { EditorPane } from "./EditorPane";
@@ -51,13 +51,40 @@ export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
   // typing doesn't re-parse markdown + re-run mermaid on every keystroke. We
   // read view.state.doc lazily INSIDE the timeout, so a burst of keystrokes
   // stringifies the buffer once (at fire time) instead of on every keypress.
-  const [text, setText] = useState("");
+  //
+  // The text is labeled with the tab.path it was read for: recycled preview
+  // tabs swap tab.path WITHOUT remounting this pane (WorkspaceView keys by
+  // tab id), so until EditorPane reloads, the buffer still holds the OLD
+  // file. Deriving "" for a mismatched label keeps the preview (and its
+  // revealHeading consumption) from ever acting on the previous document.
+  const [buf, setBuf] = useState({ path: tab.path, text: "" });
+  const text = buf.path === tab.path ? buf.text : "";
   const debounceRef = useRef<number | null>(null);
   function onContent(view: EditorView) {
     if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => setText(view.state.doc.toString()), 200);
+    const path = tab.path;
+    debounceRef.current = window.setTimeout(() => setBuf({ path, text: view.state.doc.toString() }), 200);
   }
-  useEffect(() => () => { if (debounceRef.current != null) window.clearTimeout(debounceRef.current); }, []);
+  // Keyed on tab.path (not just unmount): a debounced write scheduled for
+  // the PREVIOUS path must be cancelled the instant the tab recycles to a
+  // new one, not left to fire later. Without this, navigating away and
+  // quickly back (before the 200ms timer fires) lets the stale write land
+  // AFTER the tab is back on the original path — its `path` no longer
+  // matches `tab.path`, so `text` derives "" and blanks an already-correct
+  // preview until the next real content update arrives.
+  useEffect(() => () => { if (debounceRef.current != null) window.clearTimeout(debounceRef.current); }, [tab.path]);
+
+  // A pending file.md#heading reveal is only consumable by the rendered
+  // preview: a tab sitting in source view switches to preview (tab-local
+  // mdView only; the global default-view pref is not touched). Without this
+  // the reveal would linger unconsumed and fire as a surprise scroll when
+  // the user eventually toggles the view themselves.
+  useEffect(() => {
+    if (tab.revealHeading && view === "source") {
+      useApp.getState().patchTab(ws.id, tab.id, { mdView: "preview" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.revealHeading]);
 
   // Split divider position as a percentage of width given to the editor.
   const [editorPct, setEditorPct] = useState(50);
@@ -66,6 +93,18 @@ export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
   // Subscribe so the preview/mermaid theme tracks app palette changes.
   const themeMode = usePrefs(s => s.themeMode);
   const themeDark = resolveTheme(themeMode) !== "light";
+
+  // fsRevision bumps when an agent settles — exactly when images on disk may
+  // have changed — so it doubles as the preview's image-cache invalidator.
+  const fsRev = useApp(s => s.fsRevision[ws.id] ?? 0);
+
+  // Memoized so MarkdownPreview's effects can safely depend on it: `ws.composition`
+  // is frozen at workspace creation (stable across unrelated store updates),
+  // but `.map(...)` allocates a fresh array every render — an unmemoized
+  // array literal in an effect's dependency array would make that effect
+  // re-run (and, for the main render effect, rebuild innerHTML) on every
+  // single re-render regardless of whether composition actually changed.
+  const memberDirs = useMemo(() => ws.composition?.map(m => m.dir_name), [ws.composition]);
 
   const showEditor = view === "source" || view === "split";
   const showPreview = view === "preview" || view === "split";
@@ -125,7 +164,14 @@ export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
             }}
           >
             <Suspense fallback={<div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading preview…</div>}>
-              <MarkdownPreview text={text} themeDark={themeDark} />
+              <MarkdownPreview
+                text={text}
+                themeDark={themeDark}
+                ctx={{ wsId: ws.id, filePath: tab.path, epoch: fsRev, memberDirs }}
+                revealHeading={tab.revealHeading}
+                onRevealConsumed={() => useApp.getState().patchTab(ws.id, tab.id, { revealHeading: undefined })}
+                visible={showPreview}
+              />
             </Suspense>
           </div>
         )}

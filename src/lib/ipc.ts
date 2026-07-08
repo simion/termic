@@ -302,6 +302,22 @@ export const workspaceFileDiffSides = (id: string, path: string) =>
     "workspace_file_diff_sides", { id, path },
   );
 export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });
+/** Read a workspace image as base64 for the markdown preview (image
+ *  extensions only, 10 MB cap). Member-aware + worktree-contained, same
+ *  checks as workspaceFileRead. Pass the `fp` from a previous successful
+ *  read as `knownFp` to let the backend skip the read+encode entirely when
+ *  the file hasn't changed (`unchanged: true`, no `mime`/`data`) — the fast
+ *  path an agent-settle revalidation of every mounted preview relies on. */
+export const workspaceFileReadBase64 = (id: string, path: string, knownFp?: string) =>
+  invoke<{ unchanged: boolean; mime?: string; data?: string; fp: string }>(
+    "workspace_file_read_base64", { id, path, knownFp },
+  );
+/** Does a workspace-relative path exist, and is it a directory? Tolerates a
+ *  missing target (returns `{ exists: false, is_dir: false }` rather than
+ *  erroring) so the markdown preview's link handler can show a real "not
+ *  found" instead of opening a dead tab. */
+export const workspacePathStat = (id: string, path: string) =>
+  invoke<{ exists: boolean; is_dir: boolean }>("workspace_path_stat", { id, path });
 export const workspaceFileWrite = (id: string, path: string, content: string) =>
   invoke<void>("workspace_file_write", { id, path, content });
 export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
