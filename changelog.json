@@ -1,8 +1,8 @@
 {
   "versions": [
     {
-      "version": "0.18.3",
-      "date": "2026-07-07",
+      "version": "0.18.4",
+      "date": "2026-07-08",
       "summary": "A Sublime-style split-pane rewrite, plus Run now lives in the main window."
     },
     {

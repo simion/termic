@@ -22,6 +22,7 @@ import { SandboxIcon } from "@/components/SandboxIcon";
 import type { TerminalTab } from "@/lib/types";
 import { findLeaf } from "@/lib/splitTree";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
+import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
 import { openPath, workspaceSendDiffToMain } from "@/lib/ipc";
 import { archiveAndRefresh } from "@/lib/archiveWorkspace";
 import { visibleCliIds, isTerminalEntry, tabLabel } from "@/lib/agents";
@@ -153,6 +154,10 @@ export function UnifiedBar() {
             available. Sits next to the theme picker so it's findable
             but not intrusive. */}
         <UpdaterBanner />
+        {/* Waiting-agents pill (issue #56): appears only when an agent needs
+            you, jumps to the next on click. Sits with the other status pills
+            so a live "N waiting" is glanceable from anywhere. */}
+        <WaitingAgentsPill />
         {/* YOLO is per-workspace only — controlled from the workspace's
             sidebar dropdown ("YOLO: on/off"), with a red ⚡ status badge
             on the sidebar row. No top-bar toggle (it had no global
