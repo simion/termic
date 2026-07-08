@@ -1,6 +1,6 @@
 <div align="center">
 
-# termic
+<img src="./docs/termic-wordmark.svg" alt="termic" width="420" />
 
 ### One window, many parallel coding agents. Each in its own git worktree.
 
