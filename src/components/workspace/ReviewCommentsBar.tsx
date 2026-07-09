@@ -129,7 +129,7 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
                 "flex shrink-0 items-center gap-1.5 rounded-md whitespace-nowrap font-medium text-[12.5px] transition-colors",
                 compact ? "h-7 px-2.5" : "px-2.5 py-1",
                 // Loud filled-accent CTA so pending comments can't be missed.
-                "bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-deep)]",
+                "bg-[var(--color-accent)] text-[var(--color-accent-fg)] hover:bg-[var(--color-accent-deep)] hover:text-white",
                 // Pulse only while closed — once the popover is open the user
                 // is already acting on them, no need to keep shouting.
                 !open && "termic-review-pending",

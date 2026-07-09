@@ -526,7 +526,7 @@ function ThemePicker({
             // explicit user choice. Outline matches button bg so it
             // reads as a sticker on top of the icon, not part of it.
             <span
-              className="absolute -bottom-1 -right-1 flex h-[10px] w-[10px] items-center justify-center rounded-full bg-[var(--color-accent)] text-[7px] font-bold leading-none text-white ring-1 ring-[var(--color-bg)]"
+              className="absolute -bottom-1 -right-1 flex h-[10px] w-[10px] items-center justify-center rounded-full bg-[var(--color-accent)] text-[7px] font-bold leading-none text-[var(--color-accent-fg)] ring-1 ring-[var(--color-bg)]"
               aria-label="auto"
             >A</span>
           )}
