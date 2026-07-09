@@ -24,7 +24,7 @@ import { CliIcon, CLI_LABEL } from "@/icons/cli";
 import { TermicMark } from "@/icons/TermicLogo";
 import { cn } from "@/lib/utils";
 import { usePrefs, applyTheme, type ThemeMode } from "@/store/prefs";
-import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2 } from "lucide-react";
+import { Sun, Moon, Monitor, Sunrise, Droplet, Binary, Code2, Flower2 } from "lucide-react";
 
 type Step = 0 | 1 | 2;
 
@@ -317,6 +317,7 @@ const THEME_ITEMS: { id: ThemeMode; label: string; icon: typeof Sun; swatch: [st
   { id: "solarized", label: "Solarized Dark", icon: Sunrise, swatch: ["#002b36", "#93a1a1", "#cb4b16"] },
   { id: "cobalt",    label: "Cobalt",         icon: Droplet, swatch: ["#193549", "#e1efff", "#66c4ff"] },
   { id: "matrix",    label: "Matrix",         icon: Binary,  swatch: ["#000800", "#00ff41", "#00ff41"] },
+  { id: "rosepine",  label: "Rosé Pine",      icon: Flower2, swatch: ["#191724", "#e0def4", "#ebbcba"] },
 ];
 function StepTheme() {
   const themeMode = usePrefs(s => s.themeMode);
@@ -363,6 +364,7 @@ function StepTheme() {
                   {t.id === "solarized" && "Schoonover palette"}
                   {t.id === "cobalt" && "deep navy + sky blue"}
                   {t.id === "matrix" && "phosphor green CRT"}
+                  {t.id === "rosepine" && "dusky purple + rose"}
                 </span>
               </div>
             </button>

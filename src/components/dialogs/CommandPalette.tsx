@@ -56,8 +56,9 @@ const THEME_LABELS: Record<ThemeMode, string> = {
   solarized: "Solarized",
   cobalt: "Cobalt",
   matrix: "Matrix",
+  rosepine: "Rosé Pine",
 };
-const THEME_ORDER: ThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix"];
+const THEME_ORDER: ThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
 
 export function CommandPalette() {
   const open = useUI(s => s.commandPaletteOpen);
