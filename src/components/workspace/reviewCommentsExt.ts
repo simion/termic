@@ -548,13 +548,15 @@ const baseTheme = EditorView.baseTheme({
     fontWeight: "500",
     lineHeight: "1",
     cursor: "pointer",
-    color: "#fff",
+    color: "var(--color-accent-fg)",
     background: "var(--color-accent)",
     border: "1px solid var(--color-accent-deep)",
     boxShadow: "0 4px 12px rgba(0,0,0,0.35)",
     whiteSpace: "nowrap",
   },
-  ".tc-add-comment-btn:hover": { background: "var(--color-accent-deep)" },
+  // Hover drops to accent-deep, which is dark in every theme, so the ink
+  // goes back to white (accent-fg would be dark-on-dark on rosepine).
+  ".tc-add-comment-btn:hover": { background: "var(--color-accent-deep)", color: "#fff" },
   // Inline thread cards: an accent left rail ties them to the commented-line
   // stripe, a flat fill (no popover shadow) so they read as part of the diff,
   // not floating over it.
@@ -625,8 +627,8 @@ const baseTheme = EditorView.baseTheme({
   },
   ".tc-btn-ghost": { background: "transparent", color: "var(--color-fg-dim)", borderColor: "var(--color-border)" },
   ".tc-btn-ghost:hover": { background: "var(--color-hover)", color: "var(--color-fg)" },
-  ".tc-btn-primary": { background: "var(--color-accent)", color: "#fff", borderColor: "var(--color-accent-deep)" },
-  ".tc-btn-primary:hover": { background: "var(--color-accent-deep)" },
+  ".tc-btn-primary": { background: "var(--color-accent)", color: "var(--color-accent-fg)", borderColor: "var(--color-accent-deep)" },
+  ".tc-btn-primary:hover": { background: "var(--color-accent-deep)", color: "#fff" },
   ".tc-icon-btn": {
     padding: "2px 7px",
     borderRadius: "5px",
@@ -658,10 +660,12 @@ const baseTheme = EditorView.baseTheme({
     border: "none",
     borderRadius: "5px",
     cursor: "pointer",
-    color: "#fff",
+    // The "+" glyph is the whole control here, so a low-contrast ink makes
+    // the button look empty rather than merely hard to read.
+    color: "var(--color-accent-fg)",
     background: "var(--color-accent)",
     boxShadow: "0 1px 2px rgba(0,0,0,0.3)",
   },
-  ".tc-line-add-btn:hover": { background: "var(--color-accent-deep)" },
+  ".tc-line-add-btn:hover": { background: "var(--color-accent-deep)", color: "#fff" },
   ".tc-line-add-btn svg": { width: "12px", height: "12px" },
 });

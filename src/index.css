@@ -51,11 +51,18 @@
      White text + accent-deep should hit ≥4.5:1 contrast. */
   --color-accent-deep: #b35e3f;
   /* Text painted ON a solid --color-accent fill (count badges, filled
-     CTAs). White works for the dark terracotta/orange accents; themes
-     with a LIGHT accent (rosepine gold, cobalt sky, matrix green)
-     override this to a dark ink or the text is unreadable. */
+     CTAs). Themes with a LIGHT accent (rosepine rose, cobalt sky,
+     matrix green) override this to a dark ink or the text is
+     unreadable. The default terracotta is only ~3.1:1 with white; it
+     stays for brand continuity, and this token is the lever if the
+     shipped theme should ever clear 4.5:1 too. */
   --color-accent-fg: #ffffff;
   --color-ok:        #4caf50;
+  /* Ink on a solid --color-ok fill (the AgentsSection toggle tracks).
+     Deliberately NOT --color-accent-fg: a theme may pair a light accent
+     with a dark ok, or the reverse, so the two inks cannot share a
+     token. rosepine is the only theme that recolors --color-ok. */
+  --color-ok-fg:     #ffffff;
   --color-warn:      #f0b13a;
   --color-err:       #ef5350;
 
@@ -275,6 +282,9 @@
                                            which made filled knobs/badges read
                                            as holes punched to the page bg */
     --color-ok:          #9ccfd8;       /* foam — additions/info */
+    --color-ok-fg:       #26233a;       /* overlay ink on foam, ~8.9:1. The only
+                                           theme needing this: foam is the one
+                                           light --color-ok in the app */
     --color-warn:        #f6c177;       /* gold */
     --color-err:         #eb6f92;       /* love */
     color-scheme: dark;

@@ -206,7 +206,12 @@ export function editorSurfaceTheme(
       top: "0px",
       width: "4px",
       height: "8px",
-      border: "solid white",
+      // Checkmark sits on an accent-filled box, so it takes the on-accent ink.
+      // Longhands, not `border: solid var(...)`: a var() inside a shorthand
+      // makes the whole declaration pending-substitution, and one unset token
+      // would drop border-style back to `none` and erase the checkmark.
+      borderStyle: "solid",
+      borderColor: "var(--color-accent-fg)",
       borderWidth: "0 1.5px 1.5px 0",
       transform: "rotate(45deg)",
     },

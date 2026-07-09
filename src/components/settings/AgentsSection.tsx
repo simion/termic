@@ -640,8 +640,10 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           >
             <span
               className={cn(
+                // Track is --color-ok when on, so the knob takes the ok ink,
+                // not the accent ink. Off-track is dark in every theme.
                 "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out",
-                !agent.disabled ? "translate-x-4 bg-[var(--color-accent-fg)]" : "translate-x-0 bg-white"
+                !agent.disabled ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
               )}
             />
           </button>
@@ -783,8 +785,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             >
               <span
                 className={cn(
+                  // Ok-filled track, so the ok ink (see the toggle above).
                   "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out",
-                  agent.work_done !== false ? "translate-x-4 bg-[var(--color-accent-fg)]" : "translate-x-0 bg-white"
+                  agent.work_done !== false ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
                 )}
               />
             </button>
