@@ -15,12 +15,13 @@ import {
 } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
-import { usePrefs, type ThemeMode } from "@/store/prefs";
+import { usePrefs, type BuiltinThemeMode, type ThemeMode } from "@/store/prefs";
 import { useUpdate } from "@/store/update";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
 import { bindingGlyphs, type ShortcutId } from "@/lib/shortcuts";
 import { confirmAndArchive } from "@/lib/archiveWorkspace";
 import { workspaceSetYolo, openPath } from "@/lib/ipc";
+import { isCustomId } from "@/lib/customTheme";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -48,7 +49,7 @@ interface Cmd {
   run: () => void;
 }
 
-const THEME_LABELS: Record<ThemeMode, string> = {
+const THEME_LABELS: Record<BuiltinThemeMode, string> = {
   auto: "System (auto)",
   light: "Light",
   dark: "Dark",
@@ -58,7 +59,7 @@ const THEME_LABELS: Record<ThemeMode, string> = {
   matrix: "Matrix",
   rosepine: "Rosé Pine",
 };
-const THEME_ORDER: ThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
+const THEME_ORDER: BuiltinThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
 
 export function CommandPalette() {
   const open = useUI(s => s.commandPaletteOpen);
@@ -67,7 +68,19 @@ export function CommandPalette() {
   const workspaces = useApp(s => s.workspaces);
   const projects = useApp(s => s.projects);
   const themeMode = usePrefs(s => s.themeMode);
+  const customThemes = usePrefs(s => s.customThemes);
   const binds = usePrefs(s => s.shortcuts);
+
+  // Built-ins first, then the custom theme files — the submenu's order.
+  const themeEntries = useMemo<{ id: ThemeMode; label: string }[]>(
+    () => [
+      ...THEME_ORDER.map(m => ({ id: m as ThemeMode, label: THEME_LABELS[m] })),
+      ...customThemes.map(t => ({ id: t.id as ThemeMode, label: t.name })),
+    ],
+    [customThemes],
+  );
+  const themeLabel = (m: ThemeMode) =>
+    themeEntries.find(e => e.id === m)?.label ?? (isCustomId(m) ? m.slice("custom:".length) : m);
 
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -111,9 +124,9 @@ export function CommandPalette() {
   useEffect(() => {
     if (view === "theme") {
       const cur = themeOriginalRef.current ?? usePrefs.getState().themeMode;
-      setActiveIdx(Math.max(0, THEME_ORDER.indexOf(cur)));
+      setActiveIdx(Math.max(0, themeEntries.findIndex(e => e.id === cur)));
     } else setActiveIdx(0);
-  }, [view]);
+  }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Wrap an action so it closes the palette, then runs on the NEXT frame.
    *  The defer matters when the action opens another dialog (Archive → confirm,
@@ -127,10 +140,10 @@ export function CommandPalette() {
   // workspace is active. Everything reads live store state at build time.
   const commands = useMemo<Cmd[]>(() => {
     if (view === "theme") {
-      return THEME_ORDER.map<Cmd>(m => ({
+      return themeEntries.map<Cmd>(({ id: m, label }) => ({
         id: `theme:${m}`,
         section: "View",
-        label: THEME_LABELS[m],
+        label,
         icon: m === themeMode ? Check : Palette,
         keywords: "theme appearance color",
         // Commit: the live preview already applied it; clear the rollback
@@ -226,8 +239,11 @@ export function CommandPalette() {
     }
     cmds.push({
       id: "change-theme", section: "View", label: "Change theme…",
-      suffix: THEME_LABELS[themeMode], icon: Palette, keywords: "appearance color dark light",
+      suffix: themeLabel(themeMode), icon: Palette, keywords: "appearance color dark light",
       run: () => {
+        // Refresh the custom theme files so the submenu reflects the folder
+        // (same refetch-on-open the picker does on trigger hover).
+        void usePrefs.getState().loadCustomThemes();
         // Enter the submenu and start a live preview — arrowing through the
         // themes applies each one; cancelling restores this captured original.
         themeOriginalRef.current = usePrefs.getState().themeMode;
@@ -291,7 +307,7 @@ export function CommandPalette() {
     }
 
     return cmds;
-  }, [view, ws, proj, themeMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, ws, proj, themeMode, themeEntries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Filter + score against the query, preserving section order. Each command
   // matches on "<label> <keywords>"; only label-range hits are highlighted.
