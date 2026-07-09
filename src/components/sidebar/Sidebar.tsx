@@ -6,7 +6,7 @@ import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen, Megaphone, Keyboard } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, EyeOff, Trash2, FolderOpen, Megaphone, Keyboard } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -885,16 +885,20 @@ function iconSize(compact: boolean) {
 // collapsed) and on each tab child row.
 //   done      → solid blue bullet (work finished, untouched until input)
 //   attention → orange bell (agent explicitly blocked on user)
-// The "working" spinner is opt-in (Settings → General → Work-in-progress
-// indicator) and OFF by default — it can misfire on noisy TUIs (Claude
-// Code's continuous redraws, Codex's status counter). The internal
+//   working   → breathing accent dot (agent thinking)
+// The "working" dot is ON by default but can be turned off (Settings →
+// General → Work-in-progress indicator) — it can misfire on noisy TUIs
+// (Claude Code's continuous redraws, Codex's status counter). The internal
 // workState=="working" is always tracked so the done detector fires on
 // busy→idle transitions; this badge just surfaces it when enabled.
 function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
   if (reason === "working") {
     return (
-      <span className="shrink-0 text-[var(--color-fg-faint)]" title="Agent working" aria-label="Working">
-        <Loader2 className="h-3 w-3 animate-spin" />
+      <span className="shrink-0 flex items-center justify-center" title="Agent working" aria-label="Working">
+        <span
+          className="termic-working-breathe block h-2 w-2 rounded-full"
+          style={{ backgroundColor: "var(--color-working)" }}
+        />
       </span>
     );
   }
@@ -906,7 +910,7 @@ function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
     );
   }
   // done — solid blue bullet, iTerm2-style. Uses --color-info if defined,
-  // falls back to a literal blue. h-3.5 visually matches the bell + spinner.
+  // falls back to a literal blue. Sized h-2 to match the working dot.
   return (
     <span
       className="shrink-0 flex items-center justify-center"
@@ -1092,10 +1096,12 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               style={{ backgroundColor: hasAttention ? "var(--color-warn)" : "var(--color-info, #4aa3ff)" }}
             />
           ) : hasWorking ? (
-            // No room for a full spinner on the rail; a faint pulsing dot
-            // carries "still working" without competing with the bold
-            // attention/done colors.
-            <span className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--color-fg-faint)] ring-2 ring-[var(--color-bg-1)]" />
+            // No room for a full glyph on the rail; a breathing accent dot
+            // carries "still working", tying to the full-row working badge.
+            <span
+              className="termic-working-breathe absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]"
+              style={{ backgroundColor: "var(--color-working)" }}
+            />
           ) : null}
         </div>
       </Tip>

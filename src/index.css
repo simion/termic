@@ -45,6 +45,10 @@
   --color-sel:       rgba(217, 119, 87, 0.20);
   --color-accent:    #d97757;
   --color-accent-soft: rgba(217, 119, 87, 0.22);
+  /* "Agent working" dot. Defaults to the accent so each theme keeps its
+     accent-colored working glyph; themes whose accent collides with the
+     done dot (--color-info blue) override this to stay legible. */
+  --color-working:   var(--color-accent);
   /* Darker accent for button surfaces. Pure accent looks fine on
      small icons + 1px borders but reads thin/light when used as a
      button background - especially on the brighter themes (cobalt).
@@ -199,6 +203,10 @@
     --color-sel:         rgba(102, 196, 255, 0.22);
     --color-accent:      #66c4ff;   /* bright cobalt sky */
     --color-accent-soft: rgba(102, 196, 255, 0.22);
+    /* Cobalt's sky-blue accent is too close to the done dot (#4aa3ff blue),
+       so the working and done glyphs would read alike, worse under
+       reduced-motion. Use a violet so working stays distinct here. */
+    --color-working:     #b58bff;
     /* Cobalt's bright sky-blue looks washed-out as a button bg
        against the navy panels. Drop down a couple of stops into
        a deep azure that still reads cobalt-family. */
@@ -402,6 +410,20 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
 }
 .termic-spotlight-wave {
   animation: termic-spotlight-wave 2s ease-in-out infinite;
+}
+
+/* Agent-working indicator — a brand-accent dot that gently breathes
+   (opacity + scale) to read as "thinking" without the spin of a loader.
+   Rhymes with the static blue done dot. Calm under reduced-motion. */
+@keyframes termic-working-breathe {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.72); }
+}
+.termic-working-breathe {
+  animation: termic-working-breathe 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .termic-working-breathe { animation: none; opacity: 0.7; }
 }
 
 /* Pending review-comments pill (ReviewCommentsBar). Comments are HELD until

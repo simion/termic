@@ -350,12 +350,12 @@ interface PrefsState {
    *  in-app "done" signal. Some users find it distracting and want
    *  the sidebar to stay calm regardless. */
   settledHighlight: boolean;
-  /** Show a spinner on an agent's tab (and sidebar icon) WHILE it's
-   *  working. OFF by default — experimental. The "working" workState is
-   *  always tracked internally to drive work-done detection; this pref only
-   *  controls whether it's surfaced. Work detection can occasionally get a
-   *  signal stuck, so TerminalPane has an absolute ceiling that force-clears
-   *  a stale "working" state regardless of sender signals. */
+  /** Show a breathing dot on an agent's tab (and sidebar icon) WHILE it's
+   *  working. ON by default. The "working" workState is always tracked
+   *  internally to drive work-done detection; this pref only controls
+   *  whether it's surfaced. Work detection can occasionally get a signal
+   *  stuck, so TerminalPane has an absolute ceiling that force-clears a
+   *  stale "working" state regardless of sender signals. */
   workingIndicator: boolean;
   /** Default for the NewWorkspaceDialog's Sandbox toggle when neither
    *  the project's `default_sandbox` nor an explicit user pick is in
@@ -589,9 +589,9 @@ const initialCompletionSoundId = readCompletionSoundId();
 // users who toggled it OFF keep their setting (lsGetBool returns the
 // stored value when present).
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
-// OFF by default — experimental re-introduction of the work-in-progress
-// spinner. Opt in via Settings → General.
-const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, false);
+// ON by default — the breathing accent dot is the in-app "working" signal,
+// matching the always-on done/attention glyphs. Opt out in Settings → General.
+const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, true);
 const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 // ON by default — sandboxed agents bypass their own permission prompts
 // because the seatbelt is the real boundary. Users can opt out.

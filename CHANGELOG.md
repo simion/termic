@@ -4,6 +4,14 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [Unreleased]
+
+### Features
+- The "agent working" indicator is now a gentle breathing dot in the agent's accent color, matching the done and attention glyphs, and it is shown by default. Turn it off in Settings, General.
+
+### Bug fixes
+- The working and done indicators are no longer both blue in the Cobalt theme, so you can tell them apart at a glance (including with reduced motion on).
+
 ## [0.19.0] - 2026-07-09
 
 Bring your own theme, and the font you picked is finally the font you get.
