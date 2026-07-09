@@ -512,7 +512,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
             disabled={commitDisabled}
             onClick={() => doCommit(pushDefault)}
             className={cn(
-              "flex h-7 items-center rounded-l-md bg-[var(--color-accent)] px-3 text-[12.5px] font-medium text-white transition-colors",
+              "flex h-7 items-center rounded-l-md bg-[var(--color-accent)] px-3 text-[12.5px] font-medium text-[var(--color-accent-fg)] transition-colors",
               commitDisabled ? "cursor-not-allowed opacity-40" : "hover:brightness-110",
             )}
           >
@@ -524,7 +524,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
                 disabled={commitDisabled}
                 title="Commit options"
                 className={cn(
-                  "flex h-7 w-6 items-center justify-center rounded-r-md border-l border-black/15 bg-[var(--color-accent)] text-white transition-colors",
+                  "flex h-7 w-6 items-center justify-center rounded-r-md border-l border-black/15 bg-[var(--color-accent)] text-[var(--color-accent-fg)] transition-colors",
                   commitDisabled ? "cursor-not-allowed opacity-40" : "hover:brightness-110",
                 )}
               >

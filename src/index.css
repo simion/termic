@@ -50,6 +50,11 @@
      button background - especially on the brighter themes (cobalt).
      White text + accent-deep should hit ≥4.5:1 contrast. */
   --color-accent-deep: #b35e3f;
+  /* Text painted ON a solid --color-accent fill (count badges, filled
+     CTAs). White works for the dark terracotta/orange accents; themes
+     with a LIGHT accent (rosepine gold, cobalt sky, matrix green)
+     override this to a dark ink or the text is unreadable. */
+  --color-accent-fg: #ffffff;
   --color-ok:        #4caf50;
   --color-warn:      #f0b13a;
   --color-err:       #ef5350;
@@ -191,6 +196,7 @@
        against the navy panels. Drop down a couple of stops into
        a deep azure that still reads cobalt-family. */
     --color-accent-deep: #1f6fa8;
+    --color-accent-fg:   #193549;   /* navy ink on the sky accent (white was ~1.9:1) */
     color-scheme: dark;
   }
 
@@ -215,6 +221,7 @@
     --color-accent:      #3fb950;       /* calmer green - reads matrix without burning the retina */
     --color-accent-soft: rgba(63, 185, 80, 0.20);
     --color-accent-deep: #2a7a36;       /* deeper phosphor for button surfaces */
+    --color-accent-fg:   #050905;       /* near-black ink on phosphor green (white was ~2.5:1) */
     color-scheme: dark;
   }
 
@@ -239,6 +246,7 @@
     --color-accent-deep: #9d3a11;       /* deeper solarized orange for buttons */
     color-scheme: dark;
   }
+
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 6px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--color-border-soft); }

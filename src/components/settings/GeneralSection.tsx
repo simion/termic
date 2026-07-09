@@ -438,8 +438,14 @@ function Toggle({ label, hint, value, onChange }: {
           style={{
             position: "absolute", top: 2, left: value ? 18 : 2,
             width: 16, height: 16, borderRadius: 999,
-            background: "#fff", boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-            transition: "left 150ms",
+            /* Knob picks up the on-accent ink when the track is filled —
+               themes with a light accent (rosepine gold) need a dark knob
+               there or knob and track melt together. */
+            background: value ? "var(--color-accent-fg)" : "#fff",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+            /* Color cross-fades with the slide so the knob doesn't snap
+               between its on/off inks mid-travel. */
+            transition: "left 150ms, background-color 150ms",
           }}
         />
       </button>

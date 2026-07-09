@@ -3,6 +3,7 @@
 ## Conventions
 
 - Colors are `@theme` CSS vars in `index.css`. Accent terracotta `#d97757`, dark surfaces `#0a0a0a`-`#181818`. Never hard-code hex outside `@theme`.
+- Text on a solid `--color-accent` fill (count badges, filled CTAs, toggle knobs on a filled track) must use `--color-accent-fg`, never `text-white`. The accent is not guaranteed dark: cobalt sky, matrix green, and any light-accent theme make white text unreadable (1.9-2.5:1). Themes with a light accent override `--color-accent-fg` to a dark ink. `--color-accent-deep` stays dark in every theme, so white text on it is fine.
 - `CliIcon cli={...}` + `CLI_BRAND_COLOR[cli]` for claude/gemini/codex (orange/blue/green).
 - Tooltips default `delay: 0`. Override per-call.
 - `cn()` from `@/lib/utils` for class composition.

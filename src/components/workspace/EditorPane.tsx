@@ -402,7 +402,7 @@ export function EditorPane({ ws, tab, active, onContent }: {
           <span>This file changed on disk. Reload discards your edits.</span>
           <button
             onClick={acceptDiskReload}
-            className="rounded bg-[var(--color-accent)] px-2 py-[3px] font-medium text-white hover:opacity-90"
+            className="rounded bg-[var(--color-accent)] px-2 py-[3px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
           >
             Reload
           </button>

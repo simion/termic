@@ -944,7 +944,7 @@ function RTab({ label, active, badge, repoBadge, onClick }: { label: string; act
       {badge !== undefined && (
         <span
           title={`${badge} files changed`}
-          className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-accent)] px-1.5 text-[11px] font-semibold leading-none text-white tabular-nums"
+          className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-accent)] px-1.5 text-[11px] font-semibold leading-none text-[var(--color-accent-fg)] tabular-nums"
         >
           {badge}
         </span>

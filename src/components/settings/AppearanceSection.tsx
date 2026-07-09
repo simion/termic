@@ -348,9 +348,10 @@ function Toggle({ label, hint, value, onChange }: { label: string; hint?: string
             left: value ? 18 : 2,
             width: 16, height: 16,
             borderRadius: 999,
-            background: "#ffffff",
+            /* Dark ink knob on a filled track (see GeneralSection Toggle). */
+            background: value ? "var(--color-accent-fg)" : "#ffffff",
             boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-            transition: "left 150ms",
+            transition: "left 150ms, background-color 150ms",
           }}
         />
       </button>
