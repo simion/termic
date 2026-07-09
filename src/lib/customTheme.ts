@@ -10,14 +10,16 @@
 export type ColorScheme = "dark" | "light";
 
 /** Raw shape returned by the Rust `themes_list` command. Parsed JSON but
- *  NOT yet validated — keys and color values may be arbitrary strings. */
+ *  NOT yet validated. Values are `unknown`, not `string`: Rust hands them
+ *  over as raw JSON so one `"bg": 123` degrades that key instead of
+ *  discarding the whole file, and `isValidColor` does the typeof check. */
 export interface CustomThemeFile {
   /** File stem (e.g. "rose-pine-moon" for rose-pine-moon.json). */
   id: string;
   name: string;
   colorScheme: string;
-  ui: Record<string, string>;
-  terminal: Record<string, string>;
+  ui: Record<string, unknown>;
+  terminal: Record<string, unknown>;
 }
 
 /** Sanitized in-app representation. `id` carries the `custom:` namespace

@@ -81,8 +81,9 @@ Unknown top-level fields are ignored (forward compatibility).
 ### `ui` keys
 
 Every key is optional and maps to the `--color-<key>` CSS variable. Missing
-keys fall back to the Dark+ defaults, so a minimal theme can override just
-`bg` and `accent` and still look coherent.
+keys fall back to the built-in palette matching your `colorScheme` (Dark+
+for dark themes, Light for light ones), so a minimal theme can override
+just `bg` and `accent` and still look coherent.
 
 | Key | What it paints |
 | --- | --- |
