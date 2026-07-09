@@ -294,13 +294,14 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
 
   // Live theme swap mirrors TerminalPane's effect; see the comment there.
   const themeMode = usePrefs(s => s.themeMode);
+  const customThemeRev = usePrefs(s => s.customThemeRev);
   const firstThemeRun = useRef(true);
   useEffect(() => {
     if (firstThemeRun.current) { firstThemeRun.current = false; return; }
     const t = termRef.current;
     if (!t) return;
     t.options.theme = currentTerminalTheme() as any;
-  }, [themeMode]);
+  }, [themeMode, customThemeRev]);
 
   return (
     <div className="relative flex h-full w-full flex-col">

@@ -9,6 +9,7 @@ import type {
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, FileEntry, Agent, RepoConfig,
   SandboxMode,
 } from "./types";
+import type { CustomThemeFile } from "./customTheme";
 import {
   COMPLETION_SOUND_SUPPORTED,
   MACOS_DEFAULT_SOUND,
@@ -402,6 +403,12 @@ export function onPtyExit(ptyId: string, cb: (code: number | null) => void): Pro
 // ───────────────────────────── settings & discovery ─────────────────────────────
 
 export const settingsLoad  = () => invoke<Settings>("settings_load");
+/** Raw custom theme files from `~/.config/termic/themes/*.json`. Unvalidated —
+ *  run each through customTheme.ts's sanitizeTheme before use. */
+export const themesList = () => invoke<CustomThemeFile[]>("themes_list");
+/** Ensure + return the custom themes directory (absolute path), for the
+ *  picker's "Open themes folder" row. */
+export const themesDir  = () => invoke<string>("themes_dir");
 export const settingsSave  = (s: Settings) => invoke<void>("settings_save", { s });
 export const agentsSave    = (agents: Agent[]) => invoke<void>("agents_save", { agents });
 export const discoverRepos = (dir: string) => invoke<DiscoveredRepo[]>("discover_repos", { dir });

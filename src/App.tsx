@@ -23,6 +23,7 @@ import { useShortcuts } from "@/hooks/useShortcuts";
 import { useAttentionNotifier } from "@/hooks/useAttentionNotifier";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
 import { useUpdate } from "@/store/update";
+import { usePrefs } from "@/store/prefs";
 import { focusMainTab } from "@/lib/tabFocus";
 
 export function App() {
@@ -63,6 +64,11 @@ export function App() {
     useApp.getState().refreshClis();
     // Kick off the update check + changelog fetch (idempotent).
     useUpdate.getState().init();
+
+    // Custom theme files: the first-paint cache already painted the active
+    // one at module load — this fetch populates the picker list and
+    // reconciles the selection against the folder (edited / deleted file).
+    usePrefs.getState().loadCustomThemes();
 
     // Hydrate spotlight state from Rust (survives hot-reloads).
     workspaceSpotlightStatus().then(map => {

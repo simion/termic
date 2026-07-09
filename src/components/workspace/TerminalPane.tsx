@@ -1625,13 +1625,16 @@ const captureArmedRef = useRef(false);
   // xterm's `options.theme` setter triggers an internal repaint so we
   // don't need to touch the WebGL atlas explicitly.
   const themeMode = usePrefs(s => s.themeMode);
+  // customThemeRev bumps when the active custom theme's FILE was edited
+  // (same themeMode string, new palette) — see prefs.loadCustomThemes.
+  const customThemeRev = usePrefs(s => s.customThemeRev);
   const firstThemeRun = useRef(true);
   useEffect(() => {
     if (firstThemeRun.current) { firstThemeRun.current = false; return; }
     const t = termRef.current;
     if (!t) return;
     t.options.theme = currentTerminalTheme() as any;
-  }, [themeMode]);
+  }, [themeMode, customThemeRev]);
 
   // YOLO live toggle — for agents that support runtime mode switching (only
   // gemini today), send the appropriate slash command. For claude/codex this

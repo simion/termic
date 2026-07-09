@@ -3,7 +3,11 @@
 // font, but built for future things (themes, terminal opacity, etc.).
 
 import { create } from "zustand";
-import { listMonospaceFonts } from "@/lib/ipc";
+import { listMonospaceFonts, themesList } from "@/lib/ipc";
+import {
+  applyCustomVars, clearCustomVars, clearThemeCache, isCustomId, mergeTerminal,
+  readThemeCache, sanitizeTheme, writeThemeCache, type CustomTheme,
+} from "@/lib/customTheme";
 import {
   DEFAULT_BINDINGS,
   type Binding,
@@ -50,20 +54,30 @@ const LS_PANE_DIM_AMT  = "splitPaneDimAmount";
 /** Markdown edit-tab view: source editor, rendered preview, or both. */
 export type MarkdownView = "source" | "preview" | "split";
 
-export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine";
-/** What `applyTheme` resolves to: a concrete palette name. `auto` is
- *  never returned; it gets mapped to light/dark based on OS preference. */
+export type BuiltinThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine";
+/** The user's selection: a built-in mode, or a custom theme file id
+ *  (`custom:<file-stem>`, see lib/customTheme.ts). */
+export type ThemeMode = BuiltinThemeMode | `custom:${string}`;
+/** What `applyTheme` resolves a BUILT-IN mode to: a concrete palette name.
+ *  `auto` is never returned; it gets mapped to light/dark based on OS
+ *  preference. Custom ids resolve to themselves (see resolveThemeFull). */
 export type ResolvedTheme = "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine";
 
-const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
+const VALID_MODES: ReadonlyArray<BuiltinThemeMode> = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
 /** Defensive parse: localStorage may hold a theme id that's been
  *  removed in a later version. Fall back to "claude" (the default
  *  theme) instead of letting the unknown string flow through and
  *  silently land on the @theme default. NOTE: this also migrates the
  *  old "vscode" id for free — that theme was renamed to "claude", and
- *  any stale "vscode" string lands here and resolves to it. */
+ *  any stale "vscode" string lands here and resolves to it. A custom id
+ *  is only trusted when the first-paint cache holds its payload (the
+ *  cache is written on every custom pick, so a cache miss means the
+ *  theme can't be painted anyway — the startup refetch would just
+ *  bounce it back to the fallback). */
 function parseThemeMode(raw: string): ThemeMode {
-  return (VALID_MODES as readonly string[]).includes(raw) ? (raw as ThemeMode) : "claude";
+  if ((VALID_MODES as readonly string[]).includes(raw)) return raw as ThemeMode;
+  if (isCustomId(raw) && readThemeCache()?.id === raw) return raw;
+  return "claude";
 }
 
 /** xterm theme objects keyed by resolved palette. Each must define enough
@@ -165,11 +179,27 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
   },
 };
 
-/** Resolve the user's chosen theme to a concrete palette name. Used by
- *  both `applyTheme` (to pick which html class to toggle) and the
- *  terminal panes (to pick the matching xterm theme). */
+/** Look up a custom theme's payload by its `custom:<slug>` id. The store's
+ *  fetched list wins; before the first themes_list answer (module load,
+ *  first paint) we fall back to the localStorage cache of the active theme. */
+function customThemeById(id: string): CustomTheme | null {
+  const fromStore = usePrefs.getState().customThemes.find(t => t.id === id);
+  if (fromStore) return fromStore;
+  const cached = readThemeCache();
+  return cached && cached.id === id ? cached : null;
+}
+
+/** Resolve the user's chosen theme to a concrete xterm palette. Custom
+ *  themes merge their (sanitized) terminal overrides onto the built-in
+ *  base matching their colorScheme, so a partial block stays readable. */
 export function currentTerminalTheme(): Record<string, string> {
   const resolved = resolveThemeFull(usePrefs.getState().themeMode);
+  if (isCustomId(resolved)) {
+    const theme = customThemeById(resolved);
+    if (!theme) return TERMINAL_THEMES.dark;
+    const base = TERMINAL_THEMES[theme.colorScheme === "light" ? "light" : "dark"];
+    return mergeTerminal(base, theme.terminal);
+  }
   return TERMINAL_THEMES[resolved];
 }
 
@@ -181,8 +211,7 @@ export function currentTerminalTheme(): Record<string, string> {
  *  (white on black) for any dark-family palette. Set this on every
  *  PTY spawn alongside TERMIC_PORT etc. */
 export function currentColorFgBg(): string {
-  const resolved = resolveThemeFull(usePrefs.getState().themeMode);
-  return resolved === "light" ? "0;15" : "15;0";
+  return resolveTheme(usePrefs.getState().themeMode) === "light" ? "0;15" : "15;0";
 }
 
 // Curated list of monospace fonts we probe for. JetBrains Mono ships
@@ -336,8 +365,19 @@ interface PrefsState {
    *  - "project" → this project's personal defaults (projects.json)
    *  - "repo"    → the committed `.termic.yaml` (team-shared) */
   allowScope: "agent" | "project" | "repo" | null;
-  /** Color scheme: explicit dark/light, or auto = follow system. */
+  /** Color scheme: explicit dark/light, auto = follow system, or a
+   *  `custom:<slug>` theme file id. */
   themeMode: ThemeMode;
+  /** Sanitized custom themes from `<data_dir>/themes/*.json`. Fetched at
+   *  startup and re-fetched every time the theme picker opens (no fs
+   *  watcher — the dir is tiny and the command is async). The reference
+   *  only changes when the on-disk content actually changed, so
+   *  subscribers don't re-render on every picker hover. */
+  customThemes: CustomTheme[];
+  /** Bumped when the ACTIVE custom theme's payload changed on a refetch
+   *  (file edited while selected). Terminal panes key their live-swap
+   *  effect on this so an edit updates xterm without a theme re-pick. */
+  customThemeRev: number;
   /** Font for the CodeMirror editor + diff viewer. */
   editorFontId: string;
   /** Syntax theme for the editor + diff viewer (atomone, tokyo-night, …).
@@ -430,6 +470,10 @@ interface PrefsState {
   setThemeMode:       (m: ThemeMode) => void;
   /** Convenience: cycle auto → light → dark → auto. */
   cycleThemeMode:     () => void;
+  /** Fetch + sanitize the custom theme files, then reconcile the active
+   *  selection: file deleted → fall back to "claude" (persisted), file
+   *  edited → re-apply vars + bump customThemeRev. Safe to fire often. */
+  loadCustomThemes:   () => Promise<void>;
   setDesktopNotifications: (v: boolean) => void;
   setCompletionSound: (v: boolean) => void;
   setCompletionSoundId: (id: CompletionSoundId) => void;
@@ -562,6 +606,8 @@ const initialQueueMinInterval = Math.max(0, Math.min(120000, Math.round(lsGetNum
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
+  customThemes: [],
+  customThemeRev: 0,
   desktopNotifications: initialDesktopNotif,
   completionSound: initialCompletionSound,
   completionSoundId: initialCompletionSoundId,
@@ -657,9 +703,41 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setCodeLigatures(d.codeLigatures);
   },
   setThemeMode: (m) => {
+    // Picking a custom theme refreshes the first-paint cache so applyTheme
+    // (and the next launch's module-load paint) has the payload at hand.
+    if (isCustomId(m)) {
+      const theme = usePrefs.getState().customThemes.find(t => t.id === m);
+      if (theme) writeThemeCache(theme);
+    }
     try { localStorage.setItem(LS_THEME, m); } catch {}
     applyTheme(m);
     set({ themeMode: m });
+  },
+  loadCustomThemes: async () => {
+    let files;
+    try { files = await themesList(); } catch { return; }
+    const themes = files.map(sanitizeTheme);
+    const prev = usePrefs.getState().customThemes;
+    // Only publish a new array when the content changed — subscribers
+    // (picker, terminal panes) shouldn't re-render on a no-op refetch.
+    if (JSON.stringify(prev) !== JSON.stringify(themes)) set({ customThemes: themes });
+    const mode = usePrefs.getState().themeMode;
+    if (!isCustomId(mode)) return;
+    const active = themes.find(t => t.id === mode);
+    if (!active) {
+      // The active theme's file was deleted — fall back to the default
+      // theme and persist so the pref doesn't dangle on a dead id.
+      clearThemeCache();
+      usePrefs.getState().setThemeMode("claude");
+      return;
+    }
+    const cached = readThemeCache();
+    if (!cached || JSON.stringify(cached) !== JSON.stringify(active)) {
+      // The active theme's file was edited — re-apply live.
+      writeThemeCache(active);
+      applyTheme(mode);
+      set(s => ({ customThemeRev: s.customThemeRev + 1 }));
+    }
   },
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}
@@ -755,28 +833,36 @@ export const usePrefs = create<PrefsState>(set => ({
 }));
 
 /** Legacy resolver kept for callers that only care about light-vs-dark
- *  (toolbar icon swap, system colorScheme hint). Espresso + Solarized
- *  both collapse to "dark" for those binary purposes. */
+ *  (toolbar icon swap, editor auto, COLORFGBG, system colorScheme hint).
+ *  Espresso + Solarized both collapse to "dark"; a custom theme collapses
+ *  to its declared colorScheme. This single mapping is why editor-auto
+ *  and COLORFGBG need zero custom-theme awareness of their own. */
 export function resolveTheme(mode: ThemeMode): "light" | "dark" {
   const full = resolveThemeFull(mode);
+  if (isCustomId(full)) return customThemeById(full)?.colorScheme ?? "dark";
   return full === "light" ? "light" : "dark";
 }
 
 /** Resolve to the concrete palette name (light / dark / espresso /
  *  solarized). `auto` only ever maps to light or dark - the OS doesn't
- *  speak espresso/solarized; those require an explicit user pick. */
-export function resolveThemeFull(mode: ThemeMode): ResolvedTheme {
+ *  speak espresso/solarized; those require an explicit user pick.
+ *  Custom ids pass through as-is. */
+export function resolveThemeFull(mode: ThemeMode): ResolvedTheme | `custom:${string}` {
   if (mode === "auto") {
     return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   }
   return mode;
 }
 
-/** Set the html element's class so the CSS palette swap kicks in.
- *  We toggle ALL palette classes so a stale class from a previous
- *  theme can't bleed through after a switch. */
+/** Swap the html element's palette. Built-ins toggle their CSS class;
+ *  custom themes clear ALL theme classes and push their colors as inline
+ *  vars (inline beats the @theme defaults in the cascade, so a partial
+ *  theme falls back to Dark+ per-key). We always toggle every class AND
+ *  reconcile the inline vars so nothing from the previous theme bleeds
+ *  through after a switch in either direction. */
 export function applyTheme(mode: ThemeMode) {
   const resolved = resolveThemeFull(mode);
+  const custom = isCustomId(resolved) ? customThemeById(resolved) : null;
   const html = document.documentElement;
   html.classList.toggle("light",     resolved === "light");
   html.classList.toggle("dark",      resolved === "dark");
@@ -785,9 +871,17 @@ export function applyTheme(mode: ThemeMode) {
   html.classList.toggle("cobalt",    resolved === "cobalt");
   html.classList.toggle("matrix",    resolved === "matrix");
   html.classList.toggle("rosepine",  resolved === "rosepine");
-  // Color-scheme tells the browser to use light/dark form controls +
-  // scrollbars. Espresso + Solarized both want dark widgets.
-  html.style.colorScheme = resolved === "light" ? "light" : "dark";
+  if (custom) {
+    applyCustomVars(html, custom.ui);
+    // Color-scheme tells the browser to use light/dark form controls +
+    // scrollbars; the theme file declares which family it belongs to.
+    html.style.colorScheme = custom.colorScheme;
+  } else {
+    // Built-in (or a custom id whose payload is gone — every class is
+    // off, so this degrades to the @theme Dark+ defaults).
+    clearCustomVars(html);
+    html.style.colorScheme = resolved === "light" ? "light" : "dark";
+  }
 }
 
 // Apply at module load so the first paint matches the user's preference.
