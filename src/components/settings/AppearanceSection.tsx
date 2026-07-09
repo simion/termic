@@ -39,8 +39,18 @@ export function AppearanceSection() {
 
   // Start with the curated subset so the picker is usable instantly, then
   // upgrade to the full system list when font-kit comes back (~50–200ms).
-  const [fonts, setFonts] = useState(() => availableMonoFonts());
-  useEffect(() => { availableMonoFontsAsync().then(setFonts).catch(() => {}); }, []);
+  // The currently-selected system: fonts are seeded into the initial list —
+  // a <select> whose value has no matching <option> renders blank, and the
+  // native popup won't take options added while it's open.
+  const [fonts, setFonts] = useState(() =>
+    withSelectedFonts(availableMonoFonts(), [editorFontId, terminalFontId]));
+  useEffect(() => {
+    availableMonoFontsAsync()
+      .then(list => setFonts(withSelectedFonts(list, [editorFontId, terminalFontId])))
+      .catch(() => {});
+    // Mount-time ids are enough: later picks can only come FROM the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Disable the reset button when every appearance pref already matches
   // the factory defaults — nothing to undo.
@@ -234,6 +244,17 @@ function Field({ label, hint, control }: { label: string; hint?: string; control
       <div className="shrink-0">{control}</div>
     </div>
   );
+}
+
+/** Ensure every selected `system:` font id has an entry in the option list,
+ *  synthesizing one from the id itself (the family name lives in the id, so
+ *  no enumeration is needed). Keeps the pick visible even if the system scan
+ *  hasn't finished, or the font was uninstalled since it was chosen. */
+function withSelectedFonts(list: typeof MONO_FONT_OPTIONS, ids: string[]) {
+  const extras = [...new Set(ids)]
+    .filter(id => id.startsWith("system:") && !list.some(o => o.id === id))
+    .map(id => ({ id, label: id.slice(7), stack: stackFor(id) }));
+  return extras.length ? [...list, ...extras] : list;
 }
 
 function FontSelect({ value, onChange, fonts }: {
