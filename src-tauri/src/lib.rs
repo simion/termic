@@ -6892,6 +6892,93 @@ fn agents_save(agents: Vec<Agent>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ───────────────────────────── custom themes ─────────────────────────────
+
+/// One custom theme file from the themes config dir (see
+/// `themes_dir_path`). `id` is the file stem (the frontend namespaces it
+/// as `custom:<id>`); `ui` / `terminal` are passed through as raw string
+/// maps — the frontend allowlist-validates keys and color values, so a
+/// bad entry degrades per-key instead of failing the file. Unknown
+/// top-level JSON fields are ignored (forward compat). Serialized
+/// camelCase to match the on-disk file format.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomThemeFile {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub color_scheme: String,
+    #[serde(default)]
+    pub ui: HashMap<String, String>,
+    #[serde(default)]
+    pub terminal: HashMap<String, String>,
+}
+
+/// `$XDG_CONFIG_HOME/termic/themes`, defaulting to `~/.config/termic/themes`
+/// — the same path shape on every platform (wezterm/starship convention;
+/// on Windows `~` is the user profile dir). Themes are hand-authored,
+/// stowable config, unlike the app-owned JSON in `data_dir()`, so they
+/// live under `.config` and deliberately skip the `termic_dev` split
+/// (dev builds should see your real themes; the files are inert and
+/// validated, so they can't destabilize a dev run).
+fn themes_dir_path() -> Result<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .ok_or_else(|| anyhow!("no home"))?;
+    let p = base.join("termic").join("themes");
+    fs::create_dir_all(&p)?;
+    Ok(p)
+}
+
+/// List every parseable custom theme file in the themes dir. A file
+/// that fails to read or parse is skipped with a log line — one bad JSON
+/// must never blank the theme picker. Sorted by file stem for stable order.
+#[tauri::command]
+async fn themes_list() -> Result<Vec<CustomThemeFile>, String> {
+    let dir = themes_dir_path().map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let raw = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[themes] skipping {}: {e}", path.display());
+                continue;
+            }
+        };
+        match serde_json::from_str::<CustomThemeFile>(&raw) {
+            Ok(mut theme) => {
+                theme.id = stem.to_string();
+                if theme.name.trim().is_empty() {
+                    theme.name = stem.to_string();
+                }
+                out.push(theme);
+            }
+            Err(e) => eprintln!("[themes] skipping {}: {e}", path.display()),
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+/// Ensure the themes directory exists and return its absolute path.
+/// Backs the picker's "Open themes folder" row.
+#[tauri::command]
+async fn themes_dir() -> Result<String, String> {
+    Ok(themes_dir_path()
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .into_owned())
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DiscoveredRepo {
     pub path: String,
@@ -7322,6 +7409,7 @@ pub fn run() {
             automation::automation_result,
             automation::automation_armed,
             list_monospace_fonts,
+            themes_list, themes_dir,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -252,7 +252,9 @@ no metered markup, no backend daemon. Here's what the window gives you on top:
   bottom, ⌘T spawns a new tab, ⌘W closes one. Every shortcut is rebindable in
   Settings → Shortcuts (⌘/ for the searchable cheat sheet). Seven themes
   (System, Light, Claude, Dark+, Solarized Dark, Cobalt, Matrix), each
-  re-themes both chrome and the terminal pane.
+  re-themes both chrome and the terminal pane. Or bring your own: drop a
+  JSON file in the themes folder and it appears in the picker as a
+  first-class theme — see [docs/themes.md](docs/themes.md).
 - **Terminal niceties.** xterm.js + WebGL, OSC 52 clipboard (copy out of a
   container or over SSH), optional copy-on-select, inline images, clickable
   links, and drag-and-drop file paths.
