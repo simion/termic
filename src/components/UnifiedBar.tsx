@@ -14,7 +14,7 @@ import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, FolderOpen, Archive,
   Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Eye, Flower2,
-  MessageSquareText, Library, Plus,
+  MessageSquareText, Library, Plus, Palette,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { effectiveSandboxMode } from "@/lib/types";
@@ -23,7 +23,7 @@ import type { TerminalTab } from "@/lib/types";
 import { findLeaf } from "@/lib/splitTree";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
-import { openPath, workspaceSendDiffToMain } from "@/lib/ipc";
+import { openPath, themesDir, workspaceSendDiffToMain } from "@/lib/ipc";
 import { archiveAndRefresh } from "@/lib/archiveWorkspace";
 import { visibleCliIds, isTerminalEntry, tabLabel } from "@/lib/agents";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -495,6 +495,9 @@ function ThemePicker({
   const [open, setOpen] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  // Custom theme files (~/.config/termic/themes/*.json). Refetched on every
+  // trigger hover — that's the "hot reload": edit file, reopen picker.
+  const customThemes = usePrefs(s => s.customThemes);
   const cancelClose = () => {
     if (closeTimerRef.current) { window.clearTimeout(closeTimerRef.current); closeTimerRef.current = null; }
   };
@@ -515,7 +518,10 @@ function ThemePicker({
     <div
       ref={wrapperRef}
       className="relative"
-      onMouseEnter={() => { cancelClose(); setOpen(true); }}
+      onMouseEnter={() => {
+        cancelClose(); setOpen(true);
+        void usePrefs.getState().loadCustomThemes();
+      }}
       onMouseLeave={scheduleClose}
     >
       <Button size="icon" variant="icon" onClick={() => setOpen(v => !v)}>
@@ -557,6 +563,40 @@ function ThemePicker({
               </button>
             );
           })}
+          {customThemes.length > 0 && (
+            <div className="my-1 border-t border-[var(--color-border-soft)]" />
+          )}
+          {customThemes.map(t => {
+            const active = t.id === themeMode;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setThemeMode(t.id)}
+                className={cn(
+                  "flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13.5px] text-[var(--color-fg)]",
+                  "hover:bg-[var(--color-hover)]",
+                )}
+              >
+                <Check className={cn("h-3.5 w-3.5 text-[var(--color-accent)]", active ? "opacity-100" : "opacity-0")} />
+                <Palette className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                <span className="truncate">{t.name}</span>
+              </button>
+            );
+          })}
+          <div className="my-1 border-t border-[var(--color-border-soft)]" />
+          {/* Doubles as the discovery affordance when no custom theme files
+              exist yet — drop a JSON here, hover the picker again, done. */}
+          <button
+            onClick={() => { themesDir().then(openPath).catch(() => {}); }}
+            className={cn(
+              "flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13.5px] text-[var(--color-fg)]",
+              "hover:bg-[var(--color-hover)]",
+            )}
+          >
+            <span className="h-3.5 w-3.5" />
+            <FolderOpen className="h-4 w-4 text-[var(--color-fg-dim)]" />
+            <span>Open themes folder</span>
+          </button>
           {/* One-time tip: agent CLIs persist their own theme. We set
               COLORFGBG on spawn so most TUIs auto-pick, but claude /
               gemini / codex also expose a `/theme` slash command that

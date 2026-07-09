@@ -123,9 +123,10 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   const setActiveBottom = useApp(s => s.setActiveBottomTab);
   const setBottomLiveTitle = useApp(s => s.setBottomTabLiveTitle);
 
-  // Subscribe to themeMode so the terminals-area bg recomputes when the
-  // user switches themes.
+  // Subscribe to themeMode (and the custom-theme edit counter) so the
+  // terminals-area bg recomputes when the user switches or edits themes.
   usePrefs(s => s.themeMode);
+  usePrefs(s => s.customThemeRev);
   const xtermBg = currentTerminalTheme().background as string;
 
   // Workspace split tree: the main pane is an ordinary leaf (isMain flag) that
