@@ -299,9 +299,13 @@ let _systemFontsCache: string[] | null = null;
  *  entry (id = "system:<name>", label = family name, stack = family). */
 export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTIONS> {
   const curated = availableMonoFonts();
-  if (!_systemFontsCache) {
-    try { _systemFontsCache = await listMonospaceFonts(); }
-    catch { _systemFontsCache = []; }
+  let system = _systemFontsCache;
+  if (!system) {
+    // Failures are NOT cached: an enumeration that dies (e.g. fired before
+    // the IPC bridge settles) must retry on the next call, not permanently
+    // hide every system font behind an empty cached list.
+    try { system = _systemFontsCache = await listMonospaceFonts(); }
+    catch { system = []; }
   }
   // Names already covered by curated (case-insensitive match against the
   // first family in each stack) — we keep the curated entry so the brand
@@ -309,7 +313,7 @@ export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTION
   const covered = new Set(curated.map(o =>
     o.stack.split(",")[0].trim().replace(/^"|"$/g, "").toLowerCase()
   ));
-  const extras = _systemFontsCache
+  const extras = system
     .filter(name => !covered.has(name.toLowerCase()))
     .map(name => ({
       id: `system:${name}`,
@@ -319,8 +323,14 @@ export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTION
   return [...curated, ...extras];
 }
 
-/** Resolve a font id → CSS font-family stack, defaulting to JetBrains. */
-function stackFor(id: string) {
+/** Resolve a font id → CSS font-family stack, defaulting to JetBrains.
+ *  Handles both curated ids and the `system:<family>` ids produced by
+ *  availableMonoFontsAsync() — those never appear in MONO_FONT_OPTIONS,
+ *  so without the prefix branch every system-enumerated pick silently
+ *  fell back to the bundled JetBrains Mono (latin subset, no Nerd Font
+ *  glyphs). */
+export function stackFor(id: string) {
+  if (id.startsWith("system:")) return `"${id.slice(7)}", monospace`;
   const opt = MONO_FONT_OPTIONS.find(o => o.id === id) || MONO_FONT_OPTIONS[0];
   return opt.stack;
 }
@@ -920,3 +930,9 @@ export const currentTerminalStack = () => {
 
 // Apply editor font at module load so the first paint uses the right font.
 applyEditorFont(initialEditorFont);
+
+// Warm the system font enumeration at startup so the Settings font pickers
+// have the full list by the time one first mounts. Without this the first
+// dropdown open raced the scan and only showed the curated subset (the
+// native select popup won't take options added while it's open).
+availableMonoFontsAsync().catch(() => {});
