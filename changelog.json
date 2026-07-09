@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.19.0",
+      "date": "2026-07-09",
+      "summary": "Bring your own theme, and the font you picked is finally the font you get."
+    },
+    {
       "version": "0.18.4",
       "date": "2026-07-08",
       "summary": "A Sublime-style split-pane rewrite, plus Run now lives in the main window."
