@@ -50,12 +50,12 @@ const LS_PANE_DIM_AMT  = "splitPaneDimAmount";
 /** Markdown edit-tab view: source editor, rendered preview, or both. */
 export type MarkdownView = "source" | "preview" | "split";
 
-export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
+export type ThemeMode = "auto" | "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine";
 /** What `applyTheme` resolves to: a concrete palette name. `auto` is
  *  never returned; it gets mapped to light/dark based on OS preference. */
-export type ResolvedTheme = "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix";
+export type ResolvedTheme = "light" | "dark" | "claude" | "solarized" | "cobalt" | "matrix" | "rosepine";
 
-const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix"];
+const VALID_MODES: ReadonlyArray<ThemeMode> = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
 /** Defensive parse: localStorage may hold a theme id that's been
  *  removed in a later version. Fall back to "claude" (the default
  *  theme) instead of letting the unknown string flow through and
@@ -145,6 +145,23 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
     blue:    "#5a9fd6", magenta: "#c075c0", cyan:    "#50b0a8", white:   "#c8e1c0",
     brightBlack:   "#5a6058", brightRed:     "#e88a8a", brightGreen:   "#5fd06e", brightYellow:  "#e0d670",
     brightBlue:    "#7eb5e6", brightMagenta: "#d090d0", brightCyan:    "#70c8c0", brightWhite:   "#e8f0e0",
+  },
+  rosepine: {
+    // Rosé Pine (main) — official ANSI mapping (matches Ghostty's built-in),
+    // so agent TUIs look identical in termic and Ghostty. Brights stay equal
+    // to normals except brightBlack=muted, per the official spec. Cursor
+    // follows the termic convention of accent-colored cursors (rose, same
+    // as the chrome accent); the official spec uses highlightHigh #524f67
+    // if rose feels loud.
+    background: "#191724",           // base
+    foreground: "#e0def4",           // text
+    cursor: "#ebbcba",               // rose — matches chrome accent
+    cursorAccent: "#191724",
+    selectionBackground: "#403d52",  // highlightMed (matches Ghostty)
+    black: "#26233a",  red: "#eb6f92",     green: "#31748f",  yellow: "#f6c177",
+    blue: "#9ccfd8",   magenta: "#c4a7e7", cyan: "#ebbcba",   white: "#e0def4",
+    brightBlack: "#6e6a86", brightRed: "#eb6f92", brightGreen: "#31748f", brightYellow: "#f6c177",
+    brightBlue: "#9ccfd8",  brightMagenta: "#c4a7e7", brightCyan: "#ebbcba", brightWhite: "#e0def4",
   },
 };
 
@@ -767,6 +784,7 @@ export function applyTheme(mode: ThemeMode) {
   html.classList.toggle("solarized", resolved === "solarized");
   html.classList.toggle("cobalt",    resolved === "cobalt");
   html.classList.toggle("matrix",    resolved === "matrix");
+  html.classList.toggle("rosepine",  resolved === "rosepine");
   // Color-scheme tells the browser to use light/dark form controls +
   // scrollbars. Espresso + Solarized both want dark widgets.
   html.style.colorScheme = resolved === "light" ? "light" : "dark";

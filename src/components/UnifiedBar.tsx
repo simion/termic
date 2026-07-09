@@ -13,7 +13,7 @@ import * as HoverCard from "@radix-ui/react-hover-card";
 import { Check } from "lucide-react";
 import {
   PanelLeft, PanelRight, FolderOpen, Archive,
-  Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Eye,
+  Sun, Moon, Monitor, ArrowUpToLine, Sunrise, Droplet, Binary, Code2, Eye, Flower2,
   MessageSquareText, Library, Plus,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
@@ -483,6 +483,7 @@ function ThemePicker({
     { id: "solarized", label: "Solarized Dark", icon: Sunrise },
     { id: "cobalt",    label: "Cobalt",         icon: Droplet },
     { id: "matrix",    label: "Matrix",         icon: Binary },
+    { id: "rosepine",  label: "Rosé Pine",      icon: Flower2 },
   ];
   // Plain DOM dropdown — Radix HoverCard's pointer-tracking kept
   // closing on item click (the theme-change re-render storm triggers

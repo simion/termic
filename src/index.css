@@ -247,6 +247,38 @@
     color-scheme: dark;
   }
 
+  /* Rosé Pine (main) — rosepinetheme.com. Chrome ladder: base → surface →
+     overlay → highlightMed; borders bumped to highlightHigh so they read
+     above bg-3. Iris-only chrome read as monochrome purple, so the accent
+     is rose (the palette's namesake, used by official ports for buttons)
+     — warm against the purple, ~10.4:1 on base — with deep iris for
+     white-text button surfaces where rose is too light. Selection stays
+     an iris tint so highlights read calm next to the rose marks. Status
+     trio uses the palette's own semantics: foam/gold/love, and gold
+     stays reserved for warnings. */
+  html.rosepine {
+    --color-bg:          #191724;       /* base — main content */
+    --color-bg-1:        #1f1d2e;       /* surface — sidebar / title bar / tabs */
+    --color-bg-2:        #26233a;       /* overlay — nested cards / badges */
+    --color-bg-3:        #403d52;       /* highlightMed — hover + active surfaces */
+    --color-fg:          #e0def4;       /* text */
+    --color-fg-dim:      #908caa;       /* subtle */
+    --color-fg-faint:    #6e6a86;       /* muted */
+    --color-border:      #524f67;       /* highlightHigh */
+    --color-border-soft: #26233a;       /* overlay as hairline */
+    --color-hover:       rgba(224, 222, 244, 0.05);
+    --color-sel:         rgba(196, 167, 231, 0.22);  /* iris-tinted */
+    --color-accent:      #ebbcba;       /* rose */
+    --color-accent-soft: rgba(235, 188, 186, 0.22);
+    --color-accent-deep: #6f5b9e;       /* deep iris, ~5.7:1 with white text */
+    --color-accent-fg:   #26233a;       /* overlay ink on rose, ~9:1 — NOT base,
+                                           which made filled knobs/badges read
+                                           as holes punched to the page bg */
+    --color-ok:          #9ccfd8;       /* foam — additions/info */
+    --color-warn:        #f6c177;       /* gold */
+    --color-err:         #eb6f92;       /* love */
+    color-scheme: dark;
+  }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 6px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--color-border-soft); }
