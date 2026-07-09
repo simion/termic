@@ -454,6 +454,16 @@ export function UnifiedBar() {
   );
 }
 
+/** Every row in the theme dropdown. Icons sit flush against the padding:
+ *  a leading checkmark column (even a transparent one) indents every label
+ *  to pay for the one active row, so the tick moved to the trailing edge
+ *  where it only takes space when it exists. */
+const THEME_ROW =
+  "flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13.5px] text-[var(--color-fg)] whitespace-nowrap hover:bg-[var(--color-hover)]";
+/** The tick alone is easy to miss at 14px, so the active row also tints its
+ *  icon + label. Two signals, no extra layout. */
+const THEME_ROW_ACTIVE = "font-medium text-[var(--color-accent)]";
+
 /** Theme picker — uses Radix HoverCard, which is purpose-built for "hover
  *  to reveal a panel". Handles cursor transit between trigger and content,
  *  open/close timing, and pointer leave/enter race conditions internally —
@@ -552,14 +562,11 @@ function ThemePicker({
               <button
                 key={it.id}
                 onClick={() => setThemeMode(it.id)}
-                className={cn(
-                  "flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13.5px] text-[var(--color-fg)]",
-                  "hover:bg-[var(--color-hover)]",
-                )}
+                className={cn(THEME_ROW, active && THEME_ROW_ACTIVE)}
               >
-                <Check className={cn("h-3.5 w-3.5 text-[var(--color-accent)]", active ? "opacity-100" : "opacity-0")} />
-                <Ic className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                <Ic className={cn("h-4 w-4 shrink-0", active ? "text-[var(--color-accent)]" : "text-[var(--color-fg-dim)]")} />
                 <span>{it.label}</span>
+                {active && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />}
               </button>
             );
           })}
@@ -572,39 +579,26 @@ function ThemePicker({
               <button
                 key={t.id}
                 onClick={() => setThemeMode(t.id)}
-                className={cn(
-                  "flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13.5px] text-[var(--color-fg)]",
-                  "hover:bg-[var(--color-hover)]",
-                )}
+                className={cn(THEME_ROW, active && THEME_ROW_ACTIVE)}
               >
-                <Check className={cn("h-3.5 w-3.5 text-[var(--color-accent)]", active ? "opacity-100" : "opacity-0")} />
-                <Palette className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                <Palette className={cn("h-4 w-4 shrink-0", active ? "text-[var(--color-accent)]" : "text-[var(--color-fg-dim)]")} />
                 <span className="truncate">{t.name}</span>
+                {active && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />}
               </button>
             );
           })}
           <div className="my-1 border-t border-[var(--color-border-soft)]" />
-          {customThemes.length === 0 && (
-            // Names the void so the folder row below reads as the next step
-            // rather than a stray utility. The folder ships a README + a
-            // copyable example, so opening it is a real starting point.
-            <div className="flex items-center gap-2 px-2 py-1 text-[12px] text-[var(--color-fg-faint)]">
-              <span className="h-3.5 w-3.5" />
-              <span>No custom themes yet</span>
-            </div>
-          )}
-          {/* Doubles as the discovery affordance when no custom theme files
-              exist yet — drop a JSON here, hover the picker again, done. */}
+          {/* The discovery affordance when no theme files exist yet: the
+              folder ships a README + a copyable example. Label names the
+              concept, title says what clicking does (the icon alone carries
+              too little). */}
           <button
+            title="Open the themes folder"
             onClick={() => { themesDir().then(openPath).catch(() => {}); }}
-            className={cn(
-              "flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13.5px] text-[var(--color-fg)]",
-              "hover:bg-[var(--color-hover)]",
-            )}
+            className={THEME_ROW}
           >
-            <span className="h-3.5 w-3.5" />
-            <FolderOpen className="h-4 w-4 text-[var(--color-fg-dim)]" />
-            <span>Open themes folder</span>
+            <FolderOpen className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
+            <span>Custom themes</span>
           </button>
           {/* One-time tip: agent CLIs persist their own theme. We set
               COLORFGBG on spawn so most TUIs auto-pick, but claude /
