@@ -2,7 +2,7 @@
 // Mirrors Termic's split: "Mono Font" governs the editor; "Terminal Font"
 // governs xterm. Sizes are independent.
 
-import { usePrefs, resolveTheme, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync } from "@/store/prefs";
+import { usePrefs, resolveTheme, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, stackFor } from "@/store/prefs";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
@@ -166,7 +166,7 @@ export function AppearanceSection() {
       {/* Legacy static preview (kept off behind the `false` gate so
           a future revert is a one-flag change). */}
       {false && (<div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3 font-mono text-[var(--color-fg)]"
-           style={{ fontFamily: stackById(terminalFontId), fontSize: `${terminalFontSize}px`, lineHeight: 1.4 }}>
+           style={{ fontFamily: stackFor(terminalFontId), fontSize: `${terminalFontSize}px`, lineHeight: 1.4 }}>
         <span className="text-[#7cd57e]">~/project</span> <span className="text-[#d97757]">main</span> <span className="text-[#f0b13a]">±3</span><br/>
         <span className="text-[#d97757]">{"〉"}</span> npm test <span className="text-[#7cd57e]">✓</span><br/>
         <span className="text-[#a7f3a0]">└─▶ All tests passed!</span>
@@ -222,10 +222,6 @@ function TerminalPreview() {
       <AuxTerminal wsPath={home} active={true} />
     </div>
   );
-}
-
-function stackById(id: string) {
-  return (MONO_FONT_OPTIONS.find(o => o.id === id) || MONO_FONT_OPTIONS[0]).stack;
 }
 
 function Field({ label, hint, control }: { label: string; hint?: string; control: React.ReactNode }) {
