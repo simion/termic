@@ -138,7 +138,9 @@ export function WelcomeDialog() {
         <div className="flex-1 min-w-0">
           <div className="text-[18px] font-semibold leading-tight">Welcome to Termic</div>
           <div className="text-[12.5px] text-[var(--color-fg-dim)]">
-            {step === 0 && "Repos & CLIs."}
+            {/* Parallel imperatives, one per step. Step 0 sets the repos
+                folder and confirms detected agents, so it says so. */}
+            {step === 0 && "Set your repos folder and agents."}
             {step === 1 && "Pick your theme."}
             {step === 2 && "Pick projects to add."}
           </div>
