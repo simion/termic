@@ -290,8 +290,14 @@ export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTION
   return [...curated, ...extras];
 }
 
-/** Resolve a font id → CSS font-family stack, defaulting to JetBrains. */
-function stackFor(id: string) {
+/** Resolve a font id → CSS font-family stack, defaulting to JetBrains.
+ *  Handles both curated ids and the `system:<family>` ids produced by
+ *  availableMonoFontsAsync() — those never appear in MONO_FONT_OPTIONS,
+ *  so without the prefix branch every system-enumerated pick silently
+ *  fell back to the bundled JetBrains Mono (latin subset, no Nerd Font
+ *  glyphs). */
+export function stackFor(id: string) {
+  if (id.startsWith("system:")) return `"${id.slice(7)}", monospace`;
   const opt = MONO_FONT_OPTIONS.find(o => o.id === id) || MONO_FONT_OPTIONS[0];
   return opt.stack;
 }
