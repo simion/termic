@@ -6929,6 +6929,32 @@ pub struct CustomThemeFile {
 /// live under `.config` and deliberately skip the `termic_dev` split
 /// (dev builds should see your real themes; the files are inert and
 /// validated, so they can't destabilize a dev run).
+/// Seeded into an EMPTY themes dir so "Open themes folder" never drops the
+/// user into a blank window with nothing to copy. Neither file ends in
+/// `.json`, so `themes_list` skips both and no phantom theme shows up in
+/// the picker.
+const THEMES_README: &str = include_str!("../assets/themes/README.md");
+const THEMES_EXAMPLE: &str = include_str!("../assets/themes/example.json.sample");
+
+/// Best-effort seed. A write failure must never block listing themes, so
+/// this logs and moves on. Only runs when the directory has no entries at
+/// all: once the user puts anything here (a theme, or nothing but their own
+/// notes) we never write again, and deleting the samples sticks.
+fn seed_themes_dir(dir: &Path) {
+    let empty = fs::read_dir(dir).map(|mut d| d.next().is_none()).unwrap_or(false);
+    if !empty {
+        return;
+    }
+    for (name, body) in [
+        ("README.md", THEMES_README),
+        ("example.json.sample", THEMES_EXAMPLE),
+    ] {
+        if let Err(e) = fs::write(dir.join(name), body) {
+            eprintln!("[themes] could not seed {name}: {e}");
+        }
+    }
+}
+
 fn themes_dir_path() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -6937,6 +6963,7 @@ fn themes_dir_path() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("no home"))?;
     let p = base.join("termic").join("themes");
     fs::create_dir_all(&p)?;
+    seed_themes_dir(&p);
     Ok(p)
 }
 

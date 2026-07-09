@@ -584,6 +584,15 @@ function ThemePicker({
             );
           })}
           <div className="my-1 border-t border-[var(--color-border-soft)]" />
+          {customThemes.length === 0 && (
+            // Names the void so the folder row below reads as the next step
+            // rather than a stray utility. The folder ships a README + a
+            // copyable example, so opening it is a real starting point.
+            <div className="flex items-center gap-2 px-2 py-1 text-[12px] text-[var(--color-fg-faint)]">
+              <span className="h-3.5 w-3.5" />
+              <span>No custom themes yet</span>
+            </div>
+          )}
           {/* Doubles as the discovery affordance when no custom theme files
               exist yet — drop a JSON here, hover the picker again, done. */}
           <button

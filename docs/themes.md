@@ -19,6 +19,12 @@ like other terminal tools (wezterm, starship, kitty), not in the app-owned
 Application Support data dir, which makes them trivially stowable from
 dotfiles.
 
+When the folder is empty, termic seeds it with a `README.md` and an
+`example.json.sample` (a complete theme, ready to `cp` to `my-theme.json`).
+Neither ends in `.json`, so the picker ignores both. Delete them once you
+have your own theme; they only come back if the folder is emptied. The
+sources live in `src-tauri/assets/themes/`.
+
 One JSON file per theme. The picker's "Open themes folder" row opens this
 directory (and creates it if needed). Themes are read at startup and
 re-read every time the picker opens, so the edit loop is: save the file,
