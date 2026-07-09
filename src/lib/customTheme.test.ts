@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   UI_KEYS,
+  TERMINAL_KEYS,
   isValidColor,
   isCustomId,
   sanitizeTheme,
@@ -230,5 +233,41 @@ describe("theme cache", () => {
     writeThemeCache(sanitizeTheme(rawFile()));
     clearThemeCache();
     expect(readThemeCache()).toBeNull();
+  });
+});
+
+// ── seeded sample ─────────────────────────────────────────────────────
+// The sample is what users copy, and it doubles as the format reference.
+// It must therefore exercise every key, and survive the real sanitizer
+// with nothing dropped. Guards against a new token landing in UI_KEYS
+// without reaching the sample (how `ok-fg` first went missing).
+
+describe("example.json.sample", () => {
+  const sample = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../src-tauri/assets/themes/example.json.sample", import.meta.url)),
+      "utf8",
+    ),
+  ) as CustomThemeFile;
+
+  it("sets every ui key", () => {
+    expect(Object.keys(sample.ui).sort()).toEqual([...UI_KEYS].sort());
+  });
+
+  it("sets the whole terminal palette, minus the selection-ink opt-ins", () => {
+    // selectionForeground / selectionInactiveBackground are deliberately
+    // absent: setting selectionForeground paints ALL selected text one
+    // flat color instead of keeping each cell's own, which is rarely what
+    // a theme author wants. They stay allowlisted, just not advertised.
+    const optional = ["selectionForeground", "selectionInactiveBackground"];
+    const expected = TERMINAL_KEYS.filter(k => !optional.includes(k));
+    expect(Object.keys(sample.terminal).sort()).toEqual([...expected].sort());
+  });
+
+  it("survives sanitizing with nothing dropped", () => {
+    const t = sanitizeTheme({ ...sample, id: "example" });
+    expect(Object.keys(t.ui)).toHaveLength(UI_KEYS.length);
+    expect(Object.keys(t.terminal)).toHaveLength(Object.keys(sample.terminal).length);
+    expect(t.colorScheme).toBe("dark");
   });
 });

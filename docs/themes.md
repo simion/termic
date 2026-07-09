@@ -59,7 +59,7 @@ never shadow the built-in Claude theme.
     "hover": "rgba(224,222,244,0.05)", "sel": "rgba(196,167,231,0.22)",
     "accent": "#c4a7e7", "accent-soft": "rgba(196,167,231,0.22)", "accent-deep": "#6f5b9e",
     "accent-fg": "#232136",
-    "ok": "#9ccfd8", "warn": "#f6c177", "err": "#eb6f92"
+    "ok": "#9ccfd8", "ok-fg": "#232136", "warn": "#f6c177", "err": "#eb6f92"
   },
   "terminal": {
     "background": "#232136", "foreground": "#e0def4",
