@@ -11,6 +11,8 @@
 - **`pty_spawn` "invalid length 0".** Payload wrap forgotten — wrap SpawnArgs in `{ args: ... }`.
 - **Right-click contextmenu.** `window.addEventListener("contextmenu", e => e.preventDefault())` in `main.tsx`.
 - **App icon missing in dev.** Dev runs raw binary, not `.app` bundle. Icon appears after `npm run tauri:build`.
+- **Picked system font ignored, Nerd Font glyphs box out.** `system:<family>` font ids (from the Rust enumeration) must go through the prefix branch in `stackFor()` (prefs.ts) — they're not in `MONO_FONT_OPTIONS`, and falling back silently uses bundled JetBrains Mono (latin subset, zero PUA glyphs). Confusingly partial symptom: Powerline U+E0A0–E0BF still render because xterm's WebGL renderer custom-draws them without a font.
+- **Font picker incomplete on first open.** The macOS native `<select>` popup snapshots its options when opened — options React adds mid-open don't appear, and a value with no matching option renders blank. Hence: warm `availableMonoFontsAsync()` at prefs module load, and seed selected `system:` ids into the picker's initial list (AppearanceSection).
 
 ## React/Zustand traps
 
