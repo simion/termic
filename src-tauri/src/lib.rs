@@ -6896,11 +6896,17 @@ fn agents_save(agents: Vec<Agent>) -> Result<(), String> {
 
 /// One custom theme file from the themes config dir (see
 /// `themes_dir_path`). `id` is the file stem (the frontend namespaces it
-/// as `custom:<id>`); `ui` / `terminal` are passed through as raw string
+/// as `custom:<id>`); `ui` / `terminal` are passed through as raw JSON
 /// maps — the frontend allowlist-validates keys and color values, so a
 /// bad entry degrades per-key instead of failing the file. Unknown
 /// top-level JSON fields are ignored (forward compat). Serialized
 /// camelCase to match the on-disk file format.
+///
+/// The value type is `serde_json::Value`, not `String`: typing it as
+/// String makes serde reject the WHOLE file on one non-string value
+/// (`"bg": 123` silently discarded the file's valid keys too), which
+/// contradicts the documented per-key degradation. Non-strings now reach
+/// the frontend and its `isValidColor` typeof check drops them per-key.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomThemeFile {
@@ -6911,9 +6917,9 @@ pub struct CustomThemeFile {
     #[serde(default)]
     pub color_scheme: String,
     #[serde(default)]
-    pub ui: HashMap<String, String>,
+    pub ui: HashMap<String, serde_json::Value>,
     #[serde(default)]
-    pub terminal: HashMap<String, String>,
+    pub terminal: HashMap<String, serde_json::Value>,
 }
 
 /// `$XDG_CONFIG_HOME/termic/themes`, defaulting to `~/.config/termic/themes`

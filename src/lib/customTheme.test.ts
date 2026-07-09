@@ -115,6 +115,17 @@ describe("sanitizeTheme", () => {
     expect(t.terminal).toEqual({ background: "#1a1b26" });
   });
 
+  it("drops non-string values per-key, keeping the file's valid siblings", () => {
+    // Rust hands ui/terminal over as raw JSON, so a number reaches us
+    // instead of failing the whole file at deserialize time.
+    const t = sanitizeTheme(rawFile({
+      ui: { bg: 123, accent: "#ff00ff", fg: null, "fg-dim": { nested: 1 } },
+      terminal: { background: true, cursor: "#ea9a97" },
+    }));
+    expect(t.ui).toEqual({ accent: "#ff00ff" });
+    expect(t.terminal).toEqual({ cursor: "#ea9a97" });
+  });
+
   it("survives non-object ui/terminal blocks", () => {
     const t = sanitizeTheme(rawFile({
       ui: "nope" as unknown as Record<string, string>,

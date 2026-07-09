@@ -855,16 +855,22 @@ export function resolveThemeFull(mode: ThemeMode): ResolvedTheme | `custom:${str
 }
 
 /** Swap the html element's palette. Built-ins toggle their CSS class;
- *  custom themes clear ALL theme classes and push their colors as inline
- *  vars (inline beats the @theme defaults in the cascade, so a partial
- *  theme falls back to Dark+ per-key). We always toggle every class AND
- *  reconcile the inline vars so nothing from the previous theme bleeds
- *  through after a switch in either direction. */
+ *  custom themes push their colors as inline vars (inline beats a
+ *  class-defined var in the cascade, so a partial theme falls back
+ *  per-key to whatever class is underneath). We always toggle every class
+ *  AND reconcile the inline vars so nothing from the previous theme bleeds
+ *  through after a switch in either direction.
+ *
+ *  A custom theme keeps the `light` class when it declares
+ *  `colorScheme: "light"`: the @theme defaults are the DARK palette, so
+ *  without this a light theme that omits `fg` would paint near-white text
+ *  on its own near-white `bg`. Its own keys still win (inline > class), and
+ *  dark customs need no class since @theme is already their fallback. */
 export function applyTheme(mode: ThemeMode) {
   const resolved = resolveThemeFull(mode);
   const custom = isCustomId(resolved) ? customThemeById(resolved) : null;
   const html = document.documentElement;
-  html.classList.toggle("light",     resolved === "light");
+  html.classList.toggle("light",     custom ? custom.colorScheme === "light" : resolved === "light");
   html.classList.toggle("dark",      resolved === "dark");
   html.classList.toggle("claude",    resolved === "claude");
   html.classList.toggle("solarized", resolved === "solarized");
