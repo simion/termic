@@ -7,11 +7,21 @@
 // are read over IPC (worktree-contained, image extensions only) and swapped
 // in as data: URLs, and relative link clicks open the target file in a tab
 // (after an existence/type check — dead links and directories no longer open
-// blank/dead tabs). Remote https images load directly (img-src allows
-// https:; note this makes previewing untrusted markdown fire image requests
-// — accepted, matches VS Code/GitHub). Raw HTML stays disabled and
-// markdown-it's validateLink blocks javascript: URLs, so none of this adds
-// script execution paths.
+// blank/dead tabs).
+//
+// Remote https images load directly (tauri.conf.json's img-src allows https:).
+// This is an ACCEPTED SANDBOX GAP, not a neutral one: the webview lives outside
+// the seatbelt + CONNECT proxy, so rendering `![](https://host/x.png?d=…)`
+// fires a GET to an arbitrary host with no click, even when the workspace is in
+// Enforce and the agent itself is barred from that host. The realistic trigger
+// is prompt injection plus untrusted markdown (a dependency's README, a
+// contributor's fork, a GitHub issue the agent read), not a scheming agent.
+// Only a GET is possible: script-src is 'self', raw HTML stays disabled, and
+// markdown-it's validateLink blocks javascript:, so nothing here adds a script
+// execution path. GitHub and VS Code make the same call. Closing it means a
+// default-off "load remote images" pref gating hydration, NOT a CSP tweak
+// (Tauri's CSP is one policy for the whole webview). See docs/sandbox.md,
+// "Known gap: the webview is outside the cage".
 //
 // The rendered HTML is written into the host element IMPERATIVELY (not via
 // React's dangerouslySetInnerHTML). React must NOT own this subtree: mermaid
