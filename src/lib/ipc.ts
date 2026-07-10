@@ -33,6 +33,10 @@ export const projectUpdate  = (p: Project) => invoke<void>("project_update", { p
 export const projectRemove  = (id: string) => invoke<void>("project_remove", { id });
 export const projectReorder = (ids: string[]) => invoke<void>("project_reorder", { ids });
 export const projectRename  = (id: string, name: string) => invoke<void>("project_rename", { id, name });
+/** Set (or clear, with null) the sidebar group label on a batch of
+ *  projects in one atomic projects.json write. */
+export const projectSetGroup = (ids: string[], group: string | null) =>
+  invoke<void>("project_set_group", { ids, group });
 
 // ───────────────────────────── tasks ─────────────────────────────
 

@@ -27,6 +27,7 @@ import { requestCloseTab, requestClosePaneTab } from "@/lib/closeTab";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { jumpToNextWaiting } from "@/lib/waitingAgents";
 import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
+import { visualProjectOrder } from "@/lib/projectGroups";
 import type { TerminalTab } from "@/lib/types";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
@@ -124,9 +125,10 @@ export function useShortcuts() {
 
       // Task nav cycles only AWAKE tasks — ones the user has opened
       // at least once + still has tabs in. Order MUST match the sidebar's
-      // visual grouping (project → its tasks → next project …) or the
-      // jumps feel random. Computed lazily; only some commands need it.
-      const awakeTasks = () => state.projects.flatMap(p =>
+      // visual grouping (group folder → its projects; project → its
+      // tasks → next project …) or the jumps feel random. Computed
+      // lazily; only some commands need it.
+      const awakeTasks = () => visualProjectOrder(state.projects).flatMap(p =>
         state.tasks.filter(w =>
           w.project_id === p.id && !w.archived && (state.tabs[w.id]?.length ?? 0) > 0,
         ),
@@ -140,7 +142,7 @@ export function useShortcuts() {
         case "sidebar-next": {
           type Row = { taskId: string; tabId?: string };
           const rows: Row[] = [];
-          for (const p of state.projects) {
+          for (const p of visualProjectOrder(state.projects)) {
             for (const w of state.tasks) {
               if (w.project_id !== p.id || w.archived) continue;
               rows.push({ taskId: w.id });
