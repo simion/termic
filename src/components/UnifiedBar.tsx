@@ -1,12 +1,12 @@
 // Single horizontal chrome strip spanning the whole window. Mirrors
 // Termic's design: traffic-light reservation on the left, sidebar toggle,
-// project/workspace breadcrumbs in the middle, action icons on the right.
+// project/task breadcrumbs in the middle, action icons on the right.
 // The whole strip is a drag region so the user can move the window from any
 // empty space, with `no-drag` opted-in on every interactive child.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useApp, useActiveWorkspace } from "@/store/app";
+import { useApp, useActiveTask } from "@/store/app";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import * as HoverCard from "@radix-ui/react-hover-card";
@@ -17,14 +17,15 @@ import {
   MessageSquareText, Library, Plus, Palette,
 } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
+import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { effectiveSandboxMode } from "@/lib/types";
 import { SandboxIcon } from "@/components/SandboxIcon";
 import type { TerminalTab } from "@/lib/types";
 import { findLeaf } from "@/lib/splitTree";
 import { UpdaterBanner } from "@/components/UpdaterBanner";
 import { WaitingAgentsPill } from "@/components/WaitingAgentsPill";
-import { openPath, themesDir, workspaceSendDiffToMain } from "@/lib/ipc";
-import { archiveAndRefresh } from "@/lib/archiveWorkspace";
+import { openPath, themesDir, taskSendDiffToMain } from "@/lib/ipc";
+import { archiveAndRefresh } from "@/lib/archiveTask";
 import { visibleCliIds, isTerminalEntry, tabLabel } from "@/lib/agents";
 import { AppDialog } from "@/components/ui/Dialog";
 import {
@@ -35,7 +36,7 @@ import { runPrompt } from "@/lib/runPrompt";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
-import { RunControls } from "@/components/workspace/RunControls";
+import { RunControls } from "@/components/task/RunControls";
 import { cn } from "@/lib/utils";
 
 // Reserve enough room for the 3 traffic lights + breathing room before the
@@ -49,25 +50,25 @@ export function UnifiedBar() {
   const compact = useApp(s => s.compactSidebar);
   const toggleCompact = useApp(s => s.toggleCompactSidebar);
   const toggleRP = useApp(s => s.toggleRightPanel);
-  const ws = useActiveWorkspace();
-  const proj = useApp(s => ws ? s.projects.find(p => p.id === ws.project_id) : null);
+  const task = useActiveTask();
+  const proj = useApp(s => task ? s.projects.find(p => p.id === task.project_id) : null);
   const openSettings = useApp(s => s.openSettings);
   const enabledPrompts = usePromptLibrary(s => s.prompts).filter(p => p.enabled);
-  // Live agents in the active workspace = the prompt destinations (+ New agent).
+  // Live agents in the active task = the prompt destinations (+ New agent).
   // Run/Setup tabs are terminals with live PTYs too, but a dev server is not
   // a prompt destination — exclude them.
-  const wsTabs = useApp(s => (ws ? s.tabs[ws.id] : undefined));
-  const liveAgents = (wsTabs ?? []).filter(
+  const taskTabs = useApp(s => (task ? s.tabs[task.id] : undefined));
+  const liveAgents = (taskTabs ?? []).filter(
     (t): t is TerminalTab => t.type === "terminal" && !!t.ptyId && !(t as TerminalTab).runTab,
   );
   const focusedAgentId = useApp(s => {
-    if (!ws) return undefined;
-    const tree = s.splitTree[ws.id];
+    if (!task) return undefined;
+    const tree = s.splitTree[task.id];
     if (tree) {
-      const leaf = findLeaf(tree, s.activePaneId[ws.id] ?? "");
+      const leaf = findLeaf(tree, s.activePaneId[task.id] ?? "");
       if (leaf?.activeTabId) return leaf.activeTabId;
     }
-    return s.activeTab[ws.id];
+    return s.activeTab[task.id];
   });
   // Picking a prompt opens a destination modal (running agents + new-agent
   // CLIs) instead of a submenu, which flipped to the wrong side near the edge.
@@ -158,15 +159,15 @@ export function UnifiedBar() {
             you, jumps to the next on click. Sits with the other status pills
             so a live "N waiting" is glanceable from anywhere. */}
         <WaitingAgentsPill />
-        {/* YOLO is per-workspace only — controlled from the workspace's
+        {/* YOLO is per-task only — controlled from the task's
             sidebar dropdown ("YOLO: on/off"), with a red ⚡ status badge
             on the sidebar row. No top-bar toggle (it had no global
-            meaning and was redundant with the per-workspace control). */}
+            meaning and was redundant with the per-task control). */}
       </div>
 
       {/* Breadcrumbs / title — text doesn't select on drag (matches AppKit title bar). */}
       <div className="ml-2 flex min-w-0 flex-1 select-none items-baseline gap-2 text-[14px]">
-        {ws && proj ? (
+        {task && proj ? (
           <>
             <span className="text-[var(--color-fg-faint)]">{proj.name}</span>
             <span className="text-[var(--color-fg-faint)]">/</span>
@@ -174,24 +175,24 @@ export function UnifiedBar() {
                 stays vertically centered next to text — items-baseline
                 on the parent would otherwise stick the icon's bottom
                 to the text baseline and float it too high. */}
-            <span className={cn("flex items-center self-center", CLI_BRAND_COLOR[resolveIconId(ws.cli, agents)])}>
-              <CliIcon cli={resolveIconId(ws.cli, agents)} className="h-4 w-4" />
+            <span className={cn("flex items-center self-center", CLI_BRAND_COLOR[resolveIconId(task.cli, agents)])}>
+              <CliIcon cli={resolveIconId(task.cli, agents)} className="h-4 w-4" />
             </span>
-            {/* Workspace name == branch means the user never renamed it,
-                so "<branch> on <branch>" reads as noise. Mirror the
-                sidebar: render the REPO ROOT chip for the repo-root
-                pseudo-workspace; otherwise just show the branch alone. */}
-            {ws.is_repo_root && ws.name === ws.branch ? (
-              <span className="shrink-0 rounded px-1 py-px text-[10.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-dim)]">
-                REPO ROOT
-              </span>
-            ) : ws.name === ws.branch ? (
-              <span className="truncate font-mono text-[13px] leading-tight text-[var(--color-fg)]">{ws.branch}</span>
+            {/* Task name == branch means the user never renamed it, so
+                "<branch> on <branch>" reads as noise: show just the branch
+                plus the location icon. The icon (main checkout vs worktree)
+                makes the task's checkout kind explicit. */}
+            {task.name === task.branch ? (
+              <>
+                <span className="truncate font-mono text-[13px] leading-tight text-[var(--color-fg)]">{task.branch}</span>
+                <TaskLocationIcon isMainCheckout={task.is_main_checkout} className="self-center" />
+              </>
             ) : (
               <>
-                <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]">{ws.name}</span>
+                <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]">{task.name}</span>
                 <span className="leading-tight text-[var(--color-fg-faint)]">on</span>
-                <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{ws.branch}</span>
+                <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{task.branch}</span>
+                <TaskLocationIcon isMainCheckout={task.is_main_checkout} className="self-center" />
               </>
             )}
             {/* Multi-repo: just a small chip with the member count.
@@ -201,17 +202,17 @@ export function UnifiedBar() {
                 into the breadcrumb made the bar unreadable past 2
                 members and pushed real chrome (Review / Send to main)
                 off-screen on narrow windows. */}
-            {(ws.composition?.length ?? 0) > 0 && (
+            {(task.composition?.length ?? 0) > 0 && (
               <span
                 className="ml-1 inline-flex shrink-0 items-center rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider leading-none text-[var(--color-fg-dim)]"
-                title={ws.composition!.map(m => m.mode === "worktree" ? `${m.dir_name} @${m.branch}` : `${m.dir_name} (live)`).join(" · ")}
+                title={task.composition!.map(m => m.mode === "worktree" ? `${m.dir_name} @${m.branch}` : `${m.dir_name} (live)`).join(" · ")}
               >
-                {ws.composition!.length} repos
+                {task.composition!.length} repos
               </span>
             )}
           </>
         ) : (
-          <span className="text-[var(--color-fg-faint)]">No workspace selected</span>
+          <span className="text-[var(--color-fg-faint)]">No task selected</span>
         )}
       </div>
 
@@ -221,11 +222,11 @@ export function UnifiedBar() {
         className="flex items-center gap-0.5"
         style={{ WebkitAppRegion: "no-drag" } as any}
       >
-        {ws && proj && (
+        {task && proj && (
           <>
             {/* Popped-out run controls (GH #54): Setup + Run/Stop live up
                 here, next to Prompts, while runs open as terminal tabs. */}
-            <RunControls ws={ws} />
+            <RunControls task={task} />
             <DropdownRoot>
               <DropdownTrigger asChild>
                 <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag>
@@ -286,7 +287,7 @@ export function UnifiedBar() {
                           return (
                             <button
                               key={a.id}
-                              onClick={() => { runPrompt(ws.id, { ...firingPrompt, body: firingBody }, { kind: "agent", tabId: a.id }); setFiringPrompt(null); }}
+                              onClick={() => { runPrompt(task.id, { ...firingPrompt, body: firingBody }, { kind: "agent", tabId: a.id }); setFiringPrompt(null); }}
                               className={cn(
                                 "flex items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors",
                                 current
@@ -324,7 +325,7 @@ export function UnifiedBar() {
                       ) : newAgentChoices.map(a => (
                         <button
                           key={a.id}
-                          onClick={() => { runPrompt(ws.id, { ...firingPrompt, body: firingBody }, { kind: "new", cli: a.id }); setFiringPrompt(null); }}
+                          onClick={() => { runPrompt(task.id, { ...firingPrompt, body: firingBody }, { kind: "new", cli: a.id }); setFiringPrompt(null); }}
                           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-hover)]"
                         >
                           <span className={cn("shrink-0 opacity-80", CLI_BRAND_COLOR[a.icon_id])}>
@@ -339,16 +340,16 @@ export function UnifiedBar() {
               </AppDialog>
             )}
             {/* Send-to-main: only shown on actual worktrees, not the
-                repo-root pseudo-workspace (which IS the main checkout —
+                repo-root pseudo-task (which IS the main checkout —
                 nothing to send). Hard-blocks on a dirty main checkout
                 rather than risk mixing change sets; the error bubbles
                 up via the alert below. */}
-            {!ws.is_repo_root && (
+            {!task.is_main_checkout && (
               <Tip content="Bring this worktree's diff into the project's main checkout" side="bottom">
                 <Button size="sm" variant="ghost" className="gap-1.5"
                   onClick={async () => {
                     const ok = await useUI.getState().askConfirm({
-                      title: `Send "${ws.name}" to main?`,
+                      title: `Send "${task.name}" to main?`,
                       message:
                         `Applies all tracked changes (committed + staged + unstaged) and copies untracked files into ${proj.root_path}. ` +
                         `The main checkout must be clean. Commit or stash there first.`,
@@ -356,7 +357,7 @@ export function UnifiedBar() {
                     });
                     if (!ok) return;
                     try {
-                      const r = await workspaceSendDiffToMain(ws.id);
+                      const r = await taskSendDiffToMain(task.id);
                       // Build a compact, human-readable summary. Quietly
                       // omit the zero halves so it reads as a result, not
                       // a checklist of nothings-happened.
@@ -381,15 +382,15 @@ export function UnifiedBar() {
               </Tip>
             )}
             {(() => {
-              const sbMode = effectiveSandboxMode(ws);
+              const sbMode = effectiveSandboxMode(task);
               const tip = sbMode === "enforce" ? "Sandbox: Enforcing"
                 : sbMode === "enforce-fs" ? "Sandbox: Enforcing filesystem (network open)"
                 : sbMode === "monitor" ? "Sandbox: Monitoring (logging access)"
-                : "Sandbox: off — click to enable";
+                : "Sandbox: off. Click to enable";
               return (
                 <Tip content={tip} side="bottom">
                   <Button size="icon" variant="icon"
-                    onClick={() => useUI.getState().openSandbox(ws.id)}
+                    onClick={() => useUI.getState().openSandbox(task.id)}
                   >
                     {/* Color + fill come from SANDBOX_VISUALS; the toolbar
                         just swaps the glyph to an Eye for monitoring. */}
@@ -398,31 +399,31 @@ export function UnifiedBar() {
                 </Tip>
               );
             })()}
-            <Tip content="Archive workspace" side="bottom">
+            <Tip content="Archive task" side="bottom">
               <Button size="icon" variant="icon"
                 onClick={async () => {
                   const ok = await useUI.getState().askConfirm({
-                    title: `Archive "${ws.name}"?`,
+                    title: `Archive "${task.name}"?`,
                     // Repo-root entries aren't worktrees - archiving
                     // drops the Termic row only; the project checkout
                     // on disk is untouched and can be re-opened later.
-                    message: ws.is_repo_root
+                    message: task.is_main_checkout
                       ? "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it any time. Any agent running here will be terminated."
-                      : (ws.composition?.length ?? 0) > 0
-                      ? `Branches stay in git, so you can recreate the workspace later. This removes: the host worktree + every member worktree (${ws.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts (those live repos are NOT touched). Any running agent will be terminated.`
+                      : (task.composition?.length ?? 0) > 0
+                      ? `Branches stay in git, so you can recreate the task later. This removes: the host worktree + every member worktree (${task.composition!.filter(m => m.mode === "worktree").map(m => m.dir_name).join(", ") || "none"}), plus any member symlinks to live checkouts (those live repos are NOT touched). Any running agent will be terminated.`
                       : "The branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent. Can't be undone from inside Termic.",
-                    confirmLabel: ws.is_repo_root ? "Remove entry" : "Archive",
+                    confirmLabel: task.is_main_checkout ? "Remove entry" : "Archive",
                     destructive: true,
-                    checkbox: ws.is_repo_root
+                    checkbox: task.is_main_checkout
                       ? undefined
-                      : (ws.composition?.length ?? 0) > 0
+                      : (task.composition?.length ?? 0) > 0
                       ? {
                           label: "Delete the git branches",
                           defaultValue: false,
                         }
                       : {
                           label: "Delete the git branch:",
-                          branchName: ws.branch || undefined,
+                          branchName: task.branch || undefined,
                           defaultValue: false,
                         },
                   });
@@ -430,14 +431,14 @@ export function UnifiedBar() {
                   const deleteBranch = typeof ok === "boolean" ? false : ok.checked;
                   if (!confirmed) return;
                   try {
-                    useUI.getState().setBusy(`Archiving "${ws.name}"…`);
-                    await archiveAndRefresh(ws.id, deleteBranch);
+                    useUI.getState().setBusy(`Archiving "${task.name}"…`);
+                    await archiveAndRefresh(task.id, deleteBranch);
                   } finally { useUI.getState().setBusy(null); }
                 }}
               ><Archive className="h-4 w-4" /></Button>
             </Tip>
             <Tip content="Open in Finder" side="bottom">
-              <Button size="icon" variant="icon" onClick={() => openPath(ws.path).catch(() => {})}>
+              <Button size="icon" variant="icon" onClick={() => openPath(task.path).catch(() => {})}>
                 <FolderOpen className="h-4 w-4" />
               </Button>
             </Tip>

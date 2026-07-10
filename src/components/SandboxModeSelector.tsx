@@ -1,5 +1,5 @@
 // Shared OFF / MONITORING / ENFORCING selector used by both the New
-// Workspace dialog and the Edit Sandbox dialog. All per-mode styling
+// Task dialog and the Edit Sandbox dialog. All per-mode styling
 // (icon, color, fill, labels, order) lives in SANDBOX_VISUALS — see
 // SandboxIcon.tsx. This file is just the picker layout.
 import { cn } from "@/lib/utils";
@@ -11,7 +11,7 @@ export function SandboxModeSelector({ value, onChange, osUnavailable = false, co
   onChange: (m: SandboxMode) => void;
   /** Disable monitor/enforce (sandbox is macOS-only). OFF stays available. */
   osUnavailable?: boolean;
-  /** Tighter padding/type (New Workspace dialog's narrower column). */
+  /** Tighter padding/type (New Task dialog's narrower column). */
   compact?: boolean;
 }) {
   return (

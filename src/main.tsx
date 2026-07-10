@@ -1,3 +1,6 @@
+// MUST be first: migrates renamed localStorage keys (workspace -> task) before
+// any store module reads them at init. See src/lib/lsMigration.ts.
+import "@/lib/lsMigration";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./App";

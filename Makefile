@@ -110,6 +110,10 @@ dev: ## Run termic in dev mode (Vite HMR + Rust auto-rebuild).
 run: dev ## Alias for `make dev`.
 .PHONY: run
 
+run_no_pill: ## Run dev with the DEV pill hidden (VITE_HIDE_DEV_PILL=1). For clean screenshots / recordings.
+	@VITE_HIDE_DEV_PILL=1 node scripts/dev.mjs
+.PHONY: run_no_pill
+
 check: ## Type-check the Rust backend (fast — no codegen, no link).
 	@if command -v cargo >/dev/null 2>&1; then \
 	    cd src-tauri && cargo check; \

@@ -24,10 +24,10 @@ export type Binding = {
 export type ShortcutId =
   | "sidebar-prev"
   | "sidebar-next"
-  | "workspace-prev"
-  | "workspace-next"
-  | "workspace-prev-arrow"
-  | "workspace-next-arrow"
+  | "task-prev"
+  | "task-next"
+  | "task-prev-arrow"
+  | "task-next-arrow"
   | "jump-next-waiting"
   | "tab-prev"
   | "tab-next"
@@ -43,7 +43,7 @@ export type ShortcutId =
   | "toggle-terminal"
   | "terminal-copy"
   | "terminal-paste"
-  | "new-workspace-quick"
+  | "new-task-quick"
   | "command-palette"
   | "open-settings"
   | "file-finder"
@@ -76,21 +76,21 @@ const B = (key: string, mods: Partial<Omit<Binding, "key">> = {}): Binding => ({
 export const SHORTCUT_DEFS: ShortcutDef[] = [
   // Navigation
   { id: "sidebar-prev", group: "Navigation", label: "Previous sidebar row",
-    hint: "Workspace or expanded tab above", defaultBinding: B("ArrowUp", { alt: true }) },
+    hint: "Task or expanded tab above", defaultBinding: B("ArrowUp", { alt: true }) },
   { id: "sidebar-next", group: "Navigation", label: "Next sidebar row",
-    hint: "Workspace or expanded tab below", defaultBinding: B("ArrowDown", { alt: true }) },
-  { id: "workspace-prev", group: "Navigation", label: "Previous workspace",
+    hint: "Task or expanded tab below", defaultBinding: B("ArrowDown", { alt: true }) },
+  { id: "task-prev", group: "Navigation", label: "Previous task",
     defaultBinding: B("[", { cmd: true }) },
-  { id: "workspace-next", group: "Navigation", label: "Next workspace",
+  { id: "task-next", group: "Navigation", label: "Next task",
     defaultBinding: B("]", { cmd: true }) },
-  { id: "workspace-prev-arrow", group: "Navigation", label: "Pane up / previous workspace",
-    hint: "With a horizontal split: focus the pane above. Otherwise: go to the previous workspace.",
+  { id: "task-prev-arrow", group: "Navigation", label: "Pane up / previous task",
+    hint: "With a horizontal split: focus the pane above. Otherwise: go to the previous task.",
     defaultBinding: B("ArrowUp", { cmd: true, alt: true }) },
-  { id: "workspace-next-arrow", group: "Navigation", label: "Pane down / next workspace",
-    hint: "With a horizontal split: focus the pane below. Otherwise: go to the next workspace.",
+  { id: "task-next-arrow", group: "Navigation", label: "Pane down / next task",
+    hint: "With a horizontal split: focus the pane below. Otherwise: go to the next task.",
     defaultBinding: B("ArrowDown", { cmd: true, alt: true }) },
   { id: "jump-next-waiting", group: "Navigation", label: "Jump to next waiting agent",
-    hint: "Cycle to the next workspace whose agent is waiting on you (finished a turn or blocked on input). Visiting clears the signal, so repeated presses walk your whole queue.",
+    hint: "Cycle to the next task whose agent is waiting on you (finished a turn or blocked on input). Visiting clears the signal, so repeated presses walk your whole queue.",
     defaultBinding: B("a", { cmd: true, shift: true }) },
 
   // Tabs
@@ -143,8 +143,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // General
   { id: "command-palette", group: "General", label: "Command palette",
     hint: "Search every command and action", defaultBinding: B("k", { cmd: true }) },
-  { id: "new-workspace-quick", group: "General", label: "New workspace…",
-    hint: "Search a project and start a new workspace", defaultBinding: B("n", { cmd: true }) },
+  { id: "new-task-quick", group: "General", label: "New task…",
+    hint: "Search a project and start a new task", defaultBinding: B("n", { cmd: true }) },
   { id: "open-settings", group: "General", label: "Open settings",
     defaultBinding: B(",", { cmd: true }) },
 { id: "file-finder", group: "General", label: "Open file finder",

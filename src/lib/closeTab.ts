@@ -29,7 +29,7 @@ async function confirmTabClose(tab: Tab | undefined, paneTab: boolean): Promise<
   }
   // Agent-tab close semantics (issue #23): the MAIN agent tab stays durable
   // — closing it just ends the process and the session auto-resumes when the
-  // workspace wakes, so it's not destructive. A SECONDARY ("+") agent tab or
+  // task wakes, so it's not destructive. A SECONDARY ("+") agent tab or
   // a split-pane agent tab is FORGOTTEN on close — X is the way to get rid
   // of it for good — so that close is destructive and the copy says so.
   // Plain shells (cli === "shell") close instantly; there's nothing to lose.
@@ -50,8 +50,8 @@ async function confirmTabClose(tab: Tab | undefined, paneTab: boolean): Promise<
       message: termLike
         ? "Stops the running process and closes the tab."
         : isMain
-          ? "Stops the running process. The session resumes when you reopen the workspace."
-          : "Ends this agent's session. It won't be restored when the workspace reopens.",
+          ? "Stops the running process. The session resumes when you reopen the task."
+          : "Ends this agent's session. It won't be restored when the task reopens.",
       confirmLabel: "Close tab",
       destructive: !isMain && !termLike,
     });
@@ -62,19 +62,19 @@ async function confirmTabClose(tab: Tab | undefined, paneTab: boolean): Promise<
 
 /** Close a main-pane tab, asking first when closing is destructive.
  *  Resolves once the tab is closed or the user backs out. */
-export async function requestCloseTab(wsId: string, tabId: string) {
-  const tab = useApp.getState().tabs[wsId]?.find(t => t.id === tabId);
+export async function requestCloseTab(taskId: string, tabId: string) {
+  const tab = useApp.getState().tabs[taskId]?.find(t => t.id === tabId);
   if (!(await confirmTabClose(tab, false))) return;
-  useApp.getState().closeTab(wsId, tabId);
+  useApp.getState().closeTab(taskId, tabId);
 }
 
 /** Close a split-pane tab with the same confirm gate as the main path.
  *  Returns true when the tab was actually closed (so callers can chain a
  *  closePane when it was the pane's last tab), false when the user backed
  *  out. */
-export async function requestClosePaneTab(wsId: string, paneId: string, tabId: string): Promise<boolean> {
-  const tab = useApp.getState().tabs[wsId]?.find(t => t.id === tabId);
+export async function requestClosePaneTab(taskId: string, paneId: string, tabId: string): Promise<boolean> {
+  const tab = useApp.getState().tabs[taskId]?.find(t => t.id === tabId);
   if (!(await confirmTabClose(tab, true))) return false;
-  useApp.getState().closePaneTab(wsId, paneId, tabId);
+  useApp.getState().closePaneTab(taskId, paneId, tabId);
   return true;
 }

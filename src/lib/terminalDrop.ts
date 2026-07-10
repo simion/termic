@@ -25,13 +25,13 @@ import { useUI } from "@/store/ui";
 // that mints a fresh pty id — or a sandbox toggle that flips mid-session — is
 // picked up at drop time without the component having to re-register.
 //   ptyId     — the terminal's CURRENT pty id, or null when the PTY has exited.
-//   wsId      — owning workspace (used to stage files into a per-ws temp dir).
+//   taskId      — owning task (used to stage files into a per-task temp dir).
 //   sandboxed — whether THIS terminal's process runs under the seatbelt. Only
 //               the agent PTY is sandboxed; the scratch shell never is, so it
 //               always inserts the raw path with no prompt.
 interface DropTarget {
   ptyId: () => string | null;
-  wsId: string;
+  taskId: string;
   sandboxed: () => boolean;
 }
 const targets = new Map<HTMLElement, DropTarget>();
@@ -39,11 +39,11 @@ const targets = new Map<HTMLElement, DropTarget>();
 export function registerTerminalDropTarget(
   host: HTMLElement,
   ptyId: () => string | null,
-  opts?: { wsId?: string; sandboxed?: () => boolean },
+  opts?: { taskId?: string; sandboxed?: () => boolean },
 ): () => void {
   targets.set(host, {
     ptyId,
-    wsId: opts?.wsId ?? "",
+    taskId: opts?.taskId ?? "",
     sandboxed: opts?.sandboxed ?? (() => false),
   });
   return () => { targets.delete(host); };
@@ -138,15 +138,15 @@ export async function initTerminalDropHandler(): Promise<void> {
     // Sandboxed agent: the seatbelt denies common drop sources (Desktop,
     // Downloads, …), so ask the user how to share the file. Async — the
     // listener callback can't await, so we kick off a promise.
-    void handleSandboxedDrop(ptyId, target.wsId, paths);
+    void handleSandboxedDrop(ptyId, target.taskId, paths);
   });
 }
 
 /** Prompt the user, then act on their choice for a drop onto a sandboxed
  *  agent. Kept out of the listener so the event callback stays sync. */
-async function handleSandboxedDrop(ptyId: string, wsId: string, paths: string[]): Promise<void> {
+async function handleSandboxedDrop(ptyId: string, taskId: string, paths: string[]): Promise<void> {
   const ui = useUI.getState();
-  const choice = await ui.askTerminalDrop({ paths, wsId });
+  const choice = await ui.askTerminalDrop({ paths, taskId });
 
   if (choice.kind === "cancel") return;
 
@@ -154,7 +154,7 @@ async function handleSandboxedDrop(ptyId: string, wsId: string, paths: string[])
     // Stage each file into TMPDIR (sandbox-readable) and insert those paths.
     const staged: string[] = [];
     for (const src of paths) {
-      try { staged.push(await ipc.terminalStageFile(wsId, src)); }
+      try { staged.push(await ipc.terminalStageFile(taskId, src)); }
       catch (e) { useUI.getState().pushToast(`Couldn't stage ${src}: ${e}`, "error"); }
     }
     if (staged.length > 0) writePaths(ptyId, staged);
@@ -169,7 +169,7 @@ async function handleSandboxedDrop(ptyId: string, wsId: string, paths: string[])
     : paths.slice();
   let added = 0;
   for (const path of toAllow) {
-    try { await ipc.workspaceSandboxAddAllowedPath(wsId, path); added++; }
+    try { await ipc.taskSandboxAddAllowedPath(taskId, path); added++; }
     catch (e) { useUI.getState().pushToast(`Couldn't allow ${path}: ${e}`, "error"); }
   }
   writePaths(ptyId, paths);

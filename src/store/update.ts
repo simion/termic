@@ -294,11 +294,11 @@ const MOCK_CHANGELOG: ChangelogEntry[] = [
   {
     version: "9.9.9",
     date: "2026-05-21",
-    summary: "Per-repository Spotlight testing and in-workspace HTML preview.",
+    summary: "Per-repository Spotlight testing and in-task HTML preview.",
     sections: [
       { label: "Features", items: [
         "Configure Spotlight testing per repository.",
-        "Preview HTML files right inside your workspace.",
+        "Preview HTML files right inside your task.",
       ]},
       { label: "Bug fixes", items: [
         "Faster cold-start when opening large repos.",
@@ -321,11 +321,11 @@ const MOCK_CHANGELOG_MD = `# Changelog
 
 ## [9.9.9] - 2026-05-21
 
-Per-repository Spotlight testing and in-workspace HTML preview.
+Per-repository Spotlight testing and in-task HTML preview.
 
 ### Features
 - Configure Spotlight testing per repository.
-- Preview HTML files right inside your workspace.
+- Preview HTML files right inside your task.
 
 ### Bug fixes
 - Faster cold-start when opening large repos.

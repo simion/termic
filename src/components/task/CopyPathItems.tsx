@@ -1,11 +1,11 @@
 // Shared path context-menu items, reused everywhere a file/folder can be
 // right-clicked (Git panel, file tree, diff header, editor breadcrumb). Keeps
 // the wording + ordering identical across surfaces. Mirrors VS Code:
-//   - "Copy path (relative)"  → path relative to the workspace root
+//   - "Copy path (relative)"  → path relative to the task root
 //   - "Copy path (absolute)"  → full on-disk path
 //   - Open / Show in <file manager> → folders open, files are revealed/selected
 //
-// `rel` is workspace-relative; `root` is the workspace's absolute disk path.
+// `rel` is task-relative; `root` is the task's absolute disk path.
 // Rendered inside a <ContextMenuContent>, so it emits items only (no wrapper).
 // Cross-platform: the file-manager label adapts (Finder on macOS, File Manager
 // elsewhere) and the open/reveal IPCs dispatch per-OS on the Rust side.

@@ -219,14 +219,14 @@ fn handle(stream: TcpStream, app: tauri::AppHandle) -> std::io::Result<()> {
             match app.get_webview_window("main") {
                 Some(win) => {
                     let _ = win.unminimize();
-                    // All-workspaces visibility matters as much as z-order:
+                    // All-Spaces visibility matters as much as z-order:
                     // the driver's user is often on a DIFFERENT macOS Space
                     // where an always-on-top window still reports
                     // document.visibilityState=hidden and rAF stays frozen.
                     let _ = win.set_visible_on_all_workspaces(on);
                     let _ = win.set_always_on_top(on);
                     // And the Space the user is on may be a FULLSCREEN one,
-                    // which all-workspaces windows still don't join without
+                    // which all-Spaces windows still don't join without
                     // NSWindowCollectionBehaviorFullScreenAuxiliary. Raw
                     // AppKit call - main thread only.
                     #[cfg(target_os = "macos")]

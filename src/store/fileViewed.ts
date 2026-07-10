@@ -4,8 +4,8 @@
 // haven't looked at yet.
 //
 // Persisted to localStorage (survives restarts, unlike the transient
-// review-comments store) and keyed by workspace, then by the
-// workspace-relative file path (the same prefixed path a diff tab uses, so
+// review-comments store) and keyed by task, then by the
+// task-relative file path (the same prefixed path a diff tab uses, so
 // it's unique across multi-repo members).
 //
 // The stored value is the file's content fingerprint (GitFile.fp,
@@ -19,10 +19,10 @@ import { create } from "zustand";
 
 const LS = "fileViewed";
 
-/** wsId → (workspace-relative path → fingerprint when marked viewed). */
-type ByWs = Record<string, Record<string, string>>;
+/** taskId → (task-relative path → fingerprint when marked viewed). */
+type ByTask = Record<string, Record<string, string>>;
 
-function load(): ByWs {
+function load(): ByTask {
   try {
     const v = JSON.parse(localStorage.getItem(LS) || "{}");
     return v && typeof v === "object" ? v : {};
@@ -30,37 +30,37 @@ function load(): ByWs {
     return {};
   }
 }
-function save(byWs: ByWs) {
+function save(byTask: ByTask) {
   try {
-    localStorage.setItem(LS, JSON.stringify(byWs));
+    localStorage.setItem(LS, JSON.stringify(byTask));
   } catch {}
 }
 
 interface FileViewedState {
-  byWs: ByWs;
+  byTask: ByTask;
   /** Tick / untick a file. Ticking stashes its current fingerprint. */
-  toggle: (wsId: string, path: string, fp: string) => void;
+  toggle: (taskId: string, path: string, fp: string) => void;
   /** Drop entries for paths that no longer have changes (committed /
    *  discarded), keeping localStorage from growing without bound. */
-  prune: (wsId: string, validPaths: Set<string>) => void;
+  prune: (taskId: string, validPaths: Set<string>) => void;
 }
 
 export const useFileViewed = create<FileViewedState>((set) => ({
-  byWs: load(),
+  byTask: load(),
 
-  toggle: (wsId, path, fp) =>
+  toggle: (taskId, path, fp) =>
     set((s) => {
-      const cur = { ...(s.byWs[wsId] ?? {}) };
+      const cur = { ...(s.byTask[taskId] ?? {}) };
       if (cur[path] === fp) delete cur[path];
       else cur[path] = fp;
-      const byWs = { ...s.byWs, [wsId]: cur };
-      save(byWs);
-      return { byWs };
+      const byTask = { ...s.byTask, [taskId]: cur };
+      save(byTask);
+      return { byTask };
     }),
 
-  prune: (wsId, validPaths) =>
+  prune: (taskId, validPaths) =>
     set((s) => {
-      const cur = s.byWs[wsId];
+      const cur = s.byTask[taskId];
       if (!cur) return s;
       const next: Record<string, string> = {};
       let changed = false;
@@ -69,15 +69,15 @@ export const useFileViewed = create<FileViewedState>((set) => ({
         else changed = true;
       }
       if (!changed) return s;
-      const byWs = { ...s.byWs, [wsId]: next };
-      save(byWs);
-      return { byWs };
+      const byTask = { ...s.byTask, [taskId]: next };
+      save(byTask);
+      return { byTask };
     }),
 }));
 
 /** Subscribe to whether a specific file is currently marked viewed. A file
  *  is viewed only when its stashed fingerprint still matches `fp`, so an
  *  agent edit (fp moves) auto-clears the mark. */
-export function useIsViewed(wsId: string, path: string, fp: string): boolean {
-  return useFileViewed((s) => s.byWs[wsId]?.[path] === fp && fp !== "");
+export function useIsViewed(taskId: string, path: string, fp: string): boolean {
+  return useFileViewed((s) => s.byTask[taskId]?.[path] === fp && fp !== "");
 }

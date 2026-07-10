@@ -2,40 +2,40 @@
 // markdown preview. Kept DOM- and Tauri-free so they're unit-testable.
 //
 // Resolution happens frontend-side because the Rust containment check
-// (`safe_workspace_path`) rejects any literal `..` segment: `../assets/a.png`
+// (`safe_task_path`) rejects any literal `..` segment: `../assets/a.png`
 // referenced from `docs/readme.md` must arrive at the IPC boundary already
 // collapsed to `assets/a.png`.
 
-/** Extensions WorkspaceView routes to MarkdownPane (rendered preview) rather
+/** Extensions TaskView routes to MarkdownPane (rendered preview) rather
  *  than the plain EditorPane. Shared so a `file.md#heading` link only ever
  *  attaches `revealHeading` to a tab that can actually consume it — a
  *  fragment aimed at a non-markdown target would otherwise sit unconsumed
  *  on an EditorPane tab forever. */
 export const MARKDOWN_EXT_RE = /\.(md|markdown|mdx)$/i;
 
-/** Directory part of a workspace-relative posix path ("" for root files). */
+/** Directory part of a task-relative posix path ("" for root files). */
 export function dirnamePosix(path: string): string {
   const i = path.lastIndexOf("/");
   return i === -1 ? "" : path.slice(0, i);
 }
 
 /** Resolve a markdown href/src against the containing file's directory.
- *  A single leading `/` means "from the workspace root" (GitHub README
+ *  A single leading `/` means "from the task root" (GitHub README
  *  convention: `![logo](/docs/logo.png)`); the backend containment checks
- *  still apply to the result. Returns a normalized workspace-relative path,
- *  or null when the target is not a workspace file: URL schemes (https:,
+ *  still apply to the result. Returns a normalized task-relative path,
+ *  or null when the target is not a task file: URL schemes (https:,
  *  mailto:, ...), protocol-relative `//host`, or paths whose `..` escape the
- *  workspace root. Strips `?query` and `#fragment`; decodes percent-encoding
+ *  task root. Strips `?query` and `#fragment`; decodes percent-encoding
  *  (markdown-it normalizes link destinations to encoded form).
  *
- *  `memberDirs` are a multi-repo workspace's member `dir_name`s (workspace
+ *  `memberDirs` are a multi-repo task's member `dir_name`s (task
  *  paths inside a member look like `<dir_name>/rest`, matching the scheme
- *  `resolve_workspace_git_path` expects backend-side). When `baseDir` falls
+ *  `resolve_task_git_path` expects backend-side). When `baseDir` falls
  *  inside one of them, both the root-relative "/" and the `..` floor are
  *  scoped to THAT member's root, not the wrapper root: a member is its own
  *  repo, so `/logo.png` in a member's README means "this repo's root", and
  *  `..` can't hop out into a sibling member or the wrapper. */
-export function resolveWorkspaceHref(baseDir: string, href: string, memberDirs: readonly string[] = []): string | null {
+export function resolveTaskHref(baseDir: string, href: string, memberDirs: readonly string[] = []): string | null {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null; // any scheme (https:, mailto:, file:, ...)
   if (href.startsWith("//")) return null; // protocol-relative URL
   const stripped = href.split(/[?#]/, 1)[0];
@@ -49,7 +49,7 @@ export function resolveWorkspaceHref(baseDir: string, href: string, memberDirs: 
   const memberDir = memberDirs.find(d => baseDir === d || baseDir.startsWith(`${d}/`));
   const floor = memberDir ? 1 : 0; // can't pop the member's own root segment away
   // Root-relative resolves from the containing member's root (or the
-  // workspace root outside any member), not the file's own dir. The leading
+  // task root outside any member), not the file's own dir. The leading
   // "/" itself is skipped as an empty segment below.
   const parts: string[] = decoded.startsWith("/")
     ? (memberDir ? [memberDir] : [])
@@ -57,7 +57,7 @@ export function resolveWorkspaceHref(baseDir: string, href: string, memberDirs: 
   for (const seg of decoded.split("/")) {
     if (seg === "" || seg === ".") continue;
     if (seg === "..") {
-      if (parts.length <= floor) return null; // escapes the member/workspace root
+      if (parts.length <= floor) return null; // escapes the member/task root
       parts.pop();
     } else {
       parts.push(seg);

@@ -2,13 +2,13 @@
 //
 // Model:
 //   Project   — a git repo on disk. User adds repos by picking their root dir.
-//   Workspace — a git worktree branched from `base_branch`. Each workspace
+//   Task — a git worktree branched from `base_branch`. Each task
 //               has its own folder + an embedded terminal running the chosen
 //               agent CLI (claude / gemini / codex).
 //
 // Terminal: PTYs are managed in `PtyManager`. The frontend (xterm.js) and
 // backend communicate via Tauri events:
-//   FE → BE: pty_spawn(workspace_id, cli, cwd) -> pty_id
+//   FE → BE: pty_spawn(task_id, cli, cwd) -> pty_id
 //   FE → BE: pty_write(pty_id, data)
 //   FE → BE: pty_resize(pty_id, rows, cols)
 //   FE → BE: pty_kill(pty_id)
@@ -50,9 +50,14 @@ pub struct Project {
     /// `ProjectType::Single` this is the only repo in play. For
     /// `ProjectType::Multi` it's the HOST repo — the one that owns
     /// the shared CLAUDE.md / AGENTS.md / .claude/ and acts as the
-    /// workspace wrapper when a multi-repo workspace is created.
+    /// task wrapper when a multi-repo task is created.
     pub root_path: String,
-    pub workspaces_path: String,
+    /// Root dir under which this project's worktree tasks are created
+    /// (`<worktrees_base>/<slug>`). `alias = "workspaces_path"` reads
+    /// projects.json written before the workspace->task rename; without it
+    /// the field loads empty and new worktrees get a relative path.
+    #[serde(alias = "workspaces_path")]
+    pub tasks_path: String,
     pub base_branch: String,
     pub remote: String,
     pub preview_url: String,
@@ -63,26 +68,26 @@ pub struct Project {
     pub default_cli: String,
     pub created: String,
 
-    // ── Sandbox config (configured per project, enabled per workspace) ──
-    /// Whether new workspaces in this project default to sandboxed. The
-    /// "New workspace" dialog pre-checks its sandbox toggle when true.
-    /// The per-workspace pin is captured at create time; flipping this
-    /// later only affects FUTURE workspaces.
+    // ── Sandbox config (configured per project, enabled per task) ──
+    /// Whether new tasks in this project default to sandboxed. The
+    /// "New task" dialog pre-checks its sandbox toggle when true.
+    /// The per-task pin is captured at create time; flipping this
+    /// later only affects FUTURE tasks.
     #[serde(default)]
     pub default_sandbox: bool,
-    /// Default sandbox MODE for new workspaces (additive over
+    /// Default sandbox MODE for new tasks (additive over
     /// `default_sandbox`). When `None`, falls back to
     /// `default_sandbox` (true → Enforce). Lets a project default new
-    /// workspaces to Monitoring.
+    /// tasks to Monitoring.
     #[serde(default)]
     pub default_sandbox_mode: Option<SandboxMode>,
-    /// Extra writable subpaths beyond the bake-in defaults (workspace
+    /// Extra writable subpaths beyond the bake-in defaults (task
     /// path, agent config dirs, /private/tmp). Absolute paths; `$HOME`
     /// and `$WORKSPACE` are substituted at render time. List, not a
     /// single string — keeps the SBPL output one rule per line.
     #[serde(default)]
     pub sandbox_rw_paths: Vec<String>,
-    /// Extra allowed-host regexes for the per-workspace network proxy,
+    /// Extra allowed-host regexes for the per-task network proxy,
     /// beyond the per-CLI defaults. One POSIX/Rust regex per line,
     /// matched against the request hostname.
     #[serde(default)]
@@ -111,7 +116,7 @@ pub struct Project {
 
     /// True when `root_path` is NOT a git repo — e.g. a parent folder
     /// that contains several independent git repos (issue #4). Such a
-    /// project can only spawn repo-root workspaces (the agent runs at
+    /// project can only spawn repo-root tasks (the agent runs at
     /// the folder, no worktree / branch / diff). Defaults false so every
     /// existing project + the `Default` impl stay git-backed.
     #[serde(default)]
@@ -126,7 +131,7 @@ pub struct ProjectMember {
     /// Members are self-contained: they no longer reference a registered
     /// Project, so adding one never spawns a standalone sidebar project.
     pub root_path: String,
-    /// Display name + default dir name inside the workspace wrapper.
+    /// Display name + default dir name inside the task wrapper.
     pub name: String,
     /// True when `root_path` is a plain folder (no git). Such a member
     /// can only mount repo-root (a live symlink) — no worktree / branch.
@@ -136,7 +141,7 @@ pub struct ProjectMember {
     pub setup_script: String,
     pub run_script: String,
     pub archive_script: String,
-    /// Sandbox lists unioned into the workspace's frozen sandbox at create.
+    /// Sandbox lists unioned into the task's frozen sandbox at create.
     #[serde(default)]
     pub sandbox_rw_paths: Vec<String>,
     #[serde(default)]
@@ -186,10 +191,10 @@ pub enum ProjectType {
     Multi,
 }
 
-/// Sandbox enforcement level for a workspace's agent PTY. The third
+/// Sandbox enforcement level for a task's agent PTY. The third
 /// value (`Monitor`) is additive — `Off` and `Enforce` keep their exact
 /// prior behavior; legacy records that only have the `sandbox_enabled`
-/// bool map to `Off`/`Enforce` via `Workspace::effective_sandbox_mode`.
+/// bool map to `Off`/`Enforce` via `Task::effective_sandbox_mode`.
 ///   Off       — no cage (full filesystem + network).
 ///   Monitor   — allow everything but LOG every file op + network request.
 ///   Enforce   — the real cage (seatbelt deny-by-default + host allowlist).
@@ -214,7 +219,7 @@ pub enum SandboxMode {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct Workspace {
+pub struct Task {
     pub id: String,
     pub project_id: String,
     pub name: String,        // user-facing label, e.g. "Montreal"
@@ -225,18 +230,22 @@ pub struct Workspace {
     pub port: u16,
     pub created: String,
     pub archived: bool,
-    /// RFC3339 timestamp written the moment `workspace_archive` marks this
-    /// workspace archived. Used by the History view to order most-recently-
-    /// archived first. `None` on workspaces archived before this field existed.
+    /// RFC3339 timestamp written the moment `task_archive` marks this
+    /// task archived. Used by the History view to order most-recently-
+    /// archived first. `None` on tasks archived before this field existed.
     #[serde(default)]
     pub archived_at: Option<String>,
-    /// True when this workspace points at the project's main repo checkout
+    /// True when this task points at the project's main repo checkout
     /// (no git worktree created). Used by the "open repo directly" feature:
     /// archive skips `git worktree remove`, and the UI shows a distinct icon.
-    #[serde(default)]
-    pub is_repo_root: bool,
-    /// Total number of times an agent has been spawned for this workspace
-    /// across all sessions (persisted via `workspace_record_spawn`).
+    /// `alias = "is_repo_root"` reads pre-Task-rename metadata files (the
+    /// field was `is_repo_root` before the workspace->task rename). The
+    /// Phase 0 migration rewrites survivors to the new name; this alias
+    /// backstops anything the migration missed.
+    #[serde(default, alias = "is_repo_root")]
+    pub is_main_checkout: bool,
+    /// Total number of times an agent has been spawned for this task
+    /// across all sessions (persisted via `task_record_spawn`).
     /// Historical signal — kept for analytics / debug. Resume gating
     /// uses `has_resumable_history` below, not this.
     #[serde(default)]
@@ -246,7 +255,7 @@ pub struct Workspace {
     /// resumable session on disk. Persisted, drives the resume-flag
     /// gating on subsequent spawns.
     ///
-    /// Flipped TRUE by `workspace_set_has_history(id, true)` once a spawn
+    /// Flipped TRUE by `task_set_has_history(id, true)` once a spawn
     /// has been running long enough that it's almost certainly past
     /// any "no conversation found to continue" rapid-exit failure.
     /// Flipped FALSE when a resume-attempt spawn exits within the
@@ -258,11 +267,11 @@ pub struct Workspace {
     /// an id-capable CLI (e.g. claude). Reused on every subsequent
     /// spawn via the agent's `resume_id_args`. Keyed by agent id.
     /// Survives termic restarts; lets
-    /// repo-root workspaces auto-resume without cross-pollinating with
+    /// repo-root tasks auto-resume without cross-pollinating with
     /// the user's external sessions in the same cwd.
     #[serde(default)]
     pub agent_session_ids: std::collections::HashMap<String, String>,
-    /// PINNED at workspace creation. The sandbox decision can't change
+    /// PINNED at task creation. The sandbox decision can't change
     /// afterwards — otherwise an agent could talk the user into
     /// loosening its own cage. To run the same project unsandboxed,
     /// archive and recreate with the toggle off (or vice versa).
@@ -276,50 +285,50 @@ pub struct Workspace {
     /// Off) so all the existing "is there a cage" checks still work.
     #[serde(default)]
     pub sandbox_mode: Option<SandboxMode>,
-    /// Per-workspace YOLO (auto-approve / bypass-permissions) flag.
-    /// Applied to EVERY agent launched in this workspace. Only meaningful
-    /// when the workspace is NOT enforce-sandboxed — under Enforcing the
+    /// Per-task YOLO (auto-approve / bypass-permissions) flag.
+    /// Applied to EVERY agent launched in this task. Only meaningful
+    /// when the task is NOT enforce-sandboxed — under Enforcing the
     /// seatbelt is the boundary and YOLO is auto-on regardless. Replaces
-    /// the old global YOLO toggle so the choice is saved per workspace.
+    /// the old global YOLO toggle so the choice is saved per task.
     #[serde(default)]
     pub yolo: bool,
     /// Frozen-at-creation copies of the sandbox lists. Seeded from the
-    /// project's defaults in `workspace_create`, but the workspace owns
+    /// project's defaults in `task_create`, but the task owns
     /// them from then on - editing the project later doesn't reach back
-    /// into existing workspaces. Spawning reads THESE, never the
+    /// into existing tasks. Spawning reads THESE, never the
     /// project's arrays.
     #[serde(default)]
     pub sandbox_rw_paths: Vec<String>,
     #[serde(default)]
     pub sandbox_allowed_hosts: Vec<String>,
-    /// Multi-repo composition. Empty for single-repo workspaces (the
+    /// Multi-repo composition. Empty for single-repo tasks (the
     /// usual case — `path` already points at the worktree of the one
-    /// project this workspace belongs to). For workspaces created
+    /// project this task belongs to). For tasks created
     /// under a `ProjectType::Multi` project this lists the host repo
     /// + every member with its resolved on-disk path. The PTY spawn
     /// + sandbox profile generator iterate this list when populated.
     #[serde(default)]
-    pub composition: Vec<WorkspaceMember>,
-    /// Pre-set launch command for `cli == "custom"` repo-root workspaces.
+    pub composition: Vec<TaskMember>,
+    /// Pre-set launch command for `cli == "custom"` repo-root tasks.
     /// The default tab runs this through a login shell instead of an
     /// agent binary (e.g. `ssh box`, `npm run dev`, `python`). None for
-    /// every agent / shell workspace. Persisted so the command re-runs
+    /// every agent / shell task. Persisted so the command re-runs
     /// on every respawn / app restart.
     #[serde(default)]
     pub custom_command: Option<String>,
-    /// Per-workspace override for the agent's resume arguments. When set
+    /// Per-task override for the agent's resume arguments. When set
     /// (non-empty), the spawn uses THIS verbatim (with `{WORKSPACE_NAME}`
     /// / `{WORKSPACE_SLUG}` / etc. placeholders expanded) as the resume
     /// block instead of termic's id-based (`--session-id`/`--resume <uuid>`)
-    /// or cwd-based (`--continue`) logic. Lets a repo-root workspace resume
+    /// or cwd-based (`--continue`) logic. Lets a repo-root task resume
     /// a named session, e.g. `--resume {WORKSPACE_NAME}`. The agent owns the
     /// "session not found" case (claude shows its resume picker), so no
     /// fast-exit fallback fires for this path. None = default behavior.
     #[serde(default)]
     pub resume_override: Option<String>,
-    /// Durable agent tabs for this workspace, in display order. Written
+    /// Durable agent tabs for this task, in display order. Written
     /// whenever the in-memory tab set changes (add / close / reorder /
-    /// rename) via `workspace_set_tabs`. On the NEXT app launch the
+    /// rename) via `task_set_tabs`. On the NEXT app launch the
     /// frontend restores this whole set (every agent tab, not just the
     /// primary) and each id-capable tab resumes its own `session_id`.
     /// Shell / scratch terminals are intentionally NOT persisted here
@@ -341,7 +350,7 @@ pub struct Workspace {
 
 /// One durable agent tab. `session_id` is termic's own per-tab session
 /// uuid for id-capable agents (claude / gemini) — distinct per tab so a
-/// workspace can run several agents side by side and resume each one
+/// task can run several agents side by side and resume each one
 /// independently. None for cwd-resume agents (codex) and tabs that have
 /// not yet minted a session.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -358,7 +367,7 @@ pub struct PersistedTab {
     #[serde(default)]
     pub command: Option<String>,
     /// Per-tab termic-owned session uuid. Owned solely by
-    /// `workspace_set_tab_session_id`; `workspace_set_tabs` PRESERVES it
+    /// `task_set_tab_session_id`; `task_set_tabs` PRESERVES it
     /// across rewrites (matched by tab id) so a metadata update never
     /// clobbers a freshly minted session.
     #[serde(default)]
@@ -372,7 +381,7 @@ pub struct PersistedTab {
     pub run_member: Option<String>,
 }
 
-/// Frontend payload for `workspace_set_tabs`. `session_id` is only honored
+/// Frontend payload for `task_set_tabs`. `session_id` is only honored
 /// when there is NO existing record for the tab id (the migration / first
 /// write case) — otherwise the stored uuid wins, so the two writers
 /// (`set_tabs` for layout, `set_tab_session_id` for the uuid) can't clobber
@@ -397,7 +406,7 @@ pub struct PersistedTabInput {
     pub run_member: Option<String>,
 }
 
-impl Workspace {
+impl Task {
     /// Resolve the effective sandbox mode, bridging the legacy
     /// `sandbox_enabled` bool for records written before monitoring
     /// shipped. `sandbox_mode` wins when present.
@@ -408,15 +417,15 @@ impl Workspace {
     }
 }
 
-/// One entry in a multi-repo workspace's composition. The host repo
-/// itself is the first member (its `path` is the workspace wrapper
+/// One entry in a multi-repo task's composition. The host repo
+/// itself is the first member (its `path` is the task wrapper
 /// dir, which IS a git worktree of the host); subsequent entries are
 /// the user-picked member repos worktree'd or symlinked inside it.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct WorkspaceMember {
-    /// LEGACY: references Project.id for workspaces created before members
-    /// went inline. New workspaces leave this empty and use `repo_path`.
+pub struct TaskMember {
+    /// LEGACY: references Project.id for tasks created before members
+    /// went inline. New tasks leave this empty and use `repo_path`.
     /// Kept so archive / sandbox code can still resolve old compositions.
     #[serde(default)]
     pub project_id: String,
@@ -441,15 +450,15 @@ pub struct WorkspaceMember {
     pub path: String,
     /// Per-member port. Frozen at create. Exposed as $TERMIC_PORT
     /// when this member's setup/run script fires so two members
-    /// running `PORT=$TERMIC_PORT npm run dev` in the same workspace
+    /// running `PORT=$TERMIC_PORT npm run dev` in the same task
     /// don't collide on the same listening port. Zero = legacy
-    /// workspace created before per-member ports existed; the
-    /// runner falls back to the workspace's own port in that case.
+    /// task created before per-member ports existed; the
+    /// runner falls back to the task's own port in that case.
     #[serde(default)]
     pub port: u16,
     /// Per-member script overrides. Frozen at creation from the
     /// member project's own defaults; user can tweak in the New
-    /// workspace dialog. Run with `cwd = member.path`. Empty = the
+    /// task dialog. Run with `cwd = member.path`. Empty = the
     /// member skips that script (so e.g. a docs repo can have no
     /// setup / no run). Host's own scripts (project.setup_script /
     /// run_script / archive_script) cover the wrapper's host worktree.
@@ -467,22 +476,22 @@ pub enum MemberMode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreateWorkspaceArgs {
+pub struct CreateTaskArgs {
     pub project_id: String,
     pub name: String,
     pub cli: Option<String>,
     pub base_branch: Option<String>,
     /// Explicit branch name. If omitted, defaults to `slugify(name)`.
     pub branch: Option<String>,
-    /// Optional client-supplied workspace ID. Lets the frontend subscribe
+    /// Optional client-supplied task ID. Lets the frontend subscribe
     /// to `setup-output://<id>` + `setup-done://<id>` BEFORE invoking
     /// create — without this, the empty-script branch race-emits done
     /// before the listener attaches and the dialog hangs forever.
     /// Defaults to a server-side UUID for backwards-compat.
     #[serde(default)]
     pub id: Option<String>,
-    /// Sandbox the agent for this workspace. PINNED at creation —
-    /// `sandbox_enabled` is copied straight onto the saved Workspace
+    /// Sandbox the agent for this task. PINNED at creation —
+    /// `sandbox_enabled` is copied straight onto the saved Task
     /// and never gets a setter. If unset, the per-project default
     /// (`Project.default_sandbox`) wins.
     #[serde(default)]
@@ -492,7 +501,7 @@ pub struct CreateWorkspaceArgs {
     /// `sandbox_enabled` / project default.
     #[serde(default)]
     pub sandbox_mode: Option<SandboxMode>,
-    /// Optional overrides for the per-workspace sandbox lists. The
+    /// Optional overrides for the per-task sandbox lists. The
     /// dialog seeds them from the project's defaults, lets the user
     /// add/remove, then sends the final shape here. Unset → fall
     /// back to the project's default arrays.
@@ -500,12 +509,18 @@ pub struct CreateWorkspaceArgs {
     pub sandbox_rw_paths: Option<Vec<String>>,
     #[serde(default)]
     pub sandbox_allowed_hosts: Option<Vec<String>>,
+    /// Pre-set launch command for a `cli == "custom"` worktree task. The
+    /// default tab runs this through a login shell instead of an agent
+    /// binary (e.g. `npm run dev`, `ssh box`). None for agent / shell tasks.
+    /// Mirrors the repo-root custom-command path in `task_open_repo`.
+    #[serde(default)]
+    pub custom_command: Option<String>,
 }
 
 // ───────────────────────────── paths ─────────────────────────────
 
 /// Top-level directory name for all of termic's on-disk data —
-/// `<data_local_dir>/<APP_DIR>/` (projects, settings, workspace
+/// `<data_local_dir>/<APP_DIR>/` (projects, settings, task
 /// metadata) and `~/<APP_DIR>/` (worktrees, auto-created host repos).
 /// Debug builds (`tauri dev`) use a separate `termic_dev` tree so
 /// day-to-day development can't read or clobber the release app's
@@ -520,7 +535,7 @@ fn data_dir() -> Result<PathBuf> {
     // instance (see automation.rs) runs against a scratch profile and
     // can't touch the real one. Also handy for parallel dev instances.
     // Deliberately dead in release: a leaked env var must never silently
-    // relocate the real profile and make the user's workspaces "vanish".
+    // relocate the real profile and make the user's tasks "vanish".
     let p = match std::env::var("TERMIC_DATA_DIR") {
         Ok(d) if cfg!(debug_assertions) && !d.trim().is_empty() => PathBuf::from(d),
         _ => dirs::data_local_dir()
@@ -534,13 +549,13 @@ fn data_dir() -> Result<PathBuf> {
 fn projects_file() -> Result<PathBuf> {
     Ok(data_dir()?.join("projects.json"))
 }
-fn workspaces_dir() -> Result<PathBuf> {
-    let p = data_dir()?.join("workspaces");
+fn tasks_dir() -> Result<PathBuf> {
+    let p = data_dir()?.join("tasks");
     fs::create_dir_all(&p)?;
     Ok(p)
 }
 fn worktrees_base() -> Result<PathBuf> {
-    let p = dirs::home_dir().ok_or_else(|| anyhow!("no home"))?.join(APP_DIR).join("workspaces");
+    let p = dirs::home_dir().ok_or_else(|| anyhow!("no home"))?.join(APP_DIR).join("tasks");
     fs::create_dir_all(&p)?;
     Ok(p)
 }
@@ -560,10 +575,35 @@ fn load_projects() -> Vec<Project> {
     // Resolve those into the self-contained inline shape so adding a
     // member never leaves a standalone project behind. Persist only when
     // something actually changed (load_projects runs on nearly every IPC).
-    if migrate_legacy_members(&mut list) {
+    let mut dirty = migrate_legacy_members(&mut list);
+    dirty |= repoint_task_bases(&mut list);
+    if dirty {
         let _ = save_projects(&list);
     }
     list
+}
+
+/// Repoint each project's worktree base from the pre-rename `~/APP_DIR/workspaces/`
+/// root to `~/APP_DIR/tasks/`, so NEW worktrees land under `tasks/` going forward.
+/// Existing task worktrees keep their own stored `path` (never moved, so CWD-resume
+/// stays intact) — this only changes where the NEXT worktree for a project gets
+/// created. Boundary-safe prefix match (trailing separator) so a custom location
+/// outside our root is left alone. Idempotent: once repointed, the prefix no longer
+/// matches. Runs on every load (cheap), self-healing pre-rename profiles without a
+/// schema bump. Returns true if anything changed.
+fn repoint_task_bases(list: &mut [Project]) -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    let sep = std::path::MAIN_SEPARATOR;
+    let old_root = format!("{}{sep}", home.join(APP_DIR).join("workspaces").to_string_lossy());
+    let new_root = format!("{}{sep}", home.join(APP_DIR).join("tasks").to_string_lossy());
+    let mut changed = false;
+    for p in list.iter_mut() {
+        if let Some(rest) = p.tasks_path.strip_prefix(&old_root) {
+            p.tasks_path = format!("{new_root}{rest}");
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Migrate pre-inline multi-repo members (which referenced a Project by
@@ -655,8 +695,8 @@ fn save_projects(list: &[Project]) -> Result<()> {
     Ok(())
 }
 
-fn load_workspaces() -> Vec<Workspace> {
-    let dir = match workspaces_dir() {
+fn load_tasks() -> Vec<Task> {
+    let dir = match tasks_dir() {
         Ok(p) => p,
         Err(_) => return Vec::new(),
     };
@@ -664,7 +704,7 @@ fn load_workspaces() -> Vec<Workspace> {
     if let Ok(rd) = fs::read_dir(&dir) {
         for entry in rd.flatten() {
             if let Ok(s) = fs::read_to_string(entry.path()) {
-                if let Ok(w) = serde_json::from_str::<Workspace>(&s) {
+                if let Ok(w) = serde_json::from_str::<Task>(&s) {
                     out.push(w);
                 }
             }
@@ -673,15 +713,285 @@ fn load_workspaces() -> Vec<Workspace> {
     out.sort_by(|a, b| a.created.cmp(&b.created));
     out
 }
-fn save_workspace(w: &Workspace) -> Result<()> {
-    let f = workspaces_dir()?.join(format!("{}.json", w.id));
+fn save_task(w: &Task) -> Result<()> {
+    let f = tasks_dir()?.join(format!("{}.json", w.id));
     fs::write(&f, serde_json::to_string_pretty(w)?)?;
     Ok(())
 }
-fn delete_workspace_file(id: &str) -> Result<()> {
-    let f = workspaces_dir()?.join(format!("{id}.json"));
+fn delete_task_file(id: &str) -> Result<()> {
+    let f = tasks_dir()?.join(format!("{id}.json"));
     let _ = fs::remove_file(f);
     Ok(())
+}
+
+// ──────────────── Phase 0: workspaces -> tasks migration ────────────────
+//
+// One-time on-disk migration for the workspace->task rename. Runs once at
+// startup (see `run()`), BEFORE any task load, gated by
+// `settings.schema_version`. See docs/plans/workspace-to-task-rename.md.
+//
+// METADATA-ONLY: it renames the metadata dir workspaces/ -> tasks/ and the
+// `is_repo_root` field to `is_main_checkout`. It does NOT touch worktree
+// directories or the `path` field, because CWD-resume agents (Claude Code's
+// `--continue`) resume by working directory and moving a worktree would orphan
+// its session history. New worktrees land under ~/APP_DIR/tasks/ going forward;
+// pre-existing ones stay under ~/APP_DIR/workspaces/ and age out lazily.
+//
+// Guarantees (stage -> verify -> single-pointer-flip):
+//   1. No data loss: the old copy is never deleted until the new one is
+//      written AND verified.
+//   2. Atomic metadata commit: build `tasks.tmp/`, validate, then one
+//      `rename(tasks.tmp -> tasks)` syscall. Readers see all-old or all-new.
+//   3. Crash-safe / resumable: `schema_version` is written LAST and every
+//      step is idempotent, so an interrupted run rolls forward next launch.
+//   4. Clean by construction: broken records never enter `tasks.tmp/`, so the
+//      committed set has zero corrupt entries (prune-on-corruption).
+
+fn migration_log_file() -> Option<PathBuf> {
+    data_dir().ok().map(|d| d.join("tasks-migration.log"))
+}
+
+fn log_migration(msg: &str) {
+    dlog(&format!("[migrate] {msg}"));
+    if let Some(f) = migration_log_file() {
+        use std::io::Write;
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(f) {
+            let _ = writeln!(file, "{msg}");
+        }
+    }
+}
+
+fn log_prune(path: &Path, reason: &str) {
+    log_migration(&format!("PRUNED {} :: {reason}", path.display()));
+}
+
+/// Seconds since the epoch, for the backup dir name. `None` if the clock is
+/// before 1970 (never in practice) — the caller then skips the backup.
+fn migration_timestamp() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Recursively copy a directory tree, preserving symlinks (worktrees can hold
+/// symlinked node_modules etc.). Used for the pre-migration backup and the
+/// cross-volume (EXDEV) fallback when `fs::rename` can't move the worktree
+/// root in one syscall.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_symlink() {
+            let target = fs::read_link(&from)?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &to)?;
+            #[cfg(not(unix))]
+            { let _ = target; let _ = fs::copy(&from, &to)?; }
+        } else if ty.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write `schema_version = TASKS_SCHEMA_VERSION` into settings.json directly
+/// (the migration's commit marker). Written LAST so a crash before this leaves
+/// the guard un-bumped and the migration re-runs cleanly.
+fn stamp_schema_version() {
+    let mut s = settings_load();
+    s.schema_version = TASKS_SCHEMA_VERSION;
+    if let Ok(f) = settings_file() {
+        if let Ok(txt) = serde_json::to_string_pretty(&s) {
+            let _ = fs::write(f, txt);
+        }
+    }
+}
+
+/// Exclusive migration lock, released on drop. Guards against two concurrent
+/// launches migrating the same data dir at once (the app is single-instance in
+/// practice, but nothing enforces it — a double-click or a stray second dev
+/// instance could race and, without this, corrupt the staging/commit).
+struct MigrationLock(PathBuf);
+impl Drop for MigrationLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Try to acquire the migration lock. Returns None if another process holds a
+/// FRESH lock (skip this launch; the holder will finish). A stale lock (older
+/// than 5 min, i.e. a crashed prior run) is stolen so migration can't wedge
+/// forever.
+fn acquire_migration_lock(data: &Path) -> Option<MigrationLock> {
+    let lock = data.join("tasks-migration.lock");
+    if let Ok(meta) = fs::metadata(&lock) {
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .map(|age| age > std::time::Duration::from_secs(300))
+            .unwrap_or(true); // unreadable mtime -> treat as stale
+        if stale {
+            let _ = fs::remove_file(&lock);
+        }
+    }
+    match fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+        Ok(_) => Some(MigrationLock(lock)),
+        Err(_) => None, // someone else holds a fresh lock
+    }
+}
+
+fn migrate_workspaces_to_tasks() {
+    // Best-effort throughout: a migration failure must NEVER stop the app from
+    // starting. Worst case the old layout stays in place and we retry next
+    // launch (the guard is the committed schema_version, written last).
+    let data = match data_dir() { Ok(p) => p, Err(_) => return };
+
+    // GUARD: already migrated?
+    if settings_load().schema_version >= TASKS_SCHEMA_VERSION {
+        return;
+    }
+
+    // LOCK: refuse to run two migrations against the same data dir at once.
+    // Released automatically on every return path (Drop).
+    let _lock = match acquire_migration_lock(&data) {
+        Some(l) => l,
+        None => {
+            log_migration("another migration is in progress (lock held); skipping this launch");
+            return;
+        }
+    };
+    // Re-check the guard now that we hold the lock: the process that held it may
+    // have just committed the migration while we waited to acquire.
+    if settings_load().schema_version >= TASKS_SCHEMA_VERSION {
+        return;
+    }
+
+    // NOTE: compute raw paths (not via tasks_dir(), which would create the dir
+    // and defeat the "does tasks/ exist yet" checks below).
+    let old_meta = data.join("workspaces");
+    let new_meta = data.join("tasks");
+    let tmp_meta = data.join("tasks.tmp");
+
+    // Fresh install (or already-migrated profile with no old metadata): just
+    // stamp the version and move on.
+    if !old_meta.exists() {
+        stamp_schema_version();
+        return;
+    }
+
+    log_migration(&format!(
+        "starting workspaces->tasks migration (schema {} -> {})",
+        settings_load().schema_version, TASKS_SCHEMA_VERSION
+    ));
+
+    // 1. BACKUP metadata + settings + projects (cheap safety net).
+    if let Some(ts) = migration_timestamp() {
+        let backup = data.join("backups").join(format!("pre-tasks-{ts}"));
+        let _ = fs::create_dir_all(&backup);
+        if copy_dir_all(&old_meta, &backup.join("workspaces")).is_ok() {
+            for f in ["settings.json", "projects.json"] {
+                let src = data.join(f);
+                if src.exists() { let _ = fs::copy(&src, backup.join(f)); }
+            }
+            log_migration(&format!("backup written to {}", backup.display()));
+        } else {
+            log_migration("backup copy failed; continuing (old layout stays intact until commit)");
+        }
+    }
+
+    // 2. CLASSIFY: build tasks.tmp/ from survivors only.
+    //
+    // METADATA-ONLY migration. We rename the metadata dir workspaces/ -> tasks/
+    // and rewrite the `is_repo_root` field to `is_main_checkout`, but we
+    // DELIBERATELY DO NOT move worktree directories or rewrite `path`.
+    // CWD-resume agents (Claude Code's `--continue`, etc.) resume the most
+    // recent session BY WORKING DIRECTORY, so relocating a worktree would
+    // silently orphan its history. Existing worktrees stay put under
+    // ~/APP_DIR/workspaces/...; NEW worktrees are created under ~/APP_DIR/tasks/
+    // (see worktrees_base). The two roots coexist and the old one empties out
+    // naturally as the user archives and recreates tasks. The metadata dir is
+    // NOT a working directory and is never passed to an agent, so renaming it
+    // is safe.
+    let _ = fs::remove_dir_all(&tmp_meta); // discard any half-built staging
+    if let Err(e) = fs::create_dir_all(&tmp_meta) {
+        log_migration(&format!("cannot create staging dir ({e}); aborting"));
+        return;
+    }
+
+    let mut kept = 0u32;
+    let mut pruned = 0u32;
+    if let Ok(rd) = fs::read_dir(&old_meta) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+            let raw = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => { pruned += 1; log_prune(&path, "unreadable"); continue; }
+            };
+            let task: Task = match serde_json::from_str(&raw) {
+                Ok(t) => t,
+                Err(e) => { pruned += 1; log_prune(&path, &format!("unparseable: {e}")); continue; }
+            };
+
+            // NON-DESTRUCTIVE: every task we can READ is migrated, full stop.
+            // We deliberately do NOT drop a task just because its worktree dir
+            // is missing at migration time — that dir could be on an unmounted
+            // external volume, a network mount, or otherwise temporarily
+            // unreachable, and losing a valid task record over a transient
+            // condition is exactly what we must not do. A genuinely orphaned
+            // task (worktree deleted for real) simply shows up in the list and
+            // the user can archive it; that's a far better failure mode than a
+            // workspace silently vanishing. Only unreadable / unparseable files
+            // are pruned above, and those are preserved in the pre-migration
+            // backup regardless. `path` is left untouched throughout.
+
+            // Survivor: re-serialize (renames is_repo_root -> is_main_checkout).
+            let out = tmp_meta.join(format!("{}.json", task.id));
+            match serde_json::to_string_pretty(&task) {
+                Ok(s) if fs::write(&out, &s).is_ok() => { kept += 1; }
+                _ => { pruned += 1; log_prune(&path, "write to staging failed"); }
+            }
+        }
+    }
+
+    // 4. VALIDATE every file in staging parses back into a Task.
+    let mut valid = true;
+    if let Ok(rd) = fs::read_dir(&tmp_meta) {
+        for e in rd.flatten() {
+            if let Ok(s) = fs::read_to_string(e.path()) {
+                if serde_json::from_str::<Task>(&s).is_err() { valid = false; break; }
+            }
+        }
+    }
+    if !valid {
+        log_migration("staging validation FAILED; aborting (old metadata intact)");
+        let _ = fs::remove_dir_all(&tmp_meta);
+        return;
+    }
+
+    // 5. COMMIT: single rename tasks.tmp -> tasks (the one flip point).
+    if new_meta.exists() {
+        // Only possible after a crash between a prior commit and old-meta
+        // delete; the fresh staging supersedes it.
+        let _ = fs::remove_dir_all(&new_meta);
+    }
+    if let Err(e) = fs::rename(&tmp_meta, &new_meta) {
+        log_migration(&format!("commit rename failed ({e}); aborting (old metadata intact)"));
+        let _ = fs::remove_dir_all(&tmp_meta);
+        return;
+    }
+
+    // 6. CLEANUP: drop old metadata, stamp schema_version LAST.
+    let _ = fs::remove_dir_all(&old_meta);
+    stamp_schema_version();
+    log_migration(&format!("migration committed: {kept} task(s) kept, {pruned} pruned"));
 }
 
 // ───────────────────────────── git ─────────────────────────────
@@ -731,7 +1041,7 @@ struct PtySlot {
     // (which holds the Child for the duration of wait()). Holding a shared
     // Mutex<Child> here would deadlock pty_kill against the waiter.
     child_pid: Option<u32>,
-    /// Sandbox bundle for this PTY, if the workspace was sandbox-enabled.
+    /// Sandbox bundle for this PTY, if the task was sandbox-enabled.
     /// Dropping the bundle shuts down the in-process proxy thread; we
     /// let TMPDIR expire for the profile / filter files (they're tiny
     /// and useful for post-mortem). `None` for unsandboxed PTYs.
@@ -739,11 +1049,11 @@ struct PtySlot {
     /// read directly, hence the allow.
     #[allow(dead_code)]
     sandbox: Option<SandboxBundle>,
-    /// Workspace this PTY belongs to, copied from `SpawnArgs.workspace_id`.
-    /// Lets `workspace_set_sandbox` SIGKILL all PTYs of a workspace whose
+    /// Task this PTY belongs to, copied from `SpawnArgs.task_id`.
+    /// Lets `task_set_sandbox` SIGKILL all PTYs of a task whose
     /// sandbox config was just edited so the next mount picks up the new
-    /// profile. `None` for non-workspace PTYs (none today; future-proof).
-    workspace_id: Option<String>,
+    /// profile. `None` for non-task PTYs (none today; future-proof).
+    task_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -758,14 +1068,14 @@ struct PtyChunk { data: Vec<u8> }
 struct PtyExit { code: Option<i32> }
 
 /// Truth about how the agent actually got spawned - not just whether
-/// the workspace WANTED to be sandboxed but whether the cage actually
+/// the task WANTED to be sandboxed but whether the cage actually
 /// closed. Returned synchronously as part of `pty_spawn`'s value so
 /// the frontend can't miss it (the earlier event-based variant had a
 /// race window between the emit and the frontend's listener attach).
 #[derive(Clone, Serialize)]
 pub struct SandboxStatus {
     /// True iff the spawn went through sandbox-exec. False for an
-    /// unsandboxed workspace AND for the degraded case where
+    /// unsandboxed task AND for the degraded case where
     /// provisioning failed (we proceed unsandboxed rather than crash).
     active: bool,
     /// True iff the network proxy started. Implies network allowlisting works.
@@ -798,19 +1108,19 @@ pub struct SpawnArgs {
     #[serde(default = "default_cols")]
     pub cols: u16,
     /// When present, the frontend is asking us to wrap the spawn in
-    /// the workspace's sandbox (seatbelt + per-workspace network proxy).
-    /// We look up the workspace, refuse to sandbox if its
+    /// the task's sandbox (seatbelt + per-task network proxy).
+    /// We look up the task, refuse to sandbox if its
     /// `sandbox_enabled` is false, and proceed unsandboxed if the
-    /// workspace can't be found (e.g. transient race). The PTY id
+    /// task can't be found (e.g. transient race). The PTY id
     /// returned is the same shape either way.
     #[serde(default)]
-    pub workspace_id: Option<String>,
+    pub task_id: Option<String>,
     /// The agent ID being spawned in *this* tab. May differ from
-    /// `workspace.cli` because a workspace can host multiple tabs
-    /// running different agents (e.g. a claude workspace with a gemini
+    /// `task.cli` because a task can host multiple tabs
+    /// running different agents (e.g. a claude task with a gemini
     /// tab open). Drives which agent's `sandbox_allowed_paths` +
     /// per-CLI host allowlist get baked into the freshly-provisioned
-    /// SBPL profile. Falls back to `workspace.cli` when absent.
+    /// SBPL profile. Falls back to `task.cli` when absent.
     #[serde(default)]
     pub agent_id: Option<String>,
 }
@@ -818,38 +1128,38 @@ fn default_rows() -> u16 { 40 }
 fn default_cols() -> u16 { 120 }
 
 /// `.termic.yaml` always lives at — and is read from — the project's
-/// `root_path` (the user's main checkout), never a per-workspace
+/// `root_path` (the user's main checkout), never a per-task
 /// worktree. That keeps one source of truth: a Repository-settings
 /// edit, a footer "Allow", and the spawn-time read all hit the same
-/// file. It is also OUTSIDE the per-workspace sandbox, so a caged
+/// file. It is also OUTSIDE the per-task sandbox, so a caged
 /// agent cannot edit the config the sandbox reads.
 fn repo_config_for(proj: &Project) -> repo_config::RepoConfig {
     repo_config::load_or_default(Path::new(&proj.root_path))
 }
 
-/// Compute the live sandbox allow-lists for a workspace at spawn time.
+/// Compute the live sandbox allow-lists for a task at spawn time.
 /// Unions four layers:
 ///   1. global Settings defaults,
-///   2. the workspace's own pinned arrays (Sandbox dialog),
+///   2. the task's own pinned arrays (Sandbox dialog),
 ///   3. each contributing project's personal "allow for me" overrides
 ///      from `projects.json`,
 ///   4. each contributing project's committed `.termic.yaml` sandbox
 ///      block — re-read fresh on every spawn.
-fn live_sandbox_lists(ws: &Workspace) -> (Vec<String>, Vec<String>) {
+fn live_sandbox_lists(task: &Task) -> (Vec<String>, Vec<String>) {
     let globals = load_settings_inner();
     let projects = load_projects();
     let mut rw = globals.sandbox_default_rw_paths.clone();
     let mut hosts = globals.sandbox_default_allowed_hosts.clone();
-    // The workspace's own pinned arrays — the Sandbox dialog's
-    // per-workspace personal layer.
-    rw.extend(ws.sandbox_rw_paths.iter().cloned());
-    hosts.extend(ws.sandbox_allowed_hosts.iter().cloned());
+    // The task's own pinned arrays — the Sandbox dialog's
+    // per-task personal layer.
+    rw.extend(task.sandbox_rw_paths.iter().cloned());
+    hosts.extend(task.sandbox_allowed_hosts.iter().cloned());
 
-    // Repos contributing to this workspace.
-    if ws.composition.is_empty() {
+    // Repos contributing to this task.
+    if task.composition.is_empty() {
         // Single-repo: the project's committed `.termic.yaml` sandbox block
         // (re-read live) + its personal projects.json overrides.
-        if let Some(p) = projects.iter().find(|p| p.id == ws.project_id) {
+        if let Some(p) = projects.iter().find(|p| p.id == task.project_id) {
             let cfg = repo_config_for(p);
             rw.extend(cfg.sandbox.allowed_paths);
             hosts.extend(cfg.sandbox.allowed_hosts);
@@ -859,9 +1169,9 @@ fn live_sandbox_lists(ws: &Workspace) -> (Vec<String>, Vec<String>) {
     } else {
         // Multi-repo: each member's committed `.termic.yaml` sandbox block,
         // re-read live from its source repo. (Member sandbox lists from the
-        // multi-repo project were frozen into the workspace's pinned arrays
+        // multi-repo project were frozen into the task's pinned arrays
         // at create, so they're already covered above.)
-        for m in &ws.composition {
+        for m in &task.composition {
             let rp = member_repo_path(m);
             if rp.is_empty() { continue; }
             let cfg = repo_config::load_or_default(Path::new(&rp));
@@ -894,6 +1204,24 @@ fn effective_scripts(proj: &Project) -> (String, String, String) {
     )
 }
 
+/// Effective script for a multi-repo composition member: the frozen per-member
+/// override (`m.setup_script` / `run_script` / `archive_script`) when non-empty,
+/// otherwise the member's OWN committed `.termic.yaml` value. Mirrors
+/// `effective_scripts` (host) and the frontend run-target resolver, so a member
+/// whose scripts live in `.termic.yaml` (rather than a manual override) still
+/// runs its setup / archive in a multi-repo task.
+fn member_effective_script(
+    m: &TaskMember,
+    pick: impl Fn(&repo_config::RepoScripts) -> String,
+    override_val: &str,
+) -> String {
+    if !override_val.trim().is_empty() {
+        return override_val.to_string();
+    }
+    let repo = if m.repo_path.is_empty() { &m.path } else { &m.repo_path };
+    pick(&repo_config::load_or_default(Path::new(repo)).scripts)
+}
+
 /// Effective `files_to_copy` globs — the project's `projects.json`
 /// override wins when non-empty, otherwise the repo's committed
 /// `.termic.yaml` list. Same override rule as `effective_scripts`.
@@ -921,33 +1249,33 @@ fn pty_spawn(
         .map_err(|e| e.to_string())?;
 
     // ── Sandbox wrap, if applicable ────────────────────────────────
-    // If the workspace is flagged sandbox_enabled, provision a fresh
+    // If the task is flagged sandbox_enabled, provision a fresh
     // seatbelt profile + network proxy and rewrite (cmd, args) to go through
     // `sandbox-exec`. The bundle gets parked on the PtySlot so its
     // Drop impl SIGKILLs the proxy when the PTY closes.
     let (effective_cmd, effective_args, sandbox_bundle) = match args
-        .workspace_id
+        .task_id
         .as_deref()
-        .and_then(|wid| load_workspaces().into_iter().find(|w| w.id == wid))
+        .and_then(|wid| load_tasks().into_iter().find(|w| w.id == wid))
         .filter(|w| w.effective_sandbox_mode() != SandboxMode::Off)
         // Re-render the allow-lists each spawn so committed
         // `.termic.yaml` edits are picked up live, unioned with the
-        // personal (workspace/project/global) layers. See
+        // personal (task/project/global) layers. See
         // `live_sandbox_lists` / repo_config.rs.
-        .map(|mut ws| {
-            let (rw, hosts) = live_sandbox_lists(&ws);
-            ws.sandbox_rw_paths = rw;
-            ws.sandbox_allowed_hosts = hosts;
-            ws
+        .map(|mut task| {
+            let (rw, hosts) = live_sandbox_lists(&task);
+            task.sandbox_rw_paths = rw;
+            task.sandbox_allowed_hosts = hosts;
+            task
         })
     {
-        Some(ws) => match sandbox::provision(&ws, args.agent_id.as_deref(), ws.effective_sandbox_mode()) {
+        Some(task) => match sandbox::provision(&task, args.agent_id.as_deref(), task.effective_sandbox_mode()) {
             Ok(bundle) => {
                 let port = bundle.proxy.as_ref().map(|p| p.port).unwrap_or(0);
-                let effective_cli = args.agent_id.as_deref().unwrap_or(&ws.cli);
+                let effective_cli = args.agent_id.as_deref().unwrap_or(&task.cli);
                 dlog(&format!(
-                    "[pty_spawn] sandbox={:?} ws={} cli={} proxy_port={} profile={}",
-                    ws.effective_sandbox_mode(), ws.id, effective_cli, port, bundle.profile_path.display(),
+                    "[pty_spawn] sandbox={:?} task={} cli={} proxy_port={} profile={}",
+                    task.effective_sandbox_mode(), task.id, effective_cli, port, bundle.profile_path.display(),
                 ));
                 let (c, a) = sandbox::wrap_command(&bundle, &args.cmd, &args.args);
                 dlog(&format!("[pty_spawn] wrapped: {c} {a:?}"));
@@ -1003,10 +1331,10 @@ fn pty_spawn(
     // Multi-repo: expose sibling ports so the agent (or anything the
     // user runs in this PTY) can `curl localhost:$TERMIC_PORT_API`
     // without hardcoding. Same scheme as the script-stream spawn.
-    if let Some(wid) = args.workspace_id.as_deref() {
-        if let Some(ws) = load_workspaces().into_iter().find(|w| w.id == wid) {
-            for (i, m) in ws.composition.iter().enumerate() {
-                let p = if m.port == 0 { ws.port.saturating_add(i as u16 + 1) } else { m.port };
+    if let Some(wid) = args.task_id.as_deref() {
+        if let Some(task) = load_tasks().into_iter().find(|w| w.id == wid) {
+            for (i, m) in task.composition.iter().enumerate() {
+                let p = if m.port == 0 { task.port.saturating_add(i as u16 + 1) } else { m.port };
                 let sanitized: String = m.dir_name.chars()
                     .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
                     .collect();
@@ -1041,8 +1369,8 @@ fn pty_spawn(
     // Register the PID with the sandbox's PID-ancestry tracker. The
     // path watcher uses this to filter system-wide deny noise: only
     // denies whose PID (or some ancestor) is in this set get counted
-    // against this workspace.
-    if let (Some(pid), Some(wid)) = (child_pid, args.workspace_id.as_deref()) {
+    // against this task.
+    if let (Some(pid), Some(wid)) = (child_pid, args.task_id.as_deref()) {
         sandbox::register_root_pid(wid, pid);
     }
 
@@ -1111,7 +1439,7 @@ fn pty_spawn(
     let app_w = app.clone();
     let id_w = id.clone();
     let state_w = state.inner.clone();
-    let ws_for_waiter = args.workspace_id.clone();
+    let ws_for_waiter = args.task_id.clone();
     let pid_for_waiter = child_pid;
     let done_w = reader_done.clone();
     thread::spawn(move || {
@@ -1128,8 +1456,8 @@ fn pty_spawn(
         // Drop this PID from the sandbox's PID set so the path watcher
         // stops counting denies from anything that happened to inherit
         // this PID after exit (rare but possible on macOS).
-        if let (Some(pid), Some(ws)) = (pid_for_waiter, ws_for_waiter.as_deref()) {
-            sandbox::unregister_root_pid(ws, pid);
+        if let (Some(pid), Some(task)) = (pid_for_waiter, ws_for_waiter.as_deref()) {
+            sandbox::unregister_root_pid(task, pid);
         }
         let mut map = state_w.lock();
         map.remove(&id_w);
@@ -1149,10 +1477,10 @@ fn pty_spawn(
             proxy_active: b.proxy.is_some(),
             warning: if b.proxy.is_none() {
                 // Headline silent-failure case: bad regex in the
-                // workspace's allowlist, EMFILE, or some other proxy
+                // task's allowlist, EMFILE, or some other proxy
                 // startup error - all degrade sandboxed-with-network
                 // to sandboxed-no-network.
-                "Network proxy didn't start - this workspace has NO network. \
+                "Network proxy didn't start - this task has NO network. \
                  Check the Sandbox dialog for a malformed allowlist regex.".into()
             } else {
                 String::new()
@@ -1167,7 +1495,7 @@ fn pty_spawn(
             master,
             child_pid,
             sandbox: sandbox_bundle,
-            workspace_id: args.workspace_id.clone(),
+            task_id: args.task_id.clone(),
         },
     );
 
@@ -1244,7 +1572,7 @@ fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, Stri
         return Err(format!("{} does not exist", expanded));
     }
     // Non-git projects (issue #4) skip the repo check entirely — they're
-    // a plain folder grouping several repos, and the only workspaces they
+    // a plain folder grouping several repos, and the only tasks they
     // spawn run an agent at the folder root (no worktree). A directory is
     // the only requirement.
     if non_git {
@@ -1269,7 +1597,7 @@ fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, Stri
         id: Uuid::new_v4().to_string(),
         name,
         root_path: canon.to_string_lossy().into_owned(),
-        workspaces_path: ws_path,
+        tasks_path: ws_path,
         // Non-git folders have no remote-tracking base ref; leave it
         // empty so nothing downstream tries to branch off "/".
         base_branch: if non_git { String::new() } else { format!("{remote}/{base}") },
@@ -1367,7 +1695,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         // Seed a stub CLAUDE.md so the host has shared knowledge the
         // agent loads. Gives the user an obvious place to start writing.
         let claude_md = format!(
-            "# {}\n\nShared knowledge for the {} multi-repo project.\nThis file is loaded by every workspace under it.\n",
+            "# {}\n\nShared knowledge for the {} multi-repo project.\nThis file is loaded by every task under it.\n",
             trimmed_name, trimmed_name,
         );
         fs::write(target.join("CLAUDE.md"), claude_md).map_err(|e| e.to_string())?;
@@ -1406,7 +1734,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
             let claude = pb.join("CLAUDE.md");
             if !claude.exists() {
                 let body = format!(
-                    "# {}\n\nShared knowledge for the {} multi-repo project.\nThis file is loaded by every workspace under it.\n",
+                    "# {}\n\nShared knowledge for the {} multi-repo project.\nThis file is loaded by every task under it.\n",
                     trimmed_name, trimmed_name,
                 );
                 fs::write(&claude, body).map_err(|e| e.to_string())?;
@@ -1466,7 +1794,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         id: Uuid::new_v4().to_string(),
         name,
         root_path: canon.to_string_lossy().into_owned(),
-        workspaces_path: ws_path,
+        tasks_path: ws_path,
         base_branch: if non_git { String::new() } else { format!("{remote}/{base}") },
         remote,
         preview_url: String::new(),
@@ -1560,27 +1888,27 @@ fn project_update(p: Project) -> Result<(), String> {
     }
 }
 
-/// Remove a project AND archive every workspace under it (kills running
+/// Remove a project AND archive every task under it (kills running
 /// scripts, removes git worktrees, wipes the worktree dirs). Off-thread —
-/// can take seconds on big repos. Workspaces' JSON files are also deleted
+/// can take seconds on big repos. Tasks' JSON files are also deleted
 /// so the entry disappears from disk entirely; the user's actual git repo
 /// at `root_path` is NOT touched (we never own that directory).
 #[tauri::command]
 async fn project_remove(id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let workspaces: Vec<Workspace> = load_workspaces()
+        let tasks: Vec<Task> = load_tasks()
             .into_iter().filter(|w| w.project_id == id).collect();
-        for w in workspaces {
-            // workspace_archive_sync handles SIGTERMing scripts, running the
+        for w in tasks {
+            // task_archive_sync handles SIGTERMing scripts, running the
             // archive script, removing the worktree, and saving archived=true.
-            // Errors per-workspace are logged but don't abort — we want a
+            // Errors per-task are logged but don't abort — we want a
             // best-effort full cleanup even if one worktree is borked.
-            if let Err(e) = workspace_archive_sync(w.id.clone(), false) {
+            if let Err(e) = task_archive_sync(w.id.clone(), false) {
                 eprintln!("project_remove: archive {} failed: {}", w.id, e);
             }
             // Hard-delete the JSON so it doesn't linger as a ghost archived
             // entry pointing at a non-existent project.
-            let _ = delete_workspace_file(&w.id);
+            let _ = delete_task_file(&w.id);
         }
         let mut list = load_projects();
         list.retain(|p| p.id != id);
@@ -1588,18 +1916,18 @@ async fn project_remove(id: String) -> Result<(), String> {
     }).await.map_err(|e| e.to_string())?
 }
 
-// ───────────────────────────── workspace commands ─────────────────────────────
+// ───────────────────────────── task commands ─────────────────────────────
 
 #[tauri::command]
-fn workspaces_list() -> Vec<Workspace> { load_workspaces() }
+fn tasks_list() -> Vec<Task> { load_tasks() }
 
-/// Open the project's main repo checkout as a workspace (no git worktree).
+/// Open the project's main repo checkout as a task (no git worktree).
 /// Idempotent: if one already exists for this project (and isn't archived),
 /// returns it; otherwise seeds a new one pointing at `project.root_path`.
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<String>, command: Option<String>) -> Result<Workspace, String> {
+fn task_open_repo(project_id: String, cli: Option<String>, name: Option<String>, command: Option<String>) -> Result<Task, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     // CLI is now explicit — frontend's "+ Open repo with <agent>" passes the
@@ -1608,7 +1936,7 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
     let repo = PathBuf::from(&proj.root_path);
     // ALWAYS re-read current HEAD so a stale cached `branch` doesn't lie
     // (user may have `git checkout`'d a different branch outside termic
-    // since the workspace was first opened). Non-git folders (issue #4)
+    // since the task was first opened). Non-git folders (issue #4)
     // have no branch — leave it empty, the sidebar just shows the name.
     let branch = if proj.non_git {
         String::new()
@@ -1617,24 +1945,24 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "HEAD".to_string())
     };
-    let port = 18100 + (load_workspaces().len() as u16);
+    let port = 18100 + (load_tasks().len() as u16);
 
     // Multi-repo project opened in REPO mode: drop a symlink for
     // each member into the host's working dir so the agent at the
     // host root can navigate into them. Symlinks point at each
     // member's live checkout (no worktree — REPO mode is the
     // "everything live, no isolation" variant). Composition gets
-    // frozen on the workspace so sandbox + archive treat the symlinks
-    // as the workspace's responsibility. The host's .gitignore is
+    // frozen on the task so sandbox + archive treat the symlinks
+    // as the task's responsibility. The host's .gitignore is
     // updated with a managed block so the new dirs don't show up as
     // untracked changes.
-    let mut composition: Vec<WorkspaceMember> = Vec::new();
+    let mut composition: Vec<TaskMember> = Vec::new();
     if proj.project_type == ProjectType::Multi {
         let host_dir = Path::new(&proj.root_path);
         let mut dir_names: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         // Per-member port counter — same scheme as worktree-mode
-        // multi-repo: workspace.port + i + 1 so members can run
+        // multi-repo: task.port + i + 1 so members can run
         // PORT=$TERMIC_PORT npm run dev without colliding.
         let mut next_member_port = port + 1;
         for pm in &proj.members {
@@ -1648,16 +1976,16 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
             if target.symlink_metadata().is_ok() {
                 let link_target = fs::read_link(&target).ok();
                 if link_target.map(|p| p.to_string_lossy().into_owned()) != Some(pm.root_path.clone()) {
-                    eprintln!("workspace_open_repo: {} exists and isn't our symlink; skipping {}", target.display(), pm.name);
+                    eprintln!("task_open_repo: {} exists and isn't our symlink; skipping {}", target.display(), pm.name);
                     continue;
                 }
             } else if let Err(e) = std::os::unix::fs::symlink(&pm.root_path, &target) {
-                eprintln!("workspace_open_repo: symlink {} failed: {e}", pm.name);
+                eprintln!("task_open_repo: symlink {} failed: {e}", pm.name);
                 continue;
             }
             let member_port = next_member_port;
             next_member_port = next_member_port.saturating_add(1);
-            composition.push(WorkspaceMember {
+            composition.push(TaskMember {
                 project_id: String::new(),
                 repo_path: pm.root_path.clone(),
                 dir_name: dir_name.clone(),
@@ -1684,14 +2012,14 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         // Branch is the natural fallback for a git repo; non-git folders
         // have no branch, so fall back to the project name there.
         .unwrap_or_else(|| if branch.is_empty() { proj.name.clone() } else { branch.clone() });
-    // Only "custom" workspaces carry a launch command; agent/shell
-    // workspaces resolve their command from the registry at spawn.
+    // Only "custom" tasks carry a launch command; agent/shell
+    // tasks resolve their command from the registry at spawn.
     let custom_command = if cli == "custom" {
         command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty())
     } else {
         None
     };
-    let ws = Workspace {
+    let task = Task {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
         // Caller-supplied name (preferred — the sidebar prompts for one
@@ -1706,11 +2034,11 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
         port,
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
-        is_repo_root: true,
+        is_main_checkout: true,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
-        // Repo-root workspaces start unsandboxed - the user is
+        // Repo-root tasks start unsandboxed - the user is
         // opting into one-off work in their main checkout, and a
         // surprise cage at first launch would obscure that. They
         // CAN turn the sandbox on later from the dialog (shield
@@ -1729,8 +2057,8 @@ fn workspace_open_repo(project_id: String, cli: Option<String>, name: Option<Str
                 split_layout: None,
         archived_at: None,
     };
-    save_workspace(&ws).map_err(|e| e.to_string())?;
-    Ok(ws)
+    save_task(&task).map_err(|e| e.to_string())?;
+    Ok(task)
 }
 
 // ───────────────────────── import existing worktree (issue #5) ─────────────────────────
@@ -1756,11 +2084,11 @@ fn canon_str(p: &str) -> String {
 }
 
 /// List the git worktrees of a project's repo that aren't yet tracked as
-/// termic workspaces (issue #5). Excludes the main checkout (that's the
+/// termic tasks (issue #5). Excludes the main checkout (that's the
 /// "Run in repo" path), bare entries, and any worktree already imported.
 /// Empty for non-git projects.
 #[tauri::command]
-fn workspace_importable_worktrees(project_id: String) -> Result<Vec<ImportableWorktree>, String> {
+fn task_importable_worktrees(project_id: String) -> Result<Vec<ImportableWorktree>, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     if proj.non_git { return Ok(Vec::new()); }
@@ -1771,7 +2099,7 @@ fn workspace_importable_worktrees(project_id: String) -> Result<Vec<ImportableWo
     let listed = git(&["worktree", "list", "--porcelain"], &repo).map_err(|e| e.to_string())?;
 
     let main_canon = canon_str(&proj.root_path);
-    let existing: HashSet<String> = load_workspaces().iter()
+    let existing: HashSet<String> = load_tasks().iter()
         .filter(|w| w.project_id == proj.id)
         .map(|w| canon_str(&w.path))
         .collect();
@@ -1809,19 +2137,19 @@ fn workspace_importable_worktrees(project_id: String) -> Result<Vec<ImportableWo
     Ok(out)
 }
 
-/// Import an existing git worktree as a termic workspace (issue #5).
-/// Unlike `workspace_create` this does NOT run `git worktree add` /
+/// Import an existing git worktree as a termic task (issue #5).
+/// Unlike `task_create` this does NOT run `git worktree add` /
 /// copy files / run setup — the worktree already exists on disk. We
-/// just register a Workspace pointing at it. Archiving one later runs
+/// just register a Task pointing at it. Archiving one later runs
 /// the normal `git worktree remove` path (it IS a real worktree).
 #[tauri::command]
-fn workspace_import_worktree(
+fn task_import_worktree(
     project_id: String, path: String, name: Option<String>, cli: Option<String>,
     sandbox_enabled: Option<bool>,
     sandbox_mode: Option<SandboxMode>,
     sandbox_rw_paths: Option<Vec<String>>,
     sandbox_allowed_hosts: Option<Vec<String>>,
-) -> Result<Workspace, String> {
+) -> Result<Task, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     if proj.non_git { return Err("project is not a git repo".into()); }
@@ -1844,15 +2172,15 @@ fn workspace_import_worktree(
     if wt_canon == canon_str(&proj.root_path) {
         return Err("that's the repo's main checkout — use \"Run in repo\" instead".into());
     }
-    if load_workspaces().iter().any(|w| canon_str(&w.path) == wt_canon) {
-        return Err("this worktree is already open as a workspace".into());
+    if load_tasks().iter().any(|w| canon_str(&w.path) == wt_canon) {
+        return Err("this worktree is already open as a task".into());
     }
 
     let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"], &wt)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     let cli = cli.unwrap_or_else(|| proj.default_cli.clone());
-    let port = 18100 + (load_workspaces().len() as u16);
+    let port = 18100 + (load_tasks().len() as u16);
     let ws_name = name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
@@ -1862,7 +2190,7 @@ fn workspace_import_worktree(
 
     // Sandbox: honor the dialog's explicit choice when provided, else
     // fall back to the project default + the merged default lists (same
-    // shape as workspace_create).
+    // shape as task_create).
     let globals = load_settings_inner();
     let merge = |g: &[String], p: &[String]| -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
@@ -1883,7 +2211,7 @@ fn workspace_import_worktree(
     let sandbox_allowed_hosts = sandbox_allowed_hosts
         .unwrap_or_else(|| merge(&globals.sandbox_default_allowed_hosts, &proj.sandbox_allowed_hosts));
 
-    let ws = Workspace {
+    let task = Task {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
         name: ws_name,
@@ -1897,7 +2225,7 @@ fn workspace_import_worktree(
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
         // A real worktree — NOT repo-root, so archive removes it properly.
-        is_repo_root: false,
+        is_main_checkout: false,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
@@ -1914,30 +2242,39 @@ fn workspace_import_worktree(
                 split_layout: None,
         archived_at: None,
     };
-    save_workspace(&ws).map_err(|e| e.to_string())?;
-    Ok(ws)
+    save_task(&task).map_err(|e| e.to_string())?;
+    Ok(task)
 }
 
-/// Create a new workspace (git worktree + file copy + optional streaming
+/// Create a new task (git worktree + file copy + optional streaming
 /// setup script). MUST stay off the IPC handler thread — `git worktree add`
 /// + the `files_to_copy` glob copy can take 1-2s on a chunky repo and that
 /// blocks the WKWebView event loop in dev, freezing the UI right before the
 /// progress modal opens (the user's exact complaint). See the
 /// "Long-running IPC discipline" section in CLAUDE.md.
 #[tauri::command]
-async fn workspace_create(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Workspace, String> {
-    tauri::async_runtime::spawn_blocking(move || workspace_create_sync(app, args))
+async fn task_create(args: CreateTaskArgs) -> Result<Task, String> {
+    tauri::async_runtime::spawn_blocking(move || task_create_sync(args))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Workspace, String> {
+fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
     let projects = load_projects();
     let proj = projects.iter().find(|p| p.id == args.project_id)
         .ok_or("project not found")?.clone();
     let repo = PathBuf::from(&proj.root_path);
 
     let slug = slugify(&args.name);
+    // CRITICAL guard: a name that is all punctuation/whitespace slugifies to
+    // "". `wt_root.join("")` == `wt_root`, which `.exists()` reports true, so
+    // the orphan-cleanup `remove_dir_all` below would delete the ENTIRE tasks
+    // root (every other worktree in the project). Never let an empty slug
+    // reach the worktree path math. The frontend also validates, but this is
+    // the last line of defense for any caller.
+    if slug.is_empty() {
+        return Err("Task name must contain at least one letter or number.".into());
+    }
     let branch = args.branch
         .as_ref()
         .map(|b| b.trim())
@@ -1949,7 +2286,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     let base_full = args.base_branch.unwrap_or_else(|| proj.base_branch.clone());
     // git can branch off "origin/master" directly
 
-    let wt_root = PathBuf::from(&proj.workspaces_path);
+    let wt_root = PathBuf::from(&proj.tasks_path);
     fs::create_dir_all(&wt_root).map_err(|e| e.to_string())?;
     let wt_path = wt_root.join(&slug);
 
@@ -2029,7 +2366,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     if let Err(e) = add_result {
         if e.to_string().contains("already used by worktree") {
             return Err(format!(
-                "branch '{}' is already checked out elsewhere. Pick a different workspace name.",
+                "branch '{}' is already checked out elsewhere. Pick a different task name.",
                 branch
             ));
         }
@@ -2078,9 +2415,16 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     }
 
     // Allocate port (18100 + index).
-    let port = 18100 + (load_workspaces().len() as u16);
+    let port = 18100 + (load_tasks().len() as u16);
 
     let cli = args.cli.unwrap_or_else(|| proj.default_cli.clone());
+    // Only "custom" tasks carry a pre-set launch command; agent/shell tasks
+    // resolve their command from the registry at spawn. Mirrors task_open_repo.
+    let custom_command = if cli == "custom" {
+        args.custom_command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty())
+    } else {
+        None
+    };
     // Use the client-supplied ID if present so the frontend can listen on
     // `setup-{output,done}://<id>` BEFORE invoking — eliminates the
     // empty-script race that made the "Running setup script…" spinner hang.
@@ -2101,7 +2445,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
     // before clicking Create); whatever it sends is what we store.
     // If the dialog sends None we fall back to the project's
     // defaults verbatim - same effective outcome.
-    // Workspace inherits the union of GLOBAL defaults (Settings →
+    // Task inherits the union of GLOBAL defaults (Settings →
     // General) and the PROJECT's per-repo defaults. The dialog
     // already merges these for the user, so when args.x is Some we
     // honor it verbatim; when it's None (older callers / non-UI
@@ -2119,7 +2463,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         .unwrap_or_else(|| merge(&globals.sandbox_default_rw_paths, &proj.sandbox_rw_paths));
     let sandbox_allowed_hosts = args.sandbox_allowed_hosts
         .unwrap_or_else(|| merge(&globals.sandbox_default_allowed_hosts, &proj.sandbox_allowed_hosts));
-    let ws = Workspace {
+    let task = Task {
         id: args.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         project_id: proj.id.clone(),
         name: args.name,
@@ -2130,7 +2474,7 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         port,
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
-        is_repo_root: false,
+        is_main_checkout: false,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
@@ -2139,50 +2483,35 @@ fn workspace_create_sync(app: AppHandle, args: CreateWorkspaceArgs) -> Result<Wo
         yolo: false,
         sandbox_rw_paths,
         sandbox_allowed_hosts,
-        // Single-project workspaces leave composition empty. Multi-
-        // repo workspace creation runs through a separate code path
-        // (workspace_create_multi) that populates this and re-uses
-        // the same Workspace + sandbox plumbing.
+        // Single-project tasks leave composition empty. Multi-
+        // repo task creation runs through a separate code path
+        // (task_create_multi) that populates this and re-uses
+        // the same Task + sandbox plumbing.
         composition: Vec::new(),
-        // Worktree workspaces always run an agent / shell, never a
-        // pre-set custom command (that path is repo-root only).
-        custom_command: None,
+        // Set only for `cli == "custom"` worktree tasks (quick "Custom
+        // command" in worktree mode); None for agent / shell worktrees.
+        custom_command,
         resume_override: None,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
                 split_layout: None,
         archived_at: None,
     };
-    save_workspace(&ws).map_err(|e| e.to_string())?;
+    save_task(&task).map_err(|e| e.to_string())?;
 
-    // Run setup script in a background thread so the IPC handler returns
-    // immediately and the UI doesn't freeze. Errors are surfaced via a
-    // notification rather than failing workspace creation.
-    let (setup_script, _, _) = effective_scripts(&proj);
-    if !setup_script.trim().is_empty() {
-        // Stream stdout+stderr to the frontend so the New Workspace dialog
-        // can show live progress. Frontend listens on:
-        //   setup-output://<ws.id>  (per-line)
-        //   setup-done://<ws.id>    (final exit code)
-        run_script_streaming(
-            setup_script.clone(),
-            wt_path.clone(),
-            ws.port,
-            ws.name.clone(),
-            app,
-            ws.id.clone(),
-        );
-    } else {
-        // No setup script — emit `done` immediately so the dialog doesn't
-        // sit waiting on an event that'll never fire.
-        let _ = app.emit(&format!("setup-done://{}", ws.id),
-            serde_json::json!({ "code": 0, "success": true }));
-    }
+    // Setup no longer runs here. It used to fire in a background thread and
+    // stream to the New Task dialog via setup-output/setup-done, which the
+    // dialog blocked on before opening the task. Now the dialog opens the
+    // task immediately and the FRONTEND launches setup as an unfocused
+    // background tab (launchSetupTab in runTabs.ts), reusing the same
+    // task_run_script_stream PTY path the "Run setup" menu action uses.
+    // This also means the agent gets keyboard focus right away instead of
+    // setup.
 
-    Ok(ws)
+    Ok(task)
 }
 
-// ───────────────────────── multi-repo workspace ─────────────────────────
+// ───────────────────────── multi-repo task ─────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateMultiArgs {
@@ -2195,7 +2524,7 @@ pub struct CreateMultiArgs {
     /// Base ref to branch from on the host. Default = host's
     /// `base_branch`.
     pub base_branch: Option<String>,
-    /// Per-member spec, frozen onto the Workspace.composition.
+    /// Per-member spec, frozen onto the Task.composition.
     pub members: Vec<CreateMultiMember>,
     #[serde(default)]
     pub id: Option<String>,
@@ -2211,11 +2540,11 @@ pub struct CreateMultiArgs {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateMultiMember {
-    /// Canonical path of the host member this per-workspace spec applies
+    /// Canonical path of the host member this per-task spec applies
     /// to — matches an entry in `Project.members[].root_path`.
     pub root_path: String,
     /// Dir name inside the wrapper. Defaults to the member's `name` —
-    /// pinned at create time so renames don't break the workspace layout.
+    /// pinned at create time so renames don't break the task layout.
     pub dir_name: Option<String>,
     pub mode: MemberMode,
     /// Worktree mode only. Defaults to `branch` from CreateMultiArgs
@@ -2225,8 +2554,8 @@ pub struct CreateMultiMember {
     pub base_branch: Option<String>,
 }
 
-/// Create a workspace under a multi-repo project. Builds:
-///   - the host worktree at `<workspaces>/<host-slug>/<wsname>/`,
+/// Create a task under a multi-repo project. Builds:
+///   - the host worktree at `<tasks>/<host-slug>/<wsname>/`,
 ///   - each member worktree'd or symlinked into a named subdir,
 ///   - a Termic-managed `.gitignore` block in the host worktree
 ///     pinning the member dir names so they're not auto-staged.
@@ -2234,21 +2563,28 @@ pub struct CreateMultiMember {
 /// All operations are best-effort cleanup on error: a failed member
 /// rolls back what's been created so far before returning.
 #[tauri::command]
-async fn workspace_create_multi(app: AppHandle, args: CreateMultiArgs) -> Result<Workspace, String> {
-    tauri::async_runtime::spawn_blocking(move || workspace_create_multi_sync(app, args))
+async fn task_create_multi(app: AppHandle, args: CreateMultiArgs) -> Result<Task, String> {
+    tauri::async_runtime::spawn_blocking(move || task_create_multi_sync(app, args))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Workspace, String> {
+fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task, String> {
     let projects = load_projects();
     let host = projects.iter().find(|p| p.id == args.project_id)
         .ok_or("host project not found")?.clone();
     if host.project_type != ProjectType::Multi {
-        return Err("workspace_create_multi requires a multi-repo project".into());
+        return Err("task_create_multi requires a multi-repo project".into());
     }
 
     let slug = slugify(&args.name);
+    // Same empty-slug guard as task_create_sync: an all-punctuation name
+    // slugs to "" and `tasks_root.join("")` == `tasks_root`. Multi errors on
+    // the `wrapper.exists()` check rather than deleting, but reject it up
+    // front for a clear message instead of "a task already exists at <root>".
+    if slug.is_empty() {
+        return Err("Task name must contain at least one letter or number.".into());
+    }
     let branch = args.branch
         .as_ref().map(|b| b.trim()).filter(|b| !b.is_empty())
         .map(|b| b.to_string()).unwrap_or_else(|| slug.clone());
@@ -2258,14 +2594,19 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
 
     // Validate members + freeze dir names. dir_name collisions inside
     // the wrapper are a hard error — they'd silently overwrite. Each
-    // per-workspace spec resolves to an inline host member by path.
+    // per-task spec resolves to an inline host member by path.
     let mut frozen: Vec<(ProjectMember, CreateMultiMember, String)> = Vec::new();
     let mut seen_dirs: HashSet<String> = HashSet::new();
     for m in &args.members {
         let hm = host.members.iter().find(|hm| hm.root_path == m.root_path)
             .ok_or_else(|| format!("member not found: {}", m.root_path))?.clone();
         let dir_name = m.dir_name.clone().unwrap_or_else(|| hm.name.clone());
-        if dir_name.contains('/') || dir_name.is_empty() {
+        // Reject path separators, empty, and the `.`/`..` traversal names.
+        // `wrapper.join("..")` would escape the wrapper; today that self-
+        // defends (the parent exists + is non-empty, so symlink/worktree-add
+        // fail and roll back), but reject it up front as defense-in-depth so
+        // no archive/teardown path can ever operate on `..`.
+        if dir_name.contains('/') || dir_name.is_empty() || dir_name == "." || dir_name == ".." {
             return Err(format!("invalid member dir name: {dir_name:?}"));
         }
         if !seen_dirs.insert(dir_name.clone()) {
@@ -2274,11 +2615,11 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         frozen.push((hm, m.clone(), dir_name));
     }
 
-    // Wrapper dir = `<workspaces_root>/<host-slug>/<wsname>/`. The
-    // host's existing workspaces_path already encodes that pattern.
-    let wrapper = PathBuf::from(&host.workspaces_path).join(&slug);
+    // Wrapper dir = `<tasks_root>/<host-slug>/<wsname>/`. The
+    // host's existing tasks_path already encodes that pattern.
+    let wrapper = PathBuf::from(&host.tasks_path).join(&slug);
     if wrapper.exists() {
-        return Err(format!("a workspace already exists at {}", wrapper.display()));
+        return Err(format!("a task already exists at {}", wrapper.display()));
     }
 
     // Ensure the parent dir exists; git worktree add will create the
@@ -2350,13 +2691,13 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
 
     // Now create each member. members_done accumulates so rollback
     // can unwind a partial composition.
-    let mut composition: Vec<WorkspaceMember> = Vec::new();
+    let mut composition: Vec<TaskMember> = Vec::new();
     let mut done: Vec<(ProjectMember, CreateMultiMember, String, MemberMode, String)> = Vec::new();
-    // Per-member port counter — each member gets workspace.port+i+1
+    // Per-member port counter — each member gets task.port+i+1
     // so two members running PORT=$TERMIC_PORT npm run dev don't
-    // collide. We bumped 'port' below already by load_workspaces().len()
-    // for the workspace itself; members live in the gap above it.
-    let ws_port = 18100 + (load_workspaces().len() as u16);
+    // collide. We bumped 'port' below already by load_tasks().len()
+    // for the task itself; members live in the gap above it.
+    let ws_port = 18100 + (load_tasks().len() as u16);
     let mut next_member_port = ws_port + 1;
     for (mp, spec, dir_name) in frozen.into_iter() {
         let member_port = next_member_port;
@@ -2371,7 +2712,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                 // Scripts come from the inline member's own per-project
                 // spec (the multi-repo project's member entry), the
                 // "different commands per multi-repo project" model.
-                composition.push(WorkspaceMember {
+                composition.push(TaskMember {
                     project_id: String::new(),
                     repo_path: mp.root_path.clone(),
                     dir_name: dir_name.clone(),
@@ -2410,7 +2751,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                     rollback(&done);
                     return Err(format!("member {dir_name} worktree add failed: {e}"));
                 }
-                composition.push(WorkspaceMember {
+                composition.push(TaskMember {
                     project_id: String::new(),
                     repo_path: mp.root_path.clone(),
                     dir_name: dir_name.clone(),
@@ -2458,7 +2799,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
             let _ = git(&add_args, &wrapper);
             let _ = git(
                 &["-c", "user.email=termic@local", "-c", "user.name=Termic",
-                  "commit", "-q", "-m", "termic: workspace bookkeeping"],
+                  "commit", "-q", "-m", "termic: task bookkeeping"],
                 &wrapper,
             );
         }
@@ -2491,8 +2832,8 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     let sandbox_allowed_hosts = args.sandbox_allowed_hosts.unwrap_or(base_hosts);
 
     let cli = args.cli.unwrap_or_else(|| host.default_cli.clone());
-    let port = 18100 + (load_workspaces().len() as u16);
-    let ws = Workspace {
+    let port = 18100 + (load_tasks().len() as u16);
+    let task = Task {
         id: args.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         project_id: host.id.clone(),
         name: args.name,
@@ -2503,7 +2844,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         port,
         created: chrono::Utc::now().to_rfc3339(),
         archived: false,
-        is_repo_root: false,
+        is_main_checkout: false,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
@@ -2520,7 +2861,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
                 split_layout: None,
         archived_at: None,
     };
-    save_workspace(&ws).map_err(|e| e.to_string())?;
+    save_task(&task).map_err(|e| e.to_string())?;
 
     // Streamed setup: host's project.setup_script (cwd=wrapper)
     // first, then each member's setup_script (cwd=member.path) in
@@ -2531,29 +2872,34 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
     // Multi-repo: ONLY members have scripts. The host is a wrapper
     // dir for CLAUDE.md / AGENTS.md / .claude/, never something the
     // user wants to "run" — so we don't even peek at host.setup_script
-    // here. (Single-repo workspace_create_sync handles its own.)
+    // here. (Single-repo task_create_sync handles its own.)
     // Tuple shape: (dir_name, script, cwd, port). Per-member port
     // so setup scripts that listen (rare but possible — e.g. setup
     // boots a docker compose stack on $TERMIC_PORT) don't collide
-    // across siblings. Legacy workspaces (port == 0) get the same
-    // workspace.port + i + 1 scheme retroactively.
-    let member_setups: Vec<(String, String, std::path::PathBuf, u16)> = ws.composition.iter()
+    // across siblings. Legacy tasks (port == 0) get the same
+    // task.port + i + 1 scheme retroactively.
+    let member_setups: Vec<(String, String, std::path::PathBuf, u16)> = task.composition.iter()
         .enumerate()
         .filter_map(|(idx, m)| {
-            let s = m.setup_script.trim();
-            if s.is_empty() { None } else {
-                let p = if m.port == 0 { ws.port.saturating_add(idx as u16 + 1) } else { m.port };
-                Some((m.dir_name.clone(), m.setup_script.clone(), std::path::PathBuf::from(&m.path), p))
+            // Per-member override wins; otherwise fall back to the member's
+            // committed `.termic.yaml` setup, mirroring the run-script
+            // resolution (resolveRunTargets). Without this, a member whose
+            // scripts live in `.termic.yaml` (not a manual override) silently
+            // skipped setup in a multi-repo task.
+            let script = member_effective_script(m, |s| s.setup.clone(), &m.setup_script);
+            if script.trim().is_empty() { None } else {
+                let p = if m.port == 0 { task.port.saturating_add(idx as u16 + 1) } else { m.port };
+                Some((m.dir_name.clone(), script, std::path::PathBuf::from(&m.path), p))
             }
         })
         .collect();
     // Sibling port discovery for setup scripts (same scheme as
-    // workspace_run_script_stream). TERMIC_PORT_<DIR> for every
+    // task_run_script_stream). TERMIC_PORT_<DIR> for every
     // member so a setup script that needs to know e.g. the API's
     // port can read it.
-    let sibling_ports: Vec<(String, u16)> = ws.composition.iter().enumerate()
+    let sibling_ports: Vec<(String, u16)> = task.composition.iter().enumerate()
         .map(|(i, m)| {
-            let p = if m.port == 0 { ws.port.saturating_add(i as u16 + 1) } else { m.port };
+            let p = if m.port == 0 { task.port.saturating_add(i as u16 + 1) } else { m.port };
             let sanitized: String = m.dir_name.chars()
                 .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
                 .collect();
@@ -2561,12 +2907,12 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         })
         .collect();
     if member_setups.is_empty() {
-        let _ = app.emit(&format!("setup-done://{}", ws.id),
+        let _ = app.emit(&format!("setup-done://{}", task.id),
             serde_json::json!({ "code": 0, "success": true }));
     } else {
         let app2 = app.clone();
-        let ws_id = ws.id.clone();
-        let name = ws.name.clone();
+        let ws_id = task.id.clone();
+        let name = task.name.clone();
         thread::spawn(move || {
             let run_one = |label: &str, script: &str, cwd: &Path, port: u16| -> bool {
                 use std::io::{BufRead, BufReader};
@@ -2630,7 +2976,7 @@ fn workspace_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<
         });
     }
 
-    Ok(ws)
+    Ok(task)
 }
 
 /// Rewrite (or insert) a fenced Termic-managed block at the bottom of
@@ -2670,15 +3016,15 @@ fn ensure_multirepo_gitignore(wrapper: &Path, member_dirs: &[String]) -> std::io
 }
 
 #[tauri::command]
-fn workspace_rename(id: String, name: String) -> Result<Workspace, String> {
+fn task_rename(id: String, name: String) -> Result<Task, String> {
     let new_name = name.trim();
     if new_name.is_empty() {
         return Err("name cannot be empty".into());
     }
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.name = new_name.to_string();
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
 }
 
@@ -2696,53 +3042,53 @@ fn project_rename(id: String, name: String) -> Result<Project, String> {
 }
 
 #[tauri::command]
-fn workspace_set_cli(id: String, cli: String) -> Result<Workspace, String> {
+fn task_set_cli(id: String, cli: String) -> Result<Task, String> {
     if !["claude", "codex", "agy", "grok", "copilot", "opencode"].contains(&cli.as_str()) {
         return Err(format!("unknown cli: {cli}"));
     }
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.cli = cli;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
 }
 
-/// Update the launch command of a custom-command workspace. Only valid
-/// for `cli == "custom"` workspaces — agent / shell workspaces resolve
+/// Update the launch command of a custom-command task. Only valid
+/// for `cli == "custom"` tasks — agent / shell tasks resolve
 /// their command from the registry at spawn and have no editable command.
 /// Persisted so the new command re-runs on every respawn / app restart;
 /// any live PTY keeps running until the user restarts the agent tab.
 #[tauri::command]
-fn workspace_set_custom_command(id: String, command: String) -> Result<Workspace, String> {
+fn task_set_custom_command(id: String, command: String) -> Result<Task, String> {
     let cmd = command.trim().to_string();
     if cmd.is_empty() {
         return Err("command is empty".into());
     }
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     if w.cli != "custom" {
-        return Err("not a custom-command workspace".into());
+        return Err("not a custom-command task".into());
     }
     w.custom_command = Some(cmd);
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
 }
 
-/// Set (or clear) a workspace's resume-args override. An empty / whitespace
+/// Set (or clear) a task's resume-args override. An empty / whitespace
 /// command clears the override (back to termic's default resume logic);
 /// otherwise the trimmed string is persisted and used verbatim as the
-/// resume block on the next agent spawn. Returns the updated workspace.
+/// resume block on the next agent spawn. Returns the updated task.
 #[tauri::command]
-fn workspace_set_resume_override(id: String, command: String) -> Result<Workspace, String> {
+fn task_set_resume_override(id: String, command: String) -> Result<Task, String> {
     let cmd = command.trim().to_string();
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.resume_override = if cmd.is_empty() { None } else { Some(cmd) };
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
 }
 
-/// Replace a workspace's durable agent-tab list (metadata + order). The
+/// Replace a task's durable agent-tab list (metadata + order). The
 /// per-tab `session_id` is PRESERVED across the rewrite by matching tab
 /// ids against the existing record, so a layout change (rename, reorder,
 /// add, close) never wipes a minted session. A tab id absent from `tabs`
@@ -2750,9 +3096,9 @@ fn workspace_set_resume_override(id: String, command: String) -> Result<Workspac
 /// agent. Idempotent: rewriting the identical list is a cheap no-op (no
 /// disk write).
 #[tauri::command]
-fn workspace_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     // Carry forward each surviving tab's session uuid by id.
     let prior: std::collections::HashMap<String, Option<String>> = w
         .persisted_tabs
@@ -2795,20 +3141,20 @@ fn workspace_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), St
         return Ok(());
     }
     w.persisted_tabs = next;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Pin (or clear) the termic-owned session uuid for a single durable tab.
-/// Mirrors `workspace_set_agent_session_id` but keyed by TAB id, so two
-/// agent tabs in the same workspace resume independently. Called after a
+/// Mirrors `task_set_agent_session_id` but keyed by TAB id, so two
+/// agent tabs in the same task resume independently. Called after a
 /// freshly minted spawn survives the rapid-exit window; an empty uuid
 /// clears the slot (the stored session no longer resolves). No-op if the
 /// tab is not (yet) persisted or the value is unchanged.
 #[tauri::command]
-fn workspace_set_tab_session_id(id: String, tab_id: String, uuid: String) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_tab_session_id(id: String, tab_id: String, uuid: String) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     let tab = match w.persisted_tabs.iter_mut().find(|t| t.id == tab_id) {
         Some(t) => t,
         // The tab isn't in the durable set yet (set_tabs lands right after
@@ -2821,31 +3167,31 @@ fn workspace_set_tab_session_id(id: String, tab_id: String, uuid: String) -> Res
         return Ok(());
     }
     tab.session_id = next;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Persist the JSON-encoded SplitTree for a workspace so the split layout
+/// Persist the JSON-encoded SplitTree for a task so the split layout
 /// can be restored on the next relaunch. Pass `None` to clear (no splits).
 #[tauri::command]
-fn workspace_set_split_layout(id: String, layout: Option<String>) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_split_layout(id: String, layout: Option<String>) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     if w.split_layout == layout {
         return Ok(());
     }
     w.split_layout = layout;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Mirror of `workspace_set_tabs` for the right-split panel. Rewrites
+/// Mirror of `task_set_tabs` for the right-split panel. Rewrites
 /// `right_split_tabs` with the same merge semantics (stored session_ids
 /// carry forward by tab id so a layout rewrite never wipes a minted uuid).
 #[tauri::command]
-fn workspace_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     let prior: std::collections::HashMap<String, Option<String>> = w
         .right_split_tabs
         .iter()
@@ -2879,15 +3225,15 @@ fn workspace_set_right_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<
         return Ok(());
     }
     w.right_split_tabs = next;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Mirror of `workspace_set_tab_session_id` for right-split tabs.
+/// Mirror of `task_set_tab_session_id` for right-split tabs.
 #[tauri::command]
-fn workspace_set_right_tab_session_id(id: String, tab_id: String, uuid: String) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_right_tab_session_id(id: String, tab_id: String, uuid: String) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     let tab = match w.right_split_tabs.iter_mut().find(|t| t.id == tab_id) {
         Some(t) => t,
         None => return Ok(()),
@@ -2897,12 +3243,12 @@ fn workspace_set_right_tab_session_id(id: String, tab_id: String, uuid: String) 
         return Ok(());
     }
     tab.session_id = next;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Newest-first list of macOS Sandbox denials touching the workspace
-/// in the last `minutes` minutes. Used by the WorkspaceSandboxDialog
+/// Newest-first list of macOS Sandbox denials touching the task
+/// in the last `minutes` minutes. Used by the TaskSandboxDialog
 /// to surface why `npm install` or whatever silently failed. Returns
 /// an empty list on any error - debugging itself shouldn't fail.
 ///
@@ -2918,7 +3264,7 @@ fn workspace_set_right_tab_session_id(id: String, tab_id: String, uuid: String) 
 #[tauri::command]
 fn sandbox_available() -> bool { sandbox::available() }
 
-/// Per-workspace deny counters surfaced in the TerminalPane footer
+/// Per-task deny counters surfaced in the TerminalPane footer
 /// chip. Currently network-only (the proxy bumps it on every CONNECT/
 /// HTTP request that fails the host allowlist). Filesystem deny
 /// counting would need `log show` polling which is too expensive for
@@ -2937,7 +3283,7 @@ fn sandbox_deny_counts(id: String) -> SandboxDenyCounts {
     }
 }
 
-/// Detailed per-host breakdown of network denies for a workspace.
+/// Detailed per-host breakdown of network denies for a task.
 /// Backs the popover that opens when the user clicks the "N blocked"
 /// chip in the footer. Sorted by most-recently-seen first.
 #[derive(Clone, Serialize)]
@@ -2987,18 +3333,23 @@ fn sandbox_recent_denied_paths(id: String) -> Vec<DenyPath> {
 // a `would_block` flag = "ENFORCING mode would have denied this." Backs
 // the two-tab (Aggregate / Detailed) activity popover.
 
-/// Set the MONITORING recording filters for a workspace (from the
+/// Set the MONITORING recording filters for a task (from the
 /// activity popover's checkboxes). These gate RECORDING, not just display:
-/// `exclude_ws` drops accesses inside the workspace dir, `wb_only` records
+/// `exclude_task` drops accesses inside the task dir, `wb_only` records
 /// only would-block accesses. Prunes already-recorded entries that the
 /// newly-enabled filters exclude so the change is immediate + reclaims RAM.
+///
+/// The param is named `exclude_task` (not `exclude_ws`) so Tauri's
+/// snake_case→camelCase mapping produces the `excludeTask` key the frontend
+/// actually sends (ipc.ts). A stale `exclude_ws` here silently failed to
+/// deserialize, so the checkbox never reached the backend.
 #[tauri::command]
-fn sandbox_set_monitor_filters(id: String, exclude_ws: bool, wb_only: bool) -> Result<(), String> {
-    let dirs = load_workspaces().into_iter().find(|w| w.id == id)
-        .map(|w| sandbox::workspace_exclude_dirs(&w))
+fn sandbox_set_monitor_filters(id: String, exclude_task: bool, wb_only: bool) -> Result<(), String> {
+    let dirs = load_tasks().into_iter().find(|w| w.id == id)
+        .map(|w| sandbox::task_exclude_dirs(&w))
         .unwrap_or_default();
-    sandbox::set_monitor_filters(&id, exclude_ws, wb_only);
-    sandbox::prune_path_access(&id, exclude_ws, wb_only, &dirs);
+    sandbox::set_monitor_filters(&id, exclude_task, wb_only);
+    sandbox::prune_path_access(&id, exclude_task, wb_only, &dirs);
     Ok(())
 }
 
@@ -3054,7 +3405,7 @@ fn sandbox_recent_access_paths(id: String) -> Vec<AccessPath> {
 }
 
 // ── Per-AGENT allow (scope: "per agent") ──────────────────────────────
-// Writes to the agent registry (settings.json) so EVERY workspace
+// Writes to the agent registry (settings.json) so EVERY task
 // running this agent, across all projects, inherits the path/host. The
 // least-repetitive scope: the same CLI probes the same dirs/hosts
 // everywhere. Picked up live at the next spawn (render_profile /
@@ -3091,30 +3442,30 @@ fn agent_sandbox_add_allowed_host(agent_id: String, host: String) -> Result<(), 
     Ok(())
 }
 
-/// Append a host to the workspace's `sandbox_allowed_hosts` list and
+/// Append a host to the task's `sandbox_allowed_hosts` list and
 /// save. Does NOT kill the live PTY — adding to the allowlist is
 /// strictly more permissive than what the running agent already has,
 /// so leaving the existing process on its older (narrower) profile is
 /// safe; the new entry takes effect on the next agent start. Backs the
 /// "Allow" button next to each blocked host in the footer popover.
 #[tauri::command]
-fn workspace_sandbox_add_allowed_host(
+fn task_sandbox_add_allowed_host(
     _state: State<'_, PtyManager>, id: String, host: String,
 ) -> Result<usize, String> {
     let host = host.trim().to_string();
     if host.is_empty() { return Err("empty host".into()); }
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     if !w.sandbox_allowed_hosts.iter().any(|h| h == &host) {
         w.sandbox_allowed_hosts.push(host.clone());
     }
     let project_id = w.project_id.clone();
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     // Lift into the project's sandbox defaults too, so future
-    // workspaces under the same project inherit. The agent probes
-    // the same hosts in every workspace it runs; saving per-project
+    // tasks under the same project inherit. The agent probes
+    // the same hosts in every task it runs; saving per-project
     // means the user doesn't have to re-click Allow on each new
-    // workspace they create. Sibling workspaces that already exist
+    // task they create. Sibling tasks that already exist
     // are NOT retroactively patched (would surprise the user) —
     // they'll still hit the deny once and click Allow themselves.
     let mut projects = load_projects();
@@ -3127,12 +3478,12 @@ fn workspace_sandbox_add_allowed_host(
     Ok(0)
 }
 
-/// Mirror of `workspace_sandbox_add_allowed_host` but for filesystem
+/// Mirror of `task_sandbox_add_allowed_host` but for filesystem
 /// paths. Append to `sandbox_rw_paths`, save. No SIGKILL — same
 /// reasoning: the new entry is purely additive, the running agent's
 /// old profile is narrower, change takes effect on next start.
 #[tauri::command]
-fn workspace_sandbox_add_allowed_path(
+fn task_sandbox_add_allowed_path(
     _state: State<'_, PtyManager>, id: String, path: String,
 ) -> Result<usize, String> {
     let path = path.trim().to_string();
@@ -3154,15 +3505,15 @@ fn workspace_sandbox_add_allowed_path(
     } else {
         path
     };
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     if !w.sandbox_rw_paths.iter().any(|p| p == &stored) {
         w.sandbox_rw_paths.push(stored.clone());
     }
     let project_id = w.project_id.clone();
-    save_workspace(w).map_err(|e| e.to_string())?;
-    // Lift to project defaults too so future workspaces inherit.
-    // See workspace_sandbox_add_allowed_host for rationale.
+    save_task(w).map_err(|e| e.to_string())?;
+    // Lift to project defaults too so future tasks inherit.
+    // See task_sandbox_add_allowed_host for rationale.
     let mut projects = load_projects();
     if let Some(p) = projects.iter_mut().find(|p| p.id == project_id) {
         if !p.sandbox_rw_paths.iter().any(|p| p == &stored) {
@@ -3177,15 +3528,15 @@ fn workspace_sandbox_add_allowed_path(
     Ok(0)
 }
 
-/// Undo of `workspace_sandbox_add_allowed_path`. Removes the path from
-/// BOTH the workspace's `sandbox_rw_paths` AND the project defaults —
+/// Undo of `task_sandbox_add_allowed_path`. Removes the path from
+/// BOTH the task's `sandbox_rw_paths` AND the project defaults —
 /// symmetric with the add, which lifts the entry into the project so
-/// future workspaces inherit it. Without the project removal, Undo would
-/// leave the project-level copy behind and future workspaces would still
+/// future tasks inherit it. Without the project removal, Undo would
+/// leave the project-level copy behind and future tasks would still
 /// inherit the "reverted" allow. Used by the toast's Undo button.
 /// Idempotent — removing a path that isn't in either list is a no-op.
 #[tauri::command]
-fn workspace_sandbox_remove_allowed_path(
+fn task_sandbox_remove_allowed_path(
     _state: State<'_, PtyManager>, id: String, path: String,
 ) -> Result<(), String> {
     let path = path.trim().to_string();
@@ -3194,11 +3545,11 @@ fn workspace_sandbox_remove_allowed_path(
     // tokenized at add-time, but the caller may pass either).
     let tokenized = tokenize_home_prefix(&path);
     let matches = |p: &String| p != &path && p != &tokenized;
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.sandbox_rw_paths.retain(matches);
     let project_id = w.project_id.clone();
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     // Mirror the add's project-lift: drop the entry from the project
     // defaults too so the Undo is a true revert.
     let mut projects = load_projects();
@@ -3212,13 +3563,13 @@ fn workspace_sandbox_remove_allowed_path(
 
 // ───────────────── repo-root `.termic.yaml` config ─────────────────
 //
-// The "Allow for this repo" destination. Where `workspace_sandbox_add_*`
+// The "Allow for this repo" destination. Where `task_sandbox_add_*`
 // (above) writes the personal, uncommitted "allow for me" overrides
 // into `projects.json`, these write the committed, team-shared
 // `.termic.yaml` at the repo root. Both feed `live_sandbox_lists`.
 
 /// Tokenize a leading `$HOME` prefix so the stored `.termic.yaml`
-/// entry stays portable. Mirrors `workspace_sandbox_add_allowed_path`.
+/// entry stays portable. Mirrors `task_sandbox_add_allowed_path`.
 fn tokenize_home_prefix(path: &str) -> String {
     let home = dirs::home_dir()
         .map(|p| p.to_string_lossy().into_owned())
@@ -3283,21 +3634,21 @@ fn repo_config_add_allowed_host(id: String, host: String) -> Result<(), String> 
     if host.is_empty() {
         return Err("empty host".into());
     }
-    let proj = workspace_project(&id)?;
+    let proj = task_project(&id)?;
     repo_config::add_allowed(Path::new(&proj.root_path), repo_config::AllowKind::Host, &host)
         .map_err(|e| e.to_string())
 }
 
-/// Resolve a workspace id to its owning Project (for repo_config writes
+/// Resolve a task id to its owning Project (for repo_config writes
 /// keyed at the project's `root_path`).
-fn workspace_project(ws_id: &str) -> Result<Project, String> {
-    let ws = load_workspaces()
+fn task_project(ws_id: &str) -> Result<Project, String> {
+    let task = load_tasks()
         .into_iter()
         .find(|w| w.id == ws_id)
-        .ok_or("no such ws")?;
+        .ok_or("no such task")?;
     load_projects()
         .into_iter()
-        .find(|p| p.id == ws.project_id)
+        .find(|p| p.id == task.project_id)
         .ok_or_else(|| "no such project".into())
 }
 
@@ -3310,26 +3661,26 @@ fn repo_config_add_allowed_path(id: String, path: String) -> Result<(), String> 
         return Err("empty path".into());
     }
     let stored = tokenize_home_prefix(path);
-    let proj = workspace_project(&id)?;
+    let proj = task_project(&id)?;
     repo_config::add_allowed(Path::new(&proj.root_path), repo_config::AllowKind::Path, &stored)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
+async fn task_recent_denials(id: String, minutes: Option<u32>) -> Vec<String> {
     tauri::async_runtime::spawn_blocking(move || -> Vec<String> {
-        let Some(ws) = load_workspaces().into_iter().find(|w| w.id == id) else {
+        let Some(task) = load_tasks().into_iter().find(|w| w.id == id) else {
             return Vec::new();
         };
-        sandbox::recent_denials(&ws.path, minutes.unwrap_or(10))
+        sandbox::recent_denials(&task.path, minutes.unwrap_or(10))
     })
     .await
     .unwrap_or_default()
 }
 
 
-/// Update a workspace's sandbox config and SIGKILL any live PTYs of
-/// that workspace so the next mount picks up the new profile. Returns
+/// Update a task's sandbox config and SIGKILL any live PTYs of
+/// that task so the next mount picks up the new profile. Returns
 /// the count of PTYs that were terminated so the frontend can word the
 /// confirmation accurately ("This will restart 2 agents").
 ///
@@ -3340,7 +3691,7 @@ async fn workspace_recent_denials(id: String, minutes: Option<u32>) -> Vec<Strin
 /// we don't want the agent to handle the signal and do anything fancy
 /// before exiting; we want it gone.
 #[tauri::command]
-fn workspace_set_sandbox(
+fn task_set_sandbox(
     state: State<'_, PtyManager>,
     id: String,
     mode: SandboxMode,
@@ -3348,15 +3699,15 @@ fn workspace_set_sandbox(
     allowed_hosts: Vec<String>,
     kill_live: bool,
 ) -> Result<usize, String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.sandbox_mode = Some(mode);
     // Keep the legacy bool in sync so every existing "is there a cage"
     // check (footer, YOLO/Zap, pty_spawn) keeps working.
     w.sandbox_enabled = mode != SandboxMode::Off;
     w.sandbox_rw_paths = rw_paths;
     w.sandbox_allowed_hosts = allowed_hosts;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
 
     // `kill_live=false` is an INFORMED escape hatch: the user explicitly
     // chose "Save without restart" knowing the running agent keeps the
@@ -3365,14 +3716,14 @@ fn workspace_set_sandbox(
         return Ok(0);
     }
 
-    // Find + SIGKILL every live PTY belonging to this workspace. We
+    // Find + SIGKILL every live PTY belonging to this task. We
     // hold the manager lock only long enough to collect (id, pid)
     // pairs - kill(2) outside the lock so a slow signal can't stall
     // unrelated PTY ops.
     let victims: Vec<(String, Option<u32>)> = {
         let map = state.inner.lock();
         map.iter()
-            .filter(|(_, slot)| slot.workspace_id.as_deref() == Some(&id))
+            .filter(|(_, slot)| slot.task_id.as_deref() == Some(&id))
             .map(|(pty_id, slot)| (pty_id.clone(), slot.child_pid))
             .collect()
     };
@@ -3389,30 +3740,30 @@ fn workspace_set_sandbox(
     Ok(count)
 }
 
-/// Set the per-workspace YOLO flag and persist. No PTY kill — it only
+/// Set the per-task YOLO flag and persist. No PTY kill — it only
 /// affects how the NEXT agent is launched (the frontend separately
 /// flips a live agent via its runtime YOLO command when supported).
 #[tauri::command]
-fn workspace_set_yolo(id: String, yolo: bool) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_yolo(id: String, yolo: bool) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.yolo = yolo;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Increment + persist the workspace's `spawn_count`. Historical metric
+/// Increment + persist the task's `spawn_count`. Historical metric
 /// only — resume gating now uses `has_resumable_history` instead.
 #[tauri::command]
-fn workspace_record_spawn(id: String) -> Result<u32, String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_record_spawn(id: String) -> Result<u32, String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.spawn_count = w.spawn_count.saturating_add(1);
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(w.spawn_count)
 }
 
-/// Set the persisted `has_resumable_history` flag for a workspace.
+/// Set the persisted `has_resumable_history` flag for a task.
 /// Frontend calls this:
 ///   - TRUE when a spawn has been alive past the rapid-failure window
 ///     (~2s) — meaning the agent didn't immediately bail with "no
@@ -3421,25 +3772,25 @@ fn workspace_record_spawn(id: String) -> Result<u32, String> {
 ///     window — we now know the resume path is broken for this worktree
 ///     and shouldn't re-try.
 #[tauri::command]
-fn workspace_set_has_history(id: String, value: bool) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_has_history(id: String, value: bool) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     if w.has_resumable_history == value { return Ok(()); }
     w.has_resumable_history = value;
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Pin a termic-owned session UUID for a (workspace, agent CLI) pair.
+/// Pin a termic-owned session UUID for a (task, agent CLI) pair.
 /// Called by the frontend after the first spawn for an id-capable CLI
 /// (claude, gemini) has survived past the rapid-failure window — at
 /// that point the agent has materialized a session file for that uuid,
 /// so every subsequent spawn can resume it. Idempotent: re-setting the
 /// same uuid is a cheap no-op (no disk write).
 #[tauri::command]
-fn workspace_set_agent_session_id(id: String, cli: String, uuid: String) -> Result<(), String> {
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_set_agent_session_id(id: String, cli: String, uuid: String) -> Result<(), String> {
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     // Empty uuid = clear the slot. Used when a resume attempt died fast,
     // signalling the stored uuid no longer resolves to a live session
     // (agent log rotated out, user ran `claude --delete-session`, ...).
@@ -3452,11 +3803,11 @@ fn workspace_set_agent_session_id(id: String, cli: String, uuid: String) -> Resu
         }
         w.agent_session_ids.insert(cli, uuid);
     }
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Archive a workspace: stop scripts, run the archive script, remove the
+/// Archive a task: stop scripts, run the archive script, remove the
 /// worktree, mark archived in our JSON.
 ///
 /// CRITICAL: this MUST run off the Tauri IPC thread. `fs::remove_dir_all`
@@ -3466,22 +3817,65 @@ fn workspace_set_agent_session_id(id: String, cli: String, uuid: String) -> Resu
 /// blocked main webview event loop. `spawn_blocking` parks the work on a
 /// background thread so the UI keeps painting and the OS stays responsive.
 #[tauri::command]
-async fn workspace_archive(id: String, delete_branch: Option<bool>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || workspace_archive_sync(id, delete_branch.unwrap_or(false)))
+async fn task_archive(id: String, delete_branch: Option<bool>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || task_archive_sync(id, delete_branch.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
-    // Stop spotlight for this workspace before tearing down — otherwise the
+/// Remove `dir` only when it holds no VISIBLE entries. This is a NON-recursive
+/// `rmdir` (`fs::remove_dir`), never `remove_dir_all` — a stray visible file
+/// or subdirectory aborts it, so we can never nuke real content. Hidden files
+/// (`.DS_Store` and similar OS cruft) are the one exception: they'd otherwise
+/// keep an "empty" dir alive forever, so we delete those individual files
+/// (files only — a hidden *directory* like `.git` still aborts) and then rmdir.
+/// Returns true iff the directory was removed.
+fn remove_dir_if_empty_ignoring_hidden(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else { return false };
+    let mut hidden_files: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let hidden = entry.file_name().to_string_lossy().starts_with('.');
+        // Treat an unreadable file_type as a directory (conservative: abort).
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(true);
+        if hidden && !is_dir {
+            hidden_files.push(entry.path());
+        } else {
+            return false; // a visible entry, or a hidden dir → not empty
+        }
+    }
+    for f in &hidden_files { let _ = fs::remove_file(f); }
+    fs::remove_dir(dir).is_ok()
+}
+
+/// After a worktree directory is archived (removed), prune any now-empty
+/// ancestor directories: the `<project-slug>` folder, then the legacy
+/// `~/APP_DIR/workspaces/` (or new `~/APP_DIR/tasks/`) root, so the old
+/// `workspaces/` tree disappears once its last task is archived. Bounded and
+/// safe: only strict descendants of the `~/APP_DIR` worktree home are touched
+/// (never the home itself, which also holds `projects/`, nor anything outside
+/// it such as an imported worktree), and each step is the empty-only rmdir
+/// above, so it stops the moment a directory still has content.
+fn prune_empty_worktree_ancestors(worktree_path: &Path) {
+    let Some(home) = dirs::home_dir() else { return };
+    let app_home = home.join(APP_DIR);
+    let mut cur = worktree_path.parent();
+    while let Some(d) = cur {
+        if d == app_home || !d.starts_with(&app_home) { break; }
+        if !remove_dir_if_empty_ignoring_hidden(d) { break; }
+        cur = d.parent();
+    }
+}
+
+fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
+    // Stop spotlight for this task before tearing down — otherwise the
     // polling thread will keep trying to sync a worktree that no longer exists.
     spotlight_stop_for_ws(&id);
 
-    let mut list = load_workspaces();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("workspace not found")?;
+    let mut list = load_tasks();
+    let w = list.iter_mut().find(|w| w.id == id).ok_or("task not found")?;
     let proj = load_projects().into_iter().find(|p| p.id == w.project_id);
 
-    // Kill any running setup/run scripts for this workspace BEFORE doing
+    // Kill any running setup/run scripts for this task BEFORE doing
     // anything else — otherwise dev servers (npm run dev, runserver, etc.)
     // keep listening on their port long after the worktree is gone, which
     // the user just hit. We SIGTERM the process group, same as Stop.
@@ -3499,15 +3893,19 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
         }
     }
 
-    // Multi-repo workspaces: only members have scripts (host is a
+    // Multi-repo tasks: only members have scripts (host is a
     // wrapper, not a thing you run). Members archive in REVERSE
     // declared order — stack teardown convention (last started,
-    // first stopped). Single-repo workspaces: host's project
+    // first stopped). Single-repo tasks: host's project
     // archive_script fires (covers `npm run cleanup` etc).
     if !w.composition.is_empty() {
         for m in w.composition.iter().rev() {
-            if !m.archive_script.trim().is_empty() && Path::new(&m.path).exists() {
-                let _ = run_script(&m.archive_script, Path::new(&m.path), w.port, &w.name);
+            // Per-member override, else the member's committed `.termic.yaml`
+            // archive (same resolution as setup/run) so a member configured
+            // via `.termic.yaml` still tears down.
+            let script = member_effective_script(m, |s| s.archive.clone(), &m.archive_script);
+            if !script.trim().is_empty() && Path::new(&m.path).exists() {
+                let _ = run_script(&script, Path::new(&m.path), w.port, &w.name);
             }
         }
     } else if let Some(p) = &proj {
@@ -3518,28 +3916,28 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
     }
 
     let mut errs = Vec::new();
-    // Repo-root workspaces are NOT git worktrees — skip the worktree/rmdir
+    // Repo-root tasks are NOT git worktrees — skip the worktree/rmdir
     // dance entirely. Archiving one just removes it from our list; the actual
     // repo on disk stays intact.
-    if w.is_repo_root {
-        // Multi-repo project opened in REPO mode: workspace_open_repo
+    if w.is_main_checkout {
+        // Multi-repo project opened in REPO mode: task_open_repo
         // dropped member symlinks into the host dir. Clean them up
         // on archive so a re-open doesn't trip the "already exists,
         // not our symlink" guard. We only remove entries that are
         // STILL symlinks pointing where we expect — a user who
         // replaced the link with real content keeps their work.
         //
-        // CRITICAL: every repo-root workspace on the same multi-repo
+        // CRITICAL: every repo-root task on the same multi-repo
         // project SHARES this host checkout (w.path == proj.root_path),
         // and therefore the very same member symlinks. If another live
-        // (non-archived) repo-root workspace still points at this host,
+        // (non-archived) repo-root task still points at this host,
         // those links are its file tree — archiving THIS one must not
         // yank them out from under it. Only unlink a member when no
         // surviving sibling on the same host still lists it. (Excludes
         // self by id; w.archived isn't set yet, so we'd otherwise match
         // ourselves.) Without this, archiving one DPF repo-root session
         // silently emptied another's repo list (no command ever ran).
-        let sibling_links: HashSet<String> = load_workspaces().into_iter()
+        let sibling_links: HashSet<String> = load_tasks().into_iter()
             .filter(|o| o.id != w.id && !o.archived && o.path == w.path)
             .flat_map(|o| o.composition.into_iter()
                 .filter(|cm| cm.mode == MemberMode::RepoRoot)
@@ -3559,12 +3957,12 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
         }
         w.archived = true;
         w.archived_at = Some(chrono::Utc::now().to_rfc3339());
-        save_workspace(w).map_err(|e| e.to_string())?;
+        save_task(w).map_err(|e| e.to_string())?;
         if !errs.is_empty() { return Err(errs.join("; ")); }
         return Ok(());
     }
 
-    // Multi-repo workspaces tear down each member first, then the
+    // Multi-repo tasks tear down each member first, then the
     // host worktree. Members in RepoRoot mode are symlinks — unlink
     // them, NEVER touch the linked checkout. Errors per-member are
     // recorded but don't abort the loop (best-effort cleanup).
@@ -3634,48 +4032,51 @@ fn workspace_archive_sync(id: String, delete_branch: bool) -> Result<(), String>
             errs.push(format!("rm worktree dir: {e}"));
         }
     }
+    // Tidy up now-empty ancestors (the project folder, then the legacy
+    // `workspaces/` root once its last task is gone). Best-effort, empty-only.
+    prune_empty_worktree_ancestors(Path::new(&w.path));
 
     w.archived = true;
     w.archived_at = Some(chrono::Utc::now().to_rfc3339());
-    save_workspace(w).map_err(|e| e.to_string())?;
+    save_task(w).map_err(|e| e.to_string())?;
     if errs.is_empty() { Ok(()) } else { Err(errs.join("; ")) }
 }
 
 #[tauri::command]
-async fn workspace_delete(id: String) -> Result<(), String> {
+async fn task_delete(id: String) -> Result<(), String> {
     // Hard delete: archive (off-thread) then wipe the json. Same async
-    // discipline as workspace_archive — see its doc comment for why.
+    // discipline as task_archive — see its doc comment for why.
     let id2 = id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = workspace_archive_sync(id2.clone(), false);
-        delete_workspace_file(&id2).map_err(|e| e.to_string())
+        let _ = task_archive_sync(id2.clone(), false);
+        delete_task_file(&id2).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn workspace_restore(app: AppHandle, id: String) -> Result<Workspace, String> {
-    tauri::async_runtime::spawn_blocking(move || workspace_restore_sync(app, id))
+async fn task_restore(app: AppHandle, id: String) -> Result<Task, String> {
+    tauri::async_runtime::spawn_blocking(move || task_restore_sync(app, id))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn workspace_restore_sync(app: AppHandle, id: String) -> Result<Workspace, String> {
-    let mut list = load_workspaces();
-    let idx = list.iter().position(|w| w.id == id).ok_or("workspace not found")?;
+fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
+    let mut list = load_tasks();
+    let idx = list.iter().position(|w| w.id == id).ok_or("task not found")?;
     if !list[idx].archived {
-        return Err("workspace is not archived".into());
+        return Err("task is not archived".into());
     }
 
     let proj = load_projects().into_iter()
         .find(|p| p.id == list[idx].project_id)
         .ok_or("project not found")?;
 
-    // Repo-root workspaces have no dedicated worktree to recreate — the workspace
+    // Repo-root tasks have no dedicated worktree to recreate — the task
     // IS the main checkout. Just unarchive the record and return.
-    if list[idx].is_repo_root {
+    if list[idx].is_main_checkout {
         list[idx].archived = false;
         list[idx].archived_at = None;
-        save_workspace(&list[idx]).map_err(|e| e.to_string())?;
+        save_task(&list[idx]).map_err(|e| e.to_string())?;
         return Ok(list[idx].clone());
     }
 
@@ -3683,7 +4084,7 @@ fn workspace_restore_sync(app: AppHandle, id: String) -> Result<Workspace, Strin
     let repo = PathBuf::from(&proj.root_path);
 
     if list[idx].composition.is_empty() {
-        // ── Single-repo workspace ──────────────────────────────────────────
+        // ── Single-repo task ──────────────────────────────────────────
         if !proj.non_git {
             let _ = git(&["worktree", "prune"], &repo);
 
@@ -3705,7 +4106,7 @@ fn workspace_restore_sync(app: AppHandle, id: String) -> Result<Workspace, Strin
             let branch = list[idx].branch.clone();
             let base_branch = list[idx].base_branch.clone();
 
-            // git-crypt detection (mirrors workspace_create_sync).
+            // git-crypt detection (mirrors task_create_sync).
             let common_gitdir = git(&["rev-parse", "--git-common-dir"], &repo)
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -3765,11 +4166,11 @@ fn workspace_restore_sync(app: AppHandle, id: String) -> Result<Workspace, Strin
             fs::create_dir_all(&wt_path).map_err(|e| e.to_string())?;
         }
     } else {
-        // ── Multi-repo workspace ───────────────────────────────────────────
+        // ── Multi-repo task ───────────────────────────────────────────
         let _ = git(&["worktree", "prune"], &repo);
 
         if wt_path.exists() {
-            return Err(format!("workspace wrapper already exists at {}", wt_path.display()));
+            return Err(format!("task wrapper already exists at {}", wt_path.display()));
         }
 
         // Recreate host worktree.
@@ -3837,36 +4238,36 @@ fn workspace_restore_sync(app: AppHandle, id: String) -> Result<Workspace, Strin
 
     // Unarchive and persist.
     list[idx].archived = false;
-    save_workspace(&list[idx]).map_err(|e| e.to_string())?;
-    let ws = list[idx].clone();
+    save_task(&list[idx]).map_err(|e| e.to_string())?;
+    let task = list[idx].clone();
 
     // Run setup script(s) fire-and-forget, same as creation.
-    if ws.composition.is_empty() {
+    if task.composition.is_empty() {
         let (setup, _, _) = effective_scripts(&proj);
         if !setup.trim().is_empty() {
-            run_script_streaming(setup, wt_path, ws.port, ws.name.clone(), app, ws.id.clone());
+            run_script_streaming(setup, wt_path, task.port, task.name.clone(), app, task.id.clone());
         }
     } else {
-        for m in &ws.composition {
+        for m in &task.composition {
             if !m.setup_script.trim().is_empty() {
                 run_script_streaming(
                     m.setup_script.clone(),
                     PathBuf::from(&m.path),
-                    if m.port > 0 { m.port } else { ws.port },
-                    ws.name.clone(),
+                    if m.port > 0 { m.port } else { task.port },
+                    task.name.clone(),
                     app.clone(),
-                    ws.id.clone(),
+                    task.id.clone(),
                 );
             }
         }
     }
 
-    Ok(ws)
+    Ok(task)
 }
 
 #[tauri::command]
-fn workspace_run_script(id: String, which: String) -> Result<String, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such ws")?;
+fn task_run_script(id: String, which: String) -> Result<String, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no such task")?;
     let p = load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
     let (setup, run, archive) = effective_scripts(&p);
     let script = match which.as_str() {
@@ -3882,8 +4283,8 @@ fn workspace_run_script(id: String, which: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn workspace_diff(id: String) -> Result<String, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_diff(id: String) -> Result<String, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let p = load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
     let repo = PathBuf::from(&p.root_path);
     let base = w.base_branch.clone();
@@ -3917,15 +4318,15 @@ pub struct SendDiffResult {
 ///      We honor .gitignore (that's what --exclude-standard does) so
 ///      build artifacts / .venv / node_modules don't get dragged in.
 ///
-/// Skips workspaces where `is_repo_root` is true — those ARE the main
+/// Skips tasks where `is_main_checkout` is true — those ARE the main
 /// checkout, there's nothing to send.
 #[tauri::command]
-async fn workspace_send_diff_to_main(id: String) -> Result<SendDiffResult, String> {
+async fn task_send_diff_to_main(id: String) -> Result<SendDiffResult, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<SendDiffResult, String> {
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such workspace")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no such task")?;
         let p = load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("project missing")?;
-        if w.is_repo_root {
-            return Err("This workspace IS the main checkout — nothing to send.".into());
+        if w.is_main_checkout {
+            return Err("This task IS the main checkout — nothing to send.".into());
         }
         let worktree = PathBuf::from(&w.path);
         let main = PathBuf::from(&p.root_path);
@@ -4006,7 +4407,7 @@ async fn workspace_send_diff_to_main(id: String) -> Result<SendDiffResult, Strin
             // Defensive: ls-files should never emit `..` or absolute
             // paths here, but a malicious .gitignore + symlink trick
             // could in theory. Reuse the existing safety helper.
-            let src = safe_workspace_path(&worktree, rel)
+            let src = safe_task_path(&worktree, rel)
                 .map_err(|e| format!("untracked path rejected: {e}"))?;
             let dst = main.join(rel);
             if let Some(parent) = dst.parent() {
@@ -4041,7 +4442,7 @@ pub struct ChangeGroup {
     /// "host" | "worktree" | "repo_root". The UI uses this to flag
     /// repo_root (live) groups + to disable click-to-diff for them
     /// (their files live outside the wrapper subtree, so the
-    /// safe_workspace_path check would reject them).
+    /// safe_task_path check would reject them).
     pub kind: String,
     /// Absolute path to the group's root on disk (wrapper for host,
     /// member subdir for member groups). Frontend only uses this for
@@ -4056,23 +4457,23 @@ pub struct ChangeGroup {
 }
 
 #[derive(Clone, Debug, Serialize, Default)]
-pub struct WorkspaceChanges {
+pub struct TaskChanges {
     /// Total file count across all groups. UI badge.
     pub count: usize,
     /// Flat list of host-only files. Kept for back-compat with any
     /// caller / UI bit that pre-dates the multi-repo split. New code
     /// should iterate `groups` instead.
     pub files: Vec<ChangedFile>,
-    /// Per-repo groups. Single-repo workspaces have one entry (host
-    /// only); multi-repo workspaces have one per composition member +
-    /// the host. Empty for repo-root workspaces (the user's living
+    /// Per-repo groups. Single-repo tasks have one entry (host
+    /// only); multi-repo tasks have one per composition member +
+    /// the host. Empty for repo-root tasks (the user's living
     /// repo — surfacing its uncommitted changes here would be noise).
     pub groups: Vec<ChangeGroup>,
 }
 
 #[tauri::command]
-fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_changes(id: String) -> Result<TaskChanges, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
 
     // Parse `git status --porcelain` into our ChangedFile shape.
     let parse = |out: &str| -> Vec<ChangedFile> {
@@ -4091,7 +4492,7 @@ fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
             .unwrap_or_default()
     };
 
-    // Host group: always present. Run git status at the workspace
+    // Host group: always present. Run git status at the task
     // path itself (= wrapper for multi, = worktree for single).
     // -uall lists files inside brand-new untracked dirs individually
     // (without it git collapses them to a single "dir/" entry).
@@ -4110,7 +4511,7 @@ fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
         files: host_files.clone(),
     };
 
-    // Member groups: only for multi-repo workspaces. For each member,
+    // Member groups: only for multi-repo tasks. For each member,
     // run git status in its dir (worktree mode → real worktree;
     // repo_root → symlinked live checkout) and prefix file paths
     // with `<dir_name>/` so they resolve correctly from the wrapper.
@@ -4141,13 +4542,13 @@ fn workspace_changes(id: String) -> Result<WorkspaceChanges, String> {
     }
 
     let count: usize = groups.iter().map(|g| g.files.len()).sum();
-    Ok(WorkspaceChanges { count, files: host_files, groups })
+    Ok(TaskChanges { count, files: host_files, groups })
 }
 
 // ─────────────────────────── git staging ───────────────────────────
 //
 // Fork-style staged/unstaged split + stage / unstage / commit. Unlike
-// `workspace_changes` (which collapses the two porcelain status columns
+// `task_changes` (which collapses the two porcelain status columns
 // into one and prefixes member paths with `<dir_name>/`), these keep the
 // index column and the worktree column separate and return paths
 // *relative to their own repo* — staging needs the repo-relative path and
@@ -4252,9 +4653,9 @@ fn parse_porcelain_line(line: &str) -> (Option<GitFile>, Option<GitFile>) {
 }
 
 #[tauri::command]
-async fn workspace_git_status(id: String) -> Result<GitStatus, String> {
+async fn task_git_status(id: String) -> Result<GitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
 
         let branch_of = |p: &Path| -> String {
             git(&["branch", "--show-current"], p).map(|s| s.trim().to_string()).unwrap_or_default()
@@ -4312,9 +4713,9 @@ async fn workspace_git_status(id: String) -> Result<GitStatus, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Resolve the git cwd for a stage/commit op: the host workspace path
+/// Resolve the git cwd for a stage/commit op: the host task path
 /// when `dir_name` is empty, otherwise the matching composition member.
-fn repo_cwd(w: &Workspace, dir_name: &str) -> Result<PathBuf, String> {
+fn repo_cwd(w: &Task, dir_name: &str) -> Result<PathBuf, String> {
     if dir_name.is_empty() {
         return Ok(PathBuf::from(&w.path));
     }
@@ -4325,9 +4726,9 @@ fn repo_cwd(w: &Workspace, dir_name: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-async fn workspace_stage(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
+async fn task_stage(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
         let cwd = repo_cwd(&w, &dir_name)?;
         if paths.is_empty() { return Ok(()); }
         let mut args: Vec<&str> = vec!["add", "--"];
@@ -4339,9 +4740,9 @@ async fn workspace_stage(id: String, dir_name: String, paths: Vec<String>) -> Re
 }
 
 #[tauri::command]
-async fn workspace_unstage(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
+async fn task_unstage(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
         let cwd = repo_cwd(&w, &dir_name)?;
         if paths.is_empty() { return Ok(()); }
         let mut args: Vec<&str> = vec!["reset", "-q", "HEAD", "--"];
@@ -4353,11 +4754,11 @@ async fn workspace_unstage(id: String, dir_name: String, paths: Vec<String>) -> 
 }
 
 #[tauri::command]
-async fn workspace_commit(
+async fn task_commit(
     id: String, dir_name: String, subject: String, body: String, amend: bool, push: bool,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
         let cwd = repo_cwd(&w, &dir_name)?;
 
         let subject = subject.trim().to_string();
@@ -4397,9 +4798,9 @@ async fn workspace_commit(
 /// staged and unstaged edits); untracked files are deleted from disk.
 /// Destructive + irreversible — the frontend gates it behind a confirm.
 #[tauri::command]
-async fn workspace_discard(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
+async fn task_discard(id: String, dir_name: String, paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
         let cwd = repo_cwd(&w, &dir_name)?;
         for p in &paths {
             // `git ls-files --error-unmatch` exits non-zero for untracked
@@ -4419,16 +4820,16 @@ async fn workspace_discard(id: String, dir_name: String, paths: Vec<String>) -> 
     .map_err(|e| e.to_string())?
 }
 
-/// Resolve a renderer-supplied path against a workspace root and verify the
+/// Resolve a renderer-supplied path against a task root and verify the
 /// result is contained within it. Rejects absolute paths and `..` segments
 /// up front so attempts like `/etc/passwd` or `../../foo` fail loudly
 /// instead of being silently joined. Canonicalizes both ends so a symlink
 /// pointing outside the worktree also fails the contains check.
 ///
-/// **MUST** be used for every renderer → filesystem read inside a workspace
+/// **MUST** be used for every renderer → filesystem read inside a task
 /// (file_read, file_diff, future watchers). Without it, untrusted paths
 /// from the webview could read arbitrary text files on disk.
-/// Structural validation shared by every workspace-relative path resolver:
+/// Structural validation shared by every task-relative path resolver:
 /// rejects absolute paths and literal `..` segments up front, before any
 /// filesystem call. Attempts like `/etc/passwd` or `../../foo` fail loudly
 /// instead of being silently joined.
@@ -4447,16 +4848,16 @@ fn reject_escaping_segments(rel: &str) -> Result<PathBuf, String> {
 /// result is contained within it. Canonicalizes both ends so a symlink
 /// pointing outside the worktree also fails the contains check.
 ///
-/// **MUST** be used for every renderer → filesystem read inside a workspace
+/// **MUST** be used for every renderer → filesystem read inside a task
 /// (file_read, file_diff, future watchers). Without it, untrusted paths
 /// from the webview could read arbitrary text files on disk.
-fn safe_workspace_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
+fn safe_task_path(ws_path: &Path, rel: &str) -> Result<PathBuf, String> {
     let pb = reject_escaping_segments(rel)?;
     let target = ws_path.join(&pb);
     let canon_base = fs::canonicalize(ws_path).map_err(|e| e.to_string())?;
     let canon_target = fs::canonicalize(&target).map_err(|e| e.to_string())?;
     if !canon_target.starts_with(&canon_base) {
-        return Err(format!("path escapes workspace: {rel}"));
+        return Err(format!("path escapes task: {rel}"));
     }
     Ok(canon_target)
 }
@@ -4467,7 +4868,7 @@ struct PathStat {
     is_dir: bool,
 }
 
-/// Does a workspace-relative path exist, and is it a directory? Used by the
+/// Does a task-relative path exist, and is it a directory? Used by the
 /// markdown preview's link click handler before opening a tab or revealing
 /// in the file manager, so a dead link shows a visible "not found" instead
 /// of a blank/broken tab, and a directory link reveals instead of trying to
@@ -4475,24 +4876,24 @@ struct PathStat {
 ///
 /// `fs::canonicalize` errors on any path that doesn't exist, so a missing
 /// target (the exact case this command exists to report) can't be
-/// containment-checked the way `safe_workspace_path` does. This resolves the
+/// containment-checked the way `safe_task_path` does. This resolves the
 /// containment check AND the final exists/is_dir answer from the SAME
 /// canonicalized path in one pass — critically, the is_dir metadata call
 /// below stats the canonical (symlink-resolved, already-verified) path, not
 /// the original possibly-symlinked one, so a symlink swapped in between the
-/// two calls can't smuggle an out-of-workspace answer past the check that
+/// two calls can't smuggle an out-of-task answer past the check that
 /// just ran (the TOCTOU pattern `read_capped_file` is careful to avoid).
 /// When the target doesn't exist, walks up to the nearest EXISTING ancestor
 /// and canonicalizes THAT instead — sufficient to catch a symlink escape (a
 /// symlink has to actually exist to redirect anything), and the walk always
 /// terminates at `ws_path` itself, which does exist.
-fn check_workspace_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat, String> {
+fn check_task_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat, String> {
     let pb = reject_escaping_segments(rel)?;
     let target = ws_path.join(&pb);
     let canon_base = fs::canonicalize(ws_path).map_err(|e| e.to_string())?;
     if let Ok(canon) = fs::canonicalize(&target) {
         if !canon.starts_with(&canon_base) {
-            return Err(format!("path escapes workspace: {rel}"));
+            return Err(format!("path escapes task: {rel}"));
         }
         let is_dir = fs::metadata(&canon).map(|m| m.is_dir()).unwrap_or(false);
         return Ok(PathStat { exists: true, is_dir });
@@ -4506,7 +4907,7 @@ fn check_workspace_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat,
         if probe.exists() {
             let canon = fs::canonicalize(probe).map_err(|e| e.to_string())?;
             if !canon.starts_with(&canon_base) {
-                return Err(format!("path escapes workspace: {rel}"));
+                return Err(format!("path escapes task: {rel}"));
             }
             break;
         }
@@ -4515,14 +4916,14 @@ fn check_workspace_path_existence(ws_path: &Path, rel: &str) -> Result<PathStat,
 }
 
 #[tauri::command]
-fn workspace_path_stat(id: String, path: String) -> Result<PathStat, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_path_stat(id: String, path: String) -> Result<PathStat, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no ws")?;
     // Unlike a diff/read, "is this a directory" is a sensible question for a
     // path that's exactly a composition member's own root (e.g. a markdown
-    // link's `..`/`/` resolves there per resolveWorkspaceHref's member-floor
+    // link's `..`/`/` resolves there per resolveTaskHref's member-floor
     // scoping) — allow it rather than erroring.
-    let (cwd, rel) = resolve_workspace_git_path_ex(&w, &path, true)?;
-    check_workspace_path_existence(&cwd, &rel)
+    let (cwd, rel) = resolve_task_git_path_ex(&w, &path, true)?;
+    check_task_path_existence(&cwd, &rel)
 }
 
 /// Read `abs` capped at `cap` bytes, TOCTOU-safe: the size/type check runs
@@ -4550,13 +4951,13 @@ fn read_capped_file(abs: &Path, cap: u64) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn workspace_file_read(id: String, path: String) -> Result<String, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_file_read(id: String, path: String) -> Result<String, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     // Member-aware: a `<dir_name>/…` path resolves inside that member's repo
     // (which may live outside the wrapper for repo_root members), matching
     // the diff/finder/grep path scheme.
-    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
-    let abs = safe_workspace_path(&cwd, &rel)?;
+    let (cwd, rel) = resolve_task_git_path(&w, &path)?;
+    let abs = safe_task_path(&cwd, &rel)?;
     // Refuse binary or huge files for now — viewer is text-only.
     let bytes = read_capped_file(&abs, 2_000_000)?;
     String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8".to_string())
@@ -4585,7 +4986,7 @@ fn image_mime_for_ext(p: &Path) -> Option<&'static str> {
     }
 }
 
-/// Result of `workspace_file_read_base64`. `unchanged` short-circuits the
+/// Result of `task_file_read_base64`. `unchanged` short-circuits the
 /// common case (an agent settle re-validating every image in every mounted
 /// preview): when the caller's `known_fp` still matches the file's current
 /// `mtime:len` fingerprint, `mime`/`data` are omitted entirely — the
@@ -4604,17 +5005,17 @@ struct Base64Read {
 
 /// Read a workspace image as base64 for the markdown preview, or confirm
 /// it's unchanged since `known_fp` (see `Base64Read`). Same member-aware
-/// resolution + worktree containment as `workspace_file_read`, plus an
+/// resolution + worktree containment as `task_file_read`, plus an
 /// image-extension whitelist and a 10 MB cap. Async + spawn_blocking because
 /// a multi-MB read IS the heavy-IO case the IPC discipline targets (unlike
 /// the 2 MB-capped text read above).
 #[tauri::command]
-async fn workspace_file_read_base64(id: String, path: String, known_fp: Option<String>) -> Result<Base64Read, String> {
+async fn task_file_read_base64(id: String, path: String, known_fp: Option<String>) -> Result<Base64Read, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use base64::Engine as _;
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-        let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
-        let abs = safe_workspace_path(&cwd, &rel)?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let (cwd, rel) = resolve_task_git_path(&w, &path)?;
+        let abs = safe_task_path(&cwd, &rel)?;
         let mime = image_mime_for_ext(&abs).ok_or_else(|| format!("not an image: {path}"))?;
         // Cheap pre-read stat: if it matches what the caller already has
         // cached, skip the read + base64 encode entirely. Only bother when
@@ -4645,40 +5046,40 @@ async fn workspace_file_read_base64(id: String, path: String, known_fp: Option<S
     .map_err(|e| e.to_string())?
 }
 
-/// Overwrite a workspace file with new contents (editor save). The
-/// path is constrained to the worktree by `safe_workspace_path`, same
-/// as the read side. Synchronous to mirror `workspace_file_read` — a
+/// Overwrite a task file with new contents (editor save). The
+/// path is constrained to the worktree by `safe_task_path`, same
+/// as the read side. Synchronous to mirror `task_file_read` — a
 /// single text file (capped at 2 MB on read) is not the heavy-IO case
 /// the spawn_blocking discipline targets.
 #[tauri::command]
-fn workspace_file_write(id: String, path: String, content: String) -> Result<(), String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
-    let abs = safe_workspace_path(&cwd, &rel)?;
+fn task_file_write(id: String, path: String, content: String) -> Result<(), String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    let (cwd, rel) = resolve_task_git_path(&w, &path)?;
+    let abs = safe_task_path(&cwd, &rel)?;
     fs::write(&abs, content).map_err(|e| format!("write failed: {e}"))
 }
 
-/// Rename a file or directory in the workspace (file-tree context menu).
+/// Rename a file or directory in the task (file-tree context menu).
 /// `new_name` is a bare name (no path separators) — the entry stays in its
 /// current directory. Member-aware + constrained to the worktree via
-/// `safe_workspace_path`. Returns the new workspace-relative path so the
+/// `safe_task_path`. Returns the new task-relative path so the
 /// caller can update an open tab / re-select the row.
 #[tauri::command]
-fn workspace_path_rename(id: String, path: String, new_name: String) -> Result<String, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_path_rename(id: String, path: String, new_name: String) -> Result<String, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let trimmed = new_name.trim();
     if trimmed.is_empty() || trimmed.contains('/') || trimmed == "." || trimmed == ".." {
         return Err(format!("invalid name: {new_name:?}"));
     }
-    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
-    let abs = safe_workspace_path(&cwd, &rel)?;
+    let (cwd, rel) = resolve_task_git_path(&w, &path)?;
+    let abs = safe_task_path(&cwd, &rel)?;
     let parent = abs.parent().ok_or("no parent directory")?;
     let dest = parent.join(trimmed);
     if dest.exists() {
         return Err(format!("\"{trimmed}\" already exists here"));
     }
     fs::rename(&abs, &dest).map_err(|e| format!("rename failed: {e}"))?;
-    // Rebuild the workspace-relative path: swap the last segment of the
+    // Rebuild the task-relative path: swap the last segment of the
     // INBOUND `path` (which keeps any `<member>/` prefix) for the new name.
     let new_rel = match path.rsplit_once('/') {
         Some((head, _)) => format!("{head}/{trimmed}"),
@@ -4687,14 +5088,14 @@ fn workspace_path_rename(id: String, path: String, new_name: String) -> Result<S
     Ok(new_rel)
 }
 
-/// Delete a file or directory in the workspace (file-tree context menu).
+/// Delete a file or directory in the task (file-tree context menu).
 /// Permanent (no trash) — the caller confirms first. Directories delete
 /// recursively. Member-aware + worktree-constrained.
 #[tauri::command]
-fn workspace_path_delete(id: String, path: String) -> Result<(), String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    let (cwd, rel) = resolve_workspace_git_path(&w, &path)?;
-    let abs = safe_workspace_path(&cwd, &rel)?;
+fn task_path_delete(id: String, path: String) -> Result<(), String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    let (cwd, rel) = resolve_task_git_path(&w, &path)?;
+    let abs = safe_task_path(&cwd, &rel)?;
     let meta = fs::symlink_metadata(&abs).map_err(|e| format!("stat failed: {e}"))?;
     if meta.is_dir() && !meta.file_type().is_symlink() {
         fs::remove_dir_all(&abs).map_err(|e| format!("delete failed: {e}"))
@@ -4703,18 +5104,18 @@ fn workspace_path_delete(id: String, path: String) -> Result<(), String> {
     }
 }
 
-/// Reveal a workspace entry in the OS file manager ("Show in Finder").
+/// Reveal a task entry in the OS file manager ("Show in Finder").
 /// Resolves the absolute path server-side (member-aware) so the frontend
 /// doesn't have to reconstruct paths for members that live outside the
 /// wrapper. macOS selects the item; Windows selects it; Linux opens the
 /// containing folder (no portable "select" verb).
 #[tauri::command]
-fn workspace_reveal_path(id: String, path: String) -> Result<(), String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_reveal_path(id: String, path: String) -> Result<(), String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     // Revealing a directory (including a composition member's own root) is
     // meaningful here, unlike for a diff/read — allow the bare-member-root case.
-    let (cwd, rel) = resolve_workspace_git_path_ex(&w, &path, true)?;
-    let abs = safe_workspace_path(&cwd, &rel)?;
+    let (cwd, rel) = resolve_task_git_path_ex(&w, &path, true)?;
+    let abs = safe_task_path(&cwd, &rel)?;
     let target = abs.to_string_lossy().into_owned();
     let (program, args) = reveal_command(std::env::consts::OS, &target);
     Command::new(program).args(&args).status().map_err(|e| e.to_string())?;
@@ -4761,14 +5162,14 @@ struct FileDiffSides {
     fp: String,
 }
 
-/// Resolve a workspace-relative path to (member cwd, path relative to that
+/// Resolve a task-relative path to (member cwd, path relative to that
 /// cwd), member-aware: a `<dir_name>/…` path resolves inside that member's
 /// own repo (which may live outside the wrapper for repo_root members). A
 /// path equal to exactly `dir_name` (no remainder) is the member's OWN
 /// root — diff/read callers reject that (a diff/read needs a file, not a
 /// directory); `allow_bare_member_root` lets a caller that's fine with a
 /// directory (stat, reveal-in-file-manager) opt in instead.
-fn resolve_workspace_git_path_ex(w: &Workspace, path: &str, allow_bare_member_root: bool) -> Result<(PathBuf, String), String> {
+fn resolve_task_git_path_ex(w: &Task, path: &str, allow_bare_member_root: bool) -> Result<(PathBuf, String), String> {
     if let Some((member, remainder)) = w.composition.iter().find_map(|m| {
         if path == m.dir_name {
             Some((m, ""))
@@ -4786,17 +5187,17 @@ fn resolve_workspace_git_path_ex(w: &Workspace, path: &str, allow_bare_member_ro
     Ok((PathBuf::from(&w.path), path.to_string()))
 }
 
-fn resolve_workspace_git_path(w: &Workspace, path: &str) -> Result<(PathBuf, String), String> {
-    resolve_workspace_git_path_ex(w, path, false)
+fn resolve_task_git_path(w: &Task, path: &str) -> Result<(PathBuf, String), String> {
+    resolve_task_git_path_ex(w, path, false)
 }
 
-fn workspace_file_diff_sides_for_workspace(w: &Workspace, path: &str) -> Result<FileDiffSides, String> {
-    let (cwd, rel_path) = resolve_workspace_git_path(w, path)?;
+fn task_file_diff_sides_for_task(w: &Task, path: &str) -> Result<FileDiffSides, String> {
+    let (cwd, rel_path) = resolve_task_git_path(w, path)?;
     // `git show` fails for a path not in HEAD (untracked/added file);
     // read_to_string fails for non-UTF8. Either way the side is
     // unrenderable → exists=false, content "".
     let original = git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
-    let modified_path = safe_workspace_path(&cwd, &rel_path).ok();
+    let modified_path = safe_task_path(&cwd, &rel_path).ok();
     let modified = match &modified_path {
         Some(p) if p.exists() => fs::read_to_string(p).ok(),
         _ => None,
@@ -4811,8 +5212,8 @@ fn workspace_file_diff_sides_for_workspace(w: &Workspace, path: &str) -> Result<
     })
 }
 
-fn workspace_file_diff_for_workspace(w: &Workspace, path: &str) -> Result<String, String> {
-    let (cwd, rel_path) = resolve_workspace_git_path(w, path)?;
+fn task_file_diff_for_task(w: &Task, path: &str) -> Result<String, String> {
+    let (cwd, rel_path) = resolve_task_git_path(w, path)?;
     // Tracked diff is safe because the path is forwarded to `git -C cwd diff`
     // which already constrains paths to the working tree. The untracked
     // fallback below DOES read straight from disk, so for THAT branch we
@@ -4823,7 +5224,7 @@ fn workspace_file_diff_for_workspace(w: &Workspace, path: &str) -> Result<String
         return Ok(tracked_diff);
     }
     // Maybe it's untracked — synthesize a "new file" diff.
-    let abs = match safe_workspace_path(&cwd, &rel_path) {
+    let abs = match safe_task_path(&cwd, &rel_path) {
         Ok(p) => p,
         Err(_) => return Ok(String::new()),
     };
@@ -4846,20 +5247,20 @@ fn workspace_file_diff_for_workspace(w: &Workspace, path: &str) -> Result<String
 }
 
 #[tauri::command]
-fn workspace_file_diff_sides(id: String, path: String) -> Result<FileDiffSides, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    workspace_file_diff_sides_for_workspace(&w, &path)
+fn task_file_diff_sides(id: String, path: String) -> Result<FileDiffSides, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    task_file_diff_sides_for_task(&w, &path)
 }
 
 #[tauri::command]
-fn workspace_file_diff(id: String, path: String) -> Result<String, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-    workspace_file_diff_for_workspace(&w, &path)
+fn task_file_diff(id: String, path: String) -> Result<String, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    task_file_diff_for_task(&w, &path)
 }
 
 #[tauri::command]
-fn workspace_files(id: String) -> Result<Vec<String>, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_files(id: String) -> Result<Vec<String>, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let mut out = Vec::new();
     if let Ok(rd) = fs::read_dir(&w.path) {
         for e in rd.flatten() {
@@ -4901,8 +5302,8 @@ fn compile_exclude_patterns(repo_path: &str) -> Vec<glob::Pattern> {
 
 /// Source repo path for a composition member: inline `repo_path` on new
 /// records, or the legacy `project_id` reference resolved against
-/// projects.json for workspaces created before members went inline.
-fn member_repo_path(m: &WorkspaceMember) -> String {
+/// projects.json for tasks created before members went inline.
+fn member_repo_path(m: &TaskMember) -> String {
     if !m.repo_path.is_empty() { return m.repo_path.clone(); }
     load_projects().into_iter().find(|p| p.id == m.project_id)
         .map(|p| p.root_path).unwrap_or_default()
@@ -4921,30 +5322,30 @@ fn path_is_excluded(patterns: &[glob::Pattern], repo_local_path: &str) -> bool {
         || patterns.iter().any(|p| p.matches(repo_local_path))
 }
 
-/// List entries inside a directory, relative to the workspace root. `rel`
-/// of "" returns the workspace's top level. Refuses to traverse outside the
-/// workspace (no `..` segments allowed). Returns `is_dir` directly so the UI
+/// List entries inside a directory, relative to the task root. `rel`
+/// of "" returns the task's top level. Refuses to traverse outside the
+/// task (no `..` segments allowed). Returns `is_dir` directly so the UI
 /// doesn't have to guess by extension. Async + spawn_blocking: it reads
 /// settings/projects/.termic.yaml off the IPC/WebView thread.
 #[tauri::command]
-async fn workspace_dir_list(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
-    tauri::async_runtime::spawn_blocking(move || workspace_dir_list_sync(id, rel, heal))
+async fn task_dir_list(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || task_dir_list_sync(id, rel, heal))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn workspace_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+fn task_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<FileEntry>, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     let base = PathBuf::from(&w.path);
     // Multi-repo: when the relative path enters a composition member
     // (e.g. "pydpf" or "pydpf/src"), resolve under that member's real
-    // path instead of going through safe_workspace_path — which would
+    // path instead of going through safe_task_path — which would
     // canonicalize the symlink-to-real-checkout and reject as "escapes
-    // workspace". The member is a first-class browseable subtree.
+    // task". The member is a first-class browseable subtree.
     // Which composition member (if any) owns the directory being listed, plus
     // the path RELATIVE TO THAT member's root — used both to resolve the dir
     // and to scope/evaluate the member's excludes member-locally.
-    let member_hit: Option<(&WorkspaceMember, String)> = if rel.is_empty() {
+    let member_hit: Option<(&TaskMember, String)> = if rel.is_empty() {
         None
     } else {
         w.composition.iter().find_map(|m| {
@@ -4964,10 +5365,10 @@ fn workspace_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<Fi
         if remainder.is_empty() {
             fs::canonicalize(&mp).map_err(|e| e.to_string())?
         } else {
-            safe_workspace_path(&mp, remainder)?
+            safe_task_path(&mp, remainder)?
         }
     } else {
-        safe_workspace_path(&base, &rel)?
+        safe_task_path(&base, &rel)?
     };
     // The repo that owns this directory + the path relative to its root.
     let (owner_repo_path, local_rel): (String, &str) = match &member_hit {
@@ -4992,9 +5393,9 @@ fn workspace_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<Fi
         // Member dirs at the root are first-class subtrees — never hide them
         // with the HOST repo's patterns (a host `dist`/`target` exclude must
         // not drop a member repo that happens to share the name).
-        // Primary check: the frozen composition in the workspace JSON.
-        // Fallback: any symlink at the workspace root is a member repo symlink
-        // placed there by workspace_open_repo — protect it regardless of
+        // Primary check: the frozen composition in the task JSON.
+        // Fallback: any symlink at the task root is a member repo symlink
+        // placed there by task_open_repo — protect it regardless of
         // whether the composition list is current (e.g. after a member rename).
         let is_symlink_at_root = rel.is_empty()
             && e.file_type().map(|t| t.is_symlink()).unwrap_or(false);
@@ -5019,10 +5420,10 @@ fn workspace_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<Fi
         out.push(FileEntry { name, is_dir });
     }
     // Self-heal missing repo-root member symlinks. They're git-ignored and
-    // live in the (often live, for is_repo_root workspaces) host checkout,
+    // live in the (often live, for is_main_checkout tasks) host checkout,
     // so a stray `git clean -fdx` run there can wipe them while the frozen
     // composition stays intact — leaving the tree showing only the bare host
-    // repo. Only the caller's intentional re-reads opt in (`heal`): workspace
+    // repo. Only the caller's intentional re-reads opt in (`heal`): task
     // launch and the manual refresh button, not every agent-settle reload.
     // Detection is then free: we already listed the root, so a member whose
     // dir_name is absent from `out` is the missing case, and a `symlink()`
@@ -5036,7 +5437,7 @@ fn workspace_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<Fi
             if present.contains(&m.dir_name) { continue; }
             // Absent from the listing. Only relink when the slot is truly
             // empty (never clobber real user content sharing the name) and
-            // the target repo still exists. Mirrors workspace_open_repo's guard.
+            // the target repo still exists. Mirrors task_open_repo's guard.
             let target = base.join(&m.dir_name);
             if target.symlink_metadata().is_ok() { continue; }
             let src = member_repo_path(m);
@@ -5057,14 +5458,14 @@ fn workspace_dir_list_sync(id: String, rel: String, heal: bool) -> Result<Vec<Fi
 }
 
 /// Flat list of every git-tracked + untracked-not-ignored file in the
-/// workspace, used by the ⌘P file finder. Async + spawn_blocking because
+/// task, used by the ⌘P file finder. Async + spawn_blocking because
 /// `git ls-files` walks the whole tree and we don't want to freeze the IPC
 /// thread on large repos. Re-fetched on every ⌘P open — good enough, no
 /// caching layer.
 #[tauri::command]
-async fn workspace_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
+async fn task_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no ws")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
         // List tracked + untracked files in a repo, prefixing each with
         // `prefix` (empty for the host; `<dir_name>/` for members) so member
         // paths resolve from the wrapper. `patterns` are that repo's exclude
@@ -5196,7 +5597,7 @@ fn simple_glob_match(pat: &str, s: &str) -> bool {
     }
 }
 
-/// Setup / run / archive scripts run UNSANDBOXED, even for workspaces
+/// Setup / run / archive scripts run UNSANDBOXED, even for tasks
 /// where `sandbox_enabled` is true. The agent itself is the threat
 /// model - the user-authored scripts in `project.{setup,run,archive}_script`
 /// are explicit user intent, and sandboxing them would break common
@@ -5233,7 +5634,7 @@ fn run_script(script: &str, cwd: &Path, port: u16, name: &str) -> Result<String>
 /// Emits:
 ///   setup-output://<ws_id>  payload = { line: String }
 ///   setup-done://<ws_id>    payload = { code: Option<i32>, success: bool }
-/// Used during workspace creation so the New Workspace dialog can show live
+/// Used during task creation so the New Task dialog can show live
 /// progress. Non-blocking from the caller's perspective: this spawns the
 /// pump threads and returns immediately. Caller is responsible for keeping
 /// `app` alive long enough (it's an Arc internally).
@@ -5259,7 +5660,7 @@ fn run_script_streaming(
             .env("TERMIC_PORT", port.to_string())
             .env("TERMIC_WORKSPACE_NAME", &name)
             .env("TERMIC_TASK", &name)
-            // Match workspace_run_script_stream: hint line-buffered output
+            // Match task_run_script_stream: hint line-buffered output
             // for the languages that honor env-var unbuffering. Native
             // binaries that block-buffer on pipe regardless will still
             // chunk; only a PTY would fix that universally.
@@ -5311,7 +5712,7 @@ fn run_script_streaming(
 // ─────────────────────────── streaming run scripts ───────────────────────────
 
 /// Tracks running script PIDs (process-group leaders) keyed by "ws_id:kind".
-/// Lets `workspace_stop_script` find the right process group to SIGTERM. We
+/// Lets `task_stop_script` find the right process group to SIGTERM. We
 /// store i32 (PID) rather than `Child` because holding a `Child` would block
 /// the waiter thread that calls `wait()`.
 static RUNNING_SCRIPTS: std::sync::Mutex<Option<std::collections::HashMap<String, i32>>>
@@ -5346,7 +5747,7 @@ fn script_topic_member(member: &str) -> String {
 ///   leave the replacement's entry alone and do NOT emit (a stale done
 ///   would flip the UI to idle while the new instance is running).
 /// - no entry → explicit stop already deregistered us; still emit so
-///   listeners that didn't initiate the stop (e.g. another workspace's
+///   listeners that didn't initiate the stop (e.g. another task's
 ///   panel) settle out of "running".
 fn running_scripts_finish(key: &str, pid: i32) -> bool {
     let mut g = RUNNING_SCRIPTS.lock().unwrap();
@@ -5360,7 +5761,7 @@ fn running_scripts_finish(key: &str, pid: i32) -> bool {
 
 // ─────────────────────────── spotlight ───────────────────────────
 
-/// Per-project spotlight session. At most one workspace per project
+/// Per-project spotlight session. At most one task per project
 /// can be spotlighted at a time. The key in SPOTLIGHT is project_id.
 struct SpotlightState {
     ws_id: String,
@@ -5522,7 +5923,7 @@ fn spotlight_apply(
     ).map_err(|e| e.to_string())?;
     let mut applied_untracked = Vec::new();
     for rel in untracked_raw.split('\0').filter(|s| !s.is_empty()) {
-        let src = safe_workspace_path(worktree, rel)
+        let src = safe_task_path(worktree, rel)
             .map_err(|e| format!("untracked path rejected: {e}"))?;
         let dst = main.join(rel);
         if let Some(parent) = dst.parent() {
@@ -5562,7 +5963,7 @@ fn spotlight_revert(main: &Path, original_ref: &str, applied_untracked: &[String
     Ok(())
 }
 
-/// SIGTERM a workspace's host run-script process group, if one is running.
+/// SIGTERM a task's host run-script process group, if one is running.
 /// The run script started while spotlighted executes at the repo root, so
 /// when spotlight stops or switches away we must tear it down — otherwise a
 /// stale dev server keeps serving the repo root after the sync target changed.
@@ -5574,11 +5975,11 @@ fn spotlight_kill_run(ws_id: &str) {
     }
 }
 
-/// Stop spotlight for a workspace without requiring an AppHandle (called
-/// from workspace_archive_sync). Caller emits the status event if needed.
+/// Stop spotlight for a task without requiring an AppHandle (called
+/// from task_archive_sync). Caller emits the status event if needed.
 fn spotlight_stop_for_ws(ws_id: &str) {
-    let workspaces = load_workspaces();
-    let Some(w) = workspaces.iter().find(|w| w.id == ws_id) else { return };
+    let tasks = load_tasks();
+    let Some(w) = tasks.iter().find(|w| w.id == ws_id) else { return };
     let projects = load_projects();
     let Some(p) = projects.iter().find(|p| p.id == w.project_id) else { return };
     let main = PathBuf::from(&p.root_path);
@@ -5589,7 +5990,7 @@ fn spotlight_stop_for_ws(ws_id: &str) {
 }
 
 #[tauri::command]
-fn workspace_spotlight_status() -> HashMap<String, String> {
+fn task_spotlight_status() -> HashMap<String, String> {
     let g = SPOTLIGHT.lock().unwrap();
     match g.as_ref() {
         None => HashMap::new(),
@@ -5599,23 +6000,23 @@ fn workspace_spotlight_status() -> HashMap<String, String> {
 
 
 #[tauri::command]
-async fn workspace_spotlight_start(id: String, app: AppHandle) -> Result<(), String> {
+async fn task_spotlight_start(id: String, app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || spotlight_start_sync(id, app))
         .await
         .map_err(|e| e.to_string())?
 }
 
 fn spotlight_start_sync(ws_id: String, app: AppHandle) -> Result<(), String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == ws_id)
-        .ok_or("no such workspace")?;
+    let w = load_tasks().into_iter().find(|w| w.id == ws_id)
+        .ok_or("no such task")?;
     let p = load_projects().into_iter().find(|p| p.id == w.project_id)
         .ok_or("project missing")?;
 
     if !p.spotlight_enabled {
         return Err("Spotlight is not enabled for this project. Enable it in Repository Settings.".into());
     }
-    if w.is_repo_root {
-        return Err("This workspace IS the main checkout — nothing to spotlight.".into());
+    if w.is_main_checkout {
+        return Err("This task IS the main checkout — nothing to spotlight.".into());
     }
     if p.project_type == ProjectType::Multi {
         return Err("Spotlight is not supported for multi-repo projects.".into());
@@ -5630,11 +6031,11 @@ fn spotlight_start_sync(ws_id: String, app: AppHandle) -> Result<(), String> {
         return Err(format!("Main checkout missing: {}", main.display()));
     }
 
-    // If another workspace in this project is already spotlighted, revert main
+    // If another task in this project is already spotlighted, revert main
     // first — otherwise the clean check below would always fail because main
     // has the previous spotlight's changes applied.
     if let Some(existing) = spotlight_remove(&project_id) {
-        // Stop the previous workspace's repo-root run (it was serving the old
+        // Stop the previous task's repo-root run (it was serving the old
         // spotlight target) before reverting main + applying the new one.
         spotlight_kill_run(&existing.ws_id);
         spotlight_revert(&main, &existing.original_ref, &existing.applied_untracked)?;
@@ -5770,15 +6171,15 @@ fn spotlight_start_sync(ws_id: String, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn workspace_spotlight_stop(id: String, app: AppHandle) -> Result<(), String> {
+async fn task_spotlight_stop(id: String, app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || spotlight_stop_sync(id, app))
         .await
         .map_err(|e| e.to_string())?
 }
 
 fn spotlight_stop_sync(ws_id: String, app: AppHandle) -> Result<(), String> {
-    let w = load_workspaces().into_iter().find(|w| w.id == ws_id)
-        .ok_or("no such workspace")?;
+    let w = load_tasks().into_iter().find(|w| w.id == ws_id)
+        .ok_or("no such task")?;
     let p = load_projects().into_iter().find(|p| p.id == w.project_id)
         .ok_or("project missing")?;
     let main = PathBuf::from(&p.root_path);
@@ -5800,10 +6201,10 @@ fn spotlight_stop_sync(ws_id: String, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn workspace_spotlight_resync(id: String, app: AppHandle) -> Result<(), String> {
+async fn task_spotlight_resync(id: String, app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = load_workspaces().into_iter().find(|w| w.id == id)
-            .ok_or("no such workspace")?;
+        let w = load_tasks().into_iter().find(|w| w.id == id)
+            .ok_or("no such task")?;
         let p = load_projects().into_iter().find(|p| p.id == w.project_id)
             .ok_or("project missing")?;
         let worktree = PathBuf::from(&w.path);
@@ -5813,9 +6214,9 @@ async fn workspace_spotlight_resync(id: String, app: AppHandle) -> Result<(), St
             let g = SPOTLIGHT.lock().unwrap();
             let state = g.as_ref()
                 .and_then(|m| m.get(&p.id))
-                .ok_or("spotlight not active for this workspace")?;
+                .ok_or("spotlight not active for this task")?;
             if state.ws_id != id {
-                return Err("A different workspace is spotlighted for this project.".into());
+                return Err("A different task is spotlighted for this project.".into());
             }
             (state.original_ref.clone(), state.applied_untracked.clone())
         };
@@ -5839,20 +6240,20 @@ async fn workspace_spotlight_resync(id: String, app: AppHandle) -> Result<(), St
 }
 
 
-/// Kick off either the project's setup or run script for a workspace with
+/// Kick off either the project's setup or run script for a task with
 /// live stdout/stderr streaming. Emits:
 ///   script-output://<ws_id>:<kind>  { line: string }
 ///   script-done://<ws_id>:<kind>    { code, success }
-/// If a previous instance is still running for the same (ws, kind), it is
+/// If a previous instance is still running for the same (task, kind), it is
 /// SIGTERM'd before the new one starts so users can't accidentally fork
 /// multiple dev servers off the same project.
 #[tauri::command]
 // `member`: empty / unset = run the host script with cwd at the
-// workspace path (single-repo behavior; for multi-repo workspaces
+// task path (single-repo behavior; for multi-repo tasks
 // this is the host worktree). Non-empty = run a composition member's
 // script with cwd inside that member's dir. The frontend resolves
 // the member by its frozen `dir_name`.
-fn workspace_run_script_stream(
+fn task_run_script_stream(
     id: String,
     kind: String,
     member: Option<String>,
@@ -5862,7 +6263,7 @@ fn workspace_run_script_stream(
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
 
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such ws")?;
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no such task")?;
     let p = load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
     let member_dir = member.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
 
@@ -5871,7 +6272,7 @@ fn workspace_run_script_stream(
     // Per-member port avoids `PORT=$TERMIC_PORT npm run dev`
     // collisions when two members run in parallel. Members created
     // before per-member ports existed (port == 0) fall back to the
-    // workspace's port.
+    // task's port.
     let (script, cwd, target_port) = match &member_dir {
         None => {
             let (setup, run, _) = effective_scripts(&p);
@@ -5891,18 +6292,18 @@ fn workspace_run_script_stream(
                 "run"   => m.run_script.clone(),
                 other   => return Err(format!("unknown script kind: {other}")),
             };
-            // Legacy migration: workspaces created before per-member
+            // Legacy migration: tasks created before per-member
             // ports existed have m.port == 0. Falling back to
             // w.port would re-introduce the original collision. Use
-            // the same scheme workspace_create_multi_sync uses now —
-            // workspace.port + index + 1 — so existing workspaces get
+            // the same scheme task_create_multi_sync uses now —
+            // task.port + index + 1 — so existing tasks get
             // unique ports without needing to be recreated.
             let p = if m.port == 0 { w.port.saturating_add(idx as u16 + 1) } else { m.port };
             (s, std::path::PathBuf::from(&m.path), p)
         }
     };
 
-    // Spotlight override: when this workspace is spotlighted and we're
+    // Spotlight override: when this task is spotlighted and we're
     // running the "run" script (not setup, not a member), execute at the
     // main checkout so the server sees the synced files. Mirrors the
     // spawn-time cwd decision the Run TABS make in TerminalPane.
@@ -5956,7 +6357,7 @@ fn workspace_run_script_stream(
         .collect();
 
     thread::spawn(move || {
-        // Kill any prior instance for (ws, member, kind) — SIGTERM to the
+        // Kill any prior instance for (task, member, kind) — SIGTERM to the
         // whole process group so children die too — then wait (bounded) for
         // the group to actually die: spawning immediately would race the
         // dying server for the port and fail with EADDRINUSE. Deregistering
@@ -6052,7 +6453,7 @@ fn workspace_run_script_stream(
 /// `script-done` event before updating UI state — kill is async from
 /// the child's perspective.
 #[tauri::command]
-fn workspace_stop_script(id: String, kind: String, member: Option<String>) -> Result<(), String> {
+fn task_stop_script(id: String, kind: String, member: Option<String>) -> Result<(), String> {
     let member_dir = member.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
     let map_key = format!("{id}:{}:{kind}", member_dir.unwrap_or_default());
     if let Some(pid) = running_scripts_remove(&map_key) {
@@ -6063,8 +6464,8 @@ fn workspace_stop_script(id: String, kind: String, member: Option<String>) -> Re
 
 // ───────────────────────────── find in files ─────────────────────────────
 
-/// Per-workspace in-flight grep PID. Each new search SIGKILLs the
-/// previous one for the same workspace so typing doesn't fan out into
+/// Per-task in-flight grep PID. Each new search SIGKILLs the
+/// previous one for the same task so typing doesn't fan out into
 /// dozens of zombie git-grep procs.
 static RUNNING_GREPS: std::sync::Mutex<Option<std::collections::HashMap<String, i32>>>
     = std::sync::Mutex::new(None);
@@ -6081,10 +6482,10 @@ fn running_greps_swap(ws_id: &str, new_pid: Option<i32>) -> Option<i32> {
 /// match (`{ path, line, col, preview }`) and a final `grep-done://<search_id>`
 /// (`{ truncated }`). Caps results to keep the renderer responsive — past
 /// the cap the child is SIGKILLed and `truncated: true` is reported.
-/// Re-entrant safety: any previous grep for the same workspace is killed
+/// Re-entrant safety: any previous grep for the same task is killed
 /// before this one starts (typing fires a new search per keystroke).
 #[tauri::command]
-fn workspace_grep_start(
+fn task_grep_start(
     id: String,
     query: String,
     search_id: String,
@@ -6094,12 +6495,12 @@ fn workspace_grep_start(
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
 
-    let w = load_workspaces().into_iter().find(|w| w.id == id).ok_or("no such ws")?;
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no such task")?;
     let cwd = std::path::PathBuf::from(&w.path);
     // Search the host repo first, then each multi-repo member, serially.
     // Member result paths are prefixed with `<dir_name>/` so they resolve
     // from the wrapper (matching the diff / finder path scheme). Single-repo
-    // workspaces just have the one host entry.
+    // tasks just have the one host entry.
     let mut repos: Vec<(std::path::PathBuf, String)> = vec![(cwd.clone(), String::new())];
     for m in &w.composition {
         let mp = std::path::PathBuf::from(&m.path);
@@ -6115,7 +6516,7 @@ fn workspace_grep_start(
         return Ok(());
     }
 
-    // SIGKILL any prior grep for this workspace. The frontend bumps
+    // SIGKILL any prior grep for this task. The frontend bumps
     // search_id each keystroke and ignores late events from stale ids,
     // but we still want to free the CPU cycles ASAP.
     if let Some(prev) = running_greps_swap(&id, None) {
@@ -6232,12 +6633,12 @@ fn workspace_grep_start(
     Ok(())
 }
 
-/// Cancel an in-flight grep for the given workspace. The frontend calls
+/// Cancel an in-flight grep for the given task. The frontend calls
 /// this on dialog close — typing-triggered cancellation happens
-/// automatically in `workspace_grep_start` (the next search kills the
-/// previous one for the same workspace).
+/// automatically in `task_grep_start` (the next search kills the
+/// previous one for the same task).
 #[tauri::command]
-fn workspace_grep_cancel(id: String) -> Result<(), String> {
+fn task_grep_cancel(id: String) -> Result<(), String> {
     if let Some(prev) = running_greps_swap(&id, None) {
         unsafe { libc::kill(-prev, libc::SIGKILL); }
     }
@@ -6277,7 +6678,7 @@ fn pty_debug_append(file: String, line: String) {
 /// reads it with no profile change. The uuid prefix avoids collisions when the
 /// same filename is dropped twice.
 #[tauri::command]
-fn terminal_stage_file(ws_id: String, src: String) -> Result<String, String> {
+fn terminal_stage_file(task_id: String, src: String) -> Result<String, String> {
     let src_path = PathBuf::from(&src);
     if !src_path.is_file() {
         return Err(format!("not a file: {src}"));
@@ -6285,8 +6686,8 @@ fn terminal_stage_file(ws_id: String, src: String) -> Result<String, String> {
     let name = src_path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
-    // Sanitize ws_id for a path component (it's a uuid, but be defensive).
-    let safe_ws: String = ws_id.chars()
+    // Sanitize task_id for a path component (it's a uuid, but be defensive).
+    let safe_ws: String = task_id.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .collect();
     let dir = std::env::temp_dir().join("termic-attachments").join(&safe_ws);
@@ -6466,7 +6867,7 @@ fn open_path(path: String) -> Result<(), String> {
 /// Reveal an ABSOLUTE path in the OS file manager, selecting it where the
 /// platform supports it (macOS / Windows; Linux opens the containing dir).
 /// Sibling of `open_path`: callers that already hold the absolute path use
-/// this instead of `workspace_reveal_path` (which resolves a workspace-
+/// this instead of `task_reveal_path` (which resolves a task-
 /// relative path server-side). Cross-platform via `reveal_command`.
 #[tauri::command]
 fn reveal_path(path: String) -> Result<(), String> {
@@ -6512,25 +6913,35 @@ pub struct Settings {
     /// True once the user has finished the welcome wizard.
     pub welcomed: bool,
     /// Registered agent CLIs (claude/gemini/codex defaults + user customs).
-    /// Workspaces reference these by `id`. Always seeded with the built-ins on
+    /// Tasks reference these by `id`. Always seeded with the built-ins on
     /// first load so the app is usable out of the box.
     pub agents: Vec<Agent>,
     /// Global sandbox defaults. Merged with the per-project lists when a
-    /// workspace gets created with sandbox enabled, and pre-filled into
+    /// task gets created with sandbox enabled, and pre-filled into
     /// the sandbox dialog when the user enables the cage from scratch.
-    /// Workspaces still freeze a per-workspace copy at creation time —
-    /// editing these later only affects NEW workspaces.
+    /// Tasks still freeze a per-task copy at creation time —
+    /// editing these later only affects NEW tasks.
     pub sandbox_default_rw_paths: Vec<String>,
     pub sandbox_default_allowed_hosts: Vec<String>,
     /// Personal (this-machine) glob patterns hidden from the "All files"
     /// tree across every project. Unioned with each project's committed
     /// `.termic.yaml` `exclude` list. `.git` is always hidden regardless.
     pub file_tree_exclude: Vec<String>,
+    /// On-disk schema version. Gates one-time data migrations (see
+    /// `migrate_workspaces_to_tasks`). 0 (default, absent in old files)
+    /// means pre-Task-rename layout; bumped to `TASKS_SCHEMA_VERSION` once
+    /// the workspaces->tasks migration has committed.
+    #[serde(default)]
+    pub schema_version: u32,
 }
+
+/// Current on-disk schema version. Bump when adding a migration and gate it
+/// on `settings.schema_version < NEW_VALUE`.
+const TASKS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Agent {
-    pub id: String,                  // stable key referenced by Workspace.cli
+    pub id: String,                  // stable key referenced by Task.cli
     pub display_name: String,
     pub command: String,             // binary or shell command to spawn
     #[serde(default)]
@@ -6546,9 +6957,9 @@ pub struct Agent {
     #[serde(default)]
     pub builtin: bool,
     /// User toggle: hide this agent from the CLI pickers (worktree
-    /// popover, New Workspace, Review, the + tab menu). Settings →
+    /// popover, New Task, Review, the + tab menu). Settings →
     /// Agent CLIs still lists it so it can be re-enabled. Does NOT
-    /// affect workspaces already bound to this agent — they keep
+    /// affect tasks already bound to this agent — they keep
     /// resolving it. `#[serde(default)]` → false for pre-agents files.
     #[serde(default)]
     pub disabled: bool,
@@ -6565,20 +6976,20 @@ pub struct Agent {
     /// the UI parses `KEY=VAL` lines and round-trips them through this map.
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
-    /// Paths joined into the workspace sandbox allow-list whenever this
+    /// Paths joined into the task sandbox allow-list whenever this
     /// agent's CLI is launched. The sandbox is allowlist-only (default-deny
     /// reads + writes outside this set); per-agent paths cover the dirs the
     /// CLI itself needs (its config / session / cache). Cannot be removed
-    /// per-workspace — the workspace's own `sandbox_rw_paths` only ADDS
+    /// per-task — the task's own `sandbox_rw_paths` only ADDS
     /// to this set. `$HOME` substitution happens at sandbox provision time.
     #[serde(default)]
     pub sandbox_allowed_paths: Vec<String>,
     /// Allowed-host regexes/wildcards joined into the sandbox proxy
     /// allow-list whenever this agent's CLI runs — the per-agent
     /// network counterpart to `sandbox_allowed_paths`. Lets "Allow ·
-    /// per agent" persist a host so every workspace using this agent
+    /// per agent" persist a host so every task using this agent
     /// (across all projects) can reach it. Wildcards (`*.x.com`) are
-    /// translated to regex at render time, same as workspace hosts.
+    /// translated to regex at render time, same as task hosts.
     #[serde(default)]
     pub sandbox_allowed_hosts: Vec<String>,
     /// Whether the work-done badge/bell is active for this agent.
@@ -6632,13 +7043,13 @@ pub struct AgentCapabilities {
     /// `runtime_yolo_command` (with `{mode}` → "default"), else respawn.
     pub runtime_default_command: String,
     /// Args appended on spawn AFTER the first one for a given worktree
-    /// (gated by `Workspace.spawn_count > 0`). Lets the CLI resume its own
+    /// (gated by `Task.spawn_count > 0`). Lets the CLI resume its own
     /// per-directory history file. Empty → no auto-resume for this agent.
     #[serde(default)]
     pub resume_args: Vec<String>,
     /// FIRST-spawn args for an id-capable CLI (claude, gemini). Must
     /// contain `{UUID}` which expands to a freshly-minted uuid that the
-    /// frontend then persists on the workspace. Subsequent spawns use
+    /// frontend then persists on the task. Subsequent spawns use
     /// `resume_id_args` with the same uuid. Empty → CLI doesn't support
     /// deterministic sessions; the legacy `resume_args` path is used.
     #[serde(default)]
@@ -6649,7 +7060,7 @@ pub struct AgentCapabilities {
     pub resume_id_args: Vec<String>,
     /// Always-applied args (every spawn). Useful for things like
     /// `--name {WORKSPACE_SLUG}` so claude's /resume picker shows
-    /// termic's workspace name. Placeholders: {WORKSPACE_SLUG},
+    /// termic's task name. Placeholders: {WORKSPACE_SLUG},
     /// {WORKSPACE_NAME}, {WORKSPACE_ID}, {BRANCH}, {PORT}.
     #[serde(default)]
     pub name_args: Vec<String>,
@@ -6661,7 +7072,7 @@ fn default_agents() -> Vec<Agent> {
             id: "claude".into(),
             display_name: "claude".into(),
             command: "claude".into(),
-            // No base args. The `--name {workspace_slug}` + `--resume {slug}`
+            // No base args. The `--name {task_slug}` + `--resume {slug}`
             // scheme was reverted: claude either doesn't support `--name`
             // (silently ignored) or the named-session lookup drops users
             // into the interactive picker when no matching session exists
@@ -6677,8 +7088,8 @@ fn default_agents() -> Vec<Agent> {
                 runtime_yolo_command: String::new(),
                 runtime_default_command: String::new(),
                 // Legacy `--continue` fallback. Active only when this
-                // workspace has no termic-owned uuid stored yet (old
-                // workspaces created before id-based resume landed).
+                // task has no termic-owned uuid stored yet (old
+                // tasks created before id-based resume landed).
                 resume_args: vec!["--continue".into()],
                 // Termic owns the session uuid → deterministic resume
                 // that survives across restarts AND is safe inside the
@@ -6689,7 +7100,7 @@ fn default_agents() -> Vec<Agent> {
                 // resumes that same id.
                 session_id_args: vec!["--session-id".into(), "{UUID}".into()],
                 resume_id_args:  vec!["--resume".into(),     "{UUID}".into()],
-                // Surface termic's workspace name in claude's /resume
+                // Surface termic's task name in claude's /resume
                 // picker + prompt box + terminal title. Stamped on the mint
                 // spawn only (gated to the first id spawn in spawnArgsForCli).
                 name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
@@ -7080,7 +7491,7 @@ fn settings_save(s: Settings) -> Result<(), String> {
 #[tauri::command]
 fn agents_save(agents: Vec<Agent>) -> Result<(), String> {
     let mut s = load_settings_inner();
-    // Defensive: ensure no two agents share an id (would break workspace.cli
+    // Defensive: ensure no two agents share an id (would break task.cli
     // lookups). If duplicates, keep the first occurrence.
     let mut seen = std::collections::HashSet::new();
     s.agents = agents.into_iter().filter(|a| seen.insert(a.id.clone())).collect();
@@ -7218,10 +7629,26 @@ pub struct DiscoveredRepo {
     pub already_added: bool,
 }
 
+/// Best-effort "last activity" time for a repo, used to sort the discovery
+/// list newest-first. The reflog (`.git/logs/HEAD`) is appended on every
+/// commit / checkout / reset / merge, so its mtime tracks real activity;
+/// fall back to the `.git` dir, then the repo dir. Just a stat per candidate,
+/// no git subprocess, so the scan stays cheap even on a folder of many repos.
+fn repo_activity_time(repo: &Path) -> std::time::SystemTime {
+    let git = repo.join(".git");
+    for cand in [git.join("logs").join("HEAD"), git.clone(), repo.to_path_buf()] {
+        if let Ok(t) = fs::metadata(&cand).and_then(|m| m.modified()) {
+            return t;
+        }
+    }
+    std::time::SystemTime::UNIX_EPOCH
+}
+
 /// Walk one level under `dir` and return any subdirectory that contains a
 /// `.git` entry. One level is intentional: most people keep their repos
 /// directly under a single "code" dir, and recursing deeper would scan node
-/// modules / nested clones for no reason.
+/// modules / nested clones for no reason. Sorted by most recent activity
+/// (newest first) so the repos you actually work in surface at the top.
 #[tauri::command]
 fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
     let root = PathBuf::from(shellexpand(&dir));
@@ -7232,7 +7659,7 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
         .into_iter()
         .map(|p| p.root_path)
         .collect();
-    let mut out = Vec::new();
+    let mut out: Vec<(DiscoveredRepo, std::time::SystemTime)> = Vec::new();
     let rd = fs::read_dir(&root).map_err(|e| e.to_string())?;
     for entry in rd.flatten() {
         let path = entry.path();
@@ -7242,10 +7669,13 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
         let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
         let path_str = canon.to_string_lossy().into_owned();
         let already_added = added.contains(&path_str);
-        out.push(DiscoveredRepo { path: path_str, name, already_added });
+        let activity = repo_activity_time(&canon);
+        out.push((DiscoveredRepo { path: path_str, name, already_added }, activity));
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(out)
+    // Most recent activity first; tie-break by name so the order is stable.
+    out.sort_by(|a, b| b.1.cmp(&a.1)
+        .then_with(|| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase())));
+    Ok(out.into_iter().map(|(r, _)| r).collect())
 }
 
 /// Tilde expansion only — Tauri's dialog already returns absolute paths, but
@@ -7500,6 +7930,13 @@ pub fn run() {
             // Resolve the user's login-shell PATH off the main thread
             // so the first PTY spawn doesn't wait on shell startup.
             shell_env::warm();
+            // One-time on-disk migration for the workspace->task rename
+            // (metadata-only: renames the metadata dir + is_repo_root field;
+            // never moves worktrees). MUST run before any task load (task_list
+            // et al.) so the frontend only ever sees the migrated `tasks/`
+            // layout. Best-effort + gated by settings.schema_version, so it's a
+            // cheap no-op on every launch after the first.
+            migrate_workspaces_to_tasks();
             // The main window is created HERE (not in tauri.conf.json) so the
             // macOS traffic-light inset can be chosen per-OS. macOS Tahoe (26+)
             // stopped vertically centering the window controls in an overlay
@@ -7619,20 +8056,21 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
-            workspaces_list, workspace_create, workspace_create_multi, workspace_open_repo, workspace_importable_worktrees, workspace_import_worktree, workspace_archive, workspace_set_cli, workspace_set_custom_command, workspace_set_resume_override, workspace_set_sandbox, workspace_set_yolo,
-            sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, workspace_sandbox_add_allowed_host, workspace_sandbox_add_allowed_path, workspace_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, workspace_recent_denials,
+            tasks_list, task_create, task_create_multi, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_yolo,
+            sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
-            workspace_restore, workspace_delete, workspace_run_script, workspace_run_script_stream, workspace_stop_script, workspace_record_spawn, workspace_set_has_history, workspace_set_agent_session_id,
-            workspace_set_tabs, workspace_set_tab_session_id,
-            workspace_set_split_layout,
-            workspace_set_right_tabs, workspace_set_right_tab_session_id,
-            workspace_grep_start, workspace_grep_cancel,
-            workspace_spotlight_start, workspace_spotlight_stop, workspace_spotlight_resync, workspace_spotlight_status,
-            workspace_diff, workspace_files, workspace_list_files_for_finder, workspace_send_diff_to_main,
-            workspace_changes, workspace_git_status, workspace_stage, workspace_unstage, workspace_commit, workspace_discard,
-            workspace_file_diff, workspace_file_diff_sides, workspace_file_read, workspace_file_read_base64, workspace_file_write, workspace_dir_list, workspace_path_stat,
-            workspace_path_rename, workspace_path_delete, workspace_reveal_path,
-            workspace_rename, project_rename,
+
+            task_restore, task_delete, task_run_script, task_run_script_stream, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id,
+            task_set_tabs, task_set_tab_session_id,
+            task_set_split_layout,
+            task_set_right_tabs, task_set_right_tab_session_id,
+            task_grep_start, task_grep_cancel,
+            task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
+            task_diff, task_files, task_list_files_for_finder, task_send_diff_to_main,
+            task_changes, task_git_status, task_stage, task_unstage, task_commit, task_discard,
+            task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_write, task_dir_list, task_path_stat,
+            task_path_rename, task_path_delete, task_reveal_path,
+            task_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, reveal_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
@@ -7674,8 +8112,8 @@ fn cleanup_children(app: &tauri::AppHandle) {
         for state in sessions {
             let projects = load_projects();
             // Find the project that owns this session by matching ws_id.
-            let workspaces = load_workspaces();
-            if let Some(w) = workspaces.iter().find(|w| w.id == state.ws_id) {
+            let tasks = load_tasks();
+            if let Some(w) = tasks.iter().find(|w| w.id == state.ws_id) {
                 if let Some(p) = projects.iter().find(|p| p.id == w.project_id) {
                     let main = PathBuf::from(&p.root_path);
                     let _ = spotlight_revert(&main, &state.original_ref, &state.applied_untracked);
@@ -7695,7 +8133,7 @@ fn cleanup_children(app: &tauri::AppHandle) {
             }
         }
     }
-    // Per-workspace in-flight greps — same deal, SIGKILL the pg.
+    // Per-task in-flight greps — same deal, SIGKILL the pg.
     {
         let mut g = RUNNING_GREPS.lock().unwrap();
         if let Some(map) = g.as_mut() {
@@ -7924,24 +8362,24 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn safe_workspace_path_allows_contained_files() {
+    fn safe_task_path_allows_contained_files() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("docs")).unwrap();
         fs::write(dir.path().join("docs/a.png"), b"x").unwrap();
-        let p = safe_workspace_path(dir.path(), "docs/a.png").unwrap();
+        let p = safe_task_path(dir.path(), "docs/a.png").unwrap();
         assert!(p.ends_with("docs/a.png"));
     }
 
     #[test]
-    fn safe_workspace_path_rejects_absolute_and_parent_segments() {
+    fn safe_task_path_rejects_absolute_and_parent_segments() {
         let dir = tempdir().unwrap();
-        assert!(safe_workspace_path(dir.path(), "/etc/passwd").is_err());
-        assert!(safe_workspace_path(dir.path(), "../outside.txt").is_err());
-        assert!(safe_workspace_path(dir.path(), "docs/../../outside.txt").is_err());
+        assert!(safe_task_path(dir.path(), "/etc/passwd").is_err());
+        assert!(safe_task_path(dir.path(), "../outside.txt").is_err());
+        assert!(safe_task_path(dir.path(), "docs/../../outside.txt").is_err());
     }
 
     #[test]
-    fn safe_workspace_path_rejects_symlink_escape() {
+    fn safe_task_path_rejects_symlink_escape() {
         // A symlink INSIDE the worktree pointing OUTSIDE must fail the
         // canonicalized containment check (the markdown preview reads
         // whatever path a hostile README references).
@@ -7949,59 +8387,59 @@ mod tests {
         fs::write(outside.path().join("secret.png"), b"x").unwrap();
         let ws = tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path().join("secret.png"), ws.path().join("link.png")).unwrap();
-        assert!(safe_workspace_path(ws.path(), "link.png").is_err());
+        assert!(safe_task_path(ws.path(), "link.png").is_err());
     }
 
     #[test]
-    fn check_workspace_path_existence_reports_missing_for_nonexistent_contained_path() {
+    fn check_task_path_existence_reports_missing_for_nonexistent_contained_path() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("docs")).unwrap();
-        let stat = check_workspace_path_existence(dir.path(), "docs/missing.png").unwrap();
+        let stat = check_task_path_existence(dir.path(), "docs/missing.png").unwrap();
         assert!(!stat.exists);
         assert!(!stat.is_dir);
     }
 
     #[test]
-    fn check_workspace_path_existence_handles_missing_parent_dirs_too() {
+    fn check_task_path_existence_handles_missing_parent_dirs_too() {
         // The whole ancestor chain (not just the leaf) can be missing —
         // the walk-up must reach ws_path itself, not just the immediate parent.
         let dir = tempdir().unwrap();
-        let stat = check_workspace_path_existence(dir.path(), "a/b/c/missing.png").unwrap();
+        let stat = check_task_path_existence(dir.path(), "a/b/c/missing.png").unwrap();
         assert!(!stat.exists);
     }
 
     #[test]
-    fn check_workspace_path_existence_reports_existing_file_and_dir() {
+    fn check_task_path_existence_reports_existing_file_and_dir() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("docs")).unwrap();
         fs::write(dir.path().join("docs/a.png"), b"x").unwrap();
-        let file_stat = check_workspace_path_existence(dir.path(), "docs/a.png").unwrap();
+        let file_stat = check_task_path_existence(dir.path(), "docs/a.png").unwrap();
         assert!(file_stat.exists);
         assert!(!file_stat.is_dir);
-        let dir_stat = check_workspace_path_existence(dir.path(), "docs").unwrap();
+        let dir_stat = check_task_path_existence(dir.path(), "docs").unwrap();
         assert!(dir_stat.exists);
         assert!(dir_stat.is_dir);
     }
 
     #[test]
-    fn check_workspace_path_existence_rejects_absolute_and_parent_segments() {
+    fn check_task_path_existence_rejects_absolute_and_parent_segments() {
         let dir = tempdir().unwrap();
-        assert!(check_workspace_path_existence(dir.path(), "/etc/passwd").is_err());
-        assert!(check_workspace_path_existence(dir.path(), "../outside.txt").is_err());
-        assert!(check_workspace_path_existence(dir.path(), "docs/../../outside.txt").is_err());
+        assert!(check_task_path_existence(dir.path(), "/etc/passwd").is_err());
+        assert!(check_task_path_existence(dir.path(), "../outside.txt").is_err());
+        assert!(check_task_path_existence(dir.path(), "docs/../../outside.txt").is_err());
     }
 
     #[test]
-    fn check_workspace_path_existence_rejects_symlink_escape_for_existing_file() {
+    fn check_task_path_existence_rejects_symlink_escape_for_existing_file() {
         let outside = tempdir().unwrap();
         fs::write(outside.path().join("secret.png"), b"x").unwrap();
         let ws = tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path().join("secret.png"), ws.path().join("link.png")).unwrap();
-        assert!(check_workspace_path_existence(ws.path(), "link.png").is_err());
+        assert!(check_task_path_existence(ws.path(), "link.png").is_err());
     }
 
     #[test]
-    fn check_workspace_path_existence_rejects_symlink_escape_for_missing_leaf() {
+    fn check_task_path_existence_rejects_symlink_escape_for_missing_leaf() {
         // A symlinked directory INSIDE the worktree pointing OUTSIDE must
         // still fail containment even though the LEAF file itself doesn't
         // exist — the escaping symlink is the existing ancestor the walk-up
@@ -8009,7 +8447,7 @@ mod tests {
         let outside = tempdir().unwrap();
         let ws = tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), ws.path().join("escape")).unwrap();
-        assert!(check_workspace_path_existence(ws.path(), "escape/missing.png").is_err());
+        assert!(check_task_path_existence(ws.path(), "escape/missing.png").is_err());
     }
 
     #[test]
@@ -8071,6 +8509,43 @@ mod tests {
     }
 
     #[test]
+    fn remove_dir_if_empty_removes_empty_and_hidden_only() {
+        let root = tempdir().unwrap();
+
+        // Truly empty → removed.
+        let empty = root.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        assert!(remove_dir_if_empty_ignoring_hidden(&empty));
+        assert!(!empty.exists());
+
+        // Only a hidden file (.DS_Store) → hidden file deleted, dir removed.
+        let hidden = root.path().join("hidden");
+        fs::create_dir(&hidden).unwrap();
+        fs::write(hidden.join(".DS_Store"), b"x").unwrap();
+        assert!(remove_dir_if_empty_ignoring_hidden(&hidden));
+        assert!(!hidden.exists());
+    }
+
+    #[test]
+    fn remove_dir_if_empty_keeps_dirs_with_real_content() {
+        let root = tempdir().unwrap();
+
+        // A visible file → never removed (non-recursive, content preserved).
+        let with_file = root.path().join("withfile");
+        fs::create_dir(&with_file).unwrap();
+        fs::write(with_file.join("keep.txt"), b"data").unwrap();
+        assert!(!remove_dir_if_empty_ignoring_hidden(&with_file));
+        assert!(with_file.join("keep.txt").exists());
+
+        // A hidden *directory* (e.g. .git) → aborts, never recursed into.
+        let with_hidden_dir = root.path().join("withhiddendir");
+        fs::create_dir(&with_hidden_dir).unwrap();
+        fs::create_dir(with_hidden_dir.join(".git")).unwrap();
+        assert!(!remove_dir_if_empty_ignoring_hidden(&with_hidden_dir));
+        assert!(with_hidden_dir.join(".git").exists());
+    }
+
+    #[test]
     fn open_command_windows_uses_explorer_no_shell() {
         // Must NOT route through `cmd /C start` — the target is passed as a
         // single argv to explorer so cmd metachars (& ^ %) can't be reparsed.
@@ -8128,12 +8603,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_workspace_git_path_uses_host_repo_for_host_paths() {
+    fn resolve_task_git_path_uses_host_repo_for_host_paths() {
         let host = tempdir().unwrap();
         let member = tempdir().unwrap();
-        let ws = Workspace {
+        let task = Task {
             path: host.path().to_string_lossy().into_owned(),
-            composition: vec![WorkspaceMember {
+            composition: vec![TaskMember {
                 dir_name: "frontend".into(),
                 mode: MemberMode::Worktree,
                 path: member.path().to_string_lossy().into_owned(),
@@ -8142,18 +8617,18 @@ mod tests {
             ..Default::default()
         };
 
-        let (cwd, rel) = resolve_workspace_git_path(&ws, "src/main.rs").unwrap();
+        let (cwd, rel) = resolve_task_git_path(&task, "src/main.rs").unwrap();
         assert_eq!(cwd, host.path());
         assert_eq!(rel, "src/main.rs");
     }
 
     #[test]
-    fn resolve_workspace_git_path_strips_member_prefix_for_member_paths() {
+    fn resolve_task_git_path_strips_member_prefix_for_member_paths() {
         let host = tempdir().unwrap();
         let member = tempdir().unwrap();
-        let ws = Workspace {
+        let task = Task {
             path: host.path().to_string_lossy().into_owned(),
-            composition: vec![WorkspaceMember {
+            composition: vec![TaskMember {
                 dir_name: "frontend".into(),
                 mode: MemberMode::RepoRoot,
                 path: member.path().to_string_lossy().into_owned(),
@@ -8162,15 +8637,15 @@ mod tests {
             ..Default::default()
         };
 
-        let (cwd, rel) = resolve_workspace_git_path(&ws, "frontend/src/App.tsx").unwrap();
+        let (cwd, rel) = resolve_task_git_path(&task, "frontend/src/App.tsx").unwrap();
         assert_eq!(cwd, member.path());
         assert_eq!(rel, "src/App.tsx");
     }
 
-    fn workspace_with_member(dir_name: &str, host: &Path, member: &Path) -> Workspace {
-        Workspace {
+    fn task_with_member(dir_name: &str, host: &Path, member: &Path) -> Task {
+        Task {
             path: host.to_string_lossy().into_owned(),
-            composition: vec![WorkspaceMember {
+            composition: vec![TaskMember {
                 dir_name: dir_name.into(),
                 mode: MemberMode::RepoRoot,
                 path: member.to_string_lossy().into_owned(),
@@ -8181,37 +8656,37 @@ mod tests {
     }
 
     #[test]
-    fn resolve_workspace_git_path_rejects_bare_member_root_by_default() {
+    fn resolve_task_git_path_rejects_bare_member_root_by_default() {
         // A diff/read needs a FILE inside the member, not the member's own
         // root directory — the default (used by diff/read/write commands)
         // keeps rejecting this.
         let host = tempdir().unwrap();
         let member = tempdir().unwrap();
-        let ws = workspace_with_member("frontend", host.path(), member.path());
-        assert!(resolve_workspace_git_path(&ws, "frontend").is_err());
+        let ws = task_with_member("frontend", host.path(), member.path());
+        assert!(resolve_task_git_path(&ws, "frontend").is_err());
     }
 
     #[test]
-    fn resolve_workspace_git_path_ex_allows_bare_member_root_when_opted_in() {
+    fn resolve_task_git_path_ex_allows_bare_member_root_when_opted_in() {
         // A markdown link's `..`/`/` can legitimately resolve to exactly a
-        // member's own root (resolveWorkspaceHref's member-floor scoping) —
-        // workspace_path_stat/workspace_reveal_path need to answer for it
+        // member's own root (resolveTaskHref's member-floor scoping) —
+        // task_path_stat/task_reveal_path need to answer for it
         // (is this a directory?) rather than erroring.
         let host = tempdir().unwrap();
         let member = tempdir().unwrap();
-        let ws = workspace_with_member("frontend", host.path(), member.path());
-        let (cwd, rel) = resolve_workspace_git_path_ex(&ws, "frontend", true).unwrap();
+        let ws = task_with_member("frontend", host.path(), member.path());
+        let (cwd, rel) = resolve_task_git_path_ex(&ws, "frontend", true).unwrap();
         assert_eq!(cwd, member.path());
         assert_eq!(rel, "");
     }
 
     #[test]
-    fn workspace_path_stat_reports_a_bare_member_root_as_an_existing_directory() {
+    fn task_path_stat_reports_a_bare_member_root_as_an_existing_directory() {
         let host = tempdir().unwrap();
         let member = tempdir().unwrap();
-        let ws = workspace_with_member("frontend", host.path(), member.path());
-        let (cwd, rel) = resolve_workspace_git_path_ex(&ws, "frontend", true).unwrap();
-        let stat = check_workspace_path_existence(&cwd, &rel).unwrap();
+        let ws = task_with_member("frontend", host.path(), member.path());
+        let (cwd, rel) = resolve_task_git_path_ex(&ws, "frontend", true).unwrap();
+        let stat = check_task_path_existence(&cwd, &rel).unwrap();
         assert!(stat.exists);
         assert!(stat.is_dir);
     }
@@ -8225,9 +8700,9 @@ mod tests {
 
         fs::write(member.path().join("base.txt"), "member changed\n").unwrap();
 
-        let ws = Workspace {
+        let task = Task {
             path: host.path().to_string_lossy().into_owned(),
-            composition: vec![WorkspaceMember {
+            composition: vec![TaskMember {
                 dir_name: "frontend".into(),
                 mode: MemberMode::RepoRoot,
                 path: member.path().to_string_lossy().into_owned(),
@@ -8236,11 +8711,11 @@ mod tests {
             ..Default::default()
         };
 
-        let sides = workspace_file_diff_sides_for_workspace(&ws, "frontend/base.txt").unwrap();
+        let sides = task_file_diff_sides_for_task(&task, "frontend/base.txt").unwrap();
         assert!(sides.original.contains("base content"));
         assert!(sides.modified.contains("member changed"));
 
-        let diff = workspace_file_diff_for_workspace(&ws, "frontend/base.txt").unwrap();
+        let diff = task_file_diff_for_task(&task, "frontend/base.txt").unwrap();
         assert!(diff.contains("member changed"));
         assert!(diff.contains("diff --git a/base.txt b/base.txt"));
     }
@@ -8332,7 +8807,7 @@ mod tests {
         run_wt(&["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "feature"]);
         let wt_head = git_head(&wt);
 
-        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        let r = spotlight_apply(&wt, main, "main", "test-task").unwrap();
         assert!(!r.committed_files.is_empty(), "should have detected committed diff");
         assert!(r.applied_untracked.is_empty(), "no untracked files");
 
@@ -8358,7 +8833,7 @@ mod tests {
         // Unstaged change in worktree (no commit).
         fs::write(wt.join("base.txt"), "modified content\n").unwrap();
 
-        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        let r = spotlight_apply(&wt, main, "main", "test-task").unwrap();
         assert!(r.committed_files.is_empty(), "no committed diff");
         assert!(!r.uncommitted_files.is_empty(), "should have uncommitted files");
         assert!(r.applied_untracked.is_empty());
@@ -8381,7 +8856,7 @@ mod tests {
         // Untracked file in worktree (not in .gitignore).
         fs::write(wt.join("env.local"), "SECRET=test\n").unwrap();
 
-        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        let r = spotlight_apply(&wt, main, "main", "test-task").unwrap();
         assert_eq!(r.applied_untracked, vec!["env.local"]);
         assert!(main.join("env.local").exists(), "untracked file copied to repo root");
     }
@@ -8406,7 +8881,7 @@ mod tests {
         run_wt(&["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "tmp"]);
         fs::write(wt.join("untracked.txt"), "data\n").unwrap();
 
-        let r = spotlight_apply(&wt, main, "main", "test-ws").unwrap();
+        let r = spotlight_apply(&wt, main, "main", "test-task").unwrap();
         assert!(main.join("tmp.txt").exists());
         assert!(main.join("untracked.txt").exists());
         assert_eq!(git_branch(main), "", "detached while spotlighted");
@@ -8440,7 +8915,7 @@ mod tests {
         fs::write(wt.join("v1.txt"), "version 1\n").unwrap();
         run_wt(&["add", "."]);
         run_wt(&["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-m", "v1"]);
-        let r1 = spotlight_apply(&wt, main, "main", "ws").unwrap();
+        let r1 = spotlight_apply(&wt, main, "main", "task").unwrap();
         assert!(main.join("v1.txt").exists());
 
         // Worktree gets a second commit. Re-sync = revert then re-apply.
@@ -8451,7 +8926,7 @@ mod tests {
         spotlight_revert(main, "main", &r1.applied_untracked).unwrap();
         assert!(!main.join("v1.txt").exists(), "v1 removed on revert");
 
-        let r2 = spotlight_apply(&wt, main, "main", "ws").unwrap();
+        let r2 = spotlight_apply(&wt, main, "main", "task").unwrap();
         assert!(main.join("v1.txt").exists(), "v1 re-applied");
         assert!(main.join("v2.txt").exists(), "v2 applied");
         assert!(r2.applied_untracked.is_empty(), "no untracked");

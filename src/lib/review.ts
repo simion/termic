@@ -1,5 +1,5 @@
 // AI Code Review prompt — Termic's verbatim guidelines. The chosen CLI runs
-// inside the workspace's worktree, so the agent can fetch the diff itself with
+// inside the task's worktree, so the agent can fetch the diff itself with
 // the `git diff` fallback baked into the prompt below. We intentionally do
 // NOT pre-inject a diff; the agent's git invocation handles staged + unstaged
 // changes and respects the merge-base lookup the prompt prescribes.

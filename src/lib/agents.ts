@@ -4,7 +4,7 @@
 // if the registry hasn't loaded yet (very first render before loadAll
 // resolves) or if a user removed all agents.
 
-import type { Agent, Workspace, CliInfo } from "@/lib/types";
+import type { Agent, Task, CliInfo } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { ptyWrite } from "@/lib/ipc";
 import { slugify } from "@/lib/utils";
@@ -15,11 +15,11 @@ import { slugify } from "@/lib/utils";
  *  (case-insensitive — `{UUID}` and `{uuid}` both work):
  *    {UUID}            → termic-minted agent session uuid (only present
  *                        when buildArgs was given a sessionUuid)
- *    {WORKSPACE_SLUG}  → slugified workspace name (e.g. "improve-tests")
- *    {WORKSPACE_NAME}  → raw workspace name
- *    {WORKSPACE_ID}    → workspace's own uuid
- *    {WORKSPACE_PATH}  → absolute path of the workspace dir (worktree path
- *                        for worktree workspaces, repo root otherwise) —
+ *    {WORKSPACE_SLUG}  → slugified task name (e.g. "improve-tests")
+ *    {WORKSPACE_NAME}  → raw task name
+ *    {WORKSPACE_ID}    → task's own uuid
+ *    {WORKSPACE_PATH}  → absolute path of the task dir (worktree path
+ *                        for worktree tasks, repo root otherwise) —
  *                        lets a custom terminal vary e.g. a `docker exec
  *                        -w` mount path per worktree (#27)
  *    {BRANCH}          → git branch
@@ -36,7 +36,7 @@ function expandArg(arg: string, vars: Record<string, string>): string {
  *  double quotes so a literal value with spaces stays one arg. Placeholders
  *  (`{WORKSPACE_NAME}`) are single unquoted tokens here and get expanded
  *  AFTER the split, so a placeholder whose value contains spaces is still a
- *  single argv element. Used for the per-workspace resume override. */
+ *  single argv element. Used for the per-task resume override. */
 function tokenizeArgs(s: string): string[] {
   const out: string[] = [];
   const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
@@ -46,21 +46,28 @@ function tokenizeArgs(s: string): string[] {
   }
   return out;
 }
-function workspaceVars(ws: Workspace | undefined, sessionUuid?: string): Record<string, string> {
-  const base: Record<string, string> = ws ? {
-    WORKSPACE_SLUG: slugify(ws.name),
-    WORKSPACE_NAME: ws.name,
-    WORKSPACE_ID: ws.id,
-    WORKSPACE_PATH: ws.path,
-    BRANCH: ws.branch,
-    PORT: String(ws.port),
-    // Lowercase aliases — legacy, the original placeholder set.
-    workspace_slug: slugify(ws.name),
-    workspace_name: ws.name,
-    workspace_id: ws.id,
-    workspace_path: ws.path,
-    branch: ws.branch,
-    port: String(ws.port),
+function taskVars(task: Task | undefined, sessionUuid?: string): Record<string, string> {
+  const base: Record<string, string> = task ? {
+    WORKSPACE_SLUG: slugify(task.name),
+    WORKSPACE_NAME: task.name,
+    WORKSPACE_ID: task.id,
+    WORKSPACE_PATH: task.path,
+    BRANCH: task.branch,
+    PORT: String(task.port),
+    // Lowercase aliases. `task_*` is the new preferred set; `workspace_*` is
+    // kept as a read alias so templates saved before the workspace->task rename
+    // (users may have `--resume {workspace_name}` in resume_override / name_args)
+    // still expand instead of leaking the literal token to the CLI.
+    task_slug: slugify(task.name),
+    task_name: task.name,
+    task_id: task.id,
+    task_path: task.path,
+    workspace_slug: slugify(task.name),
+    workspace_name: task.name,
+    workspace_id: task.id,
+    workspace_path: task.path,
+    branch: task.branch,
+    port: String(task.port),
   } : {};
   if (sessionUuid) {
     base.UUID = sessionUuid;
@@ -107,13 +114,13 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
       yolo_args: ["--dangerously-skip-permissions"],
       runtime_yolo_command: "",
       // Legacy: takes most-recent session in CWD. Still seeded so
-      // workspaces created before id-based resume keep working — but
+      // tasks created before id-based resume keep working — but
       // the id-based path (session_id_args + resume_id_args) wins
-      // whenever a uuid is stored on the workspace.
+      // whenever a uuid is stored on the task.
       resume_args: ["--continue"],
       // Termic-owned deterministic sessions. First spawn mints a
       // uuid via --session-id; subsequent spawns --resume that uuid.
-      // Lets repo-root workspaces auto-resume without grabbing
+      // Lets repo-root tasks auto-resume without grabbing
       // unrelated sessions from the same cwd.
       // First (mint) spawn uses --session-id to create the session with
       // termic's uuid; later spawns --resume that same uuid.
@@ -240,16 +247,16 @@ function shellQuote(v: string): string {
  *  the result is handed to the user's login shell (`zsh -lc`, see
  *  loginShellArgs) — so unlike agent commands, shell quoting and pipes
  *  work here, and rc-file PATH/aliases apply. Expanded placeholder VALUES
- *  are shell-quoted automatically (a workspace path with a space must not
+ *  are shell-quoted automatically (a task path with a space must not
  *  word-split, and a name with `$`/`'` must not inject) — so users write
- *  bare `{workspace_path}`, not `"{workspace_path}"`. Empty command →
+ *  bare `{task_path}`, not `"{task_path}"`. Empty command →
  *  undefined (plain login shell, same as a Terminal tab). */
-export function terminalLaunchCommand(cli: string, ws?: Workspace): string | undefined {
+export function terminalLaunchCommand(cli: string, task?: Task): string | undefined {
   const { command, args } = findAgent(cli);
   const line = [command, ...args].join(" ").trim();
   if (!line) return undefined;
   const vars = Object.fromEntries(
-    Object.entries(workspaceVars(ws)).map(([k, v]) => [k, shellQuote(v)]),
+    Object.entries(taskVars(task)).map(([k, v]) => [k, shellQuote(v)]),
   );
   return expandArg(line, vars);
 }
@@ -292,10 +299,10 @@ export function spawnCommandForCli(cli: string): string {
   return findAgent(cli).command;
 }
 
-/** Per-tab resume decision. Pure — given the tab/workspace shape it picks
+/** Per-tab resume decision. Pure — given the tab/task shape it picks
  *  exactly one resume strategy. Every agent tab (primary AND secondary)
  *  resumes now; the per-tab `storedUuid` is what makes that safe, so two
- *  agents in one workspace never share a session.
+ *  agents in one task never share a session.
  *
  *    override    → user's verbatim resume block (primary tab only).
  *    resume-id   → `--resume {storedUuid}` (id-capable, uuid already minted).
@@ -331,7 +338,7 @@ export function decideResume(opts: {
   hasResumableHistory: boolean;
   /** This tab's own stored session uuid (TerminalTab.sessionId), if minted. */
   storedUuid?: string;
-  /** Raw `ws.resume_override` (gated to the primary tab here). */
+  /** Raw `task.resume_override` (gated to the primary tab here). */
   resumeOverride?: string;
   /** A resume attempt for this tab just rapid-exited → skip the stored
    *  uuid / cwd-resume and start fresh on the immediate retry. */
@@ -343,7 +350,7 @@ export function decideResume(opts: {
   if (override) return { kind: "override", override };
 
   if (opts.idCapable) {
-    // Legacy worktree main tab: a pre-per-tab-uuid workspace that already
+    // Legacy worktree main tab: a pre-per-tab-uuid task that already
     // has a `--continue` conversation but no minted uuid. Keep continuing
     // it (cwd-resume below) rather than minting a brand-new session that
     // would orphan the existing one. Brand-new worktrees (no history yet)
@@ -367,28 +374,28 @@ export function decideResume(opts: {
 }
 
 /** Compose the full args list for a spawn. Two resume modes, picked by
- *  the workspace shape (worktree vs repo-root) — the caller decides
+ *  the task shape (worktree vs repo-root) — the caller decides
  *  which mode applies and passes the right inputs:
  *
  *    A. id-based resume (REPO-ROOT id-capable CLIs):
  *       The shared cwd would let `--continue` lasso external sessions,
- *       so termic owns a UUID per (workspace, cli) pair.
+ *       so termic owns a UUID per (task, cli) pair.
  *       - `sessionUuid` provided AND `resumeKnown` → `resume_id_args`
  *         (subsequent spawn).
  *       - `sessionUuid` provided AND NOT `resumeKnown` → `session_id_args`
  *         (first spawn — mint + tell the agent to use this id).
  *
- *    B. cwd-based resume (WORKTREE workspaces):
+ *    B. cwd-based resume (WORKTREE tasks):
  *       Each worktree has its own directory, so the agent's most-recent
- *       CWD session IS this workspace's session — `--continue` / equivalent
+ *       CWD session IS this task's session — `--continue` / equivalent
  *       just works.
  *       - `opts.resume` true → append `resume_args`.
  *
  *    C. name_args (claude `--name`):
  *       - Appended on every primary-tab spawn (worktree or repo-root,
- *         mint or resume) so the workspace name is always visible.
+ *         mint or resume) so the task name is always visible.
  *       - Skipped for secondary "+" tabs (`isPrimary=false`) and
- *         no-workspace spawns (`ws` absent).
+ *         no-task spawns (`task` absent).
  *
  *    D. always-applied:
  *       - `yolo_args` appended LAST so a subcommand-style resume
@@ -400,17 +407,17 @@ export function spawnArgsForCli(
   opts: {
     yolo: boolean;
     resume: boolean;
-    ws?: Workspace;
+    task?: Task;
     /** True for the auto-created default tab; false for user-added "+" tabs.
      *  Gates name_args — secondary tabs start fresh and shouldn't get --name. */
     isPrimary?: boolean;
-    /** Termic-minted uuid for this (workspace, cli) pair. Presence
+    /** Termic-minted uuid for this (task, cli) pair. Presence
      *  switches the resume path from (B) to (A). */
     sessionUuid?: string;
     /** True iff the uuid was already used in a prior spawn (so the
      *  agent has a session file for it). False = first spawn, mint it. */
     resumeKnown?: boolean;
-    /** Per-workspace verbatim resume override (e.g. `--resume {WORKSPACE_NAME}`).
+    /** Per-task verbatim resume override (e.g. `--resume {WORKSPACE_NAME}`).
      *  When non-empty it REPLACES both the id-based and cwd-based resume
      *  blocks — the caller is expected to have already suppressed the uuid
      *  mint / `opts.resume` so they don't double up. The agent owns the
@@ -419,7 +426,7 @@ export function spawnArgsForCli(
   },
 ): string[] {
   const { args, caps } = findAgent(cli);
-  const vars = workspaceVars(opts.ws, opts.sessionUuid);
+  const vars = taskVars(opts.task, opts.sessionUuid);
 
   const hasIdResume = (caps.session_id_args?.length ?? 0) > 0
                    && (caps.resume_id_args?.length ?? 0) > 0;
@@ -448,9 +455,9 @@ export function spawnArgsForCli(
     ...args,
     ...resumeBlock,
     // name_args on every primary-tab spawn (worktree or repo-root, mint or
-    // resume) so claude always shows the workspace name. Skipped for
-    // secondary "+" tabs (isPrimary=false) and no-workspace spawns.
-    ...(opts.isPrimary && opts.ws ? (caps.name_args ?? []) : []),
+    // resume) so claude always shows the task name. Skipped for
+    // secondary "+" tabs (isPrimary=false) and no-task spawns.
+    ...(opts.isPrimary && opts.task ? (caps.name_args ?? []) : []),
     ...(opts.yolo ? (caps.yolo_args ?? []) : []),
   ];
   return composed.map(a => expandArg(a, vars));
@@ -483,7 +490,7 @@ export const resumeArgsForCli = (cli: string) => findAgent(cli).caps.resume_args
 export const envForCli = (cli: string): Record<string, string> => findAgent(cli).env;
 
 /** Which agent ids should appear in the CLI pickers (worktree popover,
- *  New Workspace, Review, the + tab menu). Terminal-kind entries are
+ *  New Task, Review, the + tab menu). Terminal-kind entries are
  *  excluded up front — they belong to the "New terminal" section of the
  *  + menu (filtered by `disabled` only, no PATH detection: their command
  *  is a free-form shell line that `which` can't probe), never to the

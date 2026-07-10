@@ -2,8 +2,8 @@
 
 ## Bear traps
 
-1. **Lazy editor.** `EditorPane`/`DiffPane` via `React.lazy` in `WorkspaceView`. Don't break.
-2. **Keep terminals mounted.** `WorkspaceView`/`MainArea` toggle `visibility:hidden` instead of unmounting. `mountedWorkspaces: Set<string>` in app store keeps every visited workspace rendered.
+1. **Lazy editor.** `EditorPane`/`DiffPane` via `React.lazy` in `TaskView`. Don't break.
+2. **Keep terminals mounted.** `TaskView`/`MainArea` toggle `visibility:hidden` instead of unmounting. `mountedTasks: Set<string>` in app store keeps every visited task rendered.
 3. **WebGL non-negotiable.** Load AFTER `term.open(host)`. Dispose `webglAddon` BEFORE `term.dispose()` — render loop fires on half-disposed terminal otherwise (`_isDisposed` crash). Same fix in TerminalPane AND AuxTerminal.
 4. **`lineHeight: 1.0` in xterm.** Anything else inflates cells; TUIs show ribbons between rows.
 5. **Tight Zustand selectors.** Never destructure the whole store. Use frozen empty constants (`EMPTY_TABS`) for referential stability — React 19 warns "getSnapshot should be cached".

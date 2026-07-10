@@ -1,8 +1,8 @@
-// Edit a workspace's resume-args override. When set, this string REPLACES
+// Edit a task's resume-args override. When set, this string REPLACES
 // termic's default resume logic (id-based `--resume <uuid>` for repo-root,
 // `--continue` for worktrees) on the next agent spawn. It's split into argv
 // tokens (quotes honored) and `{WORKSPACE_NAME}` / `{WORKSPACE_SLUG}` / etc.
-// placeholders are expanded per-spawn, so a repo-root workspace can resume a
+// placeholders are expanded per-spawn, so a repo-root task can resume a
 // named session, e.g. `--resume {WORKSPACE_NAME}`. The agent owns the
 // "session not found" case (claude shows its resume picker), so there's no
 // fast-exit fallback. Empty clears the override. Live PTYs keep running until
@@ -13,29 +13,29 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { workspaceSetResumeOverride, ptyKill } from "@/lib/ipc";
+import { taskSetResumeOverride, ptyKill } from "@/lib/ipc";
 import { isTerminalCli } from "@/lib/agents";
 import type { TerminalTab } from "@/lib/types";
 import { History, RotateCcw } from "lucide-react";
 
 export function ResumeOverrideDialog() {
-  const wsId = useUI(s => s.resumeOverrideWsId);
+  const taskId = useUI(s => s.resumeOverrideTaskId);
   const close = useUI(s => s.closeResumeOverride);
-  const ws = useApp(s => s.workspaces.find(w => w.id === wsId) ?? null);
-  const setWorkspaceResumeOverride = useApp(s => s.setWorkspaceResumeOverride);
+  const task = useApp(s => s.tasks.find(w => w.id === taskId) ?? null);
+  const setTaskResumeOverride = useApp(s => s.setTaskResumeOverride);
 
-  const open = wsId !== null;
+  const open = taskId !== null;
   const [command, setCommand] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Snapshot the workspace's override whenever the dialog opens for a new id.
+  // Snapshot the task's override whenever the dialog opens for a new id.
   useEffect(() => {
     if (!open) return;
-    setCommand(ws?.resume_override ?? "");
+    setCommand(task?.resume_override ?? "");
     setErr(null);
     setBusy(false);
-  }, [open, ws?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, task?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The primary agent tab is the only one that resumes (secondary "+" tabs
   // always start fresh), so it's the only one worth restarting. Mirror
@@ -44,7 +44,7 @@ export function ResumeOverrideDialog() {
   // agent session — isTerminalCli excludes all three, so Save & restart
   // can't SIGKILL a live docker/ssh terminal when no agent tab is open.
   const primaryAgentTab = (): TerminalTab | undefined => {
-    const tabs = (useApp.getState().tabs[wsId ?? ""] ?? []).filter(
+    const tabs = (useApp.getState().tabs[taskId ?? ""] ?? []).filter(
       t => t.type === "terminal" && !isTerminalCli((t as TerminalTab).cli),
     ) as TerminalTab[];
     return tabs.find(t => t.is_default) ?? tabs[0];
@@ -53,19 +53,19 @@ export function ResumeOverrideDialog() {
   const canRestart = !!liveAgent?.ptyId;
 
   async function submit(restart: boolean) {
-    if (!wsId || busy) return;
+    if (!taskId || busy) return;
     const c = command.trim();
     setBusy(true); setErr(null);
     try {
-      await workspaceSetResumeOverride(wsId, c);
-      setWorkspaceResumeOverride(wsId, c);
+      await taskSetResumeOverride(taskId, c);
+      setTaskResumeOverride(taskId, c);
       // Save & restart: SIGKILL the live primary agent and flag the
-      // workspace so TerminalPane auto-respawns (reading the just-saved
+      // task so TerminalPane auto-respawns (reading the just-saved
       // override from the store) instead of showing the exited overlay.
       if (restart) {
         const t = primaryAgentTab();
         if (t?.ptyId) {
-          useUI.getState().markPendingPtyRestart(wsId);
+          useUI.getState().markPendingPtyRestart(taskId);
           await ptyKill(t.ptyId).catch(() => {});
         }
       }
@@ -85,7 +85,7 @@ export function ResumeOverrideDialog() {
     >
       <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
         Replaces the default resume arguments for{" "}
-        <span className="font-mono">{ws?.name ?? "this workspace"}</span>'s agent.
+        <span className="font-mono">{task?.name ?? "this task"}</span>'s agent.
         Use it to resume a named session instead of the auto-managed one, e.g.{" "}
         <span className="font-mono">--resume {"{WORKSPACE_NAME}"}</span>. Placeholders{" "}
         <span className="font-mono">{"{WORKSPACE_NAME}"}</span>,{" "}
@@ -134,7 +134,7 @@ export function ResumeOverrideDialog() {
         <Button
           variant="primary"
           disabled={busy || !canRestart}
-          title={canRestart ? undefined : "No agent is running in this workspace yet"}
+          title={canRestart ? undefined : "No agent is running in this task yet"}
           onClick={() => submit(true)}
         >
           <RotateCcw className="h-4 w-4" /> Save &amp; restart

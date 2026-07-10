@@ -1,4 +1,4 @@
-// Workspace view: TabBar + per-tab content. Optional horizontal split puts a
+// Task view: TabBar + per-tab content. Optional horizontal split puts a
 // scratch shell terminal on the bottom half so the user can run git/grep/etc.
 // without leaving the agent up top.
 //
@@ -6,8 +6,8 @@
 // instead of unmount) — terminals MUST keep their xterm instances alive.
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Workspace, Tab, TerminalTab } from "@/lib/types";
-import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
+import type { Task, Tab, TerminalTab } from "@/lib/types";
+import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { usePrefs, currentTerminalTheme } from "@/store/prefs";
 import { TabBar, TabPill } from "./TabBar";
 import { TerminalPane, FooterBar } from "./TerminalPane";
@@ -42,9 +42,9 @@ const MIN_WIDTH = 120;
 // tab. Each segment is individually clickable: a folder reveals/expands that
 // folder in the tree, the filename reveals the file. The locate button on the
 // right reveals the file too.
-function EditorBreadcrumb({ ws }: { ws: Workspace }) {
-  const activeId = useActiveTabId(ws.id);
-  const tab = useApp(s => (s.tabs[ws.id] ?? []).find(t => t.id === activeId));
+function EditorBreadcrumb({ task }: { task: Task }) {
+  const activeId = useActiveTabId(task.id);
+  const tab = useApp(s => (s.tabs[task.id] ?? []).find(t => t.id === activeId));
   const revealInTree = useApp(s => s.revealInTree);
   const [copied, setCopied] = useState(false);
   if (!tab || (tab.type !== "edit" && tab.type !== "diff") || !tab.path) return null;
@@ -55,7 +55,7 @@ function EditorBreadcrumb({ ws }: { ws: Workspace }) {
   // Absolute folder that contains the file — opening THE DIRECTORY (not the
   // file) launches the OS file manager (Finder / Files / Explorer) at that
   // location. openPath → opener plugin: `open` on macOS, xdg-open on Linux.
-  const folderAbs = dir ? `${ws.path}/${dir}` : ws.path;
+  const folderAbs = dir ? `${task.path}/${dir}` : task.path;
   const iconBtn = "shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
   const copyPath = () => {
     navigator.clipboard.writeText(path)
@@ -78,7 +78,7 @@ function EditorBreadcrumb({ ws }: { ws: Workspace }) {
               <ContextMenuRoot>
                 <ContextMenuTrigger asChild>
                   <button
-                    onClick={() => revealInTree(ws.id, rel, !isLast)}
+                    onClick={() => revealInTree(task.id, rel, !isLast)}
                     title={isLast ? "Locate in file tree" : `Reveal ${rel} in file tree`}
                     className={cn(
                       "max-w-[240px] truncate rounded px-1 py-0.5 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
@@ -87,7 +87,7 @@ function EditorBreadcrumb({ ws }: { ws: Workspace }) {
                   >{seg}</button>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
-                  <CopyPathItems rel={rel} root={ws.path} isDir={!isLast} />
+                  <CopyPathItems rel={rel} root={task.path} isDir={!isLast} />
                 </ContextMenuContent>
               </ContextMenuRoot>
             </div>
@@ -101,7 +101,7 @@ function EditorBreadcrumb({ ws }: { ws: Workspace }) {
         <button onClick={() => openPath(folderAbs).catch(() => {})} title="Open in file manager" className={iconBtn}>
           <FolderOpen className="h-3.5 w-3.5" />
         </button>
-        <button onClick={() => revealInTree(ws.id, path, false)} title="Locate in file tree" className={iconBtn}>
+        <button onClick={() => revealInTree(task.id, path, false)} title="Locate in file tree" className={iconBtn}>
           <LocateFixed className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -109,17 +109,17 @@ function EditorBreadcrumb({ ws }: { ws: Workspace }) {
   );
 }
 
-export function WorkspaceView({ ws }: { ws: Workspace }) {
+export function TaskView({ task }: { task: Task }) {
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
-  const tabs = useWorkspaceTabs(ws.id);
-  const activeId = useActiveTabId(ws.id);
-  const split        = useApp(s => !!s.terminalSplit[ws.id]);
-  const splitHeight  = useApp(s => s.terminalSplitHeight[ws.id] ?? DEFAULT_SPLIT_HEIGHT);
+  const tabs = useTaskTabs(task.id);
+  const activeId = useActiveTabId(task.id);
+  const split        = useApp(s => !!s.terminalSplit[task.id]);
+  const splitHeight  = useApp(s => s.terminalSplitHeight[task.id] ?? DEFAULT_SPLIT_HEIGHT);
   const setSplitHeight = useApp(s => s.setTerminalSplitHeight);
-  const collapsed    = useApp(s => !!s.terminalSplitCollapsed[ws.id]);
+  const collapsed    = useApp(s => !!s.terminalSplitCollapsed[task.id]);
   const toggleCollapsed = useApp(s => s.toggleTerminalSplitCollapsed);
-  const bottomTabs   = useApp(s => s.bottomTabs[ws.id]);
-  const activeBottom = useApp(s => s.activeBottomTab[ws.id]);
+  const bottomTabs   = useApp(s => s.bottomTabs[task.id]);
+  const activeBottom = useApp(s => s.activeBottomTab[task.id]);
   const addBottomTab = useApp(s => s.addBottomTab);
   const closeBottomTab = useApp(s => s.closeBottomTab);
   const setActiveBottom = useApp(s => s.setActiveBottomTab);
@@ -131,27 +131,27 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
   usePrefs(s => s.customThemeRev);
   const xtermBg = currentTerminalTheme().background as string;
 
-  // Workspace split tree: the main pane is an ordinary leaf (isMain flag) that
+  // Task split tree: the main pane is an ordinary leaf (isMain flag) that
   // can sit anywhere in the tree — splitting main nests it deeper, like any
   // pane. All geometry comes from computeLeafBounds over the full tree.
   const splitPaneDim       = usePrefs(s => s.splitPaneDim);
   const splitPaneDimAmount = usePrefs(s => s.splitPaneDimAmount);
 
-  // Workspace-level split tree (for layout of the main pane width and resize handle).
+  // Task-level split tree (for layout of the main pane width and resize handle).
   const splitRoot = useApp(s => {
-    const t = s.splitTree[ws.id];
+    const t = s.splitTree[task.id];
     return (t && t.type === 'split') ? t : null;
   });
-  const splitActivePaneId = useApp(s => s.activePaneId[ws.id] ?? "");
+  const splitActivePaneId = useApp(s => s.activePaneId[task.id] ?? "");
   const setActivePaneId = useApp(s => s.setActivePaneId);
   const setSplitRatio = useApp(s => s.setSplitRatio);
 
-  useEffect(() => { ensureDefaultTab(ws.id, ws.cli); }, [ws.id, ws.cli, ensureDefaultTab]);
+  useEffect(() => { ensureDefaultTab(task.id, task.cli); }, [task.id, task.cli, ensureDefaultTab]);
 
   // Seed the first bottom tab the moment the split opens.
   useEffect(() => {
-    if (split && (!bottomTabs || bottomTabs.length === 0)) addBottomTab(ws.id, { focus: false });
-  }, [split, bottomTabs, ws.id, addBottomTab]);
+    if (split && (!bottomTabs || bottomTabs.length === 0)) addBottomTab(task.id, { focus: false });
+  }, [split, bottomTabs, task.id, addBottomTab]);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -233,10 +233,10 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {!splitRoot && <TabBar ws={ws} />}
-      {!splitRoot && <EditorBreadcrumb ws={ws} />}
+      {!splitRoot && <TabBar task={task} />}
+      {!splitRoot && <EditorBreadcrumb task={task} />}
       <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
-        {/* hRow: main tab-stack always mounted alongside the workspace-level
+        {/* hRow: main tab-stack always mounted alongside the task-level
             extra-pane container (visibility-toggled when splitRoot is null). */}
         <div className="relative flex min-h-0 flex-1">
           {/* ── Main pane chrome (always alive, never unmounts). Tab CONTENT
@@ -260,11 +260,11 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 }
               : { flex: 1 }}
             onMouseDown={() => {
-              if (mainLeafId) setActivePaneId(ws.id, mainLeafId);
+              if (mainLeafId) setActivePaneId(task.id, mainLeafId);
             }}
           >
-            {splitRoot && <TabBar ws={ws} />}
-            {splitRoot && <EditorBreadcrumb ws={ws} />}
+            {splitRoot && <TabBar task={task} />}
+            {splitRoot && <EditorBreadcrumb task={task} />}
             {mainDimOpacity > 0 && (
               <div
                 className="pointer-events-none absolute inset-0"
@@ -287,7 +287,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
           {splitRoot && (
             <div className="pointer-events-none absolute inset-0">
               <SplitNodeView
-                ws={ws}
+                task={task}
                 node={splitRoot}
                 activePaneId={splitActivePaneId}
                 xtermBg={xtermBg}
@@ -332,14 +332,14 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   style={{ ...style, visibility: visible ? "visible" : "hidden", zIndex: visible ? 1 : 0 }}
                   onMouseDown={() => {
                     const target = leaf ? leaf.id : mainLeafId;
-                    if (target && splitActivePaneId !== target) setActivePaneId(ws.id, target);
+                    if (target && splitActivePaneId !== target) setActivePaneId(task.id, target);
                   }}
                 >
                   {t.type === "terminal" && ((t as TerminalTab).runTab
-                    ? <RunPane ws={ws} tab={t as TerminalTab} active={tabActive} />
-                    : <TerminalPane ws={ws} tab={t as TerminalTab} active={tabActive} />)}
-                  {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane ws={ws} tab={t} /> : <EditorPane ws={ws} tab={t} active={tabActive} />}</Suspense>}
-                  {t.type === "diff"     && <Suspense fallback={null}><DiffPane ws={ws} tab={t} /></Suspense>}
+                    ? <RunPane task={task} tab={t as TerminalTab} active={tabActive} />
+                    : <TerminalPane task={task} tab={t as TerminalTab} active={tabActive} />)}
+                  {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane task={task} tab={t} /> : <EditorPane task={task} tab={t} active={tabActive} />}</Suspense>}
+                  {t.type === "diff"     && <Suspense fallback={null}><DiffPane task={task} tab={t} /></Suspense>}
                 </div>
               );
             })}
@@ -366,9 +366,9 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   className="top-0"
                   onDrag={(dy) => {
                     const containerH = containerRef.current?.clientHeight ?? 600;
-                    const cur = useApp.getState().terminalSplitHeight[ws.id] ?? DEFAULT_SPLIT_HEIGHT;
+                    const cur = useApp.getState().terminalSplitHeight[task.id] ?? DEFAULT_SPLIT_HEIGHT;
                     const next = Math.round(Math.max(MIN_HEIGHT, Math.min(containerH - MIN_HEIGHT, cur - dy)));
-                    setSplitHeight(ws.id, next);
+                    setSplitHeight(task.id, next);
                   }}
                 />
               )}
@@ -392,7 +392,7 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                 {/* Queue affordance pinned far LEFT so it's always seen; the
                     shell tabs start after a separator. The bottom status-bar
                     copy is hidden while the split is open — see FooterBar. */}
-                <MessageQueueButton wsId={ws.id} compact className="self-center" />
+                <MessageQueueButton taskId={task.id} compact className="self-center" />
                 <div className="mx-1.5 h-5 w-px shrink-0 self-center bg-[var(--color-border-soft)]" />
                 {/* Tabs + New scroll horizontally (no scrollbar) so the queue
                     button on the left and the collapse toggle on the right stay
@@ -404,13 +404,13 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                     // synthetic shell Tab) so every strip looks identical.
                     <TabPill
                       key={t.id}
-                      ws={ws}
+                      task={task}
                       tab={{ id: t.id, type: "terminal", cli: "shell", title: t.title, liveTitle: t.liveTitle } as TerminalTab}
                       active={t.id === activeBottom}
                       paneFocused
                       compact
-                      onSelect={() => setActiveBottom(ws.id, t.id)}
-                      onClose={() => closeBottomTab(ws.id, t.id)}
+                      onSelect={() => setActiveBottom(task.id, t.id)}
+                      onClose={() => closeBottomTab(task.id, t.id)}
                       renaming={null}
                       onStartRename={() => {}}
                       onChangeRename={() => {}}
@@ -423,14 +423,14 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                   ))}
                   <button
                     title="New shell tab"
-                    onClick={() => addBottomTab(ws.id)}
+                    onClick={() => addBottomTab(task.id)}
                     className="ml-1 shrink-0 self-center rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                   ><Plus className="h-4 w-4" /></button>
                 </div>
                 <div className="ml-auto flex items-center gap-0.5">
                   <button
                     title={collapsed ? "Expand terminal" : "Collapse terminal"}
-                    onClick={() => toggleCollapsed(ws.id)}
+                    onClick={() => toggleCollapsed(task.id)}
                     className="rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
                   >
                     {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -462,8 +462,8 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                     style={{ visibility: t.id === activeBottom ? "visible" : "hidden", zIndex: t.id === activeBottom ? 1 : 0 }}
                   >
                     <AuxTerminal
-                      wsId={ws.id}
-                      wsPath={ws.path}
+                      taskId={task.id}
+                      taskPath={task.path}
                       active={t.id === activeBottom}
                       // Grab focus once the PTY is live, but only for shells
                       // the user explicitly created (set by addBottomTab) —
@@ -472,8 +472,8 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
                       // closeBottomTab moves focus to the shell that takes
                       // over (or the main pane if this was the last one),
                       // so Ctrl+D'ing through shells never dumps focus.
-                      onExited={() => closeBottomTab(ws.id, t.id)}
-                      onTitle={(title) => setBottomLiveTitle(ws.id, t.id, title)}
+                      onExited={() => closeBottomTab(task.id, t.id)}
+                      onTitle={(title) => setBottomLiveTitle(task.id, t.id, title)}
                     />
                   </div>
                 ))}
@@ -483,9 +483,9 @@ export function WorkspaceView({ ws }: { ws: Workspace }) {
         )}
         {/* Sandbox status row — hoisted out of TerminalPane so it
             sits BELOW the bottom-split (when open) and stays the
-            visual bottom of the workspace regardless of which tab
+            visual bottom of the task regardless of which tab
             type is active. Always rendered. */}
-        <FooterBar ws={ws} sandboxWarning={null} />
+        <FooterBar task={task} sandboxWarning={null} />
       </div>
     </div>
   );

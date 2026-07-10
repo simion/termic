@@ -1,5 +1,5 @@
-// Edit the sandbox config of an existing workspace. Saving SIGKILLs
-// any live PTYs for the workspace so the next mount picks up the new
+// Edit the sandbox config of an existing task. Saving SIGKILLs
+// any live PTYs for the task so the next mount picks up the new
 // profile - the user has to confirm before that lands. Without the
 // kill the running agent would keep its OLD profile's permissions,
 // which is exactly the thing we're trying to enforce against.
@@ -12,26 +12,26 @@ import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
-import { settingsLoad, workspaceSetSandbox, sandboxAvailable } from "@/lib/ipc";
+import { settingsLoad, taskSetSandbox, sandboxAvailable } from "@/lib/ipc";
 import { effectiveSandboxMode, type SandboxMode } from "@/lib/types";
 import { AlertTriangle, Shield, Zap, Save, RotateCw } from "lucide-react";
 import { SandboxModeSelector } from "@/components/SandboxModeSelector";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 
-export function WorkspaceSandboxDialog() {
-  const wsId = useUI(s => s.sandboxForWsId);
+export function TaskSandboxDialog() {
+  const taskId = useUI(s => s.sandboxForTaskId);
   const close = useUI(s => s.closeSandbox);
-  const ws = useApp(s => s.workspaces.find(w => w.id === wsId) ?? null);
+  const task = useApp(s => s.tasks.find(w => w.id === taskId) ?? null);
   // The project owns the "current defaults" - drives the "Reset to
-  // project defaults" button. Workspace's frozen lists were seeded
+  // project defaults" button. Task's frozen lists were seeded
   // from these at creation; if the user since updated the project,
   // this button re-syncs (one click, no auto-overwrite).
-  const project = useApp(s => ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null);
-  const agent   = useApp(s => ws ? s.agents.find(a => a.id === ws.cli) ?? null : null);
+  const project = useApp(s => task ? s.projects.find(p => p.id === task.project_id) ?? null : null);
+  const agent   = useApp(s => task ? s.agents.find(a => a.id === task.cli) ?? null : null);
   const loadAll = useApp(s => s.loadAll);
   const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
 
-  // Local edit state, snapshotted from the workspace whenever the
+  // Local edit state, snapshotted from the task whenever the
   // dialog opens for a new id. Saving pushes back via IPC; cancelling
   // discards. Stored as text so blank lines while typing don't fight
   // the array split.
@@ -57,17 +57,17 @@ export function WorkspaceSandboxDialog() {
   }, []);
 
   useEffect(() => {
-    if (!ws) return;
-    setMode(effectiveSandboxMode(ws));
-    setRwText((ws.sandbox_rw_paths ?? []).join("\n"));
-    setHostsText((ws.sandbox_allowed_hosts ?? []).join("\n"));
+    if (!task) return;
+    setMode(effectiveSandboxMode(task));
+    setRwText((task.sandbox_rw_paths ?? []).join("\n"));
+    setHostsText((task.sandbox_allowed_hosts ?? []).join("\n"));
     setErr(null);
     setBusy(false);
-  }, [ws?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [task?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!wsId) return null;
+  if (!taskId) return null;
 
-  // Has the form drifted from the saved workspace? Compare textareas
+  // Has the form drifted from the saved task? Compare textareas
   // by their normalized line-array form (trim, drop blanks) so that
   // whitespace-only edits (an extra newline at the end) don't count
   // as dirty. The Save button stays disabled until something actually
@@ -76,24 +76,24 @@ export function WorkspaceSandboxDialog() {
     s.split("\n").map(l => l.trim()).filter(Boolean);
   const arrEq = (a: string[], b: string[]) =>
     a.length === b.length && a.every((v, i) => v === b[i]);
-  const dirty = ws ? (
-    mode !== effectiveSandboxMode(ws) ||
-    !arrEq(splitLines(rwText),    ws.sandbox_rw_paths      ?? []) ||
-    !arrEq(splitLines(hostsText), ws.sandbox_allowed_hosts ?? [])
+  const dirty = task ? (
+    mode !== effectiveSandboxMode(task) ||
+    !arrEq(splitLines(rwText),    task.sandbox_rw_paths      ?? []) ||
+    !arrEq(splitLines(hostsText), task.sandbox_allowed_hosts ?? [])
   ) : false;
 
   async function save(restart: boolean) {
-    if (!ws || busy) return;
+    if (!task || busy) return;
     // Pre-flight confirm. We don't have a live PTY count on the
     // frontend (the Rust side will tell us when the IPC returns),
     // so the dialog text is generic. The user is explicitly asking
     // for this; soft-warning is enough.
     const ok = await useUI.getState().askConfirm({
-      title: `Save sandbox changes for "${ws.name}"?`,
+      title: `Save sandbox changes for "${task.name}"?`,
       message: restart
-        ? "Any agent running in this workspace will be terminated and AUTO-restarted under the new sandbox profile. " +
+        ? "Any agent running in this task will be terminated and AUTO-restarted under the new sandbox profile. " +
           "This is by design: the running process holds the OLD profile until it's replaced."
-        : "Saving without restart. Any agent currently running in this workspace keeps its OLD sandbox profile until it next respawns. " +
+        : "Saving without restart. Any agent currently running in this task keeps its OLD sandbox profile until it next respawns. " +
           "New tabs use the saved profile immediately.",
       confirmLabel: restart ? "Save & restart" : "Save without restart",
     });
@@ -104,9 +104,9 @@ export function WorkspaceSandboxDialog() {
       // Mark BEFORE the IPC fires so TerminalPane sees the flag when
       // the pty-exit handler runs (the SIGKILL is fast - sometimes
       // exits land before this function's await even unblocks).
-      if (restart) useUI.getState().markPendingPtyRestart(ws.id);
-      const killed = await workspaceSetSandbox(
-        ws.id, mode,
+      if (restart) useUI.getState().markPendingPtyRestart(task.id);
+      const killed = await taskSetSandbox(
+        task.id, mode,
         lines(rwText), lines(hostsText),
         restart,
       );
@@ -147,10 +147,10 @@ export function WorkspaceSandboxDialog() {
 
   return (
     <AppDialog
-      open={!!wsId}
+      open={!!taskId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={ws ? `Sandbox · ${ws.name}` : "Sandbox"}
-      description="Restrict what the agent in this workspace can read, write, and reach."
+      title={task ? `Sandbox · ${task.name}` : "Sandbox"}
+      description="Restrict what the agent in this task can read, write, and reach."
       // Wider than the default max-w-md so the textareas don't get
       // squeezed into a column. Cap height to the viewport so the
       // body scrolls when content overflows (sandbox dialog has more
@@ -206,7 +206,7 @@ export function WorkspaceSandboxDialog() {
             permission prompts because the seatbelt is the real boundary -
             users should know this is happening, not stumble onto it.
             Honors the Settings → General "Bypass permissions in sandboxed
-            workspaces" toggle. */}
+            tasks" toggle. */}
         {(mode === "enforce" || mode === "enforce-fs") && sandboxBypassPermissions && (
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-ok)]/25 bg-[var(--color-ok)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
@@ -214,7 +214,7 @@ export function WorkspaceSandboxDialog() {
               <b className="text-[var(--color-fg)]">YOLO auto-on inside the cage.</b>{" "}
               The agent's own permission prompts are skipped because the
               seatbelt profile is the real boundary. The global YOLO toggle
-              becomes informational for this workspace.
+              becomes informational for this task.
             </span>
           </div>
         )}
@@ -268,7 +268,7 @@ export function WorkspaceSandboxDialog() {
         {enabled && (<>
         <Field
           label="Allowed paths"
-          hint="Extra dirs the agent can read AND write, on top of the workspace + agent + runtime defaults shown on the right. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
+          hint="Extra dirs the agent can read AND write, on top of the task + agent + runtime defaults shown on the right. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
         >
           {/* Two columns, locked to the same height. box-border on
               both so the explicit h-[] applies to the OUTER box
@@ -288,8 +288,8 @@ export function WorkspaceSandboxDialog() {
               disabled={!enabled}
             />
             <DefaultsPanel className="box-border h-[180px] overflow-y-auto [scrollbar-gutter:stable]">
-              <ChipGroup tone="allow" label="Always allowed, read + write (workspace + runtime)">
-                <Chip tone="allow">workspace</Chip>
+              <ChipGroup tone="allow" label="Always allowed, read + write (task + runtime)">
+                <Chip tone="allow">task</Chip>
                 <Chip tone="allow">~/.npm</Chip>
                 <Chip tone="allow">~/.cache</Chip>
                 <Chip tone="allow">~/.cargo/registry</Chip>
@@ -360,7 +360,7 @@ export function WorkspaceSandboxDialog() {
               />
               <DefaultsPanel className="h-full">
                 <ChipGroup tone="allow" label="Always reachable">
-                  <Chip tone="allow">vendor API for {ws?.cli ?? "this CLI"}</Chip>
+                  <Chip tone="allow">vendor API for {task?.cli ?? "this CLI"}</Chip>
                   <Chip tone="allow">github.com</Chip>
                   <Chip tone="allow">npmjs.org</Chip>
                   <Chip tone="allow">pypi.org</Chip>
@@ -374,7 +374,7 @@ export function WorkspaceSandboxDialog() {
         </>)}
 
         {/* "Recent denies" panel removed — the TerminalPane footer
-            now shows a live deny counter chip per workspace, which
+            now shows a live deny counter chip per task, which
             is the discoverable surface. Detailed log lookups belong
             in the debug.log path, not buried in the dialog. */}
 

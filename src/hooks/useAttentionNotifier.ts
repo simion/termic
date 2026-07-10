@@ -3,7 +3,7 @@
 //
 // Click-to-route: macOS osascript notifications don't expose a click callback,
 // so we use a focus-edge heuristic — when the window regains focus within
-// ROUTE_WINDOW_MS of a notification we just fired, jump to that (workspace,
+// ROUTE_WINDOW_MS of a notification we just fired, jump to that (task,
 // tab). False positives are bounded: cmd-tabbing back without clicking the
 // notification also routes, but only if there's a pending unread tab from the
 // last few seconds. In practice that matches user intent (the unread tab IS
@@ -20,11 +20,11 @@ import type { TerminalTab } from "@/lib/types";
 const DEBOUNCE_MS = 8000;
 const ROUTE_WINDOW_MS = 15_000;
 
-interface PendingRoute { wsId: string; tabId: string; firedAt: number; }
+interface PendingRoute { taskId: string; tabId: string; firedAt: number; }
 
 export function useAttentionNotifier() {
   const lastFiredRef = useRef<Record<string, number>>({});
-  // Most-recent (wsId, tabId) we sent a notification about — consumed
+  // Most-recent (taskId, tabId) we sent a notification about — consumed
   // by the focus listener below.
   const lastRouteRef = useRef<PendingRoute | null>(null);
 
@@ -34,10 +34,10 @@ export function useAttentionNotifier() {
       // dots in the sidebar — only the OS notification is opt-in.
       const desktopNotifications = usePrefs.getState().desktopNotifications;
       if (!desktopNotifications) return;
-      const wsIds = Object.keys(state.tabs);
-      for (const wsId of wsIds) {
-        const tabs = state.tabs[wsId] || [];
-        const prevTabs = prev.tabs[wsId] || [];
+      const taskIds = Object.keys(state.tabs);
+      for (const taskId of taskIds) {
+        const tabs = state.tabs[taskId] || [];
+        const prevTabs = prev.tabs[taskId] || [];
         for (const t of tabs) {
           // Run/Setup tabs are managed dev-server surfaces, not agents.
           // Stopping one intentionally (including Spotlight handoff) should
@@ -46,15 +46,15 @@ export function useAttentionNotifier() {
           if (!t.unread) continue;
           const wasUnread = prevTabs.find(p => p.id === t.id)?.unread;
           if (wasUnread) continue;
-          // Suppress notifications for ANY tab in the focused workspace —
+          // Suppress notifications for ANY tab in the focused task —
           // even hidden tabs within it. The user explicitly asked for "never
-          // watch and notify for work done" while focused on a workspace.
-          if (state.activeWorkspaceId === wsId) continue;
-          const key = `${wsId}:${t.id}`;
+          // watch and notify for work done" while focused on a task.
+          if (state.activeTaskId === taskId) continue;
+          const key = `${taskId}:${t.id}`;
           const now = Date.now();
           if ((lastFiredRef.current[key] || 0) + DEBOUNCE_MS > now) continue;
           lastFiredRef.current[key] = now;
-          const w = state.workspaces.find(w => w.id === wsId);
+          const w = state.tasks.find(w => w.id === taskId);
           const proj = w ? state.projects.find(p => p.id === w.project_id) : undefined;
           const reason =
             t.unread.reason === "bell" ? "wants input"
@@ -62,18 +62,18 @@ export function useAttentionNotifier() {
             : t.unread.reason === "done" ? "finished"
             : t.unread.reason === "attention" ? "needs your input"
             : "is idle";
-          // Title = "project · workspace". The terminal/cli name was
+          // Title = "project · task". The terminal/cli name was
           // noise — the body already says what happened.
           const title = proj?.name
-            ? `${proj.name} · ${w?.name || "workspace"}`
-            : (w?.name || "workspace");
+            ? `${proj.name} · ${w?.name || "task"}`
+            : (w?.name || "task");
           notify(
             title,
             `agent ${reason}`,
-            { wsId, tabId: t.id },
+            { taskId, tabId: t.id },
             { sound: t.unread.reason === "done" },
           ).catch(() => {});
-          lastRouteRef.current = { wsId, tabId: t.id, firedAt: now };
+          lastRouteRef.current = { taskId, tabId: t.id, firedAt: now };
         }
       }
     });
@@ -81,23 +81,23 @@ export function useAttentionNotifier() {
   }, []);
 
   // Direct click router: the notification plugin fires onAction when the
-  // user clicks a banner, carrying the {wsId, tabId} we stamped into its
+  // user clicks a banner, carrying the {taskId, tabId} we stamped into its
   // extra payload. This is the reliable path — it works even when the app
   // window was already foregrounded (the focus-edge heuristic below only
   // fires on a background→foreground transition, so it misses clicks while
-  // termic is already visible on another workspace). Brings the window
+  // termic is already visible on another task). Brings the window
   // forward and routes to the originating tab.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     (async () => {
-      unlisten = await onNotifyClick(({ wsId, tabId }) => {
+      unlisten = await onNotifyClick(({ taskId, tabId }) => {
         const state = useApp.getState();
-        const ws = state.workspaces.find(w => w.id === wsId);
-        if (!ws) return;
-        const t = (state.tabs[wsId] || []).find(x => x.id === tabId);
+        const task = state.tasks.find(w => w.id === taskId);
+        if (!task) return;
+        const t = (state.tabs[taskId] || []).find(x => x.id === tabId);
         if (!t) return;
-        state.setActiveWorkspace(wsId);
-        state.setActiveTabId(wsId, tabId);
+        state.setActiveTask(taskId);
+        state.setActiveTabId(taskId, tabId);
         try { getCurrentWindow().setFocus(); } catch {}
       });
     })();
@@ -105,7 +105,7 @@ export function useAttentionNotifier() {
   }, []);
 
   // Focus-driven router: when the window regains focus shortly after a
-  // notification fire, set the active workspace + tab.
+  // notification fire, set the active task + tab.
   //
   // Two route sources fed in:
   //   1. lastRouteRef — set when markAttention transitions a tab to
@@ -145,13 +145,13 @@ export function useAttentionNotifier() {
           const tryRoute = (route: typeof attnRoute, kind: "osc" | "attn"): boolean => {
             if (!route) return false;
             if (now - route.firedAt > ROUTE_WINDOW_MS) return false;
-            const ws = state.workspaces.find(w => w.id === route.wsId);
-            if (!ws) return false;
-            const t = (state.tabs[route.wsId] || []).find(x => x.id === route.tabId);
+            const task = state.tasks.find(w => w.id === route.taskId);
+            if (!task) return false;
+            const t = (state.tabs[route.taskId] || []).find(x => x.id === route.tabId);
             if (!t) return false;
             if (kind === "attn" && !t.unread) return false;
-            state.setActiveWorkspace(route.wsId);
-            state.setActiveTabId(route.wsId, route.tabId);
+            state.setActiveTask(route.taskId);
+            state.setActiveTabId(route.taskId, route.tabId);
             return true;
           };
           // Pick by recency.

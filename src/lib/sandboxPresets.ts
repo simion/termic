@@ -3,7 +3,7 @@
 // of preset buttons doesn't pay off.
 //
 // `applyPreset` replaces the extras (rw / hosts). The always-on
-// built-ins (workspace path + agent dirs + secrets-deny + vendor API +
+// built-ins (task path + agent dirs + secrets-deny + vendor API +
 // github + npm + pypi + crates) live in Rust and are immutable - so
 // 'Standard' is effectively a "clear the extras" button.
 

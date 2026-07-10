@@ -8,7 +8,7 @@
 // launcher unmounts automatically (the leaf now has a tabId to render).
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Workspace } from "@/lib/types";
+import type { Task } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { visibleCliIds, isTerminalEntry } from "@/lib/agents";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
@@ -21,12 +21,12 @@ interface LauncherItem {
   section: "terminal" | "agent";
 }
 
-export function SplitLauncher({ ws, paneId }: { ws: Workspace; paneId: string }) {
+export function SplitLauncher({ task, paneId }: { task: Task; paneId: string }) {
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const addPaneTab = useApp(s => s.addPaneTab);
   const closePane = useApp(s => s.closePane);
-  const activeWsId = useApp(s => s.activeWorkspaceId);
+  const activeTaskId = useApp(s => s.activeTaskId);
   const items = useMemo<LauncherItem[]>(() => {
     const visible = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
     const out: LauncherItem[] = [
@@ -46,12 +46,12 @@ export function SplitLauncher({ ws, paneId }: { ws: Workspace; paneId: string })
 
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (activeWsId === ws.id) rootRef.current?.focus({ preventScroll: true });
-  }, [activeWsId, ws.id]);
+    if (activeTaskId === task.id) rootRef.current?.focus({ preventScroll: true });
+  }, [activeTaskId, task.id]);
 
   const choose = (it: LauncherItem | undefined) => {
     if (!it) return;
-    addPaneTab(ws.id, paneId, it.cli);
+    addPaneTab(task.id, paneId, it.cli);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -68,7 +68,7 @@ export function SplitLauncher({ ws, paneId }: { ws: Workspace; paneId: string })
       choose(items[sel]);
     } else if (k === "Escape") {
       e.preventDefault(); e.stopPropagation();
-      closePane(ws.id, paneId);
+      closePane(task.id, paneId);
     }
   };
 

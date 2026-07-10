@@ -78,12 +78,12 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // the project shows up. Keep all hook calls above any conditional return.
   // The filter creates a new array each render — Zustand 5 warns about this.
   // We compute the count directly via a primitive-returning selector so the
-  // snapshot stays stable across renders unless workspaces actually change.
-  const wsCount = useApp(s => s.workspaces.reduce(
+  // snapshot stays stable across renders unless tasks actually change.
+  const taskCount = useApp(s => s.tasks.reduce(
     (n, w) => n + (project && w.project_id === project.id ? 1 : 0), 0,
   ));
-  const wtCount = useApp(s => s.workspaces.reduce(
-    (n, w) => n + (project && w.project_id === project.id && !w.is_repo_root ? 1 : 0), 0,
+  const wtCount = useApp(s => s.tasks.reduce(
+    (n, w) => n + (project && w.project_id === project.id && !w.is_main_checkout ? 1 : 0), 0,
   ));
 
   // Load raw `.termic.yaml` into rc. rc is the yaml content exactly —
@@ -123,11 +123,11 @@ export function RepositorySection({ projectId }: { projectId: string }) {
 
   // Spotlight selectors — MUST live above the early-return so the hook
   // call count stays stable across renders (see CLAUDE.md hooks rule).
-  const spotlightWsId = useApp(s => s.spotlightWsId[projectId] ?? null);
-  const spotlightWsName = useApp(s => {
-    const id = s.spotlightWsId[projectId];
+  const spotlightTaskId = useApp(s => s.spotlightTaskId[projectId] ?? null);
+  const spotlightTaskName = useApp(s => {
+    const id = s.spotlightTaskId[projectId];
     if (!id) return null;
-    return s.workspaces.find(w => w.id === id)?.name ?? null;
+    return s.tasks.find(w => w.id === id)?.name ?? null;
   });
 
   if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">Project not found.</div>;
@@ -272,16 +272,16 @@ export function RepositorySection({ projectId }: { projectId: string }) {
     if (!proj) return;
     // Build a confirmation that's specific about the side effects.
     // Worktrees: get `git worktree remove` + `rm -rf` on disk.
-    // Repo-root workspaces: just unregistered (the real repo stays put).
+    // Repo-root tasks: just unregistered (the real repo stays put).
     // The user's actual git repo at root_path is NEVER touched.
     const parts: string[] = [];
     parts.push(
-      wsCount === 0
-        ? "No workspaces to remove."
-        : `Archives ${wsCount} workspace${wsCount === 1 ? "" : "s"}.`,
+      taskCount === 0
+        ? "No tasks to remove."
+        : `Archives ${taskCount} task${taskCount === 1 ? "" : "s"}.`,
     );
     if (wtCount > 0) parts.push(`${wtCount} git worktree${wtCount === 1 ? "" : "s"} removed from disk (rm -rf).`);
-    if (wsCount - wtCount > 0) parts.push(`${wsCount - wtCount} repo-root entr${wsCount - wtCount === 1 ? "y" : "ies"} unregistered.`);
+    if (taskCount - wtCount > 0) parts.push(`${taskCount - wtCount} main-checkout entr${taskCount - wtCount === 1 ? "y" : "ies"} unregistered.`);
     parts.push(`Your repo at ${proj.root_path} is NOT touched. Cannot be undone.`);
     const ok = await useUI.getState().askConfirm({
       title: `Remove project "${proj.name}"?`,
@@ -291,7 +291,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
     });
     if (!ok) return;
     const { setBusy } = useUI.getState();
-    setBusy(`Removing "${proj.name}" and ${wsCount} workspace${wsCount === 1 ? "" : "s"}…`);
+    setBusy(`Removing "${proj.name}" and ${taskCount} task${taskCount === 1 ? "" : "s"}…`);
     try {
       await projectRemove(proj.id);
       await loadAll();
@@ -431,7 +431,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             <div className="flex flex-col gap-5">
               <ScriptField
                 label="Setup script"
-                hint="Runs when a new workspace is created."
+                hint="Runs when a new task is created."
                 value={scriptTarget === "yaml" ? (rc?.scripts.setup ?? "") : (draft.setup_script ?? "")}
                 onChange={(v) => scriptTarget === "yaml" ? patchScript("setup", v) : patch("setup_script", v)}
                 placeholder="docker compose up -d"
@@ -439,7 +439,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               />
               <ScriptField
                 label="Run script"
-                hint={<>Runs when you click the Run button. Use <Token>$TERMIC_PORT</Token> so each workspace gets its own port.</>}
+                hint={<>Runs when you click the Run button. Use <Token>$TERMIC_PORT</Token> so each task gets its own port.</>}
                 value={scriptTarget === "yaml" ? (rc?.scripts.run ?? "") : (draft.run_script ?? "")}
                 onChange={(v) => scriptTarget === "yaml" ? patchScript("run", v) : patch("run_script", v)}
                 placeholder="PORT=$TERMIC_PORT npm run dev"
@@ -447,7 +447,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               />
               <ScriptField
                 label="Archive script"
-                hint="Runs before a workspace is archived. Termic already removes the worktree dir + its contents, so this is for stopping external services your run script started."
+                hint="Runs before a task is archived. Termic already removes the worktree dir + its contents, so this is for stopping external services your run script started."
                 value={scriptTarget === "yaml" ? (rc?.scripts.archive ?? "") : (draft.archive_script ?? "")}
                 onChange={(v) => scriptTarget === "yaml" ? patchScript("archive", v) : patch("archive_script", v)}
                 placeholder="docker compose down"
@@ -460,7 +460,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           <div>
             <div className="text-[14px] font-medium">Files to copy</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              Copied from the repo root into each new workspace. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code>).
+              Copied from the repo root into each new task. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code>).
             </div>
             <textarea
               value={filesText}
@@ -518,8 +518,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                       Enable spotlight for this project
                     </span>
                     <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-                      When enabled, you can spotlight a workspace from its settings menu.
-                      Spotlight syncs that workspace's changes to your main checkout automatically
+                      When enabled, you can spotlight a task from its settings menu.
+                      Spotlight syncs that task's changes to your main checkout automatically
                       so you can run and test from there. Committed changes appear as a checkpoint
                       commit on main; uncommitted edits sync as working-tree changes; untracked
                       files are copied (.gitignore respected). Main must be clean to start.
@@ -531,15 +531,15 @@ export function RepositorySection({ projectId }: { projectId: string }) {
 
                 {draft.spotlight_enabled && (
                   <div className="ml-7">
-                    {spotlightWsName ? (
+                    {spotlightTaskName ? (
                       <div className="flex items-center gap-3 rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-3 py-2">
                         <AudioWaveform className="termic-spotlight-wave h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
                         <span className="flex-1 text-[13px] text-[var(--color-fg)]">
-                          <strong>{spotlightWsName}</strong> is spotlighted right now
+                          <strong>{spotlightTaskName}</strong> is spotlighted right now
                         </span>
                         <button
                           type="button"
-                          onClick={() => stopSpotlight(spotlightWsId!).catch(e =>
+                          onClick={() => stopSpotlight(spotlightTaskId!).catch(e =>
                             useUI.getState().pushToast(String(e), "error")
                           )}
                           className="rounded px-2.5 py-1 text-[12px] font-medium bg-[var(--color-bg-3)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
@@ -549,7 +549,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                       </div>
                     ) : (
                       <p className="text-[12.5px] text-[var(--color-fg-faint)]">
-                        No workspace is spotlighted right now.
+                        No task is spotlighted right now.
                       </p>
                     )}
                   </div>
@@ -564,7 +564,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
         <div>
           <h2 className="text-[16px] font-medium">Sandbox</h2>
           <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
-            When a workspace is sandboxed, the agent runs under macOS seatbelt: the filesystem is allow-listed (workspace + agent state + caches + dirs you list); HTTPS goes through an in-process per-workspace proxy filtered against the host allowlist. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, …) and personal data (<code className="font-mono">~/Documents</code>, <code className="font-mono">~/Desktop</code>, <code className="font-mono">~/Downloads</code>, browser data, mail) are denied by default.
+            When a task is sandboxed, the agent runs under macOS seatbelt: the filesystem is allow-listed (task + agent state + caches + dirs you list); HTTPS goes through an in-process per-task proxy filtered against the host allowlist. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, …) and personal data (<code className="font-mono">~/Documents</code>, <code className="font-mono">~/Desktop</code>, <code className="font-mono">~/Downloads</code>, browser data, mail) are denied by default.
           </p>
           <div className="mt-4 flex flex-col gap-5">
             <label className="inline-flex cursor-pointer items-center gap-2 select-none">
@@ -572,7 +572,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 checked={!!draft.default_sandbox}
                 onChange={(v) => patch("default_sandbox", v as any)}
               />
-              <span className="text-[13.5px] font-medium">Sandbox new workspaces by default</span>
+              <span className="text-[13.5px] font-medium">Sandbox new tasks by default</span>
             </label>
 
             {/* Storage target tabs — same underline-tab style as the
@@ -665,7 +665,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
         <div className="flex flex-col gap-7">
           <Field
             label="Default CLI"
-            hint="Which agent to spawn for new workspaces in this repo. Pick Terminal for a plain login shell (no agent)."
+            hint="Which agent to spawn for new tasks in this repo. Pick Terminal for a plain login shell (no agent)."
             control={
               <select
                 value={draft.default_cli}
@@ -680,7 +680,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                     always available as the no-agent fallback. Custom
                     terminals (kind: "terminal") are excluded — a project
                     default CLI must be an agent (resume, review, and
-                    workspace semantics all assume one). */}
+                    task semantics all assume one). */}
                 {agents
                   .filter(a => !a.disabled && !isTerminalEntry(a))
                   .map(a => (
@@ -696,13 +696,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             control={<Input value={draft.root_path} readOnly className="font-mono opacity-70 cursor-not-allowed" />}
           />
           <Field
-            label="Workspaces path"
-            hint="Where each new worktree lives. Don't move or delete subdirectories; archive workspaces in Termic instead."
-            control={<Input value={draft.workspaces_path} onChange={(e) => patch("workspaces_path", e.target.value)} className={cn("font-mono", flashRing("workspaces_path"))} />}
+            label="Tasks path"
+            hint="Where each new worktree lives. Don't move or delete subdirectories; archive tasks in Termic instead."
+            control={<Input value={draft.tasks_path} onChange={(e) => patch("tasks_path", e.target.value)} className={cn("font-mono", flashRing("tasks_path"))} />}
           />
           <Field
-            label="Branch new workspaces from"
-            hint="Each workspace is an isolated copy of your codebase, branched off here."
+            label="Branch new tasks from"
+            hint="Each task is an isolated copy of your codebase, branched off here."
             control={<Input value={draft.base_branch} onChange={(e) => patch("base_branch", e.target.value)} className={cn("font-mono", flashRing("base_branch"))} placeholder="origin/master" />}
           />
           <Field
@@ -720,7 +720,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               <div className="min-w-0">
                 <div className="text-[13.5px] font-medium text-[var(--color-fg)]">Remove project</div>
                 <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                  Drops the project from the sidebar + archives every workspace under it. The actual repo at <code className="font-mono">{draft.root_path}</code> stays on disk.
+                  Drops the project from the sidebar + archives every task under it. The actual repo at <code className="font-mono">{draft.root_path}</code> stays on disk.
                 </div>
               </div>
               <Button variant="danger" size="sm" onClick={remove} className="shrink-0">
@@ -804,10 +804,10 @@ function Token({ children }: { children: string }) {
 
 /** Edit the member list of a multi-repo project. Lists single-repo
  *  projects with a checkbox each; saving fires `project_set_members`
- *  which validates + persists on the Rust side. Existing workspaces
+ *  which validates + persists on the Rust side. Existing tasks
  *  under this project aren't migrated — their composition is frozen
  *  at create time. Removing a member here only affects FUTURE
- *  workspaces. */
+ *  tasks. */
 function MultiMembersEditor({ project, onSaved }: {
   project: Project;
   onSaved: () => void;
@@ -881,10 +881,10 @@ function MultiMembersEditor({ project, onSaved }: {
         <Layers className="h-4 w-4 text-[var(--color-accent)]" /> Members & scripts
       </div>
       <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-        Repos to mount inside every workspace under this multi-repo project,
+        Repos to mount inside every task under this multi-repo project,
         and the <b>Setup / Run / Archive</b> commands to use for each. These
         scripts live on the multi-repo project (independent of the member
-        project's own scripts). Edits apply to <b>future</b> workspaces;
+        project's own scripts). Edits apply to <b>future</b> tasks;
         existing ones freeze at creation.
       </div>
       {/* Cross-member port discovery: every member's scripts +
@@ -1083,7 +1083,7 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
             </Button>
           </div>
           <p className="mt-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-            Adds the folder as a member of this project only (no standalone project). A plain folder mounts repo-root only (no worktree).
+            Adds the folder as a member of this project only (no standalone project). A plain folder mounts as the main checkout only (no worktree).
           </p>
         </div>
       )}

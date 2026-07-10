@@ -42,7 +42,7 @@ const LS_TERMINAL_SCROLLBACK   = "terminalScrollback";
 const LS_TERMINAL_OPTION_AS_META = "terminalOptionAsMeta";
 const LS_TERMINAL_GPU            = "terminalGpuEnabled";
 const LS_TERMINAL_COPY_ON_SELECT = "terminalCopyOnSelect";
-const LS_WS_EXPAND_MODE = "workspaceExpandMode";
+const LS_TASK_EXPAND_MODE = "taskExpandMode";
 const LS_HIDE_INACTIVE_PROJECTS = "hideInactiveProjects";
 const LS_MD_VIEW       = "markdownDefaultView";
 const LS_BRANCH_PREFIX = "branchPrefix";
@@ -345,7 +345,7 @@ interface PrefsState {
   /** Which notification sound to use when completion sound is enabled.
    *  Defaults to the app's default sound. */
   completionSoundId: CompletionSoundId;
-  /** Highlight workspaces / tabs whose agent has just settled (idle).
+  /** Highlight tasks / tabs whose agent has just settled (idle).
    *  ON by default — the brand-color icon swap on settle is the
    *  in-app "done" signal. Some users find it distracting and want
    *  the sidebar to stay calm regardless. */
@@ -357,12 +357,12 @@ interface PrefsState {
    *  signal stuck, so TerminalPane has an absolute ceiling that force-clears
    *  a stale "working" state regardless of sender signals. */
   workingIndicator: boolean;
-  /** Default for the NewWorkspaceDialog's Sandbox toggle when neither
+  /** Default for the NewTaskDialog's Sandbox toggle when neither
    *  the project's `default_sandbox` nor an explicit user pick is in
    *  effect. Lets a single-keystroke toggle apply across all projects
    *  without per-project bookkeeping. */
   globalDefaultSandbox: boolean;
-  /** When a workspace is sandboxed, auto-pass the agent's "bypass
+  /** When a task is sandboxed, auto-pass the agent's "bypass
    *  permissions" (YOLO) flag at spawn even if the YOLO toggle is off.
    *  ON by default: the seatbelt cage is the real security boundary, so
    *  the agent's own permission prompts are just friction. Users who
@@ -371,7 +371,7 @@ interface PrefsState {
   /** Where the "Allow" button in the sandbox activity/blocked popover
    *  writes. `null` until the user picks once (the radio is mandatory
    *  on first use); their choice then becomes the app-wide default.
-   *  - "agent"   → the agent registry (every workspace using that CLI)
+   *  - "agent"   → the agent registry (every task using that CLI)
    *  - "project" → this project's personal defaults (projects.json)
    *  - "repo"    → the committed `.termic.yaml` (team-shared) */
   allowScope: "agent" | "project" | "repo" | null;
@@ -426,15 +426,15 @@ interface PrefsState {
   editorFontSize: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
-  /** How a workspace row's tab list (its "agents") expands in the sidebar:
+  /** How a task row's tab list (its "agents") expands in the sidebar:
    *  - "chevron": only the chevron toggles. Row click just activates.
    *               No auto-expand. Default — most predictable.
    *  - "click":   click on the active row's title also toggles, AND the
-   *               workspace auto-expands when it grows to 2+ agents.
-   *  - "always":  workspaces are always expanded by default. The chevron
+   *               task auto-expands when it grows to 2+ agents.
+   *  - "always":  tasks are always expanded by default. The chevron
    *               still collapses, and that collapsed-state sticks. */
-  workspaceExpandMode: "chevron" | "click" | "always";
-  /** When true, projects with no active workspaces are hidden from the
+  taskExpandMode: "chevron" | "click" | "always";
+  /** When true, projects with no active tasks are hidden from the
    *  sidebar list and folded behind a "Show N inactive" row at the bottom.
    *  Keeps a long project list (repos you've added but aren't actively
    *  working in) from crowding out the projects that have live agents. */
@@ -444,8 +444,8 @@ interface PrefsState {
    *  updates it — so the app remembers however you last looked at a doc. */
   markdownDefaultView: MarkdownView;
   /** Prefix prepended to auto-generated worktree branch names in the New
-   *  workspace dialog (e.g. "feature" → "feature/my-task"). Empty means no
-   *  prefix. The user can still freely edit the branch field per workspace. */
+   *  task dialog (e.g. "feature" → "feature/my-task"). Empty means no
+   *  prefix. The user can still freely edit the branch field per task. */
   branchPrefix: string;
   /** Minimum delay (ms) enforced between consecutive message-queue sends to
    *  the same agent. A throttle on the "ralph loop": even if the agent
@@ -492,7 +492,7 @@ interface PrefsState {
   setGlobalDefaultSandbox: (v: boolean) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setAllowScope: (s: "agent" | "project" | "repo") => void;
-  setWorkspaceExpandMode: (m: "chevron" | "click" | "always") => void;
+  setTaskExpandMode: (m: "chevron" | "click" | "always") => void;
   setHideInactiveProjects: (v: boolean) => void;
   setMarkdownDefaultView: (v: MarkdownView) => void;
   setBranchPrefix: (v: string) => void;
@@ -600,8 +600,8 @@ const initialAllowScope: "agent" | "project" | "repo" | null = (() => {
   const raw = lsGet(LS_ALLOW_SCOPE, "");
   return raw === "agent" || raw === "project" || raw === "repo" ? raw : null;
 })();
-const initialWsExpandMode: "chevron" | "click" | "always" = (() => {
-  const raw = lsGet(LS_WS_EXPAND_MODE, "chevron");
+const initialTaskExpandMode: "chevron" | "click" | "always" = (() => {
+  const raw = lsGet(LS_TASK_EXPAND_MODE, "chevron");
   return raw === "click" || raw === "always" ? raw : "chevron";
 })();
 const initialHideInactiveProjects = lsGet(LS_HIDE_INACTIVE_PROJECTS, "") === "1";
@@ -637,7 +637,7 @@ export const usePrefs = create<PrefsState>(set => ({
   terminalCopyOnSelect: initialTerminalCopyOnSelect,
   editorFontSize: initialEditorSize,
   codeLigatures: initialLigatures,
-  workspaceExpandMode: initialWsExpandMode,
+  taskExpandMode: initialTaskExpandMode,
   hideInactiveProjects: initialHideInactiveProjects,
   markdownDefaultView: initialMarkdownView,
   branchPrefix: initialBranchPrefix,
@@ -782,9 +782,9 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_ALLOW_SCOPE, s); } catch {}
     set({ allowScope: s });
   },
-  setWorkspaceExpandMode: (m) => {
-    try { localStorage.setItem(LS_WS_EXPAND_MODE, m); } catch {}
-    set({ workspaceExpandMode: m });
+  setTaskExpandMode: (m) => {
+    try { localStorage.setItem(LS_TASK_EXPAND_MODE, m); } catch {}
+    set({ taskExpandMode: m });
   },
   setHideInactiveProjects: (v) => {
     try { localStorage.setItem(LS_HIDE_INACTIVE_PROJECTS, v ? "1" : "0"); } catch {}
@@ -796,7 +796,7 @@ export const usePrefs = create<PrefsState>(set => ({
   },
   setBranchPrefix: (v) => {
     // Store as-typed (normalization happens at the use site in
-    // NewWorkspaceDialog) so a trailing "/" isn't stripped mid-keystroke.
+    // NewTaskDialog) so a trailing "/" isn't stripped mid-keystroke.
     try { localStorage.setItem(LS_BRANCH_PREFIX, v); } catch {}
     set({ branchPrefix: v });
   },

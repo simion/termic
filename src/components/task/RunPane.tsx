@@ -12,21 +12,31 @@
 // restart automatically picks worktree vs repo root.)
 
 import { useEffect, useState } from "react";
-import type { Workspace, TerminalTab } from "@/lib/types";
+import type { Task, TerminalTab } from "@/lib/types";
+import { useApp } from "@/store/app";
 import { TerminalPane } from "./TerminalPane";
 import { Play } from "lucide-react";
 
-export function RunPane({ ws, tab, active }: {
-  ws: Workspace;
+export function RunPane({ task, tab, active }: {
+  task: Task;
   tab: TerminalTab;
   active?: boolean;
 }) {
   const [gen, setGen] = useState(0);
   const [started, setStarted] = useState(!tab.runTab?.idle);
+  const patchTab = useApp(s => s.patchTab);
+
+  // A fresh run clears any prior failed flag — it's about the LAST run, not
+  // this one, and should disappear the moment the user acts on it.
+  const clearFailed = () => {
+    const live = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+    if (live?.runTab?.failed) patchTab(task.id, tab.id, { runTab: { ...live.runTab, failed: false } });
+  };
 
   useEffect(() => {
     const onRestart = (e: Event) => {
       if ((e as CustomEvent<{ tabId?: string }>).detail?.tabId !== tab.id) return;
+      clearFailed();
       setStarted(prev => {
         // Idle → first start: just mounting TerminalPane spawns the script;
         // bumping gen too would double-spawn.
@@ -43,7 +53,7 @@ export function RunPane({ ws, tab, active }: {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-[var(--color-bg)]">
         <button
-          onClick={() => setStarted(true)}
+          onClick={() => { clearFailed(); setStarted(true); }}
           title={`Run ${tab.title}`}
           className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--color-border)] text-[var(--color-fg-dim)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-fg)]"
         >
@@ -57,5 +67,5 @@ export function RunPane({ ws, tab, active }: {
   }
 
   // key={gen}: restart = teardown (kills PTY) + fresh spawn.
-  return <TerminalPane key={gen} ws={ws} tab={tab} active={!!active} />;
+  return <TerminalPane key={gen} task={task} tab={tab} active={!!active} />;
 }

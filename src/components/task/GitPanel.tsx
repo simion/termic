@@ -1,7 +1,7 @@
 // Fork-style git staging panel (the "Git" tab of the right panel).
 //
 // Layout, top to bottom:
-//   1. Repo sub-tabs   — multi-repo workspaces only; one wrapping pill per
+//   1. Repo sub-tabs   — multi-repo tasks only; one wrapping pill per
 //      repo that has changes (even if just one), each badged with its
 //      changed-file count. Clean repos get no pill.
 //   2. Toolbar         — search filter + view-mode menu (Tree / List /
@@ -11,8 +11,8 @@
 //   5. Staged pane     — resizable, scrollable file list.
 //   6. Commit form     — subject, description, Amend, split Commit button.
 //
-// Backend: workspace_git_status returns staged/unstaged split per repo;
-// workspace_stage / _unstage / _commit mutate the selected repo. Paths are
+// Backend: task_git_status returns staged/unstaged split per repo;
+// task_stage / _unstage / _commit mutate the selected repo. Paths are
 // repo-relative; member diffs are re-prefixed with `dir_name` before
 // opening (the host stays unprefixed).
 
@@ -20,8 +20,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare,
 } from "lucide-react";
-import type { Workspace, GitStatus, GitRepo, GitFile } from "@/lib/types";
-import { workspaceStage, workspaceUnstage, workspaceCommit, workspaceDiscard } from "@/lib/ipc";
+import type { Task, GitStatus, GitRepo, GitFile } from "@/lib/types";
+import { taskStage, taskUnstage, taskCommit, taskDiscard } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
@@ -62,16 +62,16 @@ function readRatio(): number {
   return 0.5;
 }
 
-export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }: {
-  ws: Workspace;
+export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff }: {
+  task: Task;
   status: GitStatus | null;
   refresh: () => void;
-  /** Opens a diff tab for a workspace-relative path (already prefixed). */
+  /** Opens a diff tab for a task-relative path (already prefixed). */
   onOpenDiff: (path: string) => void;
   onDoubleClickDiff: (path: string) => void;
 }) {
   const pushToast = useUI(s => s.pushToast);
-  const nonGit = useApp(s => s.projects.find(p => p.id === ws.project_id)?.non_git);
+  const nonGit = useApp(s => s.projects.find(p => p.id === task.project_id)?.non_git);
   // Resolved (user-overridable) bindings for the contextual Git shortcuts.
   const stageBinding = usePrefs(s => s.shortcuts["stage-file"]);
   const discardBinding = usePrefs(s => s.shortcuts["discard-file"]);
@@ -82,7 +82,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   // even once it goes clean, so a commit (or the slower commit-and-push, whose
   // mid-push status poll would otherwise see the repo already clean) doesn't
   // yank the pill away to a different changed repo. Cleared when the user
-  // picks another repo or the workspace switches.
+  // picks another repo or the task switches.
   const [pinnedRepoDir, setPinnedRepoDir] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(() => readView());
   const [hideUntracked, setHideUntracked] = useState<boolean>(() => readBool(LS_HIDE));
@@ -123,21 +123,21 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, activeRepoDir, pinnedExists]);
 
-  // Reset transient form state on workspace switch.
+  // Reset transient form state on task switch.
   useEffect(() => {
     setSubject(""); setBody(""); setSearch("");
     setActiveRepoDir(""); setSelected(null); setPinnedRepoDir(null);
-  }, [ws.id]);
+  }, [task.id]);
 
   const persist = (key: string, val: string) => { try { localStorage.setItem(key, val); } catch {} };
   const changeView = (v: ViewMode) => { setViewMode(v); persist(LS_VIEW, v); };
   const toggleHide = () => setHideUntracked(h => { const n = !h; persist(LS_HIDE, n ? "1" : "0"); return n; });
 
   const repo: GitRepo | undefined = repos.find(r => r.dir_name === activeRepoDir) ?? repos[0];
-  // Every group is diffable: the backend's resolve_workspace_git_path runs
+  // Every group is diffable: the backend's resolve_task_git_path runs
   // git in the group's OWN repo cwd (member.path), so repo_root members
   // (live checkouts that live outside the wrapper subtree) resolve fine —
-  // safe_workspace_path is checked against that member cwd, not the wrapper.
+  // safe_task_path is checked against that member cwd, not the wrapper.
   const clickable = !!repo;
 
   const filt = (files: GitFile[]) => {
@@ -151,13 +151,13 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const staged   = useMemo(() => filt(repo?.staged   ?? []), [repo, hideUntracked, search]);
   const stagedCount = staged.length;
 
-  // "Viewed" marks (GH #42). Subscribe to this workspace's map so the per-pane
+  // "Viewed" marks (GH #42). Subscribe to this task's map so the per-pane
   // "N/M viewed" header counts re-render when a row is ticked.
-  const viewedMap = useFileViewed(s => s.byWs[ws.id]);
+  const viewedMap = useFileViewed(s => s.byTask[task.id]);
   const pruneViewed = useFileViewed(s => s.prune);
   // Drop viewed marks for files that no longer have changes (committed /
   // discarded) so localStorage doesn't accumulate dead paths. Keyed by the
-  // workspace-relative path (member files prefixed with their dir_name).
+  // task-relative path (member files prefixed with their dir_name).
   useEffect(() => {
     if (!status) return;
     const valid = new Set<string>();
@@ -166,8 +166,8 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       for (const f of r.staged) valid.add(pfx + f.path);
       for (const f of r.unstaged) valid.add(pfx + f.path);
     }
-    pruneViewed(ws.id, valid);
-  }, [status, ws.id, pruneViewed]);
+    pruneViewed(task.id, valid);
+  }, [status, task.id, pruneViewed]);
 
   // ── git mutations ──
   const dir = repo?.dir_name ?? "";
@@ -186,9 +186,9 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   const closePreviewDiff = useCallback(() => {
     setSelected(null);
     const st = useApp.getState();
-    const diff = (st.tabs[ws.id] || []).find(t => t.preview && t.type === "diff");
-    if (diff) st.closeTab(ws.id, diff.id);
-  }, [ws.id]);
+    const diff = (st.tabs[task.id] || []).find(t => t.preview && t.type === "diff");
+    if (diff) st.closeTab(task.id, diff.id);
+  }, [task.id]);
 
   const focusNext = useCallback((pane: "unstaged" | "staged", path: string) => {
     const list = orderedFiles(pane === "unstaged" ? unstaged : staged, viewMode)
@@ -209,7 +209,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   // and switch the active repo sub-tab if the next file lives in another repo.
   // Without this, the row highlight stays stuck on the file you started from.
   const previewDiffPath = useApp(s => {
-    const t = (s.tabs[ws.id] || []).find(t => t.preview && t.type === "diff");
+    const t = (s.tabs[task.id] || []).find(t => t.preview && t.type === "diff");
     return t ? (t as any).path as string : null;
   });
   useEffect(() => {
@@ -232,14 +232,14 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
   // Bulk "Stage all" / "Unstage all" leave the selection alone.
   const doStage = (paths: string[]) => {
     if (paths.length === 0) return;
-    workspaceStage(ws.id, dir, paths).then(() => {
+    taskStage(task.id, dir, paths).then(() => {
       if (paths.length === 1) focusNext("unstaged", paths[0]);
       refresh();
     }).catch(e => pushToast(String(e), "error"));
   };
   const doUnstage = (paths: string[]) => {
     if (paths.length === 0) return;
-    workspaceUnstage(ws.id, dir, paths).then(() => {
+    taskUnstage(task.id, dir, paths).then(() => {
       if (paths.length === 1) focusNext("staged", paths[0]);
       refresh();
     }).catch(e => pushToast(String(e), "error"));
@@ -259,7 +259,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       destructive: true,
     }).then(ok => {
       if (!ok) return;
-      workspaceDiscard(ws.id, dir, paths)
+      taskDiscard(task.id, dir, paths)
         .then(() => {
           if (opts?.pane && paths.length === 1) focusNext(opts.pane, paths[0]);
           else closePreviewDiff();
@@ -267,7 +267,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
         })
         .catch(err => pushToast(String(err), "error"));
     });
-  }, [ws.id, dir, focusNext, closePreviewDiff, refresh, pushToast]);
+  }, [task.id, dir, focusNext, closePreviewDiff, refresh, pushToast]);
 
   const doCommit = (push: boolean) => {
     if (!subject.trim() || committing) return;
@@ -276,7 +276,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     // commit lands (well before the push returns), so the 4s status poll could
     // fire mid-push and snap the pill away unless the pin is already in place.
     setPinnedRepoDir(dir);
-    workspaceCommit(ws.id, dir, subject, body, false, push)
+    taskCommit(task.id, dir, subject, body, false, push)
       .then(() => {
         setSubject(""); setBody("");
         // The committed files no longer have changes — drop the now-stale
@@ -328,8 +328,8 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
       e.preventDefault();
       e.stopPropagation();
       if (isStage) {
-        const fn = pane === "unstaged" ? workspaceStage : workspaceUnstage;
-        fn(ws.id, dir, [path]).then(() => {
+        const fn = pane === "unstaged" ? taskStage : taskUnstage;
+        fn(task.id, dir, [path]).then(() => {
           focusNext(pane, path);   // advance to the next file in this pane
           refresh();
         }).catch(err => pushToast(String(err), "error"));
@@ -339,7 +339,7 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [selected, dir, ws.id, refresh, pushToast, stageBinding, discardBinding, focusNext, doDiscard]);
+  }, [selected, dir, task.id, refresh, pushToast, stageBinding, discardBinding, focusNext, doDiscard]);
 
   if (!status) {
     return <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
@@ -401,8 +401,8 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
                 // a stale file from another repo.
                 setSelected(null);
                 const st = useApp.getState();
-                const diff = (st.tabs[ws.id] || []).find(t => t.preview && t.type === "diff");
-                if (diff) st.closeTab(ws.id, diff.id);
+                const diff = (st.tabs[task.id] || []).find(t => t.preview && t.type === "diff");
+                if (diff) st.closeTab(task.id, diff.id);
               }}
               title={`${r.name} (${r.branch})`}
               className={cn(
@@ -460,13 +460,13 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           title="Unstaged" files={unstaged} pane="unstaged" viewMode={viewMode}
           collapsed={collapsed} setCollapsed={setCollapsed}
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
-          wsId={ws.id} viewedCount={countViewed(unstaged)}
+          taskId={task.id} viewedCount={countViewed(unstaged)}
           headerAction={unstaged.length > 0 ? { label: "Stage all", onClick: () => doStage(unstaged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("unstaged", p)}
           onToggle={doStage}
           onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "unstaged" } : undefined)}
           rowActionIcon="down"
-          root={ws.path} repoDir={dir}
+          root={task.path} repoDir={dir}
           style={{ flexBasis: `${ratio * 100}%`, flexGrow: 0, flexShrink: 0 }}
         />
         <div className="relative h-px shrink-0 bg-[var(--color-border-soft)]">
@@ -476,13 +476,13 @@ export function GitPanel({ ws, status, refresh, onOpenDiff, onDoubleClickDiff }:
           title="Staged" files={staged} pane="staged" viewMode={viewMode}
           collapsed={collapsed} setCollapsed={setCollapsed}
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
-          wsId={ws.id} viewedCount={countViewed(staged)}
+          taskId={task.id} viewedCount={countViewed(staged)}
           headerAction={staged.length > 0 ? { label: "Unstage all", onClick: () => doUnstage(staged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("staged", p)}
           onToggle={doUnstage}
           onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "staged" } : undefined)}
           rowActionIcon="up"
-          root={ws.path} repoDir={dir}
+          root={task.path} repoDir={dir}
           className="min-h-0 flex-1"
         />
       </div>
@@ -571,8 +571,8 @@ interface PaneProps {
   selectedKey: string | null;
   /** Display glyph for the stage/unstage shortcut, e.g. "⌘S". */
   stageGlyph: string;
-  /** Owning workspace id — keys the per-file viewed marks + comment counts. */
-  wsId: string;
+  /** Owning task id — keys the per-file viewed marks + comment counts. */
+  taskId: string;
   /** How many of this pane's files are currently marked viewed (header badge). */
   viewedCount?: number;
   headerAction?: { label: string; onClick: () => void };
@@ -584,9 +584,9 @@ interface PaneProps {
    *  contract as onToggle so a folder row discards its whole subtree. */
   onDiscard: (paths: string[]) => void;
   rowActionIcon: "up" | "down";
-  /** Workspace absolute root + active repo's dir_name. Used to build the
-   *  absolute / workspace-relative paths for the "Copy path" context items.
-   *  Git paths are repo-relative, so the workspace-relative form prefixes
+  /** Task absolute root + active repo's dir_name. Used to build the
+   *  absolute / task-relative paths for the "Copy path" context items.
+   *  Git paths are repo-relative, so the task-relative form prefixes
    *  `repoDir` (empty for the host repo). */
   root: string;
   repoDir: string;
@@ -596,7 +596,7 @@ interface PaneProps {
 
 function Pane({
   title, files, pane, viewMode, collapsed, setCollapsed, clickable, selectedKey, stageGlyph,
-  wsId, viewedCount = 0, headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, className, style,
+  taskId, viewedCount = 0, headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, className, style,
 }: PaneProps) {
   return (
     <div className={cn("flex flex-col overflow-hidden", className)} style={style}>
@@ -629,7 +629,7 @@ function Pane({
           <FileList
             files={files} pane={pane} viewMode={viewMode}
             collapsed={collapsed} setCollapsed={setCollapsed} clickable={clickable}
-            selectedKey={selectedKey} stageGlyph={stageGlyph} wsId={wsId}
+            selectedKey={selectedKey} stageGlyph={stageGlyph} taskId={taskId}
             onRowClick={onRowClick}
             onToggle={onToggle} onDiscard={onDiscard} rowActionIcon={rowActionIcon}
             root={root} repoDir={repoDir}
@@ -679,7 +679,7 @@ function rowProps(p: Omit<PaneProps, "title" | "headerAction" | "className" | "s
     pane: p.pane,
     selectedKey: p.selectedKey,
     stageGlyph: p.stageGlyph,
-    wsId: p.wsId,
+    taskId: p.taskId,
     clickable: p.clickable,
     onClick: p.onRowClick,
     onToggle: p.onToggle,
@@ -847,14 +847,14 @@ function TreeView(props: Omit<PaneProps, "title" | "headerAction" | "className" 
 // the diff preview. Double click stages / unstages (same as the trailing
 // arrow button). The arrow + the staging double-click work even on
 // non-clickable repo_root rows (no diff there, but staging is fine).
-function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, wsId, clickable, onClick, onToggle, onDiscard, rowActionIcon, root, repoDir }: {
+function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId, clickable, onClick, onToggle, onDiscard, rowActionIcon, root, repoDir }: {
   file: GitFile;
   label: string;
   depth?: number;
   pane: "unstaged" | "staged";
   selectedKey: string | null;
   stageGlyph: string;
-  wsId: string;
+  taskId: string;
   clickable: boolean;
   onClick: (p: string) => void;
   onToggle: (paths: string[]) => void;
@@ -867,14 +867,14 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, wsId, 
   const ActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
   const actionLabel = rowActionIcon === "down" ? "Stage" : "Unstage";
   const selected = selectedKey === `${pane} ${file.path}`;
-  // Workspace-relative path: how viewed marks + review comments key a file
+  // Task-relative path: how viewed marks + review comments key a file
   // (matches the diff tab's path, prefixed for member repos).
   const fullPath = repoDir ? `${repoDir}/${file.path}` : file.path;
-  const viewed = useIsViewed(wsId, fullPath, file.fp);
+  const viewed = useIsViewed(taskId, fullPath, file.fp);
   // Live count of pending inline comments left on this file (GH #28). A
   // primitive return keeps the selector reference-stable.
   const commentCount = useReviewComments(s => {
-    const arr = s.byWs[wsId];
+    const arr = s.byTask[taskId];
     if (!arr) return 0;
     let n = 0;
     for (const c of arr) if (c.file === fullPath) n++;
@@ -885,7 +885,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, wsId, 
   const canView = file.fp !== "";
   const toggleViewed = (e: React.MouseEvent) => {
     e.stopPropagation();
-    useFileViewed.getState().toggle(wsId, fullPath, file.fp);
+    useFileViewed.getState().toggle(taskId, fullPath, file.fp);
   };
   return (
     <ContextMenuRoot>
@@ -979,7 +979,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, wsId, 
           Discard changes
         </ContextMenuItem>
         {canView && (
-          <ContextMenuItem onSelect={() => useFileViewed.getState().toggle(wsId, fullPath, file.fp)}>
+          <ContextMenuItem onSelect={() => useFileViewed.getState().toggle(taskId, fullPath, file.fp)}>
             <Check />
             {viewed ? "Mark as not viewed" : "Mark as viewed"}
           </ContextMenuItem>

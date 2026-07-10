@@ -6,8 +6,8 @@
 // files-to-copy globs, and the agent sandbox allow-lists.
 //
 // SECURITY: termic always reads/writes `.termic.yaml` at the project's
-// `root_path` (the user's main checkout), never a per-workspace
-// worktree. That path is OUTSIDE every per-workspace sandbox, so a
+// `root_path` (the user's main checkout), never a per-task
+// worktree. That path is OUTSIDE every per-task sandbox, so a
 // caged agent cannot write the config that gates its own sandbox.
 // See `repo_config_for` in lib.rs.
 //
@@ -37,7 +37,7 @@ pub struct RepoConfig {
     pub sandbox: RepoSandbox,
     /// Glob patterns hidden from the "All files" tree for this repo
     /// (team-shared, committed). Matched against each entry's name and
-    /// its workspace-relative path. Unioned with the user's personal
+    /// its task-relative path. Unioned with the user's personal
     /// `Settings.file_tree_exclude`. `.git` is always hidden regardless.
     #[serde(deserialize_with = "de_vec")]
     pub exclude: Vec<String>,
@@ -52,7 +52,7 @@ pub struct RepoScripts {
     /// Preview URL template — same `$PORT` / `$TERMIC_PORT` expansion
     /// as the project's legacy `preview_url`.
     pub preview_url: String,
-    /// Globs copied from the repo root into each new workspace worktree.
+    /// Globs copied from the repo root into each new task worktree.
     #[serde(deserialize_with = "de_vec")]
     pub files_to_copy: Vec<String>,
 }
@@ -60,9 +60,9 @@ pub struct RepoScripts {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RepoSandbox {
-    /// New workspaces of this repo start sandboxed when true.
+    /// New tasks of this repo start sandboxed when true.
     pub enabled_by_default: bool,
-    /// Extra allowed-host regexes for the per-workspace network proxy,
+    /// Extra allowed-host regexes for the per-task network proxy,
     /// on top of the built-in per-CLI + package-registry allow-list.
     #[serde(deserialize_with = "de_vec")]
     pub allowed_hosts: Vec<String>,

@@ -27,7 +27,7 @@
      (so panel edges and the top-bar separator actually read), and
      a neutral off-white fg without the warm cream tint our base
      Dark uses. Same terracotta accent. */
-  /* Shared height for every bottom bar (workspace FooterBar, sidebar footer,
+  /* Shared height for every bottom bar (task FooterBar, sidebar footer,
      right-panel footer strip, split-terminal tab strip) so they can't desync.
      Equals Tailwind h-9. Used via h-[var(--bottom-bar-h)] / bottom-[…] and the
      collapsed inline heights. */
@@ -65,6 +65,12 @@
   --color-ok-fg:     #ffffff;
   --color-warn:      #f0b13a;
   --color-err:       #ef5350;
+
+  /* Task location glyph tint (worktree + main checkout share it). A neutral
+     warm-gray sitting a step below the task title (between fg-dim and
+     fg-faint) so it reads as a faded hint, not a badge. The glyph shape
+     (link = main checkout, branch = worktree) carries the distinction. */
+  --color-loc:  #8c8985;
 
   --color-cli-claude:  #d97757;
   --color-cli-codex:   #16a34a;

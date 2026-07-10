@@ -1591,7 +1591,7 @@ const fileIcons: FileIcons = {
     fileNames: ["pnpm-lock.yaml"],
   },
   pnpm: {
-    fileNames: ["pnpm-workspace.yaml", ".pnpmfile.cjs"],
+    fileNames: ["pnpm-task.yaml", ".pnpmfile.cjs"],
   },
   "poetry-lock": {
     fileNames: ["poetry.lock"],
@@ -2035,7 +2035,7 @@ const fileIcons: FileIcons = {
     fileNames: ["stylua.toml"],
   },
   sublime: {
-    fileExtensions: ["sublime-project", "sublime-workspace"],
+    fileExtensions: ["sublime-project", "sublime-task"],
   },
   "super-collider": {
     fileExtensions: ["sc", "scd"],
@@ -2333,9 +2333,9 @@ const fileIcons: FileIcons = {
       "vitest.config.js",
       "vitest.config.mjs",
       "vitest.config.cjs",
-      "vitest.workspace.js",
-      "vitest.workspace.ts",
-      "vitest.workspace.json",
+      "vitest.task.js",
+      "vitest.task.ts",
+      "vitest.task.json",
     ],
   },
   "vs-codium": {},
@@ -2347,7 +2347,7 @@ const fileIcons: FileIcons = {
       "vsixmanifest",
       "vsix",
       "code-workplace",
-      "code-workspace",
+      "code-task",
       "code-profile",
       "code-snippets",
     ],
@@ -2578,7 +2578,7 @@ const fileIcons: FileIcons = {
     fileExtensions: ["xaml", "axaml"],
   },
   xcode: {
-    fileExtensions: ["xcsettings", "xcworkspacedata"],
+    fileExtensions: ["xcsettings", "xctaskdata"],
   },
   xmake: {
     fileNames: ["xmake.lua"],

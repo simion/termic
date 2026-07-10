@@ -5,15 +5,14 @@
 // URL, configure) behind a chevron. Individual Run tabs carry their own
 // pill controls (play / restart / stop).
 //
-// Spotlight-enabled projects: while this workspace is spotlighted its run
+// Spotlight-enabled projects: while this task is spotlighted its run
 // executes at the repo root (spawn-time cwd in TerminalPane) — the tooltip
 // says which mode the next run will use.
 
 import { useEffect, useState } from "react";
 import { useApp } from "@/store/app";
-import { useUI } from "@/store/ui";
 import { useShallow } from "zustand/react/shallow";
-import type { Workspace, TerminalTab } from "@/lib/types";
+import type { Task, TerminalTab } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import {
@@ -21,20 +20,20 @@ import {
   DropdownLabel, DropdownSeparator,
 } from "@/components/ui/Dropdown";
 import { ptyKill, openPath } from "@/lib/ipc";
-import { launchRunTabs, resolveRunTargets, runsAtRepoRoot, type RunTarget } from "@/lib/runTabs";
+import { launchRunTabs, launchSetupTab, resolveRunTargets, runsAtRepoRoot, type RunTarget } from "@/lib/runTabs";
 import { Play, Square, ChevronDown, Wrench, Globe, Settings } from "lucide-react";
 
-export function RunControls({ ws }: { ws: Workspace }) {
-  // ALL run tabs — multi-repo workspaces have one per repo (host + members).
+export function RunControls({ task }: { task: Task }) {
+  // ALL run tabs — multi-repo tasks have one per repo (host + members).
   // useShallow: filter() returns a fresh array each call.
-  const runTabs = useApp(useShallow(s => (s.tabs[ws.id] ?? []).filter(
+  const runTabs = useApp(useShallow(s => (s.tabs[task.id] ?? []).filter(
     (t): t is TerminalTab => t.type === "terminal" && !!(t as TerminalTab).runTab,
   )));
-  const project = useApp(s => s.projects.find(p => p.id === ws.project_id));
+  const project = useApp(s => s.projects.find(p => p.id === task.project_id));
   const hasSetup = !!project?.setup_script?.trim();
-  const isSpotlighted = useApp(s => s.spotlightWsId[ws.project_id] === ws.id);
+  const isSpotlighted = useApp(s => s.spotlightTaskId[task.project_id] === task.id);
   const atRoot = runsAtRepoRoot(project);
-  const isMultiRepo = (ws.composition?.length ?? 0) > 0;
+  const isMultiRepo = (task.composition?.length ?? 0) > 0;
   const [targets, setTargets] = useState<RunTarget[]>([]);
   const runLabel = isMultiRepo ? "Run all" : "Run";
   const stopLabel = isMultiRepo ? "Stop all" : "Stop";
@@ -43,29 +42,29 @@ export function RunControls({ ws }: { ws: Workspace }) {
     ? "Run all configured run scripts"
     : atRoot && isSpotlighted
       ? "Run at the repository root (spotlight is active)"
-      : atRoot && !ws.is_repo_root
-        ? "Run in this worktree. Spotlighted workspaces run at the repository root."
+      : atRoot && !task.is_main_checkout
+        ? "Run in this worktree. Spotlighted tasks run at the repository root."
         : "Run (opens the run terminal tabs)";
   // ptyId is cleared on process exit, so its presence ≈ "running".
   const running = runTabs.some(t => !!t.ptyId);
   // Host preview URL resolved from CURRENT config (Settings / `.termic.yaml`),
   // not the run tab's launch-time snapshot — otherwise configuring preview
-  // after a run started, or a single-repo workspace (no baked target), would
+  // after a run started, or a single-repo task (no baked target), would
   // leave the URL empty. The URL is a local dev server, so the browser button
   // is still gated on `running` to avoid opening a connection-refused page.
   const previewUrl = targets.find(t => t.member === "")?.previewUrl ?? null;
 
-  // Resolve run targets (incl. host preview URL) for EVERY workspace, not just
+  // Resolve run targets (incl. host preview URL) for EVERY task, not just
   // multi-repo — single-repo needs the host target too. One `.termic.yaml`
-  // read per workspace switch (RunControls renders only for the active
-  // workspace), so the cost is negligible.
+  // read per task switch (RunControls renders only for the active
+  // task), so the cost is negligible.
   useEffect(() => {
     let cancelled = false;
-    resolveRunTargets(ws.id)
+    resolveRunTargets(task.id)
       .then(next => { if (!cancelled) setTargets(next); })
       .catch(() => { if (!cancelled) setTargets([]); });
     return () => { cancelled = true; };
-  }, [ws.id, ws.composition, project?.run_script, project?.preview_url, ws.port, ws.name]);
+  }, [task.id, task.composition, project?.run_script, project?.preview_url, task.port, task.name]);
 
   return (
     <>
@@ -101,7 +100,7 @@ export function RunControls({ ws }: { ws: Workspace }) {
         >
           <Button
             size="sm" variant="ghost" className="gap-1.5" data-no-drag
-            onClick={() => { void launchRunTabs(ws.id); }}
+            onClick={() => { void launchRunTabs(task.id); }}
           >
             <Play className="h-3.5 w-3.5" />
             <span>{runLabel}</span>
@@ -129,7 +128,7 @@ export function RunControls({ ws }: { ws: Workspace }) {
                     key={target.member || "__host__"}
                     onSelect={() => {
                       if (runningTarget && tab?.ptyId) ptyKill(tab.ptyId).catch(() => {});
-                      else void launchRunTabs(ws.id, target.member);
+                      else void launchRunTabs(task.id, target.member);
                     }}
                   >
                     {runningTarget
@@ -142,9 +141,11 @@ export function RunControls({ ws }: { ws: Workspace }) {
               <DropdownSeparator />
             </>
           )}
-          {/* Setup is a one-time action — dropdown, not a standing button. */}
+          {/* Setup is a one-time action — dropdown, not a standing button.
+              Explicit click, so it's fine to focus the tab (unlike the
+              silent background launch right after task creation). */}
           {hasSetup && (
-            <DropdownItem onSelect={() => useUI.getState().requestRunScript(ws.id, "setup")}>
+            <DropdownItem onSelect={() => { launchSetupTab(task.id).catch(() => {}); }}>
               <Wrench className="h-4 w-4" />
               <span>Run setup</span>
             </DropdownItem>
@@ -155,7 +156,7 @@ export function RunControls({ ws }: { ws: Workspace }) {
               <span>Open {previewUrl}</span>
             </DropdownItem>
           )}
-          <DropdownItem onSelect={() => useApp.getState().openSettings("repositories", ws.project_id)}>
+          <DropdownItem onSelect={() => useApp.getState().openSettings("repositories", task.project_id)}>
             <Settings className="h-4 w-4" />
             <span>Configure</span>
           </DropdownItem>

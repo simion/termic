@@ -1,6 +1,6 @@
 // Pending review-comments affordance (GH issue #28). Appears in the footer
 // once the user has left one or more inline comments anywhere in a
-// workspace's diffs. Opens a popover that lists every pending comment
+// task's diffs. Opens a popover that lists every pending comment
 // (grouped by file, click to jump to the file), lets the user pick which
 // running agent to send to, and fires the whole batch as one message.
 //
@@ -11,7 +11,7 @@
 import { useMemo, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { useWsComments, useReviewComments, composeCommentsMessage } from "@/store/reviewComments";
+import { useTaskComments, useReviewComments, composeCommentsMessage } from "@/store/reviewComments";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -33,18 +33,18 @@ function locLabel(start: number | null, end: number | null): string {
   return `line ${start}`;
 }
 
-export function ReviewCommentsBar({ wsId, compact = false, className }: {
-  wsId: string;
+export function ReviewCommentsBar({ taskId, compact = false, className }: {
+  taskId: string;
   compact?: boolean;
   className?: string;
 }) {
-  const comments = useWsComments(wsId);
+  const comments = useTaskComments(taskId);
   const remove = useReviewComments(s => s.remove);
   const clear = useReviewComments(s => s.clear);
 
-  const tabsForWs = useApp(s => s.tabs[wsId]);
+  const tabsForTask = useApp(s => s.tabs[taskId]);
   const agents = useApp(s => s.agents);
-  const activeTabId = useApp(s => s.activeTab[wsId]);
+  const activeTabId = useApp(s => s.activeTab[taskId]);
   const patchTab = useApp(s => s.patchTab);
   const setActiveTabId = useApp(s => s.setActiveTabId);
   const openPreviewTab = useApp(s => s.openPreviewTab);
@@ -55,10 +55,10 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
   // comments are instructions to act on, so they must not land in a raw shell
   // or a dev-server process.
   const targets = useMemo<TerminalTab[]>(
-    () => (tabsForWs || []).filter(
+    () => (tabsForTask || []).filter(
       (t): t is TerminalTab => t.type === "terminal" && !!t.ptyId && !isTerminalCli(t.cli, agents),
     ),
-    [tabsForWs, agents],
+    [tabsForTask, agents],
   );
 
   const [open, setOpen] = useState(false);
@@ -76,7 +76,7 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
   if (count === 0) return null;
 
   function jumpTo(file: string) {
-    openPreviewTab(wsId, { type: "diff", path: file, title: file.split("/").pop() || file });
+    openPreviewTab(taskId, { type: "diff", path: file, title: file.split("/").pop() || file });
     setOpen(false);
   }
 
@@ -99,13 +99,13 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
     }
     // Arm work-done detection exactly as a keyboard Enter would (delivery
     // writes straight to the PTY, bypassing term.onData).
-    patchTab(wsId, target.id, { lastInputAt: Date.now() });
-    clear(wsId);
+    patchTab(taskId, target.id, { lastInputAt: Date.now() });
+    clear(taskId);
     setSending(false);
     setOpen(false);
     // Surface the agent we just sent to: switch to its tab and drop keyboard
     // focus into the terminal so the user can keep steering it immediately.
-    setActiveTabId(wsId, target.id);
+    setActiveTabId(taskId, target.id);
     focusTerminalTab(target.id);
     pushToast(`Sent ${n} comment${n === 1 ? "" : "s"} to ${label}`);
   }
@@ -148,7 +148,7 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
             Review comments
           </span>
           <button
-            onClick={() => { clear(wsId); setOpen(false); }}
+            onClick={() => { clear(taskId); setOpen(false); }}
             className="flex items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-err)]"
           >
             <Trash2 className="h-3 w-3" /> Discard all
@@ -181,7 +181,7 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
                     </div>
                   </div>
                   <button
-                    onClick={() => remove(wsId, c.id)}
+                    onClick={() => remove(taskId, c.id)}
                     title="Remove comment"
                     className="mt-0.5 shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
                   >
@@ -223,7 +223,7 @@ export function ReviewCommentsBar({ wsId, compact = false, className }: {
           <span className="text-[11px] text-[var(--color-fg-faint)]">
             {target
               ? <>Sends to <span className="text-[var(--color-fg-dim)]">{tabLabel(target)}</span></>
-              : "No running agent in this workspace"}
+              : "No running agent in this task"}
           </span>
           <Button variant="primary" size="sm" className="gap-1.5" disabled={!target || sending} onClick={send}>
             <Send className="h-3.5 w-3.5" /> {sending ? "Sending…" : "Send"}

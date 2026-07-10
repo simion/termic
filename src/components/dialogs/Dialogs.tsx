@@ -5,7 +5,8 @@ import { useEffect } from "react";
 import { useUI } from "@/store/ui";
 import { settingsLoad } from "@/lib/ipc";
 import { NewProjectDialog } from "./NewProjectDialog";
-import { NewWorkspaceDialog } from "./NewWorkspaceDialog";
+import { NewTaskDialog } from "./NewTaskDialog";
+import { QuickCreateProgressDialog } from "./QuickCreateProgressDialog";
 import { CustomCommandDialog } from "./CustomCommandDialog";
 import { EditCommandDialog } from "./EditCommandDialog";
 import { ResumeOverrideDialog } from "./ResumeOverrideDialog";
@@ -13,7 +14,7 @@ import { ShortcutsHelpDialog } from "./ShortcutsHelpDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
 import { ChangelogDialog } from "./ChangelogDialog";
 import { BroadcastDialog } from "./BroadcastDialog";
-import { WorkspaceSandboxDialog } from "./WorkspaceSandboxDialog";
+import { TaskSandboxDialog } from "./TaskSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { TerminalDropDialog } from "./TerminalDropDialog";
 import { FileFinderDialog } from "./FileFinderDialog";
@@ -34,7 +35,8 @@ export function Dialogs() {
   return (
     <>
       <NewProjectDialog />
-      <NewWorkspaceDialog />
+      <NewTaskDialog />
+      <QuickCreateProgressDialog />
       <CustomCommandDialog />
       <EditCommandDialog />
       <ResumeOverrideDialog />
@@ -42,7 +44,7 @@ export function Dialogs() {
       <WelcomeDialog />
       <ChangelogDialog />
       <BroadcastDialog />
-      <WorkspaceSandboxDialog />
+      <TaskSandboxDialog />
       <ConfirmDialog />
       <TerminalDropDialog />
       <FileFinderDialog />
@@ -50,7 +52,7 @@ export function Dialogs() {
       <ProjectPickerDialog />
       <CommandPalette />
       {/* Blocking work overlay: shown while a slow IPC call is in flight
-          (archive workspace, etc.). Click-blocks the whole window so users
+          (archive task, etc.). Click-blocks the whole window so users
           don't fire the action twice mid-wait. */}
       {busyMessage && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55">

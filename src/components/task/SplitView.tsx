@@ -2,7 +2,7 @@
 // SplitNodeView renders the extra-pane subtree's CHROME as absolutely-
 // positioned leaf divs: pane header, empty-pane launcher, dim overlay,
 // resize handles. Tab CONTENT is NOT rendered here — it lives in
-// WorkspaceView's flat content layer (one stable parent for every tab,
+// TaskView's flat content layer (one stable parent for every tab,
 // keyed by tab id) so moving a tab between panes never reparents/remounts
 // it: terminals keep their PTY/xterm, editors keep their buffer.
 //
@@ -12,7 +12,7 @@
 // drag for pointer events.
 
 import { useRef, useMemo } from "react";
-import type { Workspace } from "@/lib/types";
+import type { Task } from "@/lib/types";
 import type { SplitTree, SplitNode, PaneLeaf } from "@/lib/splitTree";
 import { getAllLeaves, findSplitById, computeLeafBounds, computeSplitNodeRects } from "@/lib/splitTree";
 import { useApp } from "@/store/app";
@@ -23,7 +23,7 @@ import { SplitLauncher } from "./SplitLauncher";
 // ── leaf pane chrome ──────────────────────────────────────────────────────────
 
 interface LeafProps {
-  ws: Workspace;
+  task: Task;
   leaf: PaneLeaf;
   isActive: boolean;
   xtermBg: string;
@@ -32,7 +32,7 @@ interface LeafProps {
 }
 
 function PaneLeafView({
-  ws, leaf, isActive, xtermBg, dimAmount, dimActive,
+  task, leaf, isActive, xtermBg, dimAmount, dimActive,
 }: LeafProps) {
   const setActivePaneId = useApp(s => s.setActivePaneId);
   const closePane = useApp(s => s.closePane);
@@ -45,19 +45,19 @@ function PaneLeafView({
       className="absolute inset-0 flex flex-col overflow-hidden"
       style={{ backgroundColor: xtermBg }}
       onMouseDown={() => {
-        if (!isActive) setActivePaneId(ws.id, leaf.id);
+        if (!isActive) setActivePaneId(task.id, leaf.id);
       }}
     >
       <PaneHeader
         leaf={leaf}
-        ws={ws}
-        onClose={() => closePane(ws.id, leaf.id)}
+        task={task}
+        onClose={() => closePane(task.id, leaf.id)}
       />
 
       {/* Content area: the actual tab content paints here from the flat
           layer above; only the empty-pane launcher renders locally. */}
       <div className="relative min-h-0 flex-1">
-        {(leaf.tabIds?.length ?? 0) === 0 && <SplitLauncher ws={ws} paneId={leaf.id} />}
+        {(leaf.tabIds?.length ?? 0) === 0 && <SplitLauncher task={task} paneId={leaf.id} />}
       </div>
 
       {/* Dim overlay for inactive panes — gray tint like iTerm2, not black.
@@ -76,7 +76,7 @@ function PaneLeafView({
 // ── flat absolute renderer ────────────────────────────────────────────────────
 
 export interface SplitViewProps {
-  ws: Workspace;
+  task: Task;
   node: SplitTree;
   activePaneId: string;
   xtermBg: string;
@@ -91,9 +91,9 @@ export interface SplitViewProps {
  * Terminals and agents survive splits without restarting.
  *
  * Receives the FULL tree (main included, for correct geometry + handles at
- * every seam) but skips the main leaf's chrome — WorkspaceView renders that.
+ * every seam) but skips the main leaf's chrome — TaskView renders that.
  */
-export function SplitNodeView({ ws, node, activePaneId, xtermBg, dimAmount, dimActive }: SplitViewProps) {
+export function SplitNodeView({ task, node, activePaneId, xtermBg, dimAmount, dimActive }: SplitViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const setSplitRatio = useApp(s => s.setSplitRatio);
 
@@ -133,7 +133,7 @@ export function SplitNodeView({ ws, node, activePaneId, xtermBg, dimAmount, dimA
             }}
           >
             <PaneLeafView
-              ws={ws}
+              task={task}
               leaf={leaf}
               isActive={isActive}
               xtermBg={xtermBg}
@@ -154,7 +154,7 @@ export function SplitNodeView({ ws, node, activePaneId, xtermBg, dimAmount, dimA
         return (
           <div
             key={sn.id}
-            // z-20: the flat content layer in WorkspaceView renders LATER in
+            // z-20: the flat content layer in TaskView renders LATER in
             // the DOM with z 1, so without an explicit z-index the handles
             // would paint underneath it. pointer-events-auto: the container
             // is pointer-events-none (main chrome sits below it).
@@ -175,14 +175,14 @@ export function SplitNodeView({ ws, node, activePaneId, xtermBg, dimAmount, dimA
                 const nodeSize = (isVert ? rect.w : rect.h) * totalPx;
                 if (!nodeSize) return;
                 const st = useApp.getState();
-                const liveFullTree = st.splitTree[ws.id];
+                const liveFullTree = st.splitTree[task.id];
                 if (!liveFullTree) return;
                 const liveSplit = findSplitById(liveFullTree, sn.id);
                 if (!liveSplit) return;
                 const newRatio = Math.max(0.05, Math.min(0.95, liveSplit.ratio + delta / nodeSize));
-                setSplitRatio(ws.id, sn.id, newRatio);
+                setSplitRatio(task.id, sn.id, newRatio);
               }}
-              onEnd={() => useApp.getState().saveSplitLayout(ws.id)}
+              onEnd={() => useApp.getState().saveSplitLayout(task.id)}
             />
           </div>
         );

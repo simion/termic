@@ -553,7 +553,7 @@ const folderIcons: FolderIcons = {
     folderNames: [".wxt"],
   },
   xcode: {
-    folderNames: ["xcodeproj", "xcworkspace", "xcshareddata", "xcschemes"],
+    folderNames: ["xcodeproj", "xctask", "xcshareddata", "xcschemes"],
   },
   xmake: {
     folderNames: ["xmake", ".xmake"],

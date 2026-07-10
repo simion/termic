@@ -7,7 +7,7 @@
 // drag-to-rearrange was removed: it hijacked pointer events from the pills.
 
 import { useState, useMemo, useRef, useEffect } from "react";
-import type { Workspace, Tab } from "@/lib/types";
+import type { Task, Tab } from "@/lib/types";
 import type { PaneLeaf } from "@/lib/splitTree";
 import { useApp } from "@/store/app";
 import { useShallow } from "zustand/react/shallow";
@@ -28,11 +28,11 @@ import { detectDropZone, setDropHighlight, clearDropHighlight, type DropZone } f
 
 interface PaneHeaderProps {
   leaf: PaneLeaf;
-  ws: Workspace;
+  task: Task;
   onClose: () => void;
 }
 
-export function PaneHeader({ leaf, ws, onClose }: PaneHeaderProps) {
+export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
   const paneId = leaf.id;
 
   // Backward compat: HMR keeps old in-memory state with `tabId` (not `tabIds`/`activeTabId`).
@@ -40,7 +40,7 @@ export function PaneHeader({ leaf, ws, onClose }: PaneHeaderProps) {
 
   const paneTabs = useApp(useShallow(s => {
     const ids: string[] = leaf.tabIds ?? ((leaf as any).tabId ? [(leaf as any).tabId] : []);
-    return ids.map(id => (s.tabs[ws.id] ?? []).find(t => t.id === id)).filter(Boolean) as Tab[];
+    return ids.map(id => (s.tabs[task.id] ?? []).find(t => t.id === id)).filter(Boolean) as Tab[];
   }));
 
   const setPaneActiveTab = useApp(s => s.setPaneActiveTab);
@@ -157,9 +157,9 @@ export function PaneHeader({ leaf, ws, onClose }: PaneHeaderProps) {
       const target = started ? hitTestDropTarget(ev.clientX, ev.clientY) : null;
       teardown();
       if (target) {
-        if (target.zone !== "center") moveTabToSplit(ws.id, tabId, target.toPaneId, target.zone);
-        else if (target.toPaneId) moveTabToPane(ws.id, tabId, target.toPaneId);
-        else moveTabToMain(ws.id, tabId);
+        if (target.zone !== "center") moveTabToSplit(task.id, tabId, target.toPaneId, target.zone);
+        else if (target.toPaneId) moveTabToPane(task.id, tabId, target.toPaneId);
+        else moveTabToMain(task.id, tabId);
       }
     }
     function onCancel() { teardown(); }
@@ -174,15 +174,15 @@ export function PaneHeader({ leaf, ws, onClose }: PaneHeaderProps) {
   // ⌘T from inside this pane opens this pane's "+" dropdown.
   useEffect(() => {
     function onNewTabMenu(e: Event) {
-      const { wsId: eWsId, paneId: ePaneId } = (e as CustomEvent).detail ?? {};
-      if (eWsId === ws.id && ePaneId === paneId) setOpen(true);
+      const { taskId: eTaskId, paneId: ePaneId } = (e as CustomEvent).detail ?? {};
+      if (eTaskId === task.id && ePaneId === paneId) setOpen(true);
     }
     window.addEventListener("termic-pane-new-tab-menu", onNewTabMenu);
     return () => window.removeEventListener("termic-pane-new-tab-menu", onNewTabMenu);
-  }, [ws.id, paneId]);
+  }, [task.id, paneId]);
 
-  const activeWorkspacePaneId = useApp(s => s.activePaneId[ws.id] ?? "");
-  const isPaneFocused = activeWorkspacePaneId === paneId;
+  const activeTaskPaneId = useApp(s => s.activePaneId[task.id] ?? "");
+  const isPaneFocused = activeTaskPaneId === paneId;
 
   const registry        = useApp(s => s.agents);
   const detectedClis    = useApp(s => s.detectedClis);
@@ -204,7 +204,7 @@ export function PaneHeader({ leaf, ws, onClose }: PaneHeaderProps) {
 
   function spawnPaneTab(cli: string) {
     suppressDropdownReturn.current = true;
-    addPaneTab(ws.id, paneId, cli);
+    addPaneTab(task.id, paneId, cli);
     setOpen(false);
   }
 
@@ -224,15 +224,15 @@ export function PaneHeader({ leaf, ws, onClose }: PaneHeaderProps) {
           paneTabs.map(tab => (
             <TabPill
               key={tab.id}
-              ws={ws}
+              task={task}
               tab={tab}
               active={tab.id === activeTabId}
               paneFocused={isPaneFocused}
               compact
               // focusPaneTab: keyboard focus must follow the click so ⌘W (which
               // derives the pane from DOM focus) targets THIS pane afterwards.
-              onSelect={() => { setPaneActiveTab(ws.id, paneId, tab.id); focusPaneTab(tab.id); }}
-              onClose={() => { void requestClosePaneTab(ws.id, paneId, tab.id); }}
+              onSelect={() => { setPaneActiveTab(task.id, paneId, tab.id); focusPaneTab(tab.id); }}
+              onClose={() => { void requestClosePaneTab(task.id, paneId, tab.id); }}
               renaming={null}
               onStartRename={() => {}}
               onChangeRename={() => {}}

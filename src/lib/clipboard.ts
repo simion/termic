@@ -12,7 +12,7 @@ export function copyToClipboard(text: string, label = "text") {
     .catch(() => useUI.getState().pushToast("Couldn't copy to clipboard", "error"));
 }
 
-/** Join a workspace root with a workspace-relative path into an absolute
+/** Join a task root with a task-relative path into an absolute
  *  path, tolerating an empty relative segment and stray slashes. */
 export function joinPath(root: string, rel: string): string {
   const r = rel.replace(/^\/+/, "");

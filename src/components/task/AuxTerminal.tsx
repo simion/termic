@@ -1,5 +1,5 @@
 // Auxiliary shell in the right-panel footer / main-pane split. Spawns the
-// user's login shell ($SHELL, see loginShell) in the workspace path so the
+// user's login shell ($SHELL, see loginShell) in the task path so the
 // user has a scratch terminal for git/grep/etc. without touching the agent
 // CLI's PTY.
 //
@@ -24,7 +24,7 @@ import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
-import { TerminalExitedBanner } from "@/components/workspace/TerminalExitedBanner";
+import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
@@ -33,7 +33,7 @@ import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 // `currentTerminalTheme()` picks the matching palette at mount; the
 // themeMode effect below pushes updates into live instances.
 
-export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle }: { wsId?: string; wsPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void }) {
+export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onTitle }: { taskId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void }) {
   // Keep the latest onTitle in a ref so the long-lived spawn effect's
   // onTitleChange handler always calls the current callback without
   // re-running (and respawning the PTY) when the parent re-renders.
@@ -175,17 +175,17 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
       if (cancelled) return;
       try {
         const { id: ptyId } = await ipc.ptySpawn({
-          cwd: wsPath, cmd: shell, args: ["-l"],
+          cwd: taskPath, cmd: shell, args: ["-l"],
           // Signal terminal theme so prompts / status bars that honor
           // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right
           // colors for the current chrome.
           env: { COLORFGBG: currentColorFgBg() },
-          // NEVER pass workspace_id here. The aux shell is a scratch
+          // NEVER pass task_id here. The aux shell is a scratch
           // zsh for the user's own git/grep/etc work - sandboxing it
           // would block exactly the moves the user opened it for
           // (`gh pr create`, `kubectl get pods`, etc.). The agent CLI
           // is the only thing we sandbox; everything else inside the
-          // workspace runs with the user's normal permissions.
+          // task runs with the user's normal permissions.
           rows: Math.max(8, term.rows), cols: Math.max(40, term.cols),
         });
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
@@ -212,9 +212,9 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
         // the focus doesn't stick. Direct (no rAF: that freezes in occluded
         // windows). Gated on `autoFocus` (so launch-restored and
         // preview/footer shells never grab focus) and on still being the
-        // active workspace (so a quick workspace switch mid-spawn can't yank
+        // active task (so a quick task switch mid-spawn can't yank
         // focus into a now-background terminal).
-        if (autoFocus && !cancelled && (!wsId || useApp.getState().activeWorkspaceId === wsId)) {
+        if (autoFocus && !cancelled && (!taskId || useApp.getState().activeTaskId === taskId)) {
           try { term.focus(); } catch {}
         }
       } catch (e) { term.write(`\x1b[1;31mspawn failed: ${e}\x1b[0m\r\n`); }
@@ -250,7 +250,7 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
       try { rendererAddon?.dispose(); } catch {}
       term.dispose();
     };
-  }, [wsPath, gen]);
+  }, [taskPath, gen]);
 
   // ⌘K clear handler — fires only when this aux terminal owns
   // focus. Cheap to subscribe per-instance; the dispatch is rare.
@@ -268,8 +268,8 @@ export function AuxTerminal({ wsId, wsPath, active, autoFocus, onExited, onTitle
 
   useEffect(() => {
     // Re-fit on becoming active, but DO NOT steal focus — focus belongs to
-    // the main agent terminal on workspace switch. Stealing it here meant
-    // typing immediately after switching workspaces went into the scratch
+    // the main agent terminal on task switch. Stealing it here meant
+    // typing immediately after switching tasks went into the scratch
     // shell instead of the agent.
     if (active) requestAnimationFrame(() => { try { fitRef.current?.fit(); } catch {} });
   }, [active]);

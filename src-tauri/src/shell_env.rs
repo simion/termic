@@ -220,14 +220,14 @@ fn select_injected(
 /// Vars we must NOT carry from the probed login env: ones we set ourselves
 /// per spawn (terminal identity), pure shell-session bookkeeping, and
 /// per-shell activation state that would be wrong to FREEZE at startup and
-/// force onto every workspace.
+/// force onto every task.
 ///
 /// The venv/conda group is the important one: if the user's rc auto-activates
 /// an environment, the one-time probe captures its `VIRTUAL_ENV` / `CONDA_*`,
 /// and injecting that into every agent + setup/run script would point
 /// `python`/`pip` at that single startup-time env regardless of the
-/// workspace's own — a frozen-activation footgun. PATH already carries the
-/// right bin dirs; we just drop the activation pointers so each workspace's
+/// task's own — a frozen-activation footgun. PATH already carries the
+/// right bin dirs; we just drop the activation pointers so each task's
 /// own activation (or lack of one) wins.
 fn is_managed(key: &str) -> bool {
     matches!(
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn select_injected_drops_frozen_venv_activation() {
         // An rc-activated venv/conda must NOT be frozen + injected into every
-        // workspace; PATH carries the bin dir, the activation pointers don't.
+        // task; PATH carries the bin dir, the activation pointers don't.
         let probed = vec![
             ("VIRTUAL_ENV".into(), "/Users/x/.venv".into()),
             ("CONDA_PREFIX".into(), "/opt/conda".into()),

@@ -1,14 +1,15 @@
 // Dashboard: hero banner + action cards + per-project cards with inline
-// workspace creation. Designed so the empty state and the populated state
+// task creation. Designed so the empty state and the populated state
 // share the same shape — adding a project doesn't yank you somewhere else.
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
+import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TermicBlockmark } from "@/icons/TermicLogo";
 
 // Module-level flag: animate the hero logo ONCE per app launch, not every
-// time the user navigates back to the dashboard from a workspace tab. The
+// time the user navigates back to the dashboard from a task tab. The
 // typewriter draw-in is charming on startup but turns into visual noise
 // on the 20th dashboard visit. Set true on first import-evaluated mount;
 // flipped false after the first render so subsequent Dashboard mounts in
@@ -23,21 +24,21 @@ import { ProjectActionsMenuItems } from "@/components/sidebar/ProjectActionsMenu
 
 export function Dashboard() {
   const projects     = useApp(s => s.projects);
-  const workspaces   = useApp(s => s.workspaces);
-  const setActive    = useApp(s => s.setActiveWorkspace);
+  const tasks   = useApp(s => s.tasks);
+  const setActive    = useApp(s => s.setActiveTask);
   const openSettings = useApp(s => s.openSettings);
   const loadAll      = useApp(s => s.loadAll);
   const agents       = useApp(s => s.agents);
   const openNewProject   = useUI(s => s.openNewProject);
-  const openNewWorkspace = useUI(s => s.openNewWorkspace);
+  const openNewTask = useUI(s => s.openNewTask);
 
-  // Projects with at least one active workspace float to the top, preserving
+  // Projects with at least one active task float to the top, preserving
   // the store's order within each group (Array.sort is stable). Mirrors how
   // the sidebar splits active vs. inactive projects.
-  const hasActiveWs = (projId: string) =>
-    workspaces.some(w => w.project_id === projId && !w.archived);
+  const hasActiveTask = (projId: string) =>
+    tasks.some(w => w.project_id === projId && !w.archived);
   const sortedProjects = [...projects].sort(
-    (a, b) => Number(hasActiveWs(b.id)) - Number(hasActiveWs(a.id)),
+    (a, b) => Number(hasActiveTask(b.id)) - Number(hasActiveTask(a.id)),
   );
 
   return (
@@ -89,7 +90,7 @@ export function Dashboard() {
             </div>
             <div className="flex flex-col gap-3">
               {sortedProjects.map(p => {
-                const wsList = workspaces.filter(w => w.project_id === p.id && !w.archived);
+                const taskList = tasks.filter(w => w.project_id === p.id && !w.archived);
                 return (
                   <ProjectCard
                     key={p.id}
@@ -97,33 +98,35 @@ export function Dashboard() {
                     name={p.name}
                     onSettings={() => openSettings("repositories", p.id)}
                   >
-                    {wsList.length === 0 ? (
+                    {taskList.length === 0 ? (
                       <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
-                        Nothing here yet. Click <b>+</b> to start a new worktree or open the live <b>repo</b> checkout.
+                        Nothing here yet. Click <b>+</b> to start a new worktree or open the <b>main checkout</b>.
                       </div>
                     ) : (
                       <div className="flex flex-col">
-                        {wsList.map(w => (
+                        {/* Same as the sidebar: pure creation order, oldest first. */}
+                        {[...taskList].sort((a, b) =>
+                          (a.created || "").localeCompare(b.created || ""),
+                        ).map(w => (
                           <button
                             key={w.id}
                             onClick={() => setActive(w.id)}
                             className="group flex items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-[var(--color-hover)]"
                           >
-                            {/* Use the CLI brand icon for repo-checkout rows
+                            {/* Use the CLI brand icon for main-checkout rows
                                 too — matches the sidebar's unified rendering.
-                                The REPO chip alone signals "live checkout". */}
+                                The location chip signals main checkout vs
+                                worktree. */}
                             <span className={cn(
                               "shrink-0",
                               CLI_BRAND_COLOR[resolveIconId(w.cli, agents)] || "text-[var(--color-fg-faint)]",
                             )}>
                               <CliIcon cli={resolveIconId(w.cli, agents)} className="h-4 w-4" />
                             </span>
-                            <span className="font-medium text-[13px]">{w.name}</span>
-                            <span className="rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">
-                              {w.is_repo_root ? "repo" : "worktree"}
-                            </span>
-                            <span className="text-[12.5px] text-[var(--color-fg-faint)]">on</span>
-                            <span className="font-mono text-[12px] text-[var(--color-fg-dim)] truncate">{w.branch}</span>
+                            <span className="min-w-0 shrink truncate font-medium text-[13px]">{w.name}</span>
+                            <span className="shrink-0 text-[12.5px] text-[var(--color-fg-faint)]">on</span>
+                            <span className="min-w-0 shrink font-mono text-[12px] text-[var(--color-fg-dim)] truncate">{w.branch}</span>
+                            <TaskLocationIcon isMainCheckout={w.is_main_checkout} className="self-center" />
                           </button>
                         ))}
                       </div>
@@ -170,7 +173,7 @@ function ProjectCard({ projectId, name, onSettings, children }: {
         </div>
         <div className="flex items-center gap-1">
           <button
-            title="Repo settings"
+            title="Project settings"
             onClick={onSettings}
             className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
           ><Cog className="h-4 w-4" /></button>
@@ -180,11 +183,11 @@ function ProjectCard({ projectId, name, onSettings, children }: {
           <DropdownRoot>
             <DropdownTrigger asChild>
               <button
-                title="New…"
+                title="New task"
                 className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] data-[state=open]:bg-[var(--color-bg-3)] data-[state=open]:text-[var(--color-fg)]"
               ><Plus className="h-4 w-4" /></button>
             </DropdownTrigger>
-            <DropdownMenu align="end" sideOffset={4} className="max-w-[220px]">
+            <DropdownMenu align="end" sideOffset={4} className="w-[276px]">
               <ProjectActionsMenuItems projectId={projectId} />
             </DropdownMenu>
           </DropdownRoot>
@@ -202,7 +205,7 @@ function EmptyProjectsCard() {
       <div>
         <div className="text-[14px] font-semibold">No projects yet</div>
         <div className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
-          Add a git repo from disk to spawn agent workspaces in.
+          Add a git repo from disk to spawn agent tasks in.
         </div>
       </div>
     </div>

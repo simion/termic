@@ -1,4 +1,4 @@
-// ⌘P file finder — Sublime-style fuzzy match on workspace files.
+// ⌘P file finder — Sublime-style fuzzy match on task files.
 // Refetches the file list on every open (no cache); good enough for a
 // rarely-used feature and saves us an invalidation story.
 
@@ -7,7 +7,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { Search } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
-import { workspaceListFilesForFinder } from "@/lib/ipc";
+import { taskListFilesForFinder } from "@/lib/ipc";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
 import { cn } from "@/lib/utils";
@@ -22,16 +22,16 @@ interface Scored {
 }
 
 export function FileFinderDialog() {
-  const wsId = useUI(s => s.fileFinderWsId);
+  const taskId = useUI(s => s.fileFinderTaskId);
   const close = useUI(s => s.closeFileFinder);
   const openPreviewTab = useApp(s => s.openPreviewTab);
   const persistTab = useApp(s => s.persistTab);
   // Project name for the search-scope hint in the input placeholder.
   const projectName = useApp(s => {
-    if (!wsId) return null;
-    const ws = s.workspaces.find(w => w.id === wsId);
-    if (!ws) return null;
-    return s.projects.find(p => p.id === ws.project_id)?.name ?? null;
+    if (!taskId) return null;
+    const task = s.tasks.find(w => w.id === taskId);
+    if (!task) return null;
+    return s.projects.find(p => p.id === task.project_id)?.name ?? null;
   });
 
   const [files, setFiles] = useState<string[]>([]);
@@ -45,17 +45,17 @@ export function FileFinderDialog() {
   // time ⌘P is hit — saves a cache invalidation story for a feature that's
   // hit rarely enough that the ~50ms reload doesn't matter.
   useEffect(() => {
-    if (!wsId) return;
+    if (!taskId) return;
     setQuery("");
     setActiveIdx(0);
     setErr(null);
     setLoading(true);
     let cancelled = false;
-    workspaceListFilesForFinder(wsId)
+    taskListFilesForFinder(taskId)
       .then(list => { if (!cancelled) { setFiles(list); setLoading(false); } })
       .catch(e => { if (!cancelled) { setErr(String(e)); setLoading(false); } });
     return () => { cancelled = true; };
-  }, [wsId]);
+  }, [taskId]);
 
   const results = useMemo<Scored[]>(() => {
     if (!files.length) return [];
@@ -76,23 +76,23 @@ export function FileFinderDialog() {
   useEffect(() => { setActiveIdx(0); }, [query]);
 
   function pick(path: string) {
-    if (!wsId) return;
+    if (!taskId) return;
     const name = path.split("/").pop() || path;
     // Reuse an existing tab for this file if there is one — otherwise
     // open a preview tab and persist it (Enter = "I really want this").
-    const existing = (useApp.getState().tabs[wsId] || []).find(
+    const existing = (useApp.getState().tabs[taskId] || []).find(
       t => t.type === "edit" && (t as any).path === path,
     );
     if (existing) {
-      useApp.getState().setActiveTabId(wsId, existing.id);
+      useApp.getState().setActiveTabId(taskId, existing.id);
     } else {
-      openPreviewTab(wsId, { type: "edit", path, title: name });
+      openPreviewTab(taskId, { type: "edit", path, title: name });
       // openPreviewTab assigns the tab id internally; find it back and pin.
       queueMicrotask(() => {
-        const t = (useApp.getState().tabs[wsId] || []).find(
+        const t = (useApp.getState().tabs[taskId] || []).find(
           x => x.type === "edit" && (x as any).path === path,
         );
-        if (t) persistTab(wsId, t.id);
+        if (t) persistTab(taskId, t.id);
       });
     }
     close();
@@ -122,7 +122,7 @@ export function FileFinderDialog() {
   }, [activeIdx]);
 
   return (
-    <Dialog.Root open={!!wsId} onOpenChange={(v) => (v ? null : close())}>
+    <Dialog.Root open={!!taskId} onOpenChange={(v) => (v ? null : close())}>
       <Dialog.Portal>
         {/* Soft animated dim (matches the ⌘K palette): fades in/out via
             data-state instead of the old `bg-black/40` snap, so the panel
@@ -135,7 +135,7 @@ export function FileFinderDialog() {
           onKeyDown={onKeyDown}
         >
           <Dialog.Title className="sr-only">Find file</Dialog.Title>
-          <Dialog.Description className="sr-only">Type to fuzzy-search files in this workspace.</Dialog.Description>
+          <Dialog.Description className="sr-only">Type to fuzzy-search files in this task.</Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
             <input

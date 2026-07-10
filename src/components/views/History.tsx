@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { workspaceRestore } from "@/lib/ipc";
+import { taskRestore } from "@/lib/ipc";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
+import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { cn } from "@/lib/utils";
 import { ChevronRight, Search } from "lucide-react";
-import type { Workspace } from "@/lib/types";
+import type { Task } from "@/lib/types";
 
 function groupLabel(iso: string): string {
   const diffDays = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
@@ -28,10 +29,10 @@ function fmtDate(iso: string): string {
 
 export function HistoryView() {
   const projects  = useApp(s => s.projects);
-  const workspaces = useApp(s => s.workspaces);
+  const tasks = useApp(s => s.tasks);
   const agents    = useApp(s => s.agents);
   const loadAll   = useApp(s => s.loadAll);
-  const setActive = useApp(s => s.setActiveWorkspace);
+  const setActive = useApp(s => s.setActiveTask);
 
   useEffect(() => { void loadAll(); }, []);
 
@@ -41,7 +42,7 @@ export function HistoryView() {
 
   const archived = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return [...workspaces.filter(w => {
+    return [...tasks.filter(w => {
       if (!w.archived) return false;
       if (!q) return true;
       const p = projects.find(x => x.id === w.project_id);
@@ -51,10 +52,10 @@ export function HistoryView() {
         (p?.name ?? "").toLowerCase().includes(q)
       );
     })].sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created));
-  }, [workspaces, projects, query]);
+  }, [tasks, projects, query]);
 
   const groups = useMemo(() => {
-    const map = new Map<string, Workspace[]>();
+    const map = new Map<string, Task[]>();
     for (const w of archived) {
       const key = groupLabel(w.archived_at ?? w.created);
       if (!map.has(key)) map.set(key, []);
@@ -66,9 +67,9 @@ export function HistoryView() {
   async function restore(id: string) {
     setRestoring(prev => new Set(prev).add(id));
     try {
-      const ws = await workspaceRestore(id);
+      const task = await taskRestore(id);
       await loadAll();
-      setActive(ws.id);
+      setActive(task.id);
     } catch (err) {
       useUI.getState().pushToast(typeof err === "string" ? err : "Restore failed", "error");
     } finally {
@@ -84,7 +85,7 @@ export function HistoryView() {
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Filter workspaces..."
+          placeholder="Filter tasks..."
           className="flex-1 bg-transparent text-[13.5px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] outline-none"
         />
       </div>
@@ -94,15 +95,15 @@ export function HistoryView() {
         <div className="mx-auto max-w-3xl">
           {archived.length === 0 ? (
             <p className="py-8 text-[13.5px] text-[var(--color-fg-dim)]">
-              {query ? "No workspaces match your filter." : "No archived workspaces."}
+              {query ? "No tasks match your filter." : "No archived tasks."}
             </p>
-          ) : groups.map(([label, ws]) => (
+          ) : groups.map(([label, task]) => (
             <div key={label} className="mb-2">
               <div className="flex items-baseline gap-2 px-3 py-2">
                 <span className="text-[12px] font-medium text-[var(--color-fg-dim)]">{label}</span>
-                <span className="text-[12px] text-[var(--color-fg-faint)]">{ws.length}</span>
+                <span className="text-[12px] text-[var(--color-fg-faint)]">{task.length}</span>
               </div>
-              {ws.map(w => {
+              {task.map(w => {
                 const proj        = projects.find(x => x.id === w.project_id);
                 const isRestoring = restoring.has(w.id);
                 const isHovered   = hoveredId === w.id && !isRestoring;
@@ -125,24 +126,21 @@ export function HistoryView() {
 
                     {/* Project name */}
                     <span className="w-[130px] shrink-0 truncate text-[var(--color-fg-dim)]">
-                      {proj?.name ?? "—"}
+                      {proj?.name ?? "Unknown"}
                     </span>
 
                     {/* Separator */}
                     <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />
 
-                    {/* Workspace name */}
+                    {/* Task name */}
                     <span className="min-w-0 truncate font-medium text-[var(--color-fg)]">
                       {w.name}
                     </span>
 
-                    {/* Branch / kind */}
-                    {w.is_repo_root ? (
-                      <span className="shrink-0 rounded px-1 py-px text-[10.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-faint)]">
-                        repo root
-                      </span>
-                    ) : w.branch ? (
-                      <span className="shrink-0 text-[var(--color-fg-faint)]">· {w.branch}</span>
+                    {/* Location icon + branch */}
+                    <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3 w-3" />
+                    {!w.is_main_checkout && w.branch ? (
+                      <span className="min-w-0 truncate text-[var(--color-fg-faint)]">· {w.branch}</span>
                     ) : null}
 
                     {/* Right: date + restore button */}

@@ -1,5 +1,5 @@
-// New workspace dialog: name + CLI segmented pills + branch name +
-// branch-from. Calls workspace_create on submit.
+// New task dialog: name + CLI segmented pills + branch name +
+// branch-from. Calls task_create on submit.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -11,7 +11,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
-import { workspaceCreate, workspaceCreateMulti, settingsLoad, workspaceImportableWorktrees, workspaceImportWorktree, sandboxAvailable, workspaceOpenRepo } from "@/lib/ipc";
+import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo } from "@/lib/ipc";
+import { launchSetupTab } from "@/lib/runTabs";
 import { slugify, branchify, cn } from "@/lib/utils";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
 import { SandboxModeSelector } from "@/components/SandboxModeSelector";
@@ -20,14 +21,14 @@ import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
-// Remember the user's last-used workspace type + sandbox mode across opens —
+// Remember the user's last-used task type + sandbox mode across opens —
 // most people always work one way (always worktree, always enforce), so
 // re-deriving from project defaults every time fights their habit. Stored
 // globally (not per-project): the choice is about how the user works, not the
 // repo. Hard constraints still override at open time (non-git forces repo_root;
 // an unsupported OS forces sandbox off).
-const LS_LAST_MODE    = "newWorkspaceLastMode";
-const LS_LAST_SANDBOX = "newWorkspaceLastSandboxMode";
+const LS_LAST_MODE    = "newTaskLastMode";
+const LS_LAST_SANDBOX = "newTaskLastSandboxMode";
 function readLastMode(): "worktree" | "repo_root" | null {
   try { const v = localStorage.getItem(LS_LAST_MODE); return v === "worktree" || v === "repo_root" ? v : null; } catch { return null; }
 }
@@ -39,11 +40,11 @@ function persistLast(key: string, val: string) { try { localStorage.setItem(key,
 // the customizable `branchPrefix` pref (Settings → General, default
 // "feature"). The user edits the resulting field freely from there.
 
-export function NewWorkspaceDialog() {
-  const projectId = useUI(s => s.newWorkspaceProjectId);
-  const close = useUI(s => s.closeNewWorkspace);
+export function NewTaskDialog() {
+  const projectId = useUI(s => s.newTaskProjectId);
+  const close = useUI(s => s.closeNewTask);
   const project = useApp(s => projectId ? s.projects.find(p => p.id === projectId) : null);
-  const setActive = useApp(s => s.setActiveWorkspace);
+  const setActive = useApp(s => s.setActiveTask);
   const loadAll = useApp(s => s.loadAll);
   const agents = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
@@ -55,7 +56,7 @@ export function NewWorkspaceDialog() {
   // are installed — without it the picker would be either empty or
   // populated with uninstalled agents that spawn-fail at create time.
   // The TerminalPane / ensureDefaultTab paths already treat cli="shell"
-  // as a login zsh, so this is a complete workspace shape, not a stub.
+  // as a login zsh, so this is a complete task shape, not a stub.
   const SHELL_CHOICE = { id: "shell", display_name: "Terminal", color: "" } as any;
   const cliChoices = (() => {
     const list = agents.length
@@ -70,15 +71,21 @@ export function NewWorkspaceDialog() {
   const [branch, setBranch] = useState("");
   const [branchEdited, setBranchEdited] = useState(false);
   const [base, setBase] = useState("");
-  // Single-repo workspace shape: "worktree" (branch a fresh working dir) or
+  // Single-repo task shape: "worktree" (branch a fresh working dir) or
   // "repo_root" (no worktree — launch the agent in the repo's live checkout,
-  // the same shape as the sidebar's "Run in repo with <agent>"). Worktree is
-  // the default; repo_root hides the branch fields + sandbox panel and
-  // creates via workspace_open_repo. Multi-repo ignores this (it has its own
-  // per-member toggle); non-git projects force repo_root (no branches).
-  const [mode, setMode] = useState<"worktree" | "repo_root">("worktree");
+  // the same shape as the sidebar's "Run in repo with <agent>"). Main checkout
+  // (repo_root) is the default (most people start there, reach for worktrees
+  // later); repo_root hides the branch fields + sandbox panel and creates via
+  // task_open_repo. Multi-repo ignores this (it has its own per-member
+  // toggle); non-git projects force repo_root (no branches).
+  const [mode, setMode] = useState<"worktree" | "repo_root">("repo_root");
+  // Flipping the toggle writes through to the shared `newTaskLastMode` key
+  // right away (not just on submit), so the sidebar quick menu and this modal
+  // always agree on the last choice. Opening the dialog (which also calls
+  // setMode) must NOT persist, so that path uses setMode directly.
+  const chooseMode = (m: "worktree" | "repo_root") => { setMode(m); persistLast(LS_LAST_MODE, m); };
   // Sandbox pin captured at creation. Defaults from project, can be
-  // overridden for this one workspace, then is permanent post-create.
+  // overridden for this one task, then is permanent post-create.
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("off");
   // Sandbox is macOS-only. On unsupported platforms, disable monitor/
   // enforce in the selector and force the pin to "off" so we never save
@@ -89,7 +96,7 @@ export function NewWorkspaceDialog() {
     if (osSandboxOk === false && sandboxMode !== "off") setSandboxMode("off");
   }, [osSandboxOk, sandboxMode]);
   // Derived: any cage on. Drives the 2-column layout + "send lists" gating.
-  // Repo-root mode has no sandbox (workspace_open_repo takes no sandbox args),
+  // Repo-root mode has no sandbox (task_open_repo takes no sandbox args),
   // so force it off there — keeps the layout single-column + the panel hidden.
   const sandbox = sandboxMode !== "off" && mode === "worktree";
   // The sandbox lists. Initialized from the
@@ -101,7 +108,7 @@ export function NewWorkspaceDialog() {
   const [sbHosts, setSbHosts] = useState("");
   // Multi-repo: per-member spec, keyed by member root_path. Seeded when
   // the dialog opens for a multi project from project.members (which are
-  // self-contained — no project lookup). Scripts are not per-workspace —
+  // self-contained — no project lookup). Scripts are not per-task —
   // they live on the multi-repo project itself. The dialog only collects
   // mode + branch overrides here. name / non_git are carried for display.
   type MemberSpec = {
@@ -130,7 +137,7 @@ export function NewWorkspaceDialog() {
   // burst of Enter/click events, multiple submit() calls can already be
   // queued before that render lands. Without this guard, mashing Create
   // produces multiple worktrees on disk (the user's "hanged a lot of new
-  // workspace" bug). The ref is checked + flipped synchronously inside
+  // task" bug). The ref is checked + flipped synchronously inside
   // submit() so concurrent calls see the truth immediately.
   const submittingRef = useRef(false);
   const [err, setErr] = useState<string | null>(null);
@@ -138,7 +145,7 @@ export function NewWorkspaceDialog() {
   // setup (running setup script with live output) → done (success, 2s flash) → error.
   const [phase, setPhase] = useState<"form" | "creating" | "setup" | "done" | "error">("form");
   const [setupLog, setSetupLog] = useState<string[]>([]);
-  const [createdWsId, setCreatedWsId] = useState<string | null>(null);
+  const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
 
   // Reset the form ONLY when the dialog opens for a different project —
@@ -151,10 +158,10 @@ export function NewWorkspaceDialog() {
   useEffect(() => {
     if (!projectId) return;
     const p = useApp.getState().projects.find(x => x.id === projectId);
-    // Seed (from openNewWorkspace's optional 2nd arg): used by the
-    // "Duplicate workspace" flow to pre-fill `base` with the source
-    // workspace's branch tip + optionally seed a name prefix.
-    const seed = useUI.getState().newWorkspaceSeed;
+    // Seed (from openNewTask's optional 2nd arg): used by the
+    // "Duplicate task" flow to pre-fill `base` with the source
+    // task's branch tip + optionally seed a name prefix.
+    const seed = useUI.getState().newTaskSeed;
     setName(seed?.namePrefix ?? "");
     setBranch(""); setBranchEdited(false); setErr(null);
     setBase(seed?.baseBranch ?? p?.base_branch ?? "");
@@ -180,10 +187,10 @@ export function NewWorkspaceDialog() {
     }
     // Sandbox toggle defaults to project's preference OR the global
     // default (Settings → General). Either being true checks the box.
-    // The user can still flip for THIS workspace - but once Create
-    // fires, the pin is permanent on the Workspace record. The
+    // The user can still flip for THIS task - but once Create
+    // fires, the pin is permanent on the Task record. The
     // three lists are seeded from the project's defaults; user
-    // edits in this dialog land on the workspace ONLY, never on
+    // edits in this dialog land on the task ONLY, never on
     // the project.
     // Last-used sandbox mode wins (the user's habit); fall back to the
     // project / global default only before they've ever picked one.
@@ -252,10 +259,12 @@ export function NewWorkspaceDialog() {
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setImportMode(wantImport);
     // Non-git folders can't be worktreed → force repo_root. Everything else
-    // restores the user's last-used type (worktree by default).
-    setMode(p?.non_git ? "repo_root" : (readLastMode() ?? "worktree"));
+    // restores the user's last-used type (main checkout by default). Shares
+    // the `newTaskLastMode` key with the sidebar quick menu, so the toggle
+    // choice carries across both surfaces.
+    setMode(p?.non_git ? "repo_root" : (readLastMode() ?? "repo_root"));
     if (canImp) loadImportable(projectId);
-    setPhase("form"); setSetupLog([]); setCreatedWsId(null);
+    setPhase("form"); setSetupLog([]); setCreatedTaskId(null);
     // CRITICAL: also reset `busy`. On a successful prior creation we
     // intentionally leave busy=true (so the form can't be re-submitted
     // during the streaming-setup phase). Without this reset, the NEXT
@@ -266,7 +275,7 @@ export function NewWorkspaceDialog() {
   }, [projectId]);
 
   // Tauri event unlisten handles. Owned by submit() (which registers them
-  // imperatively BEFORE invoking workspaceCreate — guaranteed ordering vs
+  // imperatively BEFORE invoking taskCreate — guaranteed ordering vs
   // the old useEffect-based subscription that races against fast/empty
   // setup scripts). Cleaned up on unmount + before each new submission.
   const unlistenRef = useRef<Array<() => void>>([]);
@@ -303,7 +312,7 @@ export function NewWorkspaceDialog() {
   // Declared as a hoisted function so the open-effect can call it.
   function loadImportable(pid: string) {
     setImportLoading(true);
-    workspaceImportableWorktrees(pid)
+    taskImportableWorktrees(pid)
       .then(list => setImportList(list))
       .catch(e => setErr(String(e)))
       .finally(() => setImportLoading(false));
@@ -335,7 +344,7 @@ export function NewWorkspaceDialog() {
     setBusy(true); setErr(null);
     try {
       const splitLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
-      const w = await workspaceImportWorktree(
+      const w = await taskImportWorktree(
         projectId, importSelected, name.trim(), cli,
         { enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
       );
@@ -359,7 +368,7 @@ export function NewWorkspaceDialog() {
     submittingRef.current = true;
     setBusy(true); setErr(null);
     try {
-      const w = await workspaceOpenRepo(projectId, cli, name.trim());
+      const w = await taskOpenRepo(projectId, cli, name.trim());
       await loadAll();
       setActive(w.id);
       close();
@@ -372,7 +381,7 @@ export function NewWorkspaceDialog() {
   }
 
   async function submit() {
-    // Remember how the user works for next time. Workspace type is a
+    // Remember how the user works for next time. Task type is a
     // single-repo concept (multi has its own per-member toggle); sandbox mode
     // is remembered whenever a worktree/multi create can carry one.
     if (!isMulti) persistLast(LS_LAST_MODE, mode);
@@ -383,42 +392,46 @@ export function NewWorkspaceDialog() {
     if (submittingRef.current) return;
     submittingRef.current = true;
     setBusy(true); setErr(null); setPhase("creating"); setSetupLog([]);
-    // Pre-generate the workspace ID then `await listen(...)` for BOTH
-    // setup-output and setup-done BEFORE invoking workspaceCreate. The
-    // earlier useEffect-based subscription wasn't guaranteed to attach in
-    // time — for empty setup scripts Rust emits setup-done synchronously
-    // inside workspace_create_sync, so the done event could fire while
-    // React was still scheduling the effect → dialog hung forever on
-    // "Waiting for output…". `await listen()` returns once the
-    // subscription is confirmed by the Tauri backend, eliminating the
-    // race entirely.
-    const wsId = crypto.randomUUID();
-    setCreatedWsId(wsId);
+    const taskId = crypto.randomUUID();
+    setCreatedTaskId(taskId);
     // Clean up any prior unlisteners from a previous (errored) submission
     // before registering new ones.
     for (const u of unlistenRef.current) u();
     unlistenRef.current = [];
-    const uOut = await listen<{ line: string }>(`setup-output://${wsId}`, ev => {
-      setSetupLog(log => [...log, ev.payload.line]);
-    });
-    const uDone = await listen<{ code: number | null; success: boolean }>(`setup-done://${wsId}`, ev => {
-      if (ev.payload.success) {
-        setPhase("done");
-        window.setTimeout(() => { setActive(wsId); close(); }, 2000);
-      } else {
-        setPhase("error");
-        setErr(`Setup script exited with code ${ev.payload.code ?? "?"}.`);
-      }
-    });
-    unlistenRef.current = [uOut, uDone];
+    // Multi-repo still runs its (possibly several, sequential) member setup
+    // scripts synchronously on the Rust side and streams progress here —
+    // that path is unchanged, so keep waiting on it. Single-repo setup runs
+    // as an unfocused background tab instead (see below), so it needs
+    // neither of these listeners. Pre-generate + `await listen(...)` BEFORE
+    // invoking taskCreateMulti: the earlier useEffect-based subscription
+    // wasn't guaranteed to attach in time — for empty setup scripts Rust
+    // emits setup-done synchronously, so the done event could fire while
+    // React was still scheduling the effect → dialog hung forever on
+    // "Waiting for output…". `await listen()` returns once the
+    // subscription is confirmed by the Tauri backend, eliminating the race.
+    if (isMulti) {
+      const uOut = await listen<{ line: string }>(`setup-output://${taskId}`, ev => {
+        setSetupLog(log => [...log, ev.payload.line]);
+      });
+      const uDone = await listen<{ code: number | null; success: boolean }>(`setup-done://${taskId}`, ev => {
+        if (ev.payload.success) {
+          setPhase("done");
+          window.setTimeout(() => { setActive(taskId); close(); }, 2000);
+        } else {
+          setPhase("error");
+          setErr(`Setup script exited with code ${ev.payload.code ?? "?"}.`);
+        }
+      });
+      unlistenRef.current = [uOut, uDone];
+    }
     try {
       // Snap textareas → string[]. Done at submit so blank lines
       // during typing don't roundtrip through the array state.
       const splitLines = (s: string) =>
         s.split("\n").map(l => l.trim()).filter(Boolean);
       if (isMulti) {
-        await workspaceCreateMulti({
-          id: wsId,
+        await taskCreateMulti({
+          id: taskId,
           project_id: projectId,
           name: name.trim(),
           cli,
@@ -427,7 +440,7 @@ export function NewWorkspaceDialog() {
           members: members.map(m => ({
             root_path: m.root_path,
             mode: m.mode,
-            // Worktree mode: blank branch falls back to the workspace's
+            // Worktree mode: blank branch falls back to the task's
             // top-level branch on the Rust side. base falls back to
             // the member project's own base. RepoRoot mode ignores both.
             branch: m.mode === "worktree" ? (m.branch.trim() || undefined) : undefined,
@@ -438,30 +451,45 @@ export function NewWorkspaceDialog() {
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
         });
-      } else {
-        await workspaceCreate({
-          id: wsId,
-          project_id: projectId,
-          name: name.trim(),
-          cli,
-          base_branch: base.trim() || null,
-          branch: branch.trim(),
-          sandbox_enabled: sandbox,
-          sandbox_mode: sandboxMode,
-          // Only send lists when sandbox is on - keeps the JSON tidy
-          // for unsandboxed workspaces (they don't need these saved).
-          sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
-          sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
-        });
+        await loadAll();
+        setPhase("setup");
+        // On success, submittingRef stays true until the dialog closes —
+        // guards against any re-submit during the streaming-setup phase.
+        return;
       }
+      await taskCreate({
+        id: taskId,
+        project_id: projectId,
+        name: name.trim(),
+        cli,
+        base_branch: base.trim() || null,
+        branch: branch.trim(),
+        sandbox_enabled: sandbox,
+        sandbox_mode: sandboxMode,
+        // Only send lists when sandbox is on - keeps the JSON tidy
+        // for unsandboxed tasks (they don't need these saved).
+        sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
+        sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
+      });
       await loadAll();
-      setPhase("setup");
+      // Single-repo worktree: open immediately and focus the main agent —
+      // no blocking "running setup…" phase. If the project has a setup
+      // script, it fires right after as an unfocused background tab
+      // (ensureDefaultTab excludes setup-kind tabs from its "already
+      // mounted" check, so the two can't race each other out).
+      setActive(taskId);
+      close();
+      launchSetupTab(taskId, { focus: false }).catch(() => {});
     } catch (e) {
       setErr(String(e)); setBusy(false); setPhase("error");
       submittingRef.current = false;
+      return;
     }
-    // On success, submittingRef stays true until the dialog closes — guards
-    // against any re-submit during the streaming-setup phase.
+    // Success: for multi, submittingRef stays true until the dialog closes
+    // (guards against a re-submit during the streaming-setup phase). For
+    // single-repo, the dialog is already closed above — tidy up so a later
+    // mount of this component starts clean.
+    if (!isMulti) { setBusy(false); submittingRef.current = false; }
   }
 
   return (
@@ -471,7 +499,7 @@ export function NewWorkspaceDialog() {
       // for several seconds on big repos.
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={isMulti ? "New multi-repo workspace" : importMode ? "Import existing worktree" : mode === "repo_root" ? "New workspace in repo root" : "New workspace via worktree"}
+      title={isMulti ? "New multi-repo task" : importMode ? "Import existing worktree" : mode === "repo_root" ? "New task in the main checkout" : "New task in a worktree"}
       description={undefined}
       // Widen the dialog based on what's actually inside:
       //   - sandbox ON     → 4xl (the sandbox form needs a 2nd column)
@@ -535,7 +563,7 @@ export function NewWorkspaceDialog() {
 
         {/* Worktree picker — replaces the branch fields in import mode. */}
         {importMode && (
-          <Field label="Existing worktree" hint="Worktrees of this repo that aren't already open as workspaces.">
+          <Field label="Existing worktree" hint="Worktrees of this repo that aren't already open as tasks.">
             {importLoading ? (
               <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
                 <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> Scanning worktrees…
@@ -578,12 +606,24 @@ export function NewWorkspaceDialog() {
             fields and creates in the repo's live checkout. Non-git projects
             can't worktree, so the Worktree button is disabled there. */}
         {!isMulti && !importMode && (
-          <Field label="Workspace type">
+          <Field label="Task type">
             <div className="flex flex-col gap-1.5">
               <div className="inline-flex self-start items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
                 <button
                   type="button"
-                  onClick={() => setMode("worktree")}
+                  onClick={() => chooseMode("repo_root")}
+                  className={cn(
+                    "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
+                    mode === "repo_root"
+                      ? "bg-[var(--color-accent-deep)] text-white"
+                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  <Link2 className="h-3.5 w-3.5" /> Main checkout
+                </button>
+                <button
+                  type="button"
+                  onClick={() => chooseMode("worktree")}
                   disabled={!!project?.non_git}
                   className={cn(
                     "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors disabled:opacity-40",
@@ -592,25 +632,13 @@ export function NewWorkspaceDialog() {
                       : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                   )}
                 >
-                  <GitBranch className="h-3.5 w-3.5" /> New worktree
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("repo_root")}
-                  className={cn(
-                    "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
-                    mode === "repo_root"
-                      ? "bg-[var(--color-warn)] text-black"
-                      : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                  )}
-                >
-                  <Link2 className="h-3.5 w-3.5" /> Repo root
+                  <GitBranch className="h-3.5 w-3.5" /> Worktree
                 </button>
               </div>
               <p className="text-[12px] text-[var(--color-fg-faint)]">
                 {mode === "worktree"
-                  ? "Isolated branch in its own working directory. Run agents in parallel without touching your checkout."
-                  : "No worktree. The agent runs in the repo's live checkout, on its current branch. Edits land on your real files."}
+                  ? "Isolated branch in its own working directory. Run agents in parallel without touching your main checkout."
+                  : "No worktree. The agent runs in the repo's main checkout, on its current branch. Edits land on your real files."}
               </p>
             </div>
           </Field>
@@ -620,7 +648,7 @@ export function NewWorkspaceDialog() {
           <Input value={name} onChange={e => setName(e.target.value)} placeholder="fix login bug" autoFocus required />
         </Field>
 
-        <Field label="Default CLI" hint="Auto-launches on first open. You can spawn other agents anytime via the workspace's + button.">
+        <Field label="Default CLI" hint="Auto-launches on first open. You can spawn other agents anytime via the task's + button.">
           {/* Pulled from the editable agent registry (Settings → Agent
               CLIs), not hard-coded — custom agents show up here. Disabled
               and not-installed agents are filtered out (see cliChoices).
@@ -699,13 +727,28 @@ export function NewWorkspaceDialog() {
                         <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{m.root_path}</div>
                       </div>
                       <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] p-[2px] text-[11.5px]">
+                        {/* Main checkout first, matching the single-repo toggle
+                            and the sidebar quick menu (left = main, right =
+                            worktree everywhere). */}
+                        <button
+                          type="button"
+                          onClick={() => update({ mode: "repo_root" })}
+                          className={cn(
+                            "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
+                            m.mode === "repo_root"
+                              ? "bg-[var(--color-accent-deep)] text-white"
+                              : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                          )}
+                        >
+                          <Link2 className="h-3 w-3" /> Main checkout
+                        </button>
                         <button
                           type="button"
                           // Non-git members have no branches → worktree is
                           // impossible; lock them to repo-root like a non-git
                           // single project.
                           disabled={m.non_git}
-                          title={m.non_git ? "Not a git repository, runs repo-root only" : undefined}
+                          title={m.non_git ? "Not a git repository, runs in the main checkout only" : undefined}
                           onClick={() => update({ mode: "worktree" })}
                           className={cn(
                             "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
@@ -716,18 +759,6 @@ export function NewWorkspaceDialog() {
                           )}
                         >
                           <GitBranch className="h-3 w-3" /> Worktree
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => update({ mode: "repo_root" })}
-                          className={cn(
-                            "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
-                            m.mode === "repo_root"
-                              ? "bg-[var(--color-warn)] text-black"
-                              : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
-                          )}
-                        >
-                          <Link2 className="h-3 w-3" /> Repo root
                         </button>
                       </div>
                     </div>
@@ -768,9 +799,9 @@ export function NewWorkspaceDialog() {
             OFF / MONITORING / ENFORCING band reads as a labelled "Sandbox"
             control like every other row (otherwise it's an unlabelled
             strip of buttons whose purpose isn't obvious). Pinned at
-            creation - lists below freeze onto the workspace and can't be
+            creation - lists below freeze onto the task and can't be
             edited after (archive + recreate to change). */}
-        {/* Sandbox is worktree-only here: workspace_open_repo (repo-root)
+        {/* Sandbox is worktree-only here: task_open_repo (repo-root)
             takes no sandbox args, and multi keeps mode="worktree". */}
         {mode === "worktree" && (
         <Field label="Sandbox" hint="Cage the agent's filesystem + network access. Pinned at creation.">
@@ -785,7 +816,7 @@ export function NewWorkspaceDialog() {
       {sandbox && (
         <div className="flex flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6">
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-            Sandbox config for this workspace
+            Sandbox config for this task
           </div>
           <div className="flex flex-wrap items-center gap-2 text-[12px]">
             <span className="text-[var(--color-fg-faint)]">Preset:</span>
@@ -803,7 +834,7 @@ export function NewWorkspaceDialog() {
               </button>
             ))}
           </div>
-          <Field label="Allowed paths" hint="One per line. Workspace + agent state + caches + TMPDIR are always allowed. Add extras here.">
+          <Field label="Allowed paths" hint="One per line. Task + agent state + caches + TMPDIR are always allowed. Add extras here.">
             <textarea
               value={sbRw}
               onChange={e => setSbRw(e.target.value)}
@@ -854,13 +885,13 @@ export function NewWorkspaceDialog() {
   );
 }
 
-/** Progress view shown while creating a workspace. Three sub-states:
- *  - creating: worktree + file-copy in flight (workspace_create has not yet returned)
+/** Progress view shown while creating a task. Three sub-states:
+ *  - creating: worktree + file-copy in flight (task_create has not yet returned)
  *  - setup: setup script running; stream stdout/stderr line by line
  *  - done: success flash, dialog auto-closes 2s later
  *  - error: surfaces the failure + lets the user dismiss and try again
  */
-function ProgressBody({ phase, err, setupLog, outputRef, onClose }: {
+export function ProgressBody({ phase, err, setupLog, outputRef, onClose }: {
   phase: "creating" | "setup" | "done" | "error";
   err: string | null;
   setupLog: string[];
@@ -937,4 +968,4 @@ function Field({ label, hint, children }: {
 }
 
 // Per-member script editor moved to NewProjectDialog / RepositorySection
-// — scripts are project-scoped, not workspace-scoped.
+// — scripts are project-scoped, not task-scoped.

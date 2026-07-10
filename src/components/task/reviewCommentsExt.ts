@@ -37,7 +37,7 @@ interface CommentData {
 }
 
 interface Ctx {
-  wsId: string;
+  taskId: string;
   file: string;
 }
 
@@ -154,10 +154,10 @@ class ComposerWidget extends WidgetType {
       if (!body) { ta.focus(); return; }
       const store = useReviewComments.getState();
       if (this.c.mode === "edit" && this.c.id) {
-        store.update(this.ctx.wsId, this.c.id, body);
+        store.update(this.ctx.taskId, this.c.id, body);
       } else {
         store.add({
-          wsId: this.ctx.wsId,
+          taskId: this.ctx.taskId,
           file: this.ctx.file,
           startLine: this.c.startLine,
           endLine: this.c.endLine,
@@ -256,7 +256,7 @@ class CommentCardWidget extends WidgetType {
       });
     });
     del.addEventListener("click", () => {
-      useReviewComments.getState().remove(this.ctx.wsId, this.comment.id);
+      useReviewComments.getState().remove(this.ctx.taskId, this.comment.id);
     });
 
     return wrap;
@@ -346,8 +346,8 @@ function commentTooltips(state: EditorState): readonly Tooltip[] {
 
 // ── Store subscription plugin ────────────────────────────────────────────────
 
-function commentsForFile(wsId: string, file: string): ReviewComment[] {
-  const all = useReviewComments.getState().byWs[wsId] ?? [];
+function commentsForFile(taskId: string, file: string): ReviewComment[] {
+  const all = useReviewComments.getState().byTask[taskId] ?? [];
   return all
     .filter((c) => c.file === file)
     .slice()
@@ -359,7 +359,7 @@ function commentsForFile(wsId: string, file: string): ReviewComment[] {
 
 function storeSyncPlugin(ctx: Ctx) {
   return ViewPlugin.define((view): PluginValue => {
-    // The store fires on EVERY mutation app-wide (any workspace/file), and
+    // The store fires on EVERY mutation app-wide (any task/file), and
     // DiffPane keeps views alive across tab switches + can mount two views
     // for the same file (main + right split). So two guards:
     //   1. `destroyed` — the seed microtask and late subscription callbacks
@@ -373,7 +373,7 @@ function storeSyncPlugin(ctx: Ctx) {
     let lastSig: string | null = null;
     const push = () => {
       if (destroyed) return;
-      const list = commentsForFile(ctx.wsId, ctx.file);
+      const list = commentsForFile(ctx.taskId, ctx.file);
       // JSON-encode so a free-form body (spaces, colons, newlines) can't
       // collide with another comment's serialization and suppress an update.
       const sig = JSON.stringify(list.map(c => [c.id, c.startLine, c.endLine, c.body]));
@@ -480,9 +480,9 @@ function hoverTrackPlugin() {
 
 // ── Public extension factory ─────────────────────────────────────────────────
 
-/** Build the review-comments extension for one file in one workspace. */
-export function reviewCommentsExtension(wsId: string, file: string) {
-  const ctx: Ctx = { wsId, file };
+/** Build the review-comments extension for one file in one task. */
+export function reviewCommentsExtension(taskId: string, file: string) {
+  const ctx: Ctx = { taskId, file };
 
   const decoField = StateField.define<DecorationSet>({
     create: (state) => buildDeco(state, ctx),

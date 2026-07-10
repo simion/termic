@@ -42,11 +42,14 @@ export function DropdownMenu({ children, align = "end", side, sideOffset = 4, co
         // React portals keep their React-tree parent for SYNTHETIC events
         // even when the DOM target is document.body. Without these stops,
         // a click on a menu item bubbles through the React tree up to
-        // whatever wraps the trigger (e.g. a clickable workspace row that
-        // toggles collapse). Stop at the menu root so triggers can stay
-        // inside clickable containers without leaking the click.
+        // whatever wraps the trigger (e.g. a clickable task row that
+        // toggles collapse, or a project header's pointer-drag handler).
+        // Stop at the menu root so triggers can stay inside clickable /
+        // draggable containers without leaking the event. onPointerDown is
+        // the one the project drag-to-reorder arms on, so it must stop too.
         onClick={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
         // Cap the menu to the space Radix measured between the trigger and the
         // viewport edge (its own CSS var) and scroll the overflow. Without this
         // a tall menu (e.g. the 10-agent picker) in a SHORT window can't fit

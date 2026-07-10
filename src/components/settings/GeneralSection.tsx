@@ -50,8 +50,8 @@ export function GeneralSection() {
   const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
   const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
   const setSandboxBypassPermissions = usePrefs(s => s.setSandboxBypassPermissions);
-  const workspaceExpandMode = usePrefs(s => s.workspaceExpandMode);
-  const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
+  const taskExpandMode = usePrefs(s => s.taskExpandMode);
+  const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
   const branchPrefix = usePrefs(s => s.branchPrefix);
   const setBranchPrefix = usePrefs(s => s.setBranchPrefix);
   const queueMinIntervalMs = usePrefs(s => s.queueMinIntervalMs);
@@ -148,7 +148,7 @@ export function GeneralSection() {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <div className="text-[14px] font-medium">Branch prefix</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Prepended to auto-generated branch names for new workspaces (<code className="font-mono">{(() => { const p = branchPrefix.trim().replace(/^\/+|\/+$/g, ""); return p ? `${p}/my-task` : "my-task"; })()}</code>). Leave empty for no prefix. You can still edit the branch per workspace.
+          Prepended to auto-generated branch names for new tasks (<code className="font-mono">{(() => { const p = branchPrefix.trim().replace(/^\/+|\/+$/g, ""); return p ? `${p}/my-task` : "my-task"; })()}</code>). Leave empty for no prefix. You can still edit the branch per task.
         </div>
         <div className="mt-2 max-w-xs">
           <Input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="feature" className="font-mono" />
@@ -176,9 +176,9 @@ export function GeneralSection() {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <div className="flex items-start justify-between gap-6">
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-medium">Workspace expand behavior</div>
+            <div className="text-[14px] font-medium">Task expand behavior</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              How a workspace's agent list reveals itself in the sidebar.
+              How a task's agent list reveals itself in the sidebar.
             </div>
           </div>
           <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
@@ -190,10 +190,10 @@ export function GeneralSection() {
               <Tip key={id} content={hint} side="top">
                 <button
                   type="button"
-                  onClick={() => setWorkspaceExpandMode(id)}
+                  onClick={() => setTaskExpandMode(id)}
                   className={cn(
                     "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
-                    workspaceExpandMode === id
+                    taskExpandMode === id
                       ? "bg-[var(--color-accent-deep)] text-white"
                       : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                   )}
@@ -207,7 +207,7 @@ export function GeneralSection() {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
           label="Work-done indicator"
-          hint="Color a workspace's agent icon when its agent finishes a turn and is waiting on you."
+          hint="Color a task's agent icon when its agent finishes a turn and is waiting on you."
           value={settledHighlight}
           onChange={setSettledHighlight}
         />
@@ -275,16 +275,16 @@ export function GeneralSection() {
               size="md"
               className="h-9 shrink-0"
               onClick={() => {
-                // Preview with a real project · workspace title so the
+                // Preview with a real project · task title so the
                 // banner looks exactly like an agent-finished notification.
                 const st = useApp.getState();
-                const ws =
-                  st.workspaces.find(w => w.id === st.activeWorkspaceId && !w.archived) ??
-                  st.workspaces.find(w => !w.archived);
-                const proj = ws && st.projects.find(p => p.id === ws.project_id);
-                const title = ws && proj?.name
-                  ? `${proj.name} · ${ws.name || "workspace"}`
-                  : (ws?.name || "project · workspace");
+                const task =
+                  st.tasks.find(w => w.id === st.activeTaskId && !w.archived) ??
+                  st.tasks.find(w => !w.archived);
+                const proj = task && st.projects.find(p => p.id === task.project_id);
+                const title = task && proj?.name
+                  ? `${proj.name} · ${task.name || "task"}`
+                  : (task?.name || "project · task");
                 previewCompletionSound(completionSoundId, { title, body: "agent finished" });
               }}
               title="Play a preview of the selected completion sound"
@@ -302,29 +302,29 @@ export function GeneralSection() {
       </div>
       )}
 
-      {/* Global sandbox default. The New workspace dialog defaults its
+      {/* Global sandbox default. The New task dialog defaults its
           Sandbox toggle to this OR the project's own `default_sandbox`
           (whichever is true). One switch to start sandboxing across
           every project without per-project bookkeeping. */}
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
-          label="Sandbox new workspaces by default"
-          hint="When on, the New workspace dialog pre-checks its Sandbox toggle for every project. Individual projects can still opt out (Settings → Projects). Already-created workspaces aren't affected - their sandbox pin is captured at creation."
+          label="Sandbox new tasks by default"
+          hint="When on, the New task dialog pre-checks its Sandbox toggle for every project. Individual projects can still opt out (Settings → Projects). Already-created tasks aren't affected - their sandbox pin is captured at creation."
           value={globalDefaultSandbox}
           onChange={setGlobalDefaultSandbox}
         />
       </div>
 
       {/* Global sandbox lists. Joined with each project's per-repo
-          lists when a workspace gets created with sandbox enabled,
+          lists when a task gets created with sandbox enabled,
           and pre-filled into the Edit Sandbox dialog when the user
           enables the cage from scratch. Editing these only affects
-          NEW workspaces — existing ones froze a copy at creation. */}
+          NEW tasks — existing ones froze a copy at creation. */}
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <div className="text-[14px] font-medium">Global sandbox defaults</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
           One per line. Wildcards (<code>*.example.com</code>) for hosts; <code>$HOME</code> + <code>~</code> expand for paths.
-          Merged with each project's own lists when a workspace is created.
+          Merged with each project's own lists when a task is created.
         </div>
         <div className="mt-3 flex flex-col gap-4">
           <SbField label="Allowed paths" placeholder={"~/Documents/notes\n~/scratch"} value={sbRw} onChange={setSbRw} />
@@ -344,8 +344,8 @@ export function GeneralSection() {
           new PTY spawns; respawn (⌘R / new tab) to pick up a change. */}
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
-          label="Bypass permissions in sandboxed workspaces"
-          hint="When on, agents in a sandboxed workspace skip their own permission prompts. The macOS seatbelt is the real boundary. Turn off to make sandboxed agents still ask. Applies to newly spawned terminals."
+          label="Bypass permissions in sandboxed tasks"
+          hint="When on, agents in a sandboxed task skip their own permission prompts. The macOS seatbelt is the real boundary. Turn off to make sandboxed agents still ask. Applies to newly spawned terminals."
           value={sandboxBypassPermissions}
           onChange={setSandboxBypassPermissions}
         />

@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
 import { Button } from "@/components/ui/Button";
-import { AuxTerminal } from "@/components/workspace/AuxTerminal";
+import { AuxTerminal } from "@/components/task/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
 import { IS_MAC, ALT_LABEL } from "@/lib/shortcuts";
 import { EditorView } from "@codemirror/view";
@@ -229,7 +229,7 @@ function TerminalPreview() {
   if (!home) return null;
   return (
     <div className="overflow-hidden rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)]" style={{ height: 380 }}>
-      <AuxTerminal wsPath={home} active={true} />
+      <AuxTerminal taskPath={home} active={true} />
     </div>
   );
 }

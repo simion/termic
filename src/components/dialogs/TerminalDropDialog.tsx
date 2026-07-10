@@ -40,7 +40,7 @@ export function TerminalDropDialog() {
     >
       <div className="flex flex-col gap-4 pt-1 text-[13.5px] text-[var(--color-fg-dim)] leading-relaxed">
         <p>
-          This workspace is sandboxed, so the agent can't read files from
+          This task is sandboxed, so the agent can't read files from
           locations like Desktop or Downloads. Choose how to share{" "}
           <span className="font-medium text-[var(--color-fg)]">{fileLabel}</span>:
         </p>
@@ -73,7 +73,7 @@ export function TerminalDropDialog() {
             <div>
               <div className="font-medium text-[var(--color-fg)]">Allow the folder</div>
               <div className="text-[12px] text-[var(--color-fg-faint)] break-all">
-                Adds <code className="font-mono">{folderHint}</code> to this workspace's sandbox allow-list. Inserts the real path. Takes effect after the agent restarts.
+                Adds <code className="font-mono">{folderHint}</code> to this task's sandbox allow-list. Inserts the real path. Takes effect after the agent restarts.
               </div>
             </div>
           </button>

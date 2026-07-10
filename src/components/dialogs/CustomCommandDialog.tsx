@@ -1,36 +1,45 @@
-// "Run a command in repo" dialog. Creates a repo-root workspace whose
-// default tab launches a user-supplied command in a login shell instead
-// of an agent CLI (ssh, a dev server, a REPL, anything). Both a name and
-// a command are required — the name labels the sidebar row, the command
-// is what runs. Mirrors the inline name-prompt of the agent "Run in repo"
-// rows, but needs a form because there are two fields.
+// "Run a command" dialog. Creates a task whose default tab launches a
+// user-supplied command in a login shell instead of an agent CLI (ssh, a dev
+// server, a REPL, anything). Both a name and a command are required. The
+// sidebar `+` menu opens it in either worktree or main-checkout mode; in
+// worktree mode it also shows the auto-derived (editable) branch.
 
 import { useEffect, useRef, useState } from "react";
 import { useUI } from "@/store/ui";
-import { useApp } from "@/store/app";
+import { usePrefs } from "@/store/prefs";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { workspaceOpenRepo } from "@/lib/ipc";
-import { SquareChevronRight } from "lucide-react";
+import { createQuickTask, derivedBranch } from "@/lib/quickTask";
+import { GitBranch, SquareChevronRight } from "lucide-react";
 
 export function CustomCommandDialog() {
   const projectId = useUI(s => s.customCommandProjectId);
+  const mode = useUI(s => s.customCommandMode);
   const close = useUI(s => s.closeCustomCommand);
-  const loadAll = useApp(s => s.loadAll);
-  const setActive = useApp(s => s.setActiveWorkspace);
+  const branchPrefix = usePrefs(s => s.branchPrefix);
 
   const open = projectId !== null;
+  const isWorktree = mode === "worktree";
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
+  const [branch, setBranch] = useState("");
+  const [branchEdited, setBranchEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const cmdRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setName(""); setCommand(""); setErr(null); setBusy(false);
+    setName(""); setCommand(""); setBranch(""); setBranchEdited(false);
+    setErr(null); setBusy(false);
   }, [open]);
+
+  // Keep the branch in lock-step with the name until the user takes it over.
+  function onNameChange(v: string) {
+    setName(v);
+    if (isWorktree && !branchEdited) setBranch(derivedBranch(v, branchPrefix));
+  }
 
   async function submit() {
     const n = name.trim();
@@ -38,9 +47,14 @@ export function CustomCommandDialog() {
     if (!projectId || !n || !c || busy) return;
     setBusy(true); setErr(null);
     try {
-      const w = await workspaceOpenRepo(projectId, "custom", n, c);
-      await loadAll();
-      setActive(w.id);
+      await createQuickTask({
+        projectId,
+        mode,
+        cli: "custom",
+        name: n,
+        command: c,
+        branch: isWorktree ? branch.trim() : undefined,
+      });
       close();
     } catch (e) {
       setErr(String(e));
@@ -53,21 +67,20 @@ export function CustomCommandDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title="New workspace with custom launch command"
+      title={isWorktree ? "New worktree with custom launch command" : "New task with custom launch command"}
       className="max-w-md"
     >
       <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Opens the repo's current branch (no worktree) and launches your
-        command in a login shell. When the command exits you drop back into
-        a normal shell in the repo, so an ssh disconnect or stopped dev
-        server leaves a usable terminal.
+        {isWorktree
+          ? "Branches a fresh worktree and launches your command in a login shell. When the command exits you drop back into a normal shell in the worktree."
+          : "Opens the repo's current branch (no worktree) and launches your command in a login shell. When the command exits you drop back into a normal shell in the repo, so an ssh disconnect or stopped dev server leaves a usable terminal."}
       </p>
 
       <label className="block text-[13.5px]">
         Name
         <Input
           value={name}
-          onChange={e => setName(e.target.value)}
+          onChange={e => onNameChange(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); cmdRef.current?.focus(); } }}
           placeholder="dev-server"
           className="mt-1.5"
@@ -78,6 +91,26 @@ export function CustomCommandDialog() {
           Shown in the sidebar.
         </span>
       </label>
+
+      {isWorktree && (
+        <label className="mt-4 block text-[13.5px]">
+          Branch
+          <div className="mt-1.5 flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 focus-within:border-[var(--color-accent)]">
+            <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+            <input
+              value={branch}
+              onChange={e => { setBranch(e.target.value); setBranchEdited(true); }}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); cmdRef.current?.focus(); } }}
+              placeholder="branch"
+              className="min-w-0 flex-1 border-0 bg-transparent py-[7px] font-mono text-[13px] text-[var(--color-fg)] outline-none"
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            />
+          </div>
+          <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
+            Auto-filled from the name. Edit it if you want a different branch.
+          </span>
+        </label>
+      )}
 
       <label className="mt-4 block text-[13.5px]">
         Command
@@ -96,9 +129,10 @@ export function CustomCommandDialog() {
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         />
         <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
-          Runs in the repo root, e.g. <code className="mono">ssh box</code>,{" "}
-          <code className="mono">npm run dev</code>, <code className="mono">python</code>.
-          A multiline bash script is fine. Press <kbd className="font-mono">⌘↵</kbd> to launch.
+          {isWorktree ? "Runs in the new worktree" : "Runs in the main checkout"}, e.g.{" "}
+          <code className="mono">ssh box</code>, <code className="mono">npm run dev</code>,{" "}
+          <code className="mono">python</code>. A multiline bash script is fine.
+          Press <kbd className="font-mono">⌘↵</kbd> to launch.
         </span>
       </label>
 

@@ -1,7 +1,7 @@
 // ⌘N global project picker — fuzzy-search any loaded project (by name + path)
-// and open the standard New Workspace dialog for it. Built for the
+// and open the standard New Task dialog for it. Built for the
 // hundreds-of-projects case where scrolling the sidebar to find the `+` is
-// the bottleneck. Selecting a row just calls openNewWorkspace(project.id) —
+// the bottleneck. Selecting a row just calls openNewTask(project.id) —
 // the exact same flow as the sidebar `+` → "New git worktree".
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -29,7 +29,7 @@ interface Scored {
 export function ProjectPickerDialog() {
   const open = useUI(s => s.projectPickerOpen);
   const close = useUI(s => s.closeProjectPicker);
-  const openNewWorkspace = useUI(s => s.openNewWorkspace);
+  const openNewTask = useUI(s => s.openNewTask);
   const projects = useApp(s => s.projects);
 
   const [query, setQuery] = useState("");
@@ -76,10 +76,10 @@ export function ProjectPickerDialog() {
   useEffect(() => { setActiveIdx(0); }, [query]);
 
   function pick(id: string) {
-    // Close the picker first, then open the New Workspace dialog so the two
+    // Close the picker first, then open the New Task dialog so the two
     // modals never stack.
     close();
-    openNewWorkspace(id);
+    openNewTask(id);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -115,8 +115,8 @@ export function ProjectPickerDialog() {
           className="termic-pop fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}
         >
-          <Dialog.Title className="sr-only">New workspace</Dialog.Title>
-          <Dialog.Description className="sr-only">Search a project to start a new workspace.</Dialog.Description>
+          <Dialog.Title className="sr-only">New task</Dialog.Title>
+          <Dialog.Description className="sr-only">Search a project to start a new task.</Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
             <input
@@ -127,7 +127,7 @@ export function ProjectPickerDialog() {
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"
-              placeholder="Search a project to start a new workspace"
+              placeholder="Search a project to start a new task"
               className="w-full bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
             />
           </div>

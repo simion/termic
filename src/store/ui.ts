@@ -1,5 +1,5 @@
 // Transient UI-only store (separate from the main app store so re-renders
-// triggered by opening a dialog don't churn the workspace tree).
+// triggered by opening a dialog don't churn the task tree).
 
 import { create } from "zustand";
 
@@ -31,32 +31,40 @@ export type TerminalDropChoice =
 export interface TerminalDropRequest {
   /** Absolute paths the user dropped. */
   paths: string[];
-  /** Owning workspace id (for staging + allow-list mutations). */
-  wsId: string;
+  /** Owning task id (for staging + allow-list mutations). */
+  taskId: string;
 }
 
 interface UIState {
   // dialog visibility
   newProjectOpen: boolean;
-  newWorkspaceProjectId: string | null;  // null = closed
+  newTaskProjectId: string | null;  // null = closed
   /** Optional seed for the New worktree dialog — when set, the dialog
    *  pre-fills the branch-from field with this value. Used by the
-   *  "Duplicate workspace" flow to branch a new worktree off an
+   *  "Duplicate task" flow to branch a new worktree off an
    *  existing one's tip. Cleared when the dialog closes. */
-  newWorkspaceSeed: { baseBranch?: string; namePrefix?: string; importMode?: boolean } | null;
-  /** "Run a command in repo" dialog — project id to open it for, null =
-   *  closed. Creates a repo-root workspace whose default tab runs a
-   *  user-supplied launch command instead of an agent. */
+  newTaskSeed: { baseBranch?: string; namePrefix?: string; importMode?: boolean } | null;
+  /** "Run a command" dialog — project id to open it for, null = closed.
+   *  Creates a task whose default tab runs a user-supplied launch command
+   *  instead of an agent. `customCommandMode` picks worktree vs main
+   *  checkout (the sidebar `+` menu toggle drives it). */
   customCommandProjectId: string | null;
-  /** "Edit launch command" dialog — workspace id to edit the custom
+  customCommandMode: "worktree" | "repo_root";
+  /** "Edit launch command" dialog — task id to edit the custom
    *  launch command for, null = closed. Only opened for cli==="custom"
-   *  workspaces. Lives in UI store so opening doesn't churn the
-   *  workspace tree. */
-  editCommandWsId: string | null;
-  /** Workspace id whose resume-args override is being edited, null =
-   *  closed. Lives in UI store so opening doesn't churn the workspace
+   *  tasks. Lives in UI store so opening doesn't churn the
+   *  task tree. */
+  editCommandTaskId: string | null;
+  /** Task id whose resume-args override is being edited, null =
+   *  closed. Lives in UI store so opening doesn't churn the task
    *  tree. */
-  resumeOverrideWsId: string | null;
+  resumeOverrideTaskId: string | null;
+  /** Progress overlay for a QUICK worktree create (sidebar inline row).
+   *  Reuses the New Task dialog's ProgressBody: "creating" shows the
+   *  worktree add / file-copy spinner, "error" surfaces the failure with a
+   *  Close button. null = hidden. Main-checkout creates are instant and
+   *  never set this. */
+  taskCreateProgress: { phase: "creating" | "error"; err: string | null } | null;
   /** Read-only "Keyboard shortcuts" cheat-sheet modal (opened from the
    *  sidebar footer). Distinct from Settings → Shortcuts (which edits them). */
   shortcutsHelpOpen: boolean;
@@ -64,38 +72,38 @@ interface UIState {
   /** Changelog dialog — full per-version release notes. */
   changelogOpen: boolean;
   /** Broadcast dialog — send one message to several open agents in a
-   *  workspace at once. null = closed. UI-store (not app) so opening it
-   *  doesn't churn the workspace tree. */
-  broadcastForWsId: string | null;
+   *  task at once. null = closed. UI-store (not app) so opening it
+   *  doesn't churn the task tree. */
+  broadcastForTaskId: string | null;
   /** Project-scoped broadcast: the same dialog, but targeting the MAIN agent
-   *  of every workspace in this project. null = closed. Mutually exclusive
-   *  with broadcastForWsId (both cleared by closeBroadcast). */
+   *  of every task in this project. null = closed. Mutually exclusive
+   *  with broadcastForTaskId (both cleared by closeBroadcast). */
   broadcastForProjectId: string | null;
-  /** Open the Edit Sandbox dialog for a specific workspace. null = closed.
+  /** Open the Edit Sandbox dialog for a specific task. null = closed.
    *  Lives in UI store (not app) so flipping it doesn't churn the
-   *  workspace tree on every re-render. */
-  sandboxForWsId: string | null;
-  /** ⌘P file finder — workspace id to scope the search to; null = closed.
-   *  Lives here so opening doesn't churn the workspace tree. */
-  fileFinderWsId: string | null;
+   *  task tree on every re-render. */
+  sandboxForTaskId: string | null;
+  /** ⌘P file finder — task id to scope the search to; null = closed.
+   *  Lives here so opening doesn't churn the task tree. */
+  fileFinderTaskId: string | null;
   /** Global fuzzy project picker (⌘N) — search any loaded project and
-   *  start a new workspace for it without scrolling the sidebar. */
+   *  start a new task for it without scrolling the sidebar. */
   projectPickerOpen: boolean;
   /** ⌘K command palette — searchable list of every command / action. */
   commandPaletteOpen: boolean;
-  /** Fire-and-forget "start inline-rename on this workspace row" signal.
-   *  The sidebar's WorkspaceRow watches the nonce and, when the wsId
+  /** Fire-and-forget "start inline-rename on this task row" signal.
+   *  The sidebar's TaskRow watches the nonce and, when the taskId
    *  matches, flips its own local rename state (the same thing the row's
    *  dropdown "Rename" does). Lives here so the command palette can
    *  trigger the sidebar rename from outside the sidebar tree. The caller
    *  is responsible for expanding the row's project first (a collapsed
    *  project doesn't render the row, so the signal would be missed). */
-  renameRequest: { wsId: string; nonce: number } | null;
-  /** ⇧⌘F find-in-files dialog — workspace id, null = closed. */
-  findInFilesWsId: string | null;
+  renameRequest: { taskId: string; nonce: number } | null;
+  /** ⇧⌘F find-in-files dialog — task id, null = closed. */
+  findInFilesTaskId: string | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
    *  the whole window so the user knows the freeze is intentional. Set for
-   *  unavoidably-synchronous IPC calls like `workspace_archive` that take
+   *  unavoidably-synchronous IPC calls like `task_archive` that take
    *  several seconds (git worktree remove + rm -rf). */
   busyMessage: string | null;
   /** Active confirm prompt, if any. null = nothing pending. The
@@ -105,21 +113,15 @@ interface UIState {
   /** Active sandboxed-terminal drop prompt, if any. The resolve callback
    *  fires with the user's choice when the modal closes. */
   terminalDrop: { req: TerminalDropRequest; resolve: (c: TerminalDropChoice) => void } | null;
-  /** Workspaces whose PTYs are about to be SIGKILL'd because the user
+  /** Tasks whose PTYs are about to be SIGKILL'd because the user
    *  explicitly hit "Save & restart" on a config dialog (Sandbox or
    *  Resume override). The next pty-exit for any PTY belonging to one of
-   *  these workspaces will trigger an immediate respawn (the TerminalPane
+   *  these tasks will trigger an immediate respawn (the TerminalPane
    *  checks the set on exit instead of showing the "Restart agent"
-   *  overlay). Cleared per-(ws,tab) when the respawn fires. */
+   *  overlay). Cleared per-(task,tab) when the respawn fires. */
   pendingPtyRestarts: Set<string>;
   /** Transient bottom-right toasts. Auto-dismiss handled in <Toaster/>. */
   toasts: Toast[];
-  /** Fire-and-forget "run the run-script now" signal from chrome outside
-   *  the RightPanel (the UnifiedBar's top-right Run button). The RightPanel
-   *  owns the footer's collapse/tab state plus the spotlight/members nuance,
-   *  so rather than duplicate `startScript("run")` we bump a nonce here and
-   *  let the matching RightPanel react. null = nothing pending. */
-  runScriptRequest: { wsId: string; nonce: number; kind: "run" | "setup" } | null;
   /** Bumped to force the "All files" tree to re-read from disk — e.g. after
    *  the user edits exclude patterns in Settings (the tree is behind the
    *  Settings overlay, so it can't refresh itself). RightPanel folds this
@@ -129,34 +131,35 @@ interface UIState {
   // actions
   openNewProject: () => void;
   closeNewProject: () => void;
-  openNewWorkspace: (projectId: string, seed?: { baseBranch?: string; namePrefix?: string; importMode?: boolean }) => void;
-  closeNewWorkspace: () => void;
-  openCustomCommand: (projectId: string) => void;
+  openNewTask: (projectId: string, seed?: { baseBranch?: string; namePrefix?: string; importMode?: boolean }) => void;
+  closeNewTask: () => void;
+  openCustomCommand: (projectId: string, mode?: "worktree" | "repo_root") => void;
   closeCustomCommand: () => void;
-  openEditCommand: (wsId: string) => void;
+  openEditCommand: (taskId: string) => void;
   closeEditCommand: () => void;
-  openResumeOverride: (wsId: string) => void;
+  openResumeOverride: (taskId: string) => void;
   closeResumeOverride: () => void;
+  setTaskCreateProgress: (p: { phase: "creating" | "error"; err: string | null } | null) => void;
   openShortcutsHelp: () => void;
   closeShortcutsHelp: () => void;
   openWelcome: () => void;
   closeWelcome: () => void;
   openChangelog: () => void;
   closeChangelog: () => void;
-  openBroadcast: (wsId: string) => void;
+  openBroadcast: (taskId: string) => void;
   openProjectBroadcast: (projectId: string) => void;
   closeBroadcast: () => void;
-  openSandbox: (wsId: string) => void;
+  openSandbox: (taskId: string) => void;
   closeSandbox: () => void;
-  openFileFinder: (wsId: string) => void;
+  openFileFinder: (taskId: string) => void;
   closeFileFinder: () => void;
   openProjectPicker: () => void;
   closeProjectPicker: () => void;
   openCommandPalette: () => void;
   closeCommandPalette: () => void;
-  /** Ask the sidebar to start inline-renaming `wsId`. */
-  requestWorkspaceRename: (wsId: string) => void;
-  openFindInFiles: (wsId: string) => void;
+  /** Ask the sidebar to start inline-renaming `taskId`. */
+  requestTaskRename: (taskId: string) => void;
+  openFindInFiles: (taskId: string) => void;
   closeFindInFiles: () => void;
   setBusy: (msg: string | null) => void;
   reloadFileTree: () => void;
@@ -173,14 +176,14 @@ interface UIState {
    *  sharing strategy (or {kind:"cancel"} on dismiss). */
   askTerminalDrop: (req: TerminalDropRequest) => Promise<TerminalDropChoice>;
   resolveTerminalDrop: (choice: TerminalDropChoice) => void;
-  /** Mark a workspace for auto-restart on the next PTY exit. Called by
+  /** Mark a task for auto-restart on the next PTY exit. Called by
    *  dialogs that change spawn-time config and then kill the live agent so
    *  it relaunches with the new settings (the Sandbox dialog before
-   *  `workspace_set_sandbox`, the Resume override dialog before its kill). */
-  markPendingPtyRestart: (wsId: string) => void;
+   *  `task_set_sandbox`, the Resume override dialog before its kill). */
+  markPendingPtyRestart: (taskId: string) => void;
   /** Pop the marker — TerminalPane calls this after consuming a
    *  pending restart so a SUBSEQUENT real exit shows the overlay. */
-  consumePendingPtyRestart: (wsId: string) => boolean;
+  consumePendingPtyRestart: (taskId: string) => boolean;
   /** Push a transient toast. Returns its id (so callers can dismiss
    *  early if needed). Auto-dismiss is handled by <Toaster/>.
    *  `opts.action` adds a button (e.g. "Undo") whose click runs the
@@ -194,13 +197,8 @@ interface UIState {
    *  inside useAttentionNotifier so any source (OSC 9, markAttention)
    *  can seed it. ROUTE_WINDOW_MS gating + clearing on consumption
    *  live inside the hook. */
-  notifyRoute: { wsId: string; tabId: string; firedAt: number } | null;
-  setNotifyRoute: (route: { wsId: string; tabId: string } | null) => void;
-  /** Ask the workspace's RightPanel to start its run-script (or setup
-   *  script) — used by chrome outside the RightPanel: the UnifiedBar's Run
-   *  button and the TabBar's popped-out RunControls. No-op if that
-   *  workspace isn't mounted. */
-  requestRunScript: (wsId: string, kind?: "run" | "setup") => void;
+  notifyRoute: { taskId: string; tabId: string; firedAt: number } | null;
+  setNotifyRoute: (route: { taskId: string; tabId: string } | null) => void;
 }
 
 export type ToastKind = "success" | "info" | "error";
@@ -216,24 +214,25 @@ export interface Toast {
 
 export const useUI = create<UIState>(set => ({
   newProjectOpen: false,
-  newWorkspaceProjectId: null,
-  newWorkspaceSeed: null,
+  newTaskProjectId: null,
+  newTaskSeed: null,
   customCommandProjectId: null,
-  editCommandWsId: null,
-  resumeOverrideWsId: null,
+  customCommandMode: "repo_root",
+  editCommandTaskId: null,
+  resumeOverrideTaskId: null,
+  taskCreateProgress: null,
   shortcutsHelpOpen: false,
   welcomeOpen: false,
   changelogOpen: false,
-  broadcastForWsId: null,
+  broadcastForTaskId: null,
   broadcastForProjectId: null,
-  sandboxForWsId: null,
-  fileFinderWsId: null,
-  findInFilesWsId: null,
+  sandboxForTaskId: null,
+  fileFinderTaskId: null,
+  findInFilesTaskId: null,
   projectPickerOpen: false,
   commandPaletteOpen: false,
   renameRequest: null,
   busyMessage: null,
-  runScriptRequest: null,
   fileTreeNonce: 0,
   confirm: null,
   terminalDrop: null,
@@ -243,44 +242,42 @@ export const useUI = create<UIState>(set => ({
 
   openNewProject:    () => set({ newProjectOpen: true }),
   closeNewProject:   () => set({ newProjectOpen: false }),
-  openNewWorkspace:  (projectId, seed) => set({ newWorkspaceProjectId: projectId, newWorkspaceSeed: seed ?? null }),
-  closeNewWorkspace: () => set({ newWorkspaceProjectId: null, newWorkspaceSeed: null }),
-  openCustomCommand:  (projectId) => set({ customCommandProjectId: projectId }),
+  openNewTask:  (projectId, seed) => set({ newTaskProjectId: projectId, newTaskSeed: seed ?? null }),
+  closeNewTask: () => set({ newTaskProjectId: null, newTaskSeed: null }),
+  openCustomCommand:  (projectId, mode = "repo_root") => set({ customCommandProjectId: projectId, customCommandMode: mode }),
   closeCustomCommand: () => set({ customCommandProjectId: null }),
-  openEditCommand:    (wsId) => set({ editCommandWsId: wsId }),
-  closeEditCommand:   () => set({ editCommandWsId: null }),
-  openResumeOverride: (wsId) => set({ resumeOverrideWsId: wsId }),
-  closeResumeOverride:() => set({ resumeOverrideWsId: null }),
+  openEditCommand:    (taskId) => set({ editCommandTaskId: taskId }),
+  closeEditCommand:   () => set({ editCommandTaskId: null }),
+  openResumeOverride: (taskId) => set({ resumeOverrideTaskId: taskId }),
+  closeResumeOverride:() => set({ resumeOverrideTaskId: null }),
+  setTaskCreateProgress: (p) => set({ taskCreateProgress: p }),
   openShortcutsHelp:  () => set({ shortcutsHelpOpen: true }),
   closeShortcutsHelp: () => set({ shortcutsHelpOpen: false }),
   openWelcome:       () => set({ welcomeOpen: true }),
   closeWelcome:      () => set({ welcomeOpen: false }),
   openChangelog:     () => set({ changelogOpen: true }),
   closeChangelog:    () => set({ changelogOpen: false }),
-  openBroadcast:     (wsId) => set({ broadcastForWsId: wsId, broadcastForProjectId: null }),
-  openProjectBroadcast: (projectId) => set({ broadcastForProjectId: projectId, broadcastForWsId: null }),
-  closeBroadcast:    () => set({ broadcastForWsId: null, broadcastForProjectId: null }),
-  openSandbox:       (wsId) => set({ sandboxForWsId: wsId }),
-  closeSandbox:      () => set({ sandboxForWsId: null }),
-  openFileFinder:    (wsId) => set({ fileFinderWsId: wsId }),
-  closeFileFinder:   () => set({ fileFinderWsId: null }),
-  openFindInFiles:   (wsId) => set({ findInFilesWsId: wsId }),
-  closeFindInFiles:  () => set({ findInFilesWsId: null }),
+  openBroadcast:     (taskId) => set({ broadcastForTaskId: taskId, broadcastForProjectId: null }),
+  openProjectBroadcast: (projectId) => set({ broadcastForProjectId: projectId, broadcastForTaskId: null }),
+  closeBroadcast:    () => set({ broadcastForTaskId: null, broadcastForProjectId: null }),
+  openSandbox:       (taskId) => set({ sandboxForTaskId: taskId }),
+  closeSandbox:      () => set({ sandboxForTaskId: null }),
+  openFileFinder:    (taskId) => set({ fileFinderTaskId: taskId }),
+  closeFileFinder:   () => set({ fileFinderTaskId: null }),
+  openFindInFiles:   (taskId) => set({ findInFilesTaskId: taskId }),
+  closeFindInFiles:  () => set({ findInFilesTaskId: null }),
   openProjectPicker: () => set({ projectPickerOpen: true }),
   closeProjectPicker:() => set({ projectPickerOpen: false }),
   openCommandPalette: () => set({ commandPaletteOpen: true }),
   closeCommandPalette:() => set({ commandPaletteOpen: false }),
-  requestWorkspaceRename: (wsId) => set(s => ({
-    renameRequest: { wsId, nonce: (s.renameRequest?.nonce ?? 0) + 1 },
+  requestTaskRename: (taskId) => set(s => ({
+    renameRequest: { taskId, nonce: (s.renameRequest?.nonce ?? 0) + 1 },
   })),
   setBusy:           (msg) => set({ busyMessage: msg }),
   reloadFileTree:    () => set(s => ({ fileTreeNonce: s.fileTreeNonce + 1 })),
   setNotifyRoute:    (route) => set({
     notifyRoute: route ? { ...route, firedAt: Date.now() } : null,
   }),
-  requestRunScript:  (wsId, kind = "run") => set(s => ({
-    runScriptRequest: { wsId, nonce: (s.runScriptRequest?.nonce ?? 0) + 1, kind },
-  })),
   askConfirm: (req: any) =>
     // Defer mounting the confirm dialog by a macrotask. When a Radix
     // ContextMenu / Dropdown item's onSelect calls askConfirm, the menu is
@@ -309,16 +306,16 @@ export const useUI = create<UIState>(set => ({
     d?.resolve(choice);
     set({ terminalDrop: null });
   },
-  markPendingPtyRestart: (wsId) => set(s => {
+  markPendingPtyRestart: (taskId) => set(s => {
     const next = new Set(s.pendingPtyRestarts);
-    next.add(wsId);
+    next.add(taskId);
     return { pendingPtyRestarts: next };
   }),
-  consumePendingPtyRestart: (wsId) => {
+  consumePendingPtyRestart: (taskId) => {
     const s = useUI.getState();
-    if (!s.pendingPtyRestarts.has(wsId)) return false;
+    if (!s.pendingPtyRestarts.has(taskId)) return false;
     const next = new Set(s.pendingPtyRestarts);
-    next.delete(wsId);
+    next.delete(taskId);
     useUI.setState({ pendingPtyRestarts: next });
     return true;
   },

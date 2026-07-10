@@ -23,11 +23,11 @@ const CONFIRM_COPY: Record<ConfirmKind, { title: string; body: string }> = {
   },
   host: {
     title: "Add a non-git host?",
-    body: "This folder isn't a git repository. It will host the shared knowledge files as a plain folder. Member repos still get their own worktrees per workspace.",
+    body: "This folder isn't a git repository. It will host the shared knowledge files as a plain folder. Member repos still get their own worktrees per task.",
   },
   member: {
     title: "Add as a plain folder?",
-    body: "This folder isn't a git repository. It mounts repo-root only (a live symlink), with no worktree or branch.",
+    body: "This folder isn't a git repository. It mounts the main checkout only (a live symlink), with no worktree or branch.",
   },
 };
 
@@ -249,7 +249,7 @@ export function NewProjectDialog() {
       <div className="mb-5 grid grid-cols-2 gap-2 text-[13px]">
         {([
           { id: "repo",  icon: Folder, label: "Repository",  hint: "One git repo. Worktrees branch off it." },
-          { id: "multi", icon: Layers, label: "Multi-repo project", hint: "Several repos in one workspace. Shared memory across them." },
+          { id: "multi", icon: Layers, label: "Multi-repo project", hint: "Several repos in one task. Shared memory across them." },
         ] as const).map(opt => {
           const active = mode === opt.id;
           const Ic = opt.icon;
@@ -278,14 +278,14 @@ export function NewProjectDialog() {
       {mode === "multi" ? (
         <>
           <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-            A multi-repo project groups several repos under one workspace
+            A multi-repo project groups several repos under one task
             so an agent can work across them in a single session. Each
-            workspace creates a folder with one worktree per member repo,
+            task creates a folder with one worktree per member repo,
             plus a shared
             {" "}<code className="mono">CLAUDE.md</code> /{" "}
             <code className="mono">AGENTS.md</code> /{" "}
             <code className="mono">.claude/</code> the agent loads at startup,
-            persistent business knowledge that lives across every workspace.
+            persistent business knowledge that lives across every task.
           </p>
 
           <label className="block text-[13.5px]">
@@ -646,7 +646,7 @@ function AvailableMembersPicker({ candidates, onAdd, onQuickAdd }: {
             </Button>
           </div>
           <p className="mt-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-            Adds the folder as a member of this project only (no standalone project). A plain folder works too: we confirm after you pick it, then it mounts repo-root only (no worktree).
+            Adds the folder as a member of this project only (no standalone project). A plain folder works too: we confirm after you pick it, then it mounts as the main checkout only (no worktree).
           </p>
         </div>
       )}

@@ -381,7 +381,7 @@ function StepTheme() {
 // Reuses the repo list discovered in step 1 (no second IPC trip).
 // User ticks the repos they want, "Add N projects" creates them; the
 // wizard closes onto a populated dashboard instead of a sandbox lecture.
-// Sandbox itself is discoverable via the shield icon on workspace
+// Sandbox itself is discoverable via the shield icon on task
 // rows + the dialog behind it - users don't need a tour on day 1.
 function StepProjects({ dir, repos, selected, setSelected }: {
   dir: string;
@@ -508,7 +508,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
       )}
 
       <p className="text-[11.5px] text-[var(--color-fg-faint)]">
-        Each project lets you spawn workspaces (git worktrees) per agent. You
+        Each project lets you spawn tasks (git worktrees) per agent. You
         can also add projects later from the dashboard.
       </p>
     </div>

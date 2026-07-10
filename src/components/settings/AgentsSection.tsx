@@ -4,7 +4,7 @@
 // through the login shell and the card hides the agent-only fields.
 //
 // Built-in agents (claude/codex/agy/gemini) are editable but not removable —
-// removing them would orphan existing workspaces that reference them.
+// removing them would orphan existing tasks that reference them.
 // Saves are debounced (500ms) so typing doesn't hammer the JSON file.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -35,7 +35,7 @@ export function AgentsSection() {
   const [pendingDelete, setPendingDelete] = useState<Agent | null>(null);
   // Ship-time defaults, fetched from Rust. Used to compute "modified"
   // indicators + drive the reset-to-defaults action so users can pick up
-  // updated default flags (e.g. claude's new `--resume {workspace_slug}`)
+  // updated default flags (e.g. claude's new `--resume {task_slug}`)
   // without losing their other customizations.
   const [defaults, setDefaults] = useState<Agent[]>([]);
 
@@ -119,9 +119,9 @@ export function AgentsSection() {
     if (slug && slug !== id && !agents.some(other => other.id === slug)) {
       mutate(agents.map(x => x.id === id ? { ...x, id: slug } : x));
       setActiveId(slug);
-      // Update any workspaces referencing the old ID in the app store
+      // Update any tasks referencing the old ID in the app store
       useApp.setState(s => ({
-        workspaces: s.workspaces.map(w => w.cli === id ? { ...w, cli: slug } : w)
+        tasks: s.tasks.map(w => w.cli === id ? { ...w, cli: slug } : w)
       }));
     }
   }
@@ -280,7 +280,7 @@ export function AgentsSection() {
             </div>
             <p className="mt-1 text-[13px] text-[var(--color-fg-dim)]">
               <span className="font-mono text-[var(--color-fg)]">{pendingDelete?.display_name}</span>{" "}
-              will be removed. Workspaces that reference it will fall back to spawning the
+              will be removed. Tasks that reference it will fall back to spawning the
               literal command <span className="font-mono text-[var(--color-fg)]">{pendingDelete?.command || "(empty)"}</span>.
             </p>
           </div>
@@ -613,9 +613,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         </div>
         <div className="flex items-center gap-2">
           {/* Force hide/show — disabled agents drop out of every CLI
-              picker (worktree popover, New Workspace, Review, + menu)
+              picker (worktree popover, New Task, Review, + menu)
               but stay editable here and keep working for existing
-              workspaces already bound to them. */}
+              tasks already bound to them. */}
           <span
             onClick={() => onPatch({ disabled: !agent.disabled })}
             className="text-[12.5px] text-[var(--color-fg-dim)] font-medium select-none cursor-pointer hover:text-[var(--color-fg)] transition-colors mr-0.5"
@@ -676,15 +676,15 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
 
       <div className="grid grid-cols-1 gap-3">
         <Field label="Command" hint={isTerminal
-          ? "Run through your login shell (quoting, pipes, and rc-file PATH all work). The shell stays interactive after the command exits. Placeholders: {workspace_slug}, {workspace_name}, {workspace_path}, {branch}, {port}."
+          ? "Run through your login shell (quoting, pipes, and rc-file PATH all work). The shell stays interactive after the command exits. Placeholders: {task_slug}, {task_name}, {task_path}, {branch}, {port}."
           : "Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work, and shell-style `VAR=val cmd` prefixes won't either; use the Environment box below for env vars."}>
-          <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder={isTerminal ? "docker exec -it -w {workspace_path} mybox zsh" : "claude"} />
+          <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder={isTerminal ? "docker exec -it -w {task_path} mybox zsh" : "claude"} />
         </Field>
         <Field
           label="Default args"
           hint={isTerminal
-            ? "Appended to the command line above. Space-separated. Same placeholders, including {workspace_path} (differs between the main repo and each worktree)."
-            : "Always passed. Space-separated. Placeholders: {workspace_slug}, {workspace_name}, {workspace_id}, {workspace_path}, {branch}, {port}."}
+            ? "Appended to the command line above. Space-separated. Same placeholders, including {task_path} (differs between the main repo and each worktree)."
+            : "Always passed. Space-separated. Placeholders: {task_slug}, {task_name}, {task_id}, {task_path}, {branch}, {port}."}
         >
           <ArgsInput value={agent.args || []}
             onChange={args => onPatch({ args })}
@@ -712,20 +712,20 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             />
           </Field>
         </div>
-        <Field label="Resume last (worktrees)" hint="CWD-based resume. Used on every spawn after the first inside a worktree workspace — each worktree has its own dir, so the agent's most-recent CWD session IS this workspace's session. Not used in repo-root workspaces (the shared dir would lasso external sessions; repo-root uses Session/Resume ID args instead).">
+        <Field label="Resume last (worktrees)" hint="CWD-based resume. Used on every spawn after the first inside a worktree task (each worktree has its own dir, so the agent's most-recent CWD session IS this task's session). Not used in main-checkout tasks (the shared dir would lasso external sessions; the main checkout uses Session/Resume ID args instead).">
           <ArgsInput value={agent.capabilities?.resume_args || []}
             onChange={resume_args => onPatchCaps({ resume_args })}
             className="font-mono" placeholder="--continue"
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Session ID args (repo-root)" hint="First spawn in a repo-root workspace, mints a termic-owned uuid. Use {UUID}. Empty = no auto-resume in repo-root for this agent.">
+          <Field label="Session ID args (main checkout)" hint="First spawn in a main-checkout task, mints a termic-owned uuid. Use {UUID}. Empty = no auto-resume in the main checkout for this agent.">
             <ArgsInput value={agent.capabilities?.session_id_args || []}
               onChange={session_id_args => onPatchCaps({ session_id_args })}
               className="font-mono" placeholder="--session-id {UUID}"
             />
           </Field>
-          <Field label="Resume ID args (repo-root)" hint="Every spawn after the first in a repo-root workspace. Resumes the termic-owned uuid (isolates us from external sessions in the same cwd). Use {UUID}.">
+          <Field label="Resume ID args (main checkout)" hint="Every spawn after the first in a main-checkout task. Resumes the termic-owned uuid (isolates us from external sessions in the same cwd). Use {UUID}.">
             <ArgsInput value={agent.capabilities?.resume_id_args || []}
               onChange={resume_id_args => onPatchCaps({ resume_id_args })}
               className="font-mono" placeholder="--resume {UUID}"
@@ -750,7 +750,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         </Field>
         <Field
           label="Sandbox allowed paths"
-          hint="One path per line. $HOME and ~ expand. Joined into every workspace sandbox that uses this agent; workspaces cannot remove them. Reset to defaults restores the shipped list."
+          hint="One path per line. $HOME and ~ expand. Joined into every task sandbox that uses this agent; tasks cannot remove them. Reset to defaults restores the shipped list."
         >
           <PathsTextarea
             value={agent.sandbox_allowed_paths ?? []}
@@ -760,7 +760,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         </Field>
         <Field
           label="Sandbox allowed hosts"
-          hint="One host per line; * is a wildcard (e.g. *.mycompany.com). Joined into every workspace sandbox that uses this agent. This is where 'Allow · per agent' in the activity popover saves hosts."
+          hint="One host per line; * is a wildcard (e.g. *.mycompany.com). Joined into every task sandbox that uses this agent. This is where 'Allow · per agent' in the activity popover saves hosts."
         >
           <PathsTextarea
             value={agent.sandbox_allowed_hosts ?? []}

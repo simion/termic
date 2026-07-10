@@ -8,7 +8,7 @@
 // Layout mirrors a chat composer: the queue grows top→bottom (head = next to
 // send, at the top), and the input sits at the BOTTOM where you naturally add
 // the next item. Queues are per-agent, so a selector appears when more than
-// one work-done-capable agent is running in the workspace.
+// one work-done-capable agent is running in the task.
 
 import { useMemo, useState } from "react";
 import { useApp } from "@/store/app";
@@ -28,8 +28,8 @@ function tabLabel(t: TerminalTab): string {
   return t.customTitle ? t.title : (t.liveTitle || t.title);
 }
 
-export function MessageQueueButton({ wsId, compact = false, className, preferTabId }: {
-  wsId: string;
+export function MessageQueueButton({ taskId, compact = false, className, preferTabId }: {
+  taskId: string;
   /** Icon-only rendering for tight spots like the split terminal's tab strip
    *  (vs. icon + "Queue messages" text in the bottom status bar). */
   compact?: boolean;
@@ -40,8 +40,8 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
    *  pane's agent instead of the main pane's active tab. */
   preferTabId?: string;
 }) {
-  const tabsForWs = useApp(s => s.tabs[wsId]);
-  const activeTabId = useApp(s => s.activeTab[wsId]);
+  const tabsForTask = useApp(s => s.tabs[taskId]);
+  const activeTabId = useApp(s => s.activeTab[taskId]);
   // The agent this button defaults to: an explicit override (right-pane
   // button) or the main pane's active tab.
   const defaultTabId = preferTabId ?? activeTabId;
@@ -53,15 +53,15 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
   // Only work-done-capable agent tabs with a live PTY can host a queue — the
   // loop advances on work-done, which shells / detection-off agents never emit.
   const targets = useMemo<TerminalTab[]>(
-    () => (tabsForWs || []).filter(
+    () => (tabsForTask || []).filter(
       (t): t is TerminalTab => t.type === "terminal" && !!t.ptyId && workDoneCapable(t.cli, agents),
     ),
-    [tabsForWs, agents],
+    [tabsForTask, agents],
   );
   const canQueue = targets.length > 0;
 
   // The button badge reflects ONLY the active agent (the one in the main pane),
-  // not a workspace-wide sum — a count from a different agent's queue here is
+  // not a task-wide sum — a count from a different agent's queue here is
   // confusing. The popover still lists every agent via the selector.
   const activeAgent = targets.find(t => t.id === defaultTabId);
   const queuedCount = (activeAgent?.queue ?? []).reduce((sum, q) => sum + q.remaining, 0);
@@ -107,7 +107,7 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
     // enqueueAgentMessage owns the queueKick-bump protocol (see app store):
     // bumping queueKick is what wakes TerminalPane's drain effect; a
     // queueActive false->true edge would stall when the queue was already active.
-    enqueueAgentMessage(wsId, target.id, text, r);
+    enqueueAgentMessage(taskId, target.id, text, r);
     setDraft("");
     setRepeat(1);
   }
@@ -117,17 +117,17 @@ export function MessageQueueButton({ wsId, compact = false, className, preferTab
     const next = queue.filter(q => q.id !== id);
     // Emptying the queue stops the loop so a later work-done doesn't fire a
     // stray "finished" toast.
-    patchTab(wsId, target.id, next.length ? { queue: next } : { queue: [], queueActive: false });
+    patchTab(taskId, target.id, next.length ? { queue: next } : { queue: [], queueActive: false });
   }
 
   function clearAll() {
     if (!target) return;
-    patchTab(wsId, target.id, { queue: [], queueActive: false });
+    patchTab(taskId, target.id, { queue: [], queueActive: false });
   }
 
   function sendNow() {
     if (!target || queue.length === 0) return;
-    forceAgentQueueSend(wsId, target.id);
+    forceAgentQueueSend(taskId, target.id);
   }
 
   const tip = !canQueue

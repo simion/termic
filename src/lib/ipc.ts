@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  Project, ProjectMember, Workspace, CreateWorkspaceArgs, CreateMultiArgs, Settings, DiscoveredRepo,
+  Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, FileEntry, Agent, RepoConfig,
   SandboxMode,
 } from "./types";
@@ -34,77 +34,77 @@ export const projectRemove  = (id: string) => invoke<void>("project_remove", { i
 export const projectReorder = (ids: string[]) => invoke<void>("project_reorder", { ids });
 export const projectRename  = (id: string, name: string) => invoke<void>("project_rename", { id, name });
 
-// ───────────────────────────── workspaces ─────────────────────────────
+// ───────────────────────────── tasks ─────────────────────────────
 
-export const workspacesList    = () => invoke<Workspace[]>("workspaces_list");
-export const workspaceCreate   = (args: CreateWorkspaceArgs) => invoke<Workspace>("workspace_create", { args });
-export const workspaceCreateMulti = (args: CreateMultiArgs) => invoke<Workspace>("workspace_create_multi", { args });
-export const workspaceOpenRepo = (projectId: string, cli?: string, name?: string, command?: string) =>
-  invoke<Workspace>("workspace_open_repo", { projectId, cli, name, command });
-/** List a project's git worktrees not yet open as workspaces (issue #5). */
-export const workspaceImportableWorktrees = (projectId: string) =>
-  invoke<ImportableWorktree[]>("workspace_importable_worktrees", { projectId });
-/** Import an existing worktree as a workspace (issue #5). Sandbox args
- *  mirror workspace_create: when omitted, Rust falls back to the
+export const tasksList    = () => invoke<Task[]>("tasks_list");
+export const taskCreate   = (args: CreateTaskArgs) => invoke<Task>("task_create", { args });
+export const taskCreateMulti = (args: CreateMultiArgs) => invoke<Task>("task_create_multi", { args });
+export const taskOpenRepo = (projectId: string, cli?: string, name?: string, command?: string) =>
+  invoke<Task>("task_open_repo", { projectId, cli, name, command });
+/** List a project's git worktrees not yet open as tasks (issue #5). */
+export const taskImportableWorktrees = (projectId: string) =>
+  invoke<ImportableWorktree[]>("task_importable_worktrees", { projectId });
+/** Import an existing worktree as a task (issue #5). Sandbox args
+ *  mirror task_create: when omitted, Rust falls back to the
  *  project default + merged default lists. */
-export const workspaceImportWorktree = (
+export const taskImportWorktree = (
   projectId: string,
   path: string,
   name?: string,
   cli?: string,
   sandbox?: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[] },
 ) =>
-  invoke<Workspace>("workspace_import_worktree", {
+  invoke<Task>("task_import_worktree", {
     projectId, path, name, cli,
     sandboxEnabled: sandbox?.enabled,
     sandboxMode: sandbox?.mode,
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
   });
-export const workspaceArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("workspace_archive", { id, deleteBranch });
-export const workspaceRestore  = (id: string) => invoke<Workspace>("workspace_restore", { id });
-export const workspaceDelete   = (id: string) => invoke<void>("workspace_delete", { id });
-export const workspaceSetCli   = (id: string, cli: string) => invoke<void>("workspace_set_cli", { id, cli });
-/** Update a custom-command workspace's launch command (multiline bash
- *  script). Only valid for cli==="custom" workspaces. Persists and
- *  returns the updated workspace; live PTYs keep running until the user
+export const taskArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("task_archive", { id, deleteBranch });
+export const taskRestore  = (id: string) => invoke<Task>("task_restore", { id });
+export const taskDelete   = (id: string) => invoke<void>("task_delete", { id });
+export const taskSetCli   = (id: string, cli: string) => invoke<void>("task_set_cli", { id, cli });
+/** Update a custom-command task's launch command (multiline bash
+ *  script). Only valid for cli==="custom" tasks. Persists and
+ *  returns the updated task; live PTYs keep running until the user
  *  restarts the agent tab. */
-export const workspaceSetCustomCommand = (id: string, command: string) =>
-  invoke<Workspace>("workspace_set_custom_command", { id, command });
-/** Set or clear a workspace's resume-args override. An empty string clears
+export const taskSetCustomCommand = (id: string, command: string) =>
+  invoke<Task>("task_set_custom_command", { id, command });
+/** Set or clear a task's resume-args override. An empty string clears
  *  it (back to default resume logic); otherwise the string is used verbatim
  *  (placeholders expanded) as the resume block on the next agent spawn.
- *  Returns the updated workspace; live PTYs keep running until restarted. */
-export const workspaceSetResumeOverride = (id: string, command: string) =>
-  invoke<Workspace>("workspace_set_resume_override", { id, command });
-/** Persist the per-workspace YOLO flag. Applied to every agent launched
- *  in this workspace (next launch; live agents are flipped separately via
+ *  Returns the updated task; live PTYs keep running until restarted. */
+export const taskSetResumeOverride = (id: string, command: string) =>
+  invoke<Task>("task_set_resume_override", { id, command });
+/** Persist the per-task YOLO flag. Applied to every agent launched
+ *  in this task (next launch; live agents are flipped separately via
  *  the agent's runtime YOLO command where supported). */
-export const workspaceSetYolo = (id: string, yolo: boolean) =>
-  invoke<void>("workspace_set_yolo", { id, yolo });
-/** Update the workspace's sandbox config. The Rust side SIGKILLs every
- *  live PTY for this workspace so the next mount picks up the new
+export const taskSetYolo = (id: string, yolo: boolean) =>
+  invoke<void>("task_set_yolo", { id, yolo });
+/** Update the task's sandbox config. The Rust side SIGKILLs every
+ *  live PTY for this task so the next mount picks up the new
  *  profile; the returned number is the count that was terminated -
  *  use it to word the user-facing warning ("This will restart N agents").
  *  The frontend's PTY exit listener fires on each kill; existing
  *  TerminalPane already surfaces the Restart overlay on exit. */
-export const workspaceListFilesForFinder = (id: string) =>
-  invoke<string[]>("workspace_list_files_for_finder", { id });
+export const taskListFilesForFinder = (id: string) =>
+  invoke<string[]>("task_list_files_for_finder", { id });
 
 // ───────────────────────────── find in files ─────────────────────────────
 
 export interface GrepHit { path: string; line: number; col: number; preview: string }
 
-/** Start a streaming `git grep` in the workspace. Results arrive via
+/** Start a streaming `git grep` in the task. Results arrive via
  *  `grep-result://<searchId>` events (see `onGrepResult`) and a final
  *  `grep-done://<searchId>` (`onGrepDone`). The caller generates a fresh
  *  `searchId` per keystroke so we can ignore late events from cancelled
- *  searches; Rust auto-SIGKILLs any prior grep for the same workspace. */
-export const workspaceGrepStart = (id: string, query: string, searchId: string) =>
-  invoke<void>("workspace_grep_start", { id, query, searchId });
+ *  searches; Rust auto-SIGKILLs any prior grep for the same task. */
+export const taskGrepStart = (id: string, query: string, searchId: string) =>
+  invoke<void>("task_grep_start", { id, query, searchId });
 
-export const workspaceGrepCancel = (id: string) =>
-  invoke<void>("workspace_grep_cancel", { id });
+export const taskGrepCancel = (id: string) =>
+  invoke<void>("task_grep_cancel", { id });
 
 /** Rust batches hits (~30ms / 50-hit windows) before emitting to keep
  *  the WKWebView main thread from saturating on hot searches. Payload
@@ -116,7 +116,7 @@ export function onGrepDone(searchId: string, cb: (d: { truncated: boolean }) => 
   return listen<{ truncated: boolean }>(`grep-done://${searchId}`, ev => cb(ev.payload));
 }
 
-export const workspaceSetSandbox = (
+export const taskSetSandbox = (
   id: string,
   mode: SandboxMode,
   rwPaths: string[],
@@ -126,7 +126,7 @@ export const workspaceSetSandbox = (
    *  the running agent retains its OLD seatbelt permissions until it
    *  next respawns. The dialog warns the user about this. */
   killLive: boolean = true,
-) => invoke<number>("workspace_set_sandbox", {
+) => invoke<number>("task_set_sandbox", {
   id, mode,
   rwPaths, allowedHosts,
   killLive,
@@ -138,7 +138,7 @@ export const workspaceSetSandbox = (
  *  crash agent spawn. */
 export const sandboxAvailable = () => invoke<boolean>("sandbox_available");
 
-/** Per-workspace deny counters surfaced in the TerminalPane footer
+/** Per-task deny counters surfaced in the TerminalPane footer
  *  chip. Currently only `network` (the proxy bumps it on every CONNECT
  *  / HTTP request that fails the host allowlist). Cheap to poll. */
 export interface SandboxDenyCounts { network: number; path: number }
@@ -152,7 +152,7 @@ export const sandboxRecentDeniedHosts = (id: string) =>
   invoke<DenyHost[]>("sandbox_recent_denied_hosts", { id });
 
 /** Per-path filesystem deny breakdown. Parsed from macOS log stream
- *  in the background (one watcher per sandboxed workspace). */
+ *  in the background (one watcher per sandboxed task). */
 export interface DenyPath { path: string; count: number; last_seen_unix_ms: number; last_pid: number; last_proc: string }
 export const sandboxRecentDeniedPaths = (id: string) =>
   invoke<DenyPath[]>("sandbox_recent_denied_paths", { id });
@@ -166,10 +166,10 @@ export const sandboxAccessCounts = (id: string) =>
   invoke<SandboxDenyCounts>("sandbox_access_counts", { id });
 
 /** Set the MONITORING recording filters. These gate RECORDING (not just
- *  display): excludeWs drops workspace-dir accesses; wbOnly records only
+ *  display): excludeTask drops task-dir accesses; wbOnly records only
  *  would-block ones. Prunes already-recorded entries the filters exclude. */
-export const sandboxSetMonitorFilters = (id: string, excludeWs: boolean, wbOnly: boolean) =>
-  invoke<void>("sandbox_set_monitor_filters", { id, excludeWs, wbOnly });
+export const sandboxSetMonitorFilters = (id: string, excludeTask: boolean, wbOnly: boolean) =>
+  invoke<void>("sandbox_set_monitor_filters", { id, excludeTask, wbOnly });
 
 /** One observed network request. `would_block` true = host not on the
  *  allowlist (would be 403'd under ENFORCING). */
@@ -191,25 +191,25 @@ export interface AccessPath {
 export const sandboxRecentAccessPaths = (id: string) =>
   invoke<AccessPath[]>("sandbox_recent_access_paths", { id });
 
-/** Append a host to the workspace's allowed-hosts list AND respawn
+/** Append a host to the task's allowed-hosts list AND respawn
  *  any live PTYs so the new profile takes effect. Returns the number
  *  of agents that were killed. Backs the "Allow" button next to each
  *  blocked host in the footer chip popover. */
-export const workspaceSandboxAddAllowedHost = (id: string, host: string) =>
-  invoke<number>("workspace_sandbox_add_allowed_host", { id, host });
+export const taskSandboxAddAllowedHost = (id: string, host: string) =>
+  invoke<number>("task_sandbox_add_allowed_host", { id, host });
 
 /** Mirror for filesystem paths — append to allowed_rw_paths and
  *  respawn the agent. Backs the "Allow" button on path rows. */
-export const workspaceSandboxAddAllowedPath = (id: string, path: string) =>
-  invoke<number>("workspace_sandbox_add_allowed_path", { id, path });
+export const taskSandboxAddAllowedPath = (id: string, path: string) =>
+  invoke<number>("task_sandbox_add_allowed_path", { id, path });
 
-/** Undo of add-allowed-path. Drops the entry from the workspace's
+/** Undo of add-allowed-path. Drops the entry from the task's
  *  sandbox_rw_paths list (matches both raw and $HOME-tokenized form). */
-export const workspaceSandboxRemoveAllowedPath = (id: string, path: string) =>
-  invoke<void>("workspace_sandbox_remove_allowed_path", { id, path });
+export const taskSandboxRemoveAllowedPath = (id: string, path: string) =>
+  invoke<void>("task_sandbox_remove_allowed_path", { id, path });
 
 /** "Allow · per agent" — append a path/host to the AGENT registry so
- *  every workspace running that CLI (across all projects) inherits it.
+ *  every task running that CLI (across all projects) inherits it.
  *  Picked up at the next agent restart. */
 export const agentSandboxAddAllowedPath = (agentId: string, path: string) =>
   invoke<void>("agent_sandbox_add_allowed_path", { agentId, path });
@@ -219,7 +219,7 @@ export const agentSandboxAddAllowedHost = (agentId: string, host: string) =>
 /** "Allow for this repo" — append a host to the repo's committed
  *  `.termic.yaml` (shared with the team, read by the termic CLI).
  *  Comment-preserving; takes effect on the next agent restart.
- *  Counterpart to `workspaceSandboxAddAllowedHost`, which writes the
+ *  Counterpart to `taskSandboxAddAllowedHost`, which writes the
  *  personal, uncommitted "allow for me" overrides instead. */
 export const repoConfigAddAllowedHost = (id: string, host: string) =>
   invoke<void>("repo_config_add_allowed_host", { id, host });
@@ -247,117 +247,117 @@ export const repoConfigScaffold = (projectId: string) =>
   invoke<boolean>("repo_config_scaffold", { projectId });
 
 /** Newest-first list of macOS Sandbox denial lines from `log show` for
- *  the given workspace, last `minutes` minutes (default 10). Surfaces
+ *  the given task, last `minutes` minutes (default 10). Surfaces
  *  what got blocked when `npm install` etc. silently failed in a
- *  sandboxed workspace. */
-export const workspaceRecentDenials = (id: string, minutes?: number) =>
-  invoke<string[]>("workspace_recent_denials", { id, minutes });
+ *  sandboxed task. */
+export const taskRecentDenials = (id: string, minutes?: number) =>
+  invoke<string[]>("task_recent_denials", { id, minutes });
 
 // Sandbox status is now returned synchronously by `ptySpawn` (see
 // SpawnResult above). The old `sandbox-status://<id>` event was dropped
 // because the listener-attach race could make the warning chip silently
 // miss the only emission.
-export const workspaceRename   = (id: string, name: string) => invoke<void>("workspace_rename", { id, name });
-export const workspaceRecordSpawn = (id: string) => invoke<number>("workspace_record_spawn", { id });
-export const workspaceSetHasHistory = (id: string, value: boolean) =>
-  invoke<void>("workspace_set_has_history", { id, value });
-export const workspaceSetAgentSessionId = (id: string, cli: string, uuid: string) =>
-  invoke<void>("workspace_set_agent_session_id", { id, cli, uuid });
-/** Replace the workspace's durable agent-tab list (metadata + order). Each
+export const taskRename   = (id: string, name: string) => invoke<void>("task_rename", { id, name });
+export const taskRecordSpawn = (id: string) => invoke<number>("task_record_spawn", { id });
+export const taskSetHasHistory = (id: string, value: boolean) =>
+  invoke<void>("task_set_has_history", { id, value });
+export const taskSetAgentSessionId = (id: string, cli: string, uuid: string) =>
+  invoke<void>("task_set_agent_session_id", { id, cli, uuid });
+/** Replace the task's durable agent-tab list (metadata + order). Each
  *  tab's session uuid is preserved across the rewrite (matched by id) so a
  *  layout change never clobbers a minted session; a tab dropped from the
  *  list is forgotten (the X-closes-completely behavior). */
-export const workspaceSetTabs = (id: string, tabs: import("@/lib/types").PersistedTab[]) =>
-  invoke<void>("workspace_set_tabs", { id, tabs });
+export const taskSetTabs = (id: string, tabs: import("@/lib/types").PersistedTab[]) =>
+  invoke<void>("task_set_tabs", { id, tabs });
 /** Pin (or clear, via "") the per-tab session uuid for one durable tab.
- *  Keyed by tab id so several agents in a workspace resume independently. */
-export const workspaceSetTabSessionId = (id: string, tabId: string, uuid: string) =>
-  invoke<void>("workspace_set_tab_session_id", { id, tabId, uuid });
-/** Persist the JSON-encoded SplitTree for a workspace. Pass null to clear. */
-export const workspaceSetSplitLayout = (id: string, layout: string | null) =>
-  invoke<void>("workspace_set_split_layout", { id, layout });
+ *  Keyed by tab id so several agents in a task resume independently. */
+export const taskSetTabSessionId = (id: string, tabId: string, uuid: string) =>
+  invoke<void>("task_set_tab_session_id", { id, tabId, uuid });
+/** Persist the JSON-encoded SplitTree for a task. Pass null to clear. */
+export const taskSetSplitLayout = (id: string, layout: string | null) =>
+  invoke<void>("task_set_split_layout", { id, layout });
 export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agents_defaults");
 /** Run a shell command in `cwd` via `sh -lc` and return trimmed stdout.
  *  Used by post_launch_capture to harvest the CLI's session ID after the
  *  agent creates its first session. */
 export const runCaptureCommand = (cmd: string, cwd: string) =>
   invoke<string>("run_capture_command", { cmd, cwd });
-export const workspaceDiff     = (id: string) => invoke<string>("workspace_diff", { id });
-export const workspaceSendDiffToMain = (id: string) =>
-  invoke<{ tracked_files: number; untracked_files: number }>("workspace_send_diff_to_main", { id });
+export const taskDiff     = (id: string) => invoke<string>("task_diff", { id });
+export const taskSendDiffToMain = (id: string) =>
+  invoke<{ tracked_files: number; untracked_files: number }>("task_send_diff_to_main", { id });
 
 // ───────────────────────────── spotlight ─────────────────────────────
 
-export const workspaceSpotlightStart   = (id: string) => invoke<void>("workspace_spotlight_start",   { id });
-export const workspaceSpotlightStop    = (id: string) => invoke<void>("workspace_spotlight_stop",    { id });
-export const workspaceSpotlightResync  = (id: string) => invoke<void>("workspace_spotlight_resync",  { id });
-export const workspaceSpotlightStatus  = ()           => invoke<Record<string, string>>("workspace_spotlight_status");
+export const taskSpotlightStart   = (id: string) => invoke<void>("task_spotlight_start",   { id });
+export const taskSpotlightStop    = (id: string) => invoke<void>("task_spotlight_stop",    { id });
+export const taskSpotlightResync  = (id: string) => invoke<void>("task_spotlight_resync",  { id });
+export const taskSpotlightStatus  = ()           => invoke<Record<string, string>>("task_spotlight_status");
 
 /** Copy a dropped file into TMPDIR (sandbox-readable) and return the staged
  *  path. Used when dropping a file onto a sandboxed agent terminal. */
-export const terminalStageFile = (wsId: string, src: string) =>
-  invoke<string>("terminal_stage_file", { wsId, src });
-export const workspaceFileDiff = (id: string, path: string) => invoke<string>("workspace_file_diff", { id, path });
-export const workspaceFileDiffSides = (id: string, path: string) =>
+export const terminalStageFile = (taskId: string, src: string) =>
+  invoke<string>("terminal_stage_file", { taskId, src });
+export const taskFileDiff = (id: string, path: string) => invoke<string>("task_file_diff", { id, path });
+export const taskFileDiffSides = (id: string, path: string) =>
   invoke<{ original: string; modified: string; original_exists: boolean; modified_exists: boolean; fp: string }>(
-    "workspace_file_diff_sides", { id, path },
+    "task_file_diff_sides", { id, path },
   );
-export const workspaceFileRead = (id: string, path: string) => invoke<string>("workspace_file_read", { id, path });
-/** Read a workspace image as base64 for the markdown preview (image
+export const taskFileRead = (id: string, path: string) => invoke<string>("task_file_read", { id, path });
+/** Read a task image as base64 for the markdown preview (image
  *  extensions only, 10 MB cap). Member-aware + worktree-contained, same
- *  checks as workspaceFileRead. Pass the `fp` from a previous successful
+ *  checks as taskFileRead. Pass the `fp` from a previous successful
  *  read as `knownFp` to let the backend skip the read+encode entirely when
  *  the file hasn't changed (`unchanged: true`, no `mime`/`data`) — the fast
  *  path an agent-settle revalidation of every mounted preview relies on. */
-export const workspaceFileReadBase64 = (id: string, path: string, knownFp?: string) =>
+export const taskFileReadBase64 = (id: string, path: string, knownFp?: string) =>
   invoke<{ unchanged: boolean; mime?: string; data?: string; fp: string }>(
-    "workspace_file_read_base64", { id, path, knownFp },
+    "task_file_read_base64", { id, path, knownFp },
   );
-/** Does a workspace-relative path exist, and is it a directory? Tolerates a
+/** Does a task-relative path exist, and is it a directory? Tolerates a
  *  missing target (returns `{ exists: false, is_dir: false }` rather than
  *  erroring) so the markdown preview's link handler can show a real "not
  *  found" instead of opening a dead tab. */
-export const workspacePathStat = (id: string, path: string) =>
-  invoke<{ exists: boolean; is_dir: boolean }>("workspace_path_stat", { id, path });
-export const workspaceFileWrite = (id: string, path: string, content: string) =>
-  invoke<void>("workspace_file_write", { id, path, content });
-export const workspaceFiles    = (id: string) => invoke<string[]>("workspace_files", { id });
+export const taskPathStat = (id: string, path: string) =>
+  invoke<{ exists: boolean; is_dir: boolean }>("task_path_stat", { id, path });
+export const taskFileWrite = (id: string, path: string, content: string) =>
+  invoke<void>("task_file_write", { id, path, content });
+export const taskFiles    = (id: string) => invoke<string[]>("task_files", { id });
 // `heal` restores any missing repo-root member symlink while listing the
-// root — only worth doing at intentional moments (workspace launch, manual
+// root — only worth doing at intentional moments (task launch, manual
 // refresh), not on every agent-settle reload, so the caller opts in.
-export const workspaceDirList  = (id: string, rel: string, heal = false) => invoke<FileEntry[]>("workspace_dir_list", { id, rel, heal });
-/** Rename a file/dir in place (new bare name). Returns the new ws-relative path. */
-export const workspacePathRename = (id: string, path: string, newName: string) =>
-  invoke<string>("workspace_path_rename", { id, path, newName });
+export const taskDirList  = (id: string, rel: string, heal = false) => invoke<FileEntry[]>("task_dir_list", { id, rel, heal });
+/** Rename a file/dir in place (new bare name). Returns the new task-relative path. */
+export const taskPathRename = (id: string, path: string, newName: string) =>
+  invoke<string>("task_path_rename", { id, path, newName });
 /** Permanently delete a file/dir (caller confirms first). */
-export const workspacePathDelete = (id: string, path: string) =>
-  invoke<void>("workspace_path_delete", { id, path });
+export const taskPathDelete = (id: string, path: string) =>
+  invoke<void>("task_path_delete", { id, path });
 /** Reveal a file/dir in the OS file manager ("Show in Finder"). */
-export const workspaceRevealPath = (id: string, path: string) =>
-  invoke<void>("workspace_reveal_path", { id, path });
-export const workspaceChanges  = (id: string) => invoke<Changes>("workspace_changes", { id });
+export const taskRevealPath = (id: string, path: string) =>
+  invoke<void>("task_reveal_path", { id, path });
+export const taskChanges  = (id: string) => invoke<Changes>("task_changes", { id });
 // Fork-style staging: staged/unstaged split per repo + stage/unstage/commit.
-export const workspaceGitStatus = (id: string) => invoke<GitStatus>("workspace_git_status", { id });
-export const workspaceStage   = (id: string, dirName: string, paths: string[]) =>
-  invoke<void>("workspace_stage", { id, dirName, paths });
-export const workspaceUnstage = (id: string, dirName: string, paths: string[]) =>
-  invoke<void>("workspace_unstage", { id, dirName, paths });
-export const workspaceCommit  = (id: string, dirName: string, subject: string, body: string, amend: boolean, push: boolean) =>
-  invoke<void>("workspace_commit", { id, dirName, subject, body, amend, push });
-export const workspaceDiscard = (id: string, dirName: string, paths: string[]) =>
-  invoke<void>("workspace_discard", { id, dirName, paths });
-export const workspaceRunScript= (id: string, which: "setup" | "run" = "run") =>
-  invoke<string>("workspace_run_script", { id, which });
+export const taskGitStatus = (id: string) => invoke<GitStatus>("task_git_status", { id });
+export const taskStage   = (id: string, dirName: string, paths: string[]) =>
+  invoke<void>("task_stage", { id, dirName, paths });
+export const taskUnstage = (id: string, dirName: string, paths: string[]) =>
+  invoke<void>("task_unstage", { id, dirName, paths });
+export const taskCommit  = (id: string, dirName: string, subject: string, body: string, amend: boolean, push: boolean) =>
+  invoke<void>("task_commit", { id, dirName, subject, body, amend, push });
+export const taskDiscard = (id: string, dirName: string, paths: string[]) =>
+  invoke<void>("task_discard", { id, dirName, paths });
+export const taskRunScript= (id: string, which: "setup" | "run" = "run") =>
+  invoke<string>("task_run_script", { id, which });
 /** Kick off a streaming run. Subscribe to:
  *    `script-output://<id>:<topic-member>:<kind>`  (per-line stdout/stderr)
  *    `script-done://<id>:<topic-member>:<kind>`    (completion)
  *  where `<member>` is empty for the host (single-repo + multi-host
  *  scripts) or the composition member's `dir_name`, hex-encoded for the
  *  event topic because Tauri rejects dots and other punctuation. */
-export const workspaceRunScriptStream = (id: string, kind: "setup" | "run", member?: string) =>
-  invoke<void>("workspace_run_script_stream", { id, kind, member: member ?? null });
-export const workspaceStopScript = (id: string, kind: "setup" | "run", member?: string) =>
-  invoke<void>("workspace_stop_script", { id, kind, member: member ?? null });
+export const taskRunScriptStream = (id: string, kind: "setup" | "run", member?: string) =>
+  invoke<void>("task_run_script_stream", { id, kind, member: member ?? null });
+export const taskStopScript = (id: string, kind: "setup" | "run", member?: string) =>
+  invoke<void>("task_stop_script", { id, kind, member: member ?? null });
 
 // ───────────────────────────── ptys ─────────────────────────────
 
@@ -368,15 +368,15 @@ export interface SpawnArgs {
   env?: Record<string, string>;
   rows: number;
   cols: number;
-  /** When set, Rust looks up the workspace and wraps the spawn in its
-   *  sandbox (seatbelt + per-workspace tinyproxy) iff the workspace
+  /** When set, Rust looks up the task and wraps the spawn in its
+   *  sandbox (seatbelt + per-task tinyproxy) iff the task
    *  was created with sandbox_enabled. Omit for agent-less PTYs
    *  (e.g. AuxTerminal scratch shell) - those never get sandboxed. */
-  workspace_id?: string;
-  /** Agent ID for THIS tab. Can differ from the workspace's primary
+  task_id?: string;
+  /** Agent ID for THIS tab. Can differ from the task's primary
    *  CLI (multi-CLI tabs). Drives which per-agent sandbox allowlist +
    *  host-pattern set the rendered SBPL profile uses. Defaults to the
-   *  workspace's `cli` when omitted. */
+   *  task's `cli` when omitted. */
   agent_id?: string;
 }
 
@@ -447,21 +447,21 @@ import {
 let notifPermission: "granted" | "denied" | "default" | null = null;
 
 /** Route target carried on a notification's `extra` payload so a click
- *  can jump straight to the originating (workspace, tab). */
-export interface NotifyRoute { wsId: string; tabId: string; }
+ *  can jump straight to the originating (task, tab). */
+export interface NotifyRoute { taskId: string; tabId: string; }
 
 /** Register a handler for notification clicks. NOTE: tauri-plugin-notification
  *  fires `onAction` ONLY on mobile — the desktop (macOS/Win/Linux) backend has
  *  no click handler at all. So on macOS this never fires; click routing falls
  *  back entirely to the focus-edge heuristic in useAttentionNotifier (app
  *  activation on click). Kept for mobile/future-plugin support; harmless no-op
- *  on desktop. Receives the {wsId, tabId} we stamped into `extra` at send time. */
+ *  on desktop. Receives the {taskId, tabId} we stamped into `extra` at send time. */
 export async function onNotifyClick(cb: (route: NotifyRoute) => void): Promise<() => void> {
   try {
     const listener = await notifOnAction((n) => {
       const extra = (n as { extra?: Record<string, unknown> }).extra;
-      const wsId = extra?.wsId, tabId = extra?.tabId;
-      if (typeof wsId === "string" && typeof tabId === "string") cb({ wsId, tabId });
+      const taskId = extra?.taskId, tabId = extra?.tabId;
+      if (typeof taskId === "string" && typeof tabId === "string") cb({ taskId, tabId });
     });
     return () => { try { listener.unregister(); } catch {} };
   } catch {
@@ -488,7 +488,7 @@ export async function ensureNotifyPermission(): Promise<boolean> {
 /** Post an OS notification via tauri-plugin-notification (NOT osascript —
  *  that attributes to "Script Editor" and is silently dropped on modern
  *  macOS). Requests permission on first use. No-op if denied. Pass `route`
- *  so a click jumps to the originating (workspace, tab) via onNotifyClick. */
+ *  so a click jumps to the originating (task, tab) via onNotifyClick. */
 export async function notify(
   title: string,
   body: string,
@@ -502,14 +502,14 @@ export async function notify(
     // NSUserNotification API, which drops the banner sound on modern macOS.
     // The banner stays silent; the sound is decoupled and reliable.
     if (opts?.sound) void playCompletionSound(opts.sound, true);
-    notifSend({ title, body, extra: route ? { wsId: route.wsId, tabId: route.tabId } : undefined });
+    notifSend({ title, body, extra: route ? { taskId: route.taskId, tabId: route.tabId } : undefined });
   } catch {
     // Plugin unavailable (e.g. headless) — silently skip.
   }
 }
 
 /** Fire a sample notification with the given sound. Mirrors the shape of a
- *  real agent-finished notification (title "project · workspace", body
+ *  real agent-finished notification (title "project · task", body
  *  "agent finished") so the preview shows exactly what users will get.
  *  Note: in dev the banner carries the Terminal icon — the notification
  *  plugin attributes unbundled dev binaries to com.apple.Terminal; release
@@ -526,7 +526,7 @@ export async function previewCompletionSound(
     // shape, but only if notifications are permitted — never block the sound.
     if (await ensureNotifyPermission()) {
       notifSend({
-        title: example?.title ?? "project · workspace",
+        title: example?.title ?? "project · task",
         body: example?.body ?? "agent finished",
       });
     }
@@ -583,7 +583,7 @@ async function resolveCompletionSoundValue(
 
 export const openPath  = (path: string) => invoke<void>("open_path", { path });
 /** Reveal an absolute path in the OS file manager (select it on macOS/Windows,
- *  open its parent on Linux). For workspace-relative paths use workspaceRevealPath. */
+ *  open its parent on Linux). For task-relative paths use taskRevealPath. */
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
 export const homeDir   = () => invoke<string>("home_dir");
 export const pathExists= (path: string) => invoke<boolean>("path_exists", { path });

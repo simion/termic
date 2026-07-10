@@ -3,13 +3,13 @@
 // `src/lib/shortcuts.ts`, and the user's overrides live in the prefs store
 // (`usePrefs().shortcuts`). This handler reads the resolved bindings live and
 // dispatches the matching command. The default combos (for reference):
-//   ⌘1..⌘9   → switch to the Nth tab in the active workspace
-//   ⌘L       → focus the active workspace's terminal
-//   ⌘[, ⌘]   → previous / next workspace (cycles AWAKE ones in sidebar order)
-//   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (workspace + expanded tabs)
-//   ⌥⌘↑, ⌥⌘↓ → pane up/down (when horizontal split exists) or previous/next workspace
+//   ⌘1..⌘9   → switch to the Nth tab in the active task
+//   ⌘L       → focus the active task's terminal
+//   ⌘[, ⌘]   → previous / next task (cycles AWAKE ones in sidebar order)
+//   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (task + expanded tabs)
+//   ⌥⌘↑, ⌥⌘↓ → pane up/down (when horizontal split exists) or previous/next task
 //   ⇧⌘A      → jump to the next agent waiting on you (done or blocked)
-//   ⇧⌘[, ⇧⌘] → previous / next tab within the active workspace
+//   ⇧⌘[, ⇧⌘] → previous / next tab within the active task
 //   ⌥⌘←, ⌥⌘→ → previous / next tab (arrow-key alt for ⇧⌘[/⇧⌘])
 //   ⌘W       → close the active tab (or close split pane when focus is inside one)
 //   ⌘D       → split focused pane right (rebindable: split-pane-right)
@@ -38,13 +38,13 @@ import type { NavDir } from "@/lib/splitTree";
  */
 function navigatePane(
   state: { splitTree: Record<string, import("@/lib/types").SplitTree>; activePaneId: Record<string, string>; paneHistory: Record<string, string[]> },
-  wsId: string,
+  taskId: string,
   dir: NavDir,
 ): string | null {
-  const tree = state.splitTree[wsId];
+  const tree = state.splitTree[taskId];
   if (!tree) return null;
   // Fall back to the main leaf when no active pane has been clicked yet.
-  let curId = state.activePaneId[wsId] ?? "";
+  let curId = state.activePaneId[taskId] ?? "";
   if (!curId && tree.type === 'split') {
     const mainLeaf = getAllLeaves(tree).find(l => l.isMain);
     if (mainLeaf) curId = mainLeaf.id;
@@ -56,7 +56,7 @@ function navigatePane(
 
   // If the most recently visited pane is a valid candidate in this direction,
   // prefer it so "go back" feels like retracing steps, not jumping to a stranger.
-  const history = state.paneHistory[wsId] ?? [];
+  const history = state.paneHistory[taskId] ?? [];
   const prev = history[0];
   if (prev && prev !== curId) {
     const all = computeLeafBounds(tree);
@@ -103,13 +103,13 @@ export function useShortcuts() {
       if (!cmd) return;
 
       const state = useApp.getState();
-      const wsId = state.activeWorkspaceId;
+      const taskId = state.activeTaskId;
       // Pane tabs live in the same array but must not appear in main-strip
       // navigation (⌘1..9, ⇧⌘[/], ⌥⌘←/→) — those shortcuts target the main pane.
-      const tabs = (wsId ? state.tabs[wsId] || [] : []).filter(
+      const tabs = (taskId ? state.tabs[taskId] || [] : []).filter(
         t => !(t as TerminalTab).paneId,
       );
-      const activeTabId = wsId ? state.activeTab[wsId] : undefined;
+      const activeTabId = taskId ? state.activeTab[taskId] : undefined;
       const inBottom = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-bottom-split]");
       // Only true when focus is inside an EXTRA split-pane leaf (not the main pane).
       // The main pane also has data-split-leaf (for drag targeting) but it also has
@@ -122,59 +122,59 @@ export function useShortcuts() {
       // firing when focus lands in the sidebar, file tree, right panel, etc.
       const inMainPane = () => !!(document.activeElement as HTMLElement | null)?.closest?.("[data-main-content]");
 
-      // Workspace nav cycles only AWAKE workspaces — ones the user has opened
+      // Task nav cycles only AWAKE tasks — ones the user has opened
       // at least once + still has tabs in. Order MUST match the sidebar's
-      // visual grouping (project → its workspaces → next project …) or the
+      // visual grouping (project → its tasks → next project …) or the
       // jumps feel random. Computed lazily; only some commands need it.
-      const awakeWorkspaces = () => state.projects.flatMap(p =>
-        state.workspaces.filter(w =>
+      const awakeTasks = () => state.projects.flatMap(p =>
+        state.tasks.filter(w =>
           w.project_id === p.id && !w.archived && (state.tabs[w.id]?.length ?? 0) > 0,
         ),
       );
 
       switch (cmd) {
         // ⌥↑ / ⌥↓ → previous / next VISIBLE sidebar row. Walks the same flat
-        // list the user sees: each workspace, plus its terminal tabs when the
-        // workspace is expanded. Selecting a tab also activates its workspace.
+        // list the user sees: each task, plus its terminal tabs when the
+        // task is expanded. Selecting a tab also activates its task.
         case "sidebar-prev":
         case "sidebar-next": {
-          type Row = { wsId: string; tabId?: string };
+          type Row = { taskId: string; tabId?: string };
           const rows: Row[] = [];
           for (const p of state.projects) {
-            for (const w of state.workspaces) {
+            for (const w of state.tasks) {
               if (w.project_id !== p.id || w.archived) continue;
-              rows.push({ wsId: w.id });
-              const wsTabs = state.tabs[w.id] ?? [];
+              rows.push({ taskId: w.id });
+              const taskTabs = state.tabs[w.id] ?? [];
               // Exclude pane tabs from sidebar rows — they live in split panes.
-              const terminalTabs = wsTabs.filter(
+              const terminalTabs = taskTabs.filter(
                 t => t.type === "terminal" && !(t as TerminalTab).paneId,
               );
-              const explicit = state.collapsedWorkspaces[w.id];
+              const explicit = state.collapsedTasks[w.id];
               const collapsed = explicit ?? (terminalTabs.length <= 1);
               if (!collapsed) {
-                for (const t of terminalTabs) rows.push({ wsId: w.id, tabId: t.id });
+                for (const t of terminalTabs) rows.push({ taskId: w.id, tabId: t.id });
               }
             }
           }
           if (rows.length <= 1) return;
           e.preventDefault();
-          const activeTab = wsId ? state.activeTab[wsId] : undefined;
-          let idx = rows.findIndex(r => r.wsId === wsId && r.tabId === activeTab);
-          if (idx < 0) idx = rows.findIndex(r => r.wsId === wsId && !r.tabId);
+          const activeTab = taskId ? state.activeTab[taskId] : undefined;
+          let idx = rows.findIndex(r => r.taskId === taskId && r.tabId === activeTab);
+          if (idx < 0) idx = rows.findIndex(r => r.taskId === taskId && !r.tabId);
           const dir = cmd === "sidebar-next" ? 1 : -1;
           const nextIdx = idx < 0
             ? (dir > 0 ? 0 : rows.length - 1)
             : (idx + dir + rows.length) % rows.length;
           const target = rows[nextIdx];
-          state.setActiveWorkspace(target.wsId);
-          if (target.tabId) state.setActiveTabId(target.wsId, target.tabId);
+          state.setActiveTask(target.taskId);
+          if (target.tabId) state.setActiveTabId(target.taskId, target.tabId);
           return;
         }
 
         // ⌘N → global project picker. Fires from anywhere (no active
-        // workspace needed) so you can start a new workspace without first
+        // task needed) so you can start a new task without first
         // selecting one. No `isTyping` guard, same as the file finder.
-        case "new-workspace-quick":
+        case "new-task-quick":
           e.preventDefault();
           useUI.getState().openProjectPicker();
           return;
@@ -209,24 +209,24 @@ export function useShortcuts() {
 
         // ⌘P → file finder. NO `isTyping` guard — xterm's hidden textarea
         // always reports as typing, and we want it to fire from the terminal
-        // too. Scoped to having an active workspace.
+        // too. Scoped to having an active task.
         case "file-finder":
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
-          useUI.getState().openFileFinder(wsId);
+          useUI.getState().openFileFinder(taskId);
           return;
 
         // ⇧⌘F → find-in-files. Same no-`isTyping` rationale as the finder.
         case "find-in-files":
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
-          useUI.getState().openFindInFiles(wsId);
+          useUI.getState().openFindInFiles(taskId);
           return;
 
-        // ⌘1..⌘9 → switch to Nth tab in the active workspace. Indexes the
+        // ⌘1..⌘9 → switch to Nth tab in the active task. Indexes the
         // full tab list so position matches the TabBar.
         case "jump-to-tab": {
-          if (wsId && tabs.length > 0) {
+          if (taskId && tabs.length > 0) {
             const n = Number(e.key) - 1;
             const t = tabs[n];
             // Focus must follow an explicit keyboard tab switch — otherwise
@@ -235,10 +235,10 @@ export function useShortcuts() {
             // the MAIN pane, and a stale pointer keeps it dimmed.
             if (t) {
               e.preventDefault();
-              state.setActiveTabId(wsId, t.id);
-              const tree = state.splitTree[wsId];
+              state.setActiveTabId(taskId, t.id);
+              const tree = state.splitTree[taskId];
               const mainLeafId = tree ? getAllLeaves(tree).find(l => l.isMain)?.id : undefined;
-              if (mainLeafId) state.setActivePaneId(wsId, mainLeafId);
+              if (mainLeafId) state.setActivePaneId(taskId, mainLeafId);
               focusMainTab(t.id);
             }
           }
@@ -252,30 +252,30 @@ export function useShortcuts() {
         // the whole point is to escape a terminal / editor / right / bottom
         // pane back to the agent, and those all read as "typing".
         case "focus-terminal": {
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
           // Keep the store's active-pane pointer in step with the focus jump,
           // or the main pane stays dimmed / underline stays muted.
-          const tree = state.splitTree[wsId];
+          const tree = state.splitTree[taskId];
           const mainLeafId = tree ? getAllLeaves(tree).find(l => l.isMain)?.id : undefined;
-          if (mainLeafId) state.setActivePaneId(wsId, mainLeafId);
+          if (mainLeafId) state.setActivePaneId(taskId, mainLeafId);
           focusMainTab(activeTabId);
           return;
         }
 
         // ⌥⌘↑ / ⌥⌘↓ → navigate panes up/down when a horizontal split exists;
-        // otherwise cycle through workspaces (same role as ⌘[/⌘]).
-        case "workspace-prev-arrow":
-        case "workspace-next-arrow": {
-          const _tree = wsId ? state.splitTree[wsId] : undefined;
+        // otherwise cycle through tasks (same role as ⌘[/⌘]).
+        case "task-prev-arrow":
+        case "task-next-arrow": {
+          const _tree = taskId ? state.splitTree[taskId] : undefined;
           const hasHSplit = _tree ? treeHasDir(_tree, 'h') : false;
-          if (wsId && hasHSplit) {
+          if (taskId && hasHSplit) {
             e.preventDefault();
-            const dir = cmd === "workspace-next-arrow" ? 'down' : 'up';
-            const next = navigatePane(state, wsId, dir);
+            const dir = cmd === "task-next-arrow" ? 'down' : 'up';
+            const next = navigatePane(state, taskId, dir);
             if (next) {
-              state.setActivePaneId(wsId, next);
-              const leaf = findLeaf(state.splitTree[wsId]!, next);
+              state.setActivePaneId(taskId, next);
+              const leaf = findLeaf(state.splitTree[taskId]!, next);
               if (leaf?.isMain) focusMainTab(activeTabId);
               // focusPaneTab (not focusTerminalTab): the pane's visible tab can
               // be an editor — the terminal-only selector would drop focus.
@@ -287,31 +287,31 @@ export function useShortcuts() {
             }
             return;
           }
-          // No horizontal split — navigate workspaces.
-          const _ws = awakeWorkspaces();
+          // No horizontal split — navigate tasks.
+          const _ws = awakeTasks();
           if (_ws.length <= 1) return;
           e.preventDefault();
-          const _fwd = cmd === "workspace-next-arrow";
-          const _idx = _ws.findIndex(w => w.id === wsId);
+          const _fwd = cmd === "task-next-arrow";
+          const _idx = _ws.findIndex(w => w.id === taskId);
           const _next = _idx < 0
             ? (_fwd ? 0 : _ws.length - 1)
             : _fwd ? (_idx + 1) % _ws.length : (_idx - 1 + _ws.length) % _ws.length;
-          state.setActiveWorkspace(_ws[_next].id);
+          state.setActiveTask(_ws[_next].id);
           return;
         }
 
         // ⌥⌘← / ⌥⌘→ → navigate panes left/right when a vertical split exists; no-op otherwise.
         case "tab-prev-arrow":
         case "tab-next-arrow": {
-          const _tree2 = wsId ? state.splitTree[wsId] : undefined;
+          const _tree2 = taskId ? state.splitTree[taskId] : undefined;
           const hasVSplit = _tree2 ? treeHasDir(_tree2, 'v') : false;
-          if (!wsId || !hasVSplit) return;
+          if (!taskId || !hasVSplit) return;
           e.preventDefault();
           const dir = cmd === "tab-next-arrow" ? 'right' : 'left';
-          const next = navigatePane(state, wsId, dir);
+          const next = navigatePane(state, taskId, dir);
           if (next) {
-            state.setActivePaneId(wsId, next);
-            const leaf = findLeaf(state.splitTree[wsId]!, next);
+            state.setActivePaneId(taskId, next);
+            const leaf = findLeaf(state.splitTree[taskId]!, next);
             if (leaf?.isMain) focusMainTab(activeTabId);
             // focusPaneTab: same editor-vs-terminal reasoning as above.
             else if (leaf?.activeTabId) focusPaneTab(leaf.activeTabId);
@@ -323,24 +323,24 @@ export function useShortcuts() {
           return;
         }
 
-        // ⇧⌘[ / ⇧⌘] → tab nav within active workspace. Focus-aware: when the
+        // ⇧⌘[ / ⇧⌘] → tab nav within active task. Focus-aware: when the
         // bottom-split shell owns focus, cycles the BOTTOM tabs instead.
         case "tab-prev":
         case "tab-next": {
-          if (!wsId) return;
+          if (!taskId) return;
           const fwd = cmd === "tab-next";
           if (inBottom()) {
-            const bottomTabs = state.bottomTabs[wsId] || [];
+            const bottomTabs = state.bottomTabs[taskId] || [];
             if (bottomTabs.length > 1) {
               e.preventDefault();
-              const idx = bottomTabs.findIndex(t => t.id === state.activeBottomTab[wsId]);
+              const idx = bottomTabs.findIndex(t => t.id === state.activeBottomTab[taskId]);
               const nextIdx = idx < 0
                 ? (fwd ? 0 : bottomTabs.length - 1)
                 : fwd ? (idx + 1) % bottomTabs.length : (idx - 1 + bottomTabs.length) % bottomTabs.length;
               const nextId = bottomTabs[nextIdx].id;
-              state.setActiveBottomTab(wsId, nextId);
+              state.setActiveBottomTab(taskId, nextId);
               // AuxTerminal deliberately doesn't grab focus when it becomes
-              // active (so opening the split / switching workspaces doesn't
+              // active (so opening the split / switching tasks doesn't
               // steal focus from the agent). An explicit keyboard tab-switch
               // SHOULD move focus, so focus the newly-active shell once the
               // re-render makes it visible.
@@ -353,7 +353,7 @@ export function useShortcuts() {
           // next off a pane's last tab continues into the next pane; going
           // prev off a pane's first tab jumps to the previous pane's last tab.
           {
-            const tree = state.splitTree[wsId];
+            const tree = state.splitTree[taskId];
             type Entry = { paneId: string | null; tabId: string }; // null = main pane
             const entries: Entry[] = [];
             let mainLeafId: string | null = null;
@@ -394,30 +394,30 @@ export function useShortcuts() {
             // Focus follows the switch (terminal or editor) so ⌘W and further
             // ⇧⌘[/] keep targeting the pane we landed in.
             if (next.paneId === null) {
-              state.setActiveTabId(wsId, next.tabId);
-              if (mainLeafId) state.setActivePaneId(wsId, mainLeafId);
+              state.setActiveTabId(taskId, next.tabId);
+              if (mainLeafId) state.setActivePaneId(taskId, mainLeafId);
               focusMainTab(next.tabId);
             } else {
-              state.setPaneActiveTab(wsId, next.paneId, next.tabId);
-              state.setActivePaneId(wsId, next.paneId);
+              state.setPaneActiveTab(taskId, next.paneId, next.tabId);
+              state.setActivePaneId(taskId, next.paneId);
               focusPaneTab(next.tabId);
             }
           }
           return;
         }
 
-        // ⌘[ / ⌘] → workspace nav across AWAKE workspaces.
-        case "workspace-prev":
-        case "workspace-next": {
-          const ws = awakeWorkspaces();
-          if (ws.length <= 1) return;
+        // ⌘[ / ⌘] → task nav across AWAKE tasks.
+        case "task-prev":
+        case "task-next": {
+          const task = awakeTasks();
+          if (task.length <= 1) return;
           e.preventDefault();
-          const fwd = cmd === "workspace-next";
-          const idx = ws.findIndex(w => w.id === wsId);
+          const fwd = cmd === "task-next";
+          const idx = task.findIndex(w => w.id === taskId);
           const nextIdx = idx < 0
-            ? (fwd ? 0 : ws.length - 1)
-            : fwd ? (idx + 1) % ws.length : (idx - 1 + ws.length) % ws.length;
-          state.setActiveWorkspace(ws[nextIdx].id);
+            ? (fwd ? 0 : task.length - 1)
+            : fwd ? (idx + 1) % task.length : (idx - 1 + task.length) % task.length;
+          state.setActiveTask(task[nextIdx].id);
           return;
         }
 
@@ -435,47 +435,47 @@ export function useShortcuts() {
         // palette can share it. NO `isTyping` guard — must fire from inside any
         // terminal (xterm's hidden textarea) and the editor (CodeMirror).
         case "toggle-terminal":
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
-          state.toggleBottomTerminal(wsId);
+          state.toggleBottomTerminal(taskId);
           return;
 
         // ⌘D → split focused pane right; ⇧⌘D → split focused pane below.
         case "split-pane-right": {
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
-          state.splitPane(wsId, 'v');
+          state.splitPane(taskId, 'v');
           return;
         }
         case "split-pane-below": {
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
-          state.splitPane(wsId, 'h');
+          state.splitPane(taskId, 'h');
           return;
         }
 
-        // ⇧⌘B → open the Broadcast dialog for the active workspace.
+        // ⇧⌘B → open the Broadcast dialog for the active task.
         case "broadcast":
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
-          useUI.getState().openBroadcast(wsId);
+          useUI.getState().openBroadcast(taskId);
           return;
 
         // ⌘T → new tab, behaviour depends on which pane has focus. NO
         // `isTyping` guard (xterm's hidden textarea).
         case "new-tab": {
-          if (!wsId) return;
+          if (!taskId) return;
           e.preventDefault();
           if (inBottom()) {
-            state.addBottomTab(wsId);
+            state.addBottomTab(taskId);
           } else if (inSplitPane()) {
             const focusedLeaf = (document.activeElement as HTMLElement | null)
               ?.closest?.("[data-split-leaf]") as HTMLElement | null;
             const paneId = focusedLeaf?.getAttribute("data-pane-id") ?? null;
-            if (paneId) window.dispatchEvent(new CustomEvent("termic-pane-new-tab-menu", { detail: { wsId, paneId } }));
+            if (paneId) window.dispatchEvent(new CustomEvent("termic-pane-new-tab-menu", { detail: { taskId, paneId } }));
           } else {
             // Main pane: open the "+" tab menu.
-            window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { wsId } }));
+            window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { taskId } }));
           }
           return;
         }
@@ -494,58 +494,58 @@ export function useShortcuts() {
         // and right splits. NO `isTyping` guard (xterm's hidden textarea).
         case "close-tab": {
           e.preventDefault();
-          if (inBottom() && wsId) {
-            const bottomId = state.activeBottomTab[wsId];
-            if (bottomId) state.closeBottomTab(wsId, bottomId);
+          if (inBottom() && taskId) {
+            const bottomId = state.activeBottomTab[taskId];
+            if (bottomId) state.closeBottomTab(taskId, bottomId);
             return;
           }
-          if (inSplitPane() && wsId) {
-            // Always derive pane from DOM focus — activePaneId[wsId] is only updated
+          if (inSplitPane() && taskId) {
+            // Always derive pane from DOM focus — activePaneId[taskId] is only updated
             // on mouse clicks and can be stale after keyboard navigation.
             const focusedEl = (document.activeElement as HTMLElement | null)
               ?.closest?.("[data-split-leaf]") as HTMLElement | null;
             const paneId = focusedEl?.getAttribute("data-pane-id") ?? null;
             if (paneId) {
-              const tree = state.splitTree[wsId];
+              const tree = state.splitTree[taskId];
               const leaf = tree ? findLeaf(tree, paneId) : null;
               const activeTabIdInPane = leaf?.activeTabId ?? (leaf as any)?.tabId ?? null;
               if (activeTabIdInPane && leaf) {
                 // Confirm-gated (dirty editor / live agent), same as the main
                 // path. Only collapse the emptied pane if the close went through.
                 const wasLastTab = (leaf.tabIds?.length ?? 1) <= 1;
-                void requestClosePaneTab(wsId, paneId, activeTabIdInPane).then(closed => {
-                  if (closed && wasLastTab) useApp.getState().closePane(wsId, paneId);
+                void requestClosePaneTab(taskId, paneId, activeTabIdInPane).then(closed => {
+                  if (closed && wasLastTab) useApp.getState().closePane(taskId, paneId);
                 });
               } else {
-                state.closePane(wsId, paneId);
+                state.closePane(taskId, paneId);
               }
               return;
             }
           }
-          if (wsId && activeTabId && inMainPane()) { requestCloseTab(wsId, activeTabId); return; }
+          if (taskId && activeTabId && inMainPane()) { requestCloseTab(taskId, activeTabId); return; }
           // Focus outside every pane (file tree / sidebar): still close a
           // PREVIEW tab. Previews open from a single click in the tree, so
           // focus never enters the pane — without this, ⌘W right after
           // previewing a file is a silent no-op. Regular tabs keep the
           // inMainPane guard (⌘W from the sidebar must not eat real tabs).
-          if (wsId) {
+          if (taskId) {
             // Prefer the pane the preview actually lives in: openPreviewTab
             // targets the focused split pane, tracked by activePaneId.
-            const tree = state.splitTree[wsId];
-            const paneId = state.activePaneId[wsId];
+            const tree = state.splitTree[taskId];
+            const paneId = state.activePaneId[taskId];
             const leaf = tree && paneId ? findLeaf(tree, paneId) : null;
             if (leaf && !leaf.isMain && leaf.activeTabId) {
-              const paneTab = (state.tabs[wsId] ?? []).find(t => t.id === leaf.activeTabId);
+              const paneTab = (state.tabs[taskId] ?? []).find(t => t.id === leaf.activeTabId);
               if (paneTab?.preview) {
                 const wasLastTab = (leaf.tabIds?.length ?? 1) <= 1;
-                void requestClosePaneTab(wsId, leaf.id, paneTab.id).then(closed => {
-                  if (closed && wasLastTab) useApp.getState().closePane(wsId, leaf.id);
+                void requestClosePaneTab(taskId, leaf.id, paneTab.id).then(closed => {
+                  if (closed && wasLastTab) useApp.getState().closePane(taskId, leaf.id);
                 });
                 return;
               }
             }
             const mainTab = activeTabId ? tabs.find(t => t.id === activeTabId) : undefined;
-            if (mainTab?.preview) requestCloseTab(wsId, mainTab.id);
+            if (mainTab?.preview) requestCloseTab(taskId, mainTab.id);
           }
           return;
         }

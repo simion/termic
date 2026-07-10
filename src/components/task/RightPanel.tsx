@@ -4,15 +4,15 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { useApp, useActiveWorkspace } from "@/store/app";
+import { useApp, useActiveTask } from "@/store/app";
 import { useUI } from "@/store/ui";
 import {
-  workspaceGitStatus, workspaceRunScriptStream, openPath, repoConfigLoad, repoConfigLoadAt,
-  workspaceSpotlightResync,
+  taskGitStatus, taskRunScriptStream, openPath, repoConfigLoad, repoConfigLoadAt,
+  taskSpotlightResync,
 } from "@/lib/ipc";
 import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
 import { launchRunTabs, expandPreviewUrl } from "@/lib/runTabs";
-import type { GitStatus, Workspace, WorkspaceMember, Project, TerminalTab } from "@/lib/types";
+import type { GitStatus, Task, TaskMember, Project, TerminalTab } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Play, ChevronDown, ChevronUp, Square, Globe, X, AudioWaveform, RefreshCw, Copy, Check, Settings, SquareArrowOutUpRight, PanelBottom } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -26,7 +26,7 @@ import { useScriptRuns, useRunState } from "@/store/scriptRuns";
 /** Stable key for a composition member's `.termic.yaml` config maps.
  *  Inline members have no project id — key by their repo path (falling
  *  back to dir_name for legacy records that predate `repo_path`). */
-const memberKey = (m: WorkspaceMember) => m.repo_path || m.dir_name;
+const memberKey = (m: TaskMember) => m.repo_path || m.dir_name;
 
 /** Tauri event names reject dots and other punctuation. Keep the app's
  *  user-facing member dir_name unchanged, but hex-encode it inside event
@@ -45,18 +45,18 @@ type FootTab = "setup" | "run" | "term" | "spotlight";
 // pushed through the app store — same pattern as DiffPane's view mode.
 
 export function RightPanel() {
-  const ws = useActiveWorkspace();
+  const task = useActiveTask();
   const addTab = useApp(s => s.addTab);
-  const split = useApp(s => !!s.terminalSplit[ws?.id ?? ""]);
+  const split = useApp(s => !!s.terminalSplit[task?.id ?? ""]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
   const [view, setView] = useState<"files" | "changes">("files");
   // A reveal-in-tree request (editor breadcrumb / locate button) forces the
   // "All files" view so the tree is on screen for FileTree to expand/scroll.
   const revealFile = useApp(s => s.revealFile);
   useEffect(() => {
-    if (revealFile && ws && revealFile.wsId === ws.id) setView("files");
+    if (revealFile && task && revealFile.taskId === task.id) setView("files");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revealFile, ws?.id]);
+  }, [revealFile, task?.id]);
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   // Bumped by the header refresh button to force the FileTree to re-read
   // from disk. The Git side re-fetches via refreshGit() in the same click.
@@ -65,23 +65,23 @@ export function RightPanel() {
   // since the tree is hidden behind the Settings overlay then). Folded into
   // the local token so either source forces a re-read.
   const fileTreeNonce = useUI(s => s.fileTreeNonce);
-  // Bumped when an agent terminal in this workspace settles (app store). Drives
+  // Bumped when an agent terminal in this task settles (app store). Drives
   // the file tree + Git refresh below so on-disk changes appear without a
   // window focus cycle or the 4s poll, and without a heavy FS watcher.
-  const fsRevision = useApp(s => (ws ? s.fsRevision[ws.id] ?? 0 : 0));
+  const fsRevision = useApp(s => (task ? s.fsRevision[task.id] ?? 0 : 0));
   const [refreshing, setRefreshing] = useState(false);
-  // Multi-repo workspaces add a Target selector to the footer so
+  // Multi-repo tasks add a Target selector to the footer so
   // Setup/Run can target a composition member. Stored as the
-  // member's dir_name. Single-repo workspaces keep this empty
+  // member's dir_name. Single-repo tasks keep this empty
   // (legacy "host" path) since there are no members to target.
   // Default = first member for multi-repo, "" for single.
   const [footTarget, setFootTarget] = useState<string>("");
   useEffect(() => {
-    // Pick the first member for multi-repo workspaces; legacy single
+    // Pick the first member for multi-repo tasks; legacy single
     // repo keeps "" (the project's own scripts run with empty member).
-    const first = ws?.composition?.[0]?.dir_name ?? "";
+    const first = task?.composition?.[0]?.dir_name ?? "";
     setFootTarget(first);
-  }, [ws?.id]);
+  }, [task?.id]);
   // Footer holds Setup / Run status only. Scratch shells live in the
   // bottom-split (⇧⌘D) — having a second terminal slot here was redundant.
   const [footTab, setFootTab] = useState<FootTab>("run");
@@ -114,32 +114,32 @@ export function RightPanel() {
   // stage/unstage/commit reflects immediately instead of waiting for the
   // 4s tick.
   const refreshGit = React.useCallback(() => {
-    if (!ws) return;
-    workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
-  }, [ws?.id]);
-  // Clear + reload ONLY on a real workspace switch (ws.id), not on every
-  // ws-object re-patch (window refocus, attention/settled updates re-create the
+    if (!task) return;
+    taskGitStatus(task.id).then(setGitStatus).catch(() => {});
+  }, [task?.id]);
+  // Clear + reload ONLY on a real task switch (task.id), not on every
+  // task-object re-patch (window refocus, attention/settled updates re-create the
   // object) — clearing then flashed the Git panel to "Loading…". The poll and
   // the focus refresh below swap fresh status in WITHOUT clearing.
   useEffect(() => {
-    if (!ws) { setGitStatus(null); return; }
+    if (!task) { setGitStatus(null); return; }
     setGitStatus(null);
-    workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
+    taskGitStatus(task.id).then(setGitStatus).catch(() => {});
     const id = window.setInterval(() => {
-      workspaceGitStatus(ws.id).then(setGitStatus).catch(() => {});
+      taskGitStatus(task.id).then(setGitStatus).catch(() => {});
     }, 4000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.id]);
+  }, [task?.id]);
 
   // Window regained focus: the user may have run git in an external terminal
   // while away. Refresh in place (no clear, no "Loading…" flash).
   useEffect(() => {
-    if (!ws) return;
+    if (!task) return;
     const onFocus = () => refreshGit();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [ws?.id, refreshGit]);
+  }, [task?.id, refreshGit]);
 
   // Agent terminal settled → its file edits are reflected in git status too.
   // Refresh in place on the same signal that reloads the file tree below.
@@ -160,28 +160,28 @@ export function RightPanel() {
   };
 
   // Subscribe to streaming output for BOTH setup and run kinds on the active
-  // workspace. We want output to keep flowing even when the user switches
+  // task. We want output to keep flowing even when the user switches
   // footer tabs or briefly looks at the file tree — listeners stay mounted
-  // for as long as the workspace is active.
+  // for as long as the task is active.
   useEffect(() => {
-    if (!ws) return;
-    const wsId = ws.id;
+    if (!task) return;
+    const taskId = task.id;
     const { appendLine, finish } = useScriptRuns.getState();
     const unlisteners: Array<() => void> = [];
     let cancelled = false;
     // Targets to subscribe to: host ("" — also covers single-repo
-    // workspaces) + every composition member's dir_name. Each target
+    // tasks) + every composition member's dir_name. Each target
     // gets two channels (output + done) × two kinds (setup + run).
-    const targets: string[] = ["", ...(ws.composition ?? []).map(m => m.dir_name)];
+    const targets: string[] = ["", ...(task.composition ?? []).map(m => m.dir_name)];
     (async () => {
       for (const member of targets) {
         const topicMember = scriptTopicMember(member);
         for (const kind of ["setup", "run"] as const) {
-          const u1 = await listen<{ line: string }>(`script-output://${wsId}:${topicMember}:${kind}`, ev => {
-            if (!cancelled) appendLine(wsId, kind, ev.payload.line, member);
+          const u1 = await listen<{ line: string }>(`script-output://${taskId}:${topicMember}:${kind}`, ev => {
+            if (!cancelled) appendLine(taskId, kind, ev.payload.line, member);
           });
-          const u2 = await listen<{ code: number | null; success: boolean }>(`script-done://${wsId}:${topicMember}:${kind}`, ev => {
-            if (!cancelled) finish(wsId, kind, ev.payload.code, ev.payload.success, member);
+          const u2 = await listen<{ code: number | null; success: boolean }>(`script-done://${taskId}:${topicMember}:${kind}`, ev => {
+            if (!cancelled) finish(taskId, kind, ev.payload.code, ev.payload.success, member);
           });
           unlisteners.push(u1, u2);
         }
@@ -189,13 +189,13 @@ export function RightPanel() {
     })();
     return () => { cancelled = true; unlisteners.forEach(u => u()); };
     // Re-subscribe if composition changes (frozen at create-time, so
-    // this normally only fires once per workspace, but stringify the
+    // this normally only fires once per task, but stringify the
     // composition for safety).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.id, ws?.composition?.map(m => m.dir_name).join("|")]);
+  }, [task?.id, task?.composition?.map(m => m.dir_name).join("|")]);
 
   // Resolve project so we can expand `preview_url` for the Open button.
-  const project = useApp(s => (ws ? s.projects.find(p => p.id === ws.project_id) ?? null : null));
+  const project = useApp(s => (task ? s.projects.find(p => p.id === task.project_id) ?? null : null));
   // Fallback preview URLs + setup scripts from each repo's committed
   // .termic.yaml. Keyed by the host's project_id and, for multi-repo
   // members, by `memberKey` (their repo path) — inline members aren't
@@ -207,16 +207,16 @@ export function RightPanel() {
   const [yamlRunScripts, setYamlRunScripts] = useState<Record<string, string>>({});
   // Re-reads on `fileTreeNonce` too: Settings bumps it after writing a
   // `.termic.yaml` change, so the Setup/Run tabs pick up scripts edited
-  // behind the Settings overlay without needing a workspace switch.
+  // behind the Settings overlay without needing a task switch.
   useEffect(() => {
-    if (!ws) { setYamlPreviewUrls({}); setYamlSetupScripts({}); setYamlRunScripts({}); return; }
+    if (!task) { setYamlPreviewUrls({}); setYamlSetupScripts({}); setYamlRunScripts({}); return; }
     // Host loads by project id; each member loads its .termic.yaml by path.
     const loaders: Array<Promise<readonly [string, string, string, string]>> = [
-      repoConfigLoad(ws.project_id)
-        .then(rc => [ws.project_id, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? "", rc?.scripts?.run?.trim() ?? ""] as const)
-        .catch(() => [ws.project_id, "", "", ""] as const),
+      repoConfigLoad(task.project_id)
+        .then(rc => [task.project_id, rc?.scripts?.preview_url?.trim() ?? "", rc?.scripts?.setup?.trim() ?? "", rc?.scripts?.run?.trim() ?? ""] as const)
+        .catch(() => [task.project_id, "", "", ""] as const),
     ];
-    for (const m of ws.composition ?? []) {
+    for (const m of task.composition ?? []) {
       const key = memberKey(m);
       if (!m.repo_path) continue;
       loaders.push(
@@ -231,26 +231,26 @@ export function RightPanel() {
       setYamlRunScripts(Object.fromEntries(entries.map(([id, , , run]) => [id, run])));
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.project_id, ws?.composition?.map(m => m.repo_path || m.dir_name).sort().join("|"), fileTreeNonce]);
-  const footerTerm = useApp(s => (ws ? !!s.footerTerm[ws.id] : false));
+  }, [task?.project_id, task?.composition?.map(m => m.repo_path || m.dir_name).sort().join("|"), fileTreeNonce]);
+  const footerTerm = useApp(s => (task ? !!s.footerTerm[task.id] : false));
   // Icon-only toolbar when the Terminal tab is open (the tab strip eats
   // horizontal room) OR the panel is simply narrow. ~380px is where the
   // full-text Setup / Stop / Open buttons (plus the Copy-URL icon and the
   // Run / Setup tabs) stop fitting; below it the labels clip off the edge.
   const compactToolbar = footerTerm || (asideWidth > 0 && asideWidth < 380);
-  const setupRunState = useRunState(ws?.id, "setup", footTarget);
+  const setupRunState = useRunState(task?.id, "setup", footTarget);
   // The Setup tab is transient: it only appears once Setup has been
-  // invoked for this (workspace, target). Closing it resets the run
+  // invoked for this (task, target). Closing it resets the run
   // state back to idle and the tab disappears again.
   const showSetupTab = setupRunState.status !== "idle";
-  const footRun = useRunState(ws?.id, footTab === "term" ? "run" : (footTab === "spotlight" ? "run" : footTab), footTarget);
+  const footRun = useRunState(task?.id, footTab === "term" ? "run" : (footTab === "spotlight" ? "run" : footTab), footTarget);
 
   // ── spotlight ──────────────────────────────────────────────────
-  // Available for single-repo, non-root, spotlight-enabled workspaces.
-  const isSpotlighted = useApp(s => ws ? s.spotlightWsId[ws.project_id] === ws.id : false);
+  // Available for single-repo, non-root, spotlight-enabled tasks.
+  const isSpotlighted = useApp(s => task ? s.spotlightTaskId[task.project_id] === task.id : false);
   // Spotlight syncs a worktree's changes back to the repo root, so it's
-  // worktree-only: never for repo-root, multi-repo, or non-git workspaces.
-  const spotlightAvailable = !!ws && !ws.is_repo_root
+  // worktree-only: never for repo-root, multi-repo, or non-git tasks.
+  const spotlightAvailable = !!task && !task.is_main_checkout
     && !!project?.spotlight_enabled
     && project?.type !== "multi"
     && !project?.non_git;
@@ -260,10 +260,10 @@ export function RightPanel() {
   const addSpotlightLog = (msg: string, error = false) =>
     setSpotlightLog(prev => [...prev.slice(-199), { time: new Date(), msg, error }]);
 
-  // Listen to spotlight events for this workspace.
+  // Listen to spotlight events for this task.
   useEffect(() => {
-    if (!ws) return;
-    const projectId = ws.project_id;
+    if (!task) return;
+    const projectId = task.project_id;
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
     (async () => {
@@ -273,7 +273,7 @@ export function RightPanel() {
       }>(
         "spotlight://synced",
         ev => {
-          if (cancelled || ev.payload.project_id !== projectId || ev.payload.ws_id !== ws.id) return;
+          if (cancelled || ev.payload.project_id !== projectId || ev.payload.ws_id !== task.id) return;
           const { committed_files, uncommitted_files, untracked_files } = ev.payload;
           // Union of all synced paths (a file can be in committed AND uncommitted).
           const all = Array.from(new Set([...committed_files, ...uncommitted_files, ...untracked_files]));
@@ -293,14 +293,14 @@ export function RightPanel() {
       const u2 = await listen<{ project_id: string; ws_id: string; message: string }>(
         "spotlight://error",
         ev => {
-          if (cancelled || ev.payload.project_id !== projectId || ev.payload.ws_id !== ws.id) return;
+          if (cancelled || ev.payload.project_id !== projectId || ev.payload.ws_id !== task.id) return;
           addSpotlightLog(ev.payload.message, true);
         },
       );
       unlisteners.push(u1, u2);
     })();
     return () => { cancelled = true; unlisteners.forEach(u => u()); };
-  }, [ws?.id, ws?.project_id]);
+  }, [task?.id, task?.project_id]);
 
   // When spotlight starts: clear stale log, jump to Spotlight tab, expand.
   const prevSpotlightedRef = useRef(false);
@@ -315,24 +315,24 @@ export function RightPanel() {
   }, [isSpotlighted]);
 
   // Spotlight is worktree-only. If a "spotlight" tab carried over
-  // from a worktree workspace and we land on one where it's NOT available
+  // from a worktree task and we land on one where it's NOT available
   // (repo-root, multi-repo, non-git), snap back to Run so the spotlight
-  // panel can't leak onto a workspace it makes no sense for.
+  // panel can't leak onto a task it makes no sense for.
   useEffect(() => {
     if (!spotlightAvailable && footTab === "spotlight") setFootTab("run");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spotlightAvailable]);
   // The footer Run area only renders when NO run script is configured (runs
   // live in terminal tabs). footTab defaults to "run", so on spotlight
-  // workspaces with a script that combination would expand into an empty
+  // tasks with a script that combination would expand into an empty
   // void — snap to the Spotlight tab instead.
   useEffect(() => {
-    if (!ws || !spotlightAvailable || footTab !== "run") return;
-    if (project?.run_script?.trim() || yamlRunScripts[ws.project_id]?.trim()) {
+    if (!task || !spotlightAvailable || footTab !== "run") return;
+    if (project?.run_script?.trim() || yamlRunScripts[task.project_id]?.trim()) {
       setFootTab("spotlight");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.id, spotlightAvailable, footTab, project?.run_script, yamlRunScripts]);
+  }, [task?.id, spotlightAvailable, footTab, project?.run_script, yamlRunScripts]);
 
   // If the Setup tab vanishes, fall back to Spotlight (if available) or Run.
   useEffect(() => {
@@ -341,113 +341,38 @@ export function RightPanel() {
     }
   }, [showSetupTab, footTab, spotlightAvailable]);
 
-  if (!ws) return null;
-
-  const hasComposition = (ws.composition?.length ?? 0) > 0;
+  if (!task) return null;
 
   // Resolve the footer target's app key (host project or composition
   // member). Shared by the setup launch and the ScriptStream render below.
-  const footMember = ws.composition?.find(m => m.dir_name === footTarget);
-  const footAppKey = footMember ? memberKey(footMember) : ws.project_id;
-  // Runs/setups ALWAYS live in terminal tabs now (GH #54) — the footer log
-  // mode is gone; tabs + splits give full placement control. Launching is
-  // shared logic in lib/runTabs (also used by RunControls + spotlight).
-  const runsInTerminal = true;
-  // Run targets known locally: only used to decide whether the footer shows
-  // the "configure a run script" prompt (the sole remaining Run footer use).
-  const runTargets = (() => {
-    const targets: { member: string; script: string }[] = [];
-    const hostScript = (project?.run_script || yamlRunScripts[ws.project_id] || "").trim();
-    if (hostScript) targets.push({ member: "", script: hostScript });
-    for (const m of ws.composition ?? []) {
-      const script = (m.run_script || yamlRunScripts[memberKey(m)] || "").trim();
-      if (script) targets.push({ member: m.dir_name, script });
-    }
-    return targets;
-  })();
-  // Footer Run area: runs NEVER stream down here — it only appears when no
-  // run script is configured, to host the "configure a run script" prompt.
-  const showRunLog = !runsInTerminal || runTargets.length === 0;
-  // Multi-repo run controls moved to the UnifiedBar ("Run all" / "Stop all").
-  // Do not keep the old member target strip alive at the bottom of the right
-  // panel; show the footer only for non-run surfaces.
-  const showFooter =
-    !runsInTerminal ||
-    showSetupTab ||
-    footerTerm ||
-    spotlightAvailable ||
-    (!hasComposition && showRunLog);
+  const footMember = task.composition?.find(m => m.dir_name === footTarget);
+  const footAppKey = footMember ? memberKey(footMember) : task.project_id;
+  // Run/setup live entirely in main-area terminal tabs now (GH #54) + the
+  // top-bar Run controls. The bottom footer NEVER hosts a Run tab or a
+  // "configure a run script" prompt. Keeping this false also makes
+  // `onlySpotlightFooter` true, so the footer defaults straight to the
+  // spotlight strip instead of an empty/run surface.
+  const showRunLog = false;
+  // The bottom section exists ONLY for spotlight (enabled per project + this
+  // being a worktree task where spotlight applies). Otherwise it's hidden.
+  const showFooter = spotlightAvailable;
   const onlySpotlightFooter =
     spotlightAvailable && !showRunLog && !showSetupTab && !footerTerm;
   const spotlightSelected =
     spotlightAvailable && (onlySpotlightFooter || footTab === "spotlight");
 
-  // Shared start/stop. Setup auto-switches the footer view to the Setup
-  // tab (which the user can close once they're done reading the log).
-  const startScript = (kind: "setup" | "run") => {
-    if (kind === "setup") {
-      // Setup runs as a one-shot terminal tab (host or the selected member).
-      const setupScript = ((footMember ? footMember.setup_script : project?.setup_script)
-        || yamlSetupScripts[footAppKey] || "").trim();
-      if (setupScript) {
-        const st = useApp.getState();
-        const existing = (st.tabs[ws.id] ?? []).find(
-          (t): t is TerminalTab => t.type === "terminal"
-            && (t as TerminalTab).runTab?.kind === "setup"
-            && (t as TerminalTab).runTab?.member === footTarget,
-        );
-        if (existing) {
-          window.dispatchEvent(new CustomEvent("termic-run-tab-restart", { detail: { tabId: existing.id } }));
-        } else {
-          st.addTabToActivePane(ws.id, {
-            id: crypto.randomUUID(),
-            type: "terminal",
-            title: footTarget ? `Setup · ${footTarget}` : "Setup",
-            cli: "custom",
-            command: footTarget
-              ? `cd "${ws.path.replace(/"/g, '\\"')}/${footTarget}"\n${setupScript}`
-              : setupScript,
-            runTab: { member: footTarget, kind: "setup" },
-          });
-        }
-        return;
-      }
-      useUI.getState().pushToast("No setup script configured. Set one in Settings, Repositories.", "error");
-      return;
-    }
-    // Run: ALWAYS terminal tabs, every project the same (GH #54) — runs
-    // never stream into the footer. Spotlight-enabled projects' host tab
-    // cd's to the repo root inside the tab command (see lib/runTabs).
-    void launchRunTabs(ws.id);
-  };
-
-  // The UnifiedBar's top-right Run button can't drive the footer's
-  // collapse/tab state (it lives here, not in the store), so it bumps a
-  // nonce in the UI store and we react by running the run-script the same
-  // way the in-panel Run button does. Guard on the nonce so we fire once
-  // per click, and only for this (active) workspace.
-  const runReq = useUI(s => s.runScriptRequest);
-  const lastRunNonce = useRef(0);
-  useEffect(() => {
-    if (!runReq || !ws) return;
-    if (runReq.nonce === lastRunNonce.current) return;
-    lastRunNonce.current = runReq.nonce;
-    if (runReq.wsId !== ws.id) return;
-    startScript(runReq.kind ?? "run");
-  }, [runReq, ws?.id]);
-
   const handleSpotlightStart = () => {
     // Log clearing happens in the isSpotlighted useEffect above, which fires
     // when the store confirms spotlight is active. startSpotlight also hands
-    // off a running dev server from a previously-spotlighted workspace.
-    startSpotlight(ws.project_id, ws.id).catch(err =>
+    // off a running dev server from a previously-spotlighted task.
+    startSpotlight(task.project_id, task.id).catch(err =>
       useUI.getState().pushToast(String(err), "error")
     );
   };
   const handleSpotlightStop = () => {
     // stopSpotlight also stops the root run (its Run tab stays, exited —
-    // it can only be restarted from a spotlighted workspace).
-    stopSpotlight(ws.id)
+    // it can only be restarted from a spotlighted task).
+    stopSpotlight(task.id)
       .then(() => addSpotlightLog("Spotlight stopped"))
       .catch(err => {
         const msg = String(err);
@@ -456,7 +381,7 @@ export function RightPanel() {
       });
   };
   const handleSpotlightResync = () => {
-    workspaceSpotlightResync(ws.id)
+    taskSpotlightResync(task.id)
       .then(() => {})
       .catch(err => {
         const msg = String(err);
@@ -507,20 +432,20 @@ export function RightPanel() {
           scrolling so it gets the bare flex-1 height with no overflow. */}
       {view === "files" ? (
         <div className="min-h-0 flex-1 overflow-auto py-1">
-          <FileTree wsId={ws.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision} refreshToken={fileTreeReload} />
+          <FileTree taskId={task.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision} refreshToken={fileTreeReload} />
         </div>
       ) : (
         <div className="min-h-0 flex-1">
           <GitPanel
-            ws={ws}
+            task={task}
             status={gitStatus}
             refresh={refreshGit}
-            onOpenDiff={(path) => useApp.getState().openPreviewTab(ws.id, { type: "diff", path, title: `Δ ${path.split("/").pop()}` })}
+            onOpenDiff={(path) => useApp.getState().openPreviewTab(task.id, { type: "diff", path, title: `Δ ${path.split("/").pop()}` })}
             onDoubleClickDiff={(path) => {
-              const currentTabs = useApp.getState().tabs[ws.id] || [];
+              const currentTabs = useApp.getState().tabs[task.id] || [];
               const existing = currentTabs.find(t => t.type === "diff" && t.path === path);
               if (existing) {
-                useApp.getState().persistTab(ws.id, existing.id);
+                useApp.getState().persistTab(task.id, existing.id);
               }
             }}
           />
@@ -578,18 +503,13 @@ export function RightPanel() {
               onClick={() => { setFootTab("spotlight"); setFootCollapsed(false); }}
             />
           )}
-          {/* Run tab: only for non-spotlight projects and repo-root workspaces,
-              and hidden while the run is popped out into a RunPane tab. */}
-          {showRunLog && (
-            <FTab label="Run" active={footTab === "run"} onClick={() => { setFootTab("run"); setFootCollapsed(false); }} />
-          )}
           {showSetupTab && (
             <FTab
               label="Setup"
               active={footTab === "setup"}
               onClick={() => { setFootTab("setup"); setFootCollapsed(false); }}
               onClose={() => {
-                useScriptRuns.getState().reset(ws.id, "setup", footTarget);
+                useScriptRuns.getState().reset(task.id, "setup", footTarget);
                 setFootTab(isSpotlighted ? "spotlight" : "run");
               }}
             />
@@ -600,7 +520,7 @@ export function RightPanel() {
               active={footTab === "term"}
               onClick={() => { setFootTab("term"); setFootCollapsed(false); }}
               onClose={() => {
-                useApp.getState().disableFooterTerm(ws.id);
+                useApp.getState().disableFooterTerm(task.id);
                 setFootTab(isSpotlighted ? "spotlight" : "run");
               }}
             />
@@ -637,7 +557,7 @@ export function RightPanel() {
             </div>
           ) : footTab !== "term" ? (
             <RunToolbar
-              ws={ws} project={project} yamlPreviewUrl={yamlPreviewUrls[ws.project_id]}
+              task={task} project={project} yamlPreviewUrl={yamlPreviewUrls[task.project_id]}
               compact={compactToolbar}
             />
           ) : null}
@@ -654,37 +574,37 @@ export function RightPanel() {
               />
             )}
             {footTab !== "term" && !spotlightSelected && showRunLog && (() => {
-              const activeMember = ws.composition?.find(m => m.dir_name === footTarget);
+              const activeMember = task.composition?.find(m => m.dir_name === footTarget);
               // Inline members have no project id — key yaml + dismiss state
               // by memberKey. Configure always opens the host project (where
               // members + their scripts are edited).
-              const activeKey = activeMember ? memberKey(activeMember) : ws.project_id;
+              const activeKey = activeMember ? memberKey(activeMember) : task.project_id;
               const hasRunScript = !!((activeMember
                 ? activeMember.run_script?.trim()
                 : project?.run_script?.trim())
                 || yamlRunScripts[activeKey]?.trim());
               return (
                 <ScriptStream
-                  wsId={ws.id} kind={footTab as "setup" | "run"} run={footRun}
+                  taskId={task.id} kind={footTab as "setup" | "run"} run={footRun}
                   hasScript={footTab === "run"
                     ? hasRunScript
                     : !!((activeMember ? activeMember.setup_script?.trim() : project?.setup_script?.trim()) || yamlSetupScripts[activeKey]?.trim())}
                   dismissKey={footTab === "run" ? `hideRunPrompt:${activeKey}` : undefined}
                   onStart={() => {
                     const kind = footTab as "setup" | "run";
-                    useScriptRuns.getState().start(ws.id, kind, footTarget);
-                    workspaceRunScriptStream(ws.id, kind, footTarget || undefined).catch(err =>
-                      console.error("workspace_run_script_stream failed:", err));
+                    useScriptRuns.getState().start(task.id, kind, footTarget);
+                    taskRunScriptStream(task.id, kind, footTarget || undefined).catch(err =>
+                      console.error("task_run_script_stream failed:", err));
                   }}
                   onConfigure={footTab === "run"
-                    ? () => useApp.getState().openSettings("repositories", ws.project_id)
+                    ? () => useApp.getState().openSettings("repositories", task.project_id)
                     : undefined}
                   onDismiss={footTab === "run" ? () => setFootCollapsed(true) : undefined}
                 />
               );
             })()}
             {/* Keep the AuxTerminal mounted whenever the user has enabled
-                it for this workspace, regardless of which tab is currently
+                it for this task, regardless of which tab is currently
                 visible — switching to Setup/Run should NOT respawn the
                 shell. visibility:hidden preserves the PTY + scrollback. */}
             {footerTerm && (
@@ -696,7 +616,7 @@ export function RightPanel() {
                   zIndex: footTab === "term" ? 1 : 0,
                 }}
               >
-                <AuxTerminal wsPath={ws.path} active={footTab === "term"} />
+                <AuxTerminal taskPath={task.path} active={footTab === "term"} />
               </div>
             )}
           </div>
@@ -738,15 +658,15 @@ function FTab({ label, icon, active, onClick, onClose }: {
 /** Right-aligned toolbar group: preview-URL actions only. Run/Stop live in
  *  the UnifiedBar (RunControls) and Setup in its dropdown — runs and setups
  *  are terminal tabs now (GH #54), so the footer carries no script buttons. */
-function RunToolbar({ ws, project, yamlPreviewUrl = "", compact }: {
-  ws: Workspace; project: Project | null; yamlPreviewUrl?: string;
+function RunToolbar({ task, project, yamlPreviewUrl = "", compact }: {
+  task: Task; project: Project | null; yamlPreviewUrl?: string;
   /** When the footer is cramped (Terminal tab open, panel narrow),
    *  collapse buttons to icon-only with the label moved to the title.
    *  Saves ~50px per button which is enough to keep everything in the
    *  panel without overflow. */
   compact?: boolean;
 }) {
-  const url = expandPreviewUrl(project, ws, yamlPreviewUrl);
+  const url = expandPreviewUrl(project, task, yamlPreviewUrl);
   const btnCls = compact ? "h-6 w-6 p-0" : "h-6 gap-1 px-1.5 text-[12px]";
   // In compact (icon-only) mode the inline label is gone, so the action name
   // moves to an INSTANT app tooltip (Tip, delay 0) instead of a slow native
@@ -819,8 +739,8 @@ function stripAnsi(s: string): string {
  *  unless the user has scrolled up (then we pause to respect their position).
  *  Idle state shows the original empty hint so the panel doesn't look broken
  *  before the first run. */
-function ScriptStream({ wsId, kind, run, hasScript, dismissKey, onStart, onConfigure, onDismiss }: {
-  wsId: string; kind: "setup" | "run";
+function ScriptStream({ taskId, kind, run, hasScript, dismissKey, onStart, onConfigure, onDismiss }: {
+  taskId: string; kind: "setup" | "run";
   run: { status: "idle" | "running" | "done" | "error"; lines: string[]; exitCode: number | null };
   hasScript: boolean;
   dismissKey?: string;
@@ -828,7 +748,7 @@ function ScriptStream({ wsId, kind, run, hasScript, dismissKey, onStart, onConfi
   onConfigure?: () => void;
   onDismiss?: () => void;
 }) {
-  void wsId;
+  void taskId;
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [dismissed, setDismissed] = useState(() => {
@@ -885,7 +805,7 @@ function ScriptStream({ wsId, kind, run, hasScript, dismissKey, onStart, onConfi
         </div>
         <Button size="sm" variant="secondary" onClick={onStart} className="gap-1.5">
           <Play className="h-3 w-3" />
-          {kind === "setup" ? "Run setup" : "Run workspace"}
+          {kind === "setup" ? "Run setup" : "Run task"}
           <kbd className="ml-1 text-[10.5px] text-[var(--color-fg-faint)]">⌘R</kbd>
         </Button>
         <p className="text-[12px] text-[var(--color-fg-faint)]">

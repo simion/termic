@@ -8,13 +8,13 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
-import { workspaceSpotlightStatus } from "@/lib/ipc";
+import { taskSpotlightStatus } from "@/lib/ipc";
 import { installPointerEventsGuard } from "@/lib/pointerEventsGuard";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
-import { MainArea } from "@/components/workspace/MainArea";
-import { RightPanel } from "@/components/workspace/RightPanel";
+import { MainArea } from "@/components/task/MainArea";
+import { RightPanel } from "@/components/task/RightPanel";
 import { Settings } from "@/components/settings/Settings";
 import { Dialogs } from "@/components/dialogs/Dialogs";
 import { Toaster } from "@/components/ui/Toaster";
@@ -30,7 +30,7 @@ export function App() {
   const loadAll = useApp(s => s.loadAll);
   const compact = useApp(s => s.compactSidebar);
   const hideRP  = useApp(s => s.rightPanelHidden);
-  const activeWs = useApp(s => s.activeWorkspaceId);
+  const activeTask = useApp(s => s.activeTaskId);
   const view = useApp(s => s.view.page);
   const settingsOpen = useApp(s => !!s.view.settingsOpen);
 
@@ -71,9 +71,9 @@ export function App() {
     usePrefs.getState().loadCustomThemes();
 
     // Hydrate spotlight state from Rust (survives hot-reloads).
-    workspaceSpotlightStatus().then(map => {
+    taskSpotlightStatus().then(map => {
       const { setSpotlight } = useApp.getState();
-      for (const [projectId, wsId] of Object.entries(map)) setSpotlight(projectId, wsId);
+      for (const [projectId, taskId] of Object.entries(map)) setSpotlight(projectId, taskId);
     }).catch(() => {});
 
     // Keep spotlight store in sync with Rust events.
@@ -102,7 +102,7 @@ export function App() {
           last.focus();
         } else {
           const s = useApp.getState();
-          if (s.activeWorkspaceId) focusMainTab(s.activeTab[s.activeWorkspaceId]);
+          if (s.activeTaskId) focusMainTab(s.activeTab[s.activeTaskId]);
         }
       });
     };
@@ -118,7 +118,7 @@ export function App() {
   // only applies in full mode.
   const sidebarWidth = useApp(s => s.sidebarWidth);
   const rightPanelWidth = useApp(s => s.rightPanelWidth);
-  const showRP = !!activeWs && !hideRP;
+  const showRP = !!activeTask && !hideRP;
   // Sidebar / right panel widths use CSS `clamp(MIN, PREFERRED, vw-CAP)`:
   //   - PREFERRED is whatever the user manually dragged to (their ceiling).
   //   - vw-CAP kicks in when the viewport shrinks below `preferred / cap%`,
@@ -139,7 +139,7 @@ export function App() {
     : `${sbCol} 1fr`;
 
   // Settings is rendered as a full-window OVERLAY (z-50) on top of the
-  // normal app layout. The grid below it stays mounted so every workspace
+  // normal app layout. The grid below it stays mounted so every task
   // keeps its PTYs alive — closing settings dumps you straight back into
   // your live terminals. Previous "if (settings) return <Settings/>" branch
   // unmounted MainArea and killed every PTY.

@@ -18,7 +18,7 @@ import { Loader2 } from "lucide-react";
 // markdown-it + mermaid are heavy; load the renderer only when the dialog
 // actually shows notes (same lazy split the editor preview uses).
 const MarkdownPreview = lazy(() =>
-  import("@/components/workspace/MarkdownPreview").then(m => ({ default: m.MarkdownPreview })),
+  import("@/components/task/MarkdownPreview").then(m => ({ default: m.MarkdownPreview })),
 );
 
 // Drop CHANGELOG.md's leading "# Changelog" title + intro paragraph — the

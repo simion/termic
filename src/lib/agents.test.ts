@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/ipc", () => ({
   ptyWrite: vi.fn(),
   projectsList: vi.fn(),
-  workspaceList: vi.fn(),
+  taskList: vi.fn(),
 }));
 
 // useApp is used inside findAgent() to read the agent registry. In unit
@@ -67,34 +67,34 @@ describe("spawnArgsForCli", () => {
   });
 
   it("includes name_args on every primary-tab spawn (mint and resume)", () => {
-    const fakeWs = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
+    const fakeTask = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
     // Mint (first id-based spawn): name is present.
     const first = spawnArgsForCli("claude", {
       yolo: false, resume: false, isPrimary: true,
       sessionUuid: "abc-123", resumeKnown: false,
-      ws: fakeWs,
+      task: fakeTask,
     });
     expect(first).toContain("--name");
     expect(first).toContain("improve-tests");
 
     // Resume (subsequent id-based spawn): name is STILL present — claude
-    // should show the workspace name in its prompt header on resume too.
+    // should show the task name in its prompt header on resume too.
     const second = spawnArgsForCli("claude", {
       yolo: false, resume: false, isPrimary: true,
       sessionUuid: "abc-123", resumeKnown: true,
-      ws: fakeWs,
+      task: fakeTask,
     });
     expect(second).toContain("--name");
     expect(second).toContain("improve-tests");
   });
 
   it("omits name_args for secondary (+) tabs", () => {
-    const fakeWs = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
+    const fakeTask = { id: "ws1", name: "Improve Tests", branch: "main", port: 1420 } as any;
     // Secondary tabs (isPrimary falsy) start fresh and never carry --name.
     const args = spawnArgsForCli("claude", {
       yolo: false, resume: false, isPrimary: false,
       sessionUuid: "abc-123", resumeKnown: false,
-      ws: fakeWs,
+      task: fakeTask,
     });
     expect(args).not.toContain("--name");
   });
@@ -311,7 +311,7 @@ describe("custom terminals", () => {
     icon_id: "lucide:terminal", color: "#9aa0a6", builtin: false,
     kind: "terminal", ...over,
   } as Agent);
-  const fakeWs = {
+  const fakeTask = {
     id: "ws1", name: "Improve Tests", branch: "main", port: 1420,
     path: "/repos/proj/.worktrees/improve-tests",
   } as any;
@@ -331,27 +331,27 @@ describe("custom terminals", () => {
 
   it("terminalLaunchCommand joins command + args and expands placeholders", () => {
     mockAgents.push(termEntry());
-    expect(terminalLaunchCommand("devcontainer", fakeWs)).toBe(
+    expect(terminalLaunchCommand("devcontainer", fakeTask)).toBe(
       "docker exec -it -w /repos/proj/.worktrees/improve-tests mybox zsh",
     );
   });
 
   it("terminalLaunchCommand returns undefined for an empty command (plain shell)", () => {
     mockAgents.push(termEntry({ command: "", args: [] }));
-    expect(terminalLaunchCommand("devcontainer", fakeWs)).toBeUndefined();
+    expect(terminalLaunchCommand("devcontainer", fakeTask)).toBeUndefined();
   });
 
   it("terminalLaunchCommand shell-quotes expanded values with spaces or metachars", () => {
     mockAgents.push(termEntry());
-    const ws = { ...fakeWs, path: "/Users/x/My Projects/repo" };
-    expect(terminalLaunchCommand("devcontainer", ws)).toBe(
+    const task = { ...fakeTask, path: "/Users/x/My Projects/repo" };
+    expect(terminalLaunchCommand("devcontainer", task)).toBe(
       "docker exec -it -w '/Users/x/My Projects/repo' mybox zsh",
     );
     // A name with a single quote must not break out of the quoting.
     mockAgents.length = 0;
     mockAgents.push(termEntry({ args: ["{WORKSPACE_NAME}"] }));
-    const wsQuote = { ...fakeWs, name: "it's a test" };
-    expect(terminalLaunchCommand("devcontainer", wsQuote)).toBe(
+    const taskQuote = { ...fakeTask, name: "it's a test" };
+    expect(terminalLaunchCommand("devcontainer", taskQuote)).toBe(
       `docker 'it'\\''s a test'`,
     );
   });

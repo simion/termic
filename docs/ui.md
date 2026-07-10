@@ -23,8 +23,8 @@ Opt-out with both `data-tauri-drag-region="false"` and `WebkitAppRegion: "no-dra
 
 Three tabs. Setup + Run stream via `useScriptRuns`. Terminal is opt-in: click `+` → `useApp.enableFooterTerm(wsId)` → AuxTerminal mounts. RunToolbar: Open (expands `project.preview_url` with `$TERMIC_PORT`/`$CONDUCTOR_PORT`/`$PORT`/`$TERMIC_WORKSPACE_NAME`) + Run/Stop (SIGTERMs process group). Default: tab=Run, expanded.
 
-`workspace_archive` sweeps `RUNNING_SCRIPTS` and SIGTERMs each before teardown.
+`task_archive` sweeps `RUNNING_SCRIPTS` and SIGTERMs each before teardown.
 
 ## Settled detection / notifications
 
-TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible viewport, marks tab "settled" after 2 identical consecutive samples. Resets on user input. `markAttention(wsId, tabId, reason)` never marks the active tab in the active workspace. `useAttentionNotifier` suppresses OS notifications for every tab in the focused workspace. Desktop notifications off by default.
+TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible viewport, marks tab "settled" after 2 identical consecutive samples. Resets on user input. `markAttention(wsId, tabId, reason)` never marks the active tab in the active task. `useAttentionNotifier` suppresses OS notifications for every tab in the focused task. Desktop notifications off by default.

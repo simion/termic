@@ -17,7 +17,7 @@ export interface SplitNode {
 export interface PaneLeaf {
   type: 'pane';
   id: string;
-  /** true = the original workspace pane; its content mirrors activeTab[wsId].
+  /** true = the original task pane; its content mirrors activeTab[taskId].
    *  false/absent = a split pane with its own tabs (or empty SplitLauncher). */
   isMain?: boolean;
   /** Ordered list of tab ids this pane holds. Empty = shows SplitLauncher. */

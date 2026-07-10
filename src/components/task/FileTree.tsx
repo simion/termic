@@ -1,13 +1,13 @@
 // Lazy-loading file tree for the "All files" panel.
-// - Initial render fetches the workspace root only.
+// - Initial render fetches the task root only.
 // - Clicking a dir expands it and fetches its entries on demand (cached by rel-path).
-// - Clicking a file opens/selects an edit tab in the workspace.
+// - Clicking a file opens/selects an edit tab in the task.
 // - Indentation reflects depth; chevrons rotate to indicate expansion state.
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { ChevronRight, Pencil, Trash2 } from "lucide-react";
 import type { FileEntry } from "@/lib/types";
-import { workspaceDirList, workspacePathRename, workspacePathDelete } from "@/lib/ipc";
+import { taskDirList, taskPathRename, taskPathDelete } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -16,7 +16,7 @@ import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuIte
 import { CopyPathItems } from "./CopyPathItems";
 
 interface Props {
-  wsId: string;
+  taskId: string;
   /** Bump to force a re-read from disk (e.g. the header refresh button).
    *  Preserves the expanded folder set: root + every open dir is
    *  re-fetched, the rest of the cache is dropped. */
@@ -28,11 +28,11 @@ interface Props {
   refreshToken?: number;
 }
 
-// Expanded folders, kept per workspace across switches. FileTree is a single
-// shared instance (lives under RightPanel, not per-workspace), so its local
-// `expanded` state would be wiped every time `wsId` changes. This module-level
-// map survives the swap so re-selecting a workspace restores its open folders.
-const expandedByWs = new Map<string, Set<string>>();
+// Expanded folders, kept per task across switches. FileTree is a single
+// shared instance (lives under RightPanel, not per-task), so its local
+// `expanded` state would be wiped every time `taskId` changes. This module-level
+// map survives the swap so re-selecting a task restores its open folders.
+const expandedByTask = new Map<string, Set<string>>();
 
 // Compare a freshly re-fetched listing against the cached one. `next` holds
 // only the dirs we re-read (root + expanded), which are exactly the ones the
@@ -54,16 +54,16 @@ function sameChildren(
   return true;
 }
 
-export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
-  // Absolute workspace root, used to build the "Copy path" (absolute) item.
-  // Tree `rel` paths are workspace-root-relative, so absolute = root/rel.
-  const root = useApp(s => s.workspaces.find(w => w.id === wsId)?.path ?? "");
+export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
+  // Absolute task root, used to build the "Copy path" (absolute) item.
+  // Tree `rel` paths are task-root-relative, so absolute = root/rel.
+  const root = useApp(s => s.tasks.find(w => w.id === taskId)?.path ?? "");
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   // Per-dir cache of children, keyed by rel-path ("" = root).
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
   // Expanded set keyed by rel-path. Seeded from (and mirrored back to) the
-  // per-workspace map so switching away and back keeps the tree open.
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(expandedByWs.get(wsId)));
+  // per-task map so switching away and back keeps the tree open.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(expandedByTask.get(taskId)));
   // Tracks in-flight dir loads so we don't double-fetch.
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
   const [err, setErr] = useState<string | null>(null);
@@ -85,24 +85,24 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
   const revealFile = useApp(s => s.revealFile);
   const clearReveal = useApp(s => s.clearReveal);
 
-  // Load root on mount / wsId change. Restore this workspace's previously
+  // Load root on mount / taskId change. Restore this task's previously
   // expanded folders (empty on first visit) and re-fetch them so they show
-  // their contents; the stale cache for the old workspace is dropped.
+  // their contents; the stale cache for the old task is dropped.
   useEffect(() => {
-    const saved = new Set(expandedByWs.get(wsId));
+    const saved = new Set(expandedByTask.get(taskId));
     setRootEntries(null); setChildren({}); setExpanded(saved); setErr(null);
     let alive = true;
     // Launch is an intentional moment — heal missing member symlinks here.
     const toLoad = ["", ...saved];
     Promise.all(toLoad.map(rel =>
-      workspaceDirList(wsId, rel, rel === "")
+      taskDirList(taskId, rel, rel === "")
         .then(list => [rel, list] as const)
         .catch(() => [rel, null] as const),
     )).then(results => {
       if (!alive) return;
       const patch: Record<string, FileEntry[]> = {};
       for (const [rel, list] of results) if (list) patch[rel] = list;
-      if (!patch[""]) { setErr("Failed to read workspace files"); return; }
+      if (!patch[""]) { setErr("Failed to read task files"); return; }
       setRootEntries(patch[""]);
       // Merge (not replace) so a reveal-in-tree that expanded ancestor dirs
       // while this load was in flight doesn't get its children clobbered.
@@ -110,7 +110,7 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
       setChildren(c => ({ ...c, ...patch }));
     });
     return () => { alive = false; };
-  }, [wsId]);
+  }, [taskId]);
 
   // Manual refresh: re-read root + every expanded dir from disk, keeping
   // the expansion state. Skips the initial render (token starts at 0).
@@ -125,7 +125,7 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
     prevRefresh.current = refreshToken;
     const toLoad = ["", ...Array.from(expandedRef.current)];
     Promise.all(toLoad.map(rel =>
-      workspaceDirList(wsId, rel, heal && rel === "").then(list => [rel, list] as const).catch(() => [rel, null] as const),
+      taskDirList(taskId, rel, heal && rel === "").then(list => [rel, list] as const).catch(() => [rel, null] as const),
     )).then(results => {
       if (!alive) return;
       const next: Record<string, FileEntry[]> = {};
@@ -145,36 +145,36 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
     if (children[rel] || loading.has(rel)) return;
     setLoading(s => { const n = new Set(s); n.add(rel); return n; });
     try {
-      const list = await workspaceDirList(wsId, rel);
+      const list = await taskDirList(taskId, rel);
       setChildren(c => ({ ...c, [rel]: list }));
     } catch (e) { console.error("dir list failed", rel, e); }
     finally { setLoading(s => { const n = new Set(s); n.delete(rel); return n; }); }
-  }, [wsId, children, loading]);
+  }, [taskId, children, loading]);
 
   // Force a re-read of one dir from disk + update the cache. Used after a
   // context-menu rename/delete mutates that directory's contents. "" = root.
   const refetchDir = useCallback(async (rel: string) => {
     try {
-      const list = await workspaceDirList(wsId, rel);
+      const list = await taskDirList(taskId, rel);
       setChildren(c => ({ ...c, [rel]: list }));
       if (rel === "") setRootEntries(list);
     } catch (e) { console.error("refetch dir failed", rel, e); }
-  }, [wsId]);
+  }, [taskId]);
 
   const toggle = useCallback((rel: string) => {
     setExpanded(s => {
       const n = new Set(s);
       if (n.has(rel)) n.delete(rel); else { n.add(rel); ensureLoaded(rel); }
-      expandedByWs.set(wsId, n);
+      expandedByTask.set(taskId, n);
       return n;
     });
-  }, [ensureLoaded, wsId]);
+  }, [ensureLoaded, taskId]);
 
   // Reveal-in-tree: expand the path's ancestors, scroll to it, highlight it.
   // Driven by the store (set by the editor breadcrumb / locate button) so it
   // works even after the panel is un-hidden and switched to the files view.
   useEffect(() => {
-    if (!revealFile || revealFile.wsId !== wsId || !revealFile.path) return;
+    if (!revealFile || revealFile.taskId !== taskId || !revealFile.path) return;
     let alive = true;
     const { path, isDir } = revealFile;
     (async () => {
@@ -184,11 +184,11 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
       for (let i = 0; i < upto; i++) dirs.push(parts.slice(0, i + 1).join("/"));
       const patch: Record<string, FileEntry[]> = {};
       await Promise.all(dirs.map(async d => {
-        try { patch[d] = await workspaceDirList(wsId, d); } catch {}
+        try { patch[d] = await taskDirList(taskId, d); } catch {}
       }));
       if (!alive) return;
       if (Object.keys(patch).length) setChildren(c => ({ ...c, ...patch }));
-      setExpanded(s => { const n = new Set(s); dirs.forEach(d => n.add(d)); expandedByWs.set(wsId, n); return n; });
+      setExpanded(s => { const n = new Set(s); dirs.forEach(d => n.add(d)); expandedByTask.set(taskId, n); return n; });
       setRevealedRel(path);
       // Two rAFs so the freshly-expanded rows have laid out before scrolling.
       requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -199,7 +199,7 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
       clearReveal();
     })();
     return () => { alive = false; };
-  }, [revealFile, wsId, clearReveal]);
+  }, [revealFile, taskId, clearReveal]);
 
   // Fade the reveal highlight after a moment.
   useEffect(() => {
@@ -216,7 +216,7 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
     <div ref={treeRef} className="flex flex-col select-none">
       {rootEntries.map(e => (
         <TreeNode
-          key={e.name} wsId={wsId} entry={e} depth={0} rel={e.name} root={root}
+          key={e.name} taskId={taskId} entry={e} depth={0} rel={e.name} root={root}
           expanded={expanded} children_={children} toggle={toggle} revealed={revealedRel} refetch={refetchDir}
         />
       ))}
@@ -225,11 +225,11 @@ export function FileTree({ wsId, reloadToken = 0, refreshToken = 0 }: Props) {
 }
 
 interface NodeProps {
-  wsId: string;
+  taskId: string;
   entry: FileEntry;
   depth: number;
   rel: string;
-  /** Absolute workspace root, for the "Copy path" context item. */
+  /** Absolute task root, for the "Copy path" context item. */
   root: string;
   expanded: Set<string>;
   children_: Record<string, FileEntry[]>;
@@ -239,12 +239,12 @@ interface NodeProps {
   refetch: (rel: string) => void;
 }
 
-function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch }: NodeProps) {
+function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch }: NodeProps) {
   const openPreviewTab = useApp(s => s.openPreviewTab);
   const persistTab = useApp(s => s.persistTab);
   const closeTab = useApp(s => s.closeTab);
-  const tabs = useApp(s => s.tabs[wsId] || []);
-  const activeTabId = useApp(s => s.activeTab[wsId]);
+  const tabs = useApp(s => s.tabs[taskId] || []);
+  const activeTabId = useApp(s => s.activeTab[taskId]);
   const isOpen = expanded.has(rel);
   const kids = children_[rel];
 
@@ -266,7 +266,7 @@ function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, 
   function closeStaleTabs(p: string) {
     for (const t of tabs) {
       if ((t.type === "edit" || t.type === "diff") && (t.path === p || t.path.startsWith(`${p}/`))) {
-        closeTab(wsId, t.id);
+        closeTab(taskId, t.id);
       }
     }
   }
@@ -282,7 +282,7 @@ function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, 
     submittingRef.current = true;
     setRenaming(false);
     try {
-      await workspacePathRename(wsId, rel, name);
+      await taskPathRename(taskId, rel, name);
       closeStaleTabs(rel);
       refetch(parentRel);
     } catch (e) {
@@ -302,7 +302,7 @@ function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, 
     });
     if (!ok) return;
     try {
-      await workspacePathDelete(wsId, rel);
+      await taskPathDelete(taskId, rel);
       closeStaleTabs(rel);
       refetch(parentRel);
     } catch (e) {
@@ -317,7 +317,7 @@ function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, 
     if (entry.is_dir) {
       toggle(rel);
     } else {
-      openPreviewTab(wsId, { type: "edit", path: rel, title: entry.name });
+      openPreviewTab(taskId, { type: "edit", path: rel, title: entry.name });
     }
   }
 
@@ -325,7 +325,7 @@ function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, 
     if (entry.is_dir) return;
     const existing = tabs.find(t => t.type === "edit" && t.path === rel);
     if (existing) {
-      persistTab(wsId, existing.id);
+      persistTab(taskId, existing.id);
     }
   }
 
@@ -408,7 +408,7 @@ function TreeNode({ wsId, entry, depth, rel, root, expanded, children_, toggle, 
       )}
       {entry.is_dir && isOpen && kids && kids.map(c => (
         <TreeNode
-          key={c.name} wsId={wsId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`} root={root}
+          key={c.name} taskId={taskId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`} root={root}
           expanded={expanded} children_={children_} toggle={toggle} revealed={revealed} refetch={refetch}
         />
       ))}

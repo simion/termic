@@ -4,8 +4,8 @@
 // unifiedMergeView in a single read-only editor.
 
 import { useEffect, useRef, useState } from "react";
-import type { DiffTab, Workspace, GitFile } from "@/lib/types";
-import { workspaceFileDiffSides, workspaceGitStatus } from "@/lib/ipc";
+import type { DiffTab, Task, GitFile } from "@/lib/types";
+import { taskFileDiffSides, taskGitStatus } from "@/lib/ipc";
 import { orderedFiles, readView } from "./GitPanel";
 import { Button } from "@/components/ui/Button";
 import { FolderOpen, Columns2, AlignJustify, Eye } from "lucide-react";
@@ -52,7 +52,7 @@ function writeMode(m: Mode) {
   try { localStorage.setItem(LS_DIFF_MODE, m); } catch {}
 }
 
-export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
+export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   const [err, setErr] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>(() => readMode());
   // New or deleted file: one diff side is empty, so side-by-side would
@@ -66,7 +66,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   // header's "Viewed" toggle anchors to the same fp the Git panel rows use
   // (GH #42). Empty for a deletion → the toggle is hidden.
   const [fp, setFp] = useState("");
-  const viewed = useIsViewed(ws.id, tab.path, fp);
+  const viewed = useIsViewed(task.id, tab.path, fp);
   const hostRef = useRef<HTMLDivElement>(null);
   // Only one of these is mounted at a time depending on `mode`.
   const mergeRef = useRef<MergeView | null>(null);
@@ -78,15 +78,15 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
   // haven't looked at yet — the GitHub PR-review flow. Mirrors the Git panel's
   // focusNext (advance after acting on a file) but skips files already viewed,
   // since "what's next" in a review means the next UNSEEN diff. Un-viewing
-  // never navigates. Files are flattened to workspace-relative paths in the
+  // never navigates. Files are flattened to task-relative paths in the
   // same alphabetical order the Git panel rows use.
   const markViewedAndAdvance = async () => {
     const wasViewed = viewed;
-    useFileViewed.getState().toggle(ws.id, tab.path, fp);
+    useFileViewed.getState().toggle(task.id, tab.path, fp);
     if (wasViewed) return; // un-viewing: stay put
     try {
-      const status = await workspaceGitStatus(ws.id);
-      const seen = useFileViewed.getState().byWs[ws.id] ?? {};
+      const status = await taskGitStatus(task.id);
+      const seen = useFileViewed.getState().byTask[task.id] ?? {};
       // Match the sidebar exactly: it shows ONE repo at a time, stacked as
       // Unstaged then Staged, each pane in the active view's render order
       // (tree puts folders first — a flat path sort would jump around). So
@@ -108,7 +108,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
           .slice(idx + 1)
           .find(f => f.fp !== "" && seen[pfx + f.path] !== f.fp);
         if (next) {
-          useApp.getState().openPreviewTab(ws.id, {
+          useApp.getState().openPreviewTab(task.id, {
             type: "diff",
             path: pfx + next.path,
             title: `Δ ${next.path.split("/").pop()}`,
@@ -136,7 +136,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
     let alive = true;
     setErr(null);
     setCommentable(false);
-    workspaceFileDiffSides(ws.id, tab.path).then(sides => {
+    taskFileDiffSides(task.id, tab.path).then(sides => {
       if (!alive || !hostRef.current) return;
       // Existence flags, not content emptiness — "" is what BOTH a missing
       // side and an empty (or non-UTF8) file serialize to, and a file
@@ -254,7 +254,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       // boundaries, so the panes drift slightly below a card until the next
       // hunk. Accepted tradeoff (unified is pixel-exact); the alternative is
       // an out-of-flow overlay, which is a lot more machinery for this.
-      const commentExt = reviewCommentsExtension(ws.id, tab.path);
+      const commentExt = reviewCommentsExtension(task.id, tab.path);
 
       if (mode === "side" && !degenerate) {
         mergeRef.current = new MergeView({
@@ -291,7 +291,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
       mergeRef.current?.destroy(); mergeRef.current = null;
       editorRef.current?.destroy(); editorRef.current = null;
     };
-  }, [ws.id, tab.path, editorFontSize, mode, editorThemeId, appIsLight]);
+  }, [task.id, tab.path, editorFontSize, mode, editorThemeId, appIsLight]);
 
   const effectiveMode: Mode = oneSided ? "unified" : mode;
 
@@ -311,7 +311,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
             >{tab.path}</span>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <CopyPathItems rel={tab.path} root={ws.path} />
+            <CopyPathItems rel={tab.path} root={task.path} />
           </ContextMenuContent>
         </ContextMenuRoot>
         <div className="flex items-center gap-1">
@@ -352,7 +352,7 @@ export function DiffPane({ ws, tab }: { ws: Workspace; tab: DiffTab }) {
             }}><MessageSquarePlus className="h-4 w-4" /> Comment</Button>
           )}
           <Button size="sm" variant="ghost" title="Open this file in the editor" onClick={() =>
-            addTab(ws.id, { id: crypto.randomUUID(), type: "edit", path: tab.path, title: tab.path.split("/").pop() || tab.path })
+            addTab(task.id, { id: crypto.randomUUID(), type: "edit", path: tab.path, title: tab.path.split("/").pop() || tab.path })
           }><FolderOpen className="h-4 w-4" /> Open</Button>
           {/* Mark-as-viewed (GH #42): mirrors the Git panel row checkbox.
               Hidden for deletions (no working-tree file to fingerprint). */}

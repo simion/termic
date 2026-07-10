@@ -17,13 +17,13 @@ interface DragBookkeeping {
 }
 
 export function useTabStripDrag(opts: {
-  wsId: string;
+  taskId: string;
   stripRef: React.RefObject<HTMLDivElement | null>;
   /** Tabs shown in this strip, in display order. */
   stripTabs: Tab[];
-  /** The full per-workspace tab array — reorderTab indexes into this. */
+  /** The full per-task tab array — reorderTab indexes into this. */
   allTabs: Tab[];
-  reorderTab: (wsId: string, tabId: string, toIndex: number) => void;
+  reorderTab: (taskId: string, tabId: string, toIndex: number) => void;
   /** ID of the pane owning this strip. null/undefined = main TabBar. */
   currentPaneId?: string | null;
   /** Called when the user drops a tab onto a different pane's header. */
@@ -31,7 +31,7 @@ export function useTabStripDrag(opts: {
   /** Called on an edge drop: split the target pane (null = main) in half. */
   onDropToSplit?: (tabId: string, toPaneId: string | null, zone: "left" | "right" | "top" | "bottom") => void;
 }) {
-  const { wsId, stripRef, stripTabs, allTabs, reorderTab, currentPaneId, onDropToPane, onDropToSplit } = opts;
+  const { taskId, stripRef, stripTabs, allTabs, reorderTab, currentPaneId, onDropToPane, onDropToSplit } = opts;
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragTx, setDragTx] = useState(0);
   const suppressClickRef = useRef(false);
@@ -129,7 +129,7 @@ export function useTabStripDrag(opts: {
       const anchor = filteredWithout[target];
       fullTarget = fullWithout.findIndex(t => t.id === anchor.id);
     }
-    reorderTab(wsId, d.id, fullTarget);
+    reorderTab(taskId, d.id, fullTarget);
   }
 
   function onPointerMove(e: PointerEvent) {

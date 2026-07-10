@@ -11,7 +11,7 @@ import { Search, X } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import {
-  workspaceGrepStart, workspaceGrepCancel,
+  taskGrepStart, taskGrepCancel,
   onGrepResult, onGrepDone, type GrepHit,
 } from "@/lib/ipc";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
@@ -60,16 +60,16 @@ function highlight(preview: string, needle: string): React.ReactNode {
 }
 
 export function FindInFilesDialog() {
-  const wsId = useUI(s => s.findInFilesWsId);
+  const taskId = useUI(s => s.findInFilesTaskId);
   const close = useUI(s => s.closeFindInFiles);
   const openPreviewTab = useApp(s => s.openPreviewTab);
   // Project name for the scope hint — users need to know which repo is
-  // being searched (workspaces can come from any project).
+  // being searched (tasks can come from any project).
   const projectName = useApp(s => {
-    if (!wsId) return null;
-    const ws = s.workspaces.find(w => w.id === wsId);
-    if (!ws) return null;
-    return s.projects.find(p => p.id === ws.project_id)?.name ?? null;
+    if (!taskId) return null;
+    const task = s.tasks.find(w => w.id === taskId);
+    if (!task) return null;
+    return s.projects.find(p => p.id === task.project_id)?.name ?? null;
   });
 
   const [query, setQuery] = useState("");
@@ -89,19 +89,19 @@ export function FindInFilesDialog() {
   // Reset everything on open. On close, cancel any in-flight grep so we
   // don't waste CPU once the user moves on.
   useEffect(() => {
-    if (!wsId) return;
+    if (!taskId) return;
     setQuery("");
     setGroups([]);
     setTruncated(false);
     setSearching(false);
     setActiveIdx(0);
-    return () => { workspaceGrepCancel(wsId).catch(() => {}); };
-  }, [wsId]);
+    return () => { taskGrepCancel(taskId).catch(() => {}); };
+  }, [taskId]);
 
   // Debounced search. Every keystroke schedules a fresh search; the
-  // previous one is auto-killed by Rust (per-workspace slot).
+  // previous one is auto-killed by Rust (per-task slot).
   useEffect(() => {
-    if (!wsId) return;
+    if (!taskId) return;
     const trimmed = query.trim();
     if (trimmed.length < MIN_QUERY) {
       // Short queries (1-2 chars) on a giant repo always blow past the
@@ -193,7 +193,7 @@ export function FindInFilesDialog() {
         else unDone = u;
       });
 
-      workspaceGrepStart(wsId, trimmed, searchId).catch(() => setSearching(false));
+      taskGrepStart(taskId, trimmed, searchId).catch(() => setSearching(false));
 
       // Hand teardown to the useEffect cleanup. A fresh keystroke / dialog
       // close supersedes this search: invalidate the ref to short-circuit
@@ -209,13 +209,13 @@ export function FindInFilesDialog() {
       clearTimeout(t);
       cleanupCurrent?.();
     };
-  }, [wsId, query]);
+  }, [taskId, query]);
 
   function cancelSearch() {
-    if (!wsId) return;
+    if (!taskId) return;
     activeSearchIdRef.current = "";
     setSearching(false);
-    workspaceGrepCancel(wsId).catch(() => {});
+    taskGrepCancel(taskId).catch(() => {});
   }
 
   // Flatten groups into a single list of selectable rows (file headers +
@@ -240,9 +240,9 @@ export function FindInFilesDialog() {
   }, [rows.length]);
 
   function pickHit(hit: GrepHit) {
-    if (!wsId) return;
+    if (!taskId) return;
     const name = hit.path.split("/").pop() || hit.path;
-    openPreviewTab(wsId, {
+    openPreviewTab(taskId, {
       type: "edit",
       path: hit.path,
       title: name,
@@ -282,7 +282,7 @@ export function FindInFilesDialog() {
   const totalHits = groups.reduce((n, g) => n + g.hits.length, 0);
 
   return (
-    <Dialog.Root open={!!wsId} onOpenChange={(v) => (v ? null : close())}>
+    <Dialog.Root open={!!taskId} onOpenChange={(v) => (v ? null : close())}>
       <Dialog.Portal>
         {/* Soft animated dim (matches the ⌘K palette): fades in/out via
             data-state instead of a snap, for contrast without flicker. */}
@@ -292,7 +292,7 @@ export function FindInFilesDialog() {
           onKeyDown={onKeyDown}
         >
           <Dialog.Title className="sr-only">Find in files</Dialog.Title>
-          <Dialog.Description className="sr-only">Search file contents across the workspace.</Dialog.Description>
+          <Dialog.Description className="sr-only">Search file contents across the task.</Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
             <input
@@ -335,7 +335,7 @@ export function FindInFilesDialog() {
           >
             {!query && (
               <div className="px-3 py-3 text-[13px] text-[var(--color-fg-dim)]">
-                Searching <span className="font-semibold text-[var(--color-fg)]">{projectName ?? "this workspace"}</span> via <code className="text-[12px]">git grep</code>. Respects <code className="text-[12px]">.gitignore</code>.
+                Searching <span className="font-semibold text-[var(--color-fg)]">{projectName ?? "this task"}</span> via <code className="text-[12px]">git grep</code>. Respects <code className="text-[12px]">.gitignore</code>.
               </div>
             )}
             {query && query.trim().length > 0 && query.trim().length < MIN_QUERY && (

@@ -6,7 +6,7 @@
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorView } from "@codemirror/view";
-import type { EditTab, Workspace } from "@/lib/types";
+import type { EditTab, Task } from "@/lib/types";
 import { EditorPane } from "./EditorPane";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useApp } from "@/store/app";
@@ -36,14 +36,14 @@ function ToolbarButton({ active, onClick, children }: {
   );
 }
 
-export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
+export function MarkdownPane({ task, tab }: { task: Task; tab: EditTab }) {
   // Fall back to the last-used view (a persisted pref) so a freshly opened
   // doc shows however you last looked at one. Toggling writes BOTH the
   // per-tab override and the global pref, so the choice survives relaunch.
   const defaultView = usePrefs(s => s.markdownDefaultView);
   const view: View = tab.mdView ?? defaultView;
   const setView = (v: View) => {
-    useApp.getState().patchTab(ws.id, tab.id, { mdView: v });
+    useApp.getState().patchTab(task.id, tab.id, { mdView: v });
     usePrefs.getState().setMarkdownDefaultView(v);
   };
 
@@ -81,7 +81,7 @@ export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
   // the user eventually toggles the view themselves.
   useEffect(() => {
     if (tab.revealHeading && view === "source") {
-      useApp.getState().patchTab(ws.id, tab.id, { mdView: "preview" });
+      useApp.getState().patchTab(task.id, tab.id, { mdView: "preview" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.revealHeading]);
@@ -96,15 +96,15 @@ export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
 
   // fsRevision bumps when an agent settles — exactly when images on disk may
   // have changed — so it doubles as the preview's image-cache invalidator.
-  const fsRev = useApp(s => s.fsRevision[ws.id] ?? 0);
+  const fsRev = useApp(s => s.fsRevision[task.id] ?? 0);
 
-  // Memoized so MarkdownPreview's effects can safely depend on it: `ws.composition`
+  // Memoized so MarkdownPreview's effects can safely depend on it: `task.composition`
   // is frozen at workspace creation (stable across unrelated store updates),
   // but `.map(...)` allocates a fresh array every render — an unmemoized
   // array literal in an effect's dependency array would make that effect
   // re-run (and, for the main render effect, rebuild innerHTML) on every
   // single re-render regardless of whether composition actually changed.
-  const memberDirs = useMemo(() => ws.composition?.map(m => m.dir_name), [ws.composition]);
+  const memberDirs = useMemo(() => task.composition?.map(m => m.dir_name), [task.composition]);
 
   const showEditor = view === "source" || view === "split";
   const showPreview = view === "preview" || view === "split";
@@ -134,7 +134,7 @@ export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
             width: view === "split" ? `${editorPct}%` : "100%",
           }}
         >
-          <EditorPane ws={ws} tab={tab} onContent={onContent} />
+          <EditorPane task={task} tab={tab} onContent={onContent} />
         </div>
 
         {view === "split" && (
@@ -167,9 +167,9 @@ export function MarkdownPane({ ws, tab }: { ws: Workspace; tab: EditTab }) {
               <MarkdownPreview
                 text={text}
                 themeDark={themeDark}
-                ctx={{ wsId: ws.id, filePath: tab.path, epoch: fsRev, memberDirs }}
+                ctx={{ taskId: task.id, filePath: tab.path, epoch: fsRev, memberDirs }}
                 revealHeading={tab.revealHeading}
-                onRevealConsumed={() => useApp.getState().patchTab(ws.id, tab.id, { revealHeading: undefined })}
+                onRevealConsumed={() => useApp.getState().patchTab(task.id, tab.id, { revealHeading: undefined })}
                 visible={showPreview}
               />
             </Suspense>

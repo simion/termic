@@ -1,4 +1,4 @@
-// macOS sandbox-exec (Seatbelt) wrapper for per-workspace agent isolation.
+// macOS sandbox-exec (Seatbelt) wrapper for per-task agent isolation.
 //
 // ⚠ sandbox-exec is Apple-deprecated. The binary still works on macOS 15
 //   and there's no replacement on the horizon, but Apple reserves the
@@ -11,7 +11,7 @@
 // Built-in defaults (builtin_rw_paths / builtin_deny_paths / per-CLI
 // host blocks in render_filter) are evaluated fresh at every spawn, so
 // updates to these in NEW versions of Termic reach EVERY existing
-// workspace automatically - they're not seeded onto the saved Workspace
+// task automatically - they're not seeded onto the saved Task
 // record. The Project's `sandbox_*` arrays are user-owned EXTRAS only.
 // This is the explicit contract: never seed defaults onto a Project at
 // create time; always grow built-ins in code.
@@ -21,11 +21,11 @@
 //      writes outside the allowlist, blocks all network except a single
 //      loopback hop to our in-process CONNECT proxy.
 //   2. The native Rust proxy (see `crate::proxy`) filters that loopback
-//      hop against a per-workspace hostname allowlist (regex per line).
+//      hop against a per-task hostname allowlist (regex per line).
 //      Anything not allowed → 403.
 //
 // Both pieces live for the lifetime of the agent PTY: the profile is a
-// fresh file under tempdir() with the workspace id; the proxy is an
+// fresh file under tempdir() with the task id; the proxy is an
 // in-process thread that gets torn down when the SandboxBundle drops.
 //
 // We used to shell out to tinyproxy here, which meant every user had
@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
-use crate::Workspace;
+use crate::Task;
 use crate::SandboxMode;
 use crate::proxy;
 use crate::dlog;
@@ -63,7 +63,7 @@ pub struct SandboxBundle {
     /// no network" rather than failing the spawn outright.
     pub proxy: Option<proxy::ProxyHandle>,
     /// `log stream` child process tailing macOS unified log for
-    /// seatbelt deny events touching this workspace's path. Counts
+    /// seatbelt deny events touching this task's path. Counts
     /// per-path go into PATH_DENY_TRACKER (queryable via
     /// `path_deny_count` / `path_deny_list`). None when log stream
     /// couldn't start. Killed on Drop.
@@ -83,7 +83,7 @@ impl Drop for PathWatcher {
     }
 }
 
-// ─── Per-workspace path-deny tracker (mirror of proxy's net tracker) ──
+// ─── Per-task path-deny tracker (mirror of proxy's net tracker) ──
 #[derive(Clone)]
 pub struct PathDenyEntry {
     pub path: String,
@@ -142,7 +142,7 @@ pub fn path_deny_list(ws_id: &str) -> Vec<PathDenyEntry> {
     out
 }
 
-/// Wipe the workspace's entire path-deny tracker. Called from
+/// Wipe the task's entire path-deny tracker. Called from
 /// `provision()` so each fresh PTY spawn starts from a clean slate —
 /// otherwise denies logged under an older SBPL profile (before a
 /// migration added a path, before the user clicked Allow, etc.)
@@ -159,7 +159,7 @@ pub fn clear_path_denies(ws_id: &str) {
     }
 }
 
-// ─── Per-workspace path-ACCESS tracker (MONITORING mode) ──────────────
+// ─── Per-task path-ACCESS tracker (MONITORING mode) ──────────────
 // In monitoring mode the seatbelt profile is `(allow default (with
 // report))`, so the kernel logs EVERY file operation (allowed) instead
 // of denies. We capture all of them here, keyed by (path, op) so the
@@ -186,7 +186,7 @@ fn path_access_tracker() -> &'static Mutex<HashMap<String, HashMap<String, PathA
     PATH_ACCESS_TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Hard cap on distinct (path, op) rows tracked per workspace in
+/// Hard cap on distinct (path, op) rows tracked per task in
 /// MONITORING. The agent's allow firehose touches a unique path per file;
 /// without a cap a big `npm install` / `cargo build` could accumulate
 /// 100k+ entries. At the cap we stop recording NEW paths (existing rows
@@ -251,14 +251,14 @@ pub fn clear_path_access(ws_id: &str) {
 // with low friction — the actionable rows are the would-block ones. So
 // the filters gate RECORDING, not just display: with them on we never
 // store the always-allowed spam (the agent's own config churn, the
-// workspace dir), which saves CPU + memory. Per-workspace, runtime-
-// settable from the popover. Defaults: exclude the workspace dir (true),
+// task dir), which saves CPU + memory. Per-task, runtime-
+// settable from the popover. Defaults: exclude the task dir (true),
 // show everything else (wb_only=false).
 #[derive(Clone, Copy)]
 struct MonitorFilters { exclude_ws: bool, wb_only: bool }
 impl Default for MonitorFilters {
     // Default to the allow-list-building posture: record only would-block
-    // accesses, and never the workspace dir. Minimal recording out of the
+    // accesses, and never the task dir. Minimal recording out of the
     // box; the user can widen via the popover checkboxes.
     fn default() -> Self { MonitorFilters { exclude_ws: true, wb_only: true } }
 }
@@ -277,11 +277,11 @@ pub fn set_monitor_filters(ws_id: &str, exclude_ws: bool, wb_only: bool) {
     }
 }
 
-/// Canonical dirs that "exclude workspace dir" hides: the workspace path
+/// Canonical dirs that "exclude task dir" hides: the task path
 /// plus each multi-repo member's resolved path.
-pub fn workspace_exclude_dirs(workspace: &Workspace) -> Vec<String> {
-    let mut v = vec![canonicalize_or_keep(&workspace.path)];
-    for m in &workspace.composition {
+pub fn task_exclude_dirs(task: &Task) -> Vec<String> {
+    let mut v = vec![canonicalize_or_keep(&task.path)];
+    for m in &task.composition {
         let c = canonicalize_or_keep(&m.path);
         if !c.is_empty() { v.push(c); }
     }
@@ -310,7 +310,7 @@ pub fn prune_path_access(ws_id: &str, exclude_ws: bool, wb_only: bool, ws_dirs: 
 //     log-watcher thread. Mirrors render_profile's path-set logic.
 #[derive(Clone, Default)]
 pub struct MonitorPolicy {
-    /// Read + write allowed (workspace, user, agent, runtime dirs).
+    /// Read + write allowed (task, user, agent, runtime dirs).
     rw_subpaths: Vec<String>,
     /// Read-only system roots (binaries, linker, etc.).
     read_roots: Vec<String>,
@@ -319,7 +319,7 @@ pub struct MonitorPolicy {
     /// .tmp.*). Without these, monitor falsely flags regex-allowed paths
     /// as "would block".
     rw_regexes: Vec<regex::Regex>,
-    /// Workspace ancestor directory nodes granted read as `literal` (the
+    /// Task ancestor directory nodes granted read as `literal` (the
     /// exact path, NOT its subtree) so realpath(cwd) traversal isn't
     /// flagged would-block. Mirrors render_profile's ancestor grants.
     read_literals: Vec<String>,
@@ -358,7 +358,7 @@ impl MonitorPolicy {
         if !is_write {
             if path == "/" { return false; }
             if self.read_roots.iter().any(|r| under(path, r)) { return false; }
-            // Workspace ancestor nodes are granted read as `literal`
+            // Task ancestor nodes are granted read as `literal`
             // (exact path, not subtree) so realpath(cwd) traversal isn't
             // flagged; sibling contents under them still block.
             if self.read_literals.iter().any(|d| path == d) { return false; }
@@ -387,20 +387,20 @@ fn system_read_roots() -> &'static [&'static str] {
     ]
 }
 
-/// Build the would-block classifier for a workspace, mirroring the path
+/// Build the would-block classifier for a task, mirroring the path
 /// sets that `render_profile` emits for ENFORCING mode.
-pub fn compute_monitor_policy(workspace: &Workspace, agent_override: Option<&str>) -> MonitorPolicy {
+pub fn compute_monitor_policy(task: &Task, agent_override: Option<&str>) -> MonitorPolicy {
     let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    let workspace_path = canonicalize_or_keep(&workspace.path);
-    let subst = |p: &str| subst_path(p, &home, &workspace_path);
+    let task_path = canonicalize_or_keep(&task.path);
+    let subst = |p: &str| subst_path(p, &home, &task_path);
 
-    let mut rw_subpaths: Vec<String> = vec![workspace_path.clone()];
-    for m in &workspace.composition {
+    let mut rw_subpaths: Vec<String> = vec![task_path.clone()];
+    for m in &task.composition {
         let resolved = canonicalize_or_keep(&m.path);
         if !resolved.is_empty() { rw_subpaths.push(resolved); }
     }
-    for ws_root in std::iter::once(workspace_path.as_str())
-        .chain(workspace.composition.iter().map(|m| m.path.as_str()))
+    for ws_root in std::iter::once(task_path.as_str())
+        .chain(task.composition.iter().map(|m| m.path.as_str()))
     {
         if let Some(parent_git) = parent_git_dir_for_worktree(ws_root) {
             rw_subpaths.push(parent_git);
@@ -410,7 +410,7 @@ pub fn compute_monitor_policy(workspace: &Workspace, agent_override: Option<&str
     // so would_block honors them. $HOME / $WORKSPACE are regex-escaped,
     // matching render_profile's emit so the classifier agrees with the cage.
     let home_esc = regex::escape(&home);
-    let ws_esc = regex::escape(&workspace_path);
+    let ws_esc = regex::escape(&task_path);
     let mut rw_regexes: Vec<regex::Regex> = Vec::new();
     let collect = |raw: &str, subs: &mut Vec<String>, regs: &mut Vec<regex::Regex>| {
         let raw = raw.trim();
@@ -425,19 +425,19 @@ pub fn compute_monitor_policy(workspace: &Workspace, agent_override: Option<&str
         }
     };
     // User allowed paths.
-    for p in &workspace.sandbox_rw_paths {
+    for p in &task.sandbox_rw_paths {
         collect(p, &mut rw_subpaths, &mut rw_regexes);
     }
     // Per-agent allowed paths from the registry.
     let settings = crate::load_settings_inner();
-    let effective_cli = agent_override.unwrap_or(&workspace.cli);
+    let effective_cli = agent_override.unwrap_or(&task.cli);
     if let Some(a) = settings.agents.iter().find(|a| a.id == effective_cli) {
         for p in &a.sandbox_allowed_paths {
             collect(p, &mut rw_subpaths, &mut rw_regexes);
         }
     }
     // Runtime dirs (also canonicalized symlink targets).
-    for p in builtin_runtime_paths(&home, &workspace_path) {
+    for p in builtin_runtime_paths(&home, &task_path) {
         let canon = canonicalize_or_keep(&p);
         rw_subpaths.push(p);
         if !canon.is_empty() { rw_subpaths.push(canon); }
@@ -448,14 +448,14 @@ pub fn compute_monitor_policy(workspace: &Workspace, agent_override: Option<&str
     // (e.g. ~/.ssh/known_hosts). Reads here don't block; writes do.
     let mut read_roots: Vec<String> = system_read_roots().iter().map(|s| s.to_string()).collect();
     read_roots.extend(builtin_runtime_readonly_paths(&home));
-    // Workspace ancestor path nodes (literal reads) so the monitor's
+    // Task ancestor path nodes (literal reads) so the monitor's
     // would-block classifier agrees with what render_profile permits for
     // realpath(cwd) traversal.
-    let read_literals = workspace_ancestor_dirs(workspace);
+    let read_literals = task_ancestor_dirs(task);
     MonitorPolicy { rw_subpaths, read_roots, rw_regexes, read_literals }
 }
 
-/// Drop every path-deny entry for this workspace whose path is at or
+/// Drop every path-deny entry for this task whose path is at or
 /// under `prefix`. Called after the user clicks "Allow" on a path so
 /// the historical deny rows actually disappear from the popover —
 /// without this, the in-memory tracker keeps the entry around and the
@@ -499,7 +499,7 @@ pub fn unregister_root_pid(ws_id: &str, pid: u32) {
 /// Read PPID for a live PID via `/bin/ps`. Returns None if the process
 /// already exited (most likely for short-lived helpers); the watcher
 /// treats that as "not ours" — false negative is preferred over false
-/// positive (counting other apps' denies under our workspace).
+/// positive (counting other apps' denies under our task).
 fn ppid_of(pid: u32) -> Option<u32> {
     let out = Command::new("/bin/ps")
         .args(["-p", &pid.to_string(), "-o", "ppid="])
@@ -523,7 +523,7 @@ fn comm_of(pid: u32) -> Option<String> {
 }
 
 /// Is `pid` (or any ancestor up to launchd) one of our registered
-/// sandbox root PIDs for this workspace? Walks up to a depth of 20 to
+/// sandbox root PIDs for this task? Walks up to a depth of 20 to
 /// guard against pathological pid loops (shouldn't happen on macOS).
 pub fn is_our_sandboxed_pid(ws_id: &str, mut pid: u32) -> bool {
     if pid == 0 { return false; }
@@ -561,11 +561,11 @@ pub fn clear_path_denies_under(ws_id: &str, prefix: &str) {
     }
 }
 
-/// Spawn `log stream` filtered to seatbelt denies for this workspace.
+/// Spawn `log stream` filtered to seatbelt denies for this task.
 /// Parses stdout line-by-line, increments the per-path deny tracker.
 /// Returns None if the child couldn't start - non-fatal, just means
-/// no path counter for this workspace.
-fn start_path_watcher(workspace_id: &str, workspace_path: &str, ws_dirs: Vec<String>, monitor: bool, policy: MonitorPolicy) -> Option<PathWatcher> {
+/// no path counter for this task.
+fn start_path_watcher(task_id: &str, task_path: &str, ws_dirs: Vec<String>, monitor: bool, policy: MonitorPolicy) -> Option<PathWatcher> {
     use std::io::{BufRead, BufReader};
     use std::thread;
 
@@ -591,8 +591,8 @@ fn start_path_watcher(workspace_id: &str, workspace_path: &str, ws_dirs: Vec<Str
         .ok()?;
 
     let stdout = child.stdout.take()?;
-    let ws_id = workspace_id.to_string();
-    let ws_path = workspace_path.to_string();
+    let ws_id = task_id.to_string();
+    let ws_path = task_path.to_string();
     let ws_id_dbg = ws_id.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -844,7 +844,7 @@ fn handle_monitor_line(
     let Some(op) = extract_allow_op(line) else { return; };
     let Some(path) = extract_allow_path(line, &op) else { return; };
     // Same belt-and-suspenders filter the deny parser uses: ignore
-    // system caches etc. outside the workspace + /Users.
+    // system caches etc. outside the task + /Users.
     if !path.starts_with(ws_path) && !path.starts_with("/Users/") { return; }
     // Recording filters — applied BEFORE the (cached) proc lookup so the
     // common spam path short-circuits cheaply, and so excluded accesses
@@ -867,18 +867,18 @@ fn handle_monitor_line(
     incr_path_access(ws_id, &path, &op, pid, &proc, would_block, dup);
 }
 
-/// Build a fully-rendered SBPL profile for one workspace. Substitutes
+/// Build a fully-rendered SBPL profile for one task. Substitutes
 /// $HOME / $WORKSPACE in any user-supplied paths, dedupes against the
 /// built-in RW list, applies built-in deny rules AFTER the broad
 /// `file-read*` allow so they take precedence. Reads extras from the
-/// workspace's own frozen-at-creation arrays - project edits don't
-/// reach back into already-created workspaces.
+/// task's own frozen-at-creation arrays - project edits don't
+/// reach back into already-created tasks.
 /// Expand `~`, `$HOME`, `$WORKSPACE` in a user-supplied path and strip
 /// trailing slashes (SBPL `(subpath ...)` matches by string prefix).
 /// Shared by `render_profile` and `compute_monitor_policy` so the two
 /// never disagree on how a configured path resolves (the previous
 /// duplicated closures were a drift risk for the would-block classifier).
-fn subst_path(raw: &str, home: &str, workspace_path: &str) -> String {
+fn subst_path(raw: &str, home: &str, task_path: &str) -> String {
     let p = raw.trim();
     let mut s = if p == "~" {
         home.to_string()
@@ -888,43 +888,43 @@ fn subst_path(raw: &str, home: &str, workspace_path: &str) -> String {
         p.to_string()
     };
     s = s.replace("$HOME", home);
-    s = s.replace("$WORKSPACE", workspace_path);
+    s = s.replace("$WORKSPACE", task_path);
     while s.len() > 1 && s.ends_with('/') { s.pop(); }
     s
 }
 
-pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Option<&str>, mode: SandboxMode) -> Result<String> {
+pub fn render_profile(task: &Task, proxy_port: u16, agent_override: Option<&str>, mode: SandboxMode) -> Result<String> {
     // MONITORING: allow everything but ask the kernel to REPORT every
     // operation (so the path watcher can log it), while still forcing
     // all network through the logging proxy. The would-block decision is
     // computed app-side (MonitorPolicy), not by the kernel.
     if mode == SandboxMode::Monitor {
-        return Ok(render_monitor_profile(proxy_port, agent_override.unwrap_or(&workspace.cli)));
+        return Ok(render_monitor_profile(proxy_port, agent_override.unwrap_or(&task.cli)));
     }
     let home = dirs::home_dir()
         .ok_or_else(|| anyhow!("no home dir"))?
         .to_string_lossy()
         .into_owned();
-    let workspace_path = canonicalize_or_keep(&workspace.path);
-    let subst = |p: &str| subst_path(p, &home, &workspace_path);
+    let task_path = canonicalize_or_keep(&task.path);
+    let subst = |p: &str| subst_path(p, &home, &task_path);
 
     // The user's "Allowed paths" list - what they explicitly want
-    // exposed to the agent. Workspace path is always implicitly here.
+    // exposed to the agent. Task path is always implicitly here.
     // Field is still called sandbox_rw_paths for storage compat but
     // the meaning shifted: it's now the unified allow-list, not just
     // writes. UI presents it as "Allowed paths" (one textarea).
-    let mut user_allowed: Vec<String> = vec![workspace_path.clone()];
-    // Multi-repo workspaces: each composition member's resolved path
+    let mut user_allowed: Vec<String> = vec![task_path.clone()];
+    // Multi-repo tasks: each composition member's resolved path
     // (worktree dir OR symlink target for RepoRoot mode) must be
     // explicitly allowed. Seatbelt evaluates canonical paths, so a
     // symlink under the wrapper alone wouldn't cover the live
     // checkout it points to — canonicalize each one to be safe.
-    for m in &workspace.composition {
+    for m in &task.composition {
         let resolved = canonicalize_or_keep(&m.path);
         if !resolved.is_empty() { user_allowed.push(resolved); }
     }
     // ── Worktree's parent .git/ ─────────────────────────────────────
-    // The workspace's path is a git worktree whose `.git` is a FILE
+    // The task's path is a git worktree whose `.git` is a FILE
     // pointing to `<parent>/.git/worktrees/<name>/`. The `commondir`
     // metadata inside that points back to `<parent>/.git`, where the
     // shared objects + packed-refs live. ANY git operation (status,
@@ -934,8 +934,8 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     // the parent .git/ and add to the allow-list.
     //
     // Same for every multi-repo member that's a worktree.
-    for ws_root in std::iter::once(workspace_path.as_str())
-        .chain(workspace.composition.iter().map(|m| m.path.as_str()))
+    for ws_root in std::iter::once(task_path.as_str())
+        .chain(task.composition.iter().map(|m| m.path.as_str()))
     {
         if let Some(parent_git) = parent_git_dir_for_worktree(ws_root) {
             user_allowed.push(parent_git);
@@ -954,7 +954,7 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
             // change the pattern's meaning. Typical macOS home paths
             // are safe, but Linux/CI users could have weirder layouts.
             let home_esc = regex::escape(&home);
-            let ws_esc   = regex::escape(&workspace_path);
+            let ws_esc   = regex::escape(&task_path);
             let pat = rest.trim()
                 .replace("$HOME", &home_esc)
                 .replace("$WORKSPACE", &ws_esc);
@@ -966,7 +966,7 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     };
 
     let mut user_allowed_regexes: Vec<String> = Vec::new();
-    for p in &workspace.sandbox_rw_paths {
+    for p in &task.sandbox_rw_paths {
         split_regex(p, &mut user_allowed, &mut user_allowed_regexes);
     }
     dedupe(&mut user_allowed);
@@ -975,8 +975,8 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     // Per-agent allowed paths from the agent registry (Settings → Agents).
     // Each agent declares its own runtime/config dirs; these are joined
     // into the allow-list whenever that agent's CLI is launched in this
-    // workspace. The user CANNOT remove them per-workspace — to drop an
-    // entry they have to edit the agent (which affects every workspace
+    // task. The user CANNOT remove them per-task — to drop an
+    // entry they have to edit the agent (which affects every task
     // using that agent). settings_load is best-effort: if the file is
     // missing or corrupt, the registry falls back to seeded defaults via
     // crate::load_settings_inner, which still returns the three built-ins.
@@ -984,8 +984,8 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     let mut agent_allowed_regexes: Vec<String> = Vec::new();
     let settings = crate::load_settings_inner();
     // Use the tab-specific agent override if the caller passed one
-    // (multi-CLI workspaces); fall back to the workspace's primary CLI.
-    let effective_cli = agent_override.unwrap_or(&workspace.cli);
+    // (multi-CLI tasks); fall back to the task's primary CLI.
+    let effective_cli = agent_override.unwrap_or(&task.cli);
     if let Some(a) = settings.agents.iter().find(|a| a.id == effective_cli) {
         for p in &a.sandbox_allowed_paths {
             split_regex(p, &mut agent_allowed, &mut agent_allowed_regexes);
@@ -998,22 +998,22 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     // Always allowed; never asked of the user. Universal across all
     // CLIs (TMPDIR, package caches, shell rc files, etc.); per-CLI
     // specifics live on each agent's sandbox_allowed_paths.
-    let runtime = builtin_runtime_paths(&home, &workspace_path);
+    let runtime = builtin_runtime_paths(&home, &task_path);
 
     // ── Read-only system roots. MINIMUM set — binaries, dynamic
     //    linker, and basic syscall config. If a user genuinely needs
     //    to load a system-wide framework or read /Applications, they
     //    should disable the cage or add the exact subpath per
-    //    workspace; the cage doesn't try to be transparent. Writes
+    //    task; the cage doesn't try to be transparent. Writes
     //    here are NEVER allowed.
     //
     //    Deliberately NOT included:
     //      /System (broad)       → firmlink-exposes user data; narrowed
     //                              to /System/Library + dyld cryptex.
     //      /Library              → every system-wide app's shared data
-    //                              dir; user adds per-workspace if needed.
+    //                              dir; user adds per-task if needed.
     //      /Applications         → headless CLI agents don't need this.
-    //      /Library/Frameworks   → third-party frameworks; add per-ws.
+    //      /Library/Frameworks   → third-party frameworks; add per-task.
     //
     //    /private/var/db                        → dyld cache (macOS 12)
     //    /System/Volumes/Preboot/Cryptexes      → dyld cache (macOS 13+)
@@ -1066,8 +1066,8 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
         out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sbpl_escape(p)));
     }
 
-    // ── Workspace + per-workspace user allows (read + write).
-    out.push_str("\n;; --- Workspace + user allow-list (read + write) ---\n");
+    // ── Task + per-task user allows (read + write).
+    out.push_str("\n;; --- Task + user allow-list (read + write) ---\n");
     for p in &user_allowed {
         out.push_str(&format!("(allow file-read*  (subpath \"{}\"))\n", sbpl_escape(p)));
         out.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sbpl_escape(p)));
@@ -1080,11 +1080,11 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
         out.push_str(&format!("(allow file-write* (regex #\"{}\"))\n", sbpl_regex_escape(r)));
     }
 
-    // ── Workspace ancestor path nodes (read: the directory NODE only).
-    //    A shell/agent launched in the workspace canonicalizes its cwd via
+    // ── Task ancestor path nodes (read: the directory NODE only).
+    //    A shell/agent launched in the task canonicalizes its cwd via
     //    realpath(3), which open()s each ancestor directory up the chain.
     //    open(dir) is a `file-read-data` op, denied by the allow-list for
-    //    anything outside the workspace subtree — so `bun run` / `bunx`
+    //    anything outside the task subtree — so `bun run` / `bunx`
     //    (claude is Bun-compiled; its RunCommand realpath()s the cwd at
     //    startup) and ANY tool that realpath()s the cwd fail immediately
     //    with EPERM ("error loading current directory" /
@@ -1095,9 +1095,9 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     //    node, NOT `subpath`) so traversal + enumeration of the path
     //    components works WITHOUT exposing sibling subtrees' contents —
     //    the same shape as the `(literal "/")` grant above, one level down.
-    let ancestors = workspace_ancestor_dirs(workspace);
+    let ancestors = task_ancestor_dirs(task);
     if !ancestors.is_empty() {
-        out.push_str("\n;; --- Workspace ancestor path (realpath/traverse; dir node only) ---\n");
+        out.push_str("\n;; --- Task ancestor path (realpath/traverse; dir node only) ---\n");
         for a in &ancestors {
             out.push_str(&format!("(allow file-read* (literal \"{}\"))\n", sbpl_escape(a)));
         }
@@ -1105,7 +1105,7 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
 
     // ── Per-agent allow-list (read + write). Joined from the agent
     //    registry; user can edit in Settings → Agents but not remove
-    //    per-workspace.
+    //    per-task.
     if !agent_allowed.is_empty() || !agent_allowed_regexes.is_empty() {
         out.push_str(&format!("\n;; --- Agent allow-list for `{}` (read + write) ---\n", effective_cli));
         for p in &agent_allowed {
@@ -1192,7 +1192,7 @@ pub fn render_profile(workspace: &Workspace, proxy_port: u16, agent_override: Op
     out.push_str("(allow network-bind     (local  ip \"localhost:*\"))\n");
     out.push_str("(allow network-inbound  (local  ip \"localhost:*\"))\n");
 
-    let agent = agent_override.unwrap_or(&workspace.cli);
+    let agent = agent_override.unwrap_or(&task.cli);
     if agent == "agy" {
         out.push_str("\n;; --- Antigravity: allow direct outbound connections to Google APIs ---\n");
         out.push_str("(allow network-outbound)\n");
@@ -1238,9 +1238,9 @@ fn render_monitor_profile(_proxy_port: u16, _agent: &str) -> String {
 /// a real-world agent breakage; the user's "Allowed paths" list is
 /// for their own dirs (other repos, notes, etc.), not for chasing
 /// runtime quirks.
-fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
+fn builtin_runtime_paths(home: &str, task_path: &str) -> Vec<String> {
     vec![
-        workspace_path.to_string(),
+        task_path.to_string(),
         // macOS TMPDIR resolves into /private/var/folders/...; agents
         // touch it constantly (cache dirs, node_modules tarballs,
         // pip build artifacts).
@@ -1253,13 +1253,13 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         //
         // Package manager caches - npm/pip/cargo all write here on
         // first install. Without these even a `git clone && npm i`
-        // breaks in a sandboxed workspace.
+        // breaks in a sandboxed task.
         format!("{home}/.npm"),
         format!("{home}/.cache"),
         format!("{home}/.cargo/registry"),
         // Rustup writes ~/.cargo/env — a tiny shell-source file that
         // adds ~/.cargo/bin to PATH. Sourced by every zsh that starts
-        // in a workspace if the user has rustup installed. NOT
+        // in a task if the user has rustup installed. NOT
         // broadening to ~/.cargo (which contains credentials.toml).
         format!("{home}/.cargo/env"),
         format!("{home}/.cargo/bin"),
@@ -1313,7 +1313,7 @@ fn builtin_runtime_paths(home: &str, workspace_path: &str) -> Vec<String> {
         // password-manager configs, etc.). Each agent declares its own
         // specific subdir via Settings → Agents → "Sandbox allowed
         // paths" (e.g. claude lists $HOME/Library/Application Support/
-        // Claude). User can add more per workspace if needed.
+        // Claude). User can add more per task if needed.
         // Shell + git init files. Tool subprocesses (the agent shells
         // out to git, gh, npm, ...) read these on startup; denying
         // them breaks every git/gh/shell invocation. Single files,
@@ -1384,21 +1384,21 @@ pub fn available() -> bool {
     cfg!(target_os = "macos") && std::path::Path::new("/usr/bin/sandbox-exec").exists()
 }
 
-/// Default host allowlist (regex per line) for a workspace, keyed off
+/// Default host allowlist (regex per line) for a task, keyed off
 /// the agent it runs. We add the API endpoints for that agent's vendor
 /// plus a baseline of stuff every dev needs (github + popular package
-/// registries). Workspace's own `sandbox_allowed_hosts` are appended.
+/// registries). Task's own `sandbox_allowed_hosts` are appended.
 /// The output is the file contents (with leading comment); use
 /// `host_patterns` if you just want the regexes for feeding to the
 /// proxy.
 #[allow(dead_code)]
-pub fn render_filter(workspace: &Workspace) -> String {
-    render_filter_for(workspace, None)
+pub fn render_filter(task: &Task) -> String {
+    render_filter_for(task, None)
 }
 
-pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) -> String {
+pub fn render_filter_for(task: &Task, agent_override: Option<&str>) -> String {
     let mut hosts: Vec<String> = Vec::new();
-    let effective_cli = agent_override.unwrap_or(&workspace.cli);
+    let effective_cli = agent_override.unwrap_or(&task.cli);
 
     // Per-CLI vendor APIs.
     match effective_cli {
@@ -1502,17 +1502,17 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
         r"^.+\.amazontrust\.com$".into(),
     ]);
 
-    // Workspace-specific extras layered on top (seeded from project
-    // at create time, frozen onto the workspace from then on). Users
+    // Task-specific extras layered on top (seeded from project
+    // at create time, frozen onto the task from then on). Users
     // type these as wildcards (`*.example.com`, `bitbucket.org`)
     // because regex is friction for a config screen - we translate to
     // anchored regex here so the proxy's matcher (which is regex-only)
     // sees a uniform format.
-    hosts.extend(workspace.sandbox_allowed_hosts.iter().map(|w| wildcard_to_regex(w)));
+    hosts.extend(task.sandbox_allowed_hosts.iter().map(|w| wildcard_to_regex(w)));
 
     // Per-agent allowed hosts from the registry (Settings → Agents),
     // the network counterpart to the agent's sandbox_allowed_paths.
-    // "Allow · per agent" persists here so every workspace running this
+    // "Allow · per agent" persists here so every task running this
     // CLI inherits the host without re-clicking.
     let settings = crate::load_settings_inner();
     if let Some(a) = settings.agents.iter().find(|a| a.id == effective_cli) {
@@ -1520,8 +1520,8 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
     }
 
     dedupe(&mut hosts);
-    let mut out = String::from("# Generated by termic sandbox for workspace ");
-    out.push_str(&workspace.id);
+    let mut out = String::from("# Generated by termic sandbox for task ");
+    out.push_str(&task.id);
     out.push('\n');
     for h in &hosts {
         out.push_str(h);
@@ -1530,17 +1530,17 @@ pub fn render_filter_for(workspace: &Workspace, agent_override: Option<&str>) ->
     out
 }
 
-/// Extract just the host regex patterns from a workspace's allowlist.
+/// Extract just the host regex patterns from a task's allowlist.
 /// Same default set as `render_filter` (which keeps the on-disk debug
 /// file), minus the comment header - this is what we feed to the
 /// in-process proxy at start time.
 #[allow(dead_code)]
-pub fn host_patterns(workspace: &Workspace) -> Vec<String> {
-    host_patterns_for(workspace, None)
+pub fn host_patterns(task: &Task) -> Vec<String> {
+    host_patterns_for(task, None)
 }
 
-pub fn host_patterns_for(workspace: &Workspace, agent_override: Option<&str>) -> Vec<String> {
-    render_filter_for(workspace, agent_override)
+pub fn host_patterns_for(task: &Task, agent_override: Option<&str>) -> Vec<String> {
+    render_filter_for(task, agent_override)
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -1555,7 +1555,7 @@ pub fn host_patterns_for(workspace: &Workspace, agent_override: Option<&str>) ->
 ///
 /// Profile/filter files live in tempdir under predictable names so the
 /// user can inspect them when something denies surprisingly.
-pub fn provision(workspace: &Workspace, agent_override: Option<&str>, mode: SandboxMode) -> Result<SandboxBundle> {
+pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -> Result<SandboxBundle> {
     let monitor = mode == SandboxMode::Monitor;
     // Hard-fail early on platforms where Seatbelt doesn't exist.
     // The frontend should be gating on sandbox_available(), but
@@ -1574,52 +1574,52 @@ pub fn provision(workspace: &Workspace, agent_override: Option<&str>, mode: Sand
     // last thing claude tried to reach"). If something is *still*
     // blocked, the kernel + proxy will refill the trackers within
     // milliseconds of the agent retrying.
-    clear_path_denies(&workspace.id);
-    clear_path_access(&workspace.id);
-    crate::proxy::clear_network_denies(&workspace.id);
-    crate::proxy::clear_network_access(&workspace.id);
+    clear_path_denies(&task.id);
+    clear_path_access(&task.id);
+    crate::proxy::clear_network_denies(&task.id);
+    crate::proxy::clear_network_access(&task.id);
     let tmp = std::env::temp_dir();
-    let profile_path = tmp.join(format!("termic-sandbox-{}.sb", workspace.id));
-    let filter_path  = tmp.join(format!("termic-proxy-{}.filter", workspace.id));
+    let profile_path = tmp.join(format!("termic-sandbox-{}.sb", task.id));
+    let filter_path  = tmp.join(format!("termic-proxy-{}.filter", task.id));
 
     // Filter file is purely for the user's `cat` benefit now; the proxy
     // gets its patterns from memory below. Best-effort write.
-    let _ = fs::write(&filter_path, render_filter_for(workspace, agent_override));
+    let _ = fs::write(&filter_path, render_filter_for(task, agent_override));
 
-    let patterns = host_patterns_for(workspace, agent_override);
+    let patterns = host_patterns_for(task, agent_override);
     dlog(&format!("[sandbox/{}] provisioning ({}), {} host patterns",
-        workspace.id, if monitor { "monitor" } else { "enforce" }, patterns.len()));
-    let policy = if monitor { compute_monitor_policy(workspace, agent_override) } else { MonitorPolicy::default() };
-    let ws_dirs = if monitor { workspace_exclude_dirs(workspace) } else { Vec::new() };
-    let path_watcher = start_path_watcher(&workspace.id, &canonicalize_or_keep(&workspace.path), ws_dirs, monitor, policy);
+        task.id, if monitor { "monitor" } else { "enforce" }, patterns.len()));
+    let policy = if monitor { compute_monitor_policy(task, agent_override) } else { MonitorPolicy::default() };
+    let ws_dirs = if monitor { task_exclude_dirs(task) } else { Vec::new() };
+    let path_watcher = start_path_watcher(&task.id, &canonicalize_or_keep(&task.path), ws_dirs, monitor, policy);
     if path_watcher.is_some() {
-        dlog(&format!("[sandbox/{}] path {} watcher started", workspace.id, if monitor { "access" } else { "deny" }));
+        dlog(&format!("[sandbox/{}] path {} watcher started", task.id, if monitor { "access" } else { "deny" }));
     }
     // EnforceFs disables the network sandbox entirely: no proxy, no
     // hostname allow-list, no http_proxy injection (wrap_command only
     // injects it when `proxy` is Some). The seatbelt profile allows all
     // network directly. Every other mode runs the filtering/logging proxy.
     let proxy = if mode == SandboxMode::EnforceFs {
-        dlog(&format!("[sandbox/{}] network sandbox OFF (enforce-fs); no proxy", workspace.id));
+        dlog(&format!("[sandbox/{}] network sandbox OFF (enforce-fs); no proxy", task.id));
         None
     } else {
-        match proxy::start(patterns, workspace.id.clone(), monitor) {
+        match proxy::start(patterns, task.id.clone(), monitor) {
             Ok(p) => {
-                dlog(&format!("[sandbox/{}] proxy up on port {}", workspace.id, p.port));
+                dlog(&format!("[sandbox/{}] proxy up on port {}", task.id, p.port));
                 Some(p)
             }
             Err(e) => {
-                dlog(&format!("[sandbox/{}] proxy failed to start: {e}", workspace.id));
+                dlog(&format!("[sandbox/{}] proxy failed to start: {e}", task.id));
                 None
             }
         }
     };
     let port = proxy.as_ref().map(|p| p.port).unwrap_or(0);
 
-    let profile = render_profile(workspace, port, agent_override, mode)?;
+    let profile = render_profile(task, port, agent_override, mode)?;
     fs::write(&profile_path, &profile)
         .with_context(|| format!("write {}", profile_path.display()))?;
-    dlog(&format!("[sandbox/{}] profile written: {}", workspace.id, profile_path.display()));
+    dlog(&format!("[sandbox/{}] profile written: {}", task.id, profile_path.display()));
 
     Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher })
 }
@@ -1640,13 +1640,13 @@ pub fn wrap_command(
     // Self-identifying env so agents (and tools they spawn) can map
     // EPERM filesystem errors and 403 X-Termic-Sandbox responses back
     // to "I'm in a Termic cage" instead of guessing macOS TCC. Most
-    // useful when the user pastes their workspace's CLAUDE.md /
+    // useful when the user pastes their task's CLAUDE.md /
     // AGENTS.md a note like:
     //   "If $TERMIC_SANDBOX=1 and you hit EPERM on a write, the path
-    //    isn't on the workspace's writable list. Tell the user to
+    //    isn't on the task's writable list. Tell the user to
     //    add it via the Sandbox dialog or disable the cage."
     new_args.push("TERMIC_SANDBOX=1".into());
-    new_args.push("TERMIC_SANDBOX_HELP=Filesystem EPERM on paths outside the workspace = blocked by Termic sandbox, not by macOS TCC. Network 403 with header `X-Termic-Sandbox: blocked-by-allowlist` = same cause. Fix: open the Sandbox dialog (shield icon on the workspace) and add the path/host, or disable the cage.".into());
+    new_args.push("TERMIC_SANDBOX_HELP=Filesystem EPERM on paths outside the task = blocked by Termic sandbox, not by macOS TCC. Network 403 with header `X-Termic-Sandbox: blocked-by-allowlist` = same cause. Fix: open the Sandbox dialog (shield icon on the task) and add the path/host, or disable the cage.".into());
     if let Some(proxy) = &bundle.proxy {
         let url = format!("http://127.0.0.1:{}", proxy.port);
         new_args.push(format!("http_proxy={url}"));
@@ -1668,22 +1668,22 @@ pub fn wrap_command(
     ("sandbox-exec".into(), new_args)
 }
 
-/// Query macOS `log` for recent sandbox denials touching a workspace.
+/// Query macOS `log` for recent sandbox denials touching a task.
 /// Filters by:
 ///   - subsystem/sender: sandboxd / kernel (where Seatbelt logs land)
 ///   - last N minutes
-///   - eventMessage containing the workspace path (so users only see
+///   - eventMessage containing the task path (so users only see
 ///     denials caused by their own agent, not noise from other apps)
 /// Returns lines in newest-first order. Empty Vec on any failure -
 /// debugging shouldn't itself fail.
-pub fn recent_denials(workspace_path: &str, minutes: u32) -> Vec<String> {
+pub fn recent_denials(task_path: &str, minutes: u32) -> Vec<String> {
     let predicate = format!(
         "(sender == \"kernel\" OR sender == \"sandboxd\") AND eventMessage CONTAINS \"deny\" AND eventMessage CONTAINS \"{}\"",
         // The path goes inside a quoted literal in the predicate; we
         // escape both backslashes and embedded double-quotes
         // defensively. macOS paths don't contain quotes in practice
         // but it costs nothing to be safe.
-        workspace_path.replace('\\', "\\\\").replace('"', "\\\""),
+        task_path.replace('\\', "\\\\").replace('"', "\\\""),
     );
     let last_arg = format!("{}m", minutes);
     let out = Command::new("log")
@@ -1741,7 +1741,7 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 
 ;; Filesystem: ALLOWLIST. The header intentionally does NOT broadly
 ;; allow file-read*; render_profile emits per-path (allow file-read*
-;; (subpath "...")) entries for the workspace, agent, runtime, and
+;; (subpath "...")) entries for the task, agent, runtime, and
 ;; system roots. `(deny default)` at the very top is the actual
 ;; default for everything not listed.
 
@@ -1827,22 +1827,22 @@ fn canonicalize_or_keep(p: &str) -> String {
         .unwrap_or_else(|_| p.to_string())
 }
 
-/// If `workspace_root` is a git worktree (its `.git` is a regular file
+/// If `task_root` is a git worktree (its `.git` is a regular file
 /// with `gitdir: <path>`), return the parent repo's `.git/` directory
 /// so the cage can allow reads+writes against it. Returns None when
-/// the workspace is the parent checkout itself (is_repo_root) or not
+/// the task is the parent checkout itself (is_main_checkout) or not
 /// a git working tree at all.
 ///
 /// Logic:
-///   1. Read `<workspace_root>/.git`.
+///   1. Read `<task_root>/.git`.
 ///   2. Expect `gitdir: <abs path to /<parent>/.git/worktrees/<name>>`.
 ///   3. Walk up to `<parent>/.git` (i.e. trim `/worktrees/<name>` suffix).
 ///   4. Canonicalize and return.
-fn parent_git_dir_for_worktree(workspace_root: &str) -> Option<String> {
-    let dot_git = std::path::Path::new(workspace_root).join(".git");
-    // For a regular checkout (is_repo_root), `.git` is a directory and
-    // we don't need to widen — the workspace allow already covers it
-    // via the workspace path subpath. We only act for the file-form.
+fn parent_git_dir_for_worktree(task_root: &str) -> Option<String> {
+    let dot_git = std::path::Path::new(task_root).join(".git");
+    // For a regular checkout (is_main_checkout), `.git` is a directory and
+    // we don't need to widen — the task allow already covers it
+    // via the task path subpath. We only act for the file-form.
     let meta = fs::metadata(&dot_git).ok()?;
     if !meta.is_file() { return None; }
     let contents = fs::read_to_string(&dot_git).ok()?;
@@ -1852,7 +1852,7 @@ fn parent_git_dir_for_worktree(workspace_root: &str) -> Option<String> {
     let gitdir_abs = if std::path::Path::new(raw_gitdir).is_absolute() {
         raw_gitdir.to_string()
     } else {
-        std::path::Path::new(workspace_root).join(raw_gitdir).to_string_lossy().into_owned()
+        std::path::Path::new(task_root).join(raw_gitdir).to_string_lossy().into_owned()
     };
     // The gitdir path lands on `<parent>/.git/worktrees/<name>`. We
     // want `<parent>/.git`. Trim the last two path components only if
@@ -1875,9 +1875,9 @@ fn dedupe(v: &mut Vec<String>) {
 /// to (but NOT including) the filesystem root `/`. Returned deepest-first.
 ///
 /// Used to grant `(allow file-read* (literal …))` on each: a shell/agent
-/// launched in the workspace canonicalizes its cwd with realpath(3), which
+/// launched in the task canonicalizes its cwd with realpath(3), which
 /// must open() every ancestor directory to resolve the path. open(dir) is a
-/// `file-read-data` op the allow-list denies outside the workspace subtree,
+/// `file-read-data` op the allow-list denies outside the task subtree,
 /// so without these grants `bun run` / `bunx` — and anything else that
 /// realpath()s the cwd — fail at startup with EPERM. `/` is granted
 /// separately (literal) and is this loop's terminator.
@@ -1894,15 +1894,15 @@ fn ancestor_dirs(path: &str) -> Vec<String> {
     out
 }
 
-/// Every workspace root's (and multi-repo member's) ancestor directory
+/// Every task root's (and multi-repo member's) ancestor directory
 /// chain, canonicalized + deduped — the set granted `literal` read so cwd
 /// canonicalization (realpath) works without exposing sibling subtrees.
 /// Shared by `render_profile` (enforcement) and `compute_monitor_policy`
 /// (the would-block classifier) so the two never disagree.
-fn workspace_ancestor_dirs(workspace: &Workspace) -> Vec<String> {
+fn task_ancestor_dirs(task: &Task) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for root in std::iter::once(canonicalize_or_keep(&workspace.path))
-        .chain(workspace.composition.iter().map(|m| canonicalize_or_keep(&m.path)))
+    for root in std::iter::once(canonicalize_or_keep(&task.path))
+        .chain(task.composition.iter().map(|m| canonicalize_or_keep(&m.path)))
     {
         if root.is_empty() { continue; }
         out.extend(ancestor_dirs(&root));
@@ -2018,7 +2018,7 @@ mod tests {
         assert!(!policy.would_block("/Users/x/.claude.json", "file-read-data"));
         assert!(!policy.would_block("/Users/x/.claude.json.lock", "file-write-create"));
         assert!(policy.would_block("/Users/x/.clauderc-other", "file-read-data"));
-        // Inside the workspace: never blocked (read or write).
+        // Inside the task: never blocked (read or write).
         assert!(!policy.would_block("/Users/x/proj/src/main.rs", "file-write-create"));
         assert!(!policy.would_block("/Users/x/proj/src/main.rs", "file-read-data"));
         // System root: reads allowed, writes denied.
@@ -2039,9 +2039,9 @@ mod tests {
     #[test]
     fn ancestor_dirs_walks_up_to_but_not_root() {
         assert_eq!(
-            ancestor_dirs("/Users/x/termic/ws/proj"),
+            ancestor_dirs("/Users/x/termic/task/proj"),
             vec![
-                "/Users/x/termic/ws".to_string(),
+                "/Users/x/termic/task".to_string(),
                 "/Users/x/termic".to_string(),
                 "/Users/x".to_string(),
                 "/Users".to_string(),
@@ -2053,29 +2053,29 @@ mod tests {
     }
 
     #[test]
-    fn workspace_ancestor_dirs_strict_ancestors_only() {
-        use crate::Workspace;
-        let ws = Workspace { path: "/Users/x/ws/a".into(), ..Default::default() };
-        let anc = workspace_ancestor_dirs(&ws);
-        assert!(anc.contains(&"/Users/x/ws".to_string()));
+    fn task_ancestor_dirs_strict_ancestors_only() {
+        use crate::Task;
+        let task = Task { path: "/Users/x/task/a".into(), ..Default::default() };
+        let anc = task_ancestor_dirs(&task);
+        assert!(anc.contains(&"/Users/x/task".to_string()));
         assert!(anc.contains(&"/Users/x".to_string()));
         assert!(anc.contains(&"/Users".to_string()));
-        // Never the workspace dir itself, and never the root.
-        assert!(!anc.contains(&"/Users/x/ws/a".to_string()));
+        // Never the task dir itself, and never the root.
+        assert!(!anc.contains(&"/Users/x/task/a".to_string()));
         assert!(!anc.contains(&"/".to_string()));
     }
 
     #[test]
     fn would_block_allows_ancestor_node_read_not_subtree() {
         let policy = MonitorPolicy {
-            rw_subpaths: vec!["/Users/x/ws/proj".into()],
+            rw_subpaths: vec!["/Users/x/task/proj".into()],
             read_roots: vec![],
             rw_regexes: vec![],
-            read_literals: vec!["/Users/x".into(), "/Users/x/ws".into()],
+            read_literals: vec!["/Users/x".into(), "/Users/x/task".into()],
         };
         // The ancestor directory NODE is readable (realpath traversal).
         assert!(!policy.would_block("/Users/x", "file-read-data"));
-        assert!(!policy.would_block("/Users/x/ws", "file-read-data"));
+        assert!(!policy.would_block("/Users/x/task", "file-read-data"));
         // But NOT a sibling subtree under an ancestor.
         assert!(policy.would_block("/Users/x/other/secret", "file-read-data"));
         // Writes to an ancestor node still block (literal grants read only).
@@ -2251,7 +2251,7 @@ mod tests {
     #[test]
     fn runtime_paths_include_xdg_data_home() {
         let home = "/Users/test";
-        let rt = builtin_runtime_paths(home, "/Users/test/ws");
+        let rt = builtin_runtime_paths(home, "/Users/test/task");
         // XDG_DATA_HOME is allowed broadly so the many tool data stores
         // under it (uv/pnpm/pipx/gem/…) work without per-tool allow-clicks.
         assert!(rt.contains(&format!("{home}/.local/share")));
@@ -2304,26 +2304,26 @@ mod tests {
     // ── builtin_runtime_paths ─────────────────────────────────────────
 
     #[test]
-    fn builtin_runtime_paths_contains_workspace() {
+    fn builtin_runtime_paths_contains_task() {
         let paths = builtin_runtime_paths("/Users/test", "/Users/test/projects/myapp");
         assert!(paths.contains(&"/Users/test/projects/myapp".to_string()));
     }
 
     #[test]
     fn builtin_runtime_paths_contains_npm_cache() {
-        let paths = builtin_runtime_paths("/Users/test", "/tmp/ws");
+        let paths = builtin_runtime_paths("/Users/test", "/tmp/task");
         assert!(paths.contains(&"/Users/test/.npm".to_string()));
     }
 
     #[test]
     fn builtin_runtime_paths_contains_private_tmp() {
-        let paths = builtin_runtime_paths("/Users/test", "/tmp/ws");
+        let paths = builtin_runtime_paths("/Users/test", "/tmp/task");
         assert!(paths.contains(&"/private/tmp".to_string()));
     }
 
     #[test]
     fn builtin_runtime_paths_contains_local_bin() {
-        let paths = builtin_runtime_paths("/Users/test", "/tmp/ws");
+        let paths = builtin_runtime_paths("/Users/test", "/tmp/task");
         assert!(paths.contains(&"/Users/test/.local/bin".to_string()));
     }
 
@@ -2331,102 +2331,102 @@ mod tests {
 
     #[test]
     fn clear_path_denies_removes_exact_prefix() {
-        let ws = "test-clear-exact";
-        incr_path_deny(ws, "/home/user/secrets", 1, "proc");
-        clear_path_denies_under(ws, "/home/user/secrets");
-        assert_eq!(path_deny_count(ws), 0);
+        let task = "test-clear-exact";
+        incr_path_deny(task, "/home/user/secrets", 1, "proc");
+        clear_path_denies_under(task, "/home/user/secrets");
+        assert_eq!(path_deny_count(task), 0);
     }
 
     #[test]
     fn clear_path_denies_removes_children() {
-        let ws = "test-clear-children";
-        incr_path_deny(ws, "/home/user/dir/file.txt", 1, "proc");
-        incr_path_deny(ws, "/home/user/dir/sub/other.txt", 1, "proc");
-        clear_path_denies_under(ws, "/home/user/dir");
-        assert_eq!(path_deny_count(ws), 0);
+        let task = "test-clear-children";
+        incr_path_deny(task, "/home/user/dir/file.txt", 1, "proc");
+        incr_path_deny(task, "/home/user/dir/sub/other.txt", 1, "proc");
+        clear_path_denies_under(task, "/home/user/dir");
+        assert_eq!(path_deny_count(task), 0);
     }
 
     #[test]
     fn clear_path_denies_preserves_sibling() {
-        let ws = "test-clear-sibling";
-        incr_path_deny(ws, "/home/user/keep/file.txt", 1, "proc");
-        incr_path_deny(ws, "/home/user/remove/file.txt", 1, "proc");
-        clear_path_denies_under(ws, "/home/user/remove");
-        assert_eq!(path_deny_count(ws), 1);
+        let task = "test-clear-sibling";
+        incr_path_deny(task, "/home/user/keep/file.txt", 1, "proc");
+        incr_path_deny(task, "/home/user/remove/file.txt", 1, "proc");
+        clear_path_denies_under(task, "/home/user/remove");
+        assert_eq!(path_deny_count(task), 1);
     }
 
     #[test]
     fn clear_path_denies_noop_on_empty_prefix() {
-        let ws = "test-clear-empty-prefix";
-        incr_path_deny(ws, "/some/path", 1, "proc");
-        let before = path_deny_count(ws);
-        clear_path_denies_under(ws, "");
-        assert_eq!(path_deny_count(ws), before);
+        let task = "test-clear-empty-prefix";
+        incr_path_deny(task, "/some/path", 1, "proc");
+        let before = path_deny_count(task);
+        clear_path_denies_under(task, "");
+        assert_eq!(path_deny_count(task), before);
         // cleanup
-        clear_path_denies_under(ws, "/some/path");
+        clear_path_denies_under(task, "/some/path");
     }
 
     // ── render_filter_for ─────────────────────────────────────────────
 
     #[test]
     fn render_filter_claude_contains_anthropic() {
-        use crate::Workspace;
-        let ws = Workspace { cli: "claude".into(), ..Default::default() };
-        let filter = render_filter_for(&ws, None);
+        use crate::Task;
+        let task = Task { cli: "claude".into(), ..Default::default() };
+        let filter = render_filter_for(&task, None);
         assert!(filter.contains("anthropic"), "claude filter must include anthropic entries");
     }
 
     #[test]
     fn render_filter_gemini_contains_googleapis() {
-        use crate::Workspace;
-        let ws = Workspace { cli: "gemini".into(), ..Default::default() };
-        let filter = render_filter_for(&ws, None);
+        use crate::Task;
+        let task = Task { cli: "gemini".into(), ..Default::default() };
+        let filter = render_filter_for(&task, None);
         assert!(filter.contains("googleapis"), "gemini filter must include googleapis");
     }
 
     #[test]
     fn render_filter_codex_contains_openai() {
-        use crate::Workspace;
-        let ws = Workspace { cli: "codex".into(), ..Default::default() };
-        let filter = render_filter_for(&ws, None);
+        use crate::Task;
+        let task = Task { cli: "codex".into(), ..Default::default() };
+        let filter = render_filter_for(&task, None);
         assert!(filter.contains("openai"), "codex filter must include openai");
     }
 
     #[test]
-    fn render_filter_agent_override_wins_over_workspace_cli() {
-        use crate::Workspace;
-        let ws = Workspace { cli: "codex".into(), ..Default::default() };
-        let filter = render_filter_for(&ws, Some("gemini"));
+    fn render_filter_agent_override_wins_over_task_cli() {
+        use crate::Task;
+        let task = Task { cli: "codex".into(), ..Default::default() };
+        let filter = render_filter_for(&task, Some("gemini"));
         assert!(filter.contains("googleapis"), "override to gemini must add googleapis");
         assert!(!filter.contains("openai"), "override must drop codex openai entries");
     }
 
     #[test]
     fn render_filter_includes_common_hosts() {
-        use crate::Workspace;
-        let ws = Workspace { cli: "claude".into(), ..Default::default() };
-        let filter = render_filter_for(&ws, None);
+        use crate::Task;
+        let task = Task { cli: "claude".into(), ..Default::default() };
+        let filter = render_filter_for(&task, None);
         assert!(filter.contains("github"), "filter must include github");
         assert!(filter.contains("npmjs"), "filter must include npmjs");
     }
 
     #[test]
     fn render_filter_custom_allowed_hosts_included() {
-        use crate::Workspace;
-        let ws = Workspace {
+        use crate::Task;
+        let task = Task {
             cli: "claude".into(),
             sandbox_allowed_hosts: vec!["my-custom-api.example.com".into()],
             ..Default::default()
         };
-        let filter = render_filter_for(&ws, None);
+        let filter = render_filter_for(&task, None);
         assert!(filter.contains("my-custom-api"), "custom allowed hosts must be in filter");
     }
 
     #[test]
     fn render_filter_unknown_cli_has_common_hosts_only() {
-        use crate::Workspace;
-        let ws = Workspace { cli: "custom".into(), ..Default::default() };
-        let filter = render_filter_for(&ws, None);
+        use crate::Task;
+        let task = Task { cli: "custom".into(), ..Default::default() };
+        let filter = render_filter_for(&task, None);
         assert!(!filter.contains("anthropic"), "custom cli must not add anthropic");
         assert!(!filter.contains("openai"), "custom cli must not add openai");
         assert!(filter.contains("github"), "common hosts still present");
@@ -2434,9 +2434,9 @@ mod tests {
 
     #[test]
     fn render_filter_dot_in_host_is_regex_escaped() {
-        use crate::Workspace;
-        let ws = Workspace { cli: "claude".into(), ..Default::default() };
-        let filter = render_filter_for(&ws, None);
+        use crate::Task;
+        let task = Task { cli: "claude".into(), ..Default::default() };
+        let filter = render_filter_for(&task, None);
         // Dots in hostnames must be regex-escaped as \. not bare .
         assert!(filter.contains(r"anthropic\.com"),
             "dots in hostnames must be regex-escaped as \\.");
@@ -2444,10 +2444,10 @@ mod tests {
 
     #[test]
     fn enforce_fs_allows_all_network_and_keeps_fs_cage() {
-        use crate::{Workspace, SandboxMode};
-        let ws = Workspace { cli: "claude".into(), ..Default::default() };
+        use crate::{Task, SandboxMode};
+        let task = Task { cli: "claude".into(), ..Default::default() };
         // proxy_port is irrelevant in EnforceFs (no proxy runs); pass 0.
-        let profile = render_profile(&ws, 0, None, SandboxMode::EnforceFs).unwrap();
+        let profile = render_profile(&task, 0, None, SandboxMode::EnforceFs).unwrap();
         // Network sandbox is OFF: full allow, and NONE of the proxy-pinning.
         assert!(profile.contains("(allow network*)"),
             "enforce-fs must allow all network");
@@ -2464,9 +2464,9 @@ mod tests {
 
     #[test]
     fn enforce_still_denies_network() {
-        use crate::{Workspace, SandboxMode};
-        let ws = Workspace { cli: "claude".into(), ..Default::default() };
-        let profile = render_profile(&ws, 12345, None, SandboxMode::Enforce).unwrap();
+        use crate::{Task, SandboxMode};
+        let task = Task { cli: "claude".into(), ..Default::default() };
+        let profile = render_profile(&task, 12345, None, SandboxMode::Enforce).unwrap();
         // Regression guard: full Enforce must remain the network cage.
         assert!(profile.contains("(deny network*)"),
             "enforce must keep denying network");

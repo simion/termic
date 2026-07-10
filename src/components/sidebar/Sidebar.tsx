@@ -1,12 +1,12 @@
 // Left sidebar: traffic-light spacer, toggle, primary nav, projects tree, footer.
 // Two layout flavors: full (220px) vs compact (56px, icon-only with tooltips).
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent } from "react";
+import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen, Megaphone, Keyboard } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen, Megaphone, Keyboard } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -15,24 +15,26 @@ import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { requestCloseTab } from "@/lib/closeTab";
-import { workspaceRename, projectRename, workspaceOpenRepo, openPath, projectReorder, workspaceSetYolo, projectRemove, projectUpdate } from "@/lib/ipc";
-import { confirmAndArchive } from "@/lib/archiveWorkspace";
+import { taskRename, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate } from "@/lib/ipc";
+import { createQuickTask, derivedBranch, type NewTaskMode } from "@/lib/quickTask";
+import { confirmAndArchive } from "@/lib/archiveTask";
 import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
-import type { Workspace, TerminalTab } from "@/lib/types";
+import type { Task, TerminalTab } from "@/lib/types";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { SandboxIcon, SANDBOX_VISUALS } from "@/components/SandboxIcon";
+import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 
-/** Pick a default name for a freshly-created repo-root workspace.
+/** Pick a default name for a freshly-created repo-root task.
  *  Format: "<agent>-N" where N is the next unused index for that CLI
  *  among the project's existing repo-root rows. "shell" → "terminal".
  *  The user can edit before pressing Enter. */
-function defaultRepoRootName(cli: string, wsList: Workspace[]): string {
+function defaultRepoRootName(cli: string, taskList: Task[]): string {
   const slug = cli === "shell" ? "terminal" : cli.toLowerCase();
   const prefix = `${slug}-`;
   const used = new Set<number>();
-  for (const w of wsList) {
-    if (!w.is_repo_root) continue;
+  for (const w of taskList) {
+    if (!w.is_main_checkout) continue;
     if (w.name === slug) { used.add(1); continue; }
     if (!w.name.startsWith(prefix)) continue;
     const tail = w.name.slice(prefix.length);
@@ -55,18 +57,18 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const projects = useApp(s => s.projects);
   const sidebarWidth = useApp(s => s.sidebarWidth);
   const setSidebarWidth = useApp(s => s.setSidebarWidth);
-  const workspaces = useApp(s => s.workspaces);
-  const activeWs = useApp(s => s.activeWorkspaceId);
-  const setActive = useApp(s => s.setActiveWorkspace);
+  const tasks = useApp(s => s.tasks);
+  const activeTask = useApp(s => s.activeTaskId);
+  const setActive = useApp(s => s.setActiveTask);
   const setView = useApp(s => s.setView);
   const currentView = useApp(s => s.view.page);
   const tabs = useApp(s => s.tabs);
   const loadAll = useApp(s => s.loadAll);
   const openNewProject = useUI(s => s.openNewProject);
-  const openNewWorkspace = useUI(s => s.openNewWorkspace);
+  const openNewTask = useUI(s => s.openNewTask);
   const collapsedProjects = useApp(s => s.collapsedProjects);
   const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
-  const setAllWorkspacesCollapsed = useApp(s => s.setAllWorkspacesCollapsed);
+  const setAllTasksCollapsed = useApp(s => s.setAllTasksCollapsed);
   // (agents subscription lives inside ProjectActionsMenuItems now —
   // Sidebar itself doesn't need the registry.)
 
@@ -74,17 +76,18 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // every isUnread() call returns false — the icon stays in its calm
   // state regardless of agent activity.
   const settledHighlight = usePrefs(s => s.settledHighlight);
-  const workspaceExpandMode = usePrefs(s => s.workspaceExpandMode);
-  const setWorkspaceExpandMode = usePrefs(s => s.setWorkspaceExpandMode);
+  const branchPrefix = usePrefs(s => s.branchPrefix);
+  const taskExpandMode = usePrefs(s => s.taskExpandMode);
+  const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
   const hideInactiveProjects = usePrefs(s => s.hideInactiveProjects);
   const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
   // Temporary, non-persisted reveal of the hidden inactive projects. Reset
   // whenever the hide pref flips off so the "Show N inactive" row starts
   // collapsed next time the user re-enables hiding.
   const [showInactive, setShowInactive] = useState(false);
-  const isUnread = (wsId: string) =>
+  const isUnread = (taskId: string) =>
     settledHighlight &&
-    (tabs[wsId] || []).some(t => t.type === "terminal" && t.unread);
+    (tabs[taskId] || []).some(t => t.type === "terminal" && t.unread);
 
   /** Build a mailto: URL with prefilled subject + body and hand it to
    *  the OS's default mail handler via `open_path` (the same Rust
@@ -101,13 +104,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const url = `https://github.com/simion/termic/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
     openPath(url).catch(() => {});
   };
-  /** True if ANY tab in the workspace just transitioned to settled/idle
+  /** True if ANY tab in the task just transitioned to settled/idle
    *  (work-done signal — agent stopped producing output, waiting on
    *  user). Gated on the same `settledHighlight` pref so the check
    *  disappears entirely when the user disables the work-done UI. */
-  const isWorkDone = (wsId: string) =>
+  const isWorkDone = (taskId: string) =>
     settledHighlight &&
-    (tabs[wsId] || []).some(t =>
+    (tabs[taskId] || []).some(t =>
       // Authoritative per-tab work state (driven by OSC 9;4 / 133 / 9
       // / title in TerminalPane). Replaces the old `unread.reason="done"`
       // edge — see the workState state machine.
@@ -116,28 +119,41 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // Distinct from work-done: the agent is explicitly blocked on the
   // user (Gemini ✋ Action Required, Codex Waiting, OSC 1337
   // RequestAttention). Different sidebar icon (bell vs check).
-  const needsAttention = (wsId: string) =>
+  const needsAttention = (taskId: string) =>
     settledHighlight &&
-    (tabs[wsId] || []).some(t =>
+    (tabs[taskId] || []).some(t =>
       t.type === "terminal" && t.unread?.reason === "attention",
     );
-  const isLoaded = (wsId: string) =>
-    (tabs[wsId] || []).some(t => t.type === "terminal" && t.ptyId);
+  const isLoaded = (taskId: string) =>
+    (tabs[taskId] || []).some(t => t.type === "terminal" && t.ptyId);
 
-  // Inline rename state for PROJECTS only. Workspace rename is managed
-  // inside WorkspaceRow so it can co-exist with per-tab rename state.
+  // Inline rename state for PROJECTS only. Task rename is managed
+  // inside TaskRow so it can co-exist with per-tab rename state.
   const [renaming, setRenaming] = useState<{ kind: "proj"; id: string; value: string } | null>(null);
   // Project whose `+` dropdown is currently open. Used to keep the row
   // visually "hovered" (bg + Cog visible) while the menu is open;
   // otherwise the menu trigger looks like it un-selected its parent.
   const [menuOpenProjectId, setMenuOpenProjectId] = useState<string | null>(null);
-  // Inline name-prompt state for repo-root workspace creation. When the
+  // Inline name-prompt state for repo-root task creation. When the
   // user picks an agent from the project's `+` menu, we stash the choice
   // here and render a focused input row under the project — Enter creates
-  // the workspace with the typed name, Esc cancels. This is the
+  // the task with the typed name, Esc cancels. This is the
   // low-friction alternative to a modal dialog.
+  // Inline "new task" name prompt. For a worktree it also carries the
+  // auto-derived (but editable) branch; `branchEdited` freezes auto-derive
+  // once the user touches the branch field.
   const [pendingRepoRoot, setPendingRepoRoot] =
-    useState<{ projectId: string; cli: string; value: string } | null>(null);
+    useState<{
+      projectId: string;
+      cli: string;
+      mode: NewTaskMode;
+      value: string;
+      branch: string;
+      branchEdited: boolean;
+    } | null>(null);
+  // Guards the inline commit against a double Enter while the (multi-second)
+  // create IPC is in flight — otherwise two tasks / a swallowed error.
+  const inlineCreatingRef = useRef(false);
   // Drag-to-reorder PROJECTS. Pointer-event based (WKWebView's HTML5
   // DnD is unreliable in Tauri). The row physically moves during the
   // drag — we mutate the live `projects` order in the app store on
@@ -265,17 +281,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
 
   const asideRef = useRef<HTMLElement>(null);
 
-  // Inactive = no active (non-archived) workspaces. When the hide pref is on we
+  // Inactive = no active (non-archived) tasks. When the hide pref is on we
   // split the list into two groups that each KEEP the original project order:
   // active rows render in place, inactive rows fold into a group below the
-  // "Show N inactive" toggle. Membership is purely "does it have a workspace" —
-  // a project only graduates to the active group once an actual workspace
+  // "Show N inactive" toggle. Membership is purely "does it have a task" —
+  // a project only graduates to the active group once an actual task
   // exists, NOT while its repo-name prompt is still open (the prompt renders in
   // place within the revealed inactive group). Because both groups preserve
-  // order, a folded project that gains a workspace pops back to its rightful
+  // order, a folded project that gains a task pops back to its rightful
   // position among the active rows.
   const projectIsActive = (pid: string) =>
-    workspaces.some(w => w.project_id === pid && !w.archived);
+    tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>
     !hideInactiveProjects || projectIsActive(p.id);
   const activeProjects = projects.filter(shownInline);
@@ -290,11 +306,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
       <nav className={cn("flex flex-col gap-0.5", compact ? "p-1.5 pt-2" : "p-2 pt-3")}>
         <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label="Dashboard"
-          active={currentView === "dashboard" && !activeWs} compact={compact}
+          active={currentView === "dashboard" && !activeTask} compact={compact}
           onClick={() => setView("dashboard")}
         />
         <NavItem icon={<History className={iconSize(compact)} />} label="History"
-          active={currentView === "history" && !activeWs} compact={compact}
+          active={currentView === "history" && !activeTask} compact={compact}
           onClick={() => setView("history")}
         />
       </nav>
@@ -319,11 +335,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   trigger, which would otherwise re-fire its (focus-triggered)
                   tooltip and leave it stuck open after selecting an item. */}
               <DropdownMenu side="right" align="start" sideOffset={4} className="w-[280px]" onCloseAutoFocus={(e) => e.preventDefault()}>
-                <DropdownItem onSelect={() => setAllWorkspacesCollapsed(false)}>
+                <DropdownItem onSelect={() => setAllTasksCollapsed(false)}>
                   <ChevronsUpDown className="h-4 w-4 text-[var(--color-fg-dim)]" />
                   <span>Expand all agents</span>
                 </DropdownItem>
-                <DropdownItem onSelect={() => setAllWorkspacesCollapsed(true)}>
+                <DropdownItem onSelect={() => setAllTasksCollapsed(true)}>
                   <ChevronsDownUp className="h-4 w-4 text-[var(--color-fg-dim)]" />
                   <span>Collapse all agents</span>
                 </DropdownItem>
@@ -334,11 +350,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   ["click",   "Click name",   "Active row toggles; auto-expands at 2+."],
                   ["always",  "Auto open",    "Start expanded; chevron still collapses."],
                 ] as const).map(([id, label, hint]) => {
-                  const isActive = workspaceExpandMode === id;
+                  const isActive = taskExpandMode === id;
                   return (
                     <DropdownItem
                       key={id}
-                      onSelect={() => setWorkspaceExpandMode(id)}
+                      onSelect={() => setTaskExpandMode(id)}
                       className={isActive
                         ? "bg-[var(--color-sel)] data-[highlighted]:bg-[var(--color-sel)]"
                         : undefined}
@@ -378,17 +394,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         <div className="flex flex-col gap-0.5">
           {(() => {
           const renderProject = (p: typeof projects[number]) => {
-            const wsList = workspaces.filter(w => w.project_id === p.id && !w.archived);
+            const taskList = tasks.filter(w => w.project_id === p.id && !w.archived);
             // Empty projects default to collapsed (no point pinning a blank
             // expanded row). User overrides stick: explicit true / false
             // wins; undefined falls back to emptiness-based default.
             const explicit = collapsedProjects[p.id];
-            const collapsed = explicit !== undefined ? explicit : wsList.length === 0;
+            const collapsed = explicit !== undefined ? explicit : taskList.length === 0;
             // Compact + collapsed: surface aggregated activity on the
             // project monogram so a collapsed project still signals that
             // something underneath wants attention (attention > done).
-            const projAttention = compact && collapsed && wsList.some(w => needsAttention(w.id));
-            const projDone = compact && collapsed && !projAttention && wsList.some(w => isWorkDone(w.id));
+            const projAttention = compact && collapsed && taskList.some(w => needsAttention(w.id));
+            const projDone = compact && collapsed && !projAttention && taskList.some(w => isWorkDone(w.id));
             const isMulti = (p.type ?? "single") === "multi";
             return (
               <div
@@ -401,7 +417,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   <div
                     // data-project-id lives on the HEADER (not the
                     // wrapper) because the wrapper includes all the
-                    // nested workspace rows — its bounding rect can
+                    // nested task rows — its bounding rect can
                     // be 6× the header's height, putting the midpoint
                     // far below the visible row. Hit-testing against
                     // headers means the cursor only has to traverse
@@ -423,7 +439,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       if (compact) return;
                       if (e.button !== 0) return;
                       const target = e.target as HTMLElement;
-                      if (target.closest('button, input, a, [data-no-drag]')) return;
+                      // Bail on interactive controls AND anything inside a
+                      // portaled menu/dialog: those render to document.body but
+                      // still bubble synthetic pointer events up the React tree
+                      // to this header, so grabbing the `+` menu's content
+                      // would otherwise start a project drag.
+                      if (target.closest('button, input, a, [data-no-drag], [role="menu"], [role="dialog"]')) return;
                       dragArmed.current = {
                         id: p.id, x: e.clientX, y: e.clientY, started: false,
                         grabOffsetY: e.clientY - (e.currentTarget as HTMLElement).getBoundingClientRect().top,
@@ -460,7 +481,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       // Full mode highlights the whole row on hover; compact
                       // mode hovers the centered monogram tile instead.
                       !compact && "hover:bg-[var(--color-hover)]",
-                      wsList.length === 0 ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg)]",
+                      taskList.length === 0 ? "text-[var(--color-fg-faint)]" : "text-[var(--color-fg)]",
                       menuOpenProjectId === p.id && "bg-[var(--color-hover)]",
                       compact ? "px-0 py-0.5 justify-center" : "pl-2 pr-0 py-1.5",
                       dragProjectId === p.id && "bg-[var(--color-accent)]/15 text-[var(--color-accent)] shadow-lg",
@@ -520,8 +541,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           )}
                         </div>
                         {/* Trio of project-row actions revealed on hover.
-                            Settings + Open-repo-as-workspace are hover-only
-                            so the row stays clean; New-workspace stays
+                            Settings + Open-repo-as-task are hover-only
+                            so the row stays clean; New-task stays
                             visible because it's the headline action. */}
                         <div className="flex items-center gap-0.5">
                           <Tip content="Project settings">
@@ -547,7 +568,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           <DropdownRoot
                             onOpenChange={(o) => setMenuOpenProjectId(o ? p.id : null)}
                           >
-                            <Tip content="New workspace for this project">
+                            <Tip content="New task for this project">
                               <DropdownTrigger asChild>
                                 <button
                                   onClick={e => e.stopPropagation()}
@@ -555,18 +576,22 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                 ><Plus className="h-4 w-4" /></button>
                               </DropdownTrigger>
                             </Tip>
-                            <DropdownMenu side="right" align="start" sideOffset={4} className="max-w-[220px]">
+                            <DropdownMenu side="right" align="start" sideOffset={4} className="w-[276px]">
                               <ProjectActionsMenuItems
                                 projectId={p.id}
-                                onPickRepoCli={(cli) => {
+                                onPick={(cli, mode) => {
                                   // The inline name prompt only renders under an
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
                                   setProjectCollapsed(p.id, false);
+                                  const value = defaultRepoRootName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
                                     cli,
-                                    value: defaultRepoRootName(cli, wsList),
+                                    mode,
+                                    value,
+                                    branch: mode === "worktree" ? derivedBranch(value, branchPrefix) : "",
+                                    branchEdited: false,
                                   });
                                 }}
                               />
@@ -583,17 +608,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   <ContextMenuSeparator />
                   <ContextMenuItem
                     disabled={!!p.non_git}
-                    onSelect={() => requestAnimationFrame(() => openNewWorkspace(p.id))}
+                    onSelect={() => requestAnimationFrame(() => openNewTask(p.id))}
                   >
-                    <GitBranchPlus />
-                    New workspace
+                    <Plus />
+                    New task
                   </ContextMenuItem>
-                  {/* Broadcast to the MAIN agent of every workspace in this
+                  {/* Broadcast to the MAIN agent of every task in this
                       project. Count = live main agents; disabled when there is
                       nothing to fan out to (0 or 1). Computed here so it only
                       runs when the menu is actually open. */}
                   {(() => {
-                    const n = wsList.filter(w => (tabs[w.id] ?? []).some(
+                    const n = taskList.filter(w => (tabs[w.id] ?? []).some(
                       t => t.type === "terminal" && !!(t as TerminalTab).is_default
                         && !(t as TerminalTab).paneId && !(t as TerminalTab).runTab
                         && !!(t as TerminalTab).ptyId,
@@ -644,7 +669,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     const ui = useUI.getState();
                     const ok = await ui.askConfirm({
                       title: `Remove "${p.name}"?`,
-                      message: "All workspaces will be archived and their worktrees removed from disk. The repo folder is kept. This cannot be undone from inside Termic.",
+                      message: "All tasks will be archived and their worktrees removed from disk. The repo folder is kept. This cannot be undone from inside Termic.",
                       confirmLabel: "Remove",
                       destructive: true,
                     });
@@ -670,7 +695,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     New worktree action). One affordance instead of two
                     cramped side-by-side buttons that had to ellipsis at
                     narrow widths. */}
-                {!collapsed && wsList.length === 0 && !compact && pendingRepoRoot?.projectId !== p.id && (
+                {!collapsed && taskList.length === 0 && !compact && pendingRepoRoot?.projectId !== p.id && (
                   <div
                     className="ml-5 mr-1 mb-1 mt-0.5"
                     onClick={e => e.stopPropagation()}
@@ -681,21 +706,25 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] bg-transparent px-2 py-2 text-[12.5px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] data-[state=open]:border-[var(--color-accent-soft)] data-[state=open]:text-[var(--color-fg)]"
                         >
                           <Plus className="h-3.5 w-3.5 shrink-0" />
-                          <span>Get started</span>
+                          <span>New task</span>
                         </button>
                       </DropdownTrigger>
-                      <DropdownMenu side="right" align="start" sideOffset={4} className="max-w-[220px]">
+                      <DropdownMenu side="right" align="start" sideOffset={4} className="w-[276px]">
                         <ProjectActionsMenuItems
                                 projectId={p.id}
-                                onPickRepoCli={(cli) => {
+                                onPick={(cli, mode) => {
                                   // The inline name prompt only renders under an
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
                                   setProjectCollapsed(p.id, false);
+                                  const value = defaultRepoRootName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
                                     cli,
-                                    value: defaultRepoRootName(cli, wsList),
+                                    mode,
+                                    value,
+                                    branch: mode === "worktree" ? derivedBranch(value, branchPrefix) : "",
+                                    branchEdited: false,
                                   });
                                 }}
                               />
@@ -704,29 +733,70 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   </div>
                 )}
 
-                {!collapsed && [...wsList].sort((a, b) => Number(!!b.is_repo_root) - Number(!!a.is_repo_root)).map(w => (
-                  <WorkspaceRow key={w.id} w={w} compact={compact} />
+                {!collapsed && [...taskList].sort((a, b) =>
+                  // Pure creation order, oldest first: new tasks append at the
+                  // bottom. No grouping by main-checkout vs worktree. RFC3339
+                  // `created` compares lexicographically = chronologically.
+                  (a.created || "").localeCompare(b.created || ""),
+                ).map(w => (
+                  <TaskRow key={w.id} w={w} compact={compact} />
                 ))}
                 {/* Inline name prompt renders at the BOTTOM — that's
-                    where a newly-created repo-root workspace lands in
+                    where a newly-created repo-root task lands in
                     the sort order, so the row physically appears in
                     the spot it'll occupy after Enter. */}
                 {!collapsed && pendingRepoRoot?.projectId === p.id && (
                   <PendingRepoRootRow
+                    mode={pendingRepoRoot.mode}
+                    cli={pendingRepoRoot.cli}
                     value={pendingRepoRoot.value}
-                    onChange={(v) => setPendingRepoRoot(prev => prev && { ...prev, value: v })}
+                    branch={pendingRepoRoot.branch}
+                    onChange={(v) => setPendingRepoRoot(prev => {
+                      if (!prev) return prev;
+                      // Keep the branch in lock-step with the name until the
+                      // user takes over the branch field.
+                      const branch = prev.branchEdited ? prev.branch : derivedBranch(v, branchPrefix);
+                      return { ...prev, value: v, branch };
+                    })}
+                    onBranchChange={(b) => setPendingRepoRoot(prev => prev && { ...prev, branch: b, branchEdited: true })}
                     onCancel={() => setPendingRepoRoot(null)}
                     onCommit={async () => {
-                      const name = pendingRepoRoot.value.trim();
-                      if (!name) { setPendingRepoRoot(null); return; }
-                      try {
-                        const w = await workspaceOpenRepo(p.id, pendingRepoRoot.cli, name);
-                        await loadAll();
-                        setActive(w.id);
-                      } catch (err) {
-                        console.error("workspace_open_repo failed:", err);
-                      } finally {
+                      if (inlineCreatingRef.current) return; // double-Enter guard
+                      const pr = pendingRepoRoot;
+                      const name = pr.value.trim();
+                      // Empty name: keep the row open (don't silently cancel);
+                      // the user can type or press Esc.
+                      if (!name) return;
+                      const ui = useUI.getState();
+                      inlineCreatingRef.current = true;
+                      if (pr.mode === "worktree") {
+                        // Close the inline row and show the SAME progress UI the
+                        // New Task modal shows on submit (worktree add + copy can
+                        // take seconds; errors surface there too).
                         setPendingRepoRoot(null);
+                        ui.setTaskCreateProgress({ phase: "creating", err: null });
+                        try {
+                          await createQuickTask({
+                            projectId: pr.projectId, mode: "worktree", cli: pr.cli,
+                            name, branch: pr.branch.trim(),
+                          });
+                          ui.setTaskCreateProgress(null); // success closes the overlay
+                        } catch (err) {
+                          ui.setTaskCreateProgress({ phase: "error", err: String(err) });
+                        } finally {
+                          inlineCreatingRef.current = false;
+                        }
+                      } else {
+                        // Main checkout is instant. On failure, toast and KEEP the
+                        // row open so the user can fix the name and retry.
+                        try {
+                          await createQuickTask({ projectId: pr.projectId, mode: "repo_root", cli: pr.cli, name });
+                          setPendingRepoRoot(null);
+                        } catch (err) {
+                          ui.pushToast(String(err), "error");
+                        } finally {
+                          inlineCreatingRef.current = false;
+                        }
                       }
                     }}
                   />
@@ -881,7 +951,7 @@ function iconSize(compact: boolean) {
   return compact ? "h-6 w-6" : "h-[18px] w-[18px]";
 }
 
-// Tiny status badge reused on both the workspace header (aggregated, when
+// Tiny status badge reused on both the task header (aggregated, when
 // collapsed) and on each tab child row.
 //   done      → solid blue bullet (work finished, untouched until input)
 //   attention → orange bell (agent explicitly blocked on user)
@@ -921,25 +991,25 @@ function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
   );
 }
 
-// ─── WorkspaceRow ────────────────────────────────────────────────────────────
-// Extracted component so each workspace subscribes only to its own tab state
-// (isolated re-renders). Handles expand/collapse, ws rename, tab rename, and
+// ─── TaskRow ────────────────────────────────────────────────────────────
+// Extracted component so each task subscribes only to its own tab state
+// (isolated re-renders). Handles expand/collapse, task rename, tab rename, and
 // shows all terminal tabs as indented children.
 
-function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
-  const tabs = useWorkspaceTabs(w.id);
+function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
+  const tabs = useTaskTabs(w.id);
   const activeTabId = useActiveTabId(w.id);
-  const activeWsId = useApp(s => s.activeWorkspaceId);
-  const setActive = useApp(s => s.setActiveWorkspace);
+  const activeTaskId = useApp(s => s.activeTaskId);
+  const setActive = useApp(s => s.setActiveTask);
   const setActiveTabId = useApp(s => s.setActiveTabId);
   const loadAll = useApp(s => s.loadAll);
   const terminalTabCount = useApp(s => (s.tabs[w.id] ?? []).filter(t => t.type === "terminal").length);
   const agents = useApp(s => s.agents);
-  const expandMode = usePrefs(s => s.workspaceExpandMode);
+  const expandMode = usePrefs(s => s.taskExpandMode);
   // Default collapsed state varies with the user's chosen expand mode.
   // The user can still override per-row via the chevron — once they
-  // explicitly toggle, `collapsedWorkspaces[w.id]` holds and the mode
-  // default is ignored for that workspace.
+  // explicitly toggle, `collapsedTasks[w.id]` holds and the mode
+  // default is ignored for that task.
   //   chevron → start collapsed; row click never toggles.
   //   click   → legacy behavior: collapsed when ≤1 tab, auto-expanded at 2+.
   //   always  → start expanded; chevron-collapsed sticks.
@@ -947,9 +1017,9 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
     expandMode === "always"  ? false :
     expandMode === "chevron" ? true  :
     /* click */                terminalTabCount <= 1;
-  const collapsed = useApp(s => s.collapsedWorkspaces[w.id] ?? defaultCollapsed);
-  const setWorkspaceCollapsed = useApp(s => s.setWorkspaceCollapsed);
-  const setWorkspaceYolo = useApp(s => s.setWorkspaceYolo);
+  const collapsed = useApp(s => s.collapsedTasks[w.id] ?? defaultCollapsed);
+  const setTaskCollapsed = useApp(s => s.setTaskCollapsed);
+  const setTaskYolo = useApp(s => s.setTaskYolo);
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
   const renameTab = useApp(s => s.renameTab);
   const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
@@ -957,38 +1027,38 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const workingIndicator = usePrefs(s => s.workingIndicator);
 
   const project = useApp(s => s.projects.find(p => p.id === w.project_id) ?? null);
-  const spotlightWsId = useApp(s => s.spotlightWsId[w.project_id] ?? null);
-  const isSpotlighted = spotlightWsId === w.id;
+  const spotlightTaskId = useApp(s => s.spotlightTaskId[w.project_id] ?? null);
+  const isSpotlighted = spotlightTaskId === w.id;
   // Spotlight is worktree-only: non-repo-root, single-repo, git, spotlight_enabled.
-  const spotlightAvailable = !w.is_repo_root && !!project?.spotlight_enabled && project?.type !== "multi" && !project?.non_git;
+  const spotlightAvailable = !w.is_main_checkout && !!project?.spotlight_enabled && project?.type !== "multi" && !project?.non_git;
 
-  const isActive = activeWsId === w.id;
+  const isActive = activeTaskId === w.id;
   // Sidebar only shows main-pane terminal tabs; split-pane tabs live in SplitView.
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
   const isLoaded = terminalTabs.some(t => t.ptyId);
   // The sidebar only renders terminal tabs as child rows; edit/diff tabs
   // are transient file views with no row. When the active tab is one of
   // those (or there's no active tab), no child row carries the selection,
-  // so the workspace HEADER must show it instead.
+  // so the task HEADER must show it instead.
   const activeTabIsTerminalChild = terminalTabs.some(
     t => t.id === activeTabId,
   );
 
-  // Workspace actions menu — controlled so a right-click on the row can
+  // Task actions menu — controlled so a right-click on the row can
   // open the same menu the kebab button triggers.
   const [menuOpen, setMenuOpen] = useState(false);
-  // Workspace rename
-  const [wsRenaming, setWsRenaming] = useState<string | null>(null);
-  const wsRenameInputRef = useRef<HTMLInputElement | null>(null);
-  // External rename trigger (⌘K command palette → "Rename workspace"). The
+  // Task rename
+  const [taskRenaming, setTaskRenaming] = useState<string | null>(null);
+  const taskRenameInputRef = useRef<HTMLInputElement | null>(null);
+  // External rename trigger (⌘K command palette → "Rename task"). The
   // palette can't reach into this row's local state, so it bumps a nonce on
   // the UI store; we start the inline rename when it targets us, then clear
   // it so a later collapse/expand re-mount doesn't re-fire. The palette
   // expands the row's project first, so by the time we mount this runs.
   const renameReq = useUI(s => s.renameRequest);
   useEffect(() => {
-    if (renameReq && renameReq.wsId === w.id) {
-      setWsRenaming(w.name);
+    if (renameReq && renameReq.taskId === w.id) {
+      setTaskRenaming(w.name);
       useUI.setState({ renameRequest: null });
     }
   }, [renameReq?.nonce, w.id, w.name]);
@@ -996,12 +1066,12 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   // restores focus; autoFocus on the freshly-mounted input loses the race.
   // Re-focus on the next two frames to land after Radix's restore tick.
   useEffect(() => {
-    if (wsRenaming === null) return;
+    if (taskRenaming === null) return;
     let cancelled = false;
     const r1 = requestAnimationFrame(() => {
       const r2 = requestAnimationFrame(() => {
         if (cancelled) return;
-        const el = wsRenameInputRef.current;
+        const el = taskRenameInputRef.current;
         if (el && document.activeElement !== el) {
           el.focus();
           el.select();
@@ -1010,7 +1080,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
       if (cancelled) cancelAnimationFrame(r2);
     });
     return () => { cancelled = true; cancelAnimationFrame(r1); };
-  }, [wsRenaming !== null]);
+  }, [taskRenaming !== null]);
   // Tab rename — per-tab id + draft value
   const [tabRenaming, setTabRenaming] = useState<{ id: string; value: string } | null>(null);
 
@@ -1018,24 +1088,24 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   //   "click"  — auto-expand 1→2+ (legacy behavior).
   //   "always" — on wake (0→1+), clear any prior chevron-collapse so
   //              the mode default (expanded) wins again. Users who
-  //              collapse a workspace and then put it to sleep
+  //              collapse a task and then put it to sleep
   //              shouldn't return to a still-collapsed row when they
   //              wake the agent — that contradicts "Auto open".
   //   "chevron"— never auto-expand (the whole point: predictability).
   // Auto-collapse on going to 0 stays in all modes — an empty
-  // workspace has nothing to expand.
+  // task has nothing to expand.
   const prevCountRef = useRef(terminalTabCount);
   useEffect(() => {
     const prev = prevCountRef.current;
     prevCountRef.current = terminalTabCount;
     if (expandMode === "click" && prev <= 1 && terminalTabCount >= 2) {
-      setWorkspaceCollapsed(w.id, false);
+      setTaskCollapsed(w.id, false);
     } else if (expandMode === "always" && prev === 0 && terminalTabCount > 0) {
-      setWorkspaceCollapsed(w.id, false);
+      setTaskCollapsed(w.id, false);
     } else if (prev > 0 && terminalTabCount === 0) {
-      setWorkspaceCollapsed(w.id, true);
+      setTaskCollapsed(w.id, true);
     }
-  }, [terminalTabCount, w.id, setWorkspaceCollapsed, expandMode]);
+  }, [terminalTabCount, w.id, setTaskCollapsed, expandMode]);
 
   // Aggregated work status shown on the row header when collapsed.
   // Priority: attention > done. ("working" intentionally not surfaced.)
@@ -1048,14 +1118,14 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
   const hasWorking = workingIndicator && !hasAttention && !hasDone
     && tabs.some(t => t.type === "terminal" && t.workState === "working");
 
-  async function commitWsRename() {
-    if (wsRenaming === null) return;
-    const trimmed = wsRenaming.trim();
-    setWsRenaming(null);
+  async function commitTaskRename() {
+    if (taskRenaming === null) return;
+    const trimmed = taskRenaming.trim();
+    setTaskRenaming(null);
     // Empty → reset to the branch name (clears any custom label).
     const next = trimmed || w.branch;
     if (next === w.name) return;
-    try { await workspaceRename(w.id, next); await loadAll(); }
+    try { await taskRename(w.id, next); await loadAll(); }
     catch (e) { console.error("rename failed", e); }
   }
 
@@ -1104,25 +1174,25 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
 
   return (
     <div className="mb-px">
-      {/* Workspace header row */}
+      {/* Task header row */}
       <div
         onClick={() => {
           setActive(w.id);
           if (terminalTabs.length === 0) {
-            // No terminals yet — wake the workspace through the store's
+            // No terminals yet — wake the task through the store's
             // restore/seed path. MUST be ensureDefaultTab, not an inline
             // addTab: the durable agent tabs (persisted_tabs) are keyed by
             // tab id, so minting a fresh id here would orphan every stored
             // session and break auto-resume (it also no-ops ensureDefaultTab
-            // in WorkspaceView, which mounts after this click).
+            // in TaskView, which mounts after this click).
             ensureDefaultTab(w.id, w.cli || "claude");
           } else {
             if (activeTabId) setActiveTabId(w.id, activeTabId);
             // Only the "click" mode treats a row click on the already
-            // active workspace as a collapse toggle. The other modes
+            // active task as a collapse toggle. The other modes
             // require the explicit chevron, which removed the "random
             // expand" feel users complained about.
-            if (isActive && expandMode === "click") setWorkspaceCollapsed(w.id, !collapsed);
+            if (isActive && expandMode === "click") setTaskCollapsed(w.id, !collapsed);
           }
         }}
         // Right-click anywhere on the row opens the same actions menu as
@@ -1145,7 +1215,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         {terminalTabs.length === 0
           ? <Moon className="shrink-0 h-3.5 w-3.5 mx-0.5 text-[var(--color-fg-faint)] opacity-40" />
           : <button
-              onClick={(e) => { e.stopPropagation(); setWorkspaceCollapsed(w.id, !collapsed); }}
+              onClick={(e) => { e.stopPropagation(); setTaskCollapsed(w.id, !collapsed); }}
               className="shrink-0 rounded p-0.5 hover:bg-[var(--color-bg-3)] transition-colors"
               data-no-drag
             >
@@ -1157,16 +1227,16 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
         }
 
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          {wsRenaming !== null ? (
+          {taskRenaming !== null ? (
             <input
-              ref={wsRenameInputRef}
+              ref={taskRenameInputRef}
               autoFocus
-              value={wsRenaming}
-              onChange={e => setWsRenaming(e.target.value)}
-              onBlur={commitWsRename}
+              value={taskRenaming}
+              onChange={e => setTaskRenaming(e.target.value)}
+              onBlur={commitTaskRename}
               onKeyDown={(e) => {
-                if (e.key === "Enter") commitWsRename();
-                else if (e.key === "Escape") setWsRenaming(null);
+                if (e.key === "Enter") commitTaskRename();
+                else if (e.key === "Escape") setTaskRenaming(null);
                 e.stopPropagation();
               }}
               onClick={e => e.stopPropagation()}
@@ -1174,23 +1244,15 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
               className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-[3px] text-[13px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
             />
-          ) : w.is_repo_root && w.name === w.branch ? (
-            <span className="-ml-1 shrink-0 rounded px-1 py-px text-[10.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-dim)]">
-              REPO ROOT
-            </span>
           ) : (
             <>
               <span className="min-w-0 truncate font-medium">{w.name}</span>
-              {w.is_repo_root && (
-                <span className="shrink-0 rounded px-1 py-px text-[9.5px] font-semibold uppercase tracking-wide bg-[var(--color-bg-3)] text-[var(--color-fg-faint)]">
-                  REPO
-                </span>
-              )}
+              <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />
             </>
           )}
           {/* Spotlight active indicator: just the animated wave icon.
-              No branch text — avoids any truncation of the workspace name. */}
-          {!wsRenaming && isSpotlighted ? (
+              No branch text — avoids any truncation of the task name. */}
+          {!taskRenaming && isSpotlighted ? (
             <Tip content={`Spotlight: changes are synced with ${project?.base_branch?.replace(/^[^/]+\//, "") ?? "main"}`} delay={0}>
               <AudioWaveform className="termic-spotlight-wave h-3 w-3 shrink-0 text-[var(--color-accent)]" />
             </Tip>
@@ -1198,7 +1260,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             /* Terminal count — only shown when >1. Was fg-faint which
                vanished on warm-dark surfaces; bump to fg-dim + tabular
                nums so the digit stays legible at small sizes. */
-            !wsRenaming && terminalTabs.length > 1 && (
+            !taskRenaming && terminalTabs.length > 1 && (
               <span className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-fg-dim)]">
                 ({terminalTabs.length})
               </span>
@@ -1220,7 +1282,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
             </span>
           )}
           <DropdownRoot open={menuOpen} onOpenChange={setMenuOpen}>
-            <Tip content="Workspace menu">
+            <Tip content="Task menu">
             <DropdownTrigger asChild>
               <button
                 data-no-drag
@@ -1234,7 +1296,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                   (w.sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && !(collapsed && (hasAttention || hasDone || hasWorking))
                     ? "opacity-100 pointer-events-auto"
                     : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
-                  wsRenaming !== null && "pointer-events-none",
+                  taskRenaming !== null && "pointer-events-none",
                 )}
               >
                 {/* Idle badge, hidden on row hover so the cog shows through.
@@ -1314,7 +1376,7 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 <SandboxIcon mode={effectiveSandboxMode(w)} className="h-4 w-4" />
                 <span>{effectiveSandboxMode(w) === "off" ? "Sandbox settings" : SANDBOX_VISUALS[effectiveSandboxMode(w)].shortLabel}</span>
               </DropdownItem>
-              {/* Per-workspace YOLO toggle. Disabled (auto-on) under
+              {/* Per-task YOLO toggle. Disabled (auto-on) under
                   Enforcing — the seatbelt is the boundary there. Red when
                   on without a cage (dangerous). */}
               <DropdownItem
@@ -1323,8 +1385,8 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                 onSelect={() => {
                   if (isSandboxEnforced(effectiveSandboxMode(w))) return;
                   const next = !w.yolo;
-                  setWorkspaceYolo(w.id, next);
-                  void workspaceSetYolo(w.id, next);
+                  setTaskYolo(w.id, next);
+                  void taskSetYolo(w.id, next);
                 }}
               >
                 <Zap
@@ -1346,13 +1408,13 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               </DropdownItem>
               <DropdownItem
                 className="items-center [&>svg]:mt-0"
-                onSelect={() => setWsRenaming(w.name)}
+                onSelect={() => setTaskRenaming(w.name)}
               >
                 <Pencil className="h-4 w-4" />
                 <span>Rename</span>
               </DropdownItem>
-              {/* Custom-command workspaces carry an editable launch
-                  script (agent / shell workspaces resolve their command
+              {/* Custom-command tasks carry an editable launch
+                  script (agent / shell tasks resolve their command
                   from the registry, so there's nothing to edit). */}
               {w.cli === "custom" && (
                 <DropdownItem
@@ -1363,8 +1425,8 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                   <span>Edit command</span>
                 </DropdownItem>
               )}
-              {/* Resume override: only for agent workspaces (shell / custom
-                  tabs don't resume an agent session). Lets a workspace
+              {/* Resume override: only for agent tasks (shell / custom
+                  tabs don't resume an agent session). Lets a task
                   resume a named session instead of termic's auto-managed
                   uuid, e.g. `--resume {WORKSPACE_NAME}`. */}
               {w.cli !== "custom" && w.cli !== "shell" && (
@@ -1390,18 +1452,18 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
                   <span>Copy branch name</span>
                 </DropdownItem>
               )}
-              {/* Duplicate: only for worktree workspaces (the repo-root
+              {/* Duplicate: only for worktree tasks (the repo-root
                   entry IS the project's checkout, can't be branched
                   off cleanly). Pre-fills the New worktree dialog with
                   the source branch as the `base` so the new worktree
                   branches off this one's current tip. */}
-              {!w.is_repo_root && w.branch && (
+              {!w.is_main_checkout && w.branch && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
                   // Defer one frame so the dropdown's focus-teardown
                   // doesn't steal focus from the dialog's autofocused name
                   // input (see ProjectActionsMenuItems for the full why).
-                  onSelect={() => requestAnimationFrame(() => useUI.getState().openNewWorkspace(w.project_id, { baseBranch: w.branch }))}
+                  onSelect={() => requestAnimationFrame(() => useUI.getState().openNewTask(w.project_id, { baseBranch: w.branch }))}
                 >
                   <GitBranchPlus className="h-4 w-4" />
                   <span>Duplicate worktree</span>
@@ -1411,12 +1473,12 @@ function WorkspaceRow({ w, compact }: { w: Workspace; compact: boolean }) {
               <DropdownItem
                 className="items-center [&>svg]:mt-0"
                 onSelect={async () => {
-                  if (wsRenaming !== null) return;
+                  if (taskRenaming !== null) return;
                   await confirmAndArchive(w);
                 }}
               >
                 <Archive className="h-4 w-4" />
-                <span>Archive workspace</span>
+                <span>Archive task</span>
               </DropdownItem>
             </DropdownMenu>
           </DropdownRoot>
@@ -1523,7 +1585,7 @@ function NavItem({ icon, label, active, compact, onClick }: {
   // In compact mode we use a fixed-size square button (h-9 w-9) centered in
   // the column (mx-auto) so every left-rail icon sits at the exact same x —
   // otherwise NavItem's `w-full` paints a wider highlight that visually shifts
-  // it left of the project/workspace icons below it.
+  // it left of the project/task icons below it.
   // font-medium (500) gives the sidebar labels enough weight to read crisp
   // against the bg without looking shouty.
   const btn = (
@@ -1544,22 +1606,32 @@ function NavItem({ icon, label, active, compact, onClick }: {
   return compact ? <Tip content={label}>{btn}</Tip> : btn;
 }
 
-/** Inline name-prompt row rendered above the workspace list while the
- *  user is creating a new repo-root workspace. Mirrors the geometry of
+/** Inline name-prompt row rendered above the task list while the
+ *  user is creating a new repo-root task. Mirrors the geometry of
  *  the rename input (py-[3px], no border, accent ring) so the row
  *  doesn't jump vertically when the input mounts. Auto-focused +
  *  pre-selected so the user can hit Enter to accept the default
  *  ("claude-1") or just start typing to replace. */
-function PendingRepoRootRow({ value, onChange, onCommit, onCancel }: {
+function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange, onCommit, onCancel }: {
+  mode: NewTaskMode;
+  cli: string;
   value: string;
+  branch: string;
   onChange: (v: string) => void;
+  onBranchChange: (v: string) => void;
   onCommit: () => void;
   onCancel: () => void;
 }) {
   const ref = useRef<HTMLInputElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const isWorktree = mode === "worktree";
+  // Show the picked agent's brand icon (or the terminal glyph for a shell) as
+  // the leading marker, so the row confirms which CLI is about to launch.
+  const agents = useApp(s => s.agents);
+  const iconId = resolveIconId(cli, agents);
   useEffect(() => {
     // Two-frame focus matches the Radix dropdown close timing — same
-    // workaround used by the workspace rename input. autoFocus alone
+    // workaround used by the task rename input. autoFocus alone
     // races the menu's focus restoration.
     let cancelled = false;
     const r1 = requestAnimationFrame(() => {
@@ -1572,22 +1644,56 @@ function PendingRepoRootRow({ value, onChange, onCommit, onCancel }: {
     });
     return () => { cancelled = true; cancelAnimationFrame(r1); };
   }, []);
+  const keyHandler = (e: ReactKeyboardEvent) => {
+    if (e.key === "Enter") { e.preventDefault(); onCommit(); }
+    else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+    e.stopPropagation();
+  };
+  // Cancel only when focus leaves the WHOLE row — tabbing name → branch must
+  // not dismiss it (single-field rows never had a second focus target).
+  const handleBlur = (e: ReactFocusEvent) => {
+    if (!containerRef.current?.contains(e.relatedTarget as Node | null)) onCancel();
+  };
+  const inputCls =
+    "min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-[3px] text-[13px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]";
   return (
-    <div className="ml-3 mr-1 flex items-center gap-1 rounded-md px-1 py-1">
-      <ChevronRight className="h-3.5 w-3.5 shrink-0 mx-0.5 text-[var(--color-fg-faint)]" />
-      <input
-        ref={ref}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        onBlur={onCancel}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") { e.preventDefault(); onCommit(); }
-          else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
-          e.stopPropagation();
-        }}
-        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-        className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-[3px] text-[13px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
-      />
+    <div
+      ref={containerRef}
+      onBlur={handleBlur}
+      className="ml-3 mr-1 flex flex-col gap-1 rounded-md px-1 py-1"
+    >
+      {/* Both rows share an identical leading-icon column (same glyph box +
+          same gap) so the name and branch inputs left-align exactly. */}
+      <div className="flex items-center gap-1.5">
+        <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
+          <CliIcon cli={iconId} className="h-3.5 w-3.5" />
+        </span>
+        <input
+          ref={ref}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          onKeyDown={keyHandler}
+          placeholder="Task name"
+          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+          className={inputCls}
+        />
+      </div>
+      {isWorktree && (
+        // Auto-derived branch, editable. Indented by one icon column (pl-5 =
+        // name icon 14px + gap 6px) so the GitBranch glyph lines up with the
+        // START of the name input above it, reading as a child of the name.
+        <div className="flex items-center gap-1.5 pl-5">
+          <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+          <input
+            value={branch}
+            onChange={e => onBranchChange(e.target.value)}
+            onKeyDown={keyHandler}
+            placeholder="branch"
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            className={cn(inputCls, "font-mono text-[12px] text-[var(--color-fg-dim)] ring-[var(--color-border)]")}
+          />
+        </div>
+      )}
     </div>
   );
 }

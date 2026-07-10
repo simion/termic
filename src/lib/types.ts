@@ -10,15 +10,15 @@ export type CLI = "claude" | "codex" | "agy" | "grok" | "opencode";
  *  (no proxy). */
 export type SandboxMode = "off" | "monitor" | "enforce" | "enforce-fs";
 
-/** Resolve a workspace's effective sandbox mode, bridging the legacy
+/** Resolve a task's effective sandbox mode, bridging the legacy
  *  `sandbox_enabled` bool for records written before monitoring shipped.
  *  `sandbox_mode` wins when present. */
 export function effectiveSandboxMode(
-  ws: { sandbox_mode?: SandboxMode; sandbox_enabled?: boolean } | null | undefined,
+  task: { sandbox_mode?: SandboxMode; sandbox_enabled?: boolean } | null | undefined,
 ): SandboxMode {
-  if (!ws) return "off";
-  if (ws.sandbox_mode) return ws.sandbox_mode;
-  return ws.sandbox_enabled ? "enforce" : "off";
+  if (!task) return "off";
+  if (task.sandbox_mode) return task.sandbox_mode;
+  return task.sandbox_enabled ? "enforce" : "off";
 }
 
 /** True when the seatbelt FILESYSTEM cage is active (deny-by-default reads
@@ -34,7 +34,7 @@ export interface Project {
   id: string;
   name: string;
   root_path: string;
-  workspaces_path: string;
+  tasks_path: string;
   base_branch: string;
   remote: string;
   preview_url: string;
@@ -44,16 +44,16 @@ export interface Project {
   archive_script: string;
   default_cli: string;
   created: string;
-  /** When true, the "New workspace" dialog pre-checks its sandbox toggle.
-   *  Existing workspaces aren't re-evaluated - their sandbox pin is
+  /** When true, the "New task" dialog pre-checks its sandbox toggle.
+   *  Existing tasks aren't re-evaluated - their sandbox pin is
    *  captured at creation and immutable thereafter. */
   default_sandbox?: boolean;
-  /** Default sandbox MODE for new workspaces (off / monitor / enforce).
+  /** Default sandbox MODE for new tasks (off / monitor / enforce).
    *  Additive over `default_sandbox`; when undefined the dialog derives
    *  the default from `default_sandbox` (true → enforce). */
   default_sandbox_mode?: SandboxMode;
   /** Extra writable subpaths added to the seatbelt profile, on top of
-   *  the workspace path + agent config dirs + TMPDIR baked into the
+   *  the task path + agent config dirs + TMPDIR baked into the
    *  default. `$HOME` and `$WORKSPACE` are substituted at render time. */
   sandbox_rw_paths?: string[];
   /** Extra POSIX-regex hostname allowlist entries appended to the
@@ -66,13 +66,13 @@ export interface Project {
 
   /** "single" (default) = one git repo, worktrees branched off it.
    *  "multi" = host repo for shared CLAUDE.md / AGENTS.md / .claude/
-   *  + a list of member project ids. Workspaces under a multi project
+   *  + a list of member project ids. Tasks under a multi project
    *  are worktrees of the host with each member worktree'd or
    *  symlinked inside named subdirs. */
   type?: "single" | "multi";
   /** True when `root_path` is NOT a git repo — a plain folder that may
    *  group several independent repos (issue #4). Such a project only
-   *  spawns repo-root workspaces (agent runs at the folder; no worktree,
+   *  spawns repo-root tasks (agent runs at the folder; no worktree,
    *  branch, or diff). For `type === "multi"` it means the HOST is a
    *  plain folder. Missing/false = normal git-backed project. */
   non_git?: boolean;
@@ -97,7 +97,7 @@ export interface ProjectMember {
   setup_script: string;
   run_script: string;
   archive_script: string;
-  /** Sandbox lists unioned into the workspace sandbox at create. Only
+  /** Sandbox lists unioned into the task sandbox at create. Only
    *  populated when a member is seeded from an existing project; not
    *  edited in the member dialogs. */
   sandbox_rw_paths?: string[];
@@ -106,11 +106,11 @@ export interface ProjectMember {
 
 export type MemberMode = "worktree" | "repo_root";
 
-/** One entry in a multi-repo workspace's composition. Frozen at
- *  workspace creation; the wrapper dir IS the host's worktree and
+/** One entry in a multi-repo task's composition. Frozen at
+ *  task creation; the wrapper dir IS the host's worktree and
  *  member entries live at `<wrapper>/<dir_name>`. */
-export interface WorkspaceMember {
-  /** Legacy reference (workspaces created before members went inline).
+export interface TaskMember {
+  /** Legacy reference (tasks created before members went inline).
    *  New records use `repo_path`. */
   project_id?: string;
   /** Source repo path, frozen at create (archive removes the worktree
@@ -122,10 +122,10 @@ export interface WorkspaceMember {
   path: string;
   /** Per-member port (frozen at create). Exposed as $TERMIC_PORT
    *  when this member's script runs so siblings don't collide on
-   *  the same listening port. 0 = legacy workspace created before
-   *  per-member ports existed; falls back to the workspace's own. */
+   *  the same listening port. 0 = legacy task created before
+   *  per-member ports existed; falls back to the task's own. */
   port?: number;
-  /** Per-member script overrides. Frozen at workspace creation from
+  /** Per-member script overrides. Frozen at task creation from
    *  the member project's own defaults; empty = the member skips
    *  that script. */
   setup_script?: string;
@@ -133,7 +133,7 @@ export interface WorkspaceMember {
   archive_script?: string;
 }
 
-export interface Workspace {
+export interface Task {
   id: string;
   project_id: string;
   name: string;
@@ -145,10 +145,10 @@ export interface Workspace {
   created: string;
   archived: boolean;
   archived_at?: string;
-  /** True when this workspace points at the project's main repo checkout
+  /** True when this task points at the project's main repo checkout
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
-  is_repo_root?: boolean;
+  is_main_checkout?: boolean;
   /** Total agent spawns ever recorded for this worktree. Historical
    *  metric only — resume gating uses `has_resumable_history` now. */
   spawn_count?: number;
@@ -161,12 +161,12 @@ export interface Workspace {
    *  id-capable CLI (e.g. claude). Reused on every subsequent spawn via
    *  `resume_id_args`. Keyed by agent id.
    *  Survives across termic restarts; lets us auto-resume in repo-root
-   *  workspaces too without cross-pollinating with the user's external
+   *  tasks too without cross-pollinating with the user's external
    *  sessions in the same cwd. */
   agent_session_ids?: Record<string, string>;
-  /** PINNED at creation. Driven by NewWorkspaceDialog (defaulting to
+  /** PINNED at creation. Driven by NewTaskDialog (defaulting to
    *  the project's `default_sandbox`). There is no setter - to flip
-   *  it, archive the workspace and recreate. The UI shows a lock
+   *  it, archive the task and recreate. The UI shows a lock
    *  badge on sandboxed rows. */
   sandbox_enabled?: boolean;
   /** Sandbox enforcement mode (off / monitor / enforce). Additive third
@@ -175,37 +175,37 @@ export interface Workspace {
    *  original immutability promise, the mode IS editable post-create via
    *  the Sandbox dialog (a forced PTY restart applies it). */
   sandbox_mode?: SandboxMode;
-  /** Per-workspace YOLO (auto-approve) flag, applied to every agent
+  /** Per-task YOLO (auto-approve) flag, applied to every agent
    *  launched here. Only meaningful when NOT enforce-sandboxed (Enforcing
    *  auto-enables YOLO since the cage is the boundary). Replaces the old
    *  global toggle. */
   yolo?: boolean;
   /** Frozen-at-creation copies of the sandbox lists. The dialog seeds
    *  these from the project's defaults, the user adds/removes before
-   *  Create, and from then on the workspace owns them. Editing the
+   *  Create, and from then on the task owns them. Editing the
    *  project's defaults later WILL NOT reach back into existing
-   *  workspaces - matches the immutability promise of sandbox_enabled. */
+   *  tasks - matches the immutability promise of sandbox_enabled. */
   sandbox_rw_paths?: string[];
   sandbox_allowed_hosts?: string[];
-  /** Multi-repo composition. Empty for single-repo workspaces. */
-  composition?: WorkspaceMember[];
-  /** Pre-set launch command for `cli === "custom"` repo-root workspaces.
+  /** Multi-repo composition. Empty for single-repo tasks. */
+  composition?: TaskMember[];
+  /** Pre-set launch command for `cli === "custom"` repo-root tasks.
    *  The default tab runs this through a login shell instead of an agent
    *  binary (e.g. `ssh box`, `npm run dev`). Null/undefined for every
-   *  agent / shell workspace. */
+   *  agent / shell task. */
   custom_command?: string | null;
-  /** Per-workspace override for the agent's resume arguments. When set
+  /** Per-task override for the agent's resume arguments. When set
    *  (non-empty), the spawn uses this verbatim (placeholders like
    *  `{WORKSPACE_NAME}` / `{WORKSPACE_SLUG}` expanded) as the resume block
    *  instead of termic's id-based (`--resume <uuid>`) or cwd-based
-   *  (`--continue`) logic. Lets a repo-root workspace resume a named
+   *  (`--continue`) logic. Lets a repo-root task resume a named
    *  session, e.g. `--resume {WORKSPACE_NAME}`. Null/empty = default. */
   resume_override?: string | null;
-  /** Durable agent tabs for this workspace, in display order. Rewritten by
-   *  `workspaceSetTabs` on every tab add / close / reorder / rename, and
+  /** Durable agent tabs for this task, in display order. Rewritten by
+   *  `taskSetTabs` on every tab add / close / reorder / rename, and
    *  read on app launch to restore the full agent-tab set (not just the
    *  primary). Each id-capable tab carries its own `session_id` so several
-   *  agents in one workspace resume independently. Shell / scratch tabs are
+   *  agents in one task resume independently. Shell / scratch tabs are
    *  never listed here — they have no session to resume. Closing a tab with
    *  its X drops it from this list (forget); quitting the app leaves it
    *  intact (restore). */
@@ -214,7 +214,7 @@ export interface Workspace {
   split_layout?: string | null;
 }
 
-/** One durable agent tab persisted on a workspace. Mirror of
+/** One durable agent tab persisted on a task. Mirror of
  *  `PersistedTab` in src-tauri/src/lib.rs. */
 export interface PersistedTab {
   id: string;
@@ -226,7 +226,7 @@ export interface PersistedTab {
   command?: string | null;
   /** termic-owned per-tab session uuid for id-capable agents
    *  (claude / gemini). Null for cwd-resume agents (codex) and tabs that
-   *  have not minted a session yet. Owned by `workspaceSetTabSessionId`. */
+   *  have not minted a session yet. Owned by `taskSetTabSessionId`. */
   session_id?: string | null;
   /** Leaf ID of the split pane this tab belongs to (absent for main panel tabs). */
   pane_leaf_id?: string | null;
@@ -235,7 +235,7 @@ export interface PersistedTab {
   run_member?: string | null;
 }
 
-/** Per-member input for `workspace_create_multi`. `root_path` matches a
+/** Per-member input for `task_create_multi`. `root_path` matches a
  *  member entry on the multi-repo project. */
 export interface CreateMultiMember {
   root_path: string;
@@ -259,13 +259,13 @@ export interface CreateMultiArgs {
   sandbox_allowed_hosts?: string[];
 }
 
-export interface CreateWorkspaceArgs {
+export interface CreateTaskArgs {
   project_id: string;
   name: string;
   cli?: string;
   base_branch?: string | null;
   branch?: string | null;
-  /** Pre-generated workspace UUID. Pass this if you want to subscribe to
+  /** Pre-generated task UUID. Pass this if you want to subscribe to
    *  `setup-output://<id>` / `setup-done://<id>` events BEFORE invoking — the
    *  alternative (using server-generated ID returned from the call) has a
    *  guaranteed race for empty setup scripts. */
@@ -277,19 +277,23 @@ export interface CreateWorkspaceArgs {
   /** Sandbox mode pin (off / monitor / enforce). Additive over
    *  `sandbox_enabled`; when present it wins. */
   sandbox_mode?: SandboxMode;
-  /** Per-workspace sandbox lists. The dialog seeds from the project's
+  /** Per-task sandbox lists. The dialog seeds from the project's
    *  defaults, the user edits, the final shape lands here. Unset =
    *  Rust falls back to the project's defaults verbatim. */
   sandbox_rw_paths?: string[];
   sandbox_allowed_hosts?: string[];
+  /** Pre-set launch command for a `cli === "custom"` worktree task (quick
+   *  "Custom command" in worktree mode). The default tab runs this through a
+   *  login shell instead of an agent binary. Null/undefined for agent/shell. */
+  custom_command?: string | null;
 }
 
 export interface Agent {
-  /** Stable key referenced by Workspace.cli. */
+  /** Stable key referenced by Task.cli. */
   id: string;
   display_name: string;
   /** Binary or shell command to spawn. Independent of `id` so renames don't
-   *  invalidate existing workspaces. */
+   *  invalidate existing tasks. */
   command: string;
   args: string[];
   /** Icon identifier. Either a brand id ("claude", "codex", "opencode", …) or
@@ -300,8 +304,8 @@ export interface Agent {
   /** Built-in (the original 3) — user can edit fields but not remove. */
   builtin: boolean;
   /** User toggle: hide this agent from the CLI pickers (worktree popover,
-   *  New Workspace, Review, the + tab menu). Settings → Agent CLIs still
-   *  lists it so it can be re-enabled; existing workspaces bound to it
+   *  New Task, Review, the + tab menu). Settings → Agent CLIs still
+   *  lists it so it can be re-enabled; existing tasks bound to it
    *  keep working. Missing = false. */
   disabled?: boolean;
   /** Optional capabilities the app consumes when present. Missing = "not
@@ -321,7 +325,7 @@ export interface Agent {
     resume_args?: string[];
     /** Args used on the FIRST spawn of an id-capable CLI to mint a
      *  termic-owned session. Must contain `{UUID}`, which expands to a
-     *  freshly-minted uuid that's then persisted on the workspace.
+     *  freshly-minted uuid that's then persisted on the task.
      *  Empty/missing → CLI doesn't support deterministic sessions →
      *  fall back to legacy `resume_args` behavior. */
     session_id_args?: string[];
@@ -331,20 +335,20 @@ export interface Agent {
     resume_id_args?: string[];
     /** Always-applied args (every spawn). Useful for things like
      *  `--name {WORKSPACE_SLUG}` so claude's /resume picker shows
-     *  termic's workspace name. */
+     *  termic's task name. */
     name_args?: string[];
   };
   /** Per-agent environment variables merged into the spawn env. Useful
    *  for things like `CLAUDE_CODE_NO_FLICKER=1` without wrapping the CLI
    *  in a shell script. UI parses `KEY=VAL` lines and round-trips them. */
   env?: Record<string, string>;
-  /** Paths joined into every sandbox built for a workspace using this
-   *  agent. Cannot be removed per-workspace — to drop one, edit the
-   *  agent in Settings → Agents (affects every workspace using it).
+  /** Paths joined into every sandbox built for a task using this
+   *  agent. Cannot be removed per-task — to drop one, edit the
+   *  agent in Settings → Agents (affects every task using it).
    *  `$HOME` substitution happens at the Rust side. */
   sandbox_allowed_paths?: string[];
   /** Per-agent allowed hosts (network counterpart to the paths above).
-   *  "Allow · per agent" appends here so every workspace using this CLI
+   *  "Allow · per agent" appends here so every task using this CLI
    *  inherits the host. */
   sandbox_allowed_hosts?: string[];
   /** Whether work-done detection is active for this agent. Defaults to
@@ -358,7 +362,7 @@ export interface Agent {
   /** One-shot session-ID capture after the agent's first user interaction.
    *  For CLIs that create sessions lazily (e.g. opencode): on the first
    *  Enter keypress with no stored session ID, termic waits `delay_ms`,
-   *  runs `command` in the workspace CWD on first PTY exit, and stores
+   *  runs `command` in the task CWD on first PTY exit, and stores
    *  stdout as the tab's resume session ID for subsequent spawns. */
   post_launch_capture?: { command: string };
   /** "agent" (default) or "terminal". Terminal entries live in the same
@@ -376,7 +380,7 @@ export interface Settings {
   welcomed: boolean;
   agents: Agent[];
   /** Global sandbox defaults. Merged with the per-project lists when
-   *  a workspace is created with sandbox enabled; pre-filled into the
+   *  a task is created with sandbox enabled; pre-filled into the
    *  Edit Sandbox dialog when the user enables the cage from scratch. */
   sandbox_default_rw_paths?: string[];
   sandbox_default_allowed_hosts?: string[];
@@ -393,7 +397,7 @@ export interface DiscoveredRepo {
 }
 
 /** A git worktree of a project's repo that isn't yet tracked as a
- *  termic workspace — offered for import (issue #5). */
+ *  termic task — offered for import (issue #5). */
 export interface ImportableWorktree {
   path: string;
   /** Short branch name, or "" for a detached HEAD. */
@@ -420,7 +424,7 @@ export interface ChangeGroup {
   branch: string;
   /** "host" | "worktree" | "repo_root" — drives the UI badge + the
    *  click-to-diff gate (repo_root files canonicalize outside the
-   *  wrapper, so safe_workspace_path would reject them). */
+   *  wrapper, so safe_task_path would reject them). */
   kind: "host" | "worktree" | "repo_root";
   path: string;
   files: ChangeFile[];
@@ -429,11 +433,11 @@ export interface ChangeGroup {
 export interface Changes {
   files: ChangeFile[];
   count: number;
-  /** Per-repo groupings. Single-repo workspaces have one entry. */
+  /** Per-repo groupings. Single-repo tasks have one entry. */
   groups?: ChangeGroup[];
 }
 
-// ── Fork-style staging (workspace_git_status) ──
+// ── Fork-style staging (task_git_status) ──
 // Unlike ChangeFile, these keep the index column and worktree column
 // separate so the UI can render Staged vs Unstaged panes. Paths are
 // relative to their own repo (the frontend re-prefixes member paths with
@@ -515,7 +519,7 @@ export interface BaseTab {
    *  cleared only by an explicit ⌘S. */
   dirty?: boolean;
   /** When set, this tab lives inside a split pane (leaf node id). Absent =
-   *  main pane tab (shown in the workspace tab bar). Split-pane tabs are
+   *  main pane tab (shown in the task tab bar). Split-pane tabs are
    *  ephemeral — they are not persisted across launches. */
   paneId?: string;
 }
@@ -524,10 +528,10 @@ export interface TerminalTab extends BaseTab {
   type: "terminal";
   /** Agent id (claude / gemini / codex / agy) the tab runs, OR the
    *  sentinel `"shell"` for a plain login-shell tab, OR `"custom"` for a
-   *  workspace launched with a user-supplied command (see `command`). */
+   *  task launched with a user-supplied command (see `command`). */
   cli: string;
   /** Launch command for `cli === "custom"` tabs — run through a login
-   *  shell (`zsh -lc`). Seeded from the workspace's `custom_command`
+   *  shell (`zsh -lc`). Seeded from the task's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */
   command?: string;
   /** Set on Run pop-out tabs (GH #54): the tab hosts the project/member run
@@ -542,21 +546,25 @@ export interface TerminalTab extends BaseTab {
     /** Restored-from-persistence marker: the tab comes back in its pane but
      *  does NOT auto-run the script — the user hits play. */
     idle?: boolean;
+    /** Set when the script last exited non-zero (a manual Stop, code null,
+     *  is NOT a failure). Cleared on restart. Drives the tab pill's red
+     *  failed indicator. */
+    failed?: boolean;
   };
   ptyId?: string;
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
-  /** True for the auto-created default tab when entering a workspace.
+  /** True for the auto-created default tab when entering a task.
    *  Drives the resume-on-spawn decision: default tab resumes the agent's
    *  prior conversation (if any), user-added tabs always start fresh
    *  (otherwise multi-tab parallelism collapses into "every new tab tries
    *  to resume the same session"). */
   is_default?: boolean;
   /** termic-owned session uuid for THIS tab (id-capable agents only:
-   *  claude / gemini). Restored from the workspace's `persisted_tabs` on
+   *  claude / gemini). Restored from the task's `persisted_tabs` on
    *  launch and minted on first spawn otherwise. Distinct per tab so two
-   *  agents in one workspace resume independently — the primary tab is no
+   *  agents in one task resume independently — the primary tab is no
    *  longer the only resumable one. Cleared (undefined) when a resume
    *  attempt rapid-exits (the stored session no longer resolves). */
   sessionId?: string;
@@ -579,7 +587,7 @@ export interface TerminalTab extends BaseTab {
    *  Used to tint the progress bar (red for error, yellow for warning). */
   workProgressKind?: 1 | 2 | 3 | 4 | null;
   /** Wall-clock when the user last manually cleared workState via
-   *  focus (clicking the tab / workspace). Setting workState to
+   *  focus (clicking the tab / task). Setting workState to
    *  "working" inside the grace window after this timestamp is
    *  silenced so a stuck spinner the user just dismissed doesn't
    *  instantly re-arm. */

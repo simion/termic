@@ -86,7 +86,7 @@ export function ShellIcon({ className }: Props) {
   );
 }
 
-// Custom-command workspaces (cli: "custom"). A "play inside a terminal"
+// Custom-command tasks (cli: "custom"). A "play inside a terminal"
 // glyph — distinguishes a pre-set launch command (ssh, dev server, repl)
 // from the plain login shell of `ShellIcon`.
 export function CustomCommandIcon({ className }: Props) {

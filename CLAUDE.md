@@ -1,6 +1,6 @@
 # termic
 
-One window, many parallel agents (claude / gemini / codex) each in its own git-worktree workspace with an embedded terminal. **Performance trumps polish** — a 1-frame terminal flicker, a >100ms editor open, or an unnecessary sidebar re-render are real regressions.
+One window, many parallel agents (claude / gemini / codex) each in its own git-worktree task with an embedded terminal. **Performance trumps polish** — a 1-frame terminal flicker, a >100ms editor open, or an unnecessary sidebar re-render are real regressions.
 
 ## Stack
 
@@ -17,10 +17,10 @@ src/
 ├── store/        (app, ui, prefs, scriptRuns)
 ├── hooks/        (useShortcuts, useAttentionNotifier)
 └── components/
-    ├── workspace/ (MainArea, WorkspaceView, TabBar, TerminalPane, EditorPane, DiffPane, AuxTerminal, RightPanel, FileTree)
+    ├── task/ (MainArea, TaskView, TabBar, TerminalPane, EditorPane, DiffPane, AuxTerminal, RightPanel, FileTree)
     ├── sidebar/ / settings/ / dialogs/ / ui/ / views/
     └── UnifiedBar.tsx
-src-tauri/src/lib.rs   ← ALL Rust (PTY, project/workspace IO, settings, scripts, git, sandbox, proxy)
+src-tauri/src/lib.rs   ← ALL Rust (PTY, project/task IO, settings, scripts, git, sandbox, proxy)
 ```
 
 ## Run / build
@@ -49,7 +49,7 @@ No em dashes (—) anywhere in user-visible text: dialogs, tooltips, buttons, `C
 - Add a server/backend daemon (app is entirely on-device).
 - Make IO-heavy Tauri commands synchronous (freezes the Mac via WKWebView event loop).
 - Sandbox AuxTerminal, setup, run, or archive scripts (only agent CLI PTY is the threat model).
-- Expose `workspace_set_sandbox` without SIGKILLing live PTYs by default.
+- Expose `task_set_sandbox` without SIGKILLing live PTYs by default.
 - Widen the CSP in `tauri.conf.json`. One policy covers the whole webview, and the webview sits outside the sandbox ("Known gap" in [docs/sandbox.md](docs/sandbox.md)). `img-src https:` is an accepted exception; `connect-src` / `script-src` would be far worse.
 - Force subpixel font smoothing (colored fringing on dark backgrounds).
 - Hard-code hex colors outside `@theme` in `index.css`.
@@ -59,7 +59,8 @@ No em dashes (—) anywhere in user-visible text: dialogs, tooltips, buttons, `C
 Deeper references — read when working in that area:
 
 - [docs/ipc.md](docs/ipc.md) — Tauri commands, critical payload shapes, long-running IPC discipline
-- [docs/data-model.md](docs/data-model.md) — data dirs, Project/Workspace/Settings/Tab entities
+- [docs/data-model.md](docs/data-model.md) — data dirs, Project/Task/Settings/Tab entities
+- [docs/tech-debt.md](docs/tech-debt.md) — index of temporary/removable scaffolding (e.g. the workspace→task migration) + purge checklists
 - [docs/performance.md](docs/performance.md) — perf traps, sub-pixel/rendering hardening
 - [docs/sandbox.md](docs/sandbox.md) — sandbox-exec + CONNECT proxy, YOLO interaction, deny debugging
 - [docs/shortcuts.md](docs/shortcuts.md) — shortcut system architecture, adding shortcuts, glyph rendering

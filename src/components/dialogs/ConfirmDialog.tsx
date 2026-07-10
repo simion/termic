@@ -14,19 +14,19 @@ export function ConfirmDialog() {
   const resolve = useUI(s => s.resolveConfirm);
 
   const newProjectOpen = useUI(s => s.newProjectOpen);
-  const newWorkspaceProjectId = useUI(s => s.newWorkspaceProjectId);
+  const newTaskProjectId = useUI(s => s.newTaskProjectId);
   const welcomeOpen = useUI(s => s.welcomeOpen);
   const changelogOpen = useUI(s => s.changelogOpen);
-  const broadcastForWsId = useUI(s => s.broadcastForWsId);
-  const sandboxForWsId = useUI(s => s.sandboxForWsId);
+  const broadcastForTaskId = useUI(s => s.broadcastForTaskId);
+  const sandboxForTaskId = useUI(s => s.sandboxForTaskId);
 
   const isAnotherDialogOpen =
     newProjectOpen ||
-    newWorkspaceProjectId !== null ||
+    newTaskProjectId !== null ||
     welcomeOpen ||
     changelogOpen ||
-    broadcastForWsId !== null ||
-    sandboxForWsId !== null;
+    broadcastForTaskId !== null ||
+    sandboxForTaskId !== null;
 
   const [checked, setChecked] = useState(false);
 

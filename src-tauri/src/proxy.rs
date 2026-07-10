@@ -1,6 +1,6 @@
 // In-process HTTP CONNECT proxy with a regex hostname allowlist.
 // Replaces the tinyproxy child process we previously spawned per
-// sandboxed workspace - eliminates the external dependency, removes
+// sandboxed task - eliminates the external dependency, removes
 // the bundling problem (Mach-O / Elf arch issues, dylib transitive
 // deps, brew assumptions), and makes the Linux port trivial because
 // the proxy code is platform-neutral Rust.
@@ -8,7 +8,7 @@
 // Design constraints:
 //   - One proxy instance per sandboxed PTY. Lives in the SandboxBundle;
 //     Drop signals shutdown and joins the accept thread.
-//   - Bind to 127.0.0.1:0 (kernel-assigned port) so multiple workspaces
+//   - Bind to 127.0.0.1:0 (kernel-assigned port) so multiple tasks
 //     don't collide. Port returned to the caller for env injection.
 //   - Allowlist is a precompiled Vec<Regex> over the request hostname.
 //     Anything not matching gets HTTP 403 (matches tinyproxy's
@@ -57,7 +57,7 @@ pub struct ProxyHandle {
     thread: Option<thread::JoinHandle<()>>,
 }
 
-/// Per-workspace per-host deny tracker. We record count + last-seen
+/// Per-task per-host deny tracker. We record count + last-seen
 /// timestamp per blocked hostname so the footer chip popover can
 /// show "what got blocked" instead of just a number. Stored
 /// in-process, lifetime = Termic session (matches user expectation
@@ -98,7 +98,7 @@ fn incr_network_deny(ws_id: &str, host: &str) {
     }
 }
 
-/// Total network-deny count for a workspace (sum across all hosts).
+/// Total network-deny count for a task (sum across all hosts).
 /// Used by the live footer counter.
 pub fn network_deny_count(ws_id: &str) -> u64 {
     tracker().lock().ok()
@@ -106,7 +106,7 @@ pub fn network_deny_count(ws_id: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Snapshot of denied hosts for a workspace, sorted by most-recently-
+/// Snapshot of denied hosts for a task, sorted by most-recently-
 /// seen first. Used by the footer chip popover to show "what got
 /// blocked." Caller-side cap on rendered rows is fine; the data here
 /// is bounded by however many unique hosts the agent has tried.
@@ -121,7 +121,7 @@ pub fn network_deny_list(ws_id: &str) -> Vec<DenyEntry> {
 /// Wipe the network-deny tracker for `ws_id`. Called from
 /// `sandbox::provision()` so a fresh PTY spawn starts with no stale
 /// host-deny rows (e.g. after the user added a hostname to the
-/// workspace allow-list, or after a migration updated the per-CLI
+/// task allow-list, or after a migration updated the per-CLI
 /// baseline). If anything is still being denied under the new
 /// allowlist regex, the next request from the agent re-fills it.
 pub fn clear_network_denies(ws_id: &str) {
@@ -135,8 +135,8 @@ pub fn clear_network_denies(ws_id: &str) {
 
 // ─── Monitoring mode: record EVERY network request (allowed + would-be-
 //     blocked) and forward it anyway. Backs the sandbox activity popover
-//     for workspaces in MONITORING mode. Separate tracker from the deny
-//     one so ENFORCING workspaces keep their existing "blocked only"
+//     for tasks in MONITORING mode. Separate tracker from the deny
+//     one so ENFORCING tasks keep their existing "blocked only"
 //     surface untouched.
 #[derive(Clone)]
 pub struct NetAccessEntry {
@@ -214,12 +214,12 @@ impl Drop for ProxyHandle {
 
 /// Spin up the proxy. Returns immediately once the listener is bound;
 /// the accept loop runs in a background thread. `allowed_patterns` is
-/// the host-allowlist regex set (one entry per line of the workspace's
+/// the host-allowlist regex set (one entry per line of the task's
 /// allowed_hosts config); patterns are tried in order, first match wins.
 /// `ws_id` is stored so denies can be attributed to the owning
-/// workspace (drives the footer-chip counter via `network_deny_count`).
+/// task (drives the footer-chip counter via `network_deny_count`).
 pub fn start(allowed_patterns: Vec<String>, ws_id: String, monitor: bool) -> Result<ProxyHandle> {
-    // Compile up front so a bad regex fails the workspace spawn cleanly
+    // Compile up front so a bad regex fails the task spawn cleanly
     // rather than silently 403-ing every request.
     let regexes: Vec<Regex> = allowed_patterns
         .iter()
@@ -359,11 +359,11 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
     if monitor {
         incr_network_access(ws_id, host, port, !allowed);
         if !allowed {
-            dlog(&format!("[proxy] CONNECT {host}:{port} → MONITOR (would-block, forwarded) ws={ws_id}"));
+            dlog(&format!("[proxy] CONNECT {host}:{port} → MONITOR (would-block, forwarded) task={ws_id}"));
         }
     } else if !allowed {
         incr_network_deny(ws_id, host);
-        dlog(&format!("[proxy] CONNECT {host}:{port} → 403 (not on allowlist) ws={ws_id}"));
+        dlog(&format!("[proxy] CONNECT {host}:{port} → 403 (not on allowlist) task={ws_id}"));
         // 403 with a self-identifying reason phrase + body + custom
         // header so the AGENT sees that THIS proxy (not the upstream
         // server, not a corporate gateway) rejected the request. The
@@ -375,8 +375,8 @@ fn handle_connect(mut client: TcpStream, target: &str, regexes: &[Regex], ws_id:
         let body = format!(
             "Blocked by Termic sandbox.\n\n\
              Host: {host}\n\
-             This workspace's allowed-hosts list does NOT permit traffic to this host.\n\n\
-             To unblock: open the Sandbox dialog (shield icon on the workspace) and add\n\
+             This task's allowed-hosts list does NOT permit traffic to this host.\n\n\
+             To unblock: open the Sandbox dialog (shield icon on the task) and add\n\
              this host (wildcards OK, e.g. `*.{host}`) to \"Add allowed hosts\".\n\
              Or disable the sandbox entirely if that's what you want.\n"
         );
@@ -470,19 +470,19 @@ fn handle_plain_http(
         // MONITORING: log + forward, never block (see handle_connect).
         incr_network_access(ws_id, host, port, !allowed);
         if !allowed {
-            dlog(&format!("[proxy] HTTP {method} {host}:{port} → MONITOR (would-block, forwarded) ws={ws_id}"));
+            dlog(&format!("[proxy] HTTP {method} {host}:{port} → MONITOR (would-block, forwarded) task={ws_id}"));
         }
     } else if !allowed {
         // Same self-identifying 403 as the CONNECT path so plain-HTTP
         // clients (older code, agents that haven't moved to HTTPS for
         // a given target) see the Termic-specific signal too.
         incr_network_deny(ws_id, host);
-        dlog(&format!("[proxy] HTTP {method} {host}:{port} → 403 (not on allowlist) ws={ws_id}"));
+        dlog(&format!("[proxy] HTTP {method} {host}:{port} → 403 (not on allowlist) task={ws_id}"));
         let body = format!(
             "Blocked by Termic sandbox.\n\n\
              Host: {host}\n\
-             This workspace's allowed-hosts list does NOT permit traffic to this host.\n\n\
-             To unblock: open the Sandbox dialog (shield icon on the workspace) and add\n\
+             This task's allowed-hosts list does NOT permit traffic to this host.\n\n\
+             To unblock: open the Sandbox dialog (shield icon on the task) and add\n\
              this host (wildcards OK, e.g. `*.{host}`) to \"Add allowed hosts\".\n\
              Or disable the sandbox entirely if that's what you want.\n"
         );

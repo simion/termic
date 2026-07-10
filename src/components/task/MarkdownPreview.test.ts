@@ -3,21 +3,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/ipc", () => ({
   openPath: vi.fn(),
-  workspaceFileReadBase64: vi.fn(),
-  workspacePathStat: vi.fn(),
-  workspaceRevealPath: vi.fn(),
+  taskFileReadBase64: vi.fn(),
+  taskPathStat: vi.fn(),
+  taskRevealPath: vi.fn(),
 }));
 vi.mock("@/store/app", () => ({ useApp: { getState: vi.fn() } }));
 vi.mock("@/store/ui", () => ({ useUI: { getState: vi.fn() } }));
 
-import { workspaceFileReadBase64 } from "@/lib/ipc";
+import { taskFileReadBase64 } from "@/lib/ipc";
 import {
-  attemptReveal, captureReveal, consumeNavRevalidate, expireRevealGrace, hydrateWorkspaceImages, IMG_CACHE_MAX_ENTRIES,
+  attemptReveal, captureReveal, consumeNavRevalidate, expireRevealGrace, hydrateTaskImages, IMG_CACHE_MAX_ENTRIES,
   imgCacheInsert, newNavRevalidateState, newRevealState,
   type ImgCache, type MarkdownCtx,
 } from "./MarkdownPreview";
 
-const readBase64 = vi.mocked(workspaceFileReadBase64);
+const readBase64 = vi.mocked(taskFileReadBase64);
 
 // Drain the fetch → cache-insert → DOM-apply promise chain (microtasks only,
 // but setTimeout(0) outlives however many .then hops it grows).
@@ -34,7 +34,7 @@ function mount(html: string): { host: HTMLElement; img: HTMLImageElement } {
   return { host, img: host.querySelector("img")! };
 }
 
-describe("hydrateWorkspaceImages", () => {
+describe("hydrateTaskImages", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
     readBase64.mockReset();
@@ -45,7 +45,7 @@ describe("hydrateWorkspaceImages", () => {
     const { host, img } = mount(`<img src="a.png">`);
     const cache = newCache();
 
-    hydrateWorkspaceImages(host, { wsId: "ws1", filePath: "docs/readme.md" }, cache);
+    hydrateTaskImages(host, { taskId: "ws1", filePath: "docs/readme.md" }, cache);
     expect(img.getAttribute("src")).toBeNull(); // never hits the webview origin
     await flush();
 
@@ -55,33 +55,33 @@ describe("hydrateWorkspaceImages", () => {
 
   it("does not re-fetch a positive entry unless revalidatePositive is set", async () => {
     readBase64.mockResolvedValue({ unchanged: false, mime: "image/png", data: "AAA", fp: "1:5" });
-    const ctx: MarkdownCtx = { wsId: "ws1", filePath: "docs/readme.md" };
+    const ctx: MarkdownCtx = { taskId: "ws1", filePath: "docs/readme.md" };
     const { host } = mount(`<img src="a.png">`);
     const cache = newCache();
 
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(readBase64).toHaveBeenCalledTimes(1);
 
     // Re-render (main text effect): same DOM, cache already positive — no
     // reason to re-check a known-good image on every keystroke.
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(readBase64).toHaveBeenCalledTimes(1);
   });
 
   it("sends the cached fp on a settle revalidation and applies the server's unchanged response", async () => {
     readBase64.mockResolvedValue({ unchanged: false, mime: "image/png", data: "AAA", fp: "1:5" });
-    const ctx: MarkdownCtx = { wsId: "ws1", filePath: "docs/readme.md" };
+    const ctx: MarkdownCtx = { taskId: "ws1", filePath: "docs/readme.md" };
     const { host, img } = mount(`<img src="a.png">`);
     const cache = newCache();
 
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(img.getAttribute("src")).toBe("data:image/png;base64,AAA");
 
     readBase64.mockResolvedValue({ unchanged: true, fp: "1:5" });
-    hydrateWorkspaceImages(host, ctx, cache, { revalidatePositive: true });
+    hydrateTaskImages(host, ctx, cache, { revalidatePositive: true });
     await flush();
 
     expect(readBase64).toHaveBeenLastCalledWith("ws1", "docs/a.png", "1:5");
@@ -91,16 +91,16 @@ describe("hydrateWorkspaceImages", () => {
 
   it("clears the stale image when a settle revalidation fails (file deleted)", async () => {
     readBase64.mockResolvedValue({ unchanged: false, mime: "image/png", data: "AAA", fp: "1:5" });
-    const ctx: MarkdownCtx = { wsId: "ws1", filePath: "docs/readme.md" };
+    const ctx: MarkdownCtx = { taskId: "ws1", filePath: "docs/readme.md" };
     const { host, img } = mount(`<img src="a.png">`);
     const cache = newCache();
 
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(img.getAttribute("src")).toBe("data:image/png;base64,AAA");
 
     readBase64.mockRejectedValue("read failed: No such file");
-    hydrateWorkspaceImages(host, ctx, cache, { revalidatePositive: true });
+    hydrateTaskImages(host, ctx, cache, { revalidatePositive: true });
     // Stale-while-revalidate: the old bytes stay up while the read is in flight.
     expect(img.getAttribute("src")).toBe("data:image/png;base64,AAA");
     await flush();
@@ -109,7 +109,7 @@ describe("hydrateWorkspaceImages", () => {
     expect(img.title).toBe("read failed: No such file");
 
     // A later hydrate pass must not resurrect the stale bytes from cache.
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(img.getAttribute("src")).toBeNull();
   });
@@ -121,11 +121,11 @@ describe("hydrateWorkspaceImages", () => {
     // of typing anywhere in the doc. The cooldown spaces retries out.
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     readBase64.mockRejectedValue("read failed: No such file");
-    const ctx: MarkdownCtx = { wsId: "ws1", filePath: "docs/readme.md" };
+    const ctx: MarkdownCtx = { taskId: "ws1", filePath: "docs/readme.md" };
     const { host, img } = mount(`<img src="a.png">`);
     const cache = newCache();
 
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(img.getAttribute("src")).toBeNull();
     expect(img.title).toBe("read failed: No such file");
@@ -135,7 +135,7 @@ describe("hydrateWorkspaceImages", () => {
     // not issue a second IPC call.
     nowSpy.mockReturnValue(1_000_000 + 500);
     readBase64.mockResolvedValue({ unchanged: false, mime: "image/png", data: "BBB", fp: "2:5" });
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(readBase64).toHaveBeenCalledTimes(1);
     expect(img.getAttribute("src")).toBeNull();
@@ -143,7 +143,7 @@ describe("hydrateWorkspaceImages", () => {
     // Past the cooldown: retries and picks up the fix, without needing
     // revalidatePositive (the "retry on an error/re-render trigger" path).
     nowSpy.mockReturnValue(1_000_000 + 2_000);
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(img.getAttribute("src")).toBe("data:image/png;base64,BBB");
     expect(img.getAttribute("title")).toBeNull(); // failure hint cleared
@@ -156,24 +156,24 @@ describe("hydrateWorkspaceImages", () => {
     // remove it on success nor overwrite it with a failure hint.
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     readBase64.mockResolvedValue({ unchanged: false, mime: "image/png", data: "AAA", fp: "1:5" });
-    const ctx: MarkdownCtx = { wsId: "ws1", filePath: "docs/readme.md" };
+    const ctx: MarkdownCtx = { taskId: "ws1", filePath: "docs/readme.md" };
     const { host, img } = mount(`<img src="a.png" title="caption">`);
     const cache = newCache();
 
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(img.getAttribute("src")).toBe("data:image/png;base64,AAA");
     expect(img.title).toBe("caption");
 
     readBase64.mockRejectedValue("read failed: No such file");
-    hydrateWorkspaceImages(host, ctx, cache, { revalidatePositive: true });
+    hydrateTaskImages(host, ctx, cache, { revalidatePositive: true });
     await flush();
     expect(img.getAttribute("src")).toBeNull(); // stale image still cleared
     expect(img.title).toBe("caption");
 
     nowSpy.mockReturnValue(1_000_000 + 2_000); // past the negative-entry cooldown
     readBase64.mockResolvedValue({ unchanged: false, mime: "image/png", data: "BBB", fp: "3:5" });
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     await flush();
     expect(img.getAttribute("src")).toBe("data:image/png;base64,BBB");
     expect(img.title).toBe("caption");
@@ -184,14 +184,14 @@ describe("hydrateWorkspaceImages", () => {
   it("single-flights concurrent reads for the same key instead of racing two", async () => {
     let resolveRead!: (v: { unchanged: boolean; mime?: string; data?: string; fp: string }) => void;
     readBase64.mockReturnValue(new Promise(r => { resolveRead = r; }));
-    const ctx: MarkdownCtx = { wsId: "ws1", filePath: "docs/readme.md" };
+    const ctx: MarkdownCtx = { taskId: "ws1", filePath: "docs/readme.md" };
     const { host } = mount(`<img src="a.png">`);
     const cache = newCache();
 
     // Two overlapping triggers (e.g. a text-effect re-render racing an
     // epoch-effect settle) before the first read has resolved.
-    hydrateWorkspaceImages(host, ctx, cache);
-    hydrateWorkspaceImages(host, ctx, cache, { revalidatePositive: true });
+    hydrateTaskImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache, { revalidatePositive: true });
     expect(readBase64).toHaveBeenCalledTimes(1);
 
     resolveRead({ unchanged: false, mime: "image/png", data: "AAA", fp: "1:5" });
@@ -201,11 +201,11 @@ describe("hydrateWorkspaceImages", () => {
 
   it("resolves multiple <img> tags referencing the same file from one fetch", async () => {
     readBase64.mockResolvedValue({ unchanged: false, mime: "image/png", data: "AAA", fp: "1:5" });
-    const ctx: MarkdownCtx = { wsId: "ws1", filePath: "docs/readme.md" };
+    const ctx: MarkdownCtx = { taskId: "ws1", filePath: "docs/readme.md" };
     const { host } = mount(`<img src="a.png"><img src="./a.png">`);
     const cache = newCache();
 
-    hydrateWorkspaceImages(host, ctx, cache);
+    hydrateTaskImages(host, ctx, cache);
     expect(readBase64).toHaveBeenCalledTimes(1); // same resolved path, one call
     await flush();
 
@@ -323,7 +323,7 @@ describe("reveal state machine (captureReveal / attemptReveal)", () => {
 
   it("resetting the reveal state (as on a file-identity change) drops a mid-retry pending reveal", () => {
     // Regression: MarkdownPreview isn't remounted when a preview tab recycles
-    // to a different file (WorkspaceView keys by tab id, not path), so a
+    // to a different file (TaskView keys by tab id, not path), so a
     // reveal captured for fileA that's still mid-retry (its content hadn't
     // loaded yet) must not survive a recycle to fileB and fire against
     // fileB's headings — even if fileB happens to contain a matching one.

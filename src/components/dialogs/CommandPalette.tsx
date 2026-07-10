@@ -1,4 +1,4 @@
-// ⌘K command palette — a searchable list of every workspace / view / app
+// ⌘K command palette — a searchable list of every task / view / app
 // action, grouped into sections, with the action's shortcut (if any) shown on
 // the right. Modelled on the ⌘P file finder + ⌘N project picker (shared fuzzy
 // matcher), plus a one-level "Change theme" submenu you navigate with the
@@ -19,8 +19,8 @@ import { usePrefs, type BuiltinThemeMode, type ThemeMode } from "@/store/prefs";
 import { useUpdate } from "@/store/update";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
 import { bindingGlyphs, type ShortcutId } from "@/lib/shortcuts";
-import { confirmAndArchive } from "@/lib/archiveWorkspace";
-import { workspaceSetYolo, openPath } from "@/lib/ipc";
+import { confirmAndArchive } from "@/lib/archiveTask";
+import { taskSetYolo, openPath } from "@/lib/ipc";
 import { isCustomId } from "@/lib/customTheme";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -29,7 +29,7 @@ import { cn } from "@/lib/utils";
 const ISSUE_URL = "https://github.com/simion/termic/issues/new";
 
 // Section render order. Sections with no (filtered) commands are dropped.
-const SECTION_ORDER = ["Workspace", "Agent", "View", "Application", "Settings"] as const;
+const SECTION_ORDER = ["Task", "Agent", "View", "Application", "Settings"] as const;
 type Section = (typeof SECTION_ORDER)[number];
 
 interface Cmd {
@@ -64,8 +64,8 @@ const THEME_ORDER: BuiltinThemeMode[] = ["auto", "light", "dark", "claude", "sol
 export function CommandPalette() {
   const open = useUI(s => s.commandPaletteOpen);
   const close = useUI(s => s.closeCommandPalette);
-  const activeWsId = useApp(s => s.activeWorkspaceId);
-  const workspaces = useApp(s => s.workspaces);
+  const activeTaskId = useApp(s => s.activeTaskId);
+  const tasks = useApp(s => s.tasks);
   const projects = useApp(s => s.projects);
   const themeMode = usePrefs(s => s.themeMode);
   const customThemes = usePrefs(s => s.customThemes);
@@ -96,8 +96,8 @@ export function CommandPalette() {
   // "roll back to this if the user cancels / closes without choosing".
   const themeOriginalRef = useRef<ThemeMode | null>(null);
 
-  const ws = useMemo(() => workspaces.find(w => w.id === activeWsId) ?? null, [workspaces, activeWsId]);
-  const proj = useMemo(() => (ws ? projects.find(p => p.id === ws.project_id) ?? null : null), [projects, ws]);
+  const task = useMemo(() => tasks.find(w => w.id === activeTaskId) ?? null, [tasks, activeTaskId]);
+  const proj = useMemo(() => (task ? projects.find(p => p.id === task.project_id) ?? null : null), [projects, task]);
 
   // Roll the live theme preview back and leave the submenu.
   const cancelThemePreview = () => {
@@ -130,14 +130,14 @@ export function CommandPalette() {
 
   /** Wrap an action so it closes the palette, then runs on the NEXT frame.
    *  The defer matters when the action opens another dialog (Archive → confirm,
-   *  Sandbox, New workspace): the palette is non-modal, so the click that
+   *  Sandbox, New task): the palette is non-modal, so the click that
    *  triggered the row would otherwise reach the freshly-mounted dialog's
    *  dismissable layer and dismiss it instantly. One frame lets the click
    *  fully settle first. Harmless for synchronous actions. */
   const act = (fn: () => void) => () => { close(); requestAnimationFrame(fn); };
 
-  // Build the full command list. Workspace/agent rows only exist when a
-  // workspace is active. Everything reads live store state at build time.
+  // Build the full command list. Task/agent rows only exist when a
+  // task is active. Everything reads live store state at build time.
   const commands = useMemo<Cmd[]>(() => {
     if (view === "theme") {
       return themeEntries.map<Cmd>(({ id: m, label }) => ({
@@ -154,68 +154,68 @@ export function CommandPalette() {
 
     const cmds: Cmd[] = [];
 
-    // ── Workspace ──────────────────────────────────────────────────────
+    // ── Task ──────────────────────────────────────────────────────
     cmds.push({
-      id: "new-workspace", section: "Workspace", label: "New workspace…",
-      icon: Plus, shortcutId: "new-workspace-quick", keywords: "create worktree project",
+      id: "new-task", section: "Task", label: "New task…",
+      icon: Plus, shortcutId: "new-task-quick", keywords: "create worktree project",
       run: act(() => useUI.getState().openProjectPicker()),
     });
-    if (ws) {
+    if (task) {
       cmds.push({
-        id: "file-picker", section: "Workspace", label: "File picker",
+        id: "file-picker", section: "Task", label: "File picker",
         icon: FileText, shortcutId: "file-finder", keywords: "open goto fuzzy",
-        run: act(() => useUI.getState().openFileFinder(ws.id)),
+        run: act(() => useUI.getState().openFileFinder(task.id)),
       });
       cmds.push({
-        id: "find-in-files", section: "Workspace", label: "Find in files",
+        id: "find-in-files", section: "Task", label: "Find in files",
         icon: Search, shortcutId: "find-in-files", keywords: "grep search ripgrep",
-        run: act(() => useUI.getState().openFindInFiles(ws.id)),
+        run: act(() => useUI.getState().openFindInFiles(task.id)),
       });
       cmds.push({
-        id: "rename-workspace", section: "Workspace", label: "Rename workspace",
+        id: "rename-task", section: "Task", label: "Rename task",
         icon: Pencil, keywords: "name title",
-        run: act(() => startRename(ws.id, ws.project_id)),
+        run: act(() => startRename(task.id, task.project_id)),
       });
-      if (ws.branch) {
+      if (task.branch) {
         cmds.push({
-          id: "copy-branch", section: "Workspace", label: "Copy branch name",
-          suffix: ws.branch, icon: GitBranch, keywords: "git clipboard",
+          id: "copy-branch", section: "Task", label: "Copy branch name",
+          suffix: task.branch, icon: GitBranch, keywords: "git clipboard",
           run: act(() => {
-            navigator.clipboard.writeText(ws.branch).catch(() => {});
-            useUI.getState().pushToast(`Copied "${ws.branch}"`);
+            navigator.clipboard.writeText(task.branch).catch(() => {});
+            useUI.getState().pushToast(`Copied "${task.branch}"`);
           }),
         });
       }
       cmds.push({
         // Not styled destructive — confirmAndArchive shows a confirm modal
         // (with the delete-branch checkbox), so the red isn't needed here.
-        id: "archive-workspace", section: "Workspace", label: `Archive "${ws.name}"`,
+        id: "archive-task", section: "Task", label: `Archive "${task.name}"`,
         icon: Archive, keywords: "delete remove close worktree",
-        run: act(() => { void confirmAndArchive(ws); }),
+        run: act(() => { void confirmAndArchive(task); }),
       });
     }
 
     // ── Agent ──────────────────────────────────────────────────────────
-    if (ws) {
-      const enforced = isSandboxEnforced(effectiveSandboxMode(ws));
+    if (task) {
+      const enforced = isSandboxEnforced(effectiveSandboxMode(task));
       cmds.push({
         id: "toggle-yolo", section: "Agent",
-        label: enforced ? "YOLO is forced on (Enforcing)" : ws.yolo ? "Disable YOLO" : "Enable YOLO",
+        label: enforced ? "YOLO is forced on (Enforcing)" : task.yolo ? "Disable YOLO" : "Enable YOLO",
         suffix: "Dangerously skip permissions",
         icon: Zap, keywords: "auto approve permissions dangerous",
         run: act(() => {
           if (enforced) return;
-          const next = !ws.yolo;
-          useApp.getState().setWorkspaceYolo(ws.id, next);
-          void workspaceSetYolo(ws.id, next);
+          const next = !task.yolo;
+          useApp.getState().setTaskYolo(task.id, next);
+          void taskSetYolo(task.id, next);
           useUI.getState().pushToast(next ? "YOLO enabled" : "YOLO disabled");
         }),
       });
       cmds.push({
         id: "sandbox", section: "Agent", label: "Sandbox settings",
-        suffix: effectiveSandboxMode(ws),
+        suffix: effectiveSandboxMode(task),
         icon: ShieldCheck, keywords: "cage security enable disable",
-        run: act(() => useUI.getState().openSandbox(ws.id)),
+        run: act(() => useUI.getState().openSandbox(task.id)),
       });
     }
 
@@ -230,11 +230,11 @@ export function CommandPalette() {
       icon: PanelRight, shortcutId: "toggle-right-sidebar", keywords: "panel diff changes hide",
       run: act(() => useApp.getState().toggleRightPanel()),
     });
-    if (ws) {
+    if (task) {
       cmds.push({
         id: "toggle-terminal", section: "View", label: "Toggle terminal panel",
         icon: PanelBottom, shortcutId: "toggle-terminal", keywords: "bottom split shell console hide show",
-        run: act(() => useApp.getState().toggleBottomTerminal(ws.id)),
+        run: act(() => useApp.getState().toggleBottomTerminal(task.id)),
       });
     }
     cmds.push({
@@ -307,7 +307,7 @@ export function CommandPalette() {
     }
 
     return cmds;
-  }, [view, ws, proj, themeMode, themeEntries]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, task, proj, themeMode, themeEntries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Filter + score against the query, preserving section order. Each command
   // matches on "<label> <keywords>"; only label-range hits are highlighted.
@@ -516,14 +516,14 @@ export function CommandPalette() {
     </Dialog.Root>
   );
 
-  // Start the sidebar's inline rename for `wsId`. The row only exists when its
+  // Start the sidebar's inline rename for `taskId`. The row only exists when its
   // project is expanded (and the row is selected/scrolled into view), so
   // expand + select first, then fire the rename signal the row watches.
-  function startRename(wsId: string, projectId: string) {
+  function startRename(taskId: string, projectId: string) {
     const app = useApp.getState();
     app.setProjectCollapsed(projectId, false);
     if (app.compactSidebar) app.toggleCompactSidebar(); // full-width row needed to show the input
-    app.setActiveWorkspace(wsId);
-    useUI.getState().requestWorkspaceRename(wsId);
+    app.setActiveTask(taskId);
+    useUI.getState().requestTaskRename(taskId);
   }
 }

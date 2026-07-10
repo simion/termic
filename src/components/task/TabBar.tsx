@@ -1,14 +1,14 @@
 // Tab strip with CLI brand icons / file glyphs and a "+" popover for new agents.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Workspace, Tab, TerminalTab, Agent } from "@/lib/types";
-import { useApp, useWorkspaceTabs, useActiveTabId } from "@/store/app";
+import type { Task, Tab, TerminalTab, Agent } from "@/lib/types";
+import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { getAllLeaves } from "@/lib/splitTree";
 import { useTabStripDrag } from "./useTabStripDrag";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL, resolveIconId } from "@/icons/cli";
-import { Plus, X, GitCompare, FileText, SquareSplitVertical, SquareSplitHorizontal, TerminalSquare, Bell, Megaphone, Repeat, Loader2, RotateCw, Square, Play } from "lucide-react";
+import { Plus, X, GitCompare, FileText, SquareSplitVertical, SquareSplitHorizontal, TerminalSquare, Bell, Megaphone, Repeat, Loader2, RotateCw, Square, Play, AlertTriangle } from "lucide-react";
 import { ptyKill } from "@/lib/ipc";
 import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
@@ -51,11 +51,11 @@ function ShellTerminalItem({ onSelect }: { onSelect: () => void }) {
   );
 }
 
-export function TabBar({ ws }: { ws: Workspace }) {
-  const allTabsRaw = useWorkspaceTabs(ws.id);
+export function TabBar({ task }: { task: Task }) {
+  const allTabsRaw = useTaskTabs(task.id);
   // Main strip shows only non-pane tabs (split-pane tabs live in SplitView).
   const tabs = allTabsRaw.filter(t => !(t as import("@/lib/types").TerminalTab).paneId);
-  const activeId = useActiveTabId(ws.id);
+  const activeId = useActiveTabId(task.id);
   const setActive = useApp(s => s.setActiveTabId);
   const addTab = useApp(s => s.addTab);
   const reorderTab = useApp(s => s.reorderTab);
@@ -79,10 +79,10 @@ export function TabBar({ ws }: { ws: Workspace }) {
   // pane is focused (or there are no splits). When a secondary pane is
   // focused, the active tab dims to border-border so only one thing reads
   // as "current" across the whole layout.
-  const hasSplitTree = useApp(s => !!s.splitTree[ws.id]);
-  const activePaneId = useApp(s => s.activePaneId[ws.id] ?? "");
+  const hasSplitTree = useApp(s => !!s.splitTree[task.id]);
+  const activePaneId = useApp(s => s.activePaneId[task.id] ?? "");
   const mainPaneId = useApp(s => {
-    const t = s.splitTree[ws.id];
+    const t = s.splitTree[task.id];
     if (!t) return "";
     return getAllLeaves(t).find(l => l.isMain)?.id ?? "";
   });
@@ -91,28 +91,28 @@ export function TabBar({ ws }: { ws: Workspace }) {
   const moveTabToPane = useApp(s => s.moveTabToPane);
 
   const { dragId, dragTx, suppressClickRef, startDrag } = useTabStripDrag({
-    wsId: ws.id, stripRef, stripTabs: tabs, allTabs: allTabsRaw, reorderTab,
+    taskId: task.id, stripRef, stripTabs: tabs, allTabs: allTabsRaw, reorderTab,
     currentPaneId: null,
-    onDropToPane: (tabId, toPaneId) => moveTabToPane(ws.id, tabId, toPaneId),
-    onDropToSplit: (tabId, toPaneId, zone) => useApp.getState().moveTabToSplit(ws.id, tabId, toPaneId, zone),
+    onDropToPane: (tabId, toPaneId) => moveTabToPane(task.id, tabId, toPaneId),
+    onDropToSplit: (tabId, toPaneId, zone) => useApp.getState().moveTabToSplit(task.id, tabId, toPaneId, zone),
   });
 
   // ⌘T from the main pane (handled in useShortcuts) opens this menu so
-  // the user can keyboard-pick an agent / terminal. Scoped by wsId —
-  // multiple workspaces stay mounted, so only the targeted TabBar
+  // the user can keyboard-pick an agent / terminal. Scoped by taskId —
+  // multiple tasks stay mounted, so only the targeted TabBar
   // reacts. Radix focuses the first item on open; arrow + Enter from
   // there. Listener identity is stable across renders → mount once.
   useEffect(() => {
     const onMenu = (e: Event) => {
-      if ((e as CustomEvent<{ wsId?: string }>).detail?.wsId === ws.id) setOpen(true);
+      if ((e as CustomEvent<{ taskId?: string }>).detail?.taskId === task.id) setOpen(true);
     };
     window.addEventListener("termic-new-tab-menu", onMenu);
     return () => window.removeEventListener("termic-new-tab-menu", onMenu);
-  }, [ws.id]);
+  }, [task.id]);
 
   function commitRename() {
     if (!renaming) return;
-    renameTab(ws.id, renaming.id, renaming.value);
+    renameTab(task.id, renaming.id, renaming.value);
     setRenaming(null);
   }
 
@@ -123,7 +123,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
   // focus back to the '+' trigger before that focus call lands.
   function addAndFocusTab(tab: Tab) {
     suppressDropdownReturn.current = true;
-    addTab(ws.id, tab);
+    addTab(task.id, tab);
     setOpen(false);
   }
 
@@ -133,7 +133,7 @@ export function TabBar({ ws }: { ws: Workspace }) {
   }
 
   /** Plain login-shell tab. Always uncaged: only agents run inside the
-   *  workspace's seatbelt (see ShellTerminalItem / TerminalPane spawn). */
+   *  task's seatbelt (see ShellTerminalItem / TerminalPane spawn). */
   function spawnShellTab() {
     addAndFocusTab({
       id: crypto.randomUUID(),
@@ -166,12 +166,12 @@ export function TabBar({ ws }: { ws: Workspace }) {
       >
         {tabs.map(t => (
           <TabPill
-            key={t.id} ws={ws} tab={t} active={t.id === activeId} paneFocused={mainFocused}
+            key={t.id} task={task} tab={t} active={t.id === activeId} paneFocused={mainFocused}
             // focusMainTab: keyboard focus must follow the click into the tab's
             // content (terminal / editor) — otherwise the previously focused
             // pane keeps DOM focus and ⌘W acts on the wrong pane.
-            onSelect={() => { if (suppressClickRef.current) return; setActive(ws.id, t.id); focusMainTab(t.id); }}
-            onClose={() => requestCloseTab(ws.id, t.id)}
+            onSelect={() => { if (suppressClickRef.current) return; setActive(task.id, t.id); focusMainTab(t.id); }}
+            onClose={() => requestCloseTab(task.id, t.id)}
             renaming={renaming?.id === t.id ? renaming.value : null}
             onStartRename={() => setRenaming({ id: t.id, value: t.title })}
             onChangeRename={(v) => setRenaming(r => r ? { ...r, value: v } : r)}
@@ -210,17 +210,17 @@ export function TabBar({ ws }: { ws: Workspace }) {
 
       {/* Fixed control cluster — never scrolls; always reachable on the right. */}
       <div className="flex shrink-0 items-center gap-1 pl-1 pr-2">
-        <Tip content="Broadcast a message to all agents from this workspace (⇧⌘B)" side="bottom">
+        <Tip content="Broadcast a message to all agents from this task (⇧⌘B)" side="bottom">
           <Button
             size="icon" variant="icon" className="h-8 w-8"
-            onClick={() => openBroadcast(ws.id)}
+            onClick={() => openBroadcast(task.id)}
           >
             <Megaphone className="h-4 w-4" />
           </Button>
         </Tip>
 
-        <SplitBelowToggle wsId={ws.id} />
-        <SplitPaneToggle wsId={ws.id} />
+        <SplitBelowToggle taskId={task.id} />
+        <SplitPaneToggle taskId={task.id} />
       </div>
       </div>
     </div>
@@ -228,14 +228,14 @@ export function TabBar({ ws }: { ws: Workspace }) {
 }
 
 /** Button that creates a new vertical split pane to the right (⌘D). */
-function SplitPaneToggle({ wsId }: { wsId: string }) {
-  const hasSplit = useApp(s => !!s.splitTree[wsId]);
+function SplitPaneToggle({ taskId }: { taskId: string }) {
+  const hasSplit = useApp(s => !!s.splitTree[taskId]);
   const splitPane = useApp(s => s.splitPane);
   return (
     <Tip content="Split right (⌘D)" side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
-        onClick={() => splitPane(wsId, 'v')}
+        onClick={() => splitPane(taskId, 'v')}
       >
         <SquareSplitHorizontal className={cn("h-4 w-4", hasSplit && "text-[var(--color-accent)]")} />
       </Button>
@@ -244,14 +244,14 @@ function SplitPaneToggle({ wsId }: { wsId: string }) {
 }
 
 /** Split the focused pane below (horizontal divider, ⇧⌘D). */
-function SplitBelowToggle({ wsId }: { wsId: string }) {
-  const hasSplit = useApp(s => !!s.splitTree[wsId]);
+function SplitBelowToggle({ taskId }: { taskId: string }) {
+  const hasSplit = useApp(s => !!s.splitTree[taskId]);
   const splitPane = useApp(s => s.splitPane);
   return (
     <Tip content="Split below (⇧⌘D)" side="bottom">
       <Button
         size="icon" variant="icon" className="h-8 w-8"
-        onClick={() => splitPane(wsId, 'h')}
+        onClick={() => splitPane(taskId, 'h')}
       >
         <SquareSplitVertical className={cn("h-4 w-4", hasSplit && "text-[var(--color-accent)]")} />
       </Button>
@@ -259,8 +259,8 @@ function SplitBelowToggle({ wsId }: { wsId: string }) {
   );
 }
 
-export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename, dragging, dragTx, onStartDrag }: {
-  ws: Workspace; tab: Tab; active: boolean;
+export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onClose, renaming, onStartRename, onChangeRename, onCommitRename, onCancelRename, dragging, dragTx, onStartDrag }: {
+  task: Task; tab: Tab; active: boolean;
   /** True when this pill's pane is the focused one. The active tab keeps its
    *  bg highlight regardless, but only shows the accent underline when its
    *  pane is focused — so across a split only ONE tab reads as fully active. */
@@ -293,9 +293,13 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
   // The "working" state is force-cleared by TerminalPane's demoters /
   // absolute ceiling, so the spinner can't spin forever.
   const workingIndicator = usePrefs(s => s.workingIndicator);
-  const showBell    = reason === "attention";
-  const showDone    = !showBell && workState === "done";
-  const showWorking = workingIndicator && !showBell && !showDone && workState === "working";
+  // Failed run/setup tab (GH #54 + exit-code plumbing): the script exited
+  // non-zero. Outranks everything else — a red flag on a background setup
+  // tab is the whole point of surfacing it without stealing focus.
+  const showFailed  = tab.type === "terminal" && !!(tab as TerminalTab).runTab?.failed;
+  const showBell    = !showFailed && reason === "attention";
+  const showDone    = !showFailed && !showBell && workState === "done";
+  const showWorking = workingIndicator && !showFailed && !showBell && !showDone && workState === "working";
   const iconId = tab.type === "terminal" ? resolveIconId(tab.cli, agents) : "";
   const color = tab.type === "terminal" ? CLI_BRAND_COLOR[iconId] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
@@ -329,7 +333,7 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
       onDoubleClick={(e) => {
         e.stopPropagation();
         if (tab.preview) {
-          useApp.getState().persistTab(ws.id, tab.id);
+          useApp.getState().persistTab(task.id, tab.id);
         } else {
           onStartRename();
         }
@@ -458,11 +462,16 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
       })()}
       {/* Trailing slot — iTerm2 convention: status badge / dirty dot
           by default; close × on hover. Fixed cell so the pill never
-          jiggles. Priority: attention > done > dirty > none. */}
+          jiggles. Priority: failed > attention > done > dirty > none. */}
       {!isRenaming && (
         <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-          {(showBell || showDone || showWorking) ? (
+          {(showFailed || showBell || showDone || showWorking) ? (
             <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover:opacity-0">
+              {showFailed && (
+                <span className="text-[var(--color-err)]" title="Exited with an error, click Restart to retry">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                </span>
+              )}
               {showBell && (
                 <span className="text-[var(--color-warn)]" title="Agent needs your input">
                   <Bell className="h-3.5 w-3.5" strokeWidth={2.5} />
@@ -493,7 +502,7 @@ export function TabPill({ ws, tab, active, paneFocused, compact, onSelect, onClo
             title="Close tab"
             className={cn(
               "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-              (!active || tab.dirty || showBell || showDone || showWorking) && "opacity-0 group-hover:opacity-100",
+              (!active || tab.dirty || showFailed || showBell || showDone || showWorking) && "opacity-0 group-hover:opacity-100",
             )}
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           ><X className="h-3 w-3" /></button>

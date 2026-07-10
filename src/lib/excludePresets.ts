@@ -4,7 +4,7 @@
 // either their personal exclude list (Settings → General) or a project's
 // committed `.termic.yaml` (Settings → Repositories). Patterns match an
 // entry's bare name (so `node_modules` / `*.pyc` hide at any depth) or its
-// workspace-relative path (`docs/build`). `.git` is always hidden, so it's
+// task-relative path (`docs/build`). `.git` is always hidden, so it's
 // deliberately omitted here.
 //
 // Single source of truth — both settings surfaces import this.

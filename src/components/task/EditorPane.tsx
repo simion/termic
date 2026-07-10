@@ -2,7 +2,7 @@
 // right language extension by extension, mounts once.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { EditTab, Workspace } from "@/lib/types";
+import type { EditTab, Task } from "@/lib/types";
 import { EditorState, Compartment, Annotation, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
@@ -28,7 +28,7 @@ import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { properties } from "@codemirror/legacy-modes/mode/properties";
-import { workspaceFileRead, workspaceFileWrite } from "@/lib/ipc";
+import { taskFileRead, taskFileWrite } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -126,8 +126,8 @@ function revealLine(view: EditorView, line: number, col?: number) {
   requestAnimationFrame(() => view.focus());
 }
 
-export function EditorPane({ ws, tab, active, onContent }: {
-  ws: Workspace;
+export function EditorPane({ task, tab, active, onContent }: {
+  task: Task;
   tab: EditTab;
   /** True when this tab is the active main tab — mirrors TerminalPane's
    *  `active` prop so the editor self-focuses on tab switch, closing, etc. */
@@ -141,7 +141,7 @@ export function EditorPane({ ws, tab, active, onContent }: {
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   // Latest onContent in a ref so the mount effect (which only runs on
-  // [ws.id, tab.path]) always calls the current callback.
+  // [task.id, tab.path]) always calls the current callback.
   const onContentRef = useRef(onContent);
   onContentRef.current = onContent;
   const viewRef = useRef<EditorView | null>(null);
@@ -156,11 +156,11 @@ export function EditorPane({ ws, tab, active, onContent }: {
   // keystroke (patchTab re-renders the whole TabBar).
   const dirtyRef = useRef(false);
 
-  // Per-workspace "files changed" tick. Bumped when an agent terminal
+  // Per-task "files changed" tick. Bumped when an agent terminal
   // settles (see app store). We re-read on its rising edge so an open file
   // the agent just rewrote refreshes without a window blur/focus cycle —
   // the common case where the agent runs in the same window the user watches.
-  const fsRevision = useApp(s => s.fsRevision[ws.id] ?? 0);
+  const fsRevision = useApp(s => s.fsRevision[task.id] ?? 0);
 
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const codeLigatures  = usePrefs(s => s.codeLigatures);
@@ -192,7 +192,7 @@ export function EditorPane({ ws, tab, active, onContent }: {
     setLoading(true);
     (async () => {
       try {
-        const content = await workspaceFileRead(ws.id, tab.path);
+        const content = await taskFileRead(task.id, tab.path);
         if (!alive || !hostRef.current) return;
         const lang = langForPath(tab.path);
 
@@ -200,17 +200,17 @@ export function EditorPane({ ws, tab, active, onContent }: {
         const markDirty = () => {
           if (dirtyRef.current) return;
           dirtyRef.current = true;
-          useApp.getState().patchTab(ws.id, tab.id, { dirty: true });
+          useApp.getState().patchTab(task.id, tab.id, { dirty: true });
         };
         // ⌘S → write the buffer to disk. termic NEVER auto-saves; this
         // is the only path that clears `dirty`. Returns true so
         // CodeMirror treats the key as handled and preventDefault's it.
         const saveDoc = (v: EditorView): boolean => {
           const name = tab.path.split("/").pop() || tab.path;
-          workspaceFileWrite(ws.id, tab.path, v.state.doc.toString())
+          taskFileWrite(task.id, tab.path, v.state.doc.toString())
             .then(() => {
               dirtyRef.current = false;
-              useApp.getState().patchTab(ws.id, tab.id, { dirty: false });
+              useApp.getState().patchTab(task.id, tab.id, { dirty: false });
               useUI.getState().pushToast(`Saved ${name}`, "success");
             })
             .catch(e => useUI.getState().pushToast(`Save failed: ${e}`, "error"));
@@ -268,7 +268,7 @@ export function EditorPane({ ws, tab, active, onContent }: {
         // (clicking a different match while the tab's already open).
         if (tab.revealAt) {
           revealLine(view, tab.revealAt.line, tab.revealAt.col);
-          useApp.getState().consumeReveal(ws.id, tab.id);
+          useApp.getState().consumeReveal(task.id, tab.id);
         }
       } catch (e) {
         if (!alive) return;
@@ -283,15 +283,15 @@ export function EditorPane({ ws, tab, active, onContent }: {
     })();
     return () => { alive = false; viewRef.current?.destroy(); viewRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws.id, tab.path]);
+  }, [task.id, tab.path]);
 
   // True-editor tabs surface a "file changed on disk" prompt instead of
   // silently reloading. Pending until the user acts; rendered only while the
   // tab is focused (see the banner in the return).
   const [diskChanged, setDiskChanged] = useState(false);
-  // Focused = this workspace is up front AND this tab is the active main-pane tab
+  // Focused = this task is up front AND this tab is the active main-pane tab
   // (edit/diff tabs only open in the main pane, not in split panes).
-  const isActive = useApp(s => s.activeWorkspaceId === ws.id && s.activeTab[ws.id] === tab.id);
+  const isActive = useApp(s => s.activeTaskId === task.id && s.activeTab[task.id] === tab.id);
 
   // Swap fresh disk content into the live view, annotated so it doesn't flip
   // the dirty dot. Used by both the silent preview-reload path and the user
@@ -316,25 +316,25 @@ export function EditorPane({ ws, tab, active, onContent }: {
   const reloadFromDisk = useCallback(() => {
     const v = viewRef.current;
     if (!v) return;
-    workspaceFileRead(ws.id, tab.path).then(content => {
+    taskFileRead(task.id, tab.path).then(content => {
       const v2 = viewRef.current;
       if (!v2) return;
       if (content === v2.state.doc.toString()) { setDiskChanged(false); return; }
       if (dirtyRef.current) { setDiskChanged(true); return; }
       applyDiskContent(content);
     }).catch(() => {});
-  }, [ws.id, tab.path, applyDiskContent]);
+  }, [task.id, tab.path, applyDiskContent]);
 
   // User accepted the prompt: re-read (content may have moved on since the
   // change was detected) and swap it in, discarding the buffer's edits — so
   // the dirty flag must clear too or the dot would lie.
   const acceptDiskReload = useCallback(() => {
-    workspaceFileRead(ws.id, tab.path).then(content => {
+    taskFileRead(task.id, tab.path).then(content => {
       applyDiskContent(content);
       dirtyRef.current = false;
-      useApp.getState().patchTab(ws.id, tab.id, { dirty: false });
+      useApp.getState().patchTab(task.id, tab.id, { dirty: false });
     }).catch(() => {});
-  }, [ws.id, tab.path, tab.id, applyDiskContent]);
+  }, [task.id, tab.path, tab.id, applyDiskContent]);
 
   // Reload on window focus: covers external edits while away (another app,
   // a `git` in a real terminal, an agent in a different window).
@@ -354,7 +354,7 @@ export function EditorPane({ ws, tab, active, onContent }: {
     requestAnimationFrame(() => view.focus());
   }, [active]);
 
-  // Reload when an agent terminal in this workspace settles. Skip the first
+  // Reload when an agent terminal in this task settles. Skip the first
   // run (the mount effect already loaded fresh content); thereafter every
   // bump of fsRevision means a turn finished and the file may have changed.
   const fsFirstRef = useRef(true);
@@ -370,8 +370,8 @@ export function EditorPane({ ws, tab, active, onContent }: {
     const v = viewRef.current;
     if (!v || !tab.revealAt) return;
     revealLine(v, tab.revealAt.line, tab.revealAt.col);
-    useApp.getState().consumeReveal(ws.id, tab.id);
-  }, [tab.revealAt, ws.id, tab.id]);
+    useApp.getState().consumeReveal(task.id, tab.id);
+  }, [tab.revealAt, task.id, tab.id]);
 
   // Re-apply theme compartment when the user changes font size,
   // ligatures, or the syntax theme — all reconfigure live.
