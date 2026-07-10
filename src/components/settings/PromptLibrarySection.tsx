@@ -6,12 +6,12 @@
 // src/store/prompts.ts.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { usePromptLibrary } from "@/store/prompts";
+import { usePromptLibrary, effectiveTriggerKeys } from "@/store/prompts";
 import { useUI } from "@/store/ui";
 import { Button } from "@/components/ui/Button";
 import { AppDialog } from "@/components/ui/Dialog";
 import { cn } from "@/lib/utils";
-import { GripVertical, Copy, Trash2, RotateCcw, Eye, EyeOff, Plus, Pencil } from "lucide-react";
+import { GripVertical, Copy, Trash2, RotateCcw, Eye, EyeOff, Plus, Pencil, X } from "lucide-react";
 
 interface DragState {
   id: string;
@@ -38,7 +38,40 @@ export function PromptLibrarySection() {
   const toggleEnabled = usePromptLibrary(s => s.toggleEnabled);
   const reorderPrompts = usePromptLibrary(s => s.reorderPrompts);
   const restoreBuiltins = usePromptLibrary(s => s.restoreBuiltins);
+  const setTriggerKey = usePromptLibrary(s => s.setTriggerKey);
   const deletedCount = usePromptLibrary(s => s.deletedBuiltins.length);
+  const triggerKeys = effectiveTriggerKeys(prompts);
+
+  // ⌘R quick-fire / palette trigger-key recorder — one row at a time, same
+  // capture-phase pattern as the Shortcuts settings recorder so the keystroke
+  // never reaches the app's global shortcut handler.
+  const [recordingKeyId, setRecordingKeyId] = useState<string | null>(null);
+  const [keyRecordError, setKeyRecordError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!recordingKeyId) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.key === "Escape") { setRecordingKeyId(null); setKeyRecordError(null); return; }
+      if (["Meta", "Control", "Shift", "Alt", "CapsLock"].includes(e.key)) return;
+      const key = e.key.toLowerCase();
+      if (!/^[a-z0-9]$/.test(key)) {
+        setKeyRecordError("Use a single letter or digit.");
+        return;
+      }
+      const takenBy = prompts.find(p => p.id !== recordingKeyId && triggerKeys.get(p.id) === key);
+      if (takenBy) {
+        setKeyRecordError(`Already used by "${takenBy.title}".`);
+        return;
+      }
+      setTriggerKey(recordingKeyId, key);
+      setRecordingKeyId(null);
+      setKeyRecordError(null);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordingKeyId]);
 
   // Body editor modal — the inline row only shows a preview.
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -186,7 +219,9 @@ export function PromptLibrarySection() {
           <p className="mt-0.5 max-w-xl text-[12.5px] text-[var(--color-fg-dim)]">
             Reusable prompts for the Prompts menu in the top bar. When you fire one, you pick
             where it goes: an existing agent (queued if it is busy) or a new agent. Drag to
-            reorder. Built-ins can be edited and reset.
+            reorder. Built-ins can be edited and reset. Each prompt also gets a quick-fire key
+            (press ⌘R, then that key) for the currently focused agent, auto-assigned 1-9 then
+            a-z, editable per prompt.
           </p>
         </div>
         <Button variant="primary" size="sm" className="shrink-0 gap-1.5" onClick={openNewPrompt}>
@@ -244,6 +279,28 @@ export function PromptLibrarySection() {
                 </span>
               )}
 
+              {/* ⌘R quick-fire / palette trigger key — click to record a new
+                  one, × to clear an override back to auto-assigned. */}
+              <div className="flex shrink-0 items-center gap-0.5">
+                <button
+                  title="Click to set the ⌘R quick-fire key"
+                  onClick={() => { setKeyRecordError(null); setRecordingKeyId(recordingKeyId === p.id ? null : p.id); }}
+                  className={cn(
+                    "flex h-6 min-w-[22px] items-center justify-center rounded border px-1 font-mono text-[11px] uppercase leading-none",
+                    recordingKeyId === p.id
+                      ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                      : "border-[var(--color-border-soft)] text-[var(--color-fg-faint)] hover:border-[var(--color-border)] hover:text-[var(--color-fg-dim)]",
+                  )}
+                >
+                  {recordingKeyId === p.id ? "…" : (triggerKeys.get(p.id) ?? "-")}
+                </button>
+                {p.triggerKeyOverride && (
+                  <IconBtn title="Clear override (back to auto)" onClick={() => setTriggerKey(p.id, null)}>
+                    <X className="h-3.5 w-3.5" />
+                  </IconBtn>
+                )}
+              </div>
+
               {/* Row actions */}
               <IconBtn title="Edit prompt" onClick={() => setEditingId(p.id)}>
                 <Pencil className="h-4 w-4" />
@@ -263,6 +320,12 @@ export function PromptLibrarySection() {
                 <Trash2 className="h-4 w-4" />
               </IconBtn>
             </div>
+
+            {recordingKeyId === p.id && (
+              <div className={cn("mt-1 pl-8 text-[11.5px]", keyRecordError ? "text-[var(--color-err)]" : "text-[var(--color-fg-faint)]")}>
+                {keyRecordError ?? "Press a letter or digit for the quick-fire key. Esc to cancel."}
+              </div>
+            )}
 
             {/* Body preview — click to edit in the modal. Blank lines stripped. */}
             <button
