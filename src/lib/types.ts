@@ -627,6 +627,11 @@ export interface EditTab extends BaseTab {
    *  and clears it via `consumeReveal` so subsequent re-renders don't
    *  re-jump the cursor every time. */
   revealAt?: { line: number; col?: number };
+  /** Heading fragment (`file.md#heading` link target) to scroll the markdown
+   *  preview to once it renders. Set when a preview link with a fragment
+   *  opens another file; MarkdownPane consumes and clears it (like
+   *  `revealAt`) so re-renders don't re-jump the scroll. */
+  revealHeading?: string;
   /** View mode for markdown files (.md/.markdown/.mdx). "source" is the
    *  raw CodeMirror editor, "preview" the rendered HTML, "split" both
    *  side-by-side. Undefined → "source". Ignored for non-markdown files. */
