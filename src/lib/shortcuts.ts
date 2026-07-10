@@ -51,6 +51,8 @@ export type ShortcutId =
   | "toggle-left-sidebar"
   | "toggle-right-sidebar"
   | "broadcast"
+  | "prompt-quick-fire"
+  | "prompt-palette"
   | "stage-file"
   | "discard-file";
 
@@ -157,6 +159,12 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     hint: "Show / hide the right panel", defaultBinding: B("b", { cmd: true, alt: true }) },
   { id: "broadcast", group: "General", label: "Broadcast to agents",
     defaultBinding: B("b", { cmd: true, shift: true }) },
+  { id: "prompt-quick-fire", group: "General", label: "Prompt quick-fire",
+    hint: "Press, then a prompt's key (shown in the Prompts menu), to run it on the focused agent",
+    defaultBinding: B("r", { cmd: true }) },
+  { id: "prompt-palette", group: "General", label: "Prompt search palette",
+    hint: "Search prompts by title; Enter runs the highlighted one",
+    defaultBinding: B("r", { cmd: true, shift: true }) },
 
   // Git — contextual: these act on the file selected in the Git panel and
   // are handled there (GitPanel), not the global handler. The discard
