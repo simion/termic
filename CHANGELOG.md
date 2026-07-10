@@ -4,22 +4,31 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.19.1] - 2026-07-10
+## [0.20.0] - 2026-07-10
 
-Bring your own theme, render images in markdown, and get the font you picked.
+Workspaces are now Tasks, and you can create one in two clicks from the sidebar.
 
 ### Features
-- Custom themes: drop a JSON file in `~/.config/termic/themes/` and it shows up in the theme picker as a first-class theme, chrome and terminal together. No restart, no theme editor to learn. Save the file, reopen the picker. The folder starts with a README and a complete example you can copy.
-- Rosé Pine, a new built-in theme. The terminal palette uses the official ANSI mapping, so agent TUIs look the same in Termic as they do in Ghostty.
-- Markdown preview renders images and follows links. Relative and remote images both display, a `file.md#heading` link jumps to that heading, a link to a missing file says so instead of opening a blank tab, and a link to a folder reveals it in Finder. (#65)
+- Renamed "workspace" to "task" everywhere: labels, menus, the command palette, shortcuts, and settings. Existing workspaces migrate automatically on first launch, with the old data backed up first, and templates that use {workspace_name} style placeholders keep working.
+- Every task now has a location. "Main checkout" runs the agent in the repo's live checkout on its current branch, so edits land on your real files. "Worktree" is an isolated branch in its own working directory. A small icon marks each task in the sidebar, top bar, dashboard, and history.
+- Quick task creation from the sidebar: click a project's "+", flip the Main checkout / Worktree toggle, pick an agent (or Terminal, or a custom command), and type a name inline. Worktrees also get an auto-filled, editable branch field, so there's no dialog for the common case.
+- The Main checkout / Worktree choice is remembered across the app and shared by the quick menu, the New Task dialog, and Advanced, so it always opens the way you last worked.
+- Custom launch command tasks (ssh, a dev server, a REPL) can now be created as a worktree too, with an editable branch.
+- Creating a single-repo worktree opens the task right away and runs its setup script as a background tab, so you land on the agent immediately instead of waiting.
+- Empty projects show a single "New task" button that opens the same menu as the "+" icon.
 
 ### Bug fixes
-- Fonts you pick from the system list are actually used. Choosing a Nerd Font (or any font Termic found on your Mac) silently fell back to the bundled JetBrains Mono, so prompt glyphs from oh-my-posh, starship, and Powerlevel10k rendered as empty boxes. The editor ignored the pick too.
-- The font dropdown now lists every system font the first time you open it, instead of only the built-in handful.
-- Text on accent-colored buttons and badges is readable in every theme. The commit button, the changed-files count, the pending-comments button, toggle knobs, and the review buttons in the diff view all painted white text, which vanished on the light accents of Cobalt, Matrix, and Rosé Pine.
-- Custom themes that declare `"colorScheme": "light"` now fall back to the light palette for any color they leave out, instead of mixing dark chrome into a light theme.
-- The file tree keeps its expanded folders when you switch workspaces.
-- The theme picker no longer indents every row to make room for the active checkmark.
+- Setup and run scripts always run outside the sandbox now, so they get the full network and filesystem they need (npm install, dev servers, and the like) even in projects that default to an enforcing sandbox.
+- A task name that contains no letters or numbers is now rejected with a clear message instead of silently failing.
+
+### Also in this release
+Smaller improvements that landed alongside the rename:
+- Custom themes: drop a JSON file in `~/.config/termic/themes/` and it shows up in the theme picker as a first-class theme, chrome and terminal together. The folder ships with a README and a copyable example. (#62)
+- Rosé Pine, a new built-in theme, using the official ANSI palette so agent TUIs look the same in Termic as in Ghostty. (#61)
+- Markdown preview renders images (relative and remote) and follows links, including `file.md#heading` jumps, missing-file notices, and folder-reveal in Finder. (#65)
+- Fonts you pick from the system list are actually used, in both the terminal and the editor, so Nerd Font glyphs from oh-my-posh, starship, and Powerlevel10k stop rendering as empty boxes. The picker also lists every system font the first time you open it. (#63)
+- Text on accent-colored buttons and badges stays readable in every theme, including the light accents of Cobalt, Matrix, and Rosé Pine. (#60)
+- Custom light themes fall back to the light palette for any color they leave out, and the file tree keeps its expanded folders when you switch tasks.
 
 ## [0.18.4] - 2026-07-08
 

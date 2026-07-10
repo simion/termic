@@ -1,9 +1,9 @@
 {
   "versions": [
     {
-      "version": "0.19.1",
+      "version": "0.20.0",
       "date": "2026-07-10",
-      "summary": "Bring your own theme, render images in markdown, and get the font you picked."
+      "summary": "Workspaces are now Tasks, and you can create one in two clicks from the sidebar."
     },
     {
       "version": "0.18.4",
