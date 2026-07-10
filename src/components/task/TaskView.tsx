@@ -25,9 +25,11 @@ import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
 import { dirnamePosix, MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
+import { previewKindForPath } from "@/lib/previewPaths";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
+const PreviewPane  = lazy(() => import("./PreviewPane").then(m => ({ default: m.PreviewPane })));
 // Lightweight extension check so we don't import the (lazy) MarkdownPane
 // module just to ask whether a path is markdown. Shared with the markdown
 // preview's link handler (markdownPaths.ts) so both agree on what counts.
@@ -338,7 +340,15 @@ export function TaskView({ task }: { task: Task }) {
                   {t.type === "terminal" && ((t as TerminalTab).runTab
                     ? <RunPane task={task} tab={t as TerminalTab} active={tabActive} />
                     : <TerminalPane task={task} tab={t as TerminalTab} active={tabActive} />)}
-                  {t.type === "edit"     && <Suspense fallback={null}>{isMarkdownPath(t.path) ? <MarkdownPane task={task} tab={t} /> : <EditorPane task={task} tab={t} active={tabActive} />}</Suspense>}
+                  {t.type === "edit"     && (
+                    <Suspense fallback={null}>
+                      {previewKindForPath(t.path)
+                        ? <PreviewPane task={task} tab={t} />
+                        : isMarkdownPath(t.path)
+                          ? <MarkdownPane task={task} tab={t} />
+                          : <EditorPane task={task} tab={t} active={tabActive} />}
+                    </Suspense>
+                  )}
                   {t.type === "diff"     && <Suspense fallback={null}><DiffPane task={task} tab={t} /></Suspense>}
                 </div>
               );
