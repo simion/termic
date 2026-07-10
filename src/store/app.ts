@@ -927,6 +927,15 @@ export const useApp = create<AppState>((set, get) => ({
       const tab = (s.tabs[taskId] ?? []).find(t => t.id === tabId);
       if (!tab) return s;
 
+      // Main must keep at least one tab — moving its only tab into a pane
+      // would leave a blank main pane (no launcher renders there, and main
+      // has no close button, so it would be stuck empty). Same invariant as
+      // moveTabToSplit's edge-drop guard.
+      if (!fromLeaf) {
+        const mainCount = (s.tabs[taskId] ?? []).filter(t => !(t as TerminalTab).paneId).length;
+        if (mainCount <= 1) return s;
+      }
+
       let newTree = tree;
       if (fromLeaf) newTree = removeLeafTab(newTree, fromLeaf.id, tabId);
       newTree = addLeafTab(newTree, toPaneId, tabId);

@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.20.0] - 2026-07-10
+## [0.20.1] - 2026-07-10
 
 Workspaces are now Tasks, and you can create one in two clicks from the sidebar.
 
@@ -20,6 +20,7 @@ Workspaces are now Tasks, and you can create one in two clicks from the sidebar.
 ### Bug fixes
 - Setup and run scripts always run outside the sandbox now, so they get the full network and filesystem they need (npm install, dev servers, and the like) even in projects that default to an enforcing sandbox.
 - A task name that contains no letters or numbers is now rejected with a clear message instead of silently failing.
+- Dragging the last main tab into a split pane no longer strands the main pane empty and unclosable: the main tab bar always keeps at least one tab, and dragging its only tab shows no drop target.
 
 ### Also in this release
 Smaller improvements that landed alongside the rename:
