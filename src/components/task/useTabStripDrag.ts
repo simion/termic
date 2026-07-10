@@ -54,6 +54,10 @@ export function useTabStripDrag(opts: {
   // strip's own drag, main is target-able only via its edges (center = plain
   // reorder); toPaneId null = the main pane.
   function hitTestDropTarget(clientX: number, clientY: number): { el: HTMLElement | null; toPaneId: string | null; zone: DropZone } | null {
+    // Main strip dragging its ONLY tab: every drop is refused by the store
+    // (main must keep at least one tab — an empty main has no launcher and
+    // no close button), so don't offer a highlight that would no-op.
+    if (!currentPaneId && stripTabsRef.current.length <= 1) return null;
     const raw = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
     const paneHighlight = (id: string) =>
       document.querySelector(`[data-split-leaf][data-pane-id="${CSS.escape(id)}"]`) as HTMLElement | null;
