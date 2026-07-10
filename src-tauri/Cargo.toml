@@ -45,6 +45,10 @@ serde_yml = "0.0.12"
 # + the personal global list). Already in the dependency tree transitively,
 # so pinning it direct doesn't change resolution.
 glob = "0.3"
+# data: URL encoding for workspace images in the markdown preview
+# (workspace_file_read_base64). Already in the dependency tree transitively,
+# so pinning it direct doesn't change resolution.
+base64 = "0.22"
 
 # macOS-only: raw Objective-C bridge used to round the window's content
 # layer on macOS Tahoe (26+) so the WKWebView corners match the system's

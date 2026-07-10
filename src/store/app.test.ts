@@ -265,6 +265,134 @@ describe("openPreviewTab", () => {
     const tab = useApp.getState().tabs[wsId].find(t => t.id === "e1") as any;
     expect(tab.revealAt).toEqual({ line: 42, col: 5 });
   });
+
+  it("sets revealHeading on existing tab (file.md#heading link to an open file)", () => {
+    const wsId = "ws1";
+    const existing: Tab = { id: "e1", type: "edit", title: "guide.md", path: "docs/guide.md", preview: false } as any;
+    useApp.setState({ tabs: { [wsId]: [existing] }, activeTab: { [wsId]: "e1" } });
+
+    useApp.getState().openPreviewTab(wsId, {
+      type: "edit", path: "docs/guide.md", title: "guide.md",
+      revealHeading: "usage",
+    });
+
+    const tab = useApp.getState().tabs[wsId].find(t => t.id === "e1") as any;
+    expect(tab.revealHeading).toBe("usage");
+    expect(useApp.getState().activeTab[wsId]).toBe("e1");
+  });
+
+  it("carries revealHeading onto a new preview tab", () => {
+    const wsId = "ws1";
+    useApp.setState({ tabs: { [wsId]: [] } });
+
+    useApp.getState().openPreviewTab(wsId, {
+      type: "edit", path: "docs/guide.md", title: "guide.md",
+      revealHeading: "usage",
+    });
+
+    const tabs = useApp.getState().tabs[wsId];
+    expect(tabs).toHaveLength(1);
+    expect((tabs[0] as any).revealHeading).toBe("usage");
+  });
+
+  it("carries revealHeading when recycling the preview tab", () => {
+    const wsId = "ws1";
+    const previewTab: Tab = { id: "prev-1", type: "edit", title: "old.md", path: "docs/old.md", preview: true } as any;
+    useApp.setState({ tabs: { [wsId]: [previewTab] }, activeTab: { [wsId]: "prev-1" } });
+
+    useApp.getState().openPreviewTab(wsId, {
+      type: "edit", path: "docs/new.md", title: "new.md",
+      revealHeading: "install",
+    });
+
+    const tab = useApp.getState().tabs[wsId][0] as any;
+    expect(tab.path).toBe("docs/new.md");
+    expect(tab.revealHeading).toBe("install");
+  });
+
+  it("does not set reveal fields on diff tabs", () => {
+    const wsId = "ws1";
+    useApp.setState({ tabs: { [wsId]: [] } });
+
+    useApp.getState().openPreviewTab(wsId, {
+      type: "diff", path: "docs/guide.md", title: "guide.md",
+      revealHeading: "usage",
+    });
+
+    const tab = useApp.getState().tabs[wsId][0] as any;
+    expect(tab.revealHeading).toBeUndefined();
+  });
+
+  it("clears a stale revealHeading when the preview tab is recycled without a fragment", () => {
+    // A file.md#missing-heading link set revealHeading but it was never
+    // consumed (no heading matched); reusing the preview tab for another
+    // file must not let the old fragment scroll the new document.
+    const wsId = "ws1";
+    const previewTab: Tab = {
+      id: "prev-1", type: "edit", title: "old.md", path: "docs/old.md",
+      preview: true, revealHeading: "missing-heading",
+    } as any;
+    useApp.setState({ tabs: { [wsId]: [previewTab] }, activeTab: { [wsId]: "prev-1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "edit", path: "docs/new.md", title: "new.md" });
+
+    const tab = useApp.getState().tabs[wsId][0] as any;
+    expect(tab.path).toBe("docs/new.md");
+    expect(tab.revealHeading).toBeUndefined();
+  });
+
+  it("does not wipe a not-yet-consumed reveal when re-activating an existing tab without a new one", () => {
+    // Regression: re-activating the SAME already-open file (no new reveal
+    // target in this call) must never cancel a reveal that's already
+    // pending and hasn't been consumed yet (e.g. a Find-in-Files jump whose
+    // EditorPane effect hasn't run, or a heading reveal MarkdownPreview
+    // hasn't fulfilled) — unlike recycling a preview tab to a DIFFERENT
+    // file, the file identity here isn't changing, so there's no stale
+    // previous-occupant risk to guard against.
+    const wsId = "ws1";
+    const existing: Tab = {
+      id: "e1", type: "edit", title: "guide.md", path: "docs/guide.md",
+      preview: false, revealAt: { line: 7 }, revealHeading: "usage",
+    } as any;
+    useApp.setState({ tabs: { [wsId]: [existing] }, activeTab: { [wsId]: "e1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "edit", path: "docs/guide.md", title: "guide.md" });
+
+    const tab = useApp.getState().tabs[wsId].find(t => t.id === "e1") as any;
+    expect(tab.revealAt).toEqual({ line: 7 });
+    expect(tab.revealHeading).toBe("usage");
+  });
+
+  it("still applies a genuinely new reveal target to an already-open tab", () => {
+    const wsId = "ws1";
+    const existing: Tab = {
+      id: "e1", type: "edit", title: "guide.md", path: "docs/guide.md",
+      preview: false, revealAt: { line: 7 },
+    } as any;
+    useApp.setState({ tabs: { [wsId]: [existing] }, activeTab: { [wsId]: "e1" } });
+
+    useApp.getState().openPreviewTab(wsId, {
+      type: "edit", path: "docs/guide.md", title: "guide.md", revealAt: { line: 99 },
+    });
+
+    const tab = useApp.getState().tabs[wsId].find(t => t.id === "e1") as any;
+    expect(tab.revealAt).toEqual({ line: 99 });
+  });
+
+  it("clears reveal fields when the preview tab is recycled into a diff tab", () => {
+    const wsId = "ws1";
+    const previewTab: Tab = {
+      id: "prev-1", type: "edit", title: "old.md", path: "docs/old.md",
+      preview: true, revealHeading: "usage",
+    } as any;
+    useApp.setState({ tabs: { [wsId]: [previewTab] }, activeTab: { [wsId]: "prev-1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "diff", path: "docs/old.md", title: "old.md" });
+
+    const tab = useApp.getState().tabs[wsId][0] as any;
+    expect(tab.type).toBe("diff");
+    expect(tab.revealHeading).toBeUndefined();
+  });
 });
 
 // ── reorderTab (issue #6: drag-to-reorder) ────────────────────────────

@@ -24,12 +24,14 @@ import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
+import { dirnamePosix, MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
 // Lightweight extension check so we don't import the (lazy) MarkdownPane
-// module just to ask whether a path is markdown.
-const isMarkdownPath = (p: string) => /\.(md|markdown|mdx)$/i.test(p);
+// module just to ask whether a path is markdown. Shared with the markdown
+// preview's link handler (markdownPaths.ts) so both agree on what counts.
+const isMarkdownPath = (p: string) => MARKDOWN_EXT_RE.test(p);
 
 const DEFAULT_SPLIT_HEIGHT = 240;
 const MIN_HEIGHT = 80;
@@ -49,7 +51,7 @@ function EditorBreadcrumb({ ws }: { ws: Workspace }) {
   const path = tab.path;
   const parts = path.split("/").filter(Boolean);
   const fileName = parts[parts.length - 1] ?? path;
-  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  const dir = dirnamePosix(path);
   // Absolute folder that contains the file — opening THE DIRECTORY (not the
   // file) launches the OS file manager (Finder / Files / Explorer) at that
   // location. openPath → opener plugin: `open` on macOS, xdg-open on Linux.

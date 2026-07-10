@@ -219,7 +219,7 @@ export interface AppState {
   closeTab: (wsId: string, tabId: string) => void;
   setActiveTabId: (wsId: string, tabId: string) => void;
   persistTab: (wsId: string, tabId: string) => void;
-  openPreviewTab: (wsId: string, data: { type: "edit" | "diff"; path: string; title: string; revealAt?: { line: number; col?: number } }) => void;
+  openPreviewTab: (wsId: string, data: { type: "edit" | "diff"; path: string; title: string; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
   /** Clear an edit tab's `revealAt` after EditorPane has consumed it,
    *  so a re-render doesn't re-jump the cursor. */
   consumeReveal: (wsId: string, tabId: string) => void;
@@ -1576,6 +1576,32 @@ export const useApp = create<AppState>((set, get) => ({
 
   openPreviewTab: (wsId, data) => set(s => {
     const list = s.tabs[wsId] || [];
+    // Reveal targets only make sense on edit tabs; explicitly UNDEFINED when
+    // absent (and for diff tabs), so RECYCLING a preview tab to a different
+    // file never keeps a stale reveal from the previous occupant (e.g. a
+    // file.md#heading link whose fragment never matched, then the tab is
+    // reused for another file that happens to contain that heading). Applied
+    // unconditionally by the two "recycle this preview tab" branches below,
+    // where the file identity itself is changing.
+    const revealPatch = {
+      revealAt: data.type === "edit" ? data.revealAt : undefined,
+      revealHeading: data.type === "edit" ? data.revealHeading : undefined,
+    };
+    // Used instead by the "already open, same file" branches: only a field
+    // the caller explicitly supplied is ever applied. Unlike the recycle
+    // case, the file identity ISN'T changing here, so there's no stale
+    // previous-occupant risk — and wiping unconditionally would be actively
+    // wrong: a call that says nothing about reveals must never cancel one
+    // that's already pending and not yet consumed (e.g. a Find-in-Files
+    // jump whose EditorPane effect hasn't run yet when a second, unrelated
+    // openPreviewTab call for the same file lands first).
+    const withNewRevealOnly = (existing: Tab) => {
+      const patch: { revealAt?: unknown; revealHeading?: unknown } = {};
+      if (data.type === "edit" && data.revealAt !== undefined) patch.revealAt = data.revealAt;
+      if (data.type === "edit" && data.revealHeading !== undefined) patch.revealHeading = data.revealHeading;
+      if (Object.keys(patch).length === 0) return list; // nothing new — leave any pending reveal alone
+      return list.map(t => t.id === existing.id ? { ...t, ...patch } as Tab : t);
+    };
     const tree = s.splitTree[wsId];
     const activePaneIdVal = s.activePaneId[wsId];
     const activePaneLeaf = (activePaneIdVal && tree) ? findLeaf(tree, activePaneIdVal) : null;
@@ -1592,9 +1618,7 @@ export const useApp = create<AppState>((set, get) => ({
       // Already open in this pane?
       const existing = paneTabs.find(t => t.type === data.type && (t as any).path === data.path);
       if (existing) {
-        const next = data.revealAt && existing.type === "edit"
-          ? list.map(t => t.id === existing.id ? { ...t, revealAt: data.revealAt } as Tab : t)
-          : list;
+        const next = withNewRevealOnly(existing);
         const newTree = setLeafActiveTabId(tree, activePaneLeaf.id, existing.id);
         return { tabs: { ...s.tabs, [wsId]: next }, splitTree: { ...s.splitTree, [wsId]: newTree } };
       }
@@ -1605,7 +1629,7 @@ export const useApp = create<AppState>((set, get) => ({
         const next = list.map(t => t.id === previewTab.id ? {
           ...t, type: data.type, path: data.path, title: data.title,
           liveTitle: undefined, customTitle: false, dirty: false, preview: true,
-          ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
+          ...revealPatch,
         } as Tab : t);
         const newTree = setLeafActiveTabId(tree, activePaneLeaf.id, previewTab.id);
         return { tabs: { ...s.tabs, [wsId]: next }, splitTree: { ...s.splitTree, [wsId]: newTree } };
@@ -1615,7 +1639,7 @@ export const useApp = create<AppState>((set, get) => ({
       const newTab: Tab = {
         id: crypto.randomUUID(), type: data.type, title: data.title,
         path: data.path, preview: true, paneId: activePaneLeaf.id,
-        ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
+        ...revealPatch,
       } as any;
       const newTree = replaceNode(tree, activePaneLeaf.id, {
         ...activePaneLeaf,
@@ -1633,9 +1657,7 @@ export const useApp = create<AppState>((set, get) => ({
 
     const existing = mainList.find(t => t.type === data.type && (t as any).path === data.path);
     if (existing) {
-      const next = data.revealAt && existing.type === "edit"
-        ? list.map(t => t.id === existing.id ? { ...t, revealAt: data.revealAt } as Tab : t)
-        : list;
+      const next = withNewRevealOnly(existing);
       return { tabs: { ...s.tabs, [wsId]: next }, ...setActive(existing.id) };
     }
 
@@ -1643,7 +1665,7 @@ export const useApp = create<AppState>((set, get) => ({
       const next = list.map(t => t.id === previewTab.id ? {
         ...t, type: data.type, path: data.path, title: data.title,
         liveTitle: undefined, customTitle: false, dirty: false, preview: true,
-        ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
+        ...revealPatch,
       } as Tab : t);
       return { tabs: { ...s.tabs, [wsId]: next }, ...setActive(previewTab.id) };
     }
@@ -1651,7 +1673,7 @@ export const useApp = create<AppState>((set, get) => ({
     const newTab: Tab = {
       id: crypto.randomUUID(), type: data.type, title: data.title,
       path: data.path, preview: true,
-      ...(data.revealAt && data.type === "edit" ? { revealAt: data.revealAt } : {}),
+      ...revealPatch,
     } as any;
     return { tabs: { ...s.tabs, [wsId]: [...list, newTab] }, ...setActive(newTab.id) };
   }),
