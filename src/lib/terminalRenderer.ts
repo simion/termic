@@ -8,7 +8,8 @@
 
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { Terminal } from "@xterm/xterm";
-import { usePrefs } from "@/store/prefs";
+import { usePrefs, terminalFontsSettled } from "@/store/prefs";
+import * as ipc from "@/lib/ipc";
 
 function dumpRenderer(addon: WebglAddon | null): void {
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -36,6 +37,53 @@ function dumpRenderer(addon: WebglAddon | null): void {
  *  and typing crawls), the load is skipped and xterm's built-in DOM renderer
  *  remains. Read once at mount; toggling the pref takes effect on the next
  *  terminal spawn (relaunch to switch every open terminal). */
+/** GH #70: hold the first fit + PTY spawn until the terminal font's faces
+ *  are active. The bundled JetBrains Mono is a lazy @font-face; if output
+ *  is rasterized before it activates, xterm's WebGL atlas caches those
+ *  glyphs drawn with the fallback monospace — keyed per (char, fg, bg,
+ *  style), with the font only in the atlas config — so the same char keeps
+ *  its wrong-height glyph until the cell happens to re-rasterize (selection
+ *  changes the bg → new key → correct glyph, which is why selecting text
+ *  "fixed" it). Gating the spawn means metrics AND glyphs come from the
+ *  real font from the start: no post-hoc refit, no atlas churn.
+ *
+ *  prefs warms the load at module start, so this normally resolves in a
+ *  microtask and adds zero spawn latency. The wait is capped so a hung
+ *  load can never stall a spawn; on that (practically unreachable) path a
+ *  one-shot repair runs when the face finally lands, guarded against the
+ *  two hazards a late fit() has: zero-geometry hosts (collapsed split —
+ *  same reason the panes' ResizeObservers bail at 0x0) and the mid-spawn
+ *  window where term.onResize isn't registered yet, which would silently
+ *  desync PTY cols/rows (hence the explicit ptyResize with retry). */
+export async function awaitTerminalFonts(
+  term: Terminal,
+  fit: { fit(): void },
+  host: HTMLElement,
+  isCancelled: () => boolean,
+  ptyId: () => string | null,
+): Promise<void> {
+  let ready = false;
+  await Promise.race([
+    terminalFontsSettled().then(() => { ready = true; }),
+    new Promise<void>(r => window.setTimeout(r, 800)),
+  ]);
+  if (ready || isCancelled()) return;
+  terminalFontsSettled().then(() => {
+    if (isCancelled()) return;
+    try { term.clearTextureAtlas(); } catch {}
+    if (host.offsetWidth === 0 || host.offsetHeight === 0) return;
+    try { fit.fit(); } catch {}
+    let tries = 20;
+    const push = () => {
+      if (isCancelled() || tries-- <= 0) return;
+      const pid = ptyId();
+      if (pid) ipc.ptyResize(pid, term.rows, term.cols).catch(() => {});
+      else window.setTimeout(push, 250);
+    };
+    push();
+  });
+}
+
 export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
   let addon: WebglAddon | null = null;
   if (usePrefs.getState().terminalGpuEnabled) {

@@ -18,7 +18,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { attachCmdClickLinkOpener } from "@/lib/termLinkOpener";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { loadTerminalRenderer } from "@/lib/terminalRenderer";
+import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
@@ -170,6 +170,10 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
         setTimeout(fin, 400);
       });
       if (cancelled) return;
+      // GH #70: don't measure/spawn until the terminal font's faces are
+      // active. Mirrors TerminalPane; see awaitTerminalFonts.
+      await awaitTerminalFonts(term, fit, host, () => cancelled, () => ptyRef.current);
+      if (cancelled) return;
       try { fit.fit(); } catch {}
       const shell = await loginShell();
       if (cancelled) return;
@@ -249,6 +253,11 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
       // on a half-disposed terminal.
       try { rendererAddon?.dispose(); } catch {}
       term.dispose();
+      // Null the refs so any late async callback's staleness check fails
+      // closed instead of touching a disposed terminal (TerminalPane does
+      // the same).
+      termRef.current = null;
+      fitRef.current = null;
     };
   }, [taskPath, gen]);
 
@@ -290,6 +299,7 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
     t.options.macOptionIsMeta = terminalOptionAsMeta;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
+    // No font-load settle needed here — see TerminalPane's font effect (GH #70).
   }, [terminalFontId, terminalFontSize, terminalLetterSpacing, terminalOptionAsMeta]);
 
   // Live theme swap mirrors TerminalPane's effect; see the comment there.

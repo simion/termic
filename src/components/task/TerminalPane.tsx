@@ -19,7 +19,7 @@ import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
-import { loadTerminalRenderer } from "@/lib/terminalRenderer";
+import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { setupImeReplacementBridge } from "@/lib/ime";
@@ -1103,6 +1103,12 @@ const captureArmedRef = useRef(false);
         setTimeout(fin, 400);
       });
       if (cancelled) return;
+      // GH #70: don't measure/spawn until the terminal font's faces are
+      // active, so cell metrics and the WebGL glyph atlas come from the
+      // real font, not the fallback. Warmed at app boot — normally this
+      // resolves in a microtask. See awaitTerminalFonts.
+      await awaitTerminalFonts(term, fit, host, () => cancelled, () => ptyRef.current);
+      if (cancelled) return;
       try { fit.fit(); } catch {}
       const cols = Math.max(40, term.cols || 100);
       const rows = Math.max(10, term.rows || 30);
@@ -1636,6 +1642,10 @@ const captureArmedRef = useRef(false);
     t.options.macOptionIsMeta = terminalOptionAsMeta;
     try { fitRef.current?.fit(); } catch {}
     if (ptyRef.current) ipc.ptyResize(ptyRef.current, t.rows, t.cols).catch(() => {});
+    // No font-load settle needed here (GH #70): every selectable family
+    // except the bundled JetBrains Mono is an installed system font
+    // (active synchronously), and the bundled faces were warmed at prefs
+    // module load — long settled before Settings can even be opened.
   }, [terminalFontId, terminalFontSize, terminalLetterSpacing, terminalOptionAsMeta]);
 
   // Live theme swap: when the user picks a different theme in the
