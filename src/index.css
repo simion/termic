@@ -65,6 +65,25 @@
   --color-ok-fg:     #ffffff;
   --color-warn:      #f0b13a;
   --color-err:       #ef5350;
+  /* "Work done" blue — sidebar activity dots + tab badges. Was previously
+     only a hard-coded fallback (var(--color-info, #4aa3ff)) sprinkled at
+     the point of use; defined here so themes can override it. */
+  --color-info:      #4aa3ff;
+
+  /* Palette ramp: hue-named accents for user-assigned identity marks
+     (project-group folders today; the user's pick is stored by hue key,
+     e.g. "red"). One fixed set for every theme in v1 (the light palette
+     re-tunes shades for contrast on cream). If themes ever define their
+     own ramp, the contract is: tune SHADE, keep each hue recognizable,
+     never collapse the ramp — the marks are user data, not decoration. */
+  --color-palette-red:    #e5484d;
+  --color-palette-orange: #f76b15;
+  --color-palette-yellow: #ffb224;
+  --color-palette-green:  #46a758;
+  --color-palette-teal:   #12a594;
+  --color-palette-blue:   #4aa3ff;
+  --color-palette-purple: #9d6ee8;
+  --color-palette-pink:   #d6409f;
 
   /* Task location glyph tint (worktree + main checkout share it). A neutral
      warm-gray sitting a step below the task title (between fg-dim and
@@ -146,6 +165,16 @@
        slate in light mode so it doesn't disappear against the cream bg. */
     --color-cli-grok:    #64748b;
     --color-cli-opencode: #6b6965;
+    /* Palette ramp: the dark-bg defaults (esp. yellow/teal) wash out
+       on cream, so shift every hue darker. */
+    --color-palette-red:    #c2403f;
+    --color-palette-orange: #bf5b16;
+    --color-palette-yellow: #a17410;
+    --color-palette-green:  #3a7d46;
+    --color-palette-teal:   #0f7d72;
+    --color-palette-blue:   #2273bd;
+    --color-palette-purple: #7c4dbc;
+    --color-palette-pink:   #b03585;
     color-scheme: light;
   }
 

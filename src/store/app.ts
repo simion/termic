@@ -9,6 +9,7 @@ import {
   updateSplitRatio, findAdjacentPane, equalizeSplitsOnAxis,
 } from "@/lib/splitTree";
 import * as ipc from "@/lib/ipc";
+import { groupOf } from "@/lib/projectGroups";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
 
@@ -90,6 +91,14 @@ export interface AppState {
    *  Persisted to localStorage so the user's tree shape survives launches. */
   collapsedProjects: Record<string, boolean>;
   collapsedTasks: Record<string, boolean>;
+  /** Per-GROUP collapse state, keyed by group NAME (groups are derived
+   *  from Project.group labels, they have no id). true = members hidden.
+   *  Persisted to localStorage; renaming a group migrates its entry. */
+  collapsedGroups: Record<string, boolean>;
+  /** Per-GROUP accent color (palette key, e.g. "red"), keyed by group
+   *  name like collapsedGroups. Persisted to localStorage; pruned and
+   *  rename-migrated alongside the collapse map. */
+  groupColors: Record<string, string>;
   /** Editable agent registry from settings.json. Loaded by `loadAll` so
    *  `spawnArgsForCli` can consult `agent.command + args + capabilities`
    *  instead of hard-coding by CLI string. Empty until first loadAll. */
@@ -134,9 +143,23 @@ export interface AppState {
   disableFooterTerm: (taskId: string) => void;
   setProjectCollapsed:   (projectId: string, collapsed: boolean) => void;
   setTaskCollapsed: (taskId: string,      collapsed: boolean) => void;
+  /** Set a project-group's collapse state (keyed by group name). */
+  setGroupCollapsed: (group: string, collapsed: boolean) => void;
+  /** Assign a palette color to a group folder (null clears back to the
+   *  default). Keys are palette names ("red"…); the sidebar maps them to
+   *  --color-palette-* tokens and ignores unknown keys. */
+  setGroupColor: (group: string, color: string | null) => void;
+  /** Move a group's stored UI state (collapse + color) from an old name
+   *  in one write, used by the sidebar's group-rename flow. Renaming onto
+   *  an existing group merges; the destination's state wins. */
+  renameGroupState: (from: string, to: string) => void;
   /** Bulk set: flips every task's explicit collapsed state to the
    *  given value in one update (single localStorage write + render). */
   setAllTasksCollapsed: (collapsed: boolean) => void;
+  /** Bulk set for GROUP folders — companion to setAllTasksCollapsed;
+   *  the sidebar's "Expand/Collapse all agents" actions call both so a
+   *  collapsed folder can't hide freshly-expanded agent rows. */
+  setAllGroupsCollapsed: (collapsed: boolean) => void;
   setTerminalSplitHeight: (taskId: string, px: number) => void;
   toggleTerminalSplitCollapsed: (taskId: string) => void;
   toggleBottomTerminal: (taskId: string) => void;
@@ -277,8 +300,12 @@ const LS_RPW     = "rightPanelWidth";
 const LS_RFH     = "rightFooterHeight";
 const LS_COLLAPSED_PROJ = "collapsedProjects"; // Record<projId, true>
 const LS_COLLAPSED_TASK   = "collapsedTasks"; // Record<taskId, bool>
+const LS_COLLAPSED_GRP  = "collapsedGroups"; // Record<groupName, bool>
+const LS_GROUP_COLORS   = "groupColors"; // Record<groupName, paletteKey>
 const initialCollapsed   = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_PROJ) || "{}"); } catch { return {}; } })();
 const initialCollapsedTask = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_TASK)   || "{}"); } catch { return {}; } })();
+const initialCollapsedGrp = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_GRP) || "{}"); } catch { return {}; } })();
+const initialGroupColors = (() => { try { return JSON.parse(localStorage.getItem(LS_GROUP_COLORS) || "{}"); } catch { return {}; } })();
 
 const initialCompact = (() => { try { return localStorage.getItem(LS_COMPACT) === "1"; } catch { return false; } })();
 const initialHidden  = (() => { try { return localStorage.getItem(LS_RPANEL)  === "1"; } catch { return false; } })();
@@ -368,6 +395,8 @@ export const useApp = create<AppState>((set, get) => ({
   footerTerm: {},
   collapsedProjects:   initialCollapsed   as Record<string, boolean>,
   collapsedTasks: initialCollapsedTask as Record<string, boolean>,
+  collapsedGroups: initialCollapsedGrp as Record<string, boolean>,
+  groupColors: initialGroupColors as Record<string, string>,
   agents: [],
   detectedClis: {},
   spotlightTaskId: {},
@@ -389,7 +418,26 @@ export const useApp = create<AppState>((set, get) => ({
       ipc.tasksList(),
       ipc.settingsLoad().catch(() => ({ agents: [] } as Partial<import("@/lib/types").Settings>)),
     ]);
-    set({ projects, tasks, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [] });
+    // Prune UI state for groups that no longer exist (groups are
+    // derived from Project.group — dissolving / renaming one would
+    // otherwise leave its entries in localStorage forever, and a stale
+    // entry would haunt a future group reusing the name).
+    const liveGroups = new Set(projects.map(groupOf).filter(Boolean));
+    let collapsedGroups = get().collapsedGroups;
+    if (Object.keys(collapsedGroups).some(k => !liveGroups.has(k))) {
+      collapsedGroups = Object.fromEntries(
+        Object.entries(collapsedGroups).filter(([k]) => liveGroups.has(k)),
+      );
+      try { localStorage.setItem(LS_COLLAPSED_GRP, JSON.stringify(collapsedGroups)); } catch {}
+    }
+    let groupColors = get().groupColors;
+    if (Object.keys(groupColors).some(k => !liveGroups.has(k))) {
+      groupColors = Object.fromEntries(
+        Object.entries(groupColors).filter(([k]) => liveGroups.has(k)),
+      );
+      try { localStorage.setItem(LS_GROUP_COLORS, JSON.stringify(groupColors)); } catch {}
+    }
+    set({ projects, tasks, collapsedGroups, groupColors, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [] });
   },
 
   refreshClis: async () => {
@@ -425,6 +473,7 @@ export const useApp = create<AppState>((set, get) => ({
     // collapsed, the new row would be hidden) AND ⌘1..9 / ⇧⌘[/] nav
     // to a task under a collapsed project.
     let nextCollapsed = get().collapsedProjects;
+    let nextCollapsedGroups = get().collapsedGroups;
     if (id) {
       const task = get().tasks.find(w => w.id === id);
       // Force the parent project expanded (explicit false) — covers the
@@ -434,12 +483,23 @@ export const useApp = create<AppState>((set, get) => ({
         nextCollapsed = { ...nextCollapsed, [task.project_id]: false };
         try { localStorage.setItem(LS_COLLAPSED_PROJ, JSON.stringify(nextCollapsed)); } catch {}
       }
+      // Same for the project's GROUP: a task activated under a
+      // collapsed group must become visible, so expand the folder too.
+      // groupOf — the sidebar keys collapse state by the normalized name.
+      const proj = task ? get().projects.find(p => p.id === task.project_id) : undefined;
+      const grp = proj ? groupOf(proj) : "";
+      const cur = Object.hasOwn(nextCollapsedGroups, grp) ? nextCollapsedGroups[grp] : undefined;
+      if (grp && cur !== false) {
+        nextCollapsedGroups = { ...nextCollapsedGroups, [grp]: false };
+        try { localStorage.setItem(LS_COLLAPSED_GRP, JSON.stringify(nextCollapsedGroups)); } catch {}
+      }
     }
     set({
       activeTaskId: id,
       view: { page: id ? "dashboard" : get().view.page },
       mountedTasks: nextMounted,
       collapsedProjects: nextCollapsed,
+      collapsedGroups: nextCollapsedGroups,
     });
     if (id) {
       // Mark the WHOLE task as read on activation. Previously we
@@ -614,6 +674,42 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem(LS_COLLAPSED_TASK, JSON.stringify(next)); } catch {}
     return { collapsedTasks: next };
   }),
+  setGroupCollapsed: (group, collapsed) => set(s => {
+    const next = { ...s.collapsedGroups, [group]: collapsed };
+    try { localStorage.setItem(LS_COLLAPSED_GRP, JSON.stringify(next)); } catch {}
+    return { collapsedGroups: next };
+  }),
+  setGroupColor: (group, color) => set(s => {
+    const next = { ...s.groupColors };
+    if (color) next[group] = color;
+    else delete next[group];
+    try { localStorage.setItem(LS_GROUP_COLORS, JSON.stringify(next)); } catch {}
+    return { groupColors: next };
+  }),
+  renameGroupState: (from, to) => set(s => {
+    // Object.hasOwn (not `in`): the records round-trip through JSON.parse,
+    // so a group named "toString"/"constructor" would otherwise hit the
+    // prototype chain. Rename onto an existing group MERGES them — the
+    // destination's own state wins; only carry the source's entry to a
+    // fresh name.
+    const migrate = <T,>(map: Record<string, T>): Record<string, T> | null => {
+      if (!Object.hasOwn(map, from)) return null;
+      const { [from]: prev, ...rest } = map;
+      return Object.hasOwn(rest, to) ? rest : { ...rest, [to]: prev };
+    };
+    const out: Partial<Pick<AppState, "collapsedGroups" | "groupColors">> = {};
+    const collapsed = migrate(s.collapsedGroups);
+    if (collapsed) {
+      out.collapsedGroups = collapsed;
+      try { localStorage.setItem(LS_COLLAPSED_GRP, JSON.stringify(collapsed)); } catch {}
+    }
+    const colors = migrate(s.groupColors);
+    if (colors) {
+      out.groupColors = colors;
+      try { localStorage.setItem(LS_GROUP_COLORS, JSON.stringify(colors)); } catch {}
+    }
+    return out;
+  }),
   setAllTasksCollapsed: (collapsed) => set(s => {
     // Build a fresh map covering every task so the default-by-mode
     // fallback in TaskRow can't sneak back in for any of them. We
@@ -623,6 +719,17 @@ export const useApp = create<AppState>((set, get) => ({
     for (const w of s.tasks) next[w.id] = collapsed;
     try { localStorage.setItem(LS_COLLAPSED_TASK, JSON.stringify(next)); } catch {}
     return { collapsedTasks: next };
+  }),
+  setAllGroupsCollapsed: (collapsed) => set(s => {
+    // Fresh map over the LIVE groups (derived from loaded projects) —
+    // one write, and stale names fall out as a bonus.
+    const next: Record<string, boolean> = {};
+    for (const p of s.projects) {
+      const g = groupOf(p);
+      if (g) next[g] = collapsed;
+    }
+    try { localStorage.setItem(LS_COLLAPSED_GRP, JSON.stringify(next)); } catch {}
+    return { collapsedGroups: next };
   }),
 
   addBottomTab: (taskId, opts) => {

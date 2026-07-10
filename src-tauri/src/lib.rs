@@ -121,6 +121,13 @@ pub struct Project {
     /// existing project + the `Default` impl stay git-backed.
     #[serde(default)]
     pub non_git: bool,
+
+    /// UI-only sidebar group label. Projects sharing the same non-empty
+    /// value render under one collapsible folder header in the project
+    /// list. Purely presentational — no effect on paths, git, or
+    /// workspaces. `None` / empty = ungrouped (renders at the top level).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -1725,6 +1732,8 @@ fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, Stri
         members: Vec::new(),
         spotlight_enabled: false,
         non_git,
+        // New projects start ungrouped; grouping is a sidebar action.
+        group: None,
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -1900,6 +1909,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         members,
         spotlight_enabled: false,
         non_git,
+        group: None,
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -1960,6 +1970,26 @@ fn project_reorder(ids: Vec<String>) -> Result<(), String> {
         if !taken.contains(&p.id) { out.push(p); }
     }
     save_projects(&out).map_err(|e| e.to_string())
+}
+
+/// Set / clear the UI-only sidebar group label on a batch of projects in
+/// ONE atomic projects.json write. Group rename / dissolve touch every
+/// member — doing this per-project from the frontend could fail halfway
+/// and leave a group half-renamed on disk, and full `project_update`s
+/// would clobber concurrent edits to unrelated fields.
+#[tauri::command]
+fn project_set_group(ids: Vec<String>, group: Option<String>) -> Result<(), String> {
+    let group = group.and_then(|g| {
+        let t = g.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
+    });
+    let mut list = load_projects();
+    for p in list.iter_mut() {
+        if ids.contains(&p.id) {
+            p.group = group.clone();
+        }
+    }
+    save_projects(&list).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -8247,7 +8277,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder,
+            projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder, project_set_group,
             tasks_list, task_create, task_create_multi, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_yolo,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,

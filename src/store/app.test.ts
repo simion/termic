@@ -720,3 +720,79 @@ describe("openSettings / clearSettingsHighlight", () => {
     expect(useApp.getState().view).toMatchObject({ settingsOpen: true, settingsTab: "general", settingsHighlight: undefined });
   });
 });
+
+// ── project-group UI state (collapse + color maps) ────────────────────
+
+describe("group UI state", () => {
+  const projectWith = (id: string, group?: string) =>
+    ({ id, name: id, group } as import("@/lib/types").Project);
+
+  beforeEach(() => {
+    useApp.setState({ collapsedGroups: {}, groupColors: {} });
+    localStorage.clear();
+  });
+
+  it("setGroupCollapsed sets state and persists", () => {
+    useApp.getState().setGroupCollapsed("BACKEND", true);
+    expect(useApp.getState().collapsedGroups).toEqual({ BACKEND: true });
+    expect(JSON.parse(localStorage.getItem("collapsedGroups")!)).toEqual({ BACKEND: true });
+  });
+
+  it("setGroupColor sets a palette key; null clears it", () => {
+    useApp.getState().setGroupColor("BACKEND", "red");
+    expect(useApp.getState().groupColors).toEqual({ BACKEND: "red" });
+    useApp.getState().setGroupColor("BACKEND", null);
+    expect(useApp.getState().groupColors).toEqual({});
+    expect(JSON.parse(localStorage.getItem("groupColors")!)).toEqual({});
+  });
+
+  it("renameGroupState carries collapse + color to a fresh name", () => {
+    useApp.setState({ collapsedGroups: { OLD: true }, groupColors: { OLD: "teal" } });
+    useApp.getState().renameGroupState("OLD", "NEW");
+    expect(useApp.getState().collapsedGroups).toEqual({ NEW: true });
+    expect(useApp.getState().groupColors).toEqual({ NEW: "teal" });
+  });
+
+  it("renameGroupState onto an existing group merges, destination wins", () => {
+    useApp.setState({
+      collapsedGroups: { SRC: true, DST: false },
+      groupColors: { SRC: "red", DST: "blue" },
+    });
+    useApp.getState().renameGroupState("SRC", "DST");
+    expect(useApp.getState().collapsedGroups).toEqual({ DST: false });
+    expect(useApp.getState().groupColors).toEqual({ DST: "blue" });
+  });
+
+  it("renameGroupState is a no-op for an unknown source", () => {
+    useApp.setState({ collapsedGroups: { A: true }, groupColors: {} });
+    useApp.getState().renameGroupState("MISSING", "B");
+    expect(useApp.getState().collapsedGroups).toEqual({ A: true });
+  });
+
+  it("setAllGroupsCollapsed covers live groups and drops stale names", () => {
+    useApp.setState({
+      projects: [projectWith("p1", "one"), projectWith("p2", " TWO "), projectWith("p3")],
+      collapsedGroups: { STALE: true },
+    });
+    useApp.getState().setAllGroupsCollapsed(true);
+    // Keys are normalized (trim + uppercase); STALE is gone.
+    expect(useApp.getState().collapsedGroups).toEqual({ ONE: true, TWO: true });
+    useApp.getState().setAllGroupsCollapsed(false);
+    expect(useApp.getState().collapsedGroups).toEqual({ ONE: false, TWO: false });
+  });
+
+  it("loadAll prunes collapse/color entries for groups that no longer exist", async () => {
+    (ipc.projectsList as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      projectWith("p1", "ALIVE"),
+    ]);
+    useApp.setState({
+      collapsedGroups: { ALIVE: true, DEAD: true },
+      groupColors: { DEAD: "pink" },
+    });
+    await useApp.getState().loadAll();
+    expect(useApp.getState().collapsedGroups).toEqual({ ALIVE: true });
+    expect(useApp.getState().groupColors).toEqual({});
+    expect(JSON.parse(localStorage.getItem("collapsedGroups")!)).toEqual({ ALIVE: true });
+    expect(JSON.parse(localStorage.getItem("groupColors")!)).toEqual({});
+  });
+});

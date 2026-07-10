@@ -9,7 +9,7 @@ Three directories, different owners:
 
 ## Entities
 
-- **Project** (`projects.json`, single JSON array) — git repo path + scripts + `preview_url` template + `files_to_copy` globs + `default_cli`.
+- **Project** (`projects.json`, single JSON array) — git repo path + scripts + `preview_url` template + `files_to_copy` globs + `default_cli` + optional `group` label (UI-only collapsible folder in the sidebar; no filesystem effect; a group exists iff ≥1 project carries the label. All group reads go through `groupOf()` in `src/lib/projectGroups.ts`, THE normalization point: trim + ALL-CAPS, so mixed-case labels on disk converge to one group. Collapse state + folder color live in `localStorage` keyed by normalized name, pruned when a group disappears).
 - **Task** (`tasks/<uuid>.json`) — git worktree branched from project's `base_branch`. Worktrees live at `~/termic/tasks/<project>/<name>/`. `is_main_checkout=true` tasks point at the project's live checkout (no worktree, archive skips `rm -rf`).
 - **Settings** (`settings.json`) — `repos_dir`, `welcomed`, `agents[]` (claude/gemini/codex defaults + customs; each has `command`/`args`/`yolo_args`/`runtime_yolo_command`). Defaults seeded if `agents` is empty. `schema_version` gates one-time on-disk migrations.
 - **Tab** (per task, in `useApp`) — `terminal` (PTY running a CLI), `edit` (CodeMirror), `diff` (vs HEAD). PTYs die with the app.
