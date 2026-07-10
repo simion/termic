@@ -4,13 +4,14 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.19.0] - 2026-07-09
+## [0.19.1] - 2026-07-10
 
-Bring your own theme, and the font you picked is finally the font you get.
+Bring your own theme, render images in markdown, and get the font you picked.
 
 ### Features
 - Custom themes: drop a JSON file in `~/.config/termic/themes/` and it shows up in the theme picker as a first-class theme, chrome and terminal together. No restart, no theme editor to learn. Save the file, reopen the picker. The folder starts with a README and a complete example you can copy.
 - Rosé Pine, a new built-in theme. The terminal palette uses the official ANSI mapping, so agent TUIs look the same in Termic as they do in Ghostty.
+- Markdown preview renders images and follows links. Relative and remote images both display, a `file.md#heading` link jumps to that heading, a link to a missing file says so instead of opening a blank tab, and a link to a folder reveals it in Finder. (#65)
 
 ### Bug fixes
 - Fonts you pick from the system list are actually used. Choosing a Nerd Font (or any font Termic found on your Mac) silently fell back to the bundled JetBrains Mono, so prompt glyphs from oh-my-posh, starship, and Powerlevel10k rendered as empty boxes. The editor ignored the pick too.
