@@ -17,6 +17,7 @@ import { requestCloseTab } from "@/lib/closeTab";
 import { focusMainTab } from "@/lib/tabFocus";
 import { visibleCliIds, agentDisplayName, isTerminalEntry } from "@/lib/agents";
 import { cn } from "@/lib/utils";
+import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
@@ -303,6 +304,11 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
   const iconId = tab.type === "terminal" ? resolveIconId(tab.cli, agents) : "";
   const color = tab.type === "terminal" ? CLI_BRAND_COLOR[iconId] : "text-[var(--color-fg-dim)]";
   const isRenaming = renaming !== null;
+  const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
+  const visibleTitle =
+    tab.type === "terminal" && !tab.customTitle
+      ? formatTerminalTitle(rawTitle, tab.cli, showWorking)
+      : rawTitle;
 
   // Reveal the pill when it becomes active — keyboard tab switches (⇧⌘[/],
   // ⌘1..9, cross-pane cycling) can land on a tab scrolled out of the strip's
@@ -416,7 +422,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
         // width and pushes the pill larger, defeating the fixed-cell
         // layout. Title attr surfaces the full text on hover.
         <span className={cn("min-w-0 flex-1 truncate", tab.preview && "italic")} title={tab.liveTitle && !tab.customTitle ? tab.liveTitle : undefined}>
-          {tab.customTitle ? tab.title : (tab.liveTitle || tab.title)}
+          {visibleTitle}
         </span>
       )}
       {/* Run tabs (GH #54): inline run controls, always visible — the pill IS

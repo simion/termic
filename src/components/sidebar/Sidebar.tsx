@@ -14,6 +14,7 @@ import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
+import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
 import { taskRename, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate } from "@/lib/ipc";
 import { createQuickTask, derivedBranch, type NewTaskMode } from "@/lib/quickTask";
@@ -1489,10 +1490,13 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
       {!collapsed && terminalTabs.map(tab => {
         const isTabActive = isActive && tab.id === activeTabId;
         const isTabHot = isTabActive;
-        const title = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const showBell    = settledHighlight && tab.unread?.reason === "attention";
         const showDone    = settledHighlight && !showBell && tab.workState === "done";
         const showWorking = workingIndicator && !showBell && !showDone && tab.workState === "working";
+        const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
+        const title = tab.customTitle
+          ? rawTitle
+          : formatTerminalTitle(rawTitle, tab.cli, showWorking);
         const isTabRenaming = tabRenaming?.id === tab.id;
 
         return (
