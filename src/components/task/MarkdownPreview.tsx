@@ -774,13 +774,13 @@ export function MarkdownPreview(
   // (and blow away the app), so preventDefault runs before any early return.
   // External links go to the OS opener, #fragments scroll the preview, and
   // task-relative links are stat'd first — a missing target shows a
-  // toast instead of opening a dead tab, a directory reveals in the file
-  // manager instead of trying to open as text — before opening the target
-  // file in a tab (markdown targets land in MarkdownPane via TaskView
-  // routing); a `file.md#heading` fragment rides along as the new tab's
-  // revealHeading, but only for a markdown target — a non-markdown tab has
-  // no MarkdownPane to ever consume it. Targets an editor can't render
-  // (images, archives) reveal in the OS file manager instead.
+  // toast instead of opening a dead tab, a directory focuses/expands in the
+  // sidebar file tree (GitHub-style folder view, not a jump to Finder) —
+  // before opening the target file in a tab (markdown targets land in
+  // MarkdownPane via TaskView routing); a `file.md#heading` fragment rides
+  // along as the new tab's revealHeading, but only for a markdown target — a
+  // non-markdown tab has no MarkdownPane to ever consume it. Targets an editor
+  // can't render (images, archives) reveal in the OS file manager instead.
   async function onClick(e: React.MouseEvent) {
     const a = (e.target as HTMLElement).closest("a");
     if (!a) return;
@@ -811,7 +811,17 @@ export function MarkdownPreview(
       useUI.getState().pushToast(`File not found: ${resolved}`, "error");
       return;
     }
-    if (stat.is_dir || BINARY_LINK_RE.test(resolved)) {
+    if (stat.is_dir) {
+      // GitHub renders a folder listing for a directory link; mirror that by
+      // focusing/expanding the target in the sidebar file tree instead of
+      // punting out to Finder. `resolved` is already task-root-relative (and
+      // resolveTaskHref guarantees it's contained), so it's exactly the path
+      // space the tree keys on — the same one the breadcrumb reveal uses.
+      useApp.getState().revealInTree(ctx.taskId, resolved, true);
+      return;
+    }
+    if (BINARY_LINK_RE.test(resolved)) {
+      // Editor can't render images/archives — reveal in the OS file manager.
       taskRevealPath(ctx.taskId, resolved)
         .catch(err => useUI.getState().pushToast(`Couldn't reveal ${resolved}: ${err}`, "error"));
       return;
