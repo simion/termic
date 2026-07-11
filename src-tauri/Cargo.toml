@@ -49,6 +49,10 @@ glob = "0.3"
 # (workspace_file_read_base64). Already in the dependency tree transitively,
 # so pinning it direct doesn't change resolution.
 base64 = "0.22"
+# Decode the url-encoded task id + relative path in the `taskpdf:` URI-scheme
+# handler (native PDF preview). Already in the tree via tauri/url, so pinning
+# it direct doesn't change resolution.
+percent-encoding = "2"
 
 # macOS-only: raw Objective-C bridge used to round the window's content
 # layer on macOS Tahoe (26+) so the WKWebView corners match the system's

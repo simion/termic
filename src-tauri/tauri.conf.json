@@ -13,7 +13,7 @@
     "withGlobalTauri": false,
     "windows": [],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws: wss: https://termic.dev; worker-src 'self' blob:; frame-src 'none'; object-src 'self' data:"
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws: wss: https://termic.dev; worker-src 'self' blob:; frame-src 'none'; object-src 'self' taskpdf:"
     }
   },
   "bundle": {

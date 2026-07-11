@@ -5055,6 +5055,58 @@ async fn task_file_read_base64(id: String, path: String, known_fp: Option<String
     .map_err(|e| e.to_string())?
 }
 
+/// Read an allowlisted preview file (image/PDF) as raw bytes + mime, reusing
+/// the SAME member-aware resolution, worktree containment, extension
+/// allowlist, and 20 MB cap as `task_file_read_base64_for_task` — just
+/// without the base64 encode. Split from the `load_tasks()` lookup (mirroring
+/// `task_file_read_base64_for_task`) so tests can exercise it with an
+/// in-memory `Task`.
+fn read_preview_file_for_task(w: &Task, path: &str) -> Result<(Vec<u8>, &'static str), String> {
+    let (cwd, rel) = resolve_task_git_path(w, path)?;
+    let abs = safe_task_path(&cwd, &rel)?;
+    let mime = preview_mime_for_ext(&abs).ok_or_else(|| format!("not previewable: {path}"))?;
+    let bytes = read_capped_file(&abs, 20_000_000)?;
+    Ok((bytes, mime))
+}
+
+/// `read_preview_file_for_task` for the `taskpdf:` URI-scheme handler, which
+/// only has the task id from the URL. Backs `taskpdf_response` below.
+fn read_preview_file(id: &str, path: &str) -> Result<(Vec<u8>, &'static str), String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    read_preview_file_for_task(&w, path)
+}
+
+/// Build the HTTP response for a `taskpdf://localhost/<enc id>/<enc path>`
+/// request (the `?v=` cache-buster is ignored here — it only forces WKWebView
+/// to re-fetch after an agent-settle rewrite). WKWebView renders a PDF served
+/// as a real `application/pdf` resource natively; a `data:` URL renders blank,
+/// which is why the file-tree preview streams PDFs through this scheme instead
+/// of the base64 channel. All the same containment/allowlist/cap checks apply
+/// via `read_preview_file`; a rejected path becomes a 404, not an open channel.
+fn taskpdf_response(uri_path: &str) -> tauri::http::Response<Vec<u8>> {
+    use percent_encoding::percent_decode_str;
+    use tauri::http::{Response, StatusCode};
+    let empty = |code: StatusCode| Response::builder().status(code).body(Vec::new()).unwrap();
+    // `<id>` and `<path>` are each encodeURIComponent'd on the frontend, so
+    // the path segment never contains a literal '/', and this split is exact.
+    let Some((id_enc, path_enc)) = uri_path.trim_start_matches('/').split_once('/') else {
+        return empty(StatusCode::BAD_REQUEST);
+    };
+    let id = percent_decode_str(id_enc).decode_utf8_lossy().into_owned();
+    let path = percent_decode_str(path_enc).decode_utf8_lossy().into_owned();
+    match read_preview_file(&id, &path) {
+        Ok((bytes, mime)) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", mime)
+            // Read-only preview; never let the webview serve a stale copy after
+            // the `?v=` buster changes (agent rewrote the file on disk).
+            .header("Cache-Control", "no-store")
+            .body(bytes)
+            .unwrap(),
+        Err(_) => empty(StatusCode::NOT_FOUND),
+    }
+}
+
 /// Overwrite a task file with new contents (editor save). The
 /// path is constrained to the worktree by `safe_task_path`, same
 /// as the read side. Synchronous to mirror `task_file_read` — a
@@ -7934,6 +7986,20 @@ pub fn run() {
         // because the process plugin also exposes exit/restart APIs we
         // may want for other purposes later (debug 'restart app' etc).
         .plugin(tauri_plugin_process::init())
+        // Native PDF preview channel. WKWebView renders a PDF served as a real
+        // `application/pdf` resource but shows blank for a `data:` URL, so the
+        // file-tree preview pane points an `<embed>` at
+        // `taskpdf://localhost/<enc id>/<enc path>?v=<rev>` and this handler
+        // streams the bytes. It reuses `read_preview_file`, so the same
+        // member-aware containment + extension allowlist + 20 MB cap as the
+        // base64 read apply; a rejected path is a 404, not a generic file read.
+        // spawn_blocking keeps the multi-MB read off the main thread.
+        .register_asynchronous_uri_scheme_protocol("taskpdf", |_ctx, request, responder| {
+            let uri_path = request.uri().path().to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(taskpdf_response(&uri_path));
+            });
+        })
         .manage(PtyManager::default())
         .setup(|app| {
             // Resolve the user's login-shell PATH off the main thread
@@ -8556,6 +8622,41 @@ mod tests {
         let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
 
         assert!(task_file_read_base64_for_task(&task, "notes.txt", None).is_err());
+    }
+
+    #[test]
+    fn read_preview_file_for_task_roundtrips_pdf_bytes_and_mime() {
+        let dir = tempdir().unwrap();
+        let pdf_bytes: &[u8] = b"%PDF-1.4\nnot-a-real-pdf-but-that's-fine-here";
+        fs::write(dir.path().join("report.pdf"), pdf_bytes).unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        let (bytes, mime) = read_preview_file_for_task(&task, "report.pdf").unwrap();
+        assert_eq!(bytes, pdf_bytes);
+        assert_eq!(mime, "application/pdf");
+    }
+
+    #[test]
+    fn read_preview_file_for_task_rejects_non_previewable_extension() {
+        // The taskpdf: scheme must not become a generic binary-file channel.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("id_rsa"), "secret").unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        assert!(read_preview_file_for_task(&task, "id_rsa").is_err());
+    }
+
+    #[test]
+    fn taskpdf_response_400s_on_malformed_path() {
+        // No "/<id>/<path>" split available -> Bad Request, not a panic.
+        assert_eq!(taskpdf_response("/only-one-segment").status(), 400);
+        assert_eq!(taskpdf_response("/").status(), 400);
+    }
+
+    #[test]
+    fn taskpdf_response_404s_on_unknown_task() {
+        // Unresolvable id (no such task) -> 404, never an open file read.
+        assert_eq!(taskpdf_response("/no-such-task-id/report.pdf").status(), 404);
     }
 
     #[test]
