@@ -25,6 +25,11 @@ interface View {
   settingsTab?: "general" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts";
   /** When viewing a repository's settings, which project id is active. */
   settingsRepoId?: string;
+  /** DOM id to scroll into view + briefly highlight once the settings
+   *  section mounts (e.g. a banner's "Settings" link pointing at the exact
+   *  toggle it changed). Consumed and cleared by the section itself on
+   *  mount, so a later manual visit to the same tab doesn't re-trigger it. */
+  settingsHighlight?: string;
 }
 
 export interface AppState {
@@ -109,8 +114,9 @@ export interface AppState {
   refreshClis: () => Promise<void>;
   setActiveTask: (id: string | null) => void;
   setView: (page: View["page"]) => void;
-  openSettings: (tab?: View["settingsTab"], repoId?: string) => void;
+  openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
+  clearSettingsHighlight: () => void;
   toggleCompactSidebar: () => void;
   toggleRightPanel: () => void;
   /** Request the "All files" tree reveal a path: un-hides the right panel and
@@ -479,10 +485,12 @@ export const useApp = create<AppState>((set, get) => ({
   // z-40 overlay (App.tsx). Preserving the underlying state means closing
   // Settings drops the user back into the exact task + tab they were
   // in, terminals still running, no context lost.
-  openSettings: (tab = "general", repoId) =>
-    set(s => ({ view: { ...s.view, settingsTab: tab, settingsRepoId: repoId, settingsOpen: true } as View })),
+  openSettings: (tab = "general", repoId, highlight) =>
+    set(s => ({ view: { ...s.view, settingsTab: tab, settingsRepoId: repoId, settingsOpen: true, settingsHighlight: highlight } as View })),
   closeSettings: () =>
     set(s => ({ view: { ...s.view, settingsOpen: false } as View })),
+  clearSettingsHighlight: () =>
+    set(s => ({ view: { ...s.view, settingsHighlight: undefined } as View })),
 
   toggleCompactSidebar: () => set(s => {
     const next = !s.compactSidebar;
@@ -1616,9 +1624,16 @@ export const useApp = create<AppState>((set, get) => ({
     // reused for another file that happens to contain that heading). Applied
     // unconditionally by the two "recycle this preview tab" branches below,
     // where the file identity itself is changing.
+    //
+    // remoteImagesUnblocked rides along here for the same reason, but it's
+    // NOT just reveal-target hygiene: it's a per-document trust decision
+    // (issue #69), and letting it survive a recycle would silently unblock
+    // remote images in a file the user never actually approved, just
+    // because a PREVIOUS file shown in this same tab slot was unblocked.
     const revealPatch = {
       revealAt: data.type === "edit" ? data.revealAt : undefined,
       revealHeading: data.type === "edit" ? data.revealHeading : undefined,
+      remoteImagesUnblocked: undefined as boolean | undefined,
     };
     // Used instead by the "already open, same file" branches: only a field
     // the caller explicitly supplied is ever applied. Unlike the recycle

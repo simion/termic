@@ -46,6 +46,8 @@ export function GeneralSection() {
   const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
   const workingIndicator = usePrefs(s => s.workingIndicator);
   const setWorkingIndicator = usePrefs(s => s.setWorkingIndicator);
+  const loadRemoteImages = usePrefs(s => s.loadRemoteImages);
+  const setLoadRemoteImages = usePrefs(s => s.setLoadRemoteImages);
   const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
   const setGlobalDefaultSandbox = usePrefs(s => s.setGlobalDefaultSandbox);
   const sandboxBypassPermissions = usePrefs(s => s.sandboxBypassPermissions);
@@ -58,6 +60,25 @@ export function GeneralSection() {
   const setQueueMinIntervalMs = usePrefs(s => s.setQueueMinIntervalMs);
   const terminalCopyOnSelect = usePrefs(s => s.terminalCopyOnSelect);
   const setTerminalCopyOnSelect = usePrefs(s => s.setTerminalCopyOnSelect);
+
+  // Scroll-to-and-flash a specific row (e.g. the remote-images banner's
+  // "Settings" link) once, on mount — see view.settingsHighlight. Consumed
+  // immediately so a later manual visit to General doesn't re-trigger it,
+  // and cleared after a beat regardless (a fresh Settings mount from a
+  // stale link a minute later shouldn't re-flash something the user is
+  // already looking at).
+  const settingsHighlight = useApp(s => s.view.settingsHighlight);
+  const [flashId, setFlashId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!settingsHighlight) return;
+    const id = settingsHighlight;
+    useApp.getState().clearSettingsHighlight();
+    document.getElementById(`setting-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFlashId(id);
+    const t = window.setTimeout(() => setFlashId(f => (f === id ? null : f)), 1600);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsHighlight]);
 
   useEffect(() => {
     settingsLoad().then(s => {
@@ -219,6 +240,21 @@ export function GeneralSection() {
           hint="Show a spinner on an agent's tab and sidebar icon while it's working. Experimental: it relies on work detection, which can occasionally misfire. A stuck spinner auto-clears after a few minutes."
           value={workingIndicator}
           onChange={setWorkingIndicator}
+        />
+      </div>
+
+      <div
+        id="setting-load-remote-images"
+        className={cn(
+          "rounded-md border-t border-[var(--color-border-soft)] pt-6 transition-colors duration-700",
+          flashId === "load-remote-images" && "bg-[var(--color-accent-deep)]/15",
+        )}
+      >
+        <Toggle
+          label="Load remote images in markdown preview"
+          hint="Off by default: images hosted on external sites are blocked in the markdown preview, so opening an untrusted file (a dependency's README, a fetched page) can't silently fire a network request. A per-document button in the preview can still load them for just that file."
+          value={loadRemoteImages}
+          onChange={setLoadRemoteImages}
         />
       </div>
 
