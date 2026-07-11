@@ -43,6 +43,10 @@ export function PreviewPane({ task, tab }: { task: Task; tab: EditTab }) {
       .then(({ unchanged, mime, data, fp }) => {
         if (!alive) return;
         fpRef.current = fp;
+        // Clear any error from a prior (failed) load: a successful refetch on
+        // an fsRevision tick must not leave a stale error banner over the
+        // freshly loaded bytes.
+        setErr(null);
         if (unchanged) {
           // Bytes already on screen are still correct.
           setLoading(false);
