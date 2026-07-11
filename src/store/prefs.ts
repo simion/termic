@@ -33,6 +33,7 @@ const LS_LIGATURES     = "codeLigatures";
 const LS_THEME         = "themeMode";
 const LS_DESKTOPNOTIF  = "desktopNotifications";
 const LS_SETTLED_HIGHLIGHT = "settledHighlight";
+const LS_CONFIRM_CLOSE_AGENT_TAB = "confirmBeforeCloseAgentTab";
 const LS_WORKING_INDICATOR = "workingIndicator";
 const LS_DEFAULT_SANDBOX = "globalDefaultSandbox";
 const LS_SANDBOX_BYPASS  = "sandboxBypassPermissions";
@@ -351,6 +352,13 @@ interface PrefsState {
    *  in-app "done" signal. Some users find it distracting and want
    *  the sidebar to stay calm regardless. */
   settledHighlight: boolean;
+  /** Whether closing a non-shell terminal/agent tab asks for confirmation
+   *  first. ON by default. Once the "+" menu's Resume section makes
+   *  undoing a close one click away, users who've learned that can turn
+   *  this off via the dialog's "Don't ask again" checkbox — closing then
+   *  happens immediately, with a toast pointing back at Resume. Dirty
+   *  edit-tab closes are never gated by this; that confirm always fires. */
+  confirmBeforeCloseAgentTab: boolean;
   /** Show a spinner on an agent's tab (and sidebar icon) WHILE it's
    *  working. OFF by default — experimental. The "working" workState is
    *  always tracked internally to drive work-done detection; this pref only
@@ -497,6 +505,7 @@ interface PrefsState {
   setCompletionSound: (v: boolean) => void;
   setCompletionSoundId: (id: CompletionSoundId) => void;
   setSettledHighlight: (v: boolean) => void;
+  setConfirmBeforeCloseAgentTab: (v: boolean) => void;
   setWorkingIndicator: (v: boolean) => void;
   setLoadRemoteImages: (v: boolean) => void;
   setGlobalDefaultSandbox: (v: boolean) => void;
@@ -599,6 +608,7 @@ const initialCompletionSoundId = readCompletionSoundId();
 // users who toggled it OFF keep their setting (lsGetBool returns the
 // stored value when present).
 const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
+const initialConfirmCloseAgentTab = lsGetBool(LS_CONFIRM_CLOSE_AGENT_TAB, true);
 // OFF by default — experimental re-introduction of the work-in-progress
 // spinner. Opt in via Settings → General.
 const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, false);
@@ -635,6 +645,7 @@ export const usePrefs = create<PrefsState>(set => ({
   completionSound: initialCompletionSound,
   completionSoundId: initialCompletionSoundId,
   settledHighlight: initialSettledHighlight,
+  confirmBeforeCloseAgentTab: initialConfirmCloseAgentTab,
   workingIndicator: initialWorkingIndicator,
   loadRemoteImages: initialLoadRemoteImages,
   globalDefaultSandbox: initialDefaultSandbox,
@@ -779,6 +790,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setSettledHighlight: (v) => {
     try { localStorage.setItem(LS_SETTLED_HIGHLIGHT, v ? "1" : "0"); } catch {}
     set({ settledHighlight: v });
+  },
+  setConfirmBeforeCloseAgentTab: (v) => {
+    try { localStorage.setItem(LS_CONFIRM_CLOSE_AGENT_TAB, v ? "1" : "0"); } catch {}
+    set({ confirmBeforeCloseAgentTab: v });
   },
   setWorkingIndicator: (v) => {
     try { localStorage.setItem(LS_WORKING_INDICATOR, v ? "1" : "0"); } catch {}
