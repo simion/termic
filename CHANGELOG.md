@@ -4,13 +4,6 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [Unreleased]
-
-Preview images and PDFs in the file pane instead of a binary error.
-
-### Features
-- Clicking an image or PDF in the file tree now previews it inline instead of showing a "not valid UTF-8" error (#66).
-
 ## [0.20.1] - 2026-07-10
 
 Workspaces are now Tasks, and you can create one in two clicks from the sidebar.
