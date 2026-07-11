@@ -43,7 +43,7 @@
 import { useEffect, useRef, useState } from "react";
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
-import { Check, ImageOff } from "lucide-react";
+import { Check, ImageOff, ChevronUp, ChevronDown, X } from "lucide-react";
 import { openPath, taskFileReadBase64, taskPathStat, taskRevealPath } from "@/lib/ipc";
 import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveTaskHref } from "@/lib/markdownPaths";
 import { useApp } from "@/store/app";
@@ -527,6 +527,81 @@ export function attemptReveal(state: RevealState, host: HTMLElement | null, visi
   return { kind: "matched", target };
 }
 
+// ─────────────────────── find-in-preview (issue #71) ───────────────────────
+// The editor's Cmd+F is a CodeMirror keymap that only binds while an
+// EditorView has focus; the rendered preview is a plain imperative <div> with
+// no equivalent, so Cmd+F did nothing there. These helpers back a small
+// find bar that paints matches via the CSS Custom Highlight API — Ranges over
+// the existing text nodes, never a DOM mutation — so mermaid SVGs and the
+// hydrated task images the render effect owns are left untouched. On engines
+// without the API the search still scrolls to matches; it just doesn't paint.
+
+const HL_ALL = "md-find";
+const HL_CURRENT = "md-find-current";
+
+/** Case-insensitive Ranges for every occurrence of `query` in the text under
+ *  `host`. Skips mermaid diagram subtrees: their rendered SVG text isn't
+ *  meaningfully searchable and Ranges inside <svg> don't highlight. */
+function collectFindRanges(host: HTMLElement, query: string): Range[] {
+  const ranges: Range[] = [];
+  const needle = query.toLowerCase();
+  if (!needle) return ranges;
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+      for (let el = node.parentElement; el && el !== host; el = el.parentElement) {
+        if (el.classList.contains("mermaid-block")) return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const hay = node.nodeValue!.toLowerCase();
+    for (let from = hay.indexOf(needle); from !== -1; from = hay.indexOf(needle, from + needle.length)) {
+      const r = document.createRange();
+      r.setStart(node, from);
+      r.setEnd(node, from + needle.length);
+      ranges.push(r);
+    }
+  }
+  return ranges;
+}
+
+/** Paint all matches, with `current` on top (higher priority). No-op where the
+ *  Highlight API is missing. */
+function paintFindHighlights(all: Range[], current: Range | null): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reg = (globalThis as any).CSS?.highlights;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const H = (globalThis as any).Highlight;
+  if (!reg || !H) return;
+  reg.set(HL_ALL, new H(...all));
+  if (current) {
+    const cur = new H(current);
+    cur.priority = 1;
+    reg.set(HL_CURRENT, cur);
+  } else {
+    reg.delete(HL_CURRENT);
+  }
+}
+
+function clearFindHighlights(): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reg = (globalThis as any).CSS?.highlights;
+  if (!reg) return;
+  reg.delete(HL_ALL);
+  reg.delete(HL_CURRENT);
+}
+
+/** Scroll `scroller` so `range` is centered, but only if it's off-screen. */
+function scrollFindRangeIntoView(scroller: HTMLElement, range: Range): void {
+  const r = range.getBoundingClientRect();
+  const s = scroller.getBoundingClientRect();
+  if (r.top >= s.top && r.bottom <= s.bottom) return; // already visible
+  const top = scroller.scrollTop + (r.top - s.top) - s.height / 2 + r.height / 2;
+  scroller.scrollTo({ top: Math.max(0, top) });
+}
+
 export function MarkdownPreview(
   { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
     remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages }: {
@@ -580,6 +655,111 @@ export function MarkdownPreview(
     const t = window.setTimeout(() => setJustAllowedGlobally(false), 5000);
     return () => window.clearTimeout(t);
   }, [justAllowedGlobally]);
+
+  // ── find-in-preview (issue #71) ──────────────────────────────────────────
+  // Wraps the whole preview so `contains(activeElement)` can tell whether the
+  // Cmd+F belongs to this pane (vs the editor in split view). tabIndex lets a
+  // click land focus here for that check.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCount, setFindCount] = useState(0);
+  const [findIndex, setFindIndex] = useState(0); // 0-based active match
+  // Live Ranges + active index kept in refs so the keydown listener and nav
+  // buttons don't fight stale closures between renders.
+  const findRangesRef = useRef<Range[]>([]);
+  const findIndexRef = useRef(0);
+
+  // Highlight the i-th match (wrapping), repaint the "current" band, scroll it
+  // into view. No-op when there are no matches.
+  const gotoMatch = (i: number) => {
+    const ranges = findRangesRef.current;
+    if (!ranges.length) return;
+    const n = ((i % ranges.length) + ranges.length) % ranges.length;
+    findIndexRef.current = n;
+    setFindIndex(n);
+    paintFindHighlights(ranges, ranges[n]);
+    const scroller = hostRef.current?.parentElement;
+    if (scroller) scrollFindRangeIntoView(scroller, ranges[n]);
+  };
+
+  // Re-run the search against the current DOM. `keepIndex` preserves the
+  // active match across a re-render (buffer edit); otherwise it resets to 0.
+  const runFind = (q: string, keepIndex = false) => {
+    const host = hostRef.current;
+    const ranges = host && q ? collectFindRanges(host, q) : [];
+    findRangesRef.current = ranges;
+    setFindCount(ranges.length);
+    if (!ranges.length) {
+      clearFindHighlights();
+      findIndexRef.current = 0;
+      setFindIndex(0);
+      return;
+    }
+    gotoMatch(keepIndex ? findIndexRef.current : 0);
+  };
+
+  const openFind = () => {
+    setFindOpen(true);
+    // Select any existing query so the next keystroke replaces it, matching
+    // the editor's Cmd+F. rAF: the input has to be in the DOM first.
+    requestAnimationFrame(() => findInputRef.current?.select());
+    if (findQuery) runFind(findQuery, true);
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    clearFindHighlights();
+    findRangesRef.current = [];
+    setFindCount(0);
+    // Hand focus back to the pane so a second Cmd+F reopens without a click.
+    containerRef.current?.focus();
+  };
+
+  // Cmd/Ctrl+F opens the bar, but only when this preview is the intended
+  // target: it's laid out AND either already searching, focus is inside it,
+  // or nothing else holds focus (preview-only view blurs the hidden editor, so
+  // focus falls to <body>). In split view with the editor focused, activeElement
+  // is the CodeMirror view — not contained, not body — so we bow out and its
+  // own keymap handles Cmd+F.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (e.key !== "f" && e.key !== "F") return;
+      if (!visible) return;
+      const c = containerRef.current;
+      if (!c) return;
+      const a = document.activeElement;
+      const mine = findOpen || c.contains(a) || !a || a === document.body;
+      if (!mine) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openFind();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, findOpen, findQuery]);
+
+  // The buffer re-rendered (edit in split view, or a settle): the old Ranges
+  // point at detached nodes. Re-search the fresh DOM if the bar is open,
+  // keeping the active match where possible; otherwise drop any stale paint.
+  // Ordered AFTER the main render effect so it reads the new innerHTML.
+  useEffect(() => {
+    if (findOpen && findQuery) runFind(findQuery, true);
+    else clearFindHighlights();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text]);
+
+  // A recycled tab now points at a different file: close find so its matches
+  // and highlight don't linger over unrelated content.
+  useEffect(() => {
+    if (findOpen) closeFind();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx?.filePath]);
+
+  // Drop the global highlight registration when this preview unmounts.
+  useEffect(() => () => clearFindHighlights(), []);
 
   // Main imperative effect: parse → inject → hydrate images + mermaid.
   // Re-runs when the buffer text or the theme changes — deliberately NOT on
@@ -842,7 +1022,23 @@ export function MarkdownPreview(
   const bannerKind = remoteImageBannerKind(hasBlockedRemoteImages, !!onUnblockRemoteImages, justAllowedGlobally);
 
   return (
-    <div className="flex h-full flex-col bg-[var(--color-bg)]">
+    <div
+      ref={containerRef}
+      tabIndex={-1}
+      className="relative flex h-full flex-col bg-[var(--color-bg)] outline-none"
+    >
+      {findOpen && (
+        <FindBar
+          inputRef={findInputRef}
+          query={findQuery}
+          count={findCount}
+          index={findIndex}
+          onQueryChange={(q) => { setFindQuery(q); runFind(q); }}
+          onNext={() => gotoMatch(findIndexRef.current + 1)}
+          onPrev={() => gotoMatch(findIndexRef.current - 1)}
+          onClose={closeFind}
+        />
+      )}
       {bannerKind === "blocked" && onUnblockRemoteImages && (
         <TerminalExitedBanner
           label="Images from external sites are blocked in this preview."
@@ -867,6 +1063,55 @@ export function MarkdownPreview(
       <div className="min-h-0 flex-1 overflow-auto">
         <div ref={hostRef} className="markdown-body px-8 py-6" onClick={onClick} />
       </div>
+    </div>
+  );
+}
+
+/** Compact find bar overlaid at the preview's top-right. Enter / Shift+Enter
+ *  step through matches, Escape closes — the same muscle memory as the
+ *  editor's search panel. */
+function FindBar({
+  inputRef, query, count, index, onQueryChange, onNext, onPrev, onClose,
+}: {
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  query: string;
+  count: number;
+  index: number;
+  onQueryChange: (q: string) => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onClose: () => void;
+}) {
+  const navBtn = "flex h-6 w-6 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--color-fg-dim)]";
+  return (
+    <div className="absolute right-4 top-3 z-10 flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] py-1 pl-2.5 pr-1 shadow-lg">
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(e) => onQueryChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); e.shiftKey ? onPrev() : onNext(); }
+          else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+        }}
+        placeholder="Find in preview"
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        autoComplete="off"
+        className="w-44 bg-transparent text-[13px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)]"
+      />
+      <span className="min-w-[3.25rem] shrink-0 text-right text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
+        {query ? `${count ? index + 1 : 0}/${count}` : ""}
+      </span>
+      <button onClick={onPrev} disabled={!count} title="Previous match (Shift+Enter)" className={navBtn}>
+        <ChevronUp className="h-3.5 w-3.5" />
+      </button>
+      <button onClick={onNext} disabled={!count} title="Next match (Enter)" className={navBtn}>
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      <button onClick={onClose} title="Close (Esc)" className={navBtn}>
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
