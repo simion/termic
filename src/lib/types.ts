@@ -644,6 +644,12 @@ export interface EditTab extends BaseTab {
    *  raw CodeMirror editor, "preview" the rendered HTML, "split" both
    *  side-by-side. Undefined → "source". Ignored for non-markdown files. */
   mdView?: "source" | "preview" | "split";
+  /** Per-tab override: true unblocks remote (http/https) images in this
+   *  document's markdown preview for the current session, without
+   *  touching the global `loadRemoteImages` pref. Undefined falls back to
+   *  the pref (see docs/sandbox.md, "Known gap: the webview is outside
+   *  the cage", and MarkdownPreview.tsx). Session-only, like mdView. */
+  remoteImagesUnblocked?: boolean;
 }
 
 export type Tab = TerminalTab | DiffTab | EditTab;

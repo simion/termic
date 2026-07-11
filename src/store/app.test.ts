@@ -341,6 +341,25 @@ describe("openPreviewTab", () => {
     expect(tab.revealHeading).toBeUndefined();
   });
 
+  it("clears a per-document remoteImagesUnblocked override when the preview tab is recycled (issue #69)", () => {
+    // Regression: the previous file's "Show images" override must not
+    // silently carry over to a DIFFERENT file recycled into the same
+    // preview tab slot — that would unblock remote images in a file the
+    // user never actually approved.
+    const wsId = "ws1";
+    const previewTab: Tab = {
+      id: "prev-1", type: "edit", title: "old.md", path: "docs/old.md",
+      preview: true, remoteImagesUnblocked: true,
+    } as any;
+    useApp.setState({ tabs: { [wsId]: [previewTab] }, activeTab: { [wsId]: "prev-1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "edit", path: "docs/new.md", title: "new.md" });
+
+    const tab = useApp.getState().tabs[wsId][0] as any;
+    expect(tab.path).toBe("docs/new.md");
+    expect(tab.remoteImagesUnblocked).toBeUndefined();
+  });
+
   it("does not wipe a not-yet-consumed reveal when re-activating an existing tab without a new one", () => {
     // Regression: re-activating the SAME already-open file (no new reveal
     // target in this call) must never cancel a reveal that's already
@@ -670,5 +689,34 @@ describe("setTabSessionId", () => {
     const task = useApp.getState().tasks.find(w => w.id === "ws1")!;
     expect(task.persisted_tabs!.find(t => t.id === "a")!.session_id).toBeNull();
     expect(ipc.taskSetTabSessionId).toHaveBeenCalledWith("ws1", "a", "");
+  });
+});
+
+describe("openSettings / clearSettingsHighlight", () => {
+  beforeEach(() => { useApp.setState({ view: { page: "dashboard" } }); });
+
+  it("opens to the given tab with no highlight by default", () => {
+    useApp.getState().openSettings("agents");
+    expect(useApp.getState().view).toMatchObject({ settingsOpen: true, settingsTab: "agents", settingsHighlight: undefined });
+  });
+
+  it("sets a highlight target for the section to consume (issue #69's Settings link)", () => {
+    useApp.getState().openSettings("general", undefined, "load-remote-images");
+    expect(useApp.getState().view.settingsHighlight).toBe("load-remote-images");
+  });
+
+  it("a later openSettings call without a highlight clears a previous one", () => {
+    // Regression: a stale highlight from an earlier "Settings" link must
+    // not resurface (re-flashing the wrong row) just because Settings is
+    // reopened normally afterwards, e.g. from the sidebar gear icon.
+    useApp.getState().openSettings("general", undefined, "load-remote-images");
+    useApp.getState().openSettings("general");
+    expect(useApp.getState().view.settingsHighlight).toBeUndefined();
+  });
+
+  it("clearSettingsHighlight removes the highlight without closing settings or changing tab", () => {
+    useApp.getState().openSettings("general", undefined, "load-remote-images");
+    useApp.getState().clearSettingsHighlight();
+    expect(useApp.getState().view).toMatchObject({ settingsOpen: true, settingsTab: "general", settingsHighlight: undefined });
   });
 });

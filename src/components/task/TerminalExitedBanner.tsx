@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 // scrollback, e.g. an error message). Render it as the first flex child of
 // a `flex-col` pane. Shared by the agent pane (TerminalPane) and the aux
 // shell (AuxTerminal) so the two can't drift.
-export function TerminalExitedBanner({ label, actionLabel, onAction, icon: Icon = RotateCcw, tone = "warning", secondary, className }: {
+export function TerminalExitedBanner({ label, actionLabel, onAction, icon: Icon = RotateCcw, tone = "warning", secondary, center, className }: {
   /** e.g. "codex exited." */
   label: string;
   /** e.g. "Restart codex" / "New shell". */
@@ -21,6 +21,12 @@ export function TerminalExitedBanner({ label, actionLabel, onAction, icon: Icon 
   /** Optional extra button to the RIGHT of the action (e.g. the setup-tab
    *  auto-close countdown). */
   secondary?: { label: string; onAction: () => void; icon?: LucideIcon; title?: string };
+  /** Group label + buttons together in the middle of the bar instead of
+   *  spreading them to opposite edges (justify-between). Off by default —
+   *  the terminal-exit callers want the label pinned left, readable
+   *  against a full-width strip. Markdown's remote-image banners opt in:
+   *  short, single-line messages read better close to their buttons. */
+  center?: boolean;
   className?: string;
 }) {
   const SecondaryIcon = secondary?.icon;
@@ -38,7 +44,8 @@ export function TerminalExitedBanner({ label, actionLabel, onAction, icon: Icon 
       className={cn(
         // Warn-tinted for dead agents; muted for managed Run/Setup tabs.
         // In-flow + shrink-0 so it pushes the terminal down.
-        "flex shrink-0 items-center justify-between gap-3 px-3 py-1.5",
+        "flex shrink-0 items-center gap-3 px-3 py-1.5",
+        center ? "justify-center" : "justify-between",
         className,
       )}
     >

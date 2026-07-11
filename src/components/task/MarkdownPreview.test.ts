@@ -12,8 +12,8 @@ vi.mock("@/store/ui", () => ({ useUI: { getState: vi.fn() } }));
 
 import { taskFileReadBase64 } from "@/lib/ipc";
 import {
-  attemptReveal, captureReveal, consumeNavRevalidate, expireRevealGrace, hydrateTaskImages, IMG_CACHE_MAX_ENTRIES,
-  imgCacheInsert, newNavRevalidateState, newRevealState,
+  attemptReveal, captureReveal, consumeNavRevalidate, expireRevealGrace, gateRemoteImages, hydrateTaskImages,
+  IMG_CACHE_MAX_ENTRIES, imgCacheInsert, newNavRevalidateState, newRevealState, remoteImageBannerKind,
   type ImgCache, type MarkdownCtx,
 } from "./MarkdownPreview";
 
@@ -212,6 +212,73 @@ describe("hydrateTaskImages", () => {
     for (const img of Array.from(host.querySelectorAll("img"))) {
       expect(img.getAttribute("src")).toBe("data:image/png;base64,AAA");
     }
+  });
+});
+
+describe("gateRemoteImages", () => {
+  beforeEach(() => { document.body.innerHTML = ""; });
+
+  it("blocks a remote http(s) src: never reaches the DOM's src attribute", () => {
+    const { host, img } = mount(`<img src="https://attacker.example/x.png?d=secret">`);
+    const blocked = gateRemoteImages(host, false);
+    expect(blocked).toBe(true);
+    expect(img.getAttribute("src")).toBeNull();
+    expect(img.dataset.mdRemoteSrc).toBe("https://attacker.example/x.png?d=secret");
+  });
+
+  it("restores a blocked src verbatim once allowed", () => {
+    const { host, img } = mount(`<img src="http://example.com/a.png">`);
+    gateRemoteImages(host, false);
+    expect(img.getAttribute("src")).toBeNull();
+
+    const blocked = gateRemoteImages(host, true);
+    expect(blocked).toBe(false);
+    expect(img.getAttribute("src")).toBe("http://example.com/a.png");
+    expect(img.dataset.mdRemoteSrc).toBeUndefined();
+  });
+
+  it("leaves data: and blob: sources alone regardless of allowed", () => {
+    const { host } = mount(`<img src="data:image/png;base64,AAA"><img src="blob:x">`);
+    const imgs = Array.from(host.querySelectorAll("img"));
+    expect(gateRemoteImages(host, false)).toBe(false);
+    expect(imgs[0].getAttribute("src")).toBe("data:image/png;base64,AAA");
+    expect(imgs[1].getAttribute("src")).toBe("blob:x");
+  });
+
+  it("leaves a task-relative image (already claimed by hydrateTaskImages) alone", () => {
+    const { host, img } = mount(`<img src="a.png">`);
+    img.dataset.mdSrc = "a.png";
+    img.removeAttribute("src");
+    expect(gateRemoteImages(host, false)).toBe(false);
+    expect(img.dataset.mdRemoteSrc).toBeUndefined();
+  });
+
+  it("when allowed from the start, never blocks (browser handles it natively)", () => {
+    const { host, img } = mount(`<img src="https://example.com/a.png">`);
+    expect(gateRemoteImages(host, true)).toBe(false);
+    expect(img.getAttribute("src")).toBe("https://example.com/a.png");
+  });
+});
+
+describe("remoteImageBannerKind", () => {
+  it("shows nothing when there's nothing blocked and nothing to confirm", () => {
+    expect(remoteImageBannerKind(false, true, false)).toBeNull();
+  });
+
+  it("shows the blocked banner when images are blocked and a per-doc override is offered", () => {
+    expect(remoteImageBannerKind(true, true, false)).toBe("blocked");
+  });
+
+  it("shows nothing for a blocked doc with no per-doc override to offer (e.g. Changelog dialog)", () => {
+    expect(remoteImageBannerKind(true, false, false)).toBeNull();
+  });
+
+  it("shows the confirm banner once justAllowedGlobally is set and nothing is blocked", () => {
+    expect(remoteImageBannerKind(false, true, true)).toBe("confirm");
+  });
+
+  it("blocked always wins over a stale confirm, instead of showing both or flickering", () => {
+    expect(remoteImageBannerKind(true, true, true)).toBe("blocked");
   });
 });
 

