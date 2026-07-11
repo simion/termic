@@ -35,6 +35,8 @@ npm run build        # tsc -b && vite build
 
 ## Releasing
 
+**Maintainer-only. Do NOT cut releases or write changelog entries as part of a contribution or agent task.** Never run `make release` / `make release-patch`, never bump the version, and never add or edit a `CHANGELOG.md` entry (or `changelog.json`) unless the maintainer explicitly asks you to in that request. A PR that fixes a bug or adds a feature must NOT touch `CHANGELOG.md` — the maintainer authors the entry when they cut the release. If you think a change is release-worthy, say so and stop; leave the versioning to them.
+
 Add a `## [version] - ` section to the TOP of `CHANGELOG.md` (Keep a Changelog format: summary lead line + `### Features`/`### Bug fixes` bullets) before running `make release`. `CHANGELOG.md` is the source of truth; `changelog.json` is derived from it by `scripts/changelog.mjs` (do not hand-edit it). For a small change riding along with the last release, `make release-patch` folds it into a patch (bump the top heading in place + append a bullet, no new entry). Full flow: the **`release` skill** (`.claude/skills/release/SKILL.md`). Mock update UI: `VITE_MOCK_UPDATE=available|whatsnew npm run tauri:dev`.
 
 ## Copy rules

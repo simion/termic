@@ -104,6 +104,11 @@ get a feature merged:
 6. **Match the existing code style** — Prettier defaults, no semicolons
    in CSS-in-JS templates, `cn()` from `@/lib/utils` for class composition,
    Zustand selectors stay tight (no destructured stores).
+7. **Don't touch `CHANGELOG.md`, the version, or cut a release.** Releases
+   and changelog entries are maintainer-only (see below) — the maintainer
+   writes the entry when they cut the version. A PR that edits `CHANGELOG.md`
+   / `changelog.json` or bumps the version will be asked to drop that change.
+   If your work is release-worthy, just say so in the PR description.
 
 ---
 
@@ -146,6 +151,11 @@ Termic exists because:
 ---
 
 ## Releasing (maintainers)
+
+> **Maintainer-only.** Contributors and automated agents should never run
+> these steps, bump the version, or add a `CHANGELOG.md` entry. The
+> maintainer authors the changelog and cuts the tag as one explicit step.
+> Everything below is for that person.
 
 ```sh
 make release                  # bump patch (0.1.0 → 0.1.1)
