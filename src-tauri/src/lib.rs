@@ -4963,16 +4963,16 @@ fn task_file_read(id: String, path: String) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8".to_string())
 }
 
-/// Mime type by extension for images the markdown preview may embed. Kept in
-/// sync by hand with `BINARY_LINK_RE` in markdownPaths.ts (the frontend link
-/// handler's "editor can't render this, reveal it in the file manager
-/// instead" list) — that list is broader (adds archives/media), this one is
-/// the image-only subset the base64 channel accepts. Unknown extensions are
-/// rejected here so this stays an image channel, not a generic binary read
-/// wider than the preview needs. SVG is safe in this context: the preview
-/// only ever renders it via `<img src="data:...">`, where embedded scripts
-/// never execute.
-fn image_mime_for_ext(p: &Path) -> Option<&'static str> {
+/// Mime type by extension for images/PDFs the markdown preview or file-tree
+/// preview pane may embed. Kept in sync by hand with `BINARY_LINK_RE` in
+/// markdownPaths.ts (the frontend link handler's "editor can't render this,
+/// reveal it in the file manager instead" list) — that list is broader (adds
+/// archives/media), this one is the subset the base64 channel accepts.
+/// Unknown extensions are rejected here so this stays a preview channel, not
+/// a generic binary read wider than the preview needs. SVG is safe in this
+/// context: the preview only ever renders it via `<img src="data:...">`,
+/// where embedded scripts never execute.
+fn preview_mime_for_ext(p: &Path) -> Option<&'static str> {
     match p.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -4982,6 +4982,7 @@ fn image_mime_for_ext(p: &Path) -> Option<&'static str> {
         "bmp" => Some("image/bmp"),
         "ico" => Some("image/x-icon"),
         "avif" => Some("image/avif"),
+        "pdf" => Some("application/pdf"),
         _ => None,
     }
 }
@@ -5003,44 +5004,52 @@ struct Base64Read {
     fp: String,
 }
 
-/// Read a workspace image as base64 for the markdown preview, or confirm
-/// it's unchanged since `known_fp` (see `Base64Read`). Same member-aware
-/// resolution + worktree containment as `task_file_read`, plus an
-/// image-extension whitelist and a 10 MB cap. Async + spawn_blocking because
-/// a multi-MB read IS the heavy-IO case the IPC discipline targets (unlike
-/// the 2 MB-capped text read above).
+/// Same member-aware resolution + worktree containment as `task_file_read`,
+/// plus an image/PDF extension whitelist and a 20 MB cap. Split from the
+/// `#[tauri::command]` wrapper (mirroring `task_file_diff_sides_for_task`)
+/// so tests can exercise it with an in-memory `Task` instead of
+/// `load_tasks()`.
+fn task_file_read_base64_for_task(w: &Task, path: &str, known_fp: Option<&str>) -> Result<Base64Read, String> {
+    use base64::Engine as _;
+    let (cwd, rel) = resolve_task_git_path(w, path)?;
+    let abs = safe_task_path(&cwd, &rel)?;
+    let mime = preview_mime_for_ext(&abs).ok_or_else(|| format!("not previewable: {path}"))?;
+    // Cheap pre-read stat: if it matches what the caller already has
+    // cached, skip the read + base64 encode entirely. Only bother when
+    // there's a known_fp to compare against — a first load (no cache
+    // yet) has nothing to match, so skip this stat rather than pay for
+    // one that can never short-circuit anything. An empty current fp
+    // means the file is missing/unreadable — always fall through to the
+    // real read below so its error path (not a silent "unchanged") fires.
+    if let Some(known) = known_fp {
+        let current_fp = file_fp(&abs);
+        if !current_fp.is_empty() && known == current_fp {
+            return Ok(Base64Read { unchanged: true, mime: None, data: None, fp: current_fp });
+        }
+    }
+    let bytes = read_capped_file(&abs, 20_000_000)?;
+    // Re-stat AFTER the read so `fp` is correlated with the bytes just
+    // returned (not the pre-read snapshot, which a concurrent write
+    // could have already invalidated).
+    let fp = file_fp(&abs);
+    Ok(Base64Read {
+        unchanged: false,
+        mime: Some(mime.to_string()),
+        data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+        fp,
+    })
+}
+
+/// Read a task image or PDF as base64 for the markdown preview / file-tree
+/// preview pane, or confirm it's unchanged since `known_fp` (see
+/// `Base64Read`). Async + spawn_blocking because a multi-MB read IS the
+/// heavy-IO case the IPC discipline targets (unlike the 2 MB-capped text
+/// read above).
 #[tauri::command]
 async fn task_file_read_base64(id: String, path: String, known_fp: Option<String>) -> Result<Base64Read, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        use base64::Engine as _;
-        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no ws")?;
-        let (cwd, rel) = resolve_task_git_path(&w, &path)?;
-        let abs = safe_task_path(&cwd, &rel)?;
-        let mime = image_mime_for_ext(&abs).ok_or_else(|| format!("not an image: {path}"))?;
-        // Cheap pre-read stat: if it matches what the caller already has
-        // cached, skip the read + base64 encode entirely. Only bother when
-        // there's a known_fp to compare against — a first load (no cache
-        // yet) has nothing to match, so skip this stat rather than pay for
-        // one that can never short-circuit anything. An empty current fp
-        // means the file is missing/unreadable — always fall through to the
-        // real read below so its error path (not a silent "unchanged") fires.
-        if let Some(known) = known_fp.as_deref() {
-            let current_fp = file_fp(&abs);
-            if !current_fp.is_empty() && known == current_fp {
-                return Ok(Base64Read { unchanged: true, mime: None, data: None, fp: current_fp });
-            }
-        }
-        let bytes = read_capped_file(&abs, 10_000_000)?;
-        // Re-stat AFTER the read so `fp` is correlated with the bytes just
-        // returned (not the pre-read snapshot, which a concurrent write
-        // could have already invalidated).
-        let fp = file_fp(&abs);
-        Ok(Base64Read {
-            unchanged: false,
-            mime: Some(mime.to_string()),
-            data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
-            fp,
-        })
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        task_file_read_base64_for_task(&w, &path, known_fp.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -8473,20 +8482,80 @@ mod tests {
     }
 
     #[test]
-    fn image_mime_for_ext_known_extensions() {
-        assert_eq!(image_mime_for_ext(Path::new("a/b.png")), Some("image/png"));
-        assert_eq!(image_mime_for_ext(Path::new("shot.JPG")), Some("image/jpeg"));
-        assert_eq!(image_mime_for_ext(Path::new("d.svg")), Some("image/svg+xml"));
-        assert_eq!(image_mime_for_ext(Path::new("p.avif")), Some("image/avif"));
+    fn preview_mime_for_ext_known_extensions() {
+        assert_eq!(preview_mime_for_ext(Path::new("a/b.png")), Some("image/png"));
+        assert_eq!(preview_mime_for_ext(Path::new("shot.JPG")), Some("image/jpeg"));
+        assert_eq!(preview_mime_for_ext(Path::new("d.svg")), Some("image/svg+xml"));
+        assert_eq!(preview_mime_for_ext(Path::new("p.avif")), Some("image/avif"));
+        assert_eq!(preview_mime_for_ext(Path::new("doc.PDF")), Some("application/pdf"));
     }
 
     #[test]
-    fn image_mime_for_ext_rejects_non_images() {
+    fn preview_mime_for_ext_rejects_non_previewable() {
         // The base64 read must not become a generic binary-file channel.
-        assert_eq!(image_mime_for_ext(Path::new("id_rsa")), None);
-        assert_eq!(image_mime_for_ext(Path::new("a.pdf")), None);
-        assert_eq!(image_mime_for_ext(Path::new("script.sh")), None);
-        assert_eq!(image_mime_for_ext(Path::new("noext")), None);
+        assert_eq!(preview_mime_for_ext(Path::new("id_rsa")), None);
+        assert_eq!(preview_mime_for_ext(Path::new("script.sh")), None);
+        assert_eq!(preview_mime_for_ext(Path::new("noext")), None);
+    }
+
+    #[test]
+    fn task_file_read_base64_for_task_roundtrips_root_file() {
+        use base64::Engine as _;
+        let dir = tempdir().unwrap();
+        let png_bytes: &[u8] = b"\x89PNG\r\n\x1a\nnot-a-real-png-but-that's-fine-here";
+        fs::write(dir.path().join("shot.png"), png_bytes).unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        let read = task_file_read_base64_for_task(&task, "shot.png", None).unwrap();
+        assert!(!read.unchanged);
+        assert_eq!(read.mime.as_deref(), Some("image/png"));
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(read.data.unwrap()).unwrap(), png_bytes);
+    }
+
+    #[test]
+    fn task_file_read_base64_for_task_resolves_member_path() {
+        use base64::Engine as _;
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        let pdf_bytes: &[u8] = b"%PDF-1.4\nnot-a-real-pdf-but-that's-fine-here";
+        fs::write(member.path().join("report.pdf"), pdf_bytes).unwrap();
+
+        let task = Task {
+            path: host.path().to_string_lossy().into_owned(),
+            composition: vec![TaskMember {
+                dir_name: "docs".into(),
+                mode: MemberMode::RepoRoot,
+                path: member.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let read = task_file_read_base64_for_task(&task, "docs/report.pdf", None).unwrap();
+        assert_eq!(read.mime.as_deref(), Some("application/pdf"));
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(read.data.unwrap()).unwrap(), pdf_bytes);
+    }
+
+    #[test]
+    fn task_file_read_base64_for_task_short_circuits_on_matching_known_fp() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("shot.png"), b"hello").unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        let first = task_file_read_base64_for_task(&task, "shot.png", None).unwrap();
+        let second = task_file_read_base64_for_task(&task, "shot.png", Some(&first.fp)).unwrap();
+        assert!(second.unchanged);
+        assert!(second.mime.is_none());
+        assert!(second.data.is_none());
+    }
+
+    #[test]
+    fn task_file_read_base64_for_task_rejects_non_previewable_extension() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        assert!(task_file_read_base64_for_task(&task, "notes.txt", None).is_err());
     }
 
     #[test]

@@ -303,12 +303,13 @@ export const taskFileDiffSides = (id: string, path: string) =>
     "task_file_diff_sides", { id, path },
   );
 export const taskFileRead = (id: string, path: string) => invoke<string>("task_file_read", { id, path });
-/** Read a task image as base64 for the markdown preview (image
- *  extensions only, 10 MB cap). Member-aware + worktree-contained, same
- *  checks as taskFileRead. Pass the `fp` from a previous successful
- *  read as `knownFp` to let the backend skip the read+encode entirely when
- *  the file hasn't changed (`unchanged: true`, no `mime`/`data`) — the fast
- *  path an agent-settle revalidation of every mounted preview relies on. */
+/** Read a task image or PDF as base64, for the markdown preview's inline
+ *  images or the file-tree preview pane (image/PDF extensions, 20 MB cap).
+ *  Member-aware + worktree-contained, same checks as taskFileRead. Pass the
+ *  `fp` from a previous successful read as `knownFp` to let the backend skip
+ *  the read+encode entirely when the file hasn't changed (`unchanged: true`,
+ *  no `mime`/`data`) — the fast path an agent-settle revalidation of every
+ *  mounted preview relies on. */
 export const taskFileReadBase64 = (id: string, path: string, knownFp?: string) =>
   invoke<{ unchanged: boolean; mime?: string; data?: string; fp: string }>(
     "task_file_read_base64", { id, path, knownFp },
