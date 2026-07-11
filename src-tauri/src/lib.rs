@@ -1016,6 +1016,92 @@ fn git(args: &[&str], cwd: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Best-effort, time-bounded fetch of a single base ref before a new task
+/// branch is cut from it, so the branch starts from the latest remote commit
+/// instead of whatever the local `origin/*` happened to point at at the last
+/// manual fetch (GH #79). `base_full` is like "origin/develop": the leading
+/// path segment is the remote, the rest is the ref. A base with no remote
+/// prefix (a purely local branch) is left alone.
+///
+/// This is NEVER fatal: auth failure, offline, or a dead/prompting remote just
+/// logs and returns, and create proceeds off the existing local ref (today's
+/// behavior). It is also hard-bounded — a hung transfer or credential prompt
+/// can't wedge task creation:
+///   - `GIT_TERMINAL_PROMPT=0` + batch-mode SSH with a short connect timeout
+///     make a credential-less remote fail fast instead of blocking on a prompt.
+///   - a wall-clock deadline SIGKILLs the child on expiry.
+/// Callers run on a `spawn_blocking` thread (see `task_create`), so the network
+/// wait never touches the UI thread.
+fn git_fetch_base(repo: &Path, base_full: &str) {
+    // Split "remote/ref". No '/' → a local branch, nothing to fetch. Verify
+    // the first segment is a configured remote so a local branch that merely
+    // contains a slash (e.g. "feature/x") isn't mistaken for "<remote>/x".
+    let Some((remote, refname)) = base_full.split_once('/') else { return };
+    if remote.is_empty() || refname.is_empty() {
+        return;
+    }
+    let remotes = git(&["remote"], repo).unwrap_or_default();
+    if !remotes.lines().any(|r| r.trim() == remote) {
+        return;
+    }
+
+    let mut cmd = Command::new("git");
+    // Single-ref, no-tags fetch: updates refs/remotes/<remote>/<ref> via the
+    // remote's configured fetch refspec and nothing else — fast, no need to
+    // pull every ref.
+    cmd.args(["fetch", "--no-tags", remote, refname]).current_dir(repo);
+    // Same login-shell env as git() so credential helpers / SSH config resolve
+    // from a GUI-launched .app (bare launchd PATH otherwise).
+    cmd.env("PATH", shell_env::resolved_path());
+    for (k, v) in shell_env::login_env() {
+        cmd.env(k, v);
+    }
+    // Fail fast rather than block on a credential/passphrase prompt or a dead
+    // host. The deadline below is the hard ceiling on top of these.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=10");
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("git_fetch_base: spawn fetch {remote}/{refname}: {e}");
+            return;
+        }
+    };
+
+    // Poll to a hard deadline; SIGKILL on expiry. 15s covers a normal
+    // single-ref fetch on a slow link; ConnectTimeout=10 already caps the
+    // common dead-host case well under this.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    // Non-fatal: branch off the local ref as before.
+                    eprintln!("git_fetch_base: fetch {remote}/{refname} exited unsuccessfully ({status}); using local ref");
+                }
+                return;
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    eprintln!("git_fetch_base: fetch {remote}/{refname} timed out; using local ref");
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                eprintln!("git_fetch_base: wait fetch {remote}/{refname}: {e}");
+                return;
+            }
+        }
+    }
+}
+
 fn detect_base_branch(repo: &Path) -> Result<String> {
     for b in &["main", "master", "develop"] {
         if git(&["rev-parse", "--verify", b], repo).is_ok() {
@@ -2358,6 +2444,12 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
     let add_result = if branch_exists {
         git(&add_args, &repo)
     } else {
+        // Refresh the remote-tracking base ref first so the new branch is cut
+        // from the latest remote commit, not a stale local origin/* (GH #79).
+        // Best-effort and time-bounded — see git_fetch_base.
+        if fetch_before_create_enabled() {
+            git_fetch_base(&repo, &base_full);
+        }
         match git(&["branch", "--no-track", &branch, &base_full], &repo) {
             Ok(_) => git(&add_args, &repo),
             Err(e) => Err(e),
@@ -2591,6 +2683,8 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     let base_branch = args.base_branch
         .as_ref().map(|b| b.trim()).filter(|b| !b.is_empty())
         .map(|b| b.to_string()).unwrap_or_else(|| host.base_branch.clone());
+    // Read the pre-create fetch toggle once (GH #79); reused for host + members.
+    let do_fetch = fetch_before_create_enabled();
 
     // Validate members + freeze dir names. dir_name collisions inside
     // the wrapper are a hard error — they'd silently overwrite. Each
@@ -2657,6 +2751,10 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         let create_result = if branch_exists {
             git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo)
         } else {
+            // Refresh the base ref before cutting the host branch (GH #79).
+            if do_fetch {
+                git_fetch_base(&host_repo, &base_branch);
+            }
             match git(&["branch", "--no-track", &branch, &base_branch], &host_repo) {
                 Ok(_) => git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo),
                 Err(e) => Err(e),
@@ -2742,6 +2840,11 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
                 let mres = if mexists {
                     git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo)
                 } else {
+                    // Refresh this member's base ref before cutting its branch,
+                    // honoring the member's own remote/base (GH #79).
+                    if do_fetch {
+                        git_fetch_base(&mrepo, &mbase);
+                    }
                     match git(&["branch", "--no-track", &mbranch, &mbase], &mrepo) {
                         Ok(_) => git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo),
                         Err(e) => Err(e),
@@ -6994,6 +7097,20 @@ pub struct Settings {
     /// the workspaces->tasks migration has committed.
     #[serde(default)]
     pub schema_version: u32,
+    /// When on (the default), a best-effort `git fetch` of the base ref runs
+    /// before a new task's branch is cut, so it starts from the latest remote
+    /// commit instead of a stale local `origin/*` (GH #79). `None` (absent in
+    /// pre-#79 files) means on; users on flaky networks can set it `false` to
+    /// opt out. See `git_fetch_base` — the fetch is always time-bounded and
+    /// non-fatal regardless of this toggle.
+    #[serde(default)]
+    pub fetch_before_create: Option<bool>,
+}
+
+/// Whether the pre-create base fetch (GH #79) is enabled. Default-on: only an
+/// explicit `Some(false)` in settings disables it.
+fn fetch_before_create_enabled() -> bool {
+    load_settings_inner().fetch_before_create != Some(false)
 }
 
 /// Current on-disk schema version. Bump when adding a migration and gate it

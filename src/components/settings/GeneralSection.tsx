@@ -35,6 +35,9 @@ export function GeneralSection() {
   // dirty check.
   const [fileExclude, setFileExclude] = useState<string[]>([]);
   const [fileExcludeOriginal, setFileExcludeOriginal] = useState("");
+  // Pre-create base fetch (GH #79). Backend Settings field; saved immediately
+  // on toggle. Absent in settings = on.
+  const [fetchBeforeCreate, setFetchBeforeCreate] = useState(true);
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
@@ -92,8 +95,19 @@ export function GeneralSection() {
       const ex = s.file_tree_exclude ?? [];
       setFileExclude(ex);
       setFileExcludeOriginal(ex.join("\n"));
+      setFetchBeforeCreate(s.fetch_before_create !== false);
     }).catch(() => {});
   }, []);
+
+  // Persist the fetch-before-create toggle immediately (backend Settings),
+  // merging into the cached object so we don't clobber other fields.
+  async function saveFetchBeforeCreate(v: boolean) {
+    setFetchBeforeCreate(v);
+    if (!settings) return;
+    const next: Settings = { ...settings, fetch_before_create: v };
+    setSettings(next);
+    try { await settingsSave(next); } catch {}
+  }
 
   const sbDirty = sbRw !== sbOriginal.rw || sbHosts !== sbOriginal.hosts;
   const excludeDirty = fileExclude.join("\n") !== fileExcludeOriginal;
@@ -174,6 +188,15 @@ export function GeneralSection() {
         <div className="mt-2 max-w-xs">
           <Input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="feature" className="font-mono" />
         </div>
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Fetch base before creating a task"
+          hint="Refresh the base branch from its remote (a quick, single-ref git fetch) right before a new task's branch is cut, so it starts from the latest commit instead of a stale local copy. Best-effort: if the remote is offline or unreachable, the task still creates from your local ref. Turn off on flaky networks."
+          value={fetchBeforeCreate}
+          onChange={saveFetchBeforeCreate}
+        />
       </div>
 
       <div className="border-t border-[var(--color-border-soft)] pt-6">

@@ -388,6 +388,11 @@ export interface Settings {
    *  tree across every project. Unioned with each project's committed
    *  `.termic.yaml` `exclude`. `.git` is always hidden regardless. */
   file_tree_exclude?: string[];
+  /** When on (the default), a best-effort `git fetch` of the base ref runs
+   *  before a new task's branch is cut, so it starts from the latest remote
+   *  commit instead of a stale local `origin/*` (GH #79). Absent = on; set
+   *  false to opt out. The fetch is always time-bounded and non-fatal. */
+  fetch_before_create?: boolean;
 }
 
 export interface DiscoveredRepo {
