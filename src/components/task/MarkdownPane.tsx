@@ -47,6 +47,18 @@ export function MarkdownPane({ task, tab }: { task: Task; tab: EditTab }) {
     usePrefs.getState().setMarkdownDefaultView(v);
   };
 
+  // Remote-image gate (issue #69): the pref is the default, a per-tab
+  // override unblocks just this document without touching it. The override
+  // is one-way (there's no "re-block" affordance) and session-only, like
+  // mdView — it dies with the tab, matching "load images this time".
+  const loadRemoteImages = usePrefs(s => s.loadRemoteImages);
+  const remoteImagesAllowed = tab.remoteImagesUnblocked ?? loadRemoteImages;
+  // "Always" flips the global pref instead of just this tab's override — it
+  // covers every future document, not just this one. The confirmation
+  // (bar text + Settings link) is MarkdownPreview's own transient banner
+  // state, not a toast — see its onAlwaysLoadRemoteImages handling.
+  const alwaysLoadRemoteImages = () => usePrefs.getState().setLoadRemoteImages(true);
+
   // Live buffer text fed from the editor's onContent. Debounced so split-mode
   // typing doesn't re-parse markdown + re-run mermaid on every keystroke. We
   // read view.state.doc lazily INSIDE the timeout, so a burst of keystrokes
@@ -171,6 +183,12 @@ export function MarkdownPane({ task, tab }: { task: Task; tab: EditTab }) {
                 revealHeading={tab.revealHeading}
                 onRevealConsumed={() => useApp.getState().patchTab(task.id, tab.id, { revealHeading: undefined })}
                 visible={showPreview}
+                remoteImagesAllowed={remoteImagesAllowed}
+                onUnblockRemoteImages={
+                  remoteImagesAllowed ? undefined
+                    : () => useApp.getState().patchTab(task.id, tab.id, { remoteImagesUnblocked: true })
+                }
+                onAlwaysLoadRemoteImages={remoteImagesAllowed ? undefined : alwaysLoadRemoteImages}
               />
             </Suspense>
           </div>

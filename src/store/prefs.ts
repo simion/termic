@@ -45,6 +45,7 @@ const LS_TERMINAL_COPY_ON_SELECT = "terminalCopyOnSelect";
 const LS_TASK_EXPAND_MODE = "taskExpandMode";
 const LS_HIDE_INACTIVE_PROJECTS = "hideInactiveProjects";
 const LS_MD_VIEW       = "markdownDefaultView";
+const LS_LOAD_REMOTE_IMAGES = "loadRemoteImages";
 const LS_BRANCH_PREFIX = "branchPrefix";
 const LS_QUEUE_MIN_INTERVAL = "queueMinIntervalMs";
 const LS_SHORTCUTS     = "shortcutBindings";
@@ -357,6 +358,14 @@ interface PrefsState {
    *  signal stuck, so TerminalPane has an absolute ceiling that force-clears
    *  a stale "working" state regardless of sender signals. */
   workingIndicator: boolean;
+  /** Gates remote (http/https) images in the markdown preview. OFF by
+   *  default: the webview sits outside the seatbelt + CONNECT proxy cage,
+   *  so an `<img src="https://...">` fires an unprompted GET to whatever
+   *  host untrusted markdown names (prompt injection, a dependency's
+   *  README, a contributor's fork) — see docs/sandbox.md, "Known gap: the
+   *  webview is outside the cage". A per-document affordance in the
+   *  preview can unblock a single file without flipping this pref. */
+  loadRemoteImages: boolean;
   /** Default for the NewTaskDialog's Sandbox toggle when neither
    *  the project's `default_sandbox` nor an explicit user pick is in
    *  effect. Lets a single-keystroke toggle apply across all projects
@@ -489,6 +498,7 @@ interface PrefsState {
   setCompletionSoundId: (id: CompletionSoundId) => void;
   setSettledHighlight: (v: boolean) => void;
   setWorkingIndicator: (v: boolean) => void;
+  setLoadRemoteImages: (v: boolean) => void;
   setGlobalDefaultSandbox: (v: boolean) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setAllowScope: (s: "agent" | "project" | "repo") => void;
@@ -592,6 +602,9 @@ const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
 // OFF by default — experimental re-introduction of the work-in-progress
 // spinner. Opt in via Settings → General.
 const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, false);
+// OFF by default (issue #69): closing the remote-image sandbox gap must not
+// silently start firing image requests for existing users.
+const initialLoadRemoteImages = lsGetBool(LS_LOAD_REMOTE_IMAGES, false);
 const initialDefaultSandbox = lsGetBool(LS_DEFAULT_SANDBOX, false);
 // ON by default — sandboxed agents bypass their own permission prompts
 // because the seatbelt is the real boundary. Users can opt out.
@@ -623,6 +636,7 @@ export const usePrefs = create<PrefsState>(set => ({
   completionSoundId: initialCompletionSoundId,
   settledHighlight: initialSettledHighlight,
   workingIndicator: initialWorkingIndicator,
+  loadRemoteImages: initialLoadRemoteImages,
   globalDefaultSandbox: initialDefaultSandbox,
   sandboxBypassPermissions: initialSandboxBypass,
   allowScope: initialAllowScope,
@@ -769,6 +783,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setWorkingIndicator: (v) => {
     try { localStorage.setItem(LS_WORKING_INDICATOR, v ? "1" : "0"); } catch {}
     set({ workingIndicator: v });
+  },
+  setLoadRemoteImages: (v) => {
+    try { localStorage.setItem(LS_LOAD_REMOTE_IMAGES, v ? "1" : "0"); } catch {}
+    set({ loadRemoteImages: v });
   },
   setGlobalDefaultSandbox: (v) => {
     try { localStorage.setItem(LS_DEFAULT_SANDBOX, v ? "1" : "0"); } catch {}

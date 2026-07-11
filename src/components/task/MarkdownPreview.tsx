@@ -17,19 +17,18 @@
 // (after an existence/type check — dead links and directories no longer open
 // blank/dead tabs).
 //
-// Remote https images load directly (tauri.conf.json's img-src allows https:).
-// This is an ACCEPTED SANDBOX GAP, not a neutral one: the webview lives outside
-// the seatbelt + CONNECT proxy, so rendering `![](https://host/x.png?d=…)`
-// fires a GET to an arbitrary host with no click, even when the task is in
-// Enforce and the agent itself is barred from that host. The realistic trigger
-// is prompt injection plus untrusted markdown (a dependency's README, a
-// contributor's fork, a GitHub issue the agent read), not a scheming agent.
-// Only a GET is possible: script-src is 'self', raw HTML stays disabled, and
-// markdown-it's validateLink blocks javascript:, so nothing here adds a script
-// execution path. GitHub and VS Code make the same call. Closing it means a
-// default-off "load remote images" pref gating hydration, NOT a CSP tweak
-// (Tauri's CSP is one policy for the whole webview). See docs/sandbox.md,
-// "Known gap: the webview is outside the cage".
+// Remote http(s) images (issue #69): tauri.conf.json's img-src still allows
+// https: (the CSP is one whole-webview policy, so it can't gate just this
+// component — see docs/sandbox.md, "Known gap: the webview is outside the
+// cage"), but gateRemoteImages() below intercepts them BEFORE they ever hit
+// an <img src>, keyed on the `remoteImagesAllowed` prop (prefs.loadRemoteImages,
+// OFF by default, or a per-tab override). Blocked, the webview never fetches
+// them at all: no unprompted GET to whatever host untrusted markdown names
+// (prompt injection, a dependency's README, a contributor's fork). When any
+// are blocked, the preview shows a banner to unblock them for this document.
+// Only a GET was ever possible either way: script-src is 'self', raw HTML
+// stays disabled, and markdown-it's validateLink blocks javascript:, so this
+// gate closes egress, not a script-execution path.
 //
 // The rendered HTML is written into the host element IMPERATIVELY (not via
 // React's dangerouslySetInnerHTML). React must NOT own this subtree: mermaid
@@ -44,10 +43,12 @@
 import { useEffect, useRef, useState } from "react";
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
+import { Check, ImageOff } from "lucide-react";
 import { openPath, taskFileReadBase64, taskPathStat, taskRevealPath } from "@/lib/ipc";
 import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveTaskHref } from "@/lib/markdownPaths";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { TerminalExitedBanner } from "./TerminalExitedBanner";
 
 // Monotonic id source for mermaid render targets. Math.random/Date.now are
 // avoided elsewhere in this codebase; a plain counter is deterministic enough.
@@ -291,7 +292,7 @@ export function hydrateTaskImages(
     let raw = img.dataset.mdSrc;
     if (raw === undefined) {
       const src = img.getAttribute("src") || "";
-      if (!src || /^(https?:|data:|blob:)/i.test(src)) continue; // remote/inline: browser handles it
+      if (!src || /^(https?:|data:|blob:)/i.test(src)) continue; // inline, or remote (gateRemoteImages handles those)
       img.dataset.mdSrc = raw = src;
       img.removeAttribute("src");
     }
@@ -309,6 +310,64 @@ export function hydrateTaskImages(
       fetchTaskImage(cache, ctx, resolved, isPositive ? cached!.fp : undefined, host);
     }
   }
+}
+
+/** Block (or restore) remote http(s) <img> sources in `host`, based on
+ *  `allowed`. A blocked source is moved into `data-md-remote-src` and the
+ *  `src` attribute removed, so the browser never issues the request; an
+ *  allowed one is moved back onto `src` verbatim so the browser fetches it
+ *  itself (this component does not proxy remote images, unlike task-relative
+ *  ones — there's no IPC round-trip to gate, only whether the fetch happens
+ *  at all). `data:`/`blob:` sources and task-relative ones (already claimed
+ *  by `hydrateTaskImages` via `data-md-src`) are left untouched: gating only
+ *  ever applies to an actual cross-origin network fetch.
+ *
+ *  Returns true if `host` currently has at least one blocked remote image,
+ *  so the caller can show the per-document "load images" affordance.
+ *  Exported for tests only. */
+export function gateRemoteImages(host: HTMLElement, allowed: boolean): boolean {
+  let blocked = false;
+  for (const img of Array.from(host.querySelectorAll<HTMLImageElement>("img"))) {
+    const stashed = img.dataset.mdRemoteSrc;
+    if (stashed !== undefined) {
+      if (allowed) {
+        img.src = stashed;
+        delete img.dataset.mdRemoteSrc;
+      } else {
+        blocked = true;
+      }
+      continue;
+    }
+    if (img.dataset.mdSrc !== undefined) continue; // task-relative image
+    const src = img.getAttribute("src") || "";
+    if (!/^https?:/i.test(src)) continue; // data:/blob:/no-src: never gated
+    if (allowed) continue; // browser handles it natively
+    img.dataset.mdRemoteSrc = src;
+    img.removeAttribute("src");
+    blocked = true;
+  }
+  return blocked;
+}
+
+export type RemoteImageBannerKind = "blocked" | "confirm" | null;
+
+/** Which remote-image banner (if any) the preview should show. "blocked"
+ *  always wins over "confirm": if THIS render still has a blocked image
+ *  (e.g. gateRemoteImages hasn't caught up to a just-flipped pref yet, or a
+ *  brand-new blocked image appeared some other way), that takes priority
+ *  over a stale "you're all set" confirmation rather than showing both or
+ *  flickering between them. `canUnblock` mirrors the `onUnblockRemoteImages`
+ *  prop being present (no per-document override to offer, e.g. the
+ *  Changelog dialog, means no banner at all regardless of blocked state).
+ *  Exported for tests only. */
+export function remoteImageBannerKind(
+  hasBlockedRemoteImages: boolean,
+  canUnblock: boolean,
+  justAllowedGlobally: boolean,
+): RemoteImageBannerKind {
+  if (hasBlockedRemoteImages && canUnblock) return "blocked";
+  if (justAllowedGlobally) return "confirm";
+  return null;
 }
 
 /** Find a heading element by `#fragment`. markdown-it doesn't emit heading ids
@@ -469,7 +528,8 @@ export function attemptReveal(state: RevealState, host: HTMLElement | null, visi
 }
 
 export function MarkdownPreview(
-  { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true }: {
+  { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
+    remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages }: {
     text: string; themeDark: boolean; linkify?: boolean; ctx?: MarkdownCtx;
     /** Pending `#fragment` to scroll to once content renders (from a
      *  `file.md#heading` link that opened this tab). Cleared by the owner
@@ -486,6 +546,22 @@ export function MarkdownPreview(
      *  reveal effect waits for this before it will scroll. Defaults to true
      *  for callers (the Changelog dialog) that never hide their preview. */
     visible?: boolean;
+    /** Whether remote (http/https) images may load (issue #69). Defaults to
+     *  true for callers with no untrusted-markdown threat model (the
+     *  Changelog dialog renders termic's own bundled release notes).
+     *  MarkdownPane computes this from `prefs.loadRemoteImages` and the
+     *  tab's own `remoteImagesUnblocked` override for task-file previews. */
+    remoteImagesAllowed?: boolean;
+    /** Present only when there's a per-document override to flip (i.e. a
+     *  task-file preview). Invoked from the "blocked images" banner. */
+    onUnblockRemoteImages?: () => void;
+    /** Present alongside onUnblockRemoteImages. Flips the GLOBAL pref
+     *  instead of just this document's override — the banner's "Always"
+     *  button. This component owns the confirmation UX itself (the banner
+     *  swaps its own text/action in place for a few seconds, see
+     *  justAllowedGlobally below); the callback here does nothing but
+     *  flip the pref. */
+    onAlwaysLoadRemoteImages?: () => void;
   },
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -493,12 +569,27 @@ export function MarkdownPreview(
   if (!imgCacheRef.current) imgCacheRef.current = { map: new Map(), bytes: 0, inflight: new Map() };
   const navRevalidateRef = useRef<NavRevalidateState | null>(null);
   if (!navRevalidateRef.current) navRevalidateRef.current = newNavRevalidateState();
+  const [hasBlockedRemoteImages, setHasBlockedRemoteImages] = useState(false);
+  // Transient confirmation after "Always": the banner swaps its text/action
+  // in place (not a separate toast) and lingers a few seconds so the
+  // Settings pointer is actually readable, then just disappears once
+  // remoteImagesAllowed flips true and there's nothing left to gate.
+  const [justAllowedGlobally, setJustAllowedGlobally] = useState(false);
+  useEffect(() => {
+    if (!justAllowedGlobally) return;
+    const t = window.setTimeout(() => setJustAllowedGlobally(false), 5000);
+    return () => window.clearTimeout(t);
+  }, [justAllowedGlobally]);
 
   // Main imperative effect: parse → inject → hydrate images + mermaid.
   // Re-runs when the buffer text or the theme changes — deliberately NOT on
   // ctx.epoch: an agent settle must not rebuild the DOM or re-render mermaid
   // (see the epoch effect below). `alive` cancels a stale run when a newer
-  // one supersedes it (or on unmount) mid async-render.
+  // one supersedes it (or on unmount) mid async-render. Also re-runs on
+  // remoteImagesAllowed: flipping the pref or the per-doc override is rare
+  // (a settings toggle, a banner click), so a full re-render (mermaid
+  // included) is simpler than a third gate-only effect and not worth
+  // optimizing away.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -511,6 +602,7 @@ export function MarkdownPreview(
     md.set({ linkify });
     host.innerHTML = renderSanitized(text || "");
     hydrateTaskImages(host, ctx, imgCacheRef.current!, { revalidatePositive: isNavigation });
+    setHasBlockedRemoteImages(gateRemoteImages(host, remoteImagesAllowed));
     const blocks = Array.from(host.querySelectorAll<HTMLElement>(".mermaid-block"));
     if (blocks.length === 0) return () => { alive = false; };
 
@@ -547,7 +639,7 @@ export function MarkdownPreview(
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, themeDark, linkify, ctx?.taskId, ctx?.filePath, ctx?.memberDirs]);
+  }, [text, themeDark, linkify, ctx?.taskId, ctx?.filePath, ctx?.memberDirs, remoteImagesAllowed]);
 
   // fsRevision bump = images may have changed on disk. Revalidate ONLY the
   // images (cached bytes stay on screen until a fresh read lands; a cheap
@@ -732,9 +824,39 @@ export function MarkdownPreview(
     });
   }
 
+  function handleAlways() {
+    onAlwaysLoadRemoteImages?.();
+    setJustAllowedGlobally(true);
+  }
+
+  const bannerKind = remoteImageBannerKind(hasBlockedRemoteImages, !!onUnblockRemoteImages, justAllowedGlobally);
+
   return (
-    <div className="h-full overflow-auto bg-[var(--color-bg)]">
-      <div ref={hostRef} className="markdown-body px-8 py-6" onClick={onClick} />
+    <div className="flex h-full flex-col bg-[var(--color-bg)]">
+      {bannerKind === "blocked" && onUnblockRemoteImages && (
+        <TerminalExitedBanner
+          label="Images from external sites are blocked in this preview."
+          actionLabel="Show images"
+          onAction={onUnblockRemoteImages}
+          icon={ImageOff}
+          tone="muted"
+          center
+          secondary={onAlwaysLoadRemoteImages ? { label: "Always", onAction: handleAlways } : undefined}
+        />
+      )}
+      {bannerKind === "confirm" && (
+        <TerminalExitedBanner
+          label="Remote images now load in every markdown preview."
+          actionLabel="Settings"
+          onAction={() => useApp.getState().openSettings("general", undefined, "load-remote-images")}
+          icon={Check}
+          tone="muted"
+          center
+        />
+      )}
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={hostRef} className="markdown-body px-8 py-6" onClick={onClick} />
+      </div>
     </div>
   );
 }
