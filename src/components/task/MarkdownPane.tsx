@@ -183,6 +183,7 @@ export function MarkdownPane({ task, tab }: { task: Task; tab: EditTab }) {
                 revealHeading={tab.revealHeading}
                 onRevealConsumed={() => useApp.getState().patchTab(task.id, tab.id, { revealHeading: undefined })}
                 visible={showPreview}
+                editorVisible={showEditor}
                 remoteImagesAllowed={remoteImagesAllowed}
                 onUnblockRemoteImages={
                   remoteImagesAllowed ? undefined

@@ -604,6 +604,7 @@ function scrollFindRangeIntoView(scroller: HTMLElement, range: Range): void {
 
 export function MarkdownPreview(
   { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
+    editorVisible = false,
     remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages }: {
     text: string; themeDark: boolean; linkify?: boolean; ctx?: MarkdownCtx;
     /** Pending `#fragment` to scroll to once content renders (from a
@@ -621,6 +622,12 @@ export function MarkdownPreview(
      *  reveal effect waits for this before it will scroll. Defaults to true
      *  for callers (the Changelog dialog) that never hide their preview. */
     visible?: boolean;
+    /** Whether an editor pane is ALSO on screen (split view). Cmd+F is then
+     *  ambiguous, so the preview only claims it when it (not the editor) is
+     *  the focused pane; otherwise CodeMirror's own search keymap wins. When
+     *  false (preview-only, or the editor-less Changelog dialog) the preview
+     *  unconditionally owns Cmd+F. Defaults to false. */
+    editorVisible?: boolean;
     /** Whether remote (http/https) images may load (issue #69). Defaults to
      *  true for callers with no untrusted-markdown threat model (the
      *  Changelog dialog renders termic's own bundled release notes).
@@ -717,11 +724,14 @@ export function MarkdownPreview(
   };
 
   // Cmd/Ctrl+F opens the bar, but only when this preview is the intended
-  // target: it's laid out AND either already searching, focus is inside it,
-  // or nothing else holds focus (preview-only view blurs the hidden editor, so
-  // focus falls to <body>). In split view with the editor focused, activeElement
-  // is the CodeMirror view — not contained, not body — so we bow out and its
-  // own keymap handles Cmd+F.
+  // target. It must be laid out; then either it's already searching, OR no
+  // editor competes (preview-only / the editor-less Changelog dialog), OR — in
+  // split view — the preview is the focused pane. We can't lean on click-focus
+  // for that last check: WKWebView (Safari engine) doesn't move focus to a
+  // non-editable element on click, so `contains(activeElement)` would never go
+  // true. The scroller's onMouseDown below programmatically focuses the
+  // container to make it reliable, which also blurs CodeMirror so its keymap
+  // stops claiming Cmd+F once the reader clicks into the preview.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
@@ -729,8 +739,7 @@ export function MarkdownPreview(
       if (!visible) return;
       const c = containerRef.current;
       if (!c) return;
-      const a = document.activeElement;
-      const mine = findOpen || c.contains(a) || !a || a === document.body;
+      const mine = findOpen || !editorVisible || c.contains(document.activeElement);
       if (!mine) return;
       e.preventDefault();
       e.stopPropagation();
@@ -739,7 +748,7 @@ export function MarkdownPreview(
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, findOpen, findQuery]);
+  }, [visible, editorVisible, findOpen, findQuery]);
 
   // The buffer re-rendered (edit in split view, or a settle): the old Ranges
   // point at detached nodes. Re-search the fresh DOM if the bar is open,
@@ -1060,7 +1069,15 @@ export function MarkdownPreview(
           center
         />
       )}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div
+        className="min-h-0 flex-1 overflow-auto"
+        // Pull focus onto the pane when the reader clicks into it (WKWebView
+        // won't do this for non-editable content on its own). Makes the
+        // split-view Cmd+F check work and blurs the editor so it stops
+        // claiming Cmd+F. preventScroll so focusing never nudges the viewport;
+        // the click's own selection/caret is untouched.
+        onMouseDown={() => containerRef.current?.focus({ preventScroll: true })}
+      >
         <div ref={hostRef} className="markdown-body px-8 py-6" onClick={onClick} />
       </div>
     </div>
