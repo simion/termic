@@ -12,6 +12,24 @@ import * as ipc from "@/lib/ipc";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
 
+/** A secondary agent tab closed via the "X", snapshotted just before it's
+ *  dropped from `persisted_tabs` (see `syncDurableTabs`'s forget rule).
+ *  Powers the "+" menu's Resume section — in-memory only, cleared on app
+ *  restart. Main/default tabs are excluded: they already auto-resume via
+ *  `persisted_tabs` when the task wakes, so listing them here would
+ *  be redundant. */
+export interface ClosedTabEntry {
+  id: string;
+  cli: string;
+  title: string;
+  customTitle?: boolean;
+  command?: string | null;
+  sessionId?: string | null;
+  closedAt: string;
+}
+
+const MAX_CLOSED_TABS = 6;
+
 interface View {
   /** Underlying page — dashboard / history / empty. NOT "settings": Settings
    *  is a separate overlay flag (`settingsOpen`), so closing it returns to
@@ -40,6 +58,9 @@ export interface AppState {
   tabs: Record<string, Tab[]>;
   /** task id → active tab id */
   activeTab: Record<string, string>;
+  /** task id → recently closed secondary agent tabs, most-recent
+   *  first, capped at MAX_CLOSED_TABS. See `ClosedTabEntry`. */
+  closedTabs: Record<string, ClosedTabEntry[]>;
   view: View;
   compactSidebar: boolean;
   rightPanelHidden: boolean;
@@ -226,6 +247,11 @@ export interface AppState {
    *  No-op if the order is unchanged. */
   reorderTab: (taskId: string, tabId: string, toIndex: number) => void;
   closeTab: (taskId: string, tabId: string) => void;
+  /** Reopen a `closedTabs` entry as a fresh tab, forcing its original
+   *  `sessionId` so the agent resumes via `--resume <uuid>` (see
+   *  `decideResume` in TerminalPane) instead of starting a new
+   *  conversation. Removes the entry from `closedTabs` once reopened. */
+  resumeClosedTab: (taskId: string, entryId: string) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
   persistTab: (taskId: string, tabId: string) => void;
   openPreviewTab: (taskId: string, data: { type: "edit" | "diff"; path: string; title: string; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
@@ -349,6 +375,7 @@ export const useApp = create<AppState>((set, get) => ({
   activeTaskId: null,
   tabs: {},
   activeTab: {},
+  closedTabs: {},
   fsRevision: {},
   view: { page: "dashboard" },
   compactSidebar: initialCompact,
@@ -1464,6 +1491,24 @@ export const useApp = create<AppState>((set, get) => ({
     const closing = list[idx];
     // Best-effort PTY kill; ignore failures (already-dead PTYs etc.).
     if (closing.type === "terminal" && closing.ptyId) ipc.ptyKill(closing.ptyId).catch(() => {});
+    // Snapshot secondary agent tabs into closedTabs before syncDurableTabs
+    // forgets them for good (see the merge rule below) — this is the only
+    // point their session_id survives, so the "+" menu's Resume section can
+    // still reopen them. Shells (no session) and the main tab (already
+    // auto-resumes via persisted_tabs) are excluded.
+    const closingTerm = closing.type === "terminal" ? closing as TerminalTab : null;
+    const closedEntry: ClosedTabEntry | null =
+      closingTerm && closingTerm.cli !== "shell" && !closingTerm.is_default && !closingTerm.paneId
+        ? {
+            id: crypto.randomUUID(),
+            cli: closingTerm.cli,
+            title: closingTerm.customTitle ? closingTerm.title : (closingTerm.liveTitle || closingTerm.title),
+            customTitle: closingTerm.customTitle,
+            command: closingTerm.command ?? null,
+            sessionId: closingTerm.sessionId ?? null,
+            closedAt: new Date().toISOString(),
+          }
+        : null;
     const next = list.filter(t => t.id !== tabId);
     const wasActive = s.activeTab[taskId] === tabId;
     // Active-tab replacement considers only main tabs (no paneId).
@@ -1490,6 +1535,12 @@ export const useApp = create<AppState>((set, get) => ({
       splitTree: _st ? splitTreeRest : s.splitTree,
       activePaneId: _ap ? activePaneRest : s.activePaneId,
       paneHistory: _ph ? paneHistoryRest : s.paneHistory,
+      ...(closedEntry ? {
+        closedTabs: {
+          ...s.closedTabs,
+          [taskId]: [closedEntry, ...(s.closedTabs[taskId] ?? [])].slice(0, MAX_CLOSED_TABS),
+        },
+      } : {}),
     };
     if (isLast) {
       // Evict from mountedTasks → TaskView unmounts → xterm
@@ -1521,6 +1572,24 @@ export const useApp = create<AppState>((set, get) => ({
      }
      focusMainTab(focusId);
    }
+  },
+
+  resumeClosedTab: (taskId, entryId) => {
+    const entry = (get().closedTabs[taskId] ?? []).find(e => e.id === entryId);
+    if (!entry) return;
+    set(s => ({
+      closedTabs: { ...s.closedTabs, [taskId]: (s.closedTabs[taskId] ?? []).filter(e => e.id !== entryId) },
+    }));
+    const tab: TerminalTab = {
+      id: crypto.randomUUID(),
+      type: "terminal",
+      title: entry.title,
+      customTitle: entry.customTitle,
+      cli: entry.cli,
+      command: entry.command ?? undefined,
+      sessionId: entry.sessionId ?? undefined,
+    };
+    get().addTab(taskId, tab);
   },
 
   setActiveTabId: (taskId, tabId) => set(s => {

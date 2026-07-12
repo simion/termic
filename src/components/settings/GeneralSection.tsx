@@ -49,6 +49,8 @@ export function GeneralSection() {
   const setSettledHighlight = usePrefs(s => s.setSettledHighlight);
   const workingIndicator = usePrefs(s => s.workingIndicator);
   const setWorkingIndicator = usePrefs(s => s.setWorkingIndicator);
+  const confirmBeforeCloseAgentTab = usePrefs(s => s.confirmBeforeCloseAgentTab);
+  const setConfirmBeforeCloseAgentTab = usePrefs(s => s.setConfirmBeforeCloseAgentTab);
   const loadRemoteImages = usePrefs(s => s.loadRemoteImages);
   const setLoadRemoteImages = usePrefs(s => s.setLoadRemoteImages);
   const globalDefaultSandbox = usePrefs(s => s.globalDefaultSandbox);
@@ -278,6 +280,15 @@ export function GeneralSection() {
           hint="Off by default: images hosted on external sites are blocked in the markdown preview, so opening an untrusted file (a dependency's README, a fetched page) can't silently fire a network request. A per-document button in the preview can still load them for just that file."
           value={loadRemoteImages}
           onChange={setLoadRemoteImages}
+        />
+      </div>
+
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Confirm before closing an agent tab"
+          hint="Ask before closing a non-shell terminal or agent tab. Turning this off (or unchecking it once from the close dialog) closes tabs immediately; a toast then points back to the '+' menu's Resume section to bring one back."
+          value={confirmBeforeCloseAgentTab}
+          onChange={setConfirmBeforeCloseAgentTab}
         />
       </div>
 

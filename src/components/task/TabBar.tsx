@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Task, Tab, TerminalTab, Agent } from "@/lib/types";
-import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
+import { useApp, useTaskTabs, useActiveTabId, type ClosedTabEntry } from "@/store/app";
 import { getAllLeaves } from "@/lib/splitTree";
 import { useTabStripDrag } from "./useTabStripDrag";
 import { Button } from "@/components/ui/Button";
@@ -21,6 +21,51 @@ import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
+
+// Stable reference for the "no closed tabs yet" case. `s.closedTabs[task.id]
+// ?? []` would mint a NEW array on every selector call, which Zustand's
+// default Object.is comparison treats as "changed" — re-rendering TabBar on
+// every unrelated store write (PTY output ticks etc) and, worse, feeding a
+// runaway render loop. A shared empty array keeps the reference stable.
+const NO_CLOSED_TABS: ClosedTabEntry[] = [];
+
+/** Coarse "Nm ago" label for a closed-tab timestamp. Closed tabs are
+ *  always recent (session-only list), so minute/hour granularity is
+ *  enough — no need for History's day/week/month buckets. */
+function relativeTime(iso: string): string {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** "Resume" section rows — recently closed secondary agent tabs (see
+ *  `ClosedTabEntry`). Icon uses the same resolveIconId/CLI_BRAND_COLOR
+ *  pairing as TabPill so a resumed tab's row matches the tab it becomes. */
+function ResumeMenuItems({ entries, agents, onResume }: {
+  entries: ClosedTabEntry[]; agents: Agent[]; onResume: (entryId: string) => void;
+}) {
+  return (
+    <>
+      {entries.map(entry => {
+        const iconId = resolveIconId(entry.cli, agents);
+        return (
+          <DropdownItem key={entry.id} onSelect={() => onResume(entry.id)}>
+            <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
+              <CliIcon cli={iconId} className="h-4 w-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate">{entry.title}</div>
+              <div className="text-[11px] text-[var(--color-fg-faint)]">{relativeTime(entry.closedAt)}</div>
+            </div>
+          </DropdownItem>
+        );
+      })}
+    </>
+  );
+}
 
 /** Registry entries rendered as dropdown rows — shared by the main strip's
  *  and the right strip's + menus (both their "New terminal" custom entries
@@ -72,6 +117,9 @@ export function TabBar({ task }: { task: Task }) {
     [registry],
   );
   const openBroadcast = useUI(s => s.openBroadcast);
+  const closedTabs = useApp(s => s.closedTabs[task.id] ?? NO_CLOSED_TABS);
+  const resumeClosedTab = useApp(s => s.resumeClosedTab);
+  const setView = useApp(s => s.setView);
   const [open, setOpen] = useState(false);
   const suppressDropdownReturn = useRef(false);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -131,6 +179,15 @@ export function TabBar({ task }: { task: Task }) {
   function spawnTab(cli: string) {
     const displayName = agentDisplayName(cli, registry);
     addAndFocusTab({ id: crypto.randomUUID(), type: "terminal", title: displayName, cli });
+  }
+
+  // Reopen a closed tab with its original session id (see resumeClosedTab
+  // in the store) — same dropdown-close/focus dance as addAndFocusTab,
+  // just driven by the store action instead of a locally-built tab.
+  function resumeAndFocus(entryId: string) {
+    suppressDropdownReturn.current = true;
+    resumeClosedTab(task.id, entryId);
+    setOpen(false);
   }
 
   /** Plain login-shell tab. Always uncaged: only agents run inside the
@@ -205,6 +262,16 @@ export function TabBar({ task }: { task: Task }) {
             <DropdownSeparator />
             <DropdownLabel>New agent</DropdownLabel>
             <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={spawnTab} />
+            {closedTabs.length > 0 && (
+              <>
+                <DropdownSeparator />
+                <DropdownLabel>Resume</DropdownLabel>
+                <ResumeMenuItems entries={closedTabs} agents={registry} onResume={resumeAndFocus} />
+                <DropdownItem onSelect={() => { setOpen(false); setView("history"); }}>
+                  More…
+                </DropdownItem>
+              </>
+            )}
           </DropdownMenu>
         </DropdownRoot>
       </div>

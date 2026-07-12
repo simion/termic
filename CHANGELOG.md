@@ -4,6 +4,14 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [Unreleased]
+
+Closed tabs and archived tasks are one click away instead of buried in History.
+
+### Features
+- Surface closed sessions in the "+" menu: the tab strip's "+" lists recently closed secondary agent tabs, letting you resume the exact same session instead of losing it for good; the sidebar's project "+" does the same for recently archived tasks. (#77)
+- Closing a non-shell terminal or agent tab can now skip the confirmation dialog, via the dialog's "Don't ask again" checkbox or the new "Confirm before closing an agent tab" toggle in Settings > General, once the new Resume section has you covered. A toast then points back to it.
+
 ## [0.20.1] - 2026-07-10
 
 Workspaces are now Tasks, and you can create one in two clicks from the sidebar.
