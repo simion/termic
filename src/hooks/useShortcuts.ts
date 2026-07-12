@@ -22,7 +22,7 @@
 import { useEffect } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { usePrefs } from "@/store/prefs";
+import { usePrefs, APPEARANCE_DEFAULTS } from "@/store/prefs";
 import { requestCloseTab, requestClosePaneTab } from "@/lib/closeTab";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { jumpToNextWaiting } from "@/lib/waitingAgents";
@@ -459,6 +459,23 @@ export function useShortcuts() {
           if (!taskId) return;
           e.preventDefault();
           useUI.getState().openBroadcast(taskId);
+          return;
+
+        // ⌘= / ⌘- / ⌘0 → whole-app zoom, like a browser. Fire from
+        // anywhere (including a focused terminal — these use Cmd, so the
+        // Ctrl-in-terminal guard doesn't apply) and preventDefault so the
+        // keystroke never leaks to the shell.
+        case "zoom-in":
+          e.preventDefault();
+          usePrefs.getState().nudgeUiScale(1);
+          return;
+        case "zoom-out":
+          e.preventDefault();
+          usePrefs.getState().nudgeUiScale(-1);
+          return;
+        case "zoom-reset":
+          e.preventDefault();
+          usePrefs.getState().setUiScale(APPEARANCE_DEFAULTS.uiScale);
           return;
 
         // ⌘T → new tab, behaviour depends on which pane has focus. NO

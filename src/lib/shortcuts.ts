@@ -51,6 +51,9 @@ export type ShortcutId =
   | "toggle-left-sidebar"
   | "toggle-right-sidebar"
   | "broadcast"
+  | "zoom-in"
+  | "zoom-out"
+  | "zoom-reset"
   | "stage-file"
   | "discard-file";
 
@@ -157,6 +160,12 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     hint: "Show / hide the right panel", defaultBinding: B("b", { cmd: true, alt: true }) },
   { id: "broadcast", group: "General", label: "Broadcast to agents",
     defaultBinding: B("b", { cmd: true, shift: true }) },
+  { id: "zoom-in", group: "General", label: "Zoom in",
+    hint: "Scale the whole app up (like browser zoom)", defaultBinding: B("=", { cmd: true }) },
+  { id: "zoom-out", group: "General", label: "Zoom out",
+    hint: "Scale the whole app down", defaultBinding: B("-", { cmd: true }) },
+  { id: "zoom-reset", group: "General", label: "Reset zoom",
+    hint: "Return the app to 100%", defaultBinding: B("0", { cmd: true }) },
 
   // Git — contextual: these act on the file selected in the Git panel and
   // are handled there (GitPanel), not the global handler. The discard

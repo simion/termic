@@ -9,7 +9,7 @@ import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/edi
 import { Button } from "@/components/ui/Button";
 import { AuxTerminal } from "@/components/task/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
-import { IS_MAC, ALT_LABEL } from "@/lib/shortcuts";
+import { IS_MAC, ALT_LABEL, CMD_LABEL } from "@/lib/shortcuts";
 import { EditorView } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import { javascript } from "@codemirror/lang-javascript";
@@ -33,6 +33,8 @@ export function AppearanceSection() {
   const setTerminalGpuEnabled = usePrefs(s => s.setTerminalGpuEnabled);
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const setEditorFontSize = usePrefs(s => s.setEditorFontSize);
+  const uiScale = usePrefs(s => s.uiScale);
+  const setUiScale = usePrefs(s => s.setUiScale);
   const codeLigatures = usePrefs(s => s.codeLigatures);
   const setCodeLigatures = usePrefs(s => s.setCodeLigatures);
   const resetAppearance = usePrefs(s => s.resetAppearance);
@@ -63,6 +65,7 @@ export function AppearanceSection() {
     terminalOptionAsMeta  === APPEARANCE_DEFAULTS.terminalOptionAsMeta &&
     terminalGpuEnabled    === APPEARANCE_DEFAULTS.terminalGpuEnabled &&
     editorFontSize        === APPEARANCE_DEFAULTS.editorFontSize &&
+    uiScale               === APPEARANCE_DEFAULTS.uiScale &&
     codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures;
 
   return (
@@ -74,7 +77,7 @@ export function AppearanceSection() {
           size="sm"
           disabled={atDefaults}
           onClick={resetAppearance}
-          title="Restore fonts, sizes, weight, letter spacing and ligatures to their defaults."
+          title="Restore fonts, sizes, zoom, letter spacing and ligatures to their defaults."
         >
           Reset to defaults
         </Button>
@@ -183,6 +186,16 @@ export function AppearanceSection() {
       </div>)}
 
       <PanesSection />
+
+      <Divider />
+
+      <Field
+        label="UI zoom"
+        hint={`${uiScale}% of native. Scales the whole app (sidebar, tabs, files and git panels, terminals) like browser zoom.\nShortcuts: ${CMD_LABEL} +, ${CMD_LABEL} -, ${CMD_LABEL} 0.`}
+        control={
+          <NumberInput value={uiScale} onChange={setUiScale} min={50} max={200} step={10} />
+        }
+      />
     </div>
   );
 }
@@ -239,7 +252,7 @@ function Field({ label, hint, control }: { label: string; hint?: string; control
     <div className="flex items-start justify-between gap-6">
       <div className="min-w-0 flex-1">
         <div className="text-[14px] font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{hint}</div>}
+        {hint && <div className="mt-0.5 whitespace-pre-line text-[12.5px] text-[var(--color-fg-dim)]">{hint}</div>}
       </div>
       <div className="shrink-0">{control}</div>
     </div>
@@ -338,7 +351,7 @@ function Toggle({ label, hint, value, onChange }: { label: string; hint?: string
     <div className="flex items-start justify-between gap-6">
       <div className="min-w-0 flex-1">
         <div className="text-[14px] font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{hint}</div>}
+        {hint && <div className="mt-0.5 whitespace-pre-line text-[12.5px] text-[var(--color-fg-dim)]">{hint}</div>}
       </div>
       {/* 100% inline-style geometry — Tailwind size utilities were getting
           shrunk by something (still investigating: possibly user-agent button
