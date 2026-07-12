@@ -8575,6 +8575,62 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    fn mkrepo(base: &Path, rel: &str) {
+        fs::create_dir_all(base.join(rel).join(".git")).unwrap();
+    }
+    fn discovered_names(dir: &Path) -> std::collections::HashSet<String> {
+        discover_repos(dir.to_string_lossy().into_owned())
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect()
+    }
+
+    #[test]
+    fn discover_repos_flat_layout() {
+        let root = tempdir().unwrap();
+        mkrepo(root.path(), "repo-a");
+        mkrepo(root.path(), "repo-b");
+        assert_eq!(discovered_names(root.path()), ["repo-a", "repo-b"].map(String::from).into());
+    }
+
+    #[test]
+    fn discover_repos_two_level_grouping() {
+        let root = tempdir().unwrap();
+        mkrepo(root.path(), "work/repo-c");
+        mkrepo(root.path(), "oss/repo-d");
+        assert_eq!(discovered_names(root.path()), ["repo-c", "repo-d"].map(String::from).into());
+    }
+
+    #[test]
+    fn discover_repos_mixed_top_repo_and_grouping() {
+        let root = tempdir().unwrap();
+        mkrepo(root.path(), "top-repo");
+        mkrepo(root.path(), "work/nested-repo");
+        assert_eq!(discovered_names(root.path()), ["top-repo", "nested-repo"].map(String::from).into());
+    }
+
+    #[test]
+    fn discover_repos_nested_clone_not_descended() {
+        // A repo child is taken as-is; its own subdirs (vendored clones) must
+        // NOT be scanned as separate repos.
+        let root = tempdir().unwrap();
+        mkrepo(root.path(), "repo-a");
+        mkrepo(root.path(), "repo-a/vendor/inner");
+        assert_eq!(discovered_names(root.path()), ["repo-a"].map(String::from).into());
+    }
+
+    #[test]
+    fn discover_repos_skips_hidden_and_node_modules() {
+        let root = tempdir().unwrap();
+        mkrepo(root.path(), "work/real");
+        mkrepo(root.path(), "work/node_modules/pkg");
+        mkrepo(root.path(), "work/.cache/hidden");
+        // A top-level hidden dir that is itself a repo is skipped too.
+        mkrepo(root.path(), ".dotfiles");
+        assert_eq!(discovered_names(root.path()), ["real"].map(String::from).into());
+    }
+
     #[test]
     fn safe_task_path_allows_contained_files() {
         let dir = tempdir().unwrap();
