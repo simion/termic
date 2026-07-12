@@ -8,15 +8,31 @@
 // Wrap in a `<DropdownMenu>` at the call site; this component renders only
 // the items (so the caller can also customize positioning).
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { visibleCliIds } from "@/lib/agents";
 import { createQuickTask, readNewTaskMode, writeNewTaskMode, type NewTaskMode } from "@/lib/quickTask";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
-import { DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
+import { taskRestore } from "@/lib/ipc";
+import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
+import { DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
 import { GitBranch, GitBranchPlus, Link2, TerminalSquare, SquareChevronRight, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/** Coarse relative label for an archived-task timestamp. Unlike the tab
+ *  strip's Resume entries (always seconds/minutes old), a task can sit
+ *  archived for a long time, so this scales from minutes up through a
+ *  short date instead of capping at hours. */
+function relativeArchivedTime(iso: string): string {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(iso));
+}
 
 /** Small section header: uppercase label + one-line explanation. Used for
  *  the non-git "RUN IN FOLDER" case, where there's no worktree/main choice
@@ -42,6 +58,21 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
   const detectedClis = useApp(s => s.detectedClis);
   const openNewTask = useUI(s => s.openNewTask);
   const openCustomCommand = useUI(s => s.openCustomCommand);
+  const setActiveTask = useApp(s => s.setActiveTask);
+  const loadAll = useApp(s => s.loadAll);
+  const setView = useApp(s => s.setView);
+  const tasks = useApp(s => s.tasks);
+  // Recently archived tasks for THIS project, most-recent first — same
+  // sort HistoryView uses, just capped and scoped to one project so the
+  // launcher menu can offer a one-click shortcut back into one instead of
+  // making the user leave to the full History page.
+  const archivedTasks = useMemo(
+    () => tasks
+      .filter(t => t.project_id === projectId && t.archived)
+      .sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created))
+      .slice(0, 5),
+    [tasks, projectId],
+  );
   const project = useApp(s => s.projects.find(p => p.id === projectId));
   const isMulti = (project?.type ?? "single") === "multi";
   // Non-git projects (issue #4) have no branches / worktrees — the only way
@@ -193,6 +224,41 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
             </span>
           </div>
         </DropdownItem>
+      )}
+      {/* Recently archived tasks for this project — a shortcut to
+          HistoryView's restore (same task_restore IPC + setActiveTask)
+          without leaving the sidebar. "More…" hands off to the full page
+          for anything past the first few. */}
+      {archivedTasks.length > 0 && (
+        <>
+          <DropdownSeparator />
+          <DropdownLabel>Resume</DropdownLabel>
+          {archivedTasks.map(t => {
+            const iconId = resolveIconId(t.cli, agents);
+            return (
+              <DropdownItem key={t.id} onSelect={async () => {
+                try {
+                  const restored = await taskRestore(t.id);
+                  await loadAll();
+                  setActiveTask(restored.id);
+                } catch (err) {
+                  console.error("task_restore failed:", err);
+                }
+              }}>
+                <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
+                  <CliIcon cli={iconId} className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate">{t.name}</div>
+                  <div className="text-[11px] text-[var(--color-fg-faint)]">{relativeArchivedTime(t.archived_at ?? t.created)}</div>
+                </div>
+              </DropdownItem>
+            );
+          })}
+          <DropdownItem onSelect={() => setView("history")}>
+            More…
+          </DropdownItem>
+        </>
       )}
     </>
   );
