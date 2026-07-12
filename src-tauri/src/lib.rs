@@ -7822,11 +7822,13 @@ fn repo_activity_time(repo: &Path) -> std::time::SystemTime {
     std::time::SystemTime::UNIX_EPOCH
 }
 
-/// Walk one level under `dir` and return any subdirectory that contains a
-/// `.git` entry. One level is intentional: most people keep their repos
-/// directly under a single "code" dir, and recursing deeper would scan node
-/// modules / nested clones for no reason. Sorted by most recent activity
-/// (newest first) so the repos you actually work in surface at the top.
+/// Walk up to two levels under `dir` and return any subdirectory that
+/// contains a `.git` entry. A direct child that is itself a repo is taken
+/// as-is (never descended into — avoids nested clones); a child that is NOT
+/// a repo is treated as a grouping folder (e.g. `code/<category>/<repo>`)
+/// and its children are scanned once more. Hidden dirs and `node_modules`
+/// are skipped at both levels. Sorted by most recent activity (newest
+/// first) so the repos you actually work in surface at the top.
 #[tauri::command]
 fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
     let root = PathBuf::from(shellexpand(&dir));
@@ -7838,17 +7840,37 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
         .map(|p| p.root_path)
         .collect();
     let mut out: Vec<(DiscoveredRepo, std::time::SystemTime)> = Vec::new();
-    let rd = fs::read_dir(&root).map_err(|e| e.to_string())?;
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if !path.is_dir() { continue; }
-        if !path.join(".git").exists() { continue; }
-        let canon = fs::canonicalize(&path).unwrap_or(path.clone());
+    let push_repo = |path: &PathBuf, out: &mut Vec<(DiscoveredRepo, std::time::SystemTime)>| {
+        let canon = fs::canonicalize(path).unwrap_or(path.clone());
         let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
         let path_str = canon.to_string_lossy().into_owned();
         let already_added = added.contains(&path_str);
         let activity = repo_activity_time(&canon);
         out.push((DiscoveredRepo { path: path_str, name, already_added }, activity));
+    };
+    let skip = |p: &PathBuf| -> bool {
+        match p.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n.starts_with('.') || n == "node_modules",
+            None => true,
+        }
+    };
+    let rd = fs::read_dir(&root).map_err(|e| e.to_string())?;
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || skip(&path) { continue; }
+        if path.join(".git").exists() {
+            push_repo(&path, &mut out);
+            continue;
+        }
+        // Grouping folder: scan its children for repos (one extra level).
+        let Ok(rd2) = fs::read_dir(&path) else { continue };
+        for e2 in rd2.flatten() {
+            let p2 = e2.path();
+            if !p2.is_dir() || skip(&p2) { continue; }
+            if p2.join(".git").exists() {
+                push_repo(&p2, &mut out);
+            }
+        }
     }
     // Most recent activity first; tie-break by name so the order is stable.
     out.sort_by(|a, b| b.1.cmp(&a.1)
