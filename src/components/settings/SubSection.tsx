@@ -9,6 +9,13 @@
  *  sections already use for labels, so it reads as a marker for what follows
  *  rather than as another field stacked above it.
  *
+ *  bg-3, not bg-2: the card is bg-1, and bg-2 sits 8/255 away from it (#1c1c1c
+ *  on #141414), which is invisible. The band then read as a hairline with
+ *  nothing behind it. bg-3 is the first token that is a real step off the card
+ *  in every theme, so the surface change carries the grouping and the hairline
+ *  only sharpens the edge. The fields inside stay on --color-bg, which is now
+ *  clearly recessed against the band rather than level with it.
+ *
  *  As the LAST child it runs flush to the card's bottom: it eats the card's
  *  bottom padding, drops its own bottom hairline (the card's border is already
  *  there) and rounds its corners to sit inside that border. Without this the
@@ -22,7 +29,7 @@ export function SubSection({ title, hint, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <section className="-mx-4 space-y-3 border-y border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-4 py-3 last:-mb-4 last:rounded-b-[7px] last:border-b-0">
+    <section className="-mx-4 space-y-3 border-y border-[var(--color-border)] bg-[var(--color-bg-3)] px-4 py-3 last:-mb-4 last:rounded-b-[7px] last:border-b-0">
       <div>
         <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">{title}</div>
         {hint && <div className="mt-1 text-[12px] text-[var(--color-fg-dim)]">{hint}</div>}
