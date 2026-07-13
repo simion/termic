@@ -1362,7 +1362,7 @@ export const useApp = create<AppState>((set, get) => ({
               paneId: pt.pane_leaf_id!,
               ...(pt.command ? { command: pt.command } : {}),
               ...(pt.session_id ? { sessionId: pt.session_id } : {}),
-        ...(pt.previous_session_id ? { previousSessionId: pt.previous_session_id } : {}),
+              ...(pt.previous_session_id ? { previousSessionId: pt.previous_session_id } : {}),
               ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
             });
           }

@@ -214,13 +214,21 @@ describe("a fast-exit resume preserves the session and can recover it", () => {
     // The recovery pointer survived the restart — this is the whole point.
     expect(restored.previousSessionId).toBe(U);
 
-    // Recover: promote previous back to live, clear the offer.
+    // Recover: promote previous back to live, and SWAP the fallback session
+    // into the stash rather than dropping it (the user may have been working
+    // in it since the failed resume — discarding its uuid would be the very
+    // loss this feature exists to prevent).
     useApp.getState().setTabSessionId("ws1", restored.id, U);
-    useApp.getState().setTabPreviousSessionId("ws1", restored.id, "");
+    useApp.getState().setTabPreviousSessionId("ws1", restored.id, NEW);
     expect(firstTab().sessionId).toBe(U);
-    expect(firstTab().previousSessionId).toBeUndefined();
+    expect(firstTab().previousSessionId).toBe(NEW);
     // decideResume now resumes the recovered session by id.
     expect(argvFor(firstTab(), useApp.getState().tasks[0])).toEqual(["--resume", U, "--name", "seo-improvements"]);
+
+    // And the swap is reversible: switching back resumes the fallback session.
+    useApp.getState().setTabSessionId("ws1", restored.id, NEW);
+    useApp.getState().setTabPreviousSessionId("ws1", restored.id, U);
+    expect(argvFor(firstTab(), useApp.getState().tasks[0])).toEqual(["--resume", NEW, "--name", "seo-improvements"]);
   });
 
   it("dismiss clears the previous pointer and leaves the live session alone", () => {
