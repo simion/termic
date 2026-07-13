@@ -18,11 +18,15 @@
 //   ⌘L       → focus the main agent (its terminal or editor) from any pane
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
 //   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings
+//   ⌘R       → prompt quick-fire (press, then a prompt's trigger key)
+//   ⇧⌘R      → prompt search palette
 //   Shortcuts cheat-sheet: icon-only, no keyboard binding
 import { useEffect } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs, APPEARANCE_DEFAULTS } from "@/store/prefs";
+import { usePromptLibrary, effectiveTriggerKeys } from "@/store/prompts";
+import { fireOrPickDestination } from "@/lib/promptFire";
 import { requestCloseTab, requestClosePaneTab } from "@/lib/closeTab";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { jumpToNextWaiting } from "@/lib/waitingAgents";
@@ -30,6 +34,50 @@ import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId }
 import type { TerminalTab } from "@/lib/types";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
 import type { NavDir } from "@/lib/splitTree";
+
+// ⌘R quick-fire: arms a transient "press a key" mode (module-scope, not
+// component state — useShortcuts' listener is registered once at mount) that
+// captures the FOLLOW-UP keystroke in the capture phase, before it reaches a
+// focused terminal/editor, and matches it against each prompt's effective
+// trigger key (src/store/prompts.ts `effectiveTriggerKeys`). A match fires
+// immediately at the focused agent (or opens the destination picker when
+// there's none, via `fireOrPickDestination`); Escape, an unmapped key, or a
+// ~2s idle timeout disarms with no side effect.
+let promptLeaderTimeout: number | null = null;
+let promptLeaderKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function disarmPromptLeader() {
+  if (promptLeaderTimeout != null) { window.clearTimeout(promptLeaderTimeout); promptLeaderTimeout = null; }
+  if (promptLeaderKeyHandler) {
+    window.removeEventListener("keydown", promptLeaderKeyHandler, { capture: true });
+    promptLeaderKeyHandler = null;
+  }
+  useUI.getState().closePromptLeader();
+}
+
+function armPromptLeader() {
+  disarmPromptLeader(); // re-arming (a second ⌘R while already armed) restarts clean
+  useUI.getState().openPromptLeader();
+  const onKey = (e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (e.key === "Escape") { disarmPromptLeader(); return; }
+    // Bare modifier keydown (still settling into the chord) — keep waiting.
+    if (["Meta", "Control", "Shift", "Alt", "CapsLock"].includes(e.key)) return;
+    disarmPromptLeader();
+    const taskId = useApp.getState().activeTaskId;
+    if (!taskId) return;
+    const key = e.key.toLowerCase();
+    if (!/^[a-z0-9]$/.test(key)) return;
+    const prompts = usePromptLibrary.getState().prompts;
+    const keys = effectiveTriggerKeys(prompts);
+    const prompt = prompts.find(p => p.enabled && keys.get(p.id) === key);
+    if (prompt) fireOrPickDestination(taskId, prompt);
+  };
+  promptLeaderKeyHandler = onKey;
+  window.addEventListener("keydown", onKey, { capture: true });
+  promptLeaderTimeout = window.setTimeout(disarmPromptLeader, 2000);
+}
 
 /**
  * Pick the next pane to focus in `dir`, preferring the most recently visited
@@ -478,6 +526,25 @@ export function useShortcuts() {
           usePrefs.getState().setUiScale(APPEARANCE_DEFAULTS.uiScale);
           return;
 
+        // ⌘R → prompt quick-fire. NO `isTyping` guard (must arm from inside
+        // a focused terminal); the follow-up key is what actually needs
+        // capturing before the terminal sees it (armPromptLeader does that).
+        case "prompt-quick-fire":
+          if (!taskId) return;
+          e.preventDefault();
+          armPromptLeader();
+          return;
+
+        // ⇧⌘R → toggle the prompt search palette. Same no-`isTyping`
+        // rationale as ⌘K's command palette.
+        case "prompt-palette": {
+          e.preventDefault();
+          const ui = useUI.getState();
+          if (ui.promptPaletteOpen) ui.closePromptPalette();
+          else ui.openPromptPalette();
+          return;
+        }
+
         // ⌘T → new tab, behaviour depends on which pane has focus. NO
         // `isTyping` guard (xterm's hidden textarea).
         case "new-tab": {
@@ -569,7 +636,7 @@ export function useShortcuts() {
       }
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); disarmPromptLeader(); };
   }, []);
 }
 
