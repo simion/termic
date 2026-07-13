@@ -27,7 +27,7 @@ import { archiveAndRefresh } from "@/lib/archiveTask";
 import {
   DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator,
 } from "@/components/ui/Dropdown";
-import { usePromptLibrary, effectiveTriggerKeys } from "@/store/prompts";
+import { usePromptLibrary } from "@/store/prompts";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { useIsFullscreen } from "@/hooks/useIsFullscreen";
@@ -48,9 +48,7 @@ export function UnifiedBar() {
   const task = useActiveTask();
   const proj = useApp(s => task ? s.projects.find(p => p.id === task.project_id) : null);
   const openSettings = useApp(s => s.openSettings);
-  const allPrompts = usePromptLibrary(s => s.prompts);
-  const enabledPrompts = allPrompts.filter(p => p.enabled);
-  const triggerKeys = effectiveTriggerKeys(allPrompts);
+  const enabledPrompts = usePromptLibrary(s => s.prompts).filter(p => p.enabled);
   // Picking a prompt opens the shared destination modal (running agents +
   // new-agent CLIs) — a modal, not a submenu, which flipped to the wrong
   // side near the window edge. Shared (not local state) so the ⌘R
@@ -213,14 +211,6 @@ export function UnifiedBar() {
                 {enabledPrompts.map(p => (
                   <DropdownItem key={p.id} onSelect={() => openPromptFire(p)}>
                     <span className="min-w-0 flex-1 truncate">{p.title}</span>
-                    {triggerKeys.get(p.id) && (
-                      <kbd
-                        title="⌘R quick-fire key"
-                        className="ml-2 shrink-0 rounded border border-[var(--color-border-soft)] px-1 font-mono text-[10.5px] uppercase leading-[16px] text-[var(--color-fg-faint)]"
-                      >
-                        {triggerKeys.get(p.id)}
-                      </kbd>
-                    )}
                   </DropdownItem>
                 ))}
                 <DropdownSeparator />

@@ -92,14 +92,11 @@ interface UIState {
   projectPickerOpen: boolean;
   /** ⌘K command palette — searchable list of every command / action. */
   commandPaletteOpen: boolean;
-  /** ⇧⌘R prompt palette — searchable list of library prompts (title only). */
+  /** ⌥⌘P prompt palette — searchable list of library prompts (title only). */
   promptPaletteOpen: boolean;
-  /** ⌘R quick-fire armed: waiting for the follow-up trigger-key press.
-   *  Drives the transient "press a key…" hint pill. See useShortcuts.ts. */
-  promptLeaderActive: boolean;
   /** The prompt-destination picker: "Run "<title>"" modal shared by the
-   *  Prompts dropdown, ⌘R quick-fire's no-focused-agent fallback, and the
-   *  prompt palette's fallback. `body` is a one-shot editable copy of the
+   *  Prompts dropdown and the prompt palette's fallback. `body` is a
+   *  one-shot editable copy of the
    *  prompt text for this send only — doesn't touch the saved library entry.
    *  null = closed. */
   promptFire: { prompt: Prompt; body: string } | null;
@@ -171,8 +168,6 @@ interface UIState {
   closeCommandPalette: () => void;
   openPromptPalette: () => void;
   closePromptPalette: () => void;
-  openPromptLeader: () => void;
-  closePromptLeader: () => void;
   /** Open the destination picker for `prompt`, seeding the editable body. */
   openPromptFire: (prompt: Prompt) => void;
   closePromptFire: () => void;
@@ -252,7 +247,6 @@ export const useUI = create<UIState>(set => ({
   projectPickerOpen: false,
   commandPaletteOpen: false,
   promptPaletteOpen: false,
-  promptLeaderActive: false,
   promptFire: null,
   renameRequest: null,
   busyMessage: null,
@@ -295,8 +289,6 @@ export const useUI = create<UIState>(set => ({
   closeCommandPalette:() => set({ commandPaletteOpen: false }),
   openPromptPalette: () => set({ promptPaletteOpen: true }),
   closePromptPalette:() => set({ promptPaletteOpen: false }),
-  openPromptLeader:  () => set({ promptLeaderActive: true }),
-  closePromptLeader: () => set({ promptLeaderActive: false }),
   openPromptFire:    (prompt) => set({ promptFire: { prompt, body: prompt.body } }),
   closePromptFire:   () => set({ promptFire: null }),
   setPromptFireBody: (body) => set(s => (s.promptFire ? { promptFire: { ...s.promptFire, body } } : s)),
