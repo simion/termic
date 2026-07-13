@@ -16,6 +16,8 @@ import { create } from "zustand";
 import { REVIEW_PROMPT } from "@/lib/review";
 import {
   WRITE_TESTS_PROMPT, SECURITY_REVIEW_PROMPT, EXPLAIN_CHANGES_PROMPT, COMMIT_PROMPT,
+  COMMIT_PUSH_PROMPT, VERIFY_PROMPT, FIX_BUG_PROMPT, STATUS_PROMPT,
+  UPDATE_DOCS_PROMPT, RESEARCH_PROMPT, CONTINUE_PROMPT, SIMPLIFY_PROMPT,
 } from "@/lib/builtinPrompts";
 
 export interface Prompt {
@@ -33,12 +35,22 @@ interface BuiltinDef { id: string; title: string; body: string }
 
 // Starter library: the "ship a change" lifecycle, every one diff-aware so it
 // leverages the worktree. Users edit, reorder, disable, delete, or add their own.
+// The second block covers the prompts terminal users reach for most
+// between agent turns: verify, fix, status, continue, docs, research.
 export const DEFAULT_PROMPTS: readonly BuiltinDef[] = [
-  { id: "builtin:review",          title: "Review",              body: REVIEW_PROMPT },
-  { id: "builtin:write-tests",     title: "Write tests",         body: WRITE_TESTS_PROMPT },
-  { id: "builtin:security-review", title: "Security review",     body: SECURITY_REVIEW_PROMPT },
-  { id: "builtin:explain-changes", title: "Explain the changes", body: EXPLAIN_CHANGES_PROMPT },
-  { id: "builtin:commit",          title: "Commit",              body: COMMIT_PROMPT },
+  { id: "builtin:review",          title: "Review",               body: REVIEW_PROMPT },
+  { id: "builtin:write-tests",     title: "Write tests",          body: WRITE_TESTS_PROMPT },
+  { id: "builtin:security-review", title: "Security review",      body: SECURITY_REVIEW_PROMPT },
+  { id: "builtin:explain-changes", title: "Explain the changes",  body: EXPLAIN_CHANGES_PROMPT },
+  { id: "builtin:commit",          title: "Commit",               body: COMMIT_PROMPT },
+  { id: "builtin:commit-push",     title: "Commit and push",      body: COMMIT_PUSH_PROMPT },
+  { id: "builtin:verify",          title: "Verify end to end",    body: VERIFY_PROMPT },
+  { id: "builtin:fix-bug",         title: "Fix the bug",          body: FIX_BUG_PROMPT },
+  { id: "builtin:simplify",        title: "Simplify",             body: SIMPLIFY_PROMPT },
+  { id: "builtin:status",          title: "What is the state?",   body: STATUS_PROMPT },
+  { id: "builtin:continue",        title: "Continue from last",   body: CONTINUE_PROMPT },
+  { id: "builtin:update-docs",     title: "Update the docs",      body: UPDATE_DOCS_PROMPT },
+  { id: "builtin:research",        title: "Research first",       body: RESEARCH_PROMPT },
 ];
 
 const LS_KEY = "promptLibrary";
