@@ -246,6 +246,9 @@ export interface AppState {
    *  to disk. Keyed by tab id so agents in one task resume
    *  independently. */
   setTabSessionId: (taskId: string, tabId: string, uuid: string) => void;
+  /** Stash (or clear, with "") the uuid a `--resume` just fast-exited on, so
+   *  a transient failure is one-click recoverable instead of lost. */
+  setTabPreviousSessionId: (taskId: string, tabId: string, uuid: string) => void;
   /** Mirror a just-persisted custom launch command into the in-memory
    *  task AND any open custom-command tabs so the next PTY respawn
    *  runs the new script (the disk write alone doesn't refresh either). */
@@ -388,6 +391,7 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       is_default: !!t.is_default,
       command: t.command ?? null,
       session_id: t.sessionId ?? null,
+      previous_session_id: t.previousSessionId ?? null,
       pane_leaf_id: t.paneId ?? null,
       // Run pop-out tabs persist WITH their marker so the RunPane comes back
       // in its pane on relaunch (the run script re-fires, like custom tabs).
@@ -1331,6 +1335,7 @@ export const useApp = create<AppState>((set, get) => ({
         is_default: !!pt.is_default,
         ...(pt.command ? { command: pt.command } : {}),
         ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+        ...(pt.previous_session_id ? { previousSessionId: pt.previous_session_id } : {}),
         // idle: restored run tabs keep their spot but never auto-fire the
         // script — the user presses play (RunPane placeholder / pill).
         ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
@@ -1357,6 +1362,7 @@ export const useApp = create<AppState>((set, get) => ({
               paneId: pt.pane_leaf_id!,
               ...(pt.command ? { command: pt.command } : {}),
               ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+              ...(pt.previous_session_id ? { previousSessionId: pt.previous_session_id } : {}),
               ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
             });
           }
@@ -1496,6 +1502,29 @@ export const useApp = create<AppState>((set, get) => ({
       };
     });
     ipc.taskSetTabSessionId(taskId, tabId, uuid).catch(() => {});
+  },
+
+  setTabPreviousSessionId: (taskId, tabId, uuid) => {
+    const val = uuid || undefined;
+    set(s => {
+      const list = s.tabs[taskId];
+      const nextTabs = list
+        ? list.map(t => (t.id === tabId && t.type === "terminal" ? { ...t, previousSessionId: val } as Tab : t))
+        : list;
+      const taskUpdate = {
+        tasks: s.tasks.map(w => w.id !== taskId ? w : {
+          ...w,
+          persisted_tabs: (w.persisted_tabs ?? []).map(pt =>
+            pt.id === tabId ? { ...pt, previous_session_id: uuid || null } : pt,
+          ),
+        }),
+      };
+      return {
+        ...(nextTabs ? { tabs: { ...s.tabs, [taskId]: nextTabs } } : {}),
+        ...taskUpdate,
+      };
+    });
+    ipc.taskSetTabPreviousSessionId(taskId, tabId, uuid).catch(() => {});
   },
 
   setTaskYolo: (taskId, yolo) => set(s => ({
