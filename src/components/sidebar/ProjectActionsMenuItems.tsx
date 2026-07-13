@@ -63,16 +63,20 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
   const setView = useApp(s => s.setView);
   const tasks = useApp(s => s.tasks);
   // Recently archived tasks for THIS project, most-recent first — same
-  // sort HistoryView uses, just capped and scoped to one project so the
-  // launcher menu can offer a one-click shortcut back into one instead of
-  // making the user leave to the full History page.
-  const archivedTasks = useMemo(
+  // sort HistoryView uses, scoped to one project so the launcher menu can
+  // offer a one-click shortcut back into a recent one instead of making the
+  // user leave to the full History page. Keep the Resume list short (a couple
+  // of most-recent) so the menu stays a launcher, not a history list; "More…"
+  // covers the rest.
+  const RESUME_LIMIT = 2;
+  const archivedAll = useMemo(
     () => tasks
       .filter(t => t.project_id === projectId && t.archived)
-      .sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created))
-      .slice(0, 5),
+      .sort((a, b) => (b.archived_at ?? b.created).localeCompare(a.archived_at ?? a.created)),
     [tasks, projectId],
   );
+  const archivedTasks = archivedAll.slice(0, RESUME_LIMIT);
+  const hasMoreArchived = archivedAll.length > RESUME_LIMIT;
   const project = useApp(s => s.projects.find(p => p.id === projectId));
   const isMulti = (project?.type ?? "single") === "multi";
   // Non-git projects (issue #4) have no branches / worktrees — the only way
@@ -255,9 +259,11 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
               </DropdownItem>
             );
           })}
-          <DropdownItem onSelect={() => setView("history")}>
-            More…
-          </DropdownItem>
+          {hasMoreArchived && (
+            <DropdownItem onSelect={() => setView("history")}>
+              More…
+            </DropdownItem>
+          )}
         </>
       )}
     </>
