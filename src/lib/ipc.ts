@@ -43,8 +43,24 @@ export const projectSetGroup = (ids: string[], group: string | null) =>
 export const tasksList    = () => invoke<Task[]>("tasks_list");
 export const taskCreate   = (args: CreateTaskArgs) => invoke<Task>("task_create", { args });
 export const taskCreateMulti = (args: CreateMultiArgs) => invoke<Task>("task_create_multi", { args });
-export const taskOpenRepo = (projectId: string, cli?: string, name?: string, command?: string) =>
-  invoke<Task>("task_open_repo", { projectId, cli, name, command });
+/** Open a task in the repo's main checkout. Sandbox args mirror task_create /
+ *  task_import_worktree: when omitted, Rust falls back to sandbox off (the
+ *  main checkout's uncaged default). The seatbelt + proxy cage it identically
+ *  to a worktree. */
+export const taskOpenRepo = (
+  projectId: string,
+  cli?: string,
+  name?: string,
+  sandbox?: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[] },
+  command?: string,
+) =>
+  invoke<Task>("task_open_repo", {
+    projectId, cli, name, command,
+    sandboxEnabled: sandbox?.enabled,
+    sandboxMode: sandbox?.mode,
+    sandboxRwPaths: sandbox?.rwPaths,
+    sandboxAllowedHosts: sandbox?.allowedHosts,
+  });
 /** List a project's git worktrees not yet open as tasks (issue #5). */
 export const taskImportableWorktrees = (projectId: string) =>
   invoke<ImportableWorktree[]>("task_importable_worktrees", { projectId });
