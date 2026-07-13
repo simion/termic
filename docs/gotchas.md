@@ -22,3 +22,13 @@
 - Async setup in `useEffect` with cleanup — never in component bodies.
 - Effect deps: stable IDs (`ws.id`, `tab.id`), never ws/tab objects (identity changes every patch).
 - StrictMode is off. Audit before re-enabling.
+
+## Custom agent work-done detection (#68)
+
+An agent's working / done / needs-you state is classified from the fastest reliable signal available. For a CUSTOM CLI, use the highest tier it can emit:
+
+- **Tier 1 - OSC signals (most reliable, zero config).** If the agent emits `OSC 9;4` (ConEmu progress), `OSC 133;D` (FinalTerm command-done), `OSC 9` / `OSC 777` (notifications), or `BEL` from an idle state, work-done detection already works with no setup. Prefer this if you control the agent.
+- **Tier 2 - title regexes.** Settings, Agents, then the Done / Busy / Attention signal fields: one regex per line, matched against the agent's `OSC 0/2` title. When any list is set it drives classification (the built-in claude/codex heuristics are the fallback for empty). Precedence: **attention > busy > done**. Invalid patterns are flagged in the UI and ignored, never crash the terminal.
+- **Tier 3 - output-line scan (opt-in).** The "Also scan output lines" toggle matches the same patterns against stdout LINES, for CLIs that print status but set no title. Higher cost on chatty agents; off by default. Patterns compile once per spawn; lines are ANSI-stripped and length-capped.
+
+`work_done: false` still disables the whole machine (badge, bell, notification) for an agent. The classifier lives in `lib/agents.ts` (`classifyAgentTitle`, unit-tested); Tier 3 scanning is in `TerminalPane`'s data sink.

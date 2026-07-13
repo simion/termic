@@ -342,6 +342,20 @@ export interface Agent {
      *  `--name {WORKSPACE_SLUG}` so claude's /resume picker shows
      *  termic's task name. */
     name_args?: string[];
+    /** Custom work-done signal patterns (regex sources) tested against the
+     *  agent's OSC 0/2 title, in precedence attention > busy > idle. When any
+     *  list is non-empty it drives classification for this agent; empty falls
+     *  back to the built-in claude/codex heuristics. Lets a custom CLI teach
+     *  termic what its own "done" / "working" / "needs you" title looks like. */
+    signals?: {
+      busy?: string[];
+      idle?: string[];
+      attention?: string[];
+    };
+    /** Tier 3: also scan stdout LINES against `signals`, not just the title.
+     *  Off by default (the title path is cheaper and safer). Turn on for CLIs
+     *  that print status to stdout and never set a title. */
+    match_output?: boolean;
   };
   /** Per-agent environment variables merged into the spawn env. Useful
    *  for things like `CLAUDE_CODE_NO_FLICKER=1` without wrapping the CLI

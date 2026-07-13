@@ -231,6 +231,59 @@ export function workDoneCapable(cli: string, agents: Agent[] = useApp.getState()
   return a?.work_done !== false;
 }
 
+/** Compile regex sources, skipping any that fail to compile. A user's bad
+ *  pattern must never throw inside the terminal title/data path, so this is
+ *  parse-at-the-boundary: invalid sources are dropped, valid ones kept. */
+export function compileSignals(sources: string[] | undefined): RegExp[] {
+  if (!sources?.length) return [];
+  const out: RegExp[] = [];
+  for (const src of sources) {
+    if (!src) continue;
+    try { out.push(new RegExp(src)); } catch { /* drop invalid pattern */ }
+  }
+  return out;
+}
+
+export type WorkState = "busy" | "idle" | "attention";
+
+/** Classify a terminal title into a work-done state for `cli`. When the agent
+ *  has user-configured `signals`, those drive it (fixed precedence attention >
+ *  busy > idle, mirroring the OSC handler priority); otherwise the built-in
+ *  claude/codex heuristics apply; an unknown cli with no signals returns null.
+ *  Pure and total — never throws on a bad user pattern (see compileSignals).
+ *  This is the registry-driven replacement for TerminalPane's old inline
+ *  classifier (issue #68). */
+export function classifyAgentTitle(
+  cli: string,
+  title: string,
+  agents: Agent[] = useApp.getState().agents,
+): WorkState | null {
+  const t = title.trim();
+  if (!t) return null;
+  const sig = agents.find(a => a.id === cli)?.capabilities?.signals;
+  if (sig && (sig.busy?.length || sig.idle?.length || sig.attention?.length)) {
+    if (compileSignals(sig.attention).some(re => re.test(t))) return "attention";
+    if (compileSignals(sig.busy).some(re => re.test(t))) return "busy";
+    if (compileSignals(sig.idle).some(re => re.test(t))) return "idle";
+    return null;
+  }
+  if (cli === "claude") {
+    // Idle/done: title leads with Claude's brand glyph. Any other leading
+    // non-alphanumeric glyph is the spinner = busy.
+    if (/^\s*✳/.test(t)) return "idle";
+    if (/^\s*\S/.test(t) && !/^\s*[A-Za-z0-9]/.test(t)) return "busy";
+    return null;
+  }
+  if (cli === "codex") {
+    if (/\b(Waiting|Action Required)\b/.test(t)) return "attention";
+    if (/\bReady\b/.test(t)) return "idle";
+    if (/\b(Working|Thinking)\b/.test(t)) return "busy";
+    if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(t)) return "busy";
+    return null;
+  }
+  return null;
+}
+
 /** Single-quote a value for safe interpolation into a `sh -c` line, only
  *  when it contains characters the shell would split or interpret. Plain
  *  flag-ish tokens pass through untouched so the composed line stays

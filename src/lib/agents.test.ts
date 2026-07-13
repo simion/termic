@@ -21,7 +21,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand } from "@/lib/agents";
+import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 
 // ── spawnArgsForCli ───────────────────────────────────────────────────
@@ -400,5 +400,61 @@ describe("agentDisplayName", () => {
 
   it("returns the id for an unknown CLI not in registry", () => {
     expect(agentDisplayName("unknown-cli", [])).toBe("unknown-cli");
+  });
+});
+
+// ── classifyAgentTitle (issue #68) ────────────────────────────────────
+
+describe("classifyAgentTitle", () => {
+  const sigAgent = (id: string, signals: NonNullable<Agent["capabilities"]>["signals"]): Agent => ({
+    id, display_name: id, command: id, args: [],
+    icon_id: "lucide:bot", color: "#888", builtin: false,
+    capabilities: { signals },
+  } as Agent);
+
+  it("keeps the built-in claude classifier when no signals are set", () => {
+    expect(classifyAgentTitle("claude", "✳ Ready", [])).toBe("idle");
+    expect(classifyAgentTitle("claude", "⠋ thinking", [])).toBe("busy");
+    expect(classifyAgentTitle("claude", "   ", [])).toBe(null);
+  });
+
+  it("keeps the built-in codex classifier when no signals are set", () => {
+    expect(classifyAgentTitle("codex", "Action Required", [])).toBe("attention");
+    expect(classifyAgentTitle("codex", "Ready", [])).toBe("idle");
+    expect(classifyAgentTitle("codex", "Working", [])).toBe("busy");
+  });
+
+  it("registry signals drive a custom agent's classification", () => {
+    const a = sigAgent("mycli", { busy: ["WORKING"], idle: ["✓ done"], attention: ["NEEDS INPUT"] });
+    expect(classifyAgentTitle("mycli", "WORKING on it", [a])).toBe("busy");
+    expect(classifyAgentTitle("mycli", "✓ done", [a])).toBe("idle");
+    expect(classifyAgentTitle("mycli", "NEEDS INPUT", [a])).toBe("attention");
+    expect(classifyAgentTitle("mycli", "nothing matches", [a])).toBe(null);
+  });
+
+  it("applies precedence attention > busy > idle when several patterns match", () => {
+    const all = sigAgent("mycli", { busy: ["X"], idle: ["X"], attention: ["X"] });
+    expect(classifyAgentTitle("mycli", "X", [all])).toBe("attention");
+    const bi = sigAgent("mycli", { busy: ["Y"], idle: ["Y"] });
+    expect(classifyAgentTitle("mycli", "Y", [bi])).toBe("busy");
+  });
+
+  it("lets registry signals override the built-in claude/codex heuristics", () => {
+    const a = sigAgent("claude", { idle: ["FINISHED"] });
+    expect(classifyAgentTitle("claude", "✳ Ready", [a])).toBe(null);
+    expect(classifyAgentTitle("claude", "FINISHED", [a])).toBe("idle");
+  });
+
+  it("skips an invalid regex instead of throwing", () => {
+    const a = sigAgent("mycli", { busy: ["(unclosed"], idle: ["ok"] });
+    expect(() => classifyAgentTitle("mycli", "ok", [a])).not.toThrow();
+    expect(classifyAgentTitle("mycli", "ok", [a])).toBe("idle");
+    expect(classifyAgentTitle("mycli", "(unclosed", [a])).toBe(null);
+  });
+
+  it("falls back to built-in when signals are all empty; unknown cli is null", () => {
+    const a = sigAgent("mycli", { busy: [], idle: [], attention: [] });
+    expect(classifyAgentTitle("mycli", "anything", [a])).toBe(null);
+    expect(classifyAgentTitle("unknown", "anything", [])).toBe(null);
   });
 });

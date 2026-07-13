@@ -7255,6 +7255,17 @@ pub struct PostLaunchCapture {
     pub command: String,
 }
 
+/// Per-agent work-done signal patterns (regex sources). Frontend-consumed:
+/// the TS classifier tests them; Rust only round-trips them so they persist
+/// in settings.json. Issue #68.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AgentSignals {
+    pub busy: Vec<String>,
+    pub idle: Vec<String>,
+    pub attention: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AgentCapabilities {
@@ -7291,6 +7302,14 @@ pub struct AgentCapabilities {
     /// {WORKSPACE_NAME}, {WORKSPACE_ID}, {BRANCH}, {PORT}.
     #[serde(default)]
     pub name_args: Vec<String>,
+    /// Custom work-done signal patterns (regex sources), frontend-consumed:
+    /// the TS classifier tests them against the agent's title (and stdout
+    /// lines when `match_output`). Rust only persists them. Issue #68.
+    #[serde(default)]
+    pub signals: AgentSignals,
+    /// Tier 3: also scan stdout lines against `signals`, not just the title.
+    #[serde(default)]
+    pub match_output: bool,
 }
 
 fn default_agents() -> Vec<Agent> {
@@ -7331,6 +7350,8 @@ fn default_agents() -> Vec<Agent> {
                 // picker + prompt box + terminal title. Stamped on the mint
                 // spawn only (gated to the first id spawn in spawnArgsForCli).
                 name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
+                signals: AgentSignals::default(),
+                match_output: false,
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -7374,6 +7395,8 @@ fn default_agents() -> Vec<Agent> {
                 session_id_args: vec![],
                 resume_id_args: vec![],
                 name_args: vec![],
+                signals: AgentSignals::default(),
+                match_output: false,
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -7417,6 +7440,8 @@ fn default_agents() -> Vec<Agent> {
                 session_id_args: vec![],
                 resume_id_args: vec![],
                 name_args: vec![],
+                signals: AgentSignals::default(),
+                match_output: false,
             },
             env: std::collections::HashMap::new(),
             // Antigravity is a Gemini-family CLI and actually keeps its
@@ -7467,6 +7492,8 @@ fn default_agents() -> Vec<Agent> {
                 session_id_args: vec!["--session-id".into(), "{UUID}".into()],
                 resume_id_args:  vec!["--session-id".into(), "{UUID}".into()],
                 name_args: vec!["--name".into(), "{WORKSPACE_SLUG}".into()],
+                signals: AgentSignals::default(),
+                match_output: false,
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -7504,6 +7531,8 @@ fn default_agents() -> Vec<Agent> {
                 session_id_args: vec![],
                 resume_id_args: vec![],
                 name_args: vec![],
+                signals: AgentSignals::default(),
+                match_output: false,
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
@@ -7544,6 +7573,8 @@ fn default_agents() -> Vec<Agent> {
                 session_id_args: vec![],
                 resume_id_args: vec!["--session".into(), "{UUID}".into()],
                 name_args: vec![],
+                signals: AgentSignals::default(),
+                match_output: false,
             },
             env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
