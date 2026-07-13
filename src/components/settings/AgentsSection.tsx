@@ -808,10 +808,10 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             loose agent setting, and so the shared explanation is stated once
             instead of on all three fields. */}
         {!isTerminal && agent.work_done !== false &&
-          <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] p-3 space-y-3">
+          <div className="mt-1 border-t border-[var(--color-border)] pt-3 space-y-3">
             <div>
-              <div className="text-[13px] font-medium">Title signals</div>
-              <div className="mt-0.5 text-[12px] text-[var(--color-fg-dim)]">{signalGroupHint(agent.id)}</div>
+              <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">Title signals</div>
+              <div className="mt-1 text-[12px] text-[var(--color-fg-dim)]">{signalGroupHint(agent.id)}</div>
             </div>
             <RegexListField
               label="Done (title → done)"
