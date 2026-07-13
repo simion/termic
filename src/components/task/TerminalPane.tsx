@@ -31,7 +31,7 @@ import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 
@@ -97,6 +97,15 @@ function decodeForDebug(u8: Uint8Array): string {
   }
   if (excess) out += `...(+${u8.length - MAX}B)`;
   return out;
+}
+
+/** Strip ANSI/OSC escape sequences from a stdout line before matching it
+ *  against output-signal patterns (issue #68 Tier 3). Covers OSC (BEL- or
+ *  ST-terminated), CSI/charset, and lone Fe escapes — enough to clean a
+ *  status line without a full VT parser. */
+const ANSI_RE = /\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b[[(][0-9;?]*[a-zA-Z]|\x1b[@-_]/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
 }
 
 // Theme is no longer a module-level constant - it depends on the user's
@@ -779,6 +788,39 @@ const captureArmedRef = useRef(false);
       doneFiredSinceSubmitRef.current = true;
     };
 
+    // Tier 3 (issue #68): opt-in output-line matching. When the agent enables
+    // `match_output`, precompile its signal patterns ONCE here and scan
+    // complete stdout lines in the data sink. `outputSignals` null (the
+    // default) means the sink does nothing, so there is zero cost when off.
+    const outputSignalAgent = useApp.getState().agents.find(a => a.id === tab.cli);
+    const outputSignals = workDoneEnabled && outputSignalAgent?.capabilities?.match_output
+      ? {
+          attention: compileSignals(outputSignalAgent.capabilities.signals?.attention),
+          busy: compileSignals(outputSignalAgent.capabilities.signals?.busy),
+          idle: compileSignals(outputSignalAgent.capabilities.signals?.idle),
+        }
+      : null;
+    const scanDecoder = new TextDecoder("utf-8", { fatal: false });
+    let scanLineBuf = "";
+    const MAX_SCAN_LINE = 4096;
+    const scanOutputLines = (u8: Uint8Array) => {
+      scanLineBuf += scanDecoder.decode(u8, { stream: true });
+      let nl: number;
+      while ((nl = scanLineBuf.indexOf("\n")) !== -1) {
+        let raw = scanLineBuf.slice(0, nl);
+        scanLineBuf = scanLineBuf.slice(nl + 1);
+        if (raw.length > MAX_SCAN_LINE) raw = raw.slice(0, MAX_SCAN_LINE);
+        const line = stripAnsi(raw).trim();
+        if (!line) continue;
+        // Precedence attention > busy > idle, mirroring the title classifier.
+        if (outputSignals!.attention.some(re => re.test(line))) goAttention("output line");
+        else if (outputSignals!.busy.some(re => re.test(line))) { if (submittedSinceSpawnRef.current) goWorking("output line"); }
+        else if (outputSignals!.idle.some(re => re.test(line))) goIdle("output line");
+      }
+      // Bound the buffer so a newline-less stream can't grow without limit.
+      if (scanLineBuf.length > MAX_SCAN_LINE * 4) scanLineBuf = scanLineBuf.slice(-MAX_SCAN_LINE);
+    };
+
     // ── OS notification forwarding (the iTerm2 "session is …" banner) ──
     //
     // OSC 9 plain + OSC 777 are agent-authored notification requests.
@@ -820,37 +862,9 @@ const captureArmedRef = useRef(false);
       }
     };
 
-    // Per-CLI title classifier (fallback for agents that don't emit
-    // OSC 9 / 133). Three states: busy / idle / attention.
-    const classifyTitle = (cli: string, title: string): "busy" | "idle" | "attention" | null => {
-      const t = title.trim();
-      if (!t) return null;
-      if (cli === "claude") {
-        // Idle/done: title starts with "✳" (Claude's brand glyph).
-        // Working: title leads with one or two spinner frames — we've
-        // seen Braille (U+2800..U+28FF) AND combinations like "⠐ ⠂".
-        // Rule: if the leading non-whitespace char is NOT ✳, it's the
-        // spinner = busy. Falsely flagging an unknown title as busy
-        // is the safer side: a momentary spurious busy gets reconciled
-        // when the title next becomes "✳" or via byte-quiet; the
-        // reverse (missing busy → premature done) is the bug we're
-        // chasing.
-        if (/^\s*✳/.test(t)) return "idle";
-        // Any leading non-✳ glyph → assume spinner = working.
-        if (/^\s*\S/.test(t) && !/^\s*[A-Za-z0-9]/.test(t)) return "busy";
-        return null;
-      }
-      if (cli === "codex") {
-        if (/\b(Waiting|Action Required)\b/.test(t)) return "attention";
-        if (/\bReady\b/.test(t)) return "idle";
-        if (/\b(Working|Thinking)\b/.test(t)) return "busy";
-        // Codex uses Braille spinner frames (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏) as the
-        // leading char in titles like "⠋ AlertaAnunt" while processing.
-        if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(t)) return "busy";
-        return null;
-      }
-      return null;
-    };
+    // Title classification now lives in lib/agents (classifyAgentTitle):
+    // registry-driven so custom agents can teach it their own signals (#68),
+    // with the built-in claude/codex heuristics as the fallback.
 
     // OSC 0/2 — title change. Always surface as the live tab label.
     // Only used as a busy/idle source for CLIs without OSC 9;4 (gemini,
@@ -873,7 +887,7 @@ const captureArmedRef = useRef(false);
       settledRef.current.marked = false;
       scrollbackRef.current.stableCount = 0;
       scrollbackRef.current.marked = false;
-      const state = classifyTitle(tab.cli, t);
+      const state = classifyAgentTitle(tab.cli, t, useApp.getState().agents);
       wdlog(`title change [classifier=${state ?? "unknown"}, last=${lastTitleState ?? "none"}]`, t);
       dbg("title", `classifier=${state ?? "??"} title=${t}`);
       // Record the sender-classified state so the interval-based
@@ -1311,6 +1325,7 @@ const captureArmedRef = useRef(false);
           const now = Date.now();
           lastDataAtRef.current = now;
           patchTab(task.id, tab.id, { lastOutputAt: now });
+          if (outputSignals) scanOutputLines(u8);
           if (ptyDebugOn) dbg("data", decodeForDebug(u8));
           // Output activity extends the OSC 9;4 done timer — even if
           // the agent went OSC-idle, fresh bytes mean it's still

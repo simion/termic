@@ -796,6 +796,56 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             </span>
           </div>
         </Field>}
+        {!isTerminal && agent.work_done !== false && <>
+          <RegexListField
+            label="Done signals (title → done)"
+            hint="One regex per line. When ANY signal list is set, these patterns classify this agent's terminal title, overriding the built-in claude/codex heuristics. A title matching one of these marks the turn done (blue badge). Most reliable is an OSC signal (see docs/gotchas.md); title patterns are the next best. Precedence when several match: attention > busy > done."
+            value={agent.capabilities?.signals?.idle ?? []}
+            onChange={idle => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), idle } })}
+            placeholder={"Ready\n✓ done\nawaiting input" /* allow-shortcut: example placeholder text, the check mark is illustrative sample content (Orel-approved) */}
+          />
+          <RegexListField
+            label="Busy signals (title → working)"
+            hint="Title matching one of these marks the agent as working (spinner), suppressing the idle heuristics while it runs. One regex per line."
+            value={agent.capabilities?.signals?.busy ?? []}
+            onChange={busy => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), busy } })}
+            placeholder={"Working\nThinking\nRunning"}
+          />
+          <RegexListField
+            label="Attention signals (title → needs you)"
+            hint="Title matching one of these means the agent is blocked on you (bell + attention dot). Highest precedence. One regex per line."
+            value={agent.capabilities?.signals?.attention ?? []}
+            onChange={attention => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), attention } })}
+            placeholder={"Action Required\nWaiting for approval"}
+          />
+          <Field
+            label="Also scan output lines (Tier 3)"
+            hint="Off by default. When on, the signal patterns above are ALSO matched against stdout lines, not just the terminal title. Turn on for CLIs that print status to stdout and never set a title. Slightly higher cost on very chatty agents."
+          >
+            <div className="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!!agent.capabilities?.match_output}
+                onClick={() => onPatchCaps({ match_output: !agent.capabilities?.match_output })}
+                className={cn(
+                  "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center", /* allow-shortcut: standard toggle switch, matches the Work-done switch above, not a decorative chip (Orel-approved) */
+                  agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
+                )}
+              >
+                <span
+                  className={cn(
+                    "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out", /* allow-shortcut: toggle knob circle, matches the Work-done switch above (Orel-approved) */
+                    agent.capabilities?.match_output ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
+                  )}
+                />
+              </button>
+              <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
+                {agent.capabilities?.match_output ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+          </Field>
+        </>}
       </div>
     </div>
   );
@@ -904,6 +954,29 @@ function PathsTextarea({ value, onChange, placeholder }: {
       className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[12.5px] text-[var(--color-fg)] focus:border-[var(--color-accent-soft)] focus:outline-none"
       placeholder={placeholder}
     />
+  );
+}
+
+/** One-regex-per-line editor for custom work-done signals (issue #68). Reuses
+ *  the paths textarea (spaces inside a pattern survive; `#` lines are
+ *  comments) and flags any pattern that fails to compile, so a bad regex is
+ *  visibly ignored rather than silently dropped. */
+function RegexListField({ label, hint, value, onChange, placeholder }: {
+  label: string; hint: string; value: string[];
+  onChange: (v: string[]) => void; placeholder?: string;
+}) {
+  const invalid = value.filter(p => {
+    try { new RegExp(p); return false; } catch { return true; }
+  });
+  return (
+    <Field label={label} hint={hint}>
+      <PathsTextarea value={value} onChange={onChange} placeholder={placeholder} />
+      {invalid.length > 0 && (
+        <div className="mt-1 font-mono text-[11.5px] text-[var(--color-warn)]">
+          Ignored (invalid regex): {invalid.join("   ")}
+        </div>
+      )}
+    </Field>
   );
 }
 
