@@ -20,6 +20,7 @@ import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy } from "lucide-reac
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cn, slugify } from "@/lib/utils";
 import { isTerminalEntry, BUILTIN_TITLE_SIGNALS } from "@/lib/agents";
+import { SubSection } from "@/components/settings/SubSection";
 
 export function AgentsSection() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -808,11 +809,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             loose agent setting, and so the shared explanation is stated once
             instead of on all three fields. */}
         {!isTerminal && agent.work_done !== false &&
-          <div className="mt-1 border-t border-[var(--color-border)] pt-3 space-y-3">
-            <div>
-              <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">Title signals</div>
-              <div className="mt-1 text-[12px] text-[var(--color-fg-dim)]">{signalGroupHint(agent.id)}</div>
-            </div>
+          <SubSection title="Title signals" hint={signalGroupHint(agent.id)}>
             <RegexListField
               label="Done (title → done)"
               hint="Marks the turn finished: blue badge, bell, notification."
@@ -876,7 +873,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                 </div>
               </Field>
             </div>
-          </div>}
+          </SubSection>}
       </div>
     </div>
   );
