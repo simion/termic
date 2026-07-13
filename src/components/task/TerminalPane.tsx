@@ -30,7 +30,7 @@ import { SandboxIcon, SANDBOX_VISUALS } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
-import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
+import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
@@ -180,6 +180,12 @@ export function TerminalPane({ task, tab, active }: Props) {
   const lastSpawnWasResumeRef = useRef(false);
   const failedResumeRef = useRef(false);
   const RESUME_FAILURE_MS = 2000;
+  // The uuid a resume attempt failed on during THIS app run. Only used to
+  // word the recovery banner: the stashed session is a known-bad resume
+  // ("Couldn't resume") when it matches, and a still-usable session we
+  // swapped away from ("switch back") when it doesn't (including after a
+  // restart, where the failure is no longer news).
+  const [failedUuid, setFailedUuid] = useState<string | null>(null);
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
@@ -395,6 +401,9 @@ const captureArmedRef = useRef(false);
       // band against neighbouring rows.
       lineHeight: 1.0,
       theme: currentTerminalTheme() as any,
+      // Keeps CLI truecolor text readable on a light bg — see
+      // currentMinimumContrastRatio (#83).
+      minimumContrastRatio: currentMinimumContrastRatio(),
       allowProposedApi: true,
       scrollback: usePrefs.getState().terminalScrollback,
       // Option-as-Meta for terminal editors (vim/emacs/nano). Off by default;
@@ -1394,10 +1403,21 @@ const captureArmedRef = useRef(false);
             // task prop refreshes.
             failedResumeRef.current = true;
             if (decision.kind === "resume-id") {
-              // This tab's stored uuid no longer resolves to a live session
-              // (deleted, rotated, …). Drop it (per-tab); the immediate
-              // retry mints a fresh one. setTabSessionId clears both the
-              // in-memory tab and disk.
+              // This tab's stored uuid didn't resolve on this spawn. Don't
+              // discard it — the failure may be transient (the session's
+              // transcript still exists on disk), and nuking the pointer
+              // turns that into permanent conversation loss. Stash it as the
+              // tab's previous session so the recover banner can offer it,
+              // then clear the live slot so the immediate retry mints fresh.
+              // An occupied stash is left alone: it holds the session we
+              // swapped away from to try this one, which is worth keeping
+              // over a uuid that just proved unresumable.
+              const stashed = (useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as
+                TerminalTab | undefined)?.previousSessionId;
+              if (storedUuid) {
+                if (!stashed) useApp.getState().setTabPreviousSessionId(task.id, tab.id, storedUuid);
+                setFailedUuid(storedUuid);
+              }
               useApp.getState().setTabSessionId(task.id, tab.id, "");
             } else if (!useIdResume) {
               // Worktree rapid-exit on `--continue` = "no conversation"
@@ -1677,6 +1697,7 @@ const captureArmedRef = useRef(false);
     const t = termRef.current;
     if (!t) return;
     t.options.theme = currentTerminalTheme() as any;
+    t.options.minimumContrastRatio = currentMinimumContrastRatio();
   }, [themeMode, customThemeRev]);
 
   // YOLO live toggle — for agents that support runtime mode switching (only
@@ -1912,6 +1933,45 @@ const captureArmedRef = useRef(false);
             icon: X,
             onAction: () => useApp.getState().closeTab(task.id, tab.id),
           } : undefined}
+        />
+      )}
+      {!exited && tab.previousSessionId && (
+        // A --resume attempt fast-exited and we fell back to a fresh session;
+        // the old session id was stashed, not discarded, so offer to recover
+        // it. In-flow (like the exited banner) so it pushes the live terminal
+        // down instead of covering it. The banner outlives the failure (it's
+        // persisted, and the fallback session may be days old by the time it's
+        // clicked), so it swaps the two uuids rather than dropping the live
+        // one, and words itself by whether the stashed session is the one that
+        // failed to resume in this run.
+        <TerminalExitedBanner
+          label={tab.previousSessionId === failedUuid
+            ? "Couldn't resume your previous session."
+            : "Your previous session is still available."}
+          actionLabel={tab.previousSessionId === failedUuid ? "Resume it" : "Switch back"}
+          tone="warning"
+          onAction={() => {
+            const live = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as
+              TerminalTab | undefined;
+            const prev = live?.previousSessionId;
+            if (!prev) return;
+            // SWAP, don't discard: the session we're leaving is a real
+            // conversation too (the user may have been working in it since the
+            // failed resume), and dropping its uuid is the same permanent loss
+            // this banner exists to prevent. Then respawn: reset the fail flag
+            // + bump gen so the spawn effect re-reads the uuid live and resumes
+            // it via --resume.
+            useApp.getState().setTabSessionId(task.id, tab.id, prev);
+            useApp.getState().setTabPreviousSessionId(task.id, tab.id, live?.sessionId ?? "");
+            failedResumeRef.current = false;
+            setGen(g => g + 1);
+          }}
+          secondary={{
+            label: "Dismiss",
+            title: "Keep the current session and forget the previous one",
+            icon: X,
+            onAction: () => useApp.getState().setTabPreviousSessionId(task.id, tab.id, ""),
+          }}
         />
       )}
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />

@@ -11,6 +11,7 @@ vi.mock("@/lib/ipc", () => ({
   ptyKill: vi.fn().mockResolvedValue(undefined),
   taskSetTabs: vi.fn().mockResolvedValue(undefined),
   taskSetTabSessionId: vi.fn().mockResolvedValue(undefined),
+  taskSetTabPreviousSessionId: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/tabFocus", () => ({ focusTerminalTab: vi.fn() }));
 
@@ -173,5 +174,74 @@ describe("worktree main agent resumes across a restart", () => {
 
     useApp.getState().ensureDefaultTab("ws1", "claude");
     expect(argvFor(firstTab(), useApp.getState().tasks[0])).toEqual(["--resume", U, "--name", "seo-improvements"]);
+  });
+});
+
+describe("a fast-exit resume preserves the session and can recover it", () => {
+  it("stashes the uuid to previous, survives a restart, and recover resumes it", () => {
+    const U = "1b02e805-5b4d-482c-927b-b62b9b1c68d8";
+    useApp.setState({ tasks: [makeTask({ is_main_checkout: true })] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const tab = firstTab();
+
+    // First spawn mints a session that survives.
+    useApp.getState().setTabSessionId("ws1", tab.id, U);
+    expect(firstTab().sessionId).toBe(U);
+
+    // A later --resume fast-exits → TerminalPane stashes then clears (the fix).
+    useApp.getState().setTabPreviousSessionId("ws1", tab.id, U);
+    useApp.getState().setTabSessionId("ws1", tab.id, "");
+    expect(firstTab().sessionId).toBeUndefined();
+    expect(firstTab().previousSessionId).toBe(U);
+
+    // The fallback fresh mint replaces the live slot; previous stays.
+    const NEW = "9f9f9f9f-0000-4000-8000-000000000000";
+    useApp.getState().setTabSessionId("ws1", tab.id, NEW);
+    expect(firstTab().sessionId).toBe(NEW);
+    expect(firstTab().previousSessionId).toBe(U);
+
+    // Both ids round-trip into persisted_tabs.
+    const persisted = useApp.getState().tasks[0].persisted_tabs!;
+    expect(persisted[0].session_id).toBe(NEW);
+    expect(persisted[0].previous_session_id).toBe(U);
+
+    // Simulate a restart: reload from disk, tabs empty again.
+    const reloaded = makeTask({ is_main_checkout: true, persisted_tabs: persisted });
+    useApp.setState({ tasks: [reloaded], tabs: {}, activeTab: {} });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const restored = firstTab();
+    expect(restored.sessionId).toBe(NEW);
+    // The recovery pointer survived the restart — this is the whole point.
+    expect(restored.previousSessionId).toBe(U);
+
+    // Recover: promote previous back to live, and SWAP the fallback session
+    // into the stash rather than dropping it (the user may have been working
+    // in it since the failed resume — discarding its uuid would be the very
+    // loss this feature exists to prevent).
+    useApp.getState().setTabSessionId("ws1", restored.id, U);
+    useApp.getState().setTabPreviousSessionId("ws1", restored.id, NEW);
+    expect(firstTab().sessionId).toBe(U);
+    expect(firstTab().previousSessionId).toBe(NEW);
+    // decideResume now resumes the recovered session by id.
+    expect(argvFor(firstTab(), useApp.getState().tasks[0])).toEqual(["--resume", U, "--name", "seo-improvements"]);
+
+    // And the swap is reversible: switching back resumes the fallback session.
+    useApp.getState().setTabSessionId("ws1", restored.id, NEW);
+    useApp.getState().setTabPreviousSessionId("ws1", restored.id, U);
+    expect(argvFor(firstTab(), useApp.getState().tasks[0])).toEqual(["--resume", NEW, "--name", "seo-improvements"]);
+  });
+
+  it("dismiss clears the previous pointer and leaves the live session alone", () => {
+    const U = "old-uuid", NEW = "new-uuid";
+    useApp.setState({ tasks: [makeTask({ is_main_checkout: true })] });
+    useApp.getState().ensureDefaultTab("ws1", "claude");
+    const tab = firstTab();
+    useApp.getState().setTabSessionId("ws1", tab.id, NEW);
+    useApp.getState().setTabPreviousSessionId("ws1", tab.id, U);
+    expect(firstTab().previousSessionId).toBe(U);
+
+    useApp.getState().setTabPreviousSessionId("ws1", tab.id, "");
+    expect(firstTab().previousSessionId).toBeUndefined();
+    expect(firstTab().sessionId).toBe(NEW);
   });
 });

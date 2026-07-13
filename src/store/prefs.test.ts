@@ -62,3 +62,40 @@ describe("prefs: loadRemoteImages", () => {
     expect(localStorage.getItem(LS_KEY)).toBe("0");
   });
 });
+
+// #83: light themes must raise the terminal's minimumContrastRatio so CLI
+// truecolor fg (which bypasses the ANSI-16 remap) stays readable on a light
+// bg; dark themes leave it at 1 (off) so their tuned palettes are untouched.
+describe("prefs: currentMinimumContrastRatio", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    (document as any).fonts = { load: () => Promise.resolve(), ready: Promise.resolve() };
+    vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("returns 4.5 (WCAG AA) for the light theme", async () => {
+    const { usePrefs, currentMinimumContrastRatio } = await import("./prefs");
+    usePrefs.getState().setThemeMode("light");
+    expect(currentMinimumContrastRatio()).toBe(4.5);
+  });
+
+  it("returns 1 (off) for dark-family themes", async () => {
+    const { usePrefs, currentMinimumContrastRatio } = await import("./prefs");
+    for (const mode of ["dark", "claude", "solarized", "cobalt", "matrix", "rosepine"] as const) {
+      usePrefs.getState().setThemeMode(mode);
+      expect(currentMinimumContrastRatio()).toBe(1);
+    }
+  });
+
+  it("follows a custom theme's colorScheme (light custom -> 4.5)", async () => {
+    const { usePrefs, currentMinimumContrastRatio } = await import("./prefs");
+    const custom = {
+      id: "custom:paper" as const, name: "Paper", colorScheme: "light" as const,
+      ui: {}, terminal: {},
+    };
+    usePrefs.setState({ customThemes: [custom as any] });
+    usePrefs.getState().setThemeMode(custom.id);
+    expect(currentMinimumContrastRatio()).toBe(4.5);
+  });
+});

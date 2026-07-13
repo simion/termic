@@ -27,16 +27,20 @@ import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { SandboxIcon, SANDBOX_VISUALS } from "@/components/SandboxIcon";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 
-/** Pick a default name for a freshly-created repo-root task.
- *  Format: "<agent>-N" where N is the next unused index for that CLI
- *  among the project's existing repo-root rows. "shell" → "terminal".
- *  The user can edit before pressing Enter. */
-function defaultRepoRootName(cli: string, taskList: Task[]): string {
+/** Pick a default name for a freshly-created task (repo-root OR worktree).
+ *  Format: "<agent>-N" where N is the next unused index for that CLI among
+ *  ALL of the project's existing rows. "shell" → "terminal". The user can
+ *  edit before pressing Enter.
+ *
+ *  Repo-root and worktree rows share one counter on purpose: they share a
+ *  namespace (a worktree's branch derives from its name, and the sidebar
+ *  rejects a duplicate name either way), so counting only one kind hands
+ *  out a name the other kind already took. */
+function defaultTaskName(cli: string, taskList: Task[]): string {
   const slug = cli === "shell" ? "terminal" : cli.toLowerCase();
   const prefix = `${slug}-`;
   const used = new Set<number>();
   for (const w of taskList) {
-    if (!w.is_main_checkout) continue;
     if (w.name === slug) { used.add(1); continue; }
     if (!w.name.startsWith(prefix)) continue;
     const tail = w.name.slice(prefix.length);
@@ -1020,7 +1024,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
                                   setProjectCollapsed(p.id, false);
-                                  const value = defaultRepoRootName(cli, taskList);
+                                  const value = defaultTaskName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
                                     cli,
@@ -1183,7 +1187,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
                                   setProjectCollapsed(p.id, false);
-                                  const value = defaultRepoRootName(cli, taskList);
+                                  const value = defaultTaskName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
                                     cli,
