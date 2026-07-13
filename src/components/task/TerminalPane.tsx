@@ -1382,10 +1382,13 @@ const captureArmedRef = useRef(false);
             // task prop refreshes.
             failedResumeRef.current = true;
             if (decision.kind === "resume-id") {
-              // This tab's stored uuid no longer resolves to a live session
-              // (deleted, rotated, …). Drop it (per-tab); the immediate
-              // retry mints a fresh one. setTabSessionId clears both the
-              // in-memory tab and disk.
+              // This tab's stored uuid didn't resolve on this spawn. Don't
+              // discard it — the failure may be transient (the session's
+              // transcript still exists on disk), and nuking the pointer
+              // turns that into permanent conversation loss. Stash it as the
+              // tab's previous session so the recover banner can offer it,
+              // then clear the live slot so the immediate retry mints fresh.
+              if (storedUuid) useApp.getState().setTabPreviousSessionId(task.id, tab.id, storedUuid);
               useApp.getState().setTabSessionId(task.id, tab.id, "");
             } else if (!useIdResume) {
               // Worktree rapid-exit on `--continue` = "no conversation"
@@ -1901,6 +1904,37 @@ const captureArmedRef = useRef(false);
             icon: X,
             onAction: () => useApp.getState().closeTab(task.id, tab.id),
           } : undefined}
+        />
+      )}
+      {!exited && tab.previousSessionId && (
+        // A --resume attempt fast-exited and we fell back to a fresh session;
+        // the old session id was stashed, not discarded, so offer to recover
+        // it. In-flow (like the exited banner) so it pushes the live terminal
+        // down instead of covering it.
+        <TerminalExitedBanner
+          label="Couldn't resume your previous session."
+          actionLabel="Resume it"
+          tone="warning"
+          onAction={() => {
+            const live = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as
+              import("@/lib/types").TerminalTab | undefined;
+            const prev = live?.previousSessionId;
+            if (!prev) return;
+            // Promote the stashed uuid back to the live slot and clear the
+            // offer, then respawn: reset the fail flag + bump gen so the spawn
+            // effect re-reads the uuid live and resumes it via --resume.
+            useApp.getState().setTabSessionId(task.id, tab.id, prev);
+            useApp.getState().setTabPreviousSessionId(task.id, tab.id, "");
+            failedResumeRef.current = false;
+            setExited(false);
+            setGen(g => g + 1);
+          }}
+          secondary={{
+            label: "Dismiss",
+            title: "Keep the new session and forget the previous one",
+            icon: X,
+            onAction: () => useApp.getState().setTabPreviousSessionId(task.id, tab.id, ""),
+          }}
         />
       )}
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
