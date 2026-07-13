@@ -30,7 +30,7 @@ import { SandboxIcon, SANDBOX_VISUALS } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
-import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
+import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli } from "@/lib/agents";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
@@ -386,6 +386,9 @@ const captureArmedRef = useRef(false);
       // band against neighbouring rows.
       lineHeight: 1.0,
       theme: currentTerminalTheme() as any,
+      // Keeps CLI truecolor text readable on a light bg — see
+      // currentMinimumContrastRatio (#83).
+      minimumContrastRatio: currentMinimumContrastRatio(),
       allowProposedApi: true,
       scrollback: usePrefs.getState().terminalScrollback,
       // Option-as-Meta for terminal editors (vim/emacs/nano). Off by default;
@@ -1662,6 +1665,7 @@ const captureArmedRef = useRef(false);
     const t = termRef.current;
     if (!t) return;
     t.options.theme = currentTerminalTheme() as any;
+    t.options.minimumContrastRatio = currentMinimumContrastRatio();
   }, [themeMode, customThemeRev]);
 
   // YOLO live toggle — for agents that support runtime mode switching (only

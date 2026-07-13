@@ -226,6 +226,19 @@ export function currentColorFgBg(): string {
   return resolveTheme(usePrefs.getState().themeMode) === "light" ? "0;15" : "15;0";
 }
 
+/** Minimum foreground/background contrast for the terminal (xterm's
+ *  `minimumContrastRatio`). TERMINAL_THEMES only remaps the 16 indexed ANSI
+ *  colors, so a CLI TUI themed for a dark background (Claude Code, gemini,
+ *  codex) paints near-white *truecolor* fg that COLORFGBG can't redirect —
+ *  invisible on a light terminal bg (#83). xterm darkens any fg below the
+ *  ratio against its actual cell bg at paint time, which catches truecolor
+ *  too. Only light-family palettes need it (dark themes already sit on a
+ *  dark bg); 1 = off, a no-op with zero render cost. 4.5 = WCAG AA, the same
+ *  default VS Code's integrated terminal ships. */
+export function currentMinimumContrastRatio(): number {
+  return resolveTheme(usePrefs.getState().themeMode) === "light" ? 4.5 : 1;
+}
+
 // Curated list of monospace fonts we probe for. JetBrains Mono ships
 // locally via @fontsource so it's always present; the rest are detected at
 // runtime via document.fonts.check(). We don't enumerate the system font
