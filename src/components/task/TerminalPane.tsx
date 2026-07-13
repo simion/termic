@@ -812,21 +812,40 @@ const captureArmedRef = useRef(false);
     const scanDecoder = new TextDecoder("utf-8", { fatal: false });
     let scanLineBuf = "";
     const MAX_SCAN_LINE = 4096;
+    // Break on CR as well as LF. The CLIs this tier exists for (status to
+    // stdout, no title) are exactly the ones that repaint one status line
+    // with a bare \r and never send a newline — splitting on \n alone, that
+    // line would sit in the buffer until the length bound sliced it away and
+    // no pattern would ever run against it.
+    const SCAN_EOL = /\r\n|[\r\n]/;
     const scanOutputLines = (u8: Uint8Array) => {
+      if (!outputSignals) return;
       scanLineBuf += scanDecoder.decode(u8, { stream: true });
-      let nl: number;
-      while ((nl = scanLineBuf.indexOf("\n")) !== -1) {
-        let raw = scanLineBuf.slice(0, nl);
-        scanLineBuf = scanLineBuf.slice(nl + 1);
+      let m: RegExpMatchArray | null;
+      while ((m = scanLineBuf.match(SCAN_EOL))) {
+        let raw = scanLineBuf.slice(0, m.index);
+        scanLineBuf = scanLineBuf.slice(m.index! + m[0].length);
         if (raw.length > MAX_SCAN_LINE) raw = raw.slice(0, MAX_SCAN_LINE);
         const line = stripAnsi(raw).trim();
         if (!line) continue;
         // Precedence attention > busy > idle, mirroring the title classifier.
-        if (outputSignals!.attention.some(re => re.test(line))) goAttention("output line");
-        else if (outputSignals!.busy.some(re => re.test(line))) { if (submittedSinceSpawnRef.current) goWorking("output line"); }
-        else if (outputSignals!.idle.some(re => re.test(line))) goIdle("output line");
+        const state = outputSignals.attention.some(re => re.test(line)) ? "attention"
+          : outputSignals.busy.some(re => re.test(line)) ? "busy"
+          : outputSignals.idle.some(re => re.test(line)) ? "idle"
+          : null;
+        if (!state) continue;
+        // Record it the same way the title handler does. This is what tells
+        // the interval demoters below that a sender signal exists: without
+        // it senderStateRef stays null forever for a title-less agent, so
+        // byte-quiet fires at QUIET_MS through any silent think and reports
+        // `attention` (its no-signal fallback) — the exact false bell this
+        // tier is meant to replace with a real `done`.
+        senderStateRef.current = state;
+        if (state === "attention") goAttention("output line");
+        else if (state === "busy") { if (submittedSinceSpawnRef.current) goWorking("output line"); }
+        else goIdle("output line");
       }
-      // Bound the buffer so a newline-less stream can't grow without limit.
+      // Bound the buffer so an EOL-less stream can't grow without limit.
       if (scanLineBuf.length > MAX_SCAN_LINE * 4) scanLineBuf = scanLineBuf.slice(-MAX_SCAN_LINE);
     };
 

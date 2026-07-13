@@ -231,6 +231,13 @@ export function workDoneCapable(cli: string, agents: Agent[] = useApp.getState()
   return a?.work_done !== false;
 }
 
+/** Compiled per pattern source, forever. classifyAgentTitle runs on every OSC
+ *  0/2 title change, and an agent repaints its title once per spinner frame —
+ *  so an uncached compile is a `new RegExp` burst per frame per terminal. The
+ *  key space is bounded by what a user types into Settings. `null` caches a
+ *  pattern that doesn't compile, so a bad one isn't retried every frame. */
+const signalCache = new Map<string, RegExp | null>();
+
 /** Compile regex sources, skipping any that fail to compile. A user's bad
  *  pattern must never throw inside the terminal title/data path, so this is
  *  parse-at-the-boundary: invalid sources are dropped, valid ones kept. */
@@ -239,7 +246,12 @@ export function compileSignals(sources: string[] | undefined): RegExp[] {
   const out: RegExp[] = [];
   for (const src of sources) {
     if (!src) continue;
-    try { out.push(new RegExp(src)); } catch { /* drop invalid pattern */ }
+    let re = signalCache.get(src);
+    if (re === undefined) {
+      try { re = new RegExp(src); } catch { re = null; /* invalid pattern */ }
+      signalCache.set(src, re);
+    }
+    if (re) out.push(re);
   }
   return out;
 }

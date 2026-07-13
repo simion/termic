@@ -799,7 +799,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         {!isTerminal && agent.work_done !== false && <>
           <RegexListField
             label="Done signals (title → done)"
-            hint="One regex per line. When ANY signal list is set, these patterns classify this agent's terminal title, overriding the built-in claude/codex heuristics. A title matching one of these marks the turn done (blue badge). Most reliable is an OSC signal (see docs/gotchas.md); title patterns are the next best. Precedence when several match: attention > busy > done."
+            hint="One regex per line. When ANY signal list is set, these patterns classify this agent's terminal title, overriding the built-in claude/codex heuristics. A title matching one of these marks the turn done (blue badge). Precedence when several match: attention > busy > done. Agents that emit OSC progress signals need none of this, it already works."
             value={agent.capabilities?.signals?.idle ?? []}
             onChange={idle => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), idle } })}
             placeholder={"Ready\n✓ done\nawaiting input" /* allow-shortcut: example placeholder text, the check mark is illustrative sample content (Orel-approved) */}
@@ -820,7 +820,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           />
           <Field
             label="Also scan output lines (Tier 3)"
-            hint="Off by default. When on, the signal patterns above are ALSO matched against stdout lines, not just the terminal title. Turn on for CLIs that print status to stdout and never set a title. Slightly higher cost on very chatty agents."
+            hint="Off by default. When on, the signal patterns above are ALSO matched against stdout lines, not just the terminal title. Turn on for CLIs that print status to stdout and never set a title. Slightly higher cost on very chatty agents. Takes effect on the next terminal restart, not on open terminals."
           >
             <div className="flex items-center gap-2 pt-0.5">
               <button
