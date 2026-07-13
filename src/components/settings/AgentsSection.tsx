@@ -796,56 +796,69 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             </span>
           </div>
         </Field>}
-        {!isTerminal && agent.work_done !== false && <>
-          <RegexListField
-            label="Done signals (title → done)"
-            hint={signalHint(agent.id, "A title matching one of these marks the turn done (blue badge). Precedence when several match: attention > busy > done.")}
-            value={agent.capabilities?.signals?.idle ?? []}
-            onChange={idle => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), idle } })}
-            placeholder={signalPlaceholder(agent.id, "idle", "Ready\n✓ done\nawaiting input" /* allow-shortcut: example placeholder text, the check mark is illustrative sample content (Orel-approved) */)}
-          />
-          <RegexListField
-            label="Busy signals (title → working)"
-            hint={signalHint(agent.id, "A title matching one of these marks the agent as working (spinner), suppressing the idle heuristics while it runs.")}
-            value={agent.capabilities?.signals?.busy ?? []}
-            onChange={busy => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), busy } })}
-            placeholder={signalPlaceholder(agent.id, "busy", "Working\nThinking\nRunning")}
-          />
-          <RegexListField
-            label="Attention signals (title → needs you)"
-            hint={signalHint(agent.id, "A title matching one of these means the agent is blocked on you (bell + attention dot). Highest precedence.")}
-            value={agent.capabilities?.signals?.attention ?? []}
-            onChange={attention => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), attention } })}
-            placeholder={signalPlaceholder(agent.id, "attention", "Action Required\nWaiting for approval")}
-          />
-          <Field
-            label="Also scan output lines (Tier 3)"
-            hint="Off by default. When on, the signal patterns above are ALSO matched against stdout lines, not just the terminal title. Turn on for CLIs that print status to stdout and never set a title. Slightly higher cost on very chatty agents. Takes effect on the next terminal restart, not on open terminals."
-          >
-            <div className="flex items-center gap-2 pt-0.5">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={!!agent.capabilities?.match_output}
-                onClick={() => onPatchCaps({ match_output: !agent.capabilities?.match_output })}
-                className={cn(
-                  "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center", /* allow-shortcut: standard toggle switch, matches the Work-done switch above, not a decorative chip (Orel-approved) */
-                  agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
-                )}
-              >
-                <span
-                  className={cn(
-                    "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out", /* allow-shortcut: toggle knob circle, matches the Work-done switch above (Orel-approved) */
-                    agent.capabilities?.match_output ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
-                  )}
-                />
-              </button>
-              <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-                {agent.capabilities?.match_output ? "Enabled" : "Disabled"}
-              </span>
+        {/* The three pattern lists and the output-scan switch are one feature:
+            what a title has to look like for this agent to read as done /
+            working / blocked, and where we look for it. Boxed so the switch
+            reads as belonging to the patterns above it rather than as another
+            loose agent setting, and so the shared explanation is stated once
+            instead of on all three fields. */}
+        {!isTerminal && agent.work_done !== false &&
+          <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] p-3 space-y-3">
+            <div>
+              <div className="text-[13px] font-medium">Title signals</div>
+              <div className="mt-0.5 text-[12px] text-[var(--color-fg-dim)]">{signalGroupHint(agent.id)}</div>
             </div>
-          </Field>
-        </>}
+            <RegexListField
+              label="Done (title → done)"
+              hint="Marks the turn finished: blue badge, bell, notification."
+              value={agent.capabilities?.signals?.idle ?? []}
+              onChange={idle => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), idle } })}
+              placeholder={signalPlaceholder(agent.id, "idle", "Ready\n✓ done\nawaiting input" /* allow-shortcut: example placeholder text, the check mark is illustrative sample content (Orel-approved) */)}
+            />
+            <RegexListField
+              label="Busy (title → working)"
+              hint="Marks the agent as working (spinner), and holds off the idle heuristics while it runs."
+              value={agent.capabilities?.signals?.busy ?? []}
+              onChange={busy => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), busy } })}
+              placeholder={signalPlaceholder(agent.id, "busy", "Working\nThinking\nRunning")}
+            />
+            <RegexListField
+              label="Attention (title → needs you)"
+              hint="The agent is blocked on you: bell + attention dot. Wins over the other two."
+              value={agent.capabilities?.signals?.attention ?? []}
+              onChange={attention => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), attention } })}
+              placeholder={signalPlaceholder(agent.id, "attention", "Action Required\nWaiting for approval")}
+            />
+            <div className="border-t border-[var(--color-border-soft)] pt-3">
+              <Field
+                label="Match the patterns above against output too"
+                hint="Off by default: the patterns are matched against the terminal title only. Turn this on for a CLI that prints its status to stdout and never sets a title, and each line of output gets tested as well. Costs a little on very chatty agents. Takes effect on the next terminal restart, not on open terminals."
+              >
+                <div className="flex items-center gap-2 pt-0.5">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={!!agent.capabilities?.match_output}
+                    onClick={() => onPatchCaps({ match_output: !agent.capabilities?.match_output })}
+                    className={cn(
+                      "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center", /* allow-shortcut: standard toggle switch, matches the Work-done switch above, not a decorative chip (Orel-approved) */
+                      agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out", /* allow-shortcut: toggle knob circle, matches the Work-done switch above (Orel-approved) */
+                        agent.capabilities?.match_output ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
+                      )}
+                    />
+                  </button>
+                  <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
+                    {agent.capabilities?.match_output ? "Title and output" : "Title only"}
+                  </span>
+                </div>
+              </Field>
+            </div>
+          </div>}
       </div>
     </div>
   );
@@ -967,14 +980,13 @@ function signalPlaceholder(cli: string, key: "busy" | "idle" | "attention", fall
   return builtin?.length ? builtin.join("\n") : fallback;
 }
 
-/** Same split: for a built-in-classified agent the greyed patterns above are
- *  live, and filling ANY of the three fields replaces all three. For everyone
- *  else the greyed lines are only examples. */
-function signalHint(cli: string, what: string): string {
-  const lead = BUILTIN_TITLE_SIGNALS[cli]
-    ? "One regex per line. The greyed patterns are what this agent uses today; filling in ANY of the three signal fields replaces them."
-    : "One regex per line. The greyed patterns are examples, this agent has no built-in title heuristics.";
-  return `${lead} ${what}`;
+/** Stated once for the whole group rather than three times, once per field.
+ *  The two cases differ in what the greyed text means: live patterns for an
+ *  agent that ships heuristics, examples for one that doesn't. */
+function signalGroupHint(cli: string): string {
+  return BUILTIN_TITLE_SIGNALS[cli]
+    ? "How termic reads this agent's state from its terminal title. One regex per line. The greyed patterns are what it uses today; type into ANY of the three fields and they replace all three. When several match, attention wins over busy, and busy over done."
+    : "How termic reads this agent's state from its terminal title. One regex per line. The greyed patterns are examples (this agent ships no title heuristics of its own). When several match, attention wins over busy, and busy over done.";
 }
 
 /** One-regex-per-line editor for custom work-done signals (issue #68). Reuses
