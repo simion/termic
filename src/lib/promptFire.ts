@@ -1,9 +1,8 @@
-// Shared "fire a library prompt" logic for the ⌘R quick-fire leader key and
-// the ⇧⌘R search palette (src/hooks/useShortcuts.ts, PromptPalette.tsx). The
-// Prompts dropdown in UnifiedBar always opens the destination picker instead
-// (its whole point is letting you tweak the body / pick a target every
-// time) — these fast paths skip straight to the focused agent when there is
-// one, and fall back to the same picker otherwise.
+// Shared "fire a library prompt" logic for the ⌥⌘P prompt palette
+// (PromptPalette.tsx). The Prompts dropdown in UnifiedBar always opens the
+// destination picker instead (its whole point is letting you tweak the body /
+// pick a target every time) — this fast path skips straight to the focused
+// agent when there is one, and falls back to the same picker otherwise.
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
