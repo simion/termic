@@ -163,26 +163,29 @@ build: ## Build a release .app + .dmg bundle. Output in src-tauri/target/release
 .PHONY: build
 
 install: build ## Build a release .app, copy it to /Applications (replacing any prior copy), and launch.
-	@APP_NAME="Termic"; \
-	BUNDLE_ID="com.simion.termic"; \
-	SRC="src-tauri/target/release/bundle/macos/$$APP_NAME.app"; \
-	DEST="/Applications/$$APP_NAME.app"; \
-	if [ ! -d "$$SRC" ]; then echo "✗ build artifact missing: $$SRC"; exit 1; fi; \
-	echo "→ Quitting any running $$APP_NAME instance (by bundle id $$BUNDLE_ID)"; \
-	osascript -e "tell application id \"$$BUNDLE_ID\" to quit" 2>/dev/null || true; \
-	sleep 1; \
-	echo "→ Removing $$DEST (if present)"; \
-	rm -rf "$$DEST"; \
-	echo "→ Copying $$SRC → $$DEST"; \
-	cp -R "$$SRC" "$$DEST"; \
-	echo "→ Refreshing icon cache"; \
-	touch "$$DEST"; \
-	/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$$DEST" 2>/dev/null || true; \
-	killall Finder 2>/dev/null || true; \
-	echo "→ Launching $$DEST"; \
-	open "$$DEST"; \
-	echo "✓ Installed."
+	@./scripts/install-app.sh
 .PHONY: install
+
+# Same bundle, same bundle id, same data dir as `make install` — the only
+# difference is VITE_BETA, which lights up a BETA pill in the unified bar so a
+# branch build living in /Applications is never mistaken for a shipped one.
+# VITE_BETA_INFO (branch@sha, `+` if the tree was dirty) shows in its tooltip.
+#
+# The updater still runs: once a stable release is NEWER than the version this
+# branch carries, the normal update pill appears and installing it replaces the
+# beta with the shipped build. That's the way back.
+beta: ## Build the CURRENT BRANCH as a beta (BETA pill), install it to /Applications, and launch.
+	@BRANCH="$$(git rev-parse --abbrev-ref HEAD)"; \
+	SHA="$$(git rev-parse --short HEAD)"; \
+	DIRTY=""; \
+	if [ -n "$$(git status --porcelain)" ]; then DIRTY="+"; fi; \
+	echo "→ Building beta from $$BRANCH@$$SHA$$DIRTY"; \
+	VITE_BETA=1 VITE_BETA_INFO="$$BRANCH@$$SHA$$DIRTY" npm run tauri build
+	@./scripts/install-app.sh
+.PHONY: beta
+
+install-beta: beta ## Alias for `make beta`.
+.PHONY: install-beta
 
 uninstall: ## Remove the installed copy from /Applications (user data untouched).
 	@rm -rf /Applications/Termic.app /Applications/termic.app && echo "✓ Removed Termic.app from /Applications"

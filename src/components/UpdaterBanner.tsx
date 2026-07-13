@@ -57,16 +57,41 @@ export function UpdaterBanner() {
     );
   }
 
-  // Nothing pending, the user already dismissed this version, or the
-  // sidebar is expanded (UpdateCard owns the surface there) → no pill.
-  if (!update || update.version === dismissedVersion || !compact) return null;
+  // Is the update pill about to claim this slot? Pending, undismissed, and
+  // the sidebar collapsed (expanded, the sidebar's UpdateCard owns it).
+  const updatePillVisible = !!update && update.version !== dismissedVersion && compact;
+
+  // Beta: a release build of a branch, installed into /Applications by
+  // `make install-beta`. Same bundle id as the shipped app, so without a
+  // marker there is nothing to tell them apart. Yields the slot to a real
+  // pending update (installing it is how you get back to a shipped build).
+  const beta =
+    import.meta.env.VITE_BETA === "1" || import.meta.env.VITE_BETA === "true";
+  if (beta && !updatePillVisible) {
+    const info = import.meta.env.VITE_BETA_INFO;
+    return (
+      <span
+        title={
+          info
+            ? `Beta build from ${info}, installed locally. Not a released version.`
+            : "Beta build, installed locally. Not a released version."
+        }
+        className="flex select-none items-center rounded-full border border-[var(--color-info)]/40 bg-[var(--color-info)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-info)]"
+      >
+        BETA
+      </span>
+    );
+  }
+
+  if (!updatePillVisible) return null;
+  const pending = update!;
 
   return (
     <button
       type="button"
       onClick={() => void install()}
       disabled={installing !== null}
-      title={`Update to ${update.version} (current: ${update.currentVersion})`}
+      title={`Update to ${pending.version} (current: ${pending.currentVersion})`}
       className="flex items-center gap-1.5 rounded-full border border-[var(--color-accent-deep)] bg-[var(--color-accent-deep)] px-2.5 py-0.5 text-[12px] font-medium text-white hover:bg-[#8a3a1c] disabled:opacity-70"
     >
       {installing === null && (
