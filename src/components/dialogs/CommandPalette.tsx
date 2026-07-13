@@ -1,9 +1,9 @@
-// ⌘K command palette — a searchable list of every task / view / app
+// ⇧⌘P command palette — a searchable list of every task / view / app
 // action, grouped into sections, with the action's shortcut (if any) shown on
 // the right. Modelled on the ⌘P file finder + ⌘N project picker (shared fuzzy
 // matcher), plus a one-level "Change theme" submenu you navigate with the
 // arrow keys. NO solid backdrop (the old `bg-black/40` overlay flickered the
-// whole screen on open) — just a subtle dim + blur that fades in, ⌘K only.
+// whole screen on open) — just a subtle dim + blur that fades in, ⇧⌘P only.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -109,7 +109,7 @@ export function CommandPalette() {
   };
 
   // Reset on open; roll back an uncommitted theme preview on close (outside
-  // click / ⌘K while still previewing).
+  // click / ⇧⌘P while still previewing).
   useEffect(() => {
     if (open) { setQuery(""); setActiveIdx(0); setView("root"); }
     else if (themeOriginalRef.current) {

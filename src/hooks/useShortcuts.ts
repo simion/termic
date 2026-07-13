@@ -18,7 +18,7 @@
 //   ⌘L       → focus the main agent (its terminal or editor) from any pane
 //   ⌘T       → new tab · ⌘K → clear terminal · ⌘P → file finder
 //   ⇧⌘F      → find in files · ⇧⌘B → broadcast · ⌘, → settings
-//   ⌥⌘P      → prompt palette
+//   ⇧⌘P      → command palette · ⌥⌘P → prompt palette
 //   Shortcuts cheat-sheet: icon-only, no keyboard binding
 import { useEffect } from "react";
 import { useApp } from "@/store/app";
@@ -182,10 +182,10 @@ export function useShortcuts() {
           useUI.getState().openProjectPicker();
           return;
 
-        // ⌘K → toggle the command palette (open, or close if already open).
-        // MUST fire from anywhere, including while focused in a terminal (the
-        // app is terminal-centric), so no `isTyping` guard. This is why
-        // ⌘K-clear moved to ⌘⇧K.
+        // ⇧⌘P → toggle the command palette (open, or close if already open),
+        // the VS Code / Sublime convention. MUST fire from anywhere, including
+        // while focused in a terminal (the app is terminal-centric), so no
+        // `isTyping` guard. ⌘K is the terminal-clear, as in any terminal.
         case "command-palette": {
           e.preventDefault();
           const ui = useUI.getState();
@@ -482,7 +482,7 @@ export function useShortcuts() {
           return;
 
         // ⌥⌘P → toggle the prompt palette. Same no-`isTyping` rationale as
-        // ⌘K's command palette.
+        // ⇧⌘P's command palette.
         case "prompt-palette": {
           e.preventDefault();
           const ui = useUI.getState();

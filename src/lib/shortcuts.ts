@@ -120,8 +120,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     hint: "Jump focus to the main pane (its agent terminal or the open editor) from anywhere",
     defaultBinding: B("l", { cmd: true }) },
   { id: "clear-terminal", group: "Terminal", label: "Clear focused terminal",
-    hint: "Moved from ⌘K, which now opens the command palette.",
-    defaultBinding: B("k", { cmd: true, shift: true }) },
+    hint: "Clears the focused terminal's scrollback, the standard ⌘K every terminal uses.",
+    defaultBinding: B("k", { cmd: true }) },
   { id: "split-pane-right", group: "Terminal", label: "Split pane right",
     hint: "Open a new pane to the right of the focused pane (vertical divider).",
     defaultBinding: B("d", { cmd: true }) },
@@ -146,7 +146,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
 
   // General
   { id: "command-palette", group: "General", label: "Command palette",
-    hint: "Search every command and action", defaultBinding: B("k", { cmd: true }) },
+    hint: "Search every command and action (the ⇧⌘P convention from VS Code / Sublime)",
+    defaultBinding: B("p", { cmd: true, shift: true }) },
   { id: "new-task-quick", group: "General", label: "New task…",
     hint: "Search a project and start a new task", defaultBinding: B("n", { cmd: true }) },
   { id: "open-settings", group: "General", label: "Open settings",

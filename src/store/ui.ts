@@ -90,7 +90,7 @@ interface UIState {
   /** Global fuzzy project picker (⌘N) — search any loaded project and
    *  start a new task for it without scrolling the sidebar. */
   projectPickerOpen: boolean;
-  /** ⌘K command palette — searchable list of every command / action. */
+  /** ⇧⌘P command palette — searchable list of every command / action. */
   commandPaletteOpen: boolean;
   /** ⌥⌘P prompt palette — searchable list of library prompts (title only). */
   promptPaletteOpen: boolean;
