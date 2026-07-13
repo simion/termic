@@ -59,7 +59,10 @@ never shadow the built-in Claude theme.
     "hover": "rgba(224,222,244,0.05)", "sel": "rgba(196,167,231,0.22)",
     "accent": "#c4a7e7", "accent-soft": "rgba(196,167,231,0.22)", "accent-deep": "#6f5b9e",
     "accent-fg": "#232136",
-    "ok": "#9ccfd8", "ok-fg": "#232136", "warn": "#f6c177", "err": "#eb6f92"
+    "ok": "#9ccfd8", "ok-fg": "#232136", "warn": "#f6c177", "err": "#eb6f92",
+    "palette-red": "#eb6f92", "palette-orange": "#e89f6f", "palette-yellow": "#f6c177",
+    "palette-green": "#97c9a3", "palette-teal": "#9ccfd8", "palette-blue": "#3e8fb0",
+    "palette-purple": "#c4a7e7", "palette-pink": "#d8a0c9"
   },
   "terminal": {
     "background": "#232136", "foreground": "#e0def4",
@@ -112,6 +115,7 @@ just `bg` and `accent` and still look coherent.
 | `ok-fg` | ink on a solid `ok` fill (toggle knobs). Defaults to white |
 | `warn` | warning yellow |
 | `err` | error red |
+| `palette-red` … `palette-pink` | hue-named accent ramp for user-assigned marks (today: project-group folder colors). 8 keys: `palette-red`, `palette-orange`, `palette-yellow`, `palette-green`, `palette-teal`, `palette-blue`, `palette-purple`, `palette-pink`. Tune shades to your theme, but keep each hue recognizable: users pick colors by name and expect "red" to stay red across themes |
 
 The `--color-cli-*` agent tint variables are not themeable in v1; they keep
 their defaults.
