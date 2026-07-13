@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Swap a freshly-built Termic.app into /Applications and launch it.
+# Swap a freshly-built .app into /Applications and launch it.
 #
-# Shared by `make install` (plain release build of the current tree) and
-# `make install-beta` (same build, stamped with a BETA pill). Both produce
-# the SAME bundle id, so the copy replaces whatever is installed and keeps
-# the user's data, window state and updater watermark.
+# Shared by `make install` (the shipped app: Termic.app, com.simion.termic)
+# and `make beta` (Termic Beta.app, com.simion.termic.beta — a parallel
+# install that shares the production data dir, see src-tauri/tauri.beta.conf.json).
 #
-# Usage: scripts/install-app.sh [path/to/Termic.app]
+# Usage: scripts/install-app.sh [APP_NAME] [BUNDLE_ID]
+#   APP_NAME  bundle basename without .app  (default: Termic)
+#   BUNDLE_ID used to quit a running copy   (default: com.simion.termic)
 set -euo pipefail
 
-APP_NAME="Termic"
-BUNDLE_ID="com.simion.termic"
-SRC="${1:-src-tauri/target/release/bundle/macos/$APP_NAME.app}"
+APP_NAME="${1:-Termic}"
+BUNDLE_ID="${2:-com.simion.termic}"
+SRC="src-tauri/target/release/bundle/macos/$APP_NAME.app"
 DEST="/Applications/$APP_NAME.app"
 
 if [ ! -d "$SRC" ]; then
@@ -36,4 +37,4 @@ killall Finder 2>/dev/null || true
 
 echo "→ Launching $DEST"
 open "$DEST"
-echo "✓ Installed."
+echo "✓ Installed $DEST"

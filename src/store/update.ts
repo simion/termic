@@ -23,6 +23,7 @@
 //     Access-Control-Allow-Origin: *.
 
 import { create } from "zustand";
+import { isBetaBuild } from "@/lib/build";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
@@ -180,6 +181,15 @@ export const useUpdate = create<UpdateState>((set, get) => ({
     // check() is meaningless in dev — stop here.
     if (import.meta.env.DEV) return;
 
+    // Beta (`make beta`): a branch build living in /Applications as
+    // "Termic Beta.app". It must not self-update. The updater replaces the
+    // bundle it is running from, so a stable release would quietly overwrite
+    // Termic Beta.app with the shipped app (its own icon, its own identifier,
+    // still sitting under the beta's name). The changelog above still loads,
+    // so the Changelog dialog works; only the probe is off. Move a beta
+    // forward by re-running `make beta`.
+    if (isBetaBuild()) return;
+
     const probe = async () => {
       try {
         const u = await check();
@@ -230,7 +240,10 @@ export const useUpdate = create<UpdateState>((set, get) => ({
 
   checkNow: async () => {
     get().fetchChangelog();
-    if (import.meta.env.DEV) return "uptodate";
+    // Same reasoning as init(): a beta bundle never pulls a shipped build over
+    // itself, so the palette's "Check for updates" refreshes the changelog and
+    // reports up-to-date rather than offering an install.
+    if (import.meta.env.DEV || isBetaBuild()) return "uptodate";
     try {
       const u = await check();
       set({ update: u });

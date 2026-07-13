@@ -166,29 +166,45 @@ install: build ## Build a release .app, copy it to /Applications (replacing any 
 	@./scripts/install-app.sh
 .PHONY: install
 
-# Same bundle, same bundle id, same data dir as `make install` — the only
-# difference is VITE_BETA, which lights up a BETA pill in the unified bar so a
-# branch build living in /Applications is never mistaken for a shipped one.
-# VITE_BETA_INFO (branch@sha, `+` if the tree was dirty) shows in its tooltip.
+# `Termic Beta.app` — a SECOND app installed next to the shipped one, from the
+# current branch. tauri.beta.conf.json renames the bundle, gives it its own
+# identifier (com.simion.termic.beta) and a blue-T icon, so both live in
+# /Applications and both can run.
 #
-# The updater still runs: once a stable release is NEWER than the version this
-# branch carries, the normal update pill appears and installing it replaces the
-# beta with the shipped build. That's the way back.
-beta: ## Build the CURRENT BRANCH as a beta (BETA pill), install it to /Applications, and launch.
+# It deliberately shares the PRODUCTION data dir (~/Library/Application
+# Support/termic + ~/termic): APP_DIR only splits on debug_assertions
+# (src-tauri/src/lib.rs), and this is a release build. Same projects, same
+# tasks, same settings.json as the shipped app. Two consequences worth
+# knowing: (1) running both at once means two processes writing the same JSON,
+# last writer wins, so don't; (2) UI prefs (theme, fonts, shortcut overrides)
+# are NOT shared — those live in localStorage, which WKWebView keys by bundle
+# id, so the beta starts on defaults.
+#
+# VITE_BETA lights up the BETA pill in the unified bar; VITE_BETA_INFO
+# (branch@sha, `+` when the tree was dirty) shows in its tooltip. The beta
+# never self-updates (store/update.ts skips the probe), so nothing can
+# overwrite this bundle with a shipped build behind your back. To move it
+# forward, re-run `make beta`.
+#
+# --bundles app: just the .app. No .dmg (nothing to distribute) and no updater
+# tarball, which is what wanted TAURI_SIGNING_PRIVATE_KEY.
+beta: ## Build the CURRENT BRANCH as `Termic Beta.app` (parallel install, shared data dir) and launch it.
 	@BRANCH="$$(git rev-parse --abbrev-ref HEAD)"; \
 	SHA="$$(git rev-parse --short HEAD)"; \
 	DIRTY=""; \
 	if [ -n "$$(git status --porcelain)" ]; then DIRTY="+"; fi; \
-	echo "→ Building beta from $$BRANCH@$$SHA$$DIRTY"; \
-	VITE_BETA=1 VITE_BETA_INFO="$$BRANCH@$$SHA$$DIRTY" npm run tauri build
-	@./scripts/install-app.sh
+	echo "→ Building Termic Beta from $$BRANCH@$$SHA$$DIRTY"; \
+	VITE_BETA=1 VITE_BETA_INFO="$$BRANCH@$$SHA$$DIRTY" \
+	    npm run tauri build -- --config src-tauri/tauri.beta.conf.json --bundles app
+	@./scripts/install-app.sh "Termic Beta" com.simion.termic.beta
 .PHONY: beta
 
 install-beta: beta ## Alias for `make beta`.
 .PHONY: install-beta
 
-uninstall: ## Remove the installed copy from /Applications (user data untouched).
-	@rm -rf /Applications/Termic.app /Applications/termic.app && echo "✓ Removed Termic.app from /Applications"
+uninstall: ## Remove the installed copies (shipped + beta) from /Applications (user data untouched).
+	@rm -rf /Applications/Termic.app /Applications/termic.app "/Applications/Termic Beta.app" \
+	  && echo "✓ Removed Termic.app + Termic Beta.app from /Applications"
 .PHONY: uninstall
 
 # ─── cleanup ──────────────────────────────────────────────────────────

@@ -1,0 +1,42 @@
+<!--
+  Termic DEV app icon - master SVG. Re-export via scripts/gen-icon.sh
+  (writes src-tauri/icons/dev/) after editing.
+
+  Same geometry as icon.svg, T recolored to the UI's warn amber (the
+  color-warn theme token, #f0b13a) to match the DEV pill, exactly as the
+  beta icon matches the BETA pill. `tauri dev` runs the bare binary (no
+  .app bundle, so no CFBundleIconFile), so this is applied at runtime by
+  set_dev_dock_icon() in lib.rs, debug builds only.
+
+  Same rules as icon.svg: solid colors only, no filters, keep the
+  silhouette readable at 16-32px.
+-->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <rect x="100" y="100" width="824" height="824" rx="180" fill="#0f0f0f"/>
+  <g fill="#f0b13a">
+    <!-- Crossbar: rows 0-1, cols 0-5 (12 cells) -->
+    <rect x="259.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="344.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="599.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="684.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="259.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="344.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="599.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="684.5" y="302" width="80" height="80" rx="14"/>
+    <!-- Stem: cols 2-3 (x=429.5, 514.5), rows 2-6 (10 cells) -->
+    <rect x="429.5" y="387" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="387" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="472" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="472" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="557" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="557" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="642" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="642" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="727" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="727" width="80" height="80" rx="14"/>
+  </g>
+</svg>

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Termic Beta",
+  "identifier": "com.simion.termic.beta",
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "icon": [
+      "icons/beta/32x32.png",
+      "icons/beta/128x128.png",
+      "icons/beta/128x128@2x.png",
+      "icons/beta/icon.png",
+      "icons/beta/icon.icns",
+      "icons/beta/icon.ico"
+    ]
+  }
+}
