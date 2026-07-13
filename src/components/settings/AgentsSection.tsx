@@ -19,7 +19,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy } from "lucide-react";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cn, slugify } from "@/lib/utils";
-import { isTerminalEntry } from "@/lib/agents";
+import { isTerminalEntry, BUILTIN_TITLE_SIGNALS } from "@/lib/agents";
 
 export function AgentsSection() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -799,24 +799,24 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         {!isTerminal && agent.work_done !== false && <>
           <RegexListField
             label="Done signals (title → done)"
-            hint="One regex per line. When ANY signal list is set, these patterns classify this agent's terminal title, overriding the built-in claude/codex heuristics. A title matching one of these marks the turn done (blue badge). Precedence when several match: attention > busy > done. Agents that emit OSC progress signals need none of this, it already works."
+            hint={signalHint(agent.id, "A title matching one of these marks the turn done (blue badge). Precedence when several match: attention > busy > done.")}
             value={agent.capabilities?.signals?.idle ?? []}
             onChange={idle => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), idle } })}
-            placeholder={"Ready\n✓ done\nawaiting input" /* allow-shortcut: example placeholder text, the check mark is illustrative sample content (Orel-approved) */}
+            placeholder={signalPlaceholder(agent.id, "idle", "Ready\n✓ done\nawaiting input" /* allow-shortcut: example placeholder text, the check mark is illustrative sample content (Orel-approved) */)}
           />
           <RegexListField
             label="Busy signals (title → working)"
-            hint="Title matching one of these marks the agent as working (spinner), suppressing the idle heuristics while it runs. One regex per line."
+            hint={signalHint(agent.id, "A title matching one of these marks the agent as working (spinner), suppressing the idle heuristics while it runs.")}
             value={agent.capabilities?.signals?.busy ?? []}
             onChange={busy => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), busy } })}
-            placeholder={"Working\nThinking\nRunning"}
+            placeholder={signalPlaceholder(agent.id, "busy", "Working\nThinking\nRunning")}
           />
           <RegexListField
             label="Attention signals (title → needs you)"
-            hint="Title matching one of these means the agent is blocked on you (bell + attention dot). Highest precedence. One regex per line."
+            hint={signalHint(agent.id, "A title matching one of these means the agent is blocked on you (bell + attention dot). Highest precedence.")}
             value={agent.capabilities?.signals?.attention ?? []}
             onChange={attention => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), attention } })}
-            placeholder={"Action Required\nWaiting for approval"}
+            placeholder={signalPlaceholder(agent.id, "attention", "Action Required\nWaiting for approval")}
           />
           <Field
             label="Also scan output lines (Tier 3)"
@@ -955,6 +955,26 @@ function PathsTextarea({ value, onChange, placeholder }: {
       placeholder={placeholder}
     />
   );
+}
+
+/** For an agent that ships title heuristics (claude, codex), the placeholder IS
+ *  those heuristics, so an empty field reads as "this is what runs today" and a
+ *  user who wants to adjust one has something to copy rather than a guess. The
+ *  sources are written to behave identically when pasted in (see
+ *  BUILTIN_TITLE_SIGNALS). Everyone else gets illustrative examples. */
+function signalPlaceholder(cli: string, key: "busy" | "idle" | "attention", fallback: string): string {
+  const builtin = BUILTIN_TITLE_SIGNALS[cli]?.[key];
+  return builtin?.length ? builtin.join("\n") : fallback;
+}
+
+/** Same split: for a built-in-classified agent the greyed patterns above are
+ *  live, and filling ANY of the three fields replaces all three. For everyone
+ *  else the greyed lines are only examples. */
+function signalHint(cli: string, what: string): string {
+  const lead = BUILTIN_TITLE_SIGNALS[cli]
+    ? "One regex per line. The greyed patterns are what this agent uses today; filling in ANY of the three signal fields replaces them."
+    : "One regex per line. The greyed patterns are examples, this agent has no built-in title heuristics.";
+  return `${lead} ${what}`;
 }
 
 /** One-regex-per-line editor for custom work-done signals (issue #68). Reuses

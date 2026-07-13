@@ -21,7 +21,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle, compileSignals } from "@/lib/agents";
+import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle, compileSignals, BUILTIN_TITLE_SIGNALS } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 
 // ── spawnArgsForCli ───────────────────────────────────────────────────
@@ -405,13 +405,13 @@ describe("agentDisplayName", () => {
 
 // ── classifyAgentTitle (issue #68) ────────────────────────────────────
 
-describe("classifyAgentTitle", () => {
-  const sigAgent = (id: string, signals: NonNullable<Agent["capabilities"]>["signals"]): Agent => ({
-    id, display_name: id, command: id, args: [],
-    icon_id: "lucide:bot", color: "#888", builtin: false,
-    capabilities: { signals },
-  } as Agent);
+const sigAgent = (id: string, signals: NonNullable<Agent["capabilities"]>["signals"]): Agent => ({
+  id, display_name: id, command: id, args: [],
+  icon_id: "lucide:bot", color: "#888", builtin: false,
+  capabilities: { signals },
+} as Agent);
 
+describe("classifyAgentTitle", () => {
   it("keeps the built-in claude classifier when no signals are set", () => {
     expect(classifyAgentTitle("claude", "✳ Ready", [])).toBe("idle");
     expect(classifyAgentTitle("claude", "⠋ thinking", [])).toBe("busy");
@@ -457,6 +457,27 @@ describe("classifyAgentTitle", () => {
     expect(classifyAgentTitle("mycli", "anything", [a])).toBe(null);
     expect(classifyAgentTitle("unknown", "anything", [])).toBe(null);
   });
+});
+
+describe("BUILTIN_TITLE_SIGNALS", () => {
+  // Settings shows these as the placeholder for an empty field, so a user can
+  // copy them out and tweak one line. If pasting them back in changed the
+  // agent's behaviour, the placeholder would be a lie. Watch claude's busy
+  // pattern especially: user signals run busy BEFORE idle, so an unqualified
+  // "leading non-alphanumeric" busy test would swallow claude's own ✳ done
+  // glyph, and every finished turn would read as still working.
+  for (const cli of ["claude", "codex"]) {
+    it(`pasting ${cli}'s placeholders back in classifies identically`, () => {
+      const pasted = sigAgent(cli, BUILTIN_TITLE_SIGNALS[cli]);
+      const titles = [
+        "✳ Ready", "⠋ thinking", "⠐ ⠂ Task", "Ready", "Working", "Thinking",
+        "Action Required", "Waiting for approval", "plain title", "",
+      ];
+      for (const t of titles) {
+        expect(classifyAgentTitle(cli, t, [pasted])).toBe(classifyAgentTitle(cli, t, []));
+      }
+    });
+  }
 });
 
 // ── compileSignals ────────────────────────────────────────────────────
