@@ -57,7 +57,11 @@ export function PromptPalette() {
   function run(prompt: Prompt) {
     if (!taskId) return;
     close();
-    fireOrPickDestination(taskId, prompt);
+    // Defer past this click: when there's no focused agent, fireOrPickDestination
+    // opens the MODAL destination picker, and a synchronous open lets the same
+    // click's trailing pointer event dismiss the freshly-mounted dialog. Same
+    // guard CommandPalette uses for its row actions.
+    requestAnimationFrame(() => fireOrPickDestination(taskId, prompt));
   }
 
   function onKeyDown(e: React.KeyboardEvent) {

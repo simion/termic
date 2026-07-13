@@ -1,10 +1,9 @@
 // "Run '<title>'" destination picker — where should this prompt go? A
 // running agent (send / queue), or a new agent with the CLI of your choice.
-// Shared by the Prompts dropdown (UnifiedBar), the ⌘R quick-fire fallback,
-// and the ⇧⌘R search palette fallback (src/lib/promptFire.ts's
-// `fireOrPickDestination`, used when there's no focused live agent to guess
-// at). Self-manages via useUI, same pattern as every other dialog in
-// components/dialogs/ — see Dialogs.tsx.
+// Shared by the Prompts dropdown (UnifiedBar) and the ⌥⌘P prompt palette's
+// fallback (src/lib/promptFire.ts's `fireOrPickDestination`, used when there's
+// no focused live agent to guess at). Self-manages via useUI, same pattern as
+// every other dialog in components/dialogs/ — see Dialogs.tsx.
 
 import { useMemo } from "react";
 import { useApp, useActiveTask } from "@/store/app";

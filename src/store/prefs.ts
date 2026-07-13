@@ -451,10 +451,10 @@ interface PrefsState {
    *  is written to the clipboard automatically. ON by default. */
   terminalCopyOnSelect: boolean;
   editorFontSize: number;
-  /** Whole-app zoom, in percent (100 = native). Applied via the CSS
-   *  `zoom` property on the document root, so it scales every chrome
-   *  surface uniformly, terminals and editor included, like browser
-   *  zoom. Independent of the per-pane terminal/editor font sizes. */
+  /** Whole-app zoom, in percent (100 = native). Applied via the webview's
+   *  native page zoom (see applyUiScale), so it scales every chrome surface
+   *  uniformly, terminals and editor included, like browser zoom. Independent
+   *  of the per-pane terminal/editor font sizes. */
   uiScale: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;

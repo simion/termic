@@ -51,8 +51,8 @@ export function UnifiedBar() {
   const enabledPrompts = usePromptLibrary(s => s.prompts).filter(p => p.enabled);
   // Picking a prompt opens the shared destination modal (running agents +
   // new-agent CLIs) — a modal, not a submenu, which flipped to the wrong
-  // side near the window edge. Shared (not local state) so the ⌘R
-  // quick-fire / ⇧⌘R palette fallback paths can open the same dialog.
+  // side near the window edge. Shared (not local state) so the ⌥⌘P prompt
+  // palette's fallback path can open the same dialog.
   const openPromptFire = useUI(s => s.openPromptFire);
   const themeMode = usePrefs(s => s.themeMode);
   const setThemeMode = usePrefs(s => s.setThemeMode);
