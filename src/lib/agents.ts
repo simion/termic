@@ -258,13 +258,45 @@ export function compileSignals(sources: string[] | undefined): RegExp[] {
 
 export type WorkState = "busy" | "idle" | "attention";
 
-/** Classify a terminal title into a work-done state for `cli`. When the agent
- *  has user-configured `signals`, those drive it (fixed precedence attention >
- *  busy > idle, mirroring the OSC handler priority); otherwise the built-in
- *  claude/codex heuristics apply; an unknown cli with no signals returns null.
+export type SignalPatterns = { busy?: string[]; idle?: string[]; attention?: string[] };
+
+/** The built-in title heuristics for the two CLIs that have them, expressed as
+ *  the same regex sources a user would type. Two jobs: they ARE the classifier
+ *  below (no second copy to drift), and Settings shows them as the placeholder
+ *  for an empty field, so what runs today is visible and copyable rather than
+ *  buried in this file.
+ *
+ *  Written to survive being copied verbatim into the fields, which is the whole
+ *  point of a placeholder: claude's busy pattern excludes ✳ so it can't win the
+ *  busy-before-idle precedence against claude's own done glyph. The old inline
+ *  code got away with an unqualified "leading non-alphanumeric" busy test only
+ *  because it checked idle first. */
+export const BUILTIN_TITLE_SIGNALS: Record<string, Required<SignalPatterns>> = {
+  claude: {
+    attention: [],
+    // Any leading glyph that isn't the ✳ brand mark is a spinner frame. We've
+    // seen Braille (U+2800..U+28FF) and combinations like "⠐ ⠂".
+    busy: ["^\\s*[^A-Za-z0-9\\s✳]"],
+    idle: ["^\\s*✳"],
+  },
+  codex: {
+    attention: ["\\b(Waiting|Action Required)\\b"],
+    busy: ["\\b(Working|Thinking)\\b", "^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"],
+    idle: ["\\bReady\\b"],
+  },
+};
+
+/** Classify a terminal title into a work-done state for `cli`. The agent's
+ *  user-configured `signals` drive it when set; otherwise the built-in
+ *  heuristics above do, and an agent with neither returns null (its state
+ *  comes from OSC signals, or from the fallback heuristics in TerminalPane).
+ *
+ *  Precedence is attention > busy > idle, mirroring the OSC handler priority.
+ *  A busy title that is wrong self-corrects on the next title or on byte-quiet;
+ *  a missed busy means a premature done, which is the worse failure.
+ *
  *  Pure and total — never throws on a bad user pattern (see compileSignals).
- *  This is the registry-driven replacement for TerminalPane's old inline
- *  classifier (issue #68). */
+ *  Registry-driven replacement for TerminalPane's old inline classifier (#68). */
 export function classifyAgentTitle(
   cli: string,
   title: string,
@@ -272,27 +304,14 @@ export function classifyAgentTitle(
 ): WorkState | null {
   const t = title.trim();
   if (!t) return null;
-  const sig = agents.find(a => a.id === cli)?.capabilities?.signals;
-  if (sig && (sig.busy?.length || sig.idle?.length || sig.attention?.length)) {
-    if (compileSignals(sig.attention).some(re => re.test(t))) return "attention";
-    if (compileSignals(sig.busy).some(re => re.test(t))) return "busy";
-    if (compileSignals(sig.idle).some(re => re.test(t))) return "idle";
-    return null;
-  }
-  if (cli === "claude") {
-    // Idle/done: title leads with Claude's brand glyph. Any other leading
-    // non-alphanumeric glyph is the spinner = busy.
-    if (/^\s*✳/.test(t)) return "idle";
-    if (/^\s*\S/.test(t) && !/^\s*[A-Za-z0-9]/.test(t)) return "busy";
-    return null;
-  }
-  if (cli === "codex") {
-    if (/\b(Waiting|Action Required)\b/.test(t)) return "attention";
-    if (/\bReady\b/.test(t)) return "idle";
-    if (/\b(Working|Thinking)\b/.test(t)) return "busy";
-    if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(t)) return "busy";
-    return null;
-  }
+  const user = agents.find(a => a.id === cli)?.capabilities?.signals;
+  const sig = user && (user.busy?.length || user.idle?.length || user.attention?.length)
+    ? user
+    : BUILTIN_TITLE_SIGNALS[cli];
+  if (!sig) return null;
+  if (compileSignals(sig.attention).some(re => re.test(t))) return "attention";
+  if (compileSignals(sig.busy).some(re => re.test(t))) return "busy";
+  if (compileSignals(sig.idle).some(re => re.test(t))) return "idle";
   return null;
 }
 
