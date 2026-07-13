@@ -774,42 +774,44 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             placeholder={"*.mycompany.com\nbitbucket.org"}
           />
         </Field>
-        {!isTerminal && <Field
-          label="Work-done detection"
-          hint="When off, the done badge, bell, and OS notification are never shown for this agent. Disable for custom CLIs that emit signals in ways that cause false positives."
-        >
-          <div className="flex items-center gap-2 pt-0.5">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={agent.work_done !== false}
-              onClick={() => onPatch({ work_done: agent.work_done === false ? true : false })}
-              className={cn(
-                "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center",
-                agent.work_done !== false ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
-              )}
-            >
-              <span
-                className={cn(
-                  // Ok-filled track, so the ok ink (see the toggle above).
-                  "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out",
-                  agent.work_done !== false ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
-                )}
-              />
-            </button>
-            <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-              {agent.work_done !== false ? "Enabled" : "Disabled"}
-            </span>
-          </div>
-        </Field>}
-        {/* The three pattern lists and the output-scan switch are one feature:
-            what a title has to look like for this agent to read as done /
-            working / blocked, and where we look for it. Boxed so the switch
-            reads as belonging to the patterns above it rather than as another
-            loose agent setting, and so the shared explanation is stated once
-            instead of on all three fields. */}
-        {!isTerminal && agent.work_done !== false &&
-          <SubSection title="Title signals" hint={signalGroupHint(agent.id)}>
+        {/* Work-done detection and the patterns are one feature: whether we
+            read this agent's state at all, and what we read it from. The master
+            switch sits on the section's legend, so the body underneath is
+            visibly what it governs, and turning it off collapses that body
+            rather than leaving dead fields for a machine that isn't running. */}
+        {!isTerminal &&
+          <SubSection
+            title="Work-done detection"
+            hint={agent.work_done === false
+              ? "Off: the done badge, bell, and OS notification are never shown for this agent. Turn it on to configure how its state is read."
+              : signalGroupHint(agent.id)}
+            action={
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={agent.work_done !== false}
+                  onClick={() => onPatch({ work_done: agent.work_done === false ? true : false })}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center",
+                    agent.work_done !== false ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-2)]"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      // Ok-filled track, so the ok ink (see the toggle above).
+                      "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out",
+                      agent.work_done !== false ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
+                    )}
+                  />
+                </button>
+                <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
+                  {agent.work_done !== false ? "On" : "Off"}
+                </span>
+              </div>
+            }
+          >
+            {agent.work_done !== false && <>
             <RegexListField
               label="Done (title → done)"
               hint="Marks the turn finished: blue badge, bell, notification."
@@ -855,7 +857,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                     className={cn(
                       "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center", /* allow-shortcut: standard toggle switch, matches the Work-done switch above, not a decorative chip (Orel-approved) */
                       hasSignals ? "cursor-pointer" : "cursor-not-allowed opacity-50",
-                      hasSignals && agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
+                      // bg-2, not bg-3: the band itself is bg-3, so an off
+                      // switch tracked in bg-3 would have no track at all.
+                      hasSignals && agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-2)]"
                     )}
                   >
                     <span
@@ -873,6 +877,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                 </div>
               </Field>
             </div>
+            </>}
           </SubSection>}
       </div>
     </div>
