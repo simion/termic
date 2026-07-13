@@ -449,10 +449,18 @@ export function NewProjectDialog() {
                 )}
                 title={r.path}
               >
-                <Folder className={cn("h-4 w-4", path === r.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
-                <span className="flex-1 truncate">{r.name}</span>
+                <Folder className={cn("h-4 w-4 shrink-0", path === r.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
+                <span className="shrink-0 truncate">{r.name}</span>
+                {/* Full path, faded, right-aligned. dir=rtl truncates from the
+                    LEFT so the meaningful tail (…/repo) stays readable. */}
+                <span
+                  dir="rtl"
+                  className="min-w-0 flex-1 truncate text-right text-[11px] text-[var(--color-fg-faint)] opacity-50"
+                >
+                  {r.path}
+                </span>
                 {path === r.path && (
-                  <span className="text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Selected</span>
+                  <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Selected</span>
                 )}
               </button>
             ))}
