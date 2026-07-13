@@ -368,9 +368,12 @@
     --color-err:         #eb6f92;       /* love */
     /* Palette ramp from the canon palette: love/rose/gold/foam/pine/iris.
        Rosé Pine has no true green, so green is a muted moss tuned to sit
-       in-family; pink is an iris–love blend to stay distinct from red. */
+       in-family; pink is an iris–love blend to stay distinct from red.
+       Orange is NOT canon rose (#ea9a97): rose sits at hue 2°, i.e. red,
+       so a folder marked "orange" rendered salmon and crowded love. This
+       is rose warmed toward gold, in-family but an actual orange. */
     --color-palette-red:    #eb6f92;    /* love */
-    --color-palette-orange: #ea9a97;    /* rose */
+    --color-palette-orange: #e89f6f;    /* rose, warmed toward gold */
     --color-palette-yellow: #f6c177;    /* gold */
     --color-palette-green:  #97c9a3;
     --color-palette-teal:   #9ccfd8;    /* foam */

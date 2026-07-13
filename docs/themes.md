@@ -60,7 +60,7 @@ never shadow the built-in Claude theme.
     "accent": "#c4a7e7", "accent-soft": "rgba(196,167,231,0.22)", "accent-deep": "#6f5b9e",
     "accent-fg": "#232136",
     "ok": "#9ccfd8", "ok-fg": "#232136", "warn": "#f6c177", "err": "#eb6f92",
-    "palette-red": "#eb6f92", "palette-orange": "#ea9a97", "palette-yellow": "#f6c177",
+    "palette-red": "#eb6f92", "palette-orange": "#e89f6f", "palette-yellow": "#f6c177",
     "palette-green": "#97c9a3", "palette-teal": "#9ccfd8", "palette-blue": "#3e8fb0",
     "palette-purple": "#c4a7e7", "palette-pink": "#d8a0c9"
   },
