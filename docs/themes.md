@@ -36,7 +36,7 @@ Two ways, same as the built-ins:
 
 - Hover the theme icon (sun/moon) in the title bar. Custom themes list
   below the built-ins, with an "Open themes folder" row at the bottom.
-- ⌘K, then "Change theme…". Arrow keys live-preview each theme; Enter
+- ⇧⌘P, then "Change theme…". Arrow keys live-preview each theme; Enter
   commits, Escape rolls back to what you had.
 
 The keyboard theme-cycle shortcut only cycles System / Light / Dark, so a

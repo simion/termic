@@ -457,7 +457,7 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
 }
 
 /* Overlay / finder entrance — fade in + a short slide down (~22px) from the
-   top. Used by the ⌘K command palette and the ⌘P / ⇧⌘F / ⌘N finder dialogs.
+   top. Used by the ⇧⌘P command palette and the ⌘P / ⇧⌘F / ⌘N finder dialogs.
    The slide animates the `transform` property; the dialogs center themselves
    with Tailwind's `-translate-x-1/2`, which v4 compiles to the SEPARATE
    `translate:` property — the two compose (individual `translate` is applied
@@ -486,7 +486,7 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   .termic-pop[data-state] { animation: none; }
 }
 
-/* Soft, non-blocking backdrop for the ⌘K command palette: a gentle dim that
+/* Soft, non-blocking backdrop for the ⇧⌘P command palette: a gentle dim that
    fades in with the panel and out on close, so the palette reads with more
    contrast against a busy editor/file-tree without the old harsh black flash.
    data-state is mirrored from the panel so it reverses on dismiss. */

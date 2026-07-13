@@ -284,7 +284,7 @@ export function FindInFilesDialog() {
   return (
     <Dialog.Root open={!!taskId} onOpenChange={(v) => (v ? null : close())}>
       <Dialog.Portal>
-        {/* Soft animated dim (matches the ⌘K palette): fades in/out via
+        {/* Soft animated dim (matches the ⇧⌘P palette): fades in/out via
             data-state instead of a snap, for contrast without flicker. */}
         <Dialog.Overlay className="termic-backdrop fixed inset-0 z-40 bg-black/30" />
         <Dialog.Content
