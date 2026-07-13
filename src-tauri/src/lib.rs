@@ -2043,7 +2043,16 @@ fn tasks_list() -> Vec<Task> { load_tasks() }
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
-fn task_open_repo(project_id: String, cli: Option<String>, name: Option<String>, command: Option<String>) -> Result<Task, String> {
+fn task_open_repo(
+    project_id: String,
+    cli: Option<String>,
+    name: Option<String>,
+    command: Option<String>,
+    sandbox_enabled: Option<bool>,
+    sandbox_mode: Option<SandboxMode>,
+    sandbox_rw_paths: Option<Vec<String>>,
+    sandbox_allowed_hosts: Option<Vec<String>>,
+) -> Result<Task, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
     // CLI is now explicit — frontend's "+ Open repo with <agent>" passes the
@@ -2135,6 +2144,18 @@ fn task_open_repo(project_id: String, cli: Option<String>, name: Option<String>,
     } else {
         None
     };
+    // Sandbox: the main checkout stays UNCAGED unless the advanced New Task
+    // dialog explicitly opts in. Unlike task_create we deliberately do NOT
+    // fall back to the project default here, so the quick "work on my real
+    // files" path (and legacy callers, which pass nothing) is never surprised
+    // by a cage at first launch. When the dialog does opt in, the seatbelt +
+    // proxy cage the main checkout identically to a worktree.
+    let sandbox_mode = sandbox_mode
+        .or_else(|| sandbox_enabled.and_then(|e| e.then_some(SandboxMode::Enforce)))
+        .unwrap_or(SandboxMode::Off);
+    let sandbox_enabled = sandbox_mode != SandboxMode::Off;
+    let sandbox_rw_paths = sandbox_rw_paths.unwrap_or_default();
+    let sandbox_allowed_hosts = sandbox_allowed_hosts.unwrap_or_default();
     let task = Task {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
@@ -2154,17 +2175,15 @@ fn task_open_repo(project_id: String, cli: Option<String>, name: Option<String>,
         spawn_count: 0,
         has_resumable_history: false,
         agent_session_ids: std::collections::HashMap::new(),
-        // Repo-root tasks start unsandboxed - the user is
-        // opting into one-off work in their main checkout, and a
-        // surprise cage at first launch would obscure that. They
-        // CAN turn the sandbox on later from the dialog (shield
-        // button) - the seatbelt + proxy work identically against
-        // the main checkout as against a worktree.
-        sandbox_enabled: false,
-        sandbox_mode: Some(SandboxMode::Off),
+        // Off by default (see the resolution above); the advanced dialog can
+        // opt a main-checkout task into a cage at create, and the shield
+        // button still changes it later. Seatbelt + proxy work identically
+        // against the main checkout as against a worktree.
+        sandbox_enabled,
+        sandbox_mode: Some(sandbox_mode),
         yolo: false,
-        sandbox_rw_paths: Vec::new(),
-        sandbox_allowed_hosts: Vec::new(),
+        sandbox_rw_paths,
+        sandbox_allowed_hosts,
         composition,
         custom_command,
         resume_override: None,
@@ -7870,10 +7889,18 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
         .map(|p| p.root_path)
         .collect();
     let mut out: Vec<(DiscoveredRepo, std::time::SystemTime)> = Vec::new();
-    let push_repo = |path: &PathBuf, out: &mut Vec<(DiscoveredRepo, std::time::SystemTime)>| {
+    // Dedup by CANONICAL path: a repo can be reachable both directly and via a
+    // grouping folder (e.g. a `code/all -> code` symlink, or the two-level
+    // scan below re-finding a direct child), and canonicalize() collapses
+    // those to one real path. Without this every such repo lists twice.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let push_repo = |path: &PathBuf,
+                     out: &mut Vec<(DiscoveredRepo, std::time::SystemTime)>,
+                     seen: &mut std::collections::HashSet<String>| {
         let canon = fs::canonicalize(path).unwrap_or(path.clone());
-        let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
         let path_str = canon.to_string_lossy().into_owned();
+        if !seen.insert(path_str.clone()) { return; } // already discovered
+        let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
         let already_added = added.contains(&path_str);
         let activity = repo_activity_time(&canon);
         out.push((DiscoveredRepo { path: path_str, name, already_added }, activity));
@@ -7889,7 +7916,7 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
         let path = entry.path();
         if !path.is_dir() || skip(&path) { continue; }
         if path.join(".git").exists() {
-            push_repo(&path, &mut out);
+            push_repo(&path, &mut out, &mut seen);
             continue;
         }
         // Grouping folder: scan its children for repos (one extra level).
@@ -7898,7 +7925,7 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
             let p2 = e2.path();
             if !p2.is_dir() || skip(&p2) { continue; }
             if p2.join(".git").exists() {
-                push_repo(&p2, &mut out);
+                push_repo(&p2, &mut out, &mut seen);
             }
         }
     }
@@ -8648,6 +8675,21 @@ mod tests {
         mkrepo(root.path(), "repo-a");
         mkrepo(root.path(), "repo-a/vendor/inner");
         assert_eq!(discovered_names(root.path()), ["repo-a"].map(String::from).into());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discover_repos_dedups_symlink_reachable_twice() {
+        // A `self -> .` symlink makes the whole root reachable a second time as
+        // a grouping folder (the real-world `~/r -> Work/Repos` case). Canonical
+        // -path dedup must keep each repo once, not list it twice.
+        let root = tempdir().unwrap();
+        mkrepo(root.path(), "repo-a");
+        mkrepo(root.path(), "repo-b");
+        std::os::unix::fs::symlink(root.path(), root.path().join("all")).unwrap();
+        let repos = discover_repos(root.path().to_string_lossy().into_owned()).unwrap();
+        let names: Vec<_> = repos.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(repos.len(), 2, "each repo should appear once, got {names:?}");
     }
 
     #[test]

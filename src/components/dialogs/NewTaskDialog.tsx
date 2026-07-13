@@ -95,10 +95,6 @@ export function NewTaskDialog() {
   useEffect(() => {
     if (osSandboxOk === false && sandboxMode !== "off") setSandboxMode("off");
   }, [osSandboxOk, sandboxMode]);
-  // Derived: any cage on. Drives the 2-column layout + "send lists" gating.
-  // Repo-root mode has no sandbox (task_open_repo takes no sandbox args),
-  // so force it off there — keeps the layout single-column + the panel hidden.
-  const sandbox = sandboxMode !== "off" && mode === "worktree";
   // The sandbox lists. Initialized from the
   // project's defaults whenever projectId changes; the user edits
   // freely until Create. Stored as multi-line text - we convert to
@@ -121,6 +117,13 @@ export function NewTaskDialog() {
   };
   const [members, setMembers] = useState<MemberSpec[]>([]);
   const isMulti = (project?.type ?? "single") === "multi";
+  // Sandbox is offered for single-repo tasks in BOTH locations: the seatbelt +
+  // proxy cage the main checkout identically to a worktree (see task_open_repo,
+  // which now takes sandbox args). Multi keeps its own handling (its mode stays
+  // "worktree"), so the repo-root case is gated on !isMulti.
+  const canSandbox = mode === "worktree" || (mode === "repo_root" && !isMulti);
+  // Derived: any cage on. Drives the 2-column layout + "send lists" gating.
+  const sandbox = sandboxMode !== "off" && canSandbox;
   // Import mode (issue #5): instead of branching a fresh worktree, adopt
   // one that already exists on disk. Only offered for single-repo git
   // projects (multi composition / non-git folders don't apply). When on,
@@ -368,7 +371,11 @@ export function NewTaskDialog() {
     submittingRef.current = true;
     setBusy(true); setErr(null);
     try {
-      const w = await taskOpenRepo(projectId, cli, name.trim());
+      const splitLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
+      const w = await taskOpenRepo(
+        projectId, cli, name.trim(),
+        { enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
+      );
       await loadAll();
       setActive(w.id);
       close();
@@ -385,7 +392,9 @@ export function NewTaskDialog() {
     // single-repo concept (multi has its own per-member toggle); sandbox mode
     // is remembered whenever a worktree/multi create can carry one.
     if (!isMulti) persistLast(LS_LAST_MODE, mode);
-    if (isMulti || mode === "worktree") persistLast(LS_LAST_SANDBOX, sandboxMode);
+    // Sandbox can now ride on a single-repo main-checkout create too, so
+    // remember the mode whenever a create can carry one (i.e. always here).
+    persistLast(LS_LAST_SANDBOX, sandboxMode);
     if (mode === "repo_root" && !isMulti) { submitRepoRoot(); return; }
     if (importMode) { submitImport(); return; }
     if (!projectId || !name.trim() || !branch.trim()) return;
@@ -801,9 +810,9 @@ export function NewTaskDialog() {
             strip of buttons whose purpose isn't obvious). Pinned at
             creation - lists below freeze onto the task and can't be
             edited after (archive + recreate to change). */}
-        {/* Sandbox is worktree-only here: task_open_repo (repo-root)
-            takes no sandbox args, and multi keeps mode="worktree". */}
-        {mode === "worktree" && (
+        {/* Offered for single-repo worktree AND main checkout (see canSandbox);
+            multi has its own per-member handling. */}
+        {canSandbox && (
         <Field label="Sandbox" hint="Cage the agent's filesystem + network access. Pinned at creation.">
           <SandboxModeSelector value={sandboxMode} onChange={setSandboxMode} osUnavailable={osSandboxOk === false} compact />
         </Field>

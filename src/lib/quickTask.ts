@@ -74,8 +74,10 @@ export async function createQuickTask(opts: {
   let task: Task;
   if (mode === "repo_root") {
     // Main checkout: no worktree, open the agent/shell/custom in the repo's
-    // live checkout (same IPC the "Run in repo" rows have always used).
-    task = await taskOpenRepo(projectId, cli, trimmedName, command);
+    // live checkout (same IPC the "Run in repo" rows have always used). The
+    // quick path stays uncaged (no sandbox arg); the advanced dialog is where
+    // you opt into one.
+    task = await taskOpenRepo(projectId, cli, trimmedName, undefined, command);
   } else {
     task = await taskCreate({
       id: crypto.randomUUID(),
