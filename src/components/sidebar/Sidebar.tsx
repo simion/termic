@@ -6,7 +6,7 @@ import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -157,6 +157,26 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // id). Task rename is managed inside TaskRow so it can co-exist with
   // per-tab rename state.
   const [renaming, setRenaming] = useState<{ kind: "proj" | "group"; id: string; value: string } | null>(null);
+  // Radix menus close AFTER onSelect and asynchronously restore focus to the
+  // trigger; autoFocus on the freshly-mounted input loses that race (worse for
+  // groups, whose header is focusable and reclaims it). Re-focus + select on
+  // the next two frames to land after Radix's restore tick. Same workaround as
+  // the task rename input (see TaskRow). Keyed on which rename so switching
+  // targets re-focuses, but typing (value change) doesn't re-select.
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!renaming) return;
+    let cancelled = false;
+    const r1 = requestAnimationFrame(() => {
+      const r2 = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const el = renameInputRef.current;
+        if (el && document.activeElement !== el) { el.focus(); el.select(); }
+      });
+      if (cancelled) cancelAnimationFrame(r2);
+    });
+    return () => { cancelled = true; cancelAnimationFrame(r1); };
+  }, [renaming?.kind, renaming?.id]);
   // Project whose `+` dropdown is currently open. Used to keep the row
   // visually "hovered" (bg + Cog visible) while the menu is open;
   // otherwise the menu trigger looks like it un-selected its parent.
@@ -280,16 +300,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         // and expand the folder so the drop is visible.
         dragged = { ...dragged, group: hoverGroup };
         list.splice(idx, 1);
-        // First VISIBLE member — same hidden-anchor guard as
-        // onDragPointerMove's firstIdOfGroup: with "Hide inactive
-        // projects" on, the group's array-first member can be an
-        // inactive row folded away at the bottom, and anchoring there
-        // would teleport the folder to that hidden position on drop.
+        // First member of the group in array order. Grouped rows never fold
+        // under "Hide inactive projects" (only loose rows do), so every member
+        // is visible; the shown() guard just keeps this in lockstep with the
+        // render's shownInline.
         const hideInactive = usePrefs.getState().hideInactiveProjects;
         const wss = useApp.getState().tasks;
         const firstIdx = list.findIndex(x =>
           groupOf(x) === hoverGroup
-          && (!hideInactive || wss.some(w => w.project_id === x.id && !w.archived)),
+          && (!hideInactive || !!groupOf(x) || wss.some(w => w.project_id === x.id && !w.archived)),
         );
         // -1 = dragged is the folder's SOLE (visible) member (dropped on
         // its own header): keep its slot instead of teleporting the
@@ -338,16 +357,16 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const fromIdx = all.findIndex(x => x.id === dragId);
     if (fromIdx === -1) return;
 
-    // Anchors below must resolve against the projects the user can SEE —
-    // with "Hide inactive projects" on, a group's array-first member can be
-    // an inactive row folded away at the bottom; anchoring on it would
-    // teleport drops to the hidden member's array position. getState (not
-    // the render closure): the document-level listener is captured once at
-    // pointerdown and would otherwise read stale values.
+    // Anchors below resolve against the projects the user can SEE. Grouped
+    // rows never fold under "Collapse inactive ungrouped projects" (only loose
+    // rows do), so shown() mirrors the render's shownInline: grouped always
+    // visible, loose visible only when active. getState (not the render
+    // closure): the document-level listener is captured once at pointerdown and
+    // would otherwise read stale values.
     const hideInactive = usePrefs.getState().hideInactiveProjects;
     const wss = useApp.getState().tasks;
     const shown = (x: typeof all[number]) =>
-      !hideInactive || wss.some(w => w.project_id === x.id && !w.archived);
+      !hideInactive || !!groupOf(x) || wss.some(w => w.project_id === x.id && !w.archived);
     // First VISIBLE member of group `g` in array order (skipping the
     // dragged row) — matches the first row rendered inside the folder.
     const firstIdOfGroup = (g: string): string | null =>
@@ -535,7 +554,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const hideInactive = usePrefs.getState().hideInactiveProjects;
     const wss = useApp.getState().tasks;
     const shown = (x: typeof all[number]) =>
-      !hideInactive || wss.some(w => w.project_id === x.id && !w.archived);
+      !hideInactive || !!groupOf(x) || wss.some(w => w.project_id === x.id && !w.archived);
     // Top-level boundaries only: loose rows + OTHER folder sections in
     // document order. A folder can't nest, so its drop slots are always
     // between top-level items; first midpoint below the cursor wins.
@@ -681,10 +700,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // place within the revealed inactive group). Because both groups preserve
   // order, a folded project that gains a task pops back to its rightful
   // position among the active rows.
+  //
+  // GROUPED projects are EXEMPT from the fold: a project inside a folder stays
+  // in that folder regardless of activity, so hide-inactive never yanks a
+  // grouped project out to the flat bottom fold (that read as a bug — you
+  // grouped it on purpose). Only LOOSE (ungrouped) inactive projects fold. So
+  // the fold is "declutter the loose top-level list"; folders stay intact and
+  // are the user's own organization to prune.
   const projectIsActive = (pid: string) =>
     tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>
-    !hideInactiveProjects || projectIsActive(p.id);
+    !hideInactiveProjects || projectIsActive(p.id) || !!groupOf(p);
   const activeProjects = projects.filter(shownInline);
   const inactiveProjects = projects.filter(p => !shownInline(p));
   const inactiveCount = inactiveProjects.length;
@@ -730,11 +756,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     under a still-collapsed folder would look like a no-op,
                     and "collapse all" means the whole tree tidies up. */}
                 <DropdownItem onSelect={() => { setAllTasksCollapsed(false); setAllGroupsCollapsed(false); }}>
-                  <ChevronsUpDown className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                  <ChevronsUpDown className="h-5 w-5 text-[var(--color-fg-dim)]" />
                   <span>Expand all agents</span>
                 </DropdownItem>
                 <DropdownItem onSelect={() => { setAllTasksCollapsed(true); setAllGroupsCollapsed(true); }}>
-                  <ChevronsDownUp className="h-4 w-4 text-[var(--color-fg-dim)]" />
+                  <ChevronsDownUp className="h-5 w-5 text-[var(--color-fg-dim)]" />
                   <span>Collapse all agents</span>
                 </DropdownItem>
                 <DropdownSeparator />
@@ -754,8 +780,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         : undefined}
                     >
                       {isActive
-                        ? <Check className="h-4 w-4 text-[var(--color-accent)]" />
-                        : <span className="h-4 w-4 shrink-0" />}
+                        ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
+                        : <span className="h-5 w-5 shrink-0" />}
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <span className={isActive ? "text-[var(--color-accent)] font-medium" : undefined}>{label}</span>
                         <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">{hint}</span>
@@ -770,12 +796,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     ? "bg-[var(--color-sel)] data-[highlighted]:bg-[var(--color-sel)]"
                     : undefined}
                 >
+                  {/* Checkmark when on, empty slot when off — same pattern as
+                      the expand-mode rows above (no stray icon). */}
                   {hideInactiveProjects
-                    ? <Check className="h-4 w-4 text-[var(--color-accent)]" />
-                    : <EyeOff className="h-4 w-4 text-[var(--color-fg-dim)]" />}
+                    ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
+                    : <span className="h-5 w-5 shrink-0" />}
                   <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className={hideInactiveProjects ? "text-[var(--color-accent)] font-medium" : undefined}>Hide inactive projects</span>
-                    <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">Fold projects with no agents behind a row at the bottom.</span>
+                    <span className={hideInactiveProjects ? "text-[var(--color-accent)] font-medium" : undefined}>Collapse inactive projects</span>
+                    <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">Fold ungrouped projects with no agents into a row at the bottom. Grouped projects stay in their folder.</span>
                   </div>
                 </DropdownItem>
               </DropdownMenu>
@@ -851,11 +879,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         grabOffsetY: e.clientY - (e.currentTarget as HTMLElement).getBoundingClientRect().top,
                         appliedTy: 0, pointerY: e.clientY,
                         origGroup: groupOf(p),
-                        // Fold rows render flat regardless of group label, so
-                        // a drag that STARTS there must never rewrite the
-                        // group — the change would be invisible until
-                        // hide-inactive is toggled off (see the fold-domain
-                        // note in onDragPointerMove).
+                        // Fold rows are ungrouped inactive projects, so a drag
+                        // that STARTS there must never rewrite the group: the
+                        // change would be invisible until the fold is revealed
+                        // (see the fold-domain note in onDragPointerMove).
                         fromFold: !!(e.currentTarget as HTMLElement).closest("[data-inactive-fold]"),
                       };
                       // Attach document-level listeners so drag
@@ -924,6 +951,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           }
                           {renaming && renaming.kind === "proj" && renaming.id === p.id ? (
                             <input
+                              ref={renameInputRef}
                               autoFocus
                               value={renaming.value}
                               onChange={e => setRenaming({ ...renaming, value: e.target.value })}
@@ -1391,6 +1419,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       <Folder className={cn("h-3.5 w-3.5 shrink-0", !accent && "text-[var(--color-fg-faint)]")} />
                       {renaming?.kind === "group" && renaming.id === name ? (
                         <input
+                          ref={renameInputRef}
                           autoFocus
                           value={renaming.value}
                           // Group names are ALL-CAPS at the data layer (they
@@ -1495,12 +1524,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               </div>
             );
           };
-          // Section the ACTIVE projects (see projectSections): ungrouped
+          // Section the inline-shown projects (shownInline: active, plus ANY
+          // grouped project since folders never fold). Ungrouped active
           // projects render in place; a group renders as one folder at its
-          // FIRST member's position, members in array order. Inactive
-          // projects keep the flat fold below regardless of group (a group
-          // whose members are all folded simply doesn't render). Keyboard
-          // nav (useShortcuts) walks the same visualProjectOrder.
+          // FIRST member's position with all its members. Only ungrouped
+          // inactive projects drop to the flat fold below. Keyboard nav
+          // (useShortcuts) walks the same visualProjectOrder.
           const sections = projectSections(activeProjects);
           return (
             <>
@@ -1542,7 +1571,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                 </button>
               )}
               {/* data-inactive-fold marks this as a separate drag domain:
-                  rows here render flat regardless of group, so drags across
+                  rows here are ungrouped inactive projects, so drags across
                   the fold reorder only and never touch group labels. */}
               {hideInactiveProjects && showInactive && (
                 <div data-inactive-fold className="flex flex-col gap-0.5">
@@ -1755,7 +1784,7 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
   // Task rename
   const [taskRenaming, setTaskRenaming] = useState<string | null>(null);
   const taskRenameInputRef = useRef<HTMLInputElement | null>(null);
-  // External rename trigger (⌘K command palette → "Rename task"). The
+  // External rename trigger (⇧⌘P command palette → "Rename task"). The
   // palette can't reach into this row's local state, so it bumps a nonce on
   // the UI store; we start the inline rename when it targets us, then clear
   // it so a later collapse/expand re-mount doesn't re-fire. The palette
