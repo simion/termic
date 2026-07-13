@@ -5,9 +5,11 @@
  *  instead ends the card's surface and starts a new one: the section bleeds out
  *  to the card's edges (the negative margin cancels the card's px-4 — the one
  *  thing this depends on) and changes background, with a hairline where each
- *  surface begins. The legend uses the faint uppercase style the settings
- *  sections already use for labels, so it reads as a marker for what follows
- *  rather than as another field stacked above it.
+ *  surface begins. The legend outranks the field labels it covers (14px semibold
+ *  against their 13px medium): it is a heading for everything in the band, so it
+ *  has to sit above them in the hierarchy, not below. The faint 11px uppercase
+ *  it started as is the style for a chip, and at that size a heading introducing
+ *  half a card just disappeared.
  *
  *  bg-3, not bg-2: the card is bg-1, and bg-2 sits 8/255 away from it (#1c1c1c
  *  on #141414), which is invisible. The band then read as a hairline with
@@ -36,7 +38,7 @@ export function SubSection({ title, hint, children }: {
   return (
     <section className="-mx-4 space-y-3 border-y border-[var(--color-border)] bg-[var(--color-bg-3)] px-4 py-3 last:-mb-4 last:rounded-b-[7px] last:border-b-0">
       <div>
-        <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">{title}</div>
+        <div className="text-[14px] font-semibold text-[var(--color-fg)]">{title}</div>
         {hint && <div className="mt-1 text-[12px] text-[var(--color-fg-dim)]">{hint}</div>}
       </div>
       {children}
