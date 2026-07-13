@@ -1,17 +1,18 @@
-// ⇧⌘R prompt search palette — fuzzy-filter the enabled prompt library by
-// TITLE ONLY (not body), Enter runs the highlighted prompt straight at the
-// focused agent (or opens the destination picker when there's none, via
-// `fireOrPickDestination` — same fallback the ⌘R quick-fire leader key
-// uses). Modelled on CommandPalette.tsx: same non-modal Dialog pattern (an
-// action here can open the destination picker, which would get dismissed
-// by a modal palette's closing animation), no solid backdrop.
+// ⌥⌘P prompt palette — fuzzy-filter the enabled prompt library by TITLE ONLY
+// (not body), Enter runs the highlighted prompt straight at the focused agent
+// (or opens the destination picker when there's none, via
+// `fireOrPickDestination`). While the query is empty, digits 1-9 fire the top
+// rows directly (Raycast-style) — a positional accelerator, no persisted
+// per-prompt keys. Modelled on CommandPalette.tsx: same non-modal Dialog
+// pattern (an action here can open the destination picker, which would get
+// dismissed by a modal palette's closing animation), no solid backdrop.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Search, BookText } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
-import { usePromptLibrary, effectiveTriggerKeys, type Prompt } from "@/store/prompts";
+import { usePromptLibrary, type Prompt } from "@/store/prompts";
 import { fireOrPickDestination } from "@/lib/promptFire";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
 
@@ -22,7 +23,6 @@ export function PromptPalette() {
   const openSettings = useApp(s => s.openSettings);
   const allPrompts = usePromptLibrary(s => s.prompts);
   const enabledPrompts = useMemo(() => allPrompts.filter(p => p.enabled), [allPrompts]);
-  const triggerKeys = useMemo(() => effectiveTriggerKeys(allPrompts), [allPrompts]);
 
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -61,6 +61,12 @@ export function PromptPalette() {
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
+    // Empty query: digits 1-9 fire the top rows directly. Once you type,
+    // digits become search text (fall through to the input).
+    if (!query && /^[1-9]$/.test(e.key)) {
+      const p = rows[Number(e.key) - 1]?.prompt;
+      if (p) { e.preventDefault(); run(p); return; }
+    }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveIdx(i => Math.min(i + 1, rows.length - 1));
@@ -132,9 +138,9 @@ export function PromptPalette() {
                 <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-fg)]">
                   {query ? <Highlighted text={prompt.title} matches={matches} /> : prompt.title}
                 </span>
-                {triggerKeys.get(prompt.id) && (
-                  <kbd className="shrink-0 rounded border border-[var(--color-border-soft)] px-1 font-mono text-[10.5px] uppercase leading-[16px] text-[var(--color-fg-faint)]">
-                    {triggerKeys.get(prompt.id)}
+                {!query && i < 9 && (
+                  <kbd className="shrink-0 rounded border border-[var(--color-border-soft)] px-1 font-mono text-[10.5px] leading-[16px] text-[var(--color-fg-faint)]">
+                    {i + 1}
                   </kbd>
                 )}
               </button>

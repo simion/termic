@@ -28,7 +28,6 @@ import { Loader2 } from "lucide-react";
 export function Dialogs() {
   const openWelcome = useUI(s => s.openWelcome);
   const busyMessage = useUI(s => s.busyMessage);
-  const promptLeaderActive = useUI(s => s.promptLeaderActive);
 
   // Fire the welcome wizard on first launch (no settings.welcomed flag yet).
   useEffect(() => {
@@ -56,13 +55,6 @@ export function Dialogs() {
       <CommandPalette />
       <PromptDestinationDialog />
       <PromptPalette />
-      {/* ⌘R quick-fire, armed: waiting for the follow-up trigger-key press.
-          See armPromptLeader in useShortcuts.ts. */}
-      {promptLeaderActive && (
-        <div className="fixed bottom-6 left-1/2 z-[55] -translate-x-1/2 rounded-full border border-[var(--color-border)] bg-[var(--color-bg-1)] px-3.5 py-1.5 text-[12.5px] text-[var(--color-fg-dim)] shadow-xl">
-          Prompt: press a key…
-        </div>
-      )}
       {/* Blocking work overlay: shown while a slow IPC call is in flight
           (archive task, etc.). Click-blocks the whole window so users
           don't fire the action twice mid-wait. */}
