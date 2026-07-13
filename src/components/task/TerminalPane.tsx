@@ -801,14 +801,28 @@ const captureArmedRef = useRef(false);
     // `match_output`, precompile its signal patterns ONCE here and scan
     // complete stdout lines in the data sink. `outputSignals` null (the
     // default) means the sink does nothing, so there is zero cost when off.
-    const outputSignalAgent = useApp.getState().agents.find(a => a.id === tab.cli);
-    const outputSignals = workDoneEnabled && outputSignalAgent?.capabilities?.match_output
+    //
+    // Null unless there is at least one pattern to test. Output matching runs
+    // the USER's signals — it deliberately does not fall back to
+    // BUILTIN_TITLE_SIGNALS, since claude's "^\s*✳" describes a title, not a
+    // line of stdout. So with the pattern fields empty (every agent's default)
+    // the switch has nothing to match, and without this guard the sink would
+    // still decode, line-split and ANSI-strip every chunk on the hot data path
+    // in order to test zero patterns. Settings disables the switch in that
+    // state; this is the enforcement.
+    const sigAgent = useApp.getState().agents.find(a => a.id === tab.cli);
+    const sigs = sigAgent?.capabilities?.signals;
+    const compiled = workDoneEnabled && sigAgent?.capabilities?.match_output
       ? {
-          attention: compileSignals(outputSignalAgent.capabilities.signals?.attention),
-          busy: compileSignals(outputSignalAgent.capabilities.signals?.busy),
-          idle: compileSignals(outputSignalAgent.capabilities.signals?.idle),
+          attention: compileSignals(sigs?.attention),
+          busy: compileSignals(sigs?.busy),
+          idle: compileSignals(sigs?.idle),
         }
       : null;
+    const outputSignals =
+      compiled && (compiled.attention.length || compiled.busy.length || compiled.idle.length)
+        ? compiled
+        : null;
     const scanDecoder = new TextDecoder("utf-8", { fatal: false });
     let scanLineBuf = "";
     const MAX_SCAN_LINE = 4096;

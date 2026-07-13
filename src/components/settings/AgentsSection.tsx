@@ -549,6 +549,11 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
     }));
   }, [autoFocus, onAutoFocusConsumed]);
 
+  // Does this agent have any title pattern at all? Gates the output-scan
+  // switch, which has nothing to run without one (see the group below).
+  const sig = agent.capabilities?.signals;
+  const hasSignals = !!(sig?.busy?.length || sig?.idle?.length || sig?.attention?.length);
+
   return (
     <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-1)] p-4">
       <header className="flex items-center justify-between mb-3">
@@ -829,31 +834,44 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               onChange={attention => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), attention } })}
               placeholder={signalPlaceholder(agent.id, "attention", "Action Required\nWaiting for approval")}
             />
+            {/* Output matching runs the patterns typed into the fields above,
+                and only those: it never falls back to the built-in heuristics,
+                because "^\s*✳" describes claude's title, not a line of its
+                stdout. So with all three fields empty (every agent's default,
+                built-in or custom) the switch has nothing to match and is dead.
+                Disabled until there is at least one pattern, rather than
+                offering a switch that silently does nothing. */}
             <div className="border-t border-[var(--color-border-soft)] pt-3">
               <Field
                 label="Match the patterns above against output too"
-                hint="Off by default: the patterns are matched against the terminal title only. Turn this on for a CLI that prints its status to stdout and never sets a title, and each line of output gets tested as well. Costs a little on very chatty agents. Takes effect on the next terminal restart, not on open terminals."
+                hint={hasSignals
+                  ? "The patterns are matched against the terminal title only. Turn this on for a CLI that prints its status to stdout and never sets a title, and every line of output gets tested as well. Costs a little on very chatty agents. Takes effect on the next terminal restart, not on open terminals."
+                  : "Nothing to match yet. This scans output for the patterns above, so it needs at least one of them filled in. The built-in title heuristics don't apply here, they describe a title, not a line of output."}
               >
                 <div className="flex items-center gap-2 pt-0.5">
                   <button
                     type="button"
                     role="switch"
+                    disabled={!hasSignals}
                     aria-checked={!!agent.capabilities?.match_output}
                     onClick={() => onPatchCaps({ match_output: !agent.capabilities?.match_output })}
                     className={cn(
-                      "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center", /* allow-shortcut: standard toggle switch, matches the Work-done switch above, not a decorative chip (Orel-approved) */
-                      agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
+                      "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center", /* allow-shortcut: standard toggle switch, matches the Work-done switch above, not a decorative chip (Orel-approved) */
+                      hasSignals ? "cursor-pointer" : "cursor-not-allowed opacity-50",
+                      hasSignals && agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
                     )}
                   >
                     <span
                       className={cn(
                         "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out", /* allow-shortcut: toggle knob circle, matches the Work-done switch above (Orel-approved) */
-                        agent.capabilities?.match_output ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
+                        hasSignals && agent.capabilities?.match_output ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
                       )}
                     />
                   </button>
                   <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-                    {agent.capabilities?.match_output ? "Title and output" : "Title only"}
+                    {!hasSignals ? "No patterns to match"
+                      : agent.capabilities?.match_output ? "Title and output"
+                      : "Title only"}
                   </span>
                 </div>
               </Field>
