@@ -277,6 +277,9 @@ export const taskSetTabs = (id: string, tabs: import("@/lib/types").PersistedTab
  *  Keyed by tab id so several agents in a task resume independently. */
 export const taskSetTabSessionId = (id: string, tabId: string, uuid: string) =>
   invoke<void>("task_set_tab_session_id", { id, tabId, uuid });
+
+export const taskSetTabPreviousSessionId = (id: string, tabId: string, uuid: string) =>
+  invoke<void>("task_set_tab_previous_session_id", { id, tabId, uuid });
 /** Persist the JSON-encoded SplitTree for a task. Pass null to clear. */
 export const taskSetSplitLayout = (id: string, layout: string | null) =>
   invoke<void>("task_set_split_layout", { id, layout });

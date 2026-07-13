@@ -233,6 +233,10 @@ export interface PersistedTab {
    *  (claude / gemini). Null for cwd-resume agents (codex) and tabs that
    *  have not minted a session yet. Owned by `taskSetTabSessionId`. */
   session_id?: string | null;
+  /** The uuid a `--resume` attempt just fast-exited on, stashed here
+   *  (instead of discarded) so it can be one-click recovered. Owned by
+   *  `taskSetTabPreviousSessionId`. */
+  previous_session_id?: string | null;
   /** Leaf ID of the split pane this tab belongs to (absent for main panel tabs). */
   pane_leaf_id?: string | null;
   /** Run pop-out tab marker (GH #54): the member dir ("" = host project)
@@ -576,8 +580,14 @@ export interface TerminalTab extends BaseTab {
    *  launch and minted on first spawn otherwise. Distinct per tab so two
    *  agents in one task resume independently — the primary tab is no
    *  longer the only resumable one. Cleared (undefined) when a resume
-   *  attempt rapid-exits (the stored session no longer resolves). */
+   *  attempt rapid-exits (the stored session no longer resolves — the old
+   *  uuid moves to `previousSessionId` for recovery). */
   sessionId?: string;
+  /** The uuid a `--resume` just fast-exited on, stashed instead of thrown
+   *  away so the user can one-click recover it (a transient failure would
+   *  otherwise lose the conversation permanently). Drives the recover
+   *  banner in TerminalPane. Restored from `persisted_tabs` on launch. */
+  previousSessionId?: string;
   /** iTerm2-style work-progress state. Authoritative signals: OSC 9;4
    *  (Claude progress), OSC 133;C/D (FinalTerm semantic prompts), OSC 0
    *  title classifier (gemini/codex). `working` → spinner; `done` →
