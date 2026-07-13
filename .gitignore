@@ -109,6 +109,10 @@ $RECYCLE.BIN/
 .cursorrules.local
 NOTES.local.md
 TODO.local.md
+# Local voice/tone rules for GitHub comments written in the maintainer's
+# name. Local-only on purpose: it's a personal style guide, not a
+# contribution rule, and contributors shouldn't have to read it.
+CLAUDE.local.md
 
 # ── claude code worktrees / scratch (if you use the worktree workflow) ─
 .worktrees/
