@@ -25,7 +25,7 @@ import { setupImeReplacementBridge } from "@/lib/ime";
 import * as ipc from "@/lib/ipc";
 import { loginShell } from "@/lib/loginShell";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
-import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg } from "@/store/prefs";
+import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 
@@ -82,6 +82,8 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
       letterSpacing: usePrefs.getState().terminalLetterSpacing,
       lineHeight: 1.0,
       theme: currentTerminalTheme() as any,
+      // Light-theme truecolor readability. See TerminalPane / #83.
+      minimumContrastRatio: currentMinimumContrastRatio(),
       allowProposedApi: true,
       scrollback: Math.round(usePrefs.getState().terminalScrollback / 2),
       // Option-as-Meta for terminal editors. See TerminalPane. (issue #11)
@@ -311,6 +313,7 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
     const t = termRef.current;
     if (!t) return;
     t.options.theme = currentTerminalTheme() as any;
+    t.options.minimumContrastRatio = currentMinimumContrastRatio();
   }, [themeMode, customThemeRev]);
 
   return (
