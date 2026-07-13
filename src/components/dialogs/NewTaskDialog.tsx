@@ -510,14 +510,18 @@ export function NewTaskDialog() {
       onOpenChange={(v) => { if (!v && !busy) close(); }}
       title={isMulti ? "New multi-repo task" : importMode ? "Import existing worktree" : mode === "repo_root" ? "New task in the main checkout" : "New task in a worktree"}
       description={undefined}
-      // Widen the dialog based on what's actually inside:
-      //   - sandbox ON     → 4xl (the sandbox form needs a 2nd column)
-      //   - multi-repo     → 3xl (per-member row = name + Worktree/Repo
-      //                      toggle + branch input — max-w-md overflows)
-      //   - plain worktree → md (anything wider looks empty)
-      // Import mode lists full worktree paths, which overflow max-w-lg —
-      // give it more room (still narrower than the sandbox 2-column form).
-      className={sandbox ? "max-w-4xl" : isMulti ? "max-w-3xl" : importMode ? "max-w-2xl" : "max-w-xl"}
+      // Widen the dialog to fit what's inside. Base width per mode (xl 36rem /
+      // 2xl 42rem / 3xl 48rem) sizes the single-column form. Enabling the
+      // sandbox adds a SECOND, equal (flex-1) column plus a 2rem (ml-8) gutter,
+      // so the dialog is 2*base - 0.5rem (content = 2*(base-2.5) + 2rem gutter,
+      // + 2.5rem padding). Everything is in REM so, whatever the root font-size
+      // (14px here), each flex-1 column resolves to the SAME width as the
+      // single-column form — the left never changes, only the column is added.
+      className={
+        sandbox
+          ? (isMulti ? "max-w-[95.5rem]" : importMode ? "max-w-[83.5rem]" : "max-w-[71.5rem]")
+          : (isMulti ? "max-w-3xl" : importMode ? "max-w-2xl" : "max-w-xl")
+      }
     >
       {/* Phase-aware body: form on start, then progress view while creating
           + running setup. Form stays unmounted in non-form phases so its
@@ -534,12 +538,14 @@ export function NewTaskDialog() {
       {phase === "form" && (
       <form
         onSubmit={(e) => { e.preventDefault(); submit(); }}
-        className={cn(
-          "mt-1.5 gap-6",
-          sandbox ? "grid grid-cols-2 gap-x-8" : "flex flex-col",
-        )}
+        className="mt-1.5 flex flex-col gap-6"
       >
-      <div className="flex flex-col gap-6">
+      {/* Columns row: the left form + the sandbox config as a second column
+          when a cage is enabled. Left is flex-1 (can't overflow); the sandbox
+          column is flex-1 too, and the dialog max-width (below) is sized in REM
+          so each column resolves to the SAME width in both states. */}
+      <div className="flex">
+      <div className="flex min-w-0 flex-1 flex-col gap-6">
         {/* Every field uses the same structure: label on its own line, optional
             hint underneath, control on a new line. Previous version inlined
             the segmented controls next to the label and put hints on the same
@@ -819,11 +825,11 @@ export function NewTaskDialog() {
         )}
       </div>
 
-      {/* Right column: sandbox config form, only when enabled.
-          Otherwise the form is single-column and this branch renders
-          nothing. */}
+      {/* Right column: sandbox config, an equal-width second pane (flex-1, so
+          it matches the left; the dialog is sized to 2x base). Rendered ONLY
+          when a cage is enabled, so there's no ghost width/height when off. */}
       {sandbox && (
-        <div className="flex flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6">
+        <div className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6">
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
             Sandbox config for this task
           </div>
@@ -873,9 +879,10 @@ export function NewTaskDialog() {
           )}
         </div>
       )}
+      </div>{/* end columns row */}
 
-      {/* Error + actions row spans both columns when sandbox is on. */}
-      <div className={cn(sandbox && "col-span-2")}>
+      {/* Error + actions row, below the columns. */}
+      <div>
         {err && <p className="mb-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" type="button" onClick={close}>Cancel</Button>
