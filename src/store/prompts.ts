@@ -27,6 +27,39 @@ export interface Prompt {
   enabled: boolean;
   /** Built-in only: true once the user edited it away from the shipped text. */
   modified: boolean;
+  /** Manually assigned trigger-key (single char), or undefined to auto-assign
+   *  from the default 1-9, a-z sequence. See `effectiveTriggerKeys`. */
+  triggerKeyOverride?: string;
+}
+
+// Default trigger-key sequence for ⌘R quick-fire / the palette badges:
+// digits first (they read fastest), then letters.
+const TRIGGER_KEY_SEQUENCE = "123456789abcdefghijklmnopqrstuvwxyz".split("");
+
+/** Resolve each prompt's EFFECTIVE trigger key: its manual override if set
+ *  and not already claimed by an earlier prompt, else the next free slot in
+ *  the default sequence. Walks the full list (not just enabled) so a
+ *  prompt's number doesn't shift when a sibling is toggled on/off - only
+ *  enabled prompts are actually reachable via the key, but everyone still
+ *  holds their place in line. */
+export function effectiveTriggerKeys(prompts: readonly Prompt[]): Map<string, string> {
+  const used = new Set<string>();
+  const result = new Map<string, string>();
+  for (const p of prompts) {
+    const ov = p.triggerKeyOverride;
+    if (ov && !used.has(ov)) { result.set(p.id, ov); used.add(ov); }
+  }
+  let seqIdx = 0;
+  for (const p of prompts) {
+    if (result.has(p.id)) continue;
+    while (seqIdx < TRIGGER_KEY_SEQUENCE.length && used.has(TRIGGER_KEY_SEQUENCE[seqIdx])) seqIdx++;
+    if (seqIdx >= TRIGGER_KEY_SEQUENCE.length) continue;
+    const key = TRIGGER_KEY_SEQUENCE[seqIdx];
+    result.set(p.id, key);
+    used.add(key);
+    seqIdx++;
+  }
+  return result;
 }
 
 interface BuiltinDef { id: string; title: string; body: string }
@@ -51,9 +84,13 @@ interface Persisted {
   deletedBuiltins: string[];
   disabled: string[];
   order: string[];
+  /** Manual trigger-key overrides for ⌘R quick-fire / the palette, id -> single char. */
+  triggerKeys: Record<string, string>;
 }
 
-const EMPTY: Persisted = { customs: [], overrides: {}, deletedBuiltins: [], disabled: [], order: [] };
+const EMPTY: Persisted = {
+  customs: [], overrides: {}, deletedBuiltins: [], disabled: [], order: [], triggerKeys: {},
+};
 
 function isCustom(c: unknown): c is StoredCustom {
   return !!c && typeof c === "object"
@@ -73,6 +110,7 @@ function load(): Persisted {
       deletedBuiltins: Array.isArray(s.deletedBuiltins) ? s.deletedBuiltins : [],
       disabled: Array.isArray(s.disabled) ? s.disabled : [],
       order: Array.isArray(s.order) ? s.order : [],
+      triggerKeys: s.triggerKeys && typeof s.triggerKeys === "object" ? s.triggerKeys : {},
     };
   } catch {
     return { ...EMPTY };
@@ -96,10 +134,15 @@ function computePrompts(p: Persisted): Prompt[] {
       builtin: true,
       enabled: !p.disabled.includes(d.id),
       modified: !!ov,
+      triggerKeyOverride: p.triggerKeys[d.id],
     });
   }
   for (const c of p.customs) {
-    items.push({ id: c.id, title: c.title, body: c.body, builtin: false, enabled: !p.disabled.includes(c.id), modified: false });
+    items.push({
+      id: c.id, title: c.title, body: c.body, builtin: false,
+      enabled: !p.disabled.includes(c.id), modified: false,
+      triggerKeyOverride: p.triggerKeys[c.id],
+    });
   }
   // Apply explicit order; anything not listed (new built-in / freshly added)
   // keeps its natural position at the end.
@@ -126,6 +169,9 @@ interface PromptStore {
   reorderPrompts: (from: number, to: number) => void;
   /** Re-add any built-ins the user deleted. */
   restoreBuiltins: () => void;
+  /** Manually pin a prompt's ⌘R quick-fire / palette trigger key. `key` must
+   *  be a single lowercase alphanumeric char; pass null to clear back to auto. */
+  setTriggerKey: (id: string, key: string | null) => void;
 }
 
 export const usePromptLibrary = create<PromptStore>((set) => {
@@ -199,11 +245,12 @@ export const usePromptLibrary = create<PromptStore>((set) => {
     deletePrompt: (id) => {
       const order = p.order.filter(x => x !== id);
       const disabled = p.disabled.filter(x => x !== id);
+      const triggerKeys = { ...p.triggerKeys }; delete triggerKeys[id];
       if (builtinDef(id)) {
         const overrides = { ...p.overrides }; delete overrides[id];
-        commit({ ...p, deletedBuiltins: Array.from(new Set([...p.deletedBuiltins, id])), overrides, order, disabled });
+        commit({ ...p, deletedBuiltins: Array.from(new Set([...p.deletedBuiltins, id])), overrides, order, disabled, triggerKeys });
       } else {
-        commit({ ...p, customs: p.customs.filter(c => c.id !== id), order, disabled });
+        commit({ ...p, customs: p.customs.filter(c => c.id !== id), order, disabled, triggerKeys });
       }
     },
 
@@ -229,6 +276,12 @@ export const usePromptLibrary = create<PromptStore>((set) => {
 
     restoreBuiltins: () => {
       commit({ ...p, deletedBuiltins: [] });
+    },
+
+    setTriggerKey: (id, key) => {
+      const triggerKeys = { ...p.triggerKeys };
+      if (key) triggerKeys[id] = key; else delete triggerKeys[id];
+      commit({ ...p, triggerKeys });
     },
   };
 });

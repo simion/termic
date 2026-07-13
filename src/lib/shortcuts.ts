@@ -51,6 +51,8 @@ export type ShortcutId =
   | "toggle-left-sidebar"
   | "toggle-right-sidebar"
   | "broadcast"
+  | "prompt-quick-fire"
+  | "prompt-palette"
   | "zoom-in"
   | "zoom-out"
   | "zoom-reset"
@@ -160,6 +162,12 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     hint: "Show / hide the right panel", defaultBinding: B("b", { cmd: true, alt: true }) },
   { id: "broadcast", group: "General", label: "Broadcast to agents",
     defaultBinding: B("b", { cmd: true, shift: true }) },
+  { id: "prompt-quick-fire", group: "General", label: "Prompt quick-fire",
+    hint: "Press, then a prompt's key (shown in the Prompts menu), to run it on the focused agent",
+    defaultBinding: B("r", { cmd: true }) },
+  { id: "prompt-palette", group: "General", label: "Prompt search palette",
+    hint: "Search prompts by title; Enter runs the highlighted one",
+    defaultBinding: B("r", { cmd: true, shift: true }) },
   { id: "zoom-in", group: "General", label: "Zoom in",
     hint: "Scale the whole app up (like browser zoom)", defaultBinding: B("=", { cmd: true }) },
   { id: "zoom-out", group: "General", label: "Zoom out",
