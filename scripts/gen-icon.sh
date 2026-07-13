@@ -50,4 +50,24 @@ echo "→ Running tauri icon to fan out to all platform sizes"
 # We point it at the master so the source-of-truth stays the SVG.
 npx --yes @tauri-apps/cli icon "$MASTER" -o "$OUT_DIR"
 
-echo "✓ Done. Regenerated icons in $OUT_DIR/"
+# Variant icon sets. Same geometry as the shipped icon, different T color, so
+# the three Termics that can be running at once are told apart in the dock:
+#
+#   beta/  blue T  (--color-info)  → `make beta`, bundled into Termic Beta.app
+#                                     via tauri.beta.conf.json
+#   dev/   amber T (--color-warn)  → `make dev`, which has no .app at all, so
+#                                     lib.rs paints icons/dev/icon.png onto
+#                                     NSApplication at launch (debug only)
+#
+# `tauri icon` reads the SVG directly here, so no rsvg needed for these. Mobile
+# sizes are dropped: these are local macOS builds, nothing more.
+for variant in beta dev; do
+  VARIANT_SVG="$OUT_DIR/icon-$variant.svg"
+  VARIANT_DIR="$OUT_DIR/$variant"
+  [[ -f "$VARIANT_SVG" ]] || continue
+  echo "→ Rendering $VARIANT_SVG → $VARIANT_DIR/"
+  npx --yes @tauri-apps/cli icon "$VARIANT_SVG" -o "$VARIANT_DIR"
+  rm -rf "$VARIANT_DIR/android" "$VARIANT_DIR/ios"
+done
+
+echo "✓ Done. Regenerated icons in $OUT_DIR/ (+ beta/, dev/)"

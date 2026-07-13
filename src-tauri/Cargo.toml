@@ -61,7 +61,12 @@ percent-encoding = "2"
 # them here doesn't change resolution.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
+objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSData"] }
+# NSApplication.setApplicationIconImage, used ONLY by set_dev_dock_icon (debug
+# builds): `tauri dev` runs an unbundled binary, so the dock icon can't come
+# from tauri.conf.json and has to be set at runtime. Also already in the tree
+# via tauri/wry.
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
 
 [dev-dependencies]
 tempfile = "3"

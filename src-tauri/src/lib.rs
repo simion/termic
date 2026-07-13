@@ -8172,6 +8172,33 @@ fn detect_clis_blocking() -> Vec<CliInfo> {
 
 // ───────────────────────────── bootstrap ─────────────────────────────
 
+/// Paint the dev dock icon (amber T, `icons/icon-dev.svg`).
+///
+/// `tauri dev` runs the bare `target/debug/termic` binary, not a bundled
+/// `.app`, so there's no `CFBundleIconFile` for macOS to read and the dock
+/// falls back to a generic executable icon. Setting NSApplication's icon image
+/// at launch is the only hook. Debug-only, so the PNG is not carried in the
+/// shipped binary either.
+///
+/// Best-effort by design: a dock icon is cosmetic, so every failure path here
+/// (not on the main thread, undecodable PNG) silently leaves the default.
+#[cfg(all(target_os = "macos", debug_assertions))]
+fn set_dev_dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    // 1024×1024 master. NSImage downsamples per dock size.
+    const DEV_ICON_PNG: &[u8] = include_bytes!("../icons/dev/icon.png");
+
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(DEV_ICON_PNG);
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else { return };
+    // SAFETY: main thread (MainThreadMarker), and the image outlives the call
+    // (AppKit retains it).
+    unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK 2.42+ defaults to its DMA-BUF renderer. It's the FAST path on
@@ -8424,6 +8451,21 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // Amber-T dock icon for `make dev`, matching the DEV pill in the
+            // unified bar. Three Termics can be running at once (shipped,
+            // `make beta`, dev); the dock is the only place you see all three,
+            // and the other two get their icon from their bundle. A dev run has
+            // no bundle at all (tauri dev execs the bare binary), so this is
+            // the only way to set it.
+            //
+            // MUST be on Ready, not in setup(): setup() runs before AppKit has
+            // finished launching, and applicationIconImage set that early is
+            // discarded when NSApplication finishes launching and re-reads its
+            // icon. That's why the first attempt at this silently did nothing.
+            #[cfg(all(target_os = "macos", debug_assertions))]
+            if matches!(event, tauri::RunEvent::Ready) {
+                set_dev_dock_icon();
+            }
             // App-level teardown: when Tauri tears down (last window
             // closed on macOS doesn't fire this, but Cmd-Q does) make
             // sure we don't orphan any child we spawned. That means

@@ -1,0 +1,43 @@
+<!--
+  Termic BETA app icon - master SVG. Re-export via scripts/gen-icon.sh
+  (writes src-tauri/icons/beta/) after editing.
+
+  Same geometry as icon.svg, only the T is recolored to the UI's info
+  blue (the color-info theme token, #4aa3ff) instead of terracotta. The point is a
+  dock/Finder read at a glance: "Termic Beta.app" installs alongside
+  the shipped app and shares its data dir, so two identical icons would
+  be a trap. Color, not a badge: a badge disappears at 16px, a hue
+  shift does not.
+
+  Same rules as icon.svg: solid colors only, no filters, keep the
+  silhouette readable at 16-32px.
+-->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <rect x="100" y="100" width="824" height="824" rx="180" fill="#0f0f0f"/>
+  <g fill="#4aa3ff">
+    <!-- Crossbar: rows 0-1, cols 0-5 (12 cells) -->
+    <rect x="259.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="344.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="599.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="684.5" y="217" width="80" height="80" rx="14"/>
+    <rect x="259.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="344.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="599.5" y="302" width="80" height="80" rx="14"/>
+    <rect x="684.5" y="302" width="80" height="80" rx="14"/>
+    <!-- Stem: cols 2-3 (x=429.5, 514.5), rows 2-6 (10 cells) -->
+    <rect x="429.5" y="387" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="387" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="472" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="472" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="557" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="557" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="642" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="642" width="80" height="80" rx="14"/>
+    <rect x="429.5" y="727" width="80" height="80" rx="14"/>
+    <rect x="514.5" y="727" width="80" height="80" rx="14"/>
+  </g>
+</svg>
