@@ -782,36 +782,40 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         {!isTerminal &&
           <SubSection
             title="Work-done detection"
-            hint={agent.work_done === false
-              ? "Off: the done badge, bell, and OS notification are never shown for this agent. Turn it on to configure how its state is read."
-              : signalGroupHint(agent.id)}
-            action={
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={agent.work_done !== false}
-                  onClick={() => onPatch({ work_done: agent.work_done === false ? true : false })}
-                  className={cn(
-                    "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center",
-                    agent.work_done !== false ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-2)]"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      // Ok-filled track, so the ok ink (see the toggle above).
-                      "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out",
-                      agent.work_done !== false ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
-                    )}
-                  />
-                </button>
-                <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-                  {agent.work_done !== false ? "On" : "Off"}
-                </span>
-              </div>
-            }
+            hint="When off, the done badge, bell, and OS notification are never shown for this agent. Turn it off for a custom CLI whose signals cause false positives."
           >
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={agent.work_done !== false}
+                onClick={() => onPatch({ work_done: agent.work_done === false ? true : false })}
+                className={cn(
+                  "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none items-center",
+                  // bg-2, not bg-3: the band itself is bg-3, so an off switch
+                  // tracked in bg-3 would have no track at all.
+                  agent.work_done !== false ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-2)]"
+                )}
+              >
+                <span
+                  className={cn(
+                    // Ok-filled track, so the ok ink (see the toggle above).
+                    "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out",
+                    agent.work_done !== false ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
+                  )}
+                />
+              </button>
+              <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
+                {agent.work_done !== false ? "On" : "Off"}
+              </span>
+            </div>
             {agent.work_done !== false && <>
+            {/* The patterns are what the switch above turns on, so they live
+                under it and vanish with it. Their shared explanation sits here
+                rather than on the legend, which speaks for the whole section. */}
+            <div className="border-t border-[var(--color-border-soft)] pt-3 text-[12px] text-[var(--color-fg-dim)]">
+              {signalGroupHint(agent.id)}
+            </div>
             <RegexListField
               label="Done (title → done)"
               hint="Marks the turn finished: blue badge, bell, notification."
