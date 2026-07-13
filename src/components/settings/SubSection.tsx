@@ -9,15 +9,20 @@
  *  sections already use for labels, so it reads as a marker for what follows
  *  rather than as another field stacked above it.
  *
- *  Don't place one flush against the card's top or bottom edge: the band is
- *  square and the card is rounded, so it would poke through the corner. */
+ *  As the LAST child it runs flush to the card's bottom: it eats the card's
+ *  bottom padding, drops its own bottom hairline (the card's border is already
+ *  there) and rounds its corners to sit inside that border. Without this the
+ *  band stopped a padding's width short, so its hairline and the card's ran
+ *  parallel with a sliver of the card's background trapped between them — the
+ *  same double-border it exists to avoid. Radius is the card's 8px less its
+ *  1px border, so the fill meets the border instead of cutting the curve. */
 export function SubSection({ title, hint, children }: {
   title: string;
   hint?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="-mx-4 space-y-3 border-y border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-4 py-3">
+    <section className="-mx-4 space-y-3 border-y border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-4 py-3 last:-mb-4 last:rounded-b-[7px] last:border-b-0">
       <div>
         <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">{title}</div>
         {hint && <div className="mt-1 text-[12px] text-[var(--color-fg-dim)]">{hint}</div>}
