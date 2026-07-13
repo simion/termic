@@ -21,7 +21,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle } from "@/lib/agents";
+import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle, compileSignals } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 
 // ── spawnArgsForCli ───────────────────────────────────────────────────
@@ -456,5 +456,29 @@ describe("classifyAgentTitle", () => {
     const a = sigAgent("mycli", { busy: [], idle: [], attention: [] });
     expect(classifyAgentTitle("mycli", "anything", [a])).toBe(null);
     expect(classifyAgentTitle("unknown", "anything", [])).toBe(null);
+  });
+});
+
+// ── compileSignals ────────────────────────────────────────────────────
+
+describe("compileSignals", () => {
+  it("reuses the compiled regex for a repeated source", () => {
+    // The title path recompiles once per spinner frame without this.
+    const [a] = compileSignals(["^Working"]);
+    const [b] = compileSignals(["^Working"]);
+    expect(a).toBe(b);
+  });
+
+  it("drops invalid sources and empty strings, keeping the rest", () => {
+    expect(compileSignals(["(unclosed", "", "ok"]).map(r => r.source)).toEqual(["ok"]);
+    expect(compileSignals(undefined)).toEqual([]);
+  });
+
+  it("returns stateless regexes — a match does not consume the next call", () => {
+    // A cached /g regex would carry lastIndex across terminals. These aren't
+    // global, so the same instance must keep matching.
+    const [re] = compileSignals(["done"]);
+    expect(re.test("done")).toBe(true);
+    expect(re.test("done")).toBe(true);
   });
 });
