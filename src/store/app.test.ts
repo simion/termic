@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mocks must be declared before the module under test is imported.
 vi.mock("@/lib/ipc", () => ({
@@ -727,10 +727,24 @@ describe("group UI state", () => {
   const projectWith = (id: string, group?: string) =>
     ({ id, name: id, group } as import("@/lib/types").Project);
 
+  // Node's experimental global `localStorage` shadows happy-dom's and doesn't
+  // work without --localstorage-file, so neither env gives a usable one here
+  // (see the same note in prefs.test.ts). Stub a Map-backed fake per test.
+  function fakeLocalStorage() {
+    const store = new Map<string, string>();
+    return {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+      clear: () => { store.clear(); },
+    };
+  }
+
   beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
     useApp.setState({ collapsedGroups: {}, groupColors: {} });
-    localStorage.clear();
   });
+  afterEach(() => { vi.unstubAllGlobals(); });
 
   it("setGroupCollapsed sets state and persists", () => {
     useApp.getState().setGroupCollapsed("BACKEND", true);
