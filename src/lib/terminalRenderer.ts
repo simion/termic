@@ -37,24 +37,44 @@ function dumpRenderer(addon: WebglAddon | null): void {
  *  and typing crawls), the load is skipped and xterm's built-in DOM renderer
  *  remains. Read once at mount; toggling the pref takes effect on the next
  *  terminal spawn (relaunch to switch every open terminal). */
-/** GH #70: hold the first fit + PTY spawn until the terminal font's faces
- *  are active. The bundled JetBrains Mono is a lazy @font-face; if output
- *  is rasterized before it activates, xterm's WebGL atlas caches those
+/** True once the bundled JetBrains Mono face — the lazy @font-face behind
+ *  GH #70 — is genuinely active for both weights xterm rasterizes (400 +
+ *  700). `document.fonts.check` on the concrete family is stricter than
+ *  terminalFontsSettled(): the latter uses `document.fonts.load`, which on
+ *  WebKit can reject and fall back to `document.fonts.ready`, resolving
+ *  before the face is actually usable. This is the source of truth. */
+const bundledFontActive = (): boolean =>
+  document.fonts.check('400 1em "JetBrains Mono"') &&
+  document.fonts.check('700 1em "JetBrains Mono"');
+
+/** GH #70: the bundled JetBrains Mono is a lazy @font-face; if terminal
+ *  output rasterizes before it activates, xterm's WebGL atlas caches those
  *  glyphs drawn with the fallback monospace — keyed per (char, fg, bg,
  *  style), with the font only in the atlas config — so the same char keeps
  *  its wrong-height glyph until the cell happens to re-rasterize (selection
  *  changes the bg → new key → correct glyph, which is why selecting text
- *  "fixed" it). Gating the spawn means metrics AND glyphs come from the
- *  real font from the start: no post-hoc refit, no atlas churn.
+ *  "fixed" it).
  *
- *  prefs warms the load at module start, so this normally resolves in a
- *  microtask and adds zero spawn latency. The wait is capped so a hung
- *  load can never stall a spawn; on that (practically unreachable) path a
- *  one-shot repair runs when the face finally lands, guarded against the
- *  two hazards a late fit() has: zero-geometry hosts (collapsed split —
- *  same reason the panes' ResizeObservers bail at 0x0) and the mid-spawn
- *  window where term.onResize isn't registered yet, which would silently
- *  desync PTY cols/rows (hence the explicit ptyResize with retry). */
+ *  The earlier gate (c677201) held the spawn until terminalFontsSettled()
+ *  resolved, but its fast path returned with no safety net — so a
+ *  false-positive settle (the WebKit fonts.ready fallback above; also the
+ *  duplicate/late-loading 700 face) still poisoned the atlas permanently.
+ *  This version makes correctness self-healing instead of race-dependent:
+ *   1. If the face is already active, nothing could have rasterized against
+ *      the fallback — return immediately, zero cost (the warm path, which
+ *      the prefs startup warm-up makes the norm).
+ *   2. Otherwise gate the spawn on the settle (capped at 800ms so a hung
+ *      load never stalls a spawn) ONLY to avoid a visible reflow, then
+ *      unconditionally rebuild the atlas the moment the face is *genuinely*
+ *      active (polling check(), not trusting the settle) so any glyph that
+ *      cached against the fallback during the race is evicted. The poll is
+ *      capped so a face that never loads can't spin.
+ *
+ *  The rebuild's fit() is guarded against the two hazards a late fit() has:
+ *  zero-geometry hosts (collapsed split — same reason the panes'
+ *  ResizeObservers bail at 0x0) and the mid-spawn window where term.onResize
+ *  isn't registered yet, which would silently desync PTY cols/rows (hence
+ *  the explicit ptyResize with retry). */
 export async function awaitTerminalFonts(
   term: Terminal,
   fit: { fit(): void },
@@ -62,26 +82,33 @@ export async function awaitTerminalFonts(
   isCancelled: () => boolean,
   ptyId: () => string | null,
 ): Promise<void> {
-  let ready = false;
+  if (bundledFontActive()) return;
+
   await Promise.race([
-    terminalFontsSettled().then(() => { ready = true; }),
+    terminalFontsSettled(),
     new Promise<void>(r => window.setTimeout(r, 800)),
   ]);
-  if (ready || isCancelled()) return;
-  terminalFontsSettled().then(() => {
+
+  let tries = 50;   // ~5s at 100ms; a face this slow is effectively hung
+  const heal = () => {
     if (isCancelled()) return;
+    if (!bundledFontActive()) {
+      if (tries-- > 0) window.setTimeout(heal, 100);
+      return;
+    }
     try { term.clearTextureAtlas(); } catch {}
     if (host.offsetWidth === 0 || host.offsetHeight === 0) return;
     try { fit.fit(); } catch {}
-    let tries = 20;
+    let rtries = 20;
     const push = () => {
-      if (isCancelled() || tries-- <= 0) return;
+      if (isCancelled() || rtries-- <= 0) return;
       const pid = ptyId();
       if (pid) ipc.ptyResize(pid, term.rows, term.cols).catch(() => {});
       else window.setTimeout(push, 250);
     };
     push();
-  });
+  };
+  heal();
 }
 
 export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
