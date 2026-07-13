@@ -72,10 +72,11 @@
 
   /* Palette ramp: hue-named accents for user-assigned identity marks
      (project-group folders today; the user's pick is stored by hue key,
-     e.g. "red"). One fixed set for every theme in v1 (the light palette
-     re-tunes shades for contrast on cream). If themes ever define their
-     own ramp, the contract is: tune SHADE, keep each hue recognizable,
-     never collapse the ramp — the marks are user data, not decoration. */
+     e.g. "red"). Hue identity is the contract — a theme tunes SHADE to
+     its palette but must keep each hue recognizable, and should never
+     collapse the ramp (the marks are user data, not decoration). Every
+     built-in theme overrides all 8; these defaults serve Dark+ and any
+     custom theme that omits the keys. */
   --color-palette-red:    #e5484d;
   --color-palette-orange: #f76b15;
   --color-palette-yellow: #ffb224;
@@ -206,6 +207,16 @@
     --color-accent:      #d97757;       /* terax `primary` */
     --color-accent-soft: rgba(217, 119, 87, 0.22);
     --color-accent-deep: #b35e3f;
+    /* Palette ramp: warm-shifted + slightly muted to sit with the
+       charcoal/terracotta chrome. */
+    --color-palette-red:    #e0605e;
+    --color-palette-orange: #e08d52;
+    --color-palette-yellow: #dcae4a;
+    --color-palette-green:  #78a865;
+    --color-palette-teal:   #4fae9e;
+    --color-palette-blue:   #6da8e0;
+    --color-palette-purple: #a685d6;
+    --color-palette-pink:   #d179ad;
     color-scheme: dark;
   }
 
@@ -239,6 +250,17 @@
        a deep azure that still reads cobalt-family. */
     --color-accent-deep: #1f6fa8;
     --color-accent-fg:   #193549;   /* navy ink on the sky accent (white was ~1.9:1) */
+    /* Palette ramp: Cobalt 2's own syntax colors (they're vivid by
+       design and read cleanly on the navy surfaces); teal toned down
+       from the canon cyan #80fcff, which is too hot for a UI mark. */
+    --color-palette-red:    #ff628c;
+    --color-palette-orange: #ff9d00;
+    --color-palette-yellow: #ffc600;
+    --color-palette-green:  #3ad900;
+    --color-palette-teal:   #2ee5d4;
+    --color-palette-blue:   #3c9dff;
+    --color-palette-purple: #b361ff;
+    --color-palette-pink:   #fb94ff;
     color-scheme: dark;
   }
 
@@ -264,6 +286,18 @@
     --color-accent-soft: rgba(63, 185, 80, 0.20);
     --color-accent-deep: #2a7a36;       /* deeper phosphor for button surfaces */
     --color-accent-fg:   #050905;       /* near-black ink on phosphor green (white was ~2.5:1) */
+    /* Palette ramp: desaturated a step so the phosphor green stays the
+       loudest thing on screen — but every hue KEEPS its identity (nine
+       shades of green would be on-brand and would erase the user's
+       marks; see the @theme note). Green maps to the accent itself. */
+    --color-palette-red:    #d9544f;
+    --color-palette-orange: #d9824f;
+    --color-palette-yellow: #cfc04a;
+    --color-palette-green:  #3fb950;
+    --color-palette-teal:   #3fb9a0;
+    --color-palette-blue:   #4f9dd9;
+    --color-palette-purple: #9d7fd9;
+    --color-palette-pink:   #d96fae;
     color-scheme: dark;
   }
 
@@ -286,6 +320,16 @@
     --color-accent:      #cb4b16;       /* solarized orange */
     --color-accent-soft: rgba(203, 75, 22, 0.22);
     --color-accent-deep: #9d3a11;       /* deeper solarized orange for buttons */
+    /* Palette ramp: Solarized's canon accent set, mapped by hue
+       (teal ← cyan, purple ← violet, pink ← magenta). */
+    --color-palette-red:    #dc322f;
+    --color-palette-orange: #cb4b16;
+    --color-palette-yellow: #b58900;
+    --color-palette-green:  #859900;
+    --color-palette-teal:   #2aa198;
+    --color-palette-blue:   #268bd2;
+    --color-palette-purple: #6c71c4;
+    --color-palette-pink:   #d33682;
     color-scheme: dark;
   }
 
@@ -322,6 +366,20 @@
                                            light --color-ok in the app */
     --color-warn:        #f6c177;       /* gold */
     --color-err:         #eb6f92;       /* love */
+    /* Palette ramp from the canon palette: love/rose/gold/foam/pine/iris.
+       Rosé Pine has no true green, so green is a muted moss tuned to sit
+       in-family; pink is an iris–love blend to stay distinct from red.
+       Orange is NOT canon rose (#ea9a97): rose sits at hue 2°, i.e. red,
+       so a folder marked "orange" rendered salmon and crowded love. This
+       is rose warmed toward gold, in-family but an actual orange. */
+    --color-palette-red:    #eb6f92;    /* love */
+    --color-palette-orange: #e89f6f;    /* rose, warmed toward gold */
+    --color-palette-yellow: #f6c177;    /* gold */
+    --color-palette-green:  #97c9a3;
+    --color-palette-teal:   #9ccfd8;    /* foam */
+    --color-palette-blue:   #5896b4;    /* pine, lifted a step for the dark base */
+    --color-palette-purple: #c4a7e7;    /* iris */
+    --color-palette-pink:   #d8a0c9;
     color-scheme: dark;
   }
   ::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -47,6 +47,11 @@ export const UI_KEYS = [
   "hover", "sel",
   "accent", "accent-soft", "accent-deep", "accent-fg",
   "ok", "ok-fg", "warn", "err",
+  // Palette ramp: hue-named accents for user-assigned marks (project-group
+  // folders consume it). Optional like everything else — omitted keys keep
+  // the built-in hues. Tune shades to your theme but keep hues recognizable.
+  "palette-red", "palette-orange", "palette-yellow", "palette-green",
+  "palette-teal", "palette-blue", "palette-purple", "palette-pink",
 ] as const;
 
 /** xterm ITheme color keys (see TERMINAL_THEMES in store/prefs.ts). */
