@@ -8,16 +8,17 @@
 // Wrap in a `<DropdownMenu>` at the call site; this component renders only
 // the items (so the caller can also customize positioning).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { visibleCliIds } from "@/lib/agents";
-import { createQuickTask, readNewTaskMode, writeNewTaskMode, type NewTaskMode } from "@/lib/quickTask";
-import { taskRestore } from "@/lib/ipc";
+import { createQuickTask, importQuickWorktree, readNewTaskMode, writeNewTaskMode, type NewTaskMode } from "@/lib/quickTask";
+import { taskImportableWorktrees, taskRestore } from "@/lib/ipc";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
-import { GitBranch, GitBranchPlus, Link2, TerminalSquare, SquareChevronRight, Settings2 } from "lucide-react";
+import { GitBranch, GitBranchPlus, Link2, TerminalSquare, SquareChevronRight, Settings2, FolderGit2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { ImportableWorktree } from "@/lib/types";
 
 /** Coarse relative label for an archived-task timestamp. Unlike the tab
  *  strip's Resume entries (always seconds/minutes old), a task can sit
@@ -84,6 +85,24 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
   // drop the toggle.
   const isNonGit = !!project?.non_git;
   const visibleClis = visibleCliIds(agents.map(a => a.id), agents, detectedClis);
+
+  // Worktrees the user made outside termic (`git worktree add`) that aren't
+  // open as tasks yet (issue #92). Adopting one is a single click here — the
+  // New Task dialog's import mode is the long way round, and nobody found it.
+  // Only single-repo git projects: import can't compose a multi-repo task.
+  // The menu is unmounted while closed, so this runs on open (a cheap
+  // `git worktree list`, no working-tree scan) and never goes stale.
+  const canImport = !isNonGit && !isMulti;
+  const IMPORT_LIMIT = 3;
+  const [importable, setImportable] = useState<ImportableWorktree[]>([]);
+  useEffect(() => {
+    if (!canImport) return;
+    let cancelled = false;
+    taskImportableWorktrees(projectId)
+      .then(list => { if (!cancelled) setImportable(list.filter(wt => !wt.locked)); })
+      .catch(err => console.error("task_importable_worktrees failed:", err));
+    return () => { cancelled = true; };
+  }, [canImport, projectId]);
 
   // App-wide remembered mode (same key the New Task dialog uses). Non-git
   // can't worktree, so it's pinned to the main checkout.
@@ -229,6 +248,38 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
           </div>
         </DropdownItem>
       )}
+      {/* Existing worktrees, one click to adopt. Named by branch (Rust derives
+          the task name + CLI), so there's nothing to fill in. Past the first
+          few, hand off to the dialog's import mode — the only thing that ever
+          sets the `importMode` seed. */}
+      {importable.length > 0 && (
+        <>
+          <DropdownSeparator />
+          <DropdownLabel>Existing worktrees</DropdownLabel>
+          {importable.slice(0, IMPORT_LIMIT).map(wt => (
+            <DropdownItem key={wt.path} onSelect={() => {
+              importQuickWorktree(projectId, wt.path)
+                .catch(err => console.error("task_import_worktree failed:", err));
+            }}>
+              <FolderGit2 className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate">
+                  {wt.branch || <span className="italic text-[var(--color-fg-dim)]">detached {wt.head}</span>}
+                </div>
+                <div className="truncate text-[11px] text-[var(--color-fg-faint)]">{wt.path}</div>
+              </div>
+            </DropdownItem>
+          ))}
+          {importable.length > IMPORT_LIMIT && (
+            <DropdownItem onSelect={() => {
+              requestAnimationFrame(() => openNewTask(projectId, { importMode: true }));
+            }}>
+              More…
+            </DropdownItem>
+          )}
+        </>
+      )}
+
       {/* Recently archived tasks for this project — a shortcut to
           HistoryView's restore (same task_restore IPC + setActiveTask)
           without leaving the sidebar. "More…" hands off to the full page

@@ -7,7 +7,7 @@
 // and writes, so the toggle, the dialog, and "Advanced…" all agree on the
 // last choice.
 
-import { taskCreate, taskOpenRepo } from "@/lib/ipc";
+import { taskCreate, taskOpenRepo, taskImportWorktree } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { launchSetupTab } from "@/lib/runTabs";
 import { slugify, branchify } from "@/lib/utils";
@@ -98,5 +98,16 @@ export async function createQuickTask(opts: {
   // Worktrees run their setup script in the background (unfocused) so the
   // main agent keeps focus. Main-checkout tasks have no per-task setup.
   if (mode === "worktree") launchSetupTab(task.id, { focus: false }).catch(() => {});
+  return task;
+}
+
+/** Adopt an existing git worktree as a task and focus it, straight from the
+ *  launcher menu (issue #92). Name and CLI are left unset so Rust derives
+ *  them (branch name / dir basename, and the project's default CLI). No setup
+ *  script: the worktree already exists and is presumed set up. */
+export async function importQuickWorktree(projectId: string, path: string): Promise<Task> {
+  const task = await taskImportWorktree(projectId, path);
+  await useApp.getState().loadAll();
+  useApp.getState().setActiveTask(task.id);
   return task;
 }

@@ -395,8 +395,13 @@ export function NewTaskDialog() {
     // Sandbox can now ride on a single-repo main-checkout create too, so
     // remember the mode whenever a create can carry one (i.e. always here).
     persistLast(LS_LAST_SANDBOX, sandboxMode);
-    if (mode === "repo_root" && !isMulti) { submitRepoRoot(); return; }
+    // Import wins over the task-type mode: adopting a worktree is orthogonal
+    // to worktree-vs-main-checkout, and the dialog can now open straight into
+    // import mode from the launcher menu while `mode` is still repo_root
+    // (the remembered default). Checking repo_root first would silently open
+    // the main checkout instead of importing the picked worktree.
     if (importMode) { submitImport(); return; }
+    if (mode === "repo_root" && !isMulti) { submitRepoRoot(); return; }
     if (!projectId || !name.trim() || !branch.trim()) return;
     if (submittingRef.current) return;
     submittingRef.current = true;
