@@ -990,7 +990,14 @@ export function applyEditorFont(id: string) {
  *  Async + best-effort: the invoke is a no-op until the webview is up. */
 export function applyUiScale(pct: number) {
   const factor = clampUiScale(pct) / 100;
-  getCurrentWebview().setZoom(factor).catch(() => {});
+  // getCurrentWebview() throws synchronously when the Tauri internals aren't
+  // present (outside the app / in tests); the .catch only covers the async
+  // setZoom. Guard so module load never crashes off-Tauri.
+  try {
+    getCurrentWebview().setZoom(factor).catch(() => {});
+  } catch {
+    // no webview to scale — no-op
+  }
 }
 
 export const currentEditorStack   = () => stackFor(usePrefs.getState().editorFontId);
