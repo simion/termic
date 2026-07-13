@@ -15,6 +15,19 @@ name: Release
 # because the Tauri updater can't replace package-manager-owned files,
 # so shipping them would split users into "self-update works" vs
 # "doesn't" buckets with no in-app signal.
+#
+# Apple signing + notarization (macOS) is OFF until six repo secrets exist:
+# APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+# APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_CONTENT. Until then the mac
+# build is ad-hoc signed and the release notes tell users how to clear the
+# quarantine bit. Once all six are set, the build is Developer ID signed,
+# notarized, stapled, and VERIFIED (spctl + stapler) before it can publish.
+#
+# After enrolling, also set the repo VARIABLE `REQUIRE_NOTARIZATION=true`.
+# That makes a missing certificate a hard failure instead of a silent fall
+# back to ad-hoc, which matters because the Homebrew cask drops its `xattr`
+# postflight at the same time: an ad-hoc build published after that point is
+# one nobody can open, and nothing else would tell us.
 
 on:
   push:
@@ -85,6 +98,10 @@ jobs:
       dmg_name:  ${{ steps.meta.outputs.dmg_name }}
       dmg_sha:   ${{ steps.hashes.outputs.dmg_sha }}
       sig:       ${{ steps.hashes.outputs.sig }}
+      # "true" only after the artifact PASSED the spctl/stapler check below.
+      # The release job keys its install footer off this, so the download
+      # instructions can never claim more than the build actually delivered.
+      notarized: ${{ steps.signing.outputs.notarize }}
     steps:
       - uses: actions/checkout@v4
       - name: Resolve version + filenames
@@ -114,6 +131,7 @@ jobs:
           key: cargo-${{ runner.os }}-universal-${{ hashFiles('src-tauri/Cargo.lock') }}
       - run: npm ci
       - name: Configure Apple signing & notarization
+        id: signing
         # Three constraints shape this step:
         #   1. `secrets` is not allowed in step `if:` expressions - the
         #      whole workflow fails to parse (killed v0.10.10's first run
@@ -124,7 +142,23 @@ jobs:
         #      configured; fall back to ad-hoc signing ('-') meanwhile.
         #   3. `env.HOME` does not exist in workflow expressions - export
         #      the API-key PATH from the shell, where $HOME is real.
+        #
+        # ALL-OR-NOTHING. A half-configured signing setup is the dangerous
+        # state, not the unconfigured one: tauri SOFT-SKIPS notarization when
+        # the auth triple is incomplete (a log line, not an error), so a
+        # missing APPLE_API_ISSUER would otherwise publish a signed-but-
+        # UNnotarized dmg through a green pipeline. Gatekeeper rejects that
+        # exactly as hard as it rejects an unsigned one. So: either all six
+        # secrets are present, or none are. Anything between is a hard fail.
+        #
+        # REQUIRE_NOTARIZATION (a repo *variable*, not a secret, so it can't
+        # be silently dropped along with them) is the latch. Set it to "true"
+        # once enrolled in the Apple Developer Program. From then on, a
+        # missing certificate secret fails the release instead of quietly
+        # falling back to ad-hoc, which after the Homebrew cask drops its
+        # `xattr` postflight would ship a DMG that no new user can open.
         env:
+          REQUIRE_NOTARIZATION:       ${{ vars.REQUIRE_NOTARIZATION }}
           APPLE_CERTIFICATE:          ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY:     ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -133,30 +167,138 @@ jobs:
           APPLE_API_KEY_CONTENT:      ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
           addenv() { printf '%s<<__TERMIC_EOF__\n%s\n__TERMIC_EOF__\n' "$1" "$2" >> "$GITHUB_ENV"; }
-          if [ -n "$APPLE_CERTIFICATE" ]; then
-            echo "Apple certificate configured; Developer ID signing."
+
+          # Which of the six are present? (Names only - never the values.)
+          present=0
+          missing=""
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_CONTENT; do
+            eval "val=\${$v:-}"
+            if [ -n "$val" ]; then present=$((present + 1)); else missing="$missing $v"; fi
+          done
+
+          if [ "$present" -eq 6 ]; then
+            echo "All six Apple secrets present: Developer ID signing + notarization."
             addenv APPLE_CERTIFICATE          "$APPLE_CERTIFICATE"
             addenv APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
-            addenv APPLE_SIGNING_IDENTITY     "${APPLE_SIGNING_IDENTITY:--}"
-          else
-            echo "No Apple certificate secret; ad-hoc signing ('-')."
-            addenv APPLE_SIGNING_IDENTITY "-"
-          fi
-          if [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_KEY_CONTENT" ]; then
-            echo "App Store Connect key configured; notarization on."
+            addenv APPLE_SIGNING_IDENTITY     "$APPLE_SIGNING_IDENTITY"
             mkdir -p ~/.appstoreconnect/private_keys
             printf '%s' "$APPLE_API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_"$APPLE_API_KEY".p8
             addenv APPLE_API_KEY      "$APPLE_API_KEY"
             addenv APPLE_API_ISSUER   "$APPLE_API_ISSUER"
             addenv APPLE_API_KEY_PATH "$HOME/.appstoreconnect/private_keys/AuthKey_$APPLE_API_KEY.p8"
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+
+            # Best-effort expiry warning. A Developer ID cert is valid ~5
+            # years and dies silently: the first you'd hear of it is a failed
+            # release. Non-fatal by design - openssl 3 needs -legacy for p12s
+            # written by older tooling, and a parse failure here must never
+            # break a release that would otherwise sign fine.
+            if enddate=$(printf '%s' "$APPLE_CERTIFICATE" | base64 --decode 2>/dev/null \
+                  | openssl pkcs12 -nokeys -clcerts -passin env:APPLE_CERTIFICATE_PASSWORD 2>/dev/null \
+                  | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2); then
+              if [ -n "$enddate" ]; then
+                exp=$(date -j -f "%b %e %T %Y %Z" "$enddate" +%s 2>/dev/null || echo "")
+                if [ -n "$exp" ]; then
+                  days=$(( (exp - $(date +%s)) / 86400 ))
+                  echo "Signing certificate expires in $days day(s) ($enddate)."
+                  if [ "$days" -lt 30 ]; then
+                    echo "::warning::Developer ID certificate expires in $days days ($enddate). Renew it before it takes a release down."
+                  fi
+                fi
+              fi
+            fi
+          elif [ "$present" -eq 0 ] && [ -z "${REQUIRE_NOTARIZATION:-}" ]; then
+            echo "::warning::No Apple secrets configured; ad-hoc signing ('-'). This DMG is NOT notarized and macOS will refuse to open it without a Gatekeeper bypass."
+            addenv APPLE_SIGNING_IDENTITY "-"
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+          elif [ "$present" -eq 0 ]; then
+            echo "::error::REQUIRE_NOTARIZATION is set, but no Apple secrets are configured. Refusing to publish an ad-hoc-signed build: the Homebrew cask no longer strips the quarantine bit, so nobody could open it."
+            exit 1
           else
-            echo "No App Store Connect key; skipping notarization."
+            echo "::error::Apple signing is partially configured. Missing:$missing"
+            echo "::error::Set all six secrets, or none. A partial setup soft-skips notarization and publishes an unopenable build through a green pipeline."
+            exit 1
           fi
       - name: Build, sign & notarize (universal)
+        # Retried up to 3 times, but ONLY when the failure looks like Apple's
+        # notary service (upload stall, 5xx, timeout). Notarization is a
+        # network round-trip to a third party, so it is the one step here that
+        # fails for reasons that have nothing to do with this repo, and a
+        # transient one would otherwise strand an already-pushed tag.
+        #
+        # A compile error must NOT be retried: it would burn three builds to
+        # reach the same failure. So the retry is gated on grepping the build
+        # log, and any other failure exits on the first attempt exactly as
+        # before. Retries are cheap - cargo's output is already in the target
+        # dir, so attempt 2 re-bundles and re-notarizes without recompiling.
         env:
           TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- --target universal-apple-darwin
+        run: |
+          attempts=3
+          for i in $(seq 1 $attempts); do
+            echo "→ tauri build, attempt $i/$attempts"
+            set +e
+            npm run tauri build -- --target universal-apple-darwin 2>&1 | tee "build-$i.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            [ "$status" -eq 0 ] && exit 0
+
+            if [ "$i" -eq "$attempts" ]; then
+              echo "::error::Build failed after $attempts attempts."
+              exit "$status"
+            fi
+            if grep -qiE 'notariz|notarytool|altool|Unable to (upload|process)|could not (upload|be uploaded)|502 Bad Gateway|503 Service|timed? ?out|connection reset|network' "build-$i.log"; then
+              backoff=$((i * 30))
+              echo "::warning::Attempt $i failed and looks like an Apple notary / network problem. Retrying in ${backoff}s."
+              sleep "$backoff"
+              continue
+            fi
+            echo "::error::Build failed for a reason unrelated to notarization; not retrying."
+            exit "$status"
+          done
+      - name: Verify signature & notarization
+        # The assertion the pipeline was missing. Everything above can succeed
+        # and still hand us an artifact macOS refuses to open, because tauri
+        # reports a soft-skipped notarization as a log line, not an error.
+        # Publishing is downstream of this step, so a build that is not
+        # genuinely notarized + stapled never reaches a user.
+        #
+        # Stapling is what makes first launch work OFFLINE (and on a machine
+        # that can't reach Apple). It's checked, not assumed.
+        if: steps.signing.outputs.notarize == 'true'
+        run: |
+          BUNDLE_DIR=src-tauri/target/universal-apple-darwin/release/bundle
+          APP="$BUNDLE_DIR/macos/Termic.app"
+          DMG="$BUNDLE_DIR/dmg/${{ steps.meta.outputs.dmg_name }}"
+
+          echo "→ codesign integrity"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "→ hardened runtime (notarization is refused without it)"
+          codesign -dv --verbose=4 "$APP" 2>&1 | tee /tmp/cs.txt
+          grep -qE 'flags=.*runtime' /tmp/cs.txt || {
+            echo "::error::Hardened runtime flag missing from the signature."; exit 1; }
+
+          echo "→ Gatekeeper assessment"
+          spctl -a -vvv -t exec "$APP" 2>&1 | tee /tmp/spctl.txt || true
+          grep -q 'source=Notarized Developer ID' /tmp/spctl.txt || {
+            echo "::error::App is not assessed as 'Notarized Developer ID'. It will not open on a user's Mac."; exit 1; }
+
+          echo "→ stapled ticket (app)"
+          xcrun stapler validate "$APP"
+
+          # The DMG is the download path for everyone not on Homebrew. Tauri
+          # staples the .app for certain; whether it also staples the DMG has
+          # varied across CLI versions, and an unstapled DMG still passes
+          # Gatekeeper via an online check. So: warn, don't fail. Promote this
+          # to a hard failure if the first notarized release shows it passing.
+          echo "→ stapled ticket (dmg, advisory)"
+          xcrun stapler validate "$DMG" || \
+            echo "::warning::DMG is not stapled (the .app inside it is). First launch will need a network round-trip to Apple. Harmless, but worth knowing."
+
+          echo "✓ Signed, notarized, stapled."
       - name: Compute SHA256 + read .sig
         id: hashes
         run: |
@@ -393,6 +535,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.build-mac.outputs.version }}
           LINUX_APPIMAGE: ${{ needs.build-linux.outputs.appimage_name }}
+          NOTARIZED: ${{ needs.build-mac.outputs.notarized }}
         run: |
           # Lead with WHAT CHANGED (extracted verbatim from CHANGELOG.md),
           # then a short install footer. Direct-download and email-notified
@@ -408,10 +551,24 @@ jobs:
           echo
           echo "---"
           echo
-          cat <<'FOOTER'
-          ## Install
-
+          echo "## Install"
+          echo
+          # The mac line follows the artifact, not our hopes for it. It says
+          # "strip the quarantine bit" only for a build that actually needs
+          # it, and stops saying so the moment build-mac proves the DMG is
+          # notarized (which it only claims after spctl + stapler pass). No
+          # release can tell users to defeat Gatekeeper on a build that
+          # doesn't need it, or forget to when it does.
+          if [ "$NOTARIZED" = "true" ]; then
+            cat <<'FOOTER'
+          - **macOS** (universal): `brew install --cask simion/termic/termic`, or download the `.dmg` below. Signed and notarized by Apple, so it opens on first launch with nothing else to do.
+          FOOTER
+          else
+            cat <<'FOOTER'
           - **macOS** (universal): `brew install --cask simion/termic/termic` (handles Gatekeeper), or download the `.dmg` below and run `xattr -dr com.apple.quarantine /Applications/Termic.app` to clear it.
+          FOOTER
+          fi
+          cat <<'FOOTER'
           - **Linux** (x86_64): download the `.AppImage` below, then `chmod +x` it and run. Sandbox is macOS-only; everything else works the same.
 
           The app self-updates after install. Full install and update help: https://termic.dev
