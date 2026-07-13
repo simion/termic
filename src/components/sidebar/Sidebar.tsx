@@ -6,9 +6,9 @@ import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, FolderOpen, Megaphone, Keyboard } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, EyeOff, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
-import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel } from "@/components/ui/ContextMenu";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
@@ -16,7 +16,8 @@ import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
-import { taskRename, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate } from "@/lib/ipc";
+import { taskRename, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate, projectSetGroup } from "@/lib/ipc";
+import { groupOf, projectSections } from "@/lib/projectGroups";
 import { createQuickTask, derivedBranch, type NewTaskMode } from "@/lib/quickTask";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
@@ -47,6 +48,24 @@ function defaultRepoRootName(cli: string, taskList: Task[]): string {
   return `${slug}-${n}`;
 }
 
+// Group folder accent palette. Keys persist in localStorage (via
+// useApp.groupColors); css points at the --color-palette-* tokens in index.css
+// @theme; label is for screen readers only (the picker renders bare
+// swatches). An unknown stored key (hand-edited storage, palette entry
+// removed in a future version) resolves to undefined = default styling.
+const GROUP_COLORS: { key: string; label: string; css: string }[] = [
+  { key: "red",    label: "Red",    css: "var(--color-palette-red)" },
+  { key: "orange", label: "Orange", css: "var(--color-palette-orange)" },
+  { key: "yellow", label: "Yellow", css: "var(--color-palette-yellow)" },
+  { key: "green",  label: "Green",  css: "var(--color-palette-green)" },
+  { key: "teal",   label: "Teal",   css: "var(--color-palette-teal)" },
+  { key: "blue",   label: "Blue",   css: "var(--color-palette-blue)" },
+  { key: "purple", label: "Purple", css: "var(--color-palette-purple)" },
+  { key: "pink",   label: "Pink",   css: "var(--color-palette-pink)" },
+];
+const groupColorCss = (key: string | undefined): string | undefined =>
+  GROUP_COLORS.find(c => c.key === key)?.css;
+
 // `compact` is normally read from the store, but the Arc-style hover reveal
 // (App.tsx) renders TWO instances at once: the 56px icon rail (`compact`)
 // plus a full-width overlay (`compact={false}`) that slides in on hover. The
@@ -69,7 +88,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const openNewTask = useUI(s => s.openNewTask);
   const collapsedProjects = useApp(s => s.collapsedProjects);
   const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
+  const collapsedGroups = useApp(s => s.collapsedGroups);
+  const setGroupCollapsed = useApp(s => s.setGroupCollapsed);
+  const groupColors = useApp(s => s.groupColors);
+  const setGroupColor = useApp(s => s.setGroupColor);
   const setAllTasksCollapsed = useApp(s => s.setAllTasksCollapsed);
+  const setAllGroupsCollapsed = useApp(s => s.setAllGroupsCollapsed);
   // (agents subscription lives inside ProjectActionsMenuItems now —
   // Sidebar itself doesn't need the registry.)
 
@@ -128,9 +152,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const isLoaded = (taskId: string) =>
     (tabs[taskId] || []).some(t => t.type === "terminal" && t.ptyId);
 
-  // Inline rename state for PROJECTS only. Task rename is managed
-  // inside TaskRow so it can co-exist with per-tab rename state.
-  const [renaming, setRenaming] = useState<{ kind: "proj"; id: string; value: string } | null>(null);
+  // Inline rename state for PROJECTS and GROUPS (for groups, `id` is the
+  // group NAME — groups are derived from Project.group labels and have no
+  // id). Task rename is managed inside TaskRow so it can co-exist with
+  // per-tab rename state.
+  const [renaming, setRenaming] = useState<{ kind: "proj" | "group"; id: string; value: string } | null>(null);
   // Project whose `+` dropdown is currently open. Used to keep the row
   // visually "hovered" (bg + Cog visible) while the menu is open;
   // otherwise the menu trigger looks like it un-selected its parent.
@@ -180,16 +206,45 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // smooth feel, same as the prompt library); the list still reorders live.
   const [dragTy, setDragTy] = useState(0);
   const dragArmed = useRef<
-    { id: string; x: number; y: number; started: boolean; grabOffsetY: number; appliedTy: number; pointerY: number } | null
+    { id: string; x: number; y: number; started: boolean; grabOffsetY: number; appliedTy: number; pointerY: number; origGroup: string; fromFold: boolean } | null
   >(null);
   const dragListenersRef = useRef<{ move: (e: PointerEvent) => void; up: (e: PointerEvent) => void } | null>(null);
+  // Folder header the cursor is currently over while dragging a project —
+  // "drop INTO this group". State drives the header highlight; the ref is
+  // what the document-level pointerup reads (the listener closure would
+  // otherwise see a stale state value).
+  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
+  const dragOverGroupRef = useRef<string | null>(null);
+  // Clicking a group header to dismiss its open rename input must NOT also
+  // toggle collapse: the input's blur (→ commitRename → renaming=null) fires
+  // on mousedown, BEFORE the click event, so a state check in onClick sees
+  // rename already closed. Captured on pointerdown instead, when the input
+  // is still mounted. Also set after a completed group drag so the click
+  // that follows pointerup doesn't collapse the folder that was just moved.
+  const suppressGroupToggle = useRef(false);
+
+  // ── Group header drag-to-reorder ──────────────────────────────────────
+  // Same pointer pattern as project rows, but the unit is the whole folder:
+  // its members move through the array as one contiguous block (labels
+  // never change), and the section container follows the cursor.
+  const [dragGroupName, setDragGroupName] = useState<string | null>(null);
+  const [dragGroupTy, setDragGroupTy] = useState(0);
+  const groupDragArmed = useRef<
+    { name: string; x: number; y: number; started: boolean; grabOffsetY: number; appliedTy: number; pointerY: number } | null
+  >(null);
+  const groupDragListenersRef = useRef<{ move: (e: PointerEvent) => void; up: (e: PointerEvent) => void } | null>(null);
+
+  // All drag hit-testing is scoped to THIS instance's DOM — the Arc-style
+  // hover reveal renders two Sidebars at once (compact rail + full overlay),
+  // and a document-wide query would also match the other instance's rows.
+  const dragRoot = (): ParentNode => asideRef.current ?? document;
 
   // translateY that keeps the dragged header under the cursor, self-correcting
   // against the live layout after each reorder (reads the header's real rect
   // minus the transform already applied to recover its untranslated slot).
   const computeProjectTy = (clientY: number): number => {
     const armed = dragArmed.current;
-    const el = armed && document.querySelector<HTMLElement>(`[data-project-id="${CSS.escape(armed.id)}"]`);
+    const el = armed && dragRoot().querySelector<HTMLElement>(`[data-project-id="${CSS.escape(armed.id)}"]`);
     if (!armed || !el) return 0;
     const layoutTop = el.getBoundingClientRect().top - armed.appliedTy;
     const ty = (clientY - armed.grabOffsetY) - layoutTop;
@@ -206,13 +261,58 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       document.removeEventListener("pointercancel", ls.up);
       dragListenersRef.current = null;
     }
-    const wasStarted = dragArmed.current?.started ?? false;
+    const armed = dragArmed.current;
+    const wasStarted = armed?.started ?? false;
+    const hoverGroup = dragOverGroupRef.current;
     dragArmed.current = null;
+    dragOverGroupRef.current = null;
+    setDragOverGroup(null);
     setDragProjectId(null);
     setDragTy(0);
-    if (commit && wasStarted) {
-      const finalIds = useApp.getState().projects.map(x => x.id);
-      projectReorder(finalIds).catch(() => { void useApp.getState().loadAll(); });
+    if (commit && wasStarted && armed) {
+      const list = [...useApp.getState().projects];
+      const idx = list.findIndex(x => x.id === armed.id);
+      if (idx === -1) return;
+      let dragged = list[idx];
+      if (hoverGroup) {
+        // Dropped on a folder header → become the group's first member
+        // (that's where the cursor is). Update the local order optimistically
+        // and expand the folder so the drop is visible.
+        dragged = { ...dragged, group: hoverGroup };
+        list.splice(idx, 1);
+        // First VISIBLE member — same hidden-anchor guard as
+        // onDragPointerMove's firstIdOfGroup: with "Hide inactive
+        // projects" on, the group's array-first member can be an
+        // inactive row folded away at the bottom, and anchoring there
+        // would teleport the folder to that hidden position on drop.
+        const hideInactive = usePrefs.getState().hideInactiveProjects;
+        const wss = useApp.getState().tasks;
+        const firstIdx = list.findIndex(x =>
+          groupOf(x) === hoverGroup
+          && (!hideInactive || wss.some(w => w.project_id === x.id && !w.archived)),
+        );
+        // -1 = dragged is the folder's SOLE (visible) member (dropped on
+        // its own header): keep its slot instead of teleporting the
+        // folder to the end of the list.
+        list.splice(firstIdx === -1 ? idx : firstIdx, 0, dragged);
+        useApp.setState({ projects: list });
+        setGroupCollapsed(hoverGroup, false);
+      }
+      // Group changed during the drag (live adoption between rows, or the
+      // header drop above) → persist it before the reorder. projectSetGroup
+      // touches ONLY the group field, so a stale snapshot of the dragged
+      // project can't clobber concurrent edits to its other fields.
+      const newGroup = groupOf(dragged);
+      const groupChanged = newGroup !== armed.origGroup;
+      const finalIds = list.map(x => x.id);
+      (async () => {
+        try {
+          if (groupChanged) await projectSetGroup([dragged.id], newGroup || null);
+          await projectReorder(finalIds);
+        } catch {
+          void useApp.getState().loadAll();
+        }
+      })();
     }
   };
 
@@ -237,27 +337,229 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const all = useApp.getState().projects;
     const fromIdx = all.findIndex(x => x.id === dragId);
     if (fromIdx === -1) return;
-    const others = Array.from(
-      document.querySelectorAll<HTMLElement>('[data-project-id]'),
-    ).filter(el => el.dataset.projectId !== dragId);
-    let beforeId: string | null = null;
-    for (const el of others) {
-      const r = el.getBoundingClientRect();
-      if (e.clientY < (r.top + r.bottom) / 2) {
-        beforeId = el.dataset.projectId ?? null;
-        break;
+
+    // Anchors below must resolve against the projects the user can SEE —
+    // with "Hide inactive projects" on, a group's array-first member can be
+    // an inactive row folded away at the bottom; anchoring on it would
+    // teleport drops to the hidden member's array position. getState (not
+    // the render closure): the document-level listener is captured once at
+    // pointerdown and would otherwise read stale values.
+    const hideInactive = usePrefs.getState().hideInactiveProjects;
+    const wss = useApp.getState().tasks;
+    const shown = (x: typeof all[number]) =>
+      !hideInactive || wss.some(w => w.project_id === x.id && !w.archived);
+    // First VISIBLE member of group `g` in array order (skipping the
+    // dragged row) — matches the first row rendered inside the folder.
+    const firstIdOfGroup = (g: string): string | null =>
+      all.find(x => x.id !== dragId && shown(x) && groupOf(x) === g)?.id ?? null;
+    // Id of the project that FOLLOWS group `g`'s last VISIBLE member in
+    // array order (null = end of array) — "insert at the end of the folder".
+    const idAfterGroup = (g: string): string | null => {
+      let last = -1;
+      all.forEach((x, i) => { if (x.id !== dragId && shown(x) && groupOf(x) === g) last = i; });
+      for (let i = last + 1; i < all.length; i++) if (all[i].id !== dragId) return all[i].id;
+      return null;
+    };
+    // Project following the dragged row itself — the "stay at this index"
+    // slot, used when the dragged row is a folder's SOLE member (the
+    // group-relative anchors above have nothing to anchor to then).
+    const idAfterSelf = (): string | null => {
+      for (let i = fromIdx + 1; i < all.length; i++) if (all[i].id !== dragId) return all[i].id;
+      return null;
+    };
+
+    // Zone-based target: where the cursor is decides both the slot AND the
+    // dragged project's group.
+    //   inside a folder's rendered container:
+    //     header top half    → before the folder, ungrouped
+    //     header bottom half → INTO the folder (highlight; assign on drop)
+    //     members area       → before the member under the cursor, in-group;
+    //                          past the last member (but still inside the
+    //                          container) stays at the folder's end — so
+    //                          hovering the tail of your own folder doesn't
+    //                          eject you.
+    //   outside any folder: walk loose headers + whole folder sections in
+    //   document order; first midpoint below the cursor wins, ungrouped.
+    let hovered: string | null = null;
+    let slot: { beforeId: string | null; group: string } | null = null;
+    const curGroup = groupOf(all[fromIdx]);
+    // The revealed inactive fold is its own drag domain: rows there render
+    // flat in a separate section regardless of their group label, so a
+    // reorder across it must NOT rewrite the dragged project's group —
+    // neither stripping a grouped inactive row nor silently adopting a
+    // group when an inactive row passes an active folder's y-range. That
+    // cuts BOTH ways: a drag that ORIGINATES in the fold keeps its group
+    // everywhere (fold rows render flat, so an adoption or strip would be
+    // invisible until hide-inactive is toggled off) — sections are plain
+    // reorder boundaries for it, never drop targets.
+    const fold = dragRoot().querySelector<HTMLElement>("[data-inactive-fold]");
+    const foldRect = fold?.getBoundingClientRect();
+    const inFold = !!foldRect && e.clientY >= foldRect.top && e.clientY <= foldRect.bottom;
+    let inSection: HTMLElement | null = null;
+    if (!inFold && !armed.fromFold) {
+      for (const sec of Array.from(dragRoot().querySelectorAll<HTMLElement>("[data-group-section]"))) {
+        const r = sec.getBoundingClientRect();
+        if (e.clientY >= r.top && e.clientY <= r.bottom) { inSection = sec; break; }
       }
     }
+    if (inFold && fold) {
+      slot = { beforeId: null, group: curGroup };
+      for (const el of Array.from(fold.querySelectorAll<HTMLElement>("[data-project-id]"))) {
+        if (el.dataset.projectId === dragId) continue;
+        const r = el.getBoundingClientRect();
+        if (e.clientY < (r.top + r.bottom) / 2) {
+          slot = { beforeId: el.dataset.projectId!, group: curGroup };
+          break;
+        }
+      }
+    } else if (inSection) {
+      const g = inSection.dataset.groupSection!;
+      const header = inSection.querySelector<HTMLElement>("[data-group-name]");
+      const hr = header?.getBoundingClientRect();
+      if (hr && e.clientY < (hr.top + hr.bottom) / 2) {
+        // ?? idAfterSelf(): dragged is the folder's sole member — pulling
+        // it out above the header keeps its index, just ungroups it.
+        slot = { beforeId: firstIdOfGroup(g) ?? idAfterSelf(), group: "" };
+      } else if (hr && e.clientY <= hr.bottom) {
+        hovered = g;
+      } else if (!firstIdOfGroup(g)) {
+        // Members area of a folder whose only member IS the dragged row:
+        // nothing to reorder against — stay put.
+        slot = null;
+      } else {
+        slot = { beforeId: idAfterGroup(g), group: g };
+        for (const el of Array.from(inSection.querySelectorAll<HTMLElement>("[data-project-id]"))) {
+          if (el.dataset.projectId === dragId) continue;
+          const r = el.getBoundingClientRect();
+          if (e.clientY < (r.top + r.bottom) / 2) {
+            slot = { beforeId: el.dataset.projectId!, group: g };
+            break;
+          }
+        }
+      }
+    } else {
+      // Fold-origin drags keep their label (see the fold-domain note above);
+      // everything else dropped at top level becomes ungrouped.
+      slot = { beforeId: null, group: armed.fromFold ? curGroup : "" };
+      const boundaries = Array.from(
+        dragRoot().querySelectorAll<HTMLElement>("[data-project-id], [data-group-section]"),
+      ).filter(el =>
+        el.dataset.groupSection !== undefined
+          ? true
+          : el.dataset.projectId !== dragId
+            && !el.closest("[data-group-section]")
+            && !el.closest("[data-inactive-fold]"));
+      for (const el of boundaries) {
+        const r = el.getBoundingClientRect();
+        if (e.clientY < (r.top + r.bottom) / 2) {
+          slot.beforeId = el.dataset.groupSection !== undefined
+            ? (firstIdOfGroup(el.dataset.groupSection) ?? idAfterSelf())
+            : el.dataset.projectId!;
+          break;
+        }
+      }
+    }
+    if (hovered !== dragOverGroupRef.current) {
+      dragOverGroupRef.current = hovered;
+      setDragOverGroup(hovered);
+    }
+    if (hovered || !slot) return;
+
+    const { beforeId, group: targetGroup } = slot;
     const nextIds = all.map(x => x.id).filter(id => id !== dragId);
     const insertAt = beforeId
       ? nextIds.findIndex(id => id === beforeId)
       : nextIds.length;
     const targetIdx = insertAt === -1 ? nextIds.length : insertAt;
-    if (targetIdx === fromIdx) return;
+    if (targetIdx === fromIdx && targetGroup === curGroup) return;
     nextIds.splice(targetIdx, 0, dragId);
     useApp.setState(s => ({
-      projects: nextIds.map(id => s.projects.find(x => x.id === id)!).filter(Boolean),
+      projects: nextIds
+        .map(id => s.projects.find(x => x.id === id)!)
+        .filter(Boolean)
+        // Live group adoption: the row visually slides into / out of the
+        // folder as it crosses the boundary; persisted on drop by endDrag.
+        .map(p => p.id === dragId && groupOf(p) !== targetGroup
+          ? { ...p, group: targetGroup || undefined }
+          : p),
     }));
+  };
+
+  // translateY for the dragged SECTION (group drag) — same self-correcting
+  // scheme as computeProjectTy, measured on the section container.
+  const computeGroupTy = (clientY: number): number => {
+    const armed = groupDragArmed.current;
+    const el = armed && dragRoot().querySelector<HTMLElement>(`[data-group-section="${CSS.escape(armed.name)}"]`);
+    if (!armed || !el) return 0;
+    const layoutTop = el.getBoundingClientRect().top - armed.appliedTy;
+    const ty = (clientY - armed.grabOffsetY) - layoutTop;
+    armed.appliedTy = ty;
+    return ty;
+  };
+
+  const endGroupDrag = (commit: boolean) => {
+    const ls = groupDragListenersRef.current;
+    if (ls) {
+      document.removeEventListener("pointermove", ls.move);
+      document.removeEventListener("pointerup", ls.up);
+      document.removeEventListener("pointercancel", ls.up);
+      groupDragListenersRef.current = null;
+    }
+    const wasStarted = groupDragArmed.current?.started ?? false;
+    groupDragArmed.current = null;
+    setDragGroupName(null);
+    setDragGroupTy(0);
+    if (commit && wasStarted) {
+      const finalIds = useApp.getState().projects.map(x => x.id);
+      projectReorder(finalIds).catch(() => { void useApp.getState().loadAll(); });
+    }
+  };
+
+  const onGroupDragPointerMove = (e: PointerEvent) => {
+    const armed = groupDragArmed.current;
+    if (!armed) return;
+    if (!armed.started) {
+      const dx = e.clientX - armed.x;
+      const dy = e.clientY - armed.y;
+      if (dx * dx + dy * dy < 16) return;
+      armed.started = true;
+      setDragGroupName(armed.name);
+    }
+    armed.pointerY = e.clientY;
+    setDragGroupTy(computeGroupTy(e.clientY));
+    const name = armed.name;
+    const all = useApp.getState().projects;
+    const members = all.filter(x => groupOf(x) === name);
+    if (members.length === 0) return;
+    const rest = all.filter(x => groupOf(x) !== name);
+    const hideInactive = usePrefs.getState().hideInactiveProjects;
+    const wss = useApp.getState().tasks;
+    const shown = (x: typeof all[number]) =>
+      !hideInactive || wss.some(w => w.project_id === x.id && !w.archived);
+    // Top-level boundaries only: loose rows + OTHER folder sections in
+    // document order. A folder can't nest, so its drop slots are always
+    // between top-level items; first midpoint below the cursor wins.
+    const boundaries = Array.from(
+      dragRoot().querySelectorAll<HTMLElement>("[data-project-id], [data-group-section]"),
+    ).filter(el =>
+      el.dataset.groupSection !== undefined
+        ? el.dataset.groupSection !== name
+        : !el.closest("[data-group-section]") && !el.closest("[data-inactive-fold]"));
+    let beforeId: string | null = null;
+    for (const el of boundaries) {
+      const r = el.getBoundingClientRect();
+      if (e.clientY < (r.top + r.bottom) / 2) {
+        beforeId = el.dataset.groupSection !== undefined
+          ? rest.find(x => shown(x) && groupOf(x) === el.dataset.groupSection)?.id ?? null
+          : el.dataset.projectId!;
+        break;
+      }
+    }
+    const at = beforeId ? rest.findIndex(x => x.id === beforeId) : rest.length;
+    const insertAt = at === -1 ? rest.length : at;
+    const next = [...rest.slice(0, insertAt), ...members, ...rest.slice(insertAt)];
+    if (next.every((x, i) => x === all[i])) return;
+    useApp.setState({ projects: next });
   };
 
   // After a live reorder re-renders the list, the dragged header sits in a new
@@ -265,20 +567,108 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // doesn't jump for a frame.
   useLayoutEffect(() => {
     if (dragArmed.current?.started) setDragTy(computeProjectTy(dragArmed.current.pointerY));
+    if (groupDragArmed.current?.started) setDragGroupTy(computeGroupTy(groupDragArmed.current.pointerY));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects]);
 
   async function commitRename() {
     if (!renaming) return;
-    const { id, value } = renaming;
+    const { kind, id, value } = renaming;
     setRenaming(null);
     const trimmed = value.trim();
     if (!trimmed) return;
     try {
-      await projectRename(id, trimmed);
+      if (kind === "proj") {
+        await projectRename(id, trimmed);
+      } else {
+        // Group rename = relabel every member in ONE atomic write (groups
+        // are derived from Project.group, there is no group entity).
+        // Renaming onto an existing group's name merges the two.
+        // Uppercase again at commit (belt to the input's braces) — a
+        // lowercase label on disk would diverge from what groupOf renders.
+        const label = trimmed.toUpperCase();
+        if (label === id) return;
+        const memberIds = useApp.getState().projects
+          .filter(p => groupOf(p) === id).map(p => p.id);
+        await projectSetGroup(memberIds, label);
+        useApp.getState().renameGroupState(id, label);
+      }
       await loadAll();
-    } catch (e) { console.error("rename failed", e); }
+    } catch (e) {
+      console.error("rename failed", e);
+      // Resync from disk — the UI may be showing optimistic state.
+      void loadAll();
+    }
   }
+
+  // ── Project groups (UI-only folders in this list) ──────────────────────
+  // A group exists iff ≥1 project carries its label; ordered by first
+  // appearance in the (user-orderable) projects array. Includes groups
+  // whose members are currently folded into the inactive section so the
+  // "Move to group" menu can still target them.
+  const allGroups: string[] = [];
+  for (const p of projects) {
+    const g = groupOf(p);
+    if (g && !allGroups.includes(g)) allGroups.push(g);
+  }
+
+  const moveToGroup = async (p: typeof projects[number], group: string | null): Promise<boolean> => {
+    try {
+      // Filing INTO an existing folder also repositions the project to the
+      // folder's end in the array. Without this a project that sits earlier
+      // in the array than the folder would drag the whole folder up to its
+      // old position (a section renders at its FIRST member's index).
+      let reorderIds: string[] | null = null;
+      if (group) {
+        const all = useApp.getState().projects;
+        if (all.some(x => x.id !== p.id && groupOf(x) === group)) {
+          const list = all.filter(x => x.id !== p.id);
+          let last = -1;
+          list.forEach((x, i) => { if (groupOf(x) === group) last = i; });
+          list.splice(last + 1, 0, { ...p, group });
+          useApp.setState({ projects: list });
+          reorderIds = list.map(x => x.id);
+        }
+      }
+      await projectSetGroup([p.id], group);
+      if (reorderIds) await projectReorder(reorderIds);
+      // Expand the destination so the project doesn't silently vanish
+      // into a collapsed folder.
+      if (group) setGroupCollapsed(group, false);
+      await loadAll();
+      return true;
+    } catch (e) {
+      console.error("move to group failed", e);
+      void loadAll();
+      return false;
+    }
+  };
+
+  const createGroupWith = async (p: typeof projects[number]) => {
+    const names = new Set(allGroups);
+    let name = "NEW GROUP";
+    for (let n = 2; names.has(name); n += 1) name = `NEW GROUP ${n}`;
+    const ok = await moveToGroup(p, name);
+    // Immediately offer the real name — but only when the fresh folder
+    // actually renders an editable header: full mode (compact has no inline
+    // rename, matching project rename) AND a visible member (a hidden
+    // inactive project renders no folder, which would strand the rename
+    // state with no input to commit or escape it).
+    if (ok && !compact && shownInline(p)) {
+      setRenaming({ kind: "group", id: name, value: name });
+    }
+  };
+
+  const dissolveGroup = async (name: string) => {
+    const ids = useApp.getState().projects.filter(p => groupOf(p) === name).map(p => p.id);
+    try {
+      await projectSetGroup(ids, null);
+      await loadAll();
+    } catch (e) {
+      console.error("ungroup failed", e);
+      void loadAll();
+    }
+  };
 
   const asideRef = useRef<HTMLElement>(null);
 
@@ -336,11 +726,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   trigger, which would otherwise re-fire its (focus-triggered)
                   tooltip and leave it stuck open after selecting an item. */}
               <DropdownMenu side="right" align="start" sideOffset={4} className="w-[280px]" onCloseAutoFocus={(e) => e.preventDefault()}>
-                <DropdownItem onSelect={() => setAllTasksCollapsed(false)}>
+                {/* Both actions cover group folders too — expanding agents
+                    under a still-collapsed folder would look like a no-op,
+                    and "collapse all" means the whole tree tidies up. */}
+                <DropdownItem onSelect={() => { setAllTasksCollapsed(false); setAllGroupsCollapsed(false); }}>
                   <ChevronsUpDown className="h-4 w-4 text-[var(--color-fg-dim)]" />
                   <span>Expand all agents</span>
                 </DropdownItem>
-                <DropdownItem onSelect={() => setAllTasksCollapsed(true)}>
+                <DropdownItem onSelect={() => { setAllTasksCollapsed(true); setAllGroupsCollapsed(true); }}>
                   <ChevronsDownUp className="h-4 w-4 text-[var(--color-fg-dim)]" />
                   <span>Collapse all agents</span>
                 </DropdownItem>
@@ -400,7 +793,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // expanded row). User overrides stick: explicit true / false
             // wins; undefined falls back to emptiness-based default.
             const explicit = collapsedProjects[p.id];
-            const collapsed = explicit !== undefined ? explicit : taskList.length === 0;
+            // Render-only fold while THIS project is being dragged: the
+            // translateY rides on the header alone, so expanded task rows
+            // would sit frozen in place while their header floats away.
+            // Folding for the drag's duration makes the header read as
+            // "picking the project up"; persisted collapse state is
+            // untouched, so the rows return on drop exactly as they were.
+            const collapsed = dragProjectId === p.id
+              || (explicit !== undefined ? explicit : taskList.length === 0);
             // Compact + collapsed: surface aggregated activity on the
             // project monogram so a collapsed project still signals that
             // something underneath wants attention (attention > done).
@@ -450,6 +850,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         id: p.id, x: e.clientX, y: e.clientY, started: false,
                         grabOffsetY: e.clientY - (e.currentTarget as HTMLElement).getBoundingClientRect().top,
                         appliedTy: 0, pointerY: e.clientY,
+                        origGroup: groupOf(p),
+                        // Fold rows render flat regardless of group label, so
+                        // a drag that STARTS there must never rewrite the
+                        // group — the change would be invisible until
+                        // hide-inactive is toggled off (see the fold-domain
+                        // note in onDragPointerMove).
+                        fromFold: !!(e.currentTarget as HTMLElement).closest("[data-inactive-fold]"),
                       };
                       // Attach document-level listeners so drag
                       // tracking survives the dragged DOM node being
@@ -504,7 +911,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         {(projAttention || projDone) && (
                           <span
                             className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]"
-                            style={{ backgroundColor: projAttention ? "var(--color-warn)" : "var(--color-info, #4aa3ff)" }}
+                            style={{ backgroundColor: projAttention ? "var(--color-warn)" : "var(--color-info)" }}
                           />
                         )}
                       </div>
@@ -648,6 +1055,36 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       Rename
                     </ContextMenuItem>
                   )}
+                  <ContextMenuSub>
+                    <ContextMenuSubTrigger>
+                      <Folder />
+                      Move to group
+                    </ContextMenuSubTrigger>
+                    <ContextMenuSubContent>
+                      {allGroups.map(g => (
+                        <ContextMenuItem
+                          key={g}
+                          onSelect={() => { if (g !== groupOf(p)) moveToGroup(p, g); }}
+                        >
+                          {groupOf(p) === g
+                            ? <Check className="text-[var(--color-accent)]" />
+                            : <span className="h-3.5 w-3.5 shrink-0" />}
+                          <span className="truncate">{g}</span>
+                        </ContextMenuItem>
+                      ))}
+                      {allGroups.length > 0 && <ContextMenuSeparator />}
+                      <ContextMenuItem onSelect={() => createGroupWith(p)}>
+                        <FolderPlus />
+                        New group
+                      </ContextMenuItem>
+                      {!!groupOf(p) && (
+                        <ContextMenuItem onSelect={() => moveToGroup(p, null)}>
+                          <FolderMinus />
+                          Remove from group
+                        </ContextMenuItem>
+                      )}
+                    </ContextMenuSubContent>
+                  </ContextMenuSub>
                   {isMulti && (
                     <ContextMenuItem onSelect={async () => {
                       await projectUpdate({ ...p, spotlight_enabled: !p.spotlight_enabled });
@@ -805,10 +1242,270 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               </div>
             );
           };
+          // Collapsible group folder wrapping its member projects. Groups
+          // are pure UI (a label on Project) — this renders the header +
+          // indented members, with collapse state keyed by group NAME.
+          const renderGroup = (name: string, members: typeof projects) => {
+            // Object.hasOwn: the record round-trips through JSON.parse, so a
+            // group named "toString"/"constructor" would otherwise read an
+            // inherited function off the prototype and render collapsed.
+            const collapsed = Object.hasOwn(collapsedGroups, name)
+              ? collapsedGroups[name] === true
+              : false;
+            // Count ALL members (hidden inactive ones included) — the header
+            // count is also what Rename/Ungroup operate on, so it must not
+            // understate the group while "Hide inactive projects" is on.
+            const totalCount = projects.filter(x => groupOf(x) === name).length;
+            // Aggregated activity for a collapsed folder (attention > done)
+            // so hidden members can still call for the user — same signal
+            // the compact project monogram carries.
+            const memberIds = new Set(members.map(m => m.id));
+            const grpWs = collapsed
+              ? tasks.filter(w => memberIds.has(w.project_id) && !w.archived)
+              : [];
+            const grpAttention = collapsed && grpWs.some(w => needsAttention(w.id));
+            const grpDone = collapsed && !grpAttention && grpWs.some(w => isWorkDone(w.id));
+            // User-assigned accent (Object.hasOwn: JSON-parsed record, see
+            // `collapsed` above). Unknown keys resolve to undefined = default.
+            const accent = groupColorCss(
+              Object.hasOwn(groupColors, name) ? groupColors[name] : undefined,
+            );
+            if (compact) {
+              // Compact rail: a chevron-only divider row (no room for a
+              // label — the tooltip carries name + count). Members render
+              // as regular monogram tiles below, hidden when collapsed.
+              return (
+                <div key={`group:${name}`}>
+                  <Tip content={`${name} (${totalCount})`}>
+                    <button
+                      type="button"
+                      aria-expanded={!collapsed}
+                      onClick={() => setGroupCollapsed(name, !collapsed)}
+                      // Inline color deliberately beats the hover class — a
+                      // colored folder stays its color under the cursor.
+                      style={accent ? { color: accent } : undefined}
+                      className="relative mx-auto flex h-6 w-8 items-center justify-center rounded-md text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                    >
+                      {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      {(grpAttention || grpDone) && (
+                        <span
+                          className="absolute -right-0.5 -top-0.5 block h-2 w-2 rounded-full ring-2 ring-[var(--color-bg-1)]"
+                          style={{ backgroundColor: grpAttention ? "var(--color-warn)" : "var(--color-info)" }}
+                        />
+                      )}
+                    </button>
+                  </Tip>
+                  {!collapsed && members.map(renderProject)}
+                </div>
+              );
+            }
+            const isGroupRenaming = renaming?.kind === "group" && renaming.id === name;
+            return (
+              <div
+                key={`group:${name}`}
+                data-group-section={name}
+                style={dragGroupName === name ? { transform: `translateY(${dragGroupTy}px)`, position: "relative", zIndex: 20 } : undefined}
+              >
+                <ContextMenuRoot>
+                  <ContextMenuTrigger className="contents">
+                    <div
+                      data-group-name={name}
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={!collapsed}
+                      // The rename input's blur (→ commitRename → renaming
+                      // cleared) fires between pointerdown and click, so a
+                      // click that merely dismisses the input would ALSO
+                      // toggle collapse if we checked state in onClick.
+                      // Capture "was renaming" at pointerdown instead.
+                      // The header doubles as the folder's DRAG HANDLE —
+                      // same arm-on-pointerdown / start-past-threshold
+                      // pattern as project rows, so a plain click still
+                      // toggles collapse.
+                      onPointerDown={(ev) => {
+                        if (ev.button !== 0) return;
+                        suppressGroupToggle.current = isGroupRenaming;
+                        if (isGroupRenaming) return;
+                        const target = ev.target as HTMLElement;
+                        if (target.closest("button, input, a, [data-no-drag]")) return;
+                        const section = (ev.currentTarget as HTMLElement).closest("[data-group-section]");
+                        if (!section) return;
+                        groupDragArmed.current = {
+                          name, x: ev.clientX, y: ev.clientY, started: false,
+                          grabOffsetY: ev.clientY - section.getBoundingClientRect().top,
+                          appliedTy: 0, pointerY: ev.clientY,
+                        };
+                        const onUp = () => {
+                          const wasStarted = groupDragArmed.current?.started ?? false;
+                          endGroupDrag(true);
+                          if (wasStarted) {
+                            // The click that follows pointerup must not
+                            // collapse the folder that was just dragged.
+                            // Reset on a macrotask in case no click fires
+                            // (pointerup landed off the header).
+                            suppressGroupToggle.current = true;
+                            setTimeout(() => { suppressGroupToggle.current = false; }, 0);
+                          }
+                        };
+                        groupDragListenersRef.current = { move: onGroupDragPointerMove, up: onUp };
+                        document.addEventListener("pointermove", onGroupDragPointerMove);
+                        document.addEventListener("pointerup", onUp);
+                        document.addEventListener("pointercancel", onUp);
+                      }}
+                      onClick={() => {
+                        if (suppressGroupToggle.current) { suppressGroupToggle.current = false; return; }
+                        setGroupCollapsed(name, !collapsed);
+                      }}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter" || ev.key === " ") {
+                          ev.preventDefault();
+                          setGroupCollapsed(name, !collapsed);
+                        }
+                      }}
+                      // Accent yields to the drag/drop states below — their
+                      // classes lose to an inline style, so skip it while
+                      // this header is a drop target or being dragged.
+                      style={accent && dragOverGroup !== name && dragGroupName !== name
+                        ? { color: accent }
+                        : undefined}
+                      className={cn(
+                        // Same size/weight as project rows (an 11.5px header
+                        // read weaker than its members), but the DEFAULT
+                        // color is the muted fg-faint of inactive projects —
+                        // folders are structure, not content, and only an
+                        // assigned accent should make one loud. Matches the
+                        // Default swatch in the color picker.
+                        "flex cursor-pointer items-center gap-1.5 rounded-md py-1 pl-2 pr-2 text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--color-accent)]",
+                        // Drop target while a project drag hovers this header.
+                        dragOverGroup === name && "bg-[var(--color-accent)]/15 text-[var(--color-accent)] ring-1 ring-inset ring-[var(--color-accent)]",
+                        // The folder itself is being dragged.
+                        dragGroupName === name && "bg-[var(--color-accent)]/15 text-[var(--color-accent)] shadow-lg",
+                      )}
+                    >
+                      {collapsed
+                        ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                        : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+                      {/* No own color class when accented — inherits the
+                          header's currentColor so glyph + name match. */}
+                      <Folder className={cn("h-3.5 w-3.5 shrink-0", !accent && "text-[var(--color-fg-faint)]")} />
+                      {renaming?.kind === "group" && renaming.id === name ? (
+                        <input
+                          autoFocus
+                          value={renaming.value}
+                          // Group names are ALL-CAPS at the data layer (they
+                          // key collapse/color state and must render the same
+                          // everywhere), so uppercase as typed — covers paste
+                          // too, since it runs on the resulting value.
+                          onChange={e => setRenaming({ ...renaming, value: e.target.value.toUpperCase() })}
+                          onBlur={commitRename}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") commitRename();
+                            else if (e.key === "Escape") setRenaming(null);
+                            // Don't leak Enter/Space to the header's own
+                            // keydown toggle.
+                            e.stopPropagation();
+                          }}
+                          onClick={e => e.stopPropagation()}
+                          onPointerDown={e => e.stopPropagation()}
+                          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+                          className="w-full min-w-0 flex-1 rounded border border-[var(--color-accent)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[12px] normal-case tracking-normal outline-none"
+                        />
+                      ) : (
+                        <span className="truncate">{name}</span>
+                      )}
+                      {(grpAttention || grpDone) && (
+                        <span
+                          className="block h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: grpAttention ? "var(--color-warn)" : "var(--color-info)" }}
+                        />
+                      )}
+                      {!isGroupRenaming && (
+                        <span className="ml-auto shrink-0 tabular-nums text-[11px] text-[var(--color-fg-faint)]">{totalCount}</span>
+                      )}
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuLabel>{name}</ContextMenuLabel>
+                    {/* Finder-tag-style inline swatch row — no submenu to
+                        aim through, the dots ARE the menu entry. Label-less
+                        by design (a "Red" label would lie if a theme ever
+                        re-tunes the hue); names survive as aria-labels.
+                        Default leads as a fg-faint swatch — the muted tint
+                        an uncolored folder actually renders with — and the
+                        active pick carries a ring. */}
+                    <div className="flex items-center gap-0.5 px-1 pb-1">
+                      <ContextMenuItem
+                        aria-label="Default"
+                        checked={!accent}
+                        onSelect={() => setGroupColor(name, null)}
+                        className="rounded-full p-1"
+                      >
+                        <span
+                          className={cn(
+                            "block h-4 w-4 rounded-full",
+                            !accent && "ring-1 ring-[var(--color-fg)] ring-offset-1 ring-offset-[var(--color-bg-1)]",
+                          )}
+                          style={{ backgroundColor: "var(--color-fg-faint)" }}
+                        />
+                      </ContextMenuItem>
+                      {GROUP_COLORS.map(c => (
+                        <ContextMenuItem
+                          key={c.key}
+                          aria-label={c.label}
+                          checked={accent === c.css}
+                          onSelect={() => setGroupColor(name, c.key)}
+                          className="rounded-full p-1"
+                        >
+                          <span
+                            className={cn(
+                              "block h-4 w-4 rounded-full",
+                              accent === c.css && "ring-1 ring-[var(--color-fg)] ring-offset-1 ring-offset-[var(--color-bg-1)]",
+                            )}
+                            style={{ backgroundColor: c.css }}
+                          />
+                        </ContextMenuItem>
+                      ))}
+                    </div>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem onSelect={() => setRenaming({ kind: "group", id: name, value: name })}>
+                      <Pencil />
+                      Rename group
+                    </ContextMenuItem>
+                    <ContextMenuItem onSelect={() => dissolveGroup(name)}>
+                      <FolderMinus />
+                      Ungroup projects
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenuRoot>
+                {/* Indented members with a tree guide line — reads as
+                    "inside the folder" without stealing much width. */}
+                {!collapsed && (
+                  <div
+                    // Tint the guide line toward the group's accent so a
+                    // long member list stays attributable mid-scroll. If
+                    // color-mix is unavailable the invalid value is dropped
+                    // and the class's border color applies.
+                    style={accent ? { borderColor: `color-mix(in srgb, ${accent} 45%, transparent)` } : undefined}
+                    className="ml-[13px] flex flex-col gap-0.5 border-l border-[var(--color-border-soft)] pl-1"
+                  >
+                    {members.map(renderProject)}
+                  </div>
+                )}
+              </div>
+            );
+          };
+          // Section the ACTIVE projects (see projectSections): ungrouped
+          // projects render in place; a group renders as one folder at its
+          // FIRST member's position, members in array order. Inactive
+          // projects keep the flat fold below regardless of group (a group
+          // whose members are all folded simply doesn't render). Keyboard
+          // nav (useShortcuts) walks the same visualProjectOrder.
+          const sections = projectSections(activeProjects);
           return (
             <>
               {/* Active projects render in place (original order). */}
-              {activeProjects.map(renderProject)}
+              {sections.map(s => s.kind === "loose" ? renderProject(s.p) : renderGroup(s.name, s.members))}
               {/* "INACTIVE PROJECTS" section header — same type treatment as
                   the PROJECTS header above. Clicking it toggles the fold; the
                   inactive group renders BELOW it so revealing never reshuffles
@@ -844,7 +1541,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   )}
                 </button>
               )}
-              {hideInactiveProjects && showInactive && inactiveProjects.map(renderProject)}
+              {/* data-inactive-fold marks this as a separate drag domain:
+                  rows here render flat regardless of group, so drags across
+                  the fold reorder only and never touch group labels. */}
+              {hideInactiveProjects && showInactive && (
+                <div data-inactive-fold className="flex flex-col gap-0.5">
+                  {inactiveProjects.map(renderProject)}
+                </div>
+              )}
             </>
           );
           })()}
@@ -976,8 +1680,8 @@ function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
       </span>
     );
   }
-  // done — solid blue bullet, iTerm2-style. Uses --color-info if defined,
-  // falls back to a literal blue. h-3.5 visually matches the bell + spinner.
+  // done — solid blue bullet, iTerm2-style, in --color-info (defined in
+  // @theme; themes can override). h-3.5 visually matches the bell + spinner.
   return (
     <span
       className="shrink-0 flex items-center justify-center"
@@ -986,7 +1690,7 @@ function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
     >
       <span
         className="block h-2 w-2 rounded-full"
-        style={{ backgroundColor: "var(--color-info, #4aa3ff)" }}
+        style={{ backgroundColor: "var(--color-info)" }}
       />
     </span>
   );
@@ -1160,7 +1864,7 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
           {(hasAttention || hasDone) ? (
             <span
               className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]"
-              style={{ backgroundColor: hasAttention ? "var(--color-warn)" : "var(--color-info, #4aa3ff)" }}
+              style={{ backgroundColor: hasAttention ? "var(--color-warn)" : "var(--color-info)" }}
             />
           ) : hasWorking ? (
             // No room for a full spinner on the rail; a faint pulsing dot

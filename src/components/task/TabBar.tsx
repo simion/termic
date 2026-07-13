@@ -554,7 +554,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
                 <span title="Agent finished a turn" aria-label="Work done">
                   <span
                     className="block h-2 w-2 rounded-full"
-                    style={{ backgroundColor: "var(--color-info, #4aa3ff)" }}
+                    style={{ backgroundColor: "var(--color-info)" }}
                   />
                 </span>
               )}

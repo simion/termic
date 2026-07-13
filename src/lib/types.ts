@@ -81,6 +81,11 @@ export interface Project {
    *  that member when used INSIDE this multi-repo project. Empty
    *  scripts = skip. Only meaningful when `type == "multi"`. */
   members?: ProjectMember[];
+  /** UI-only sidebar group label. Projects sharing the same non-empty
+   *  value render under one collapsible folder header in the project
+   *  list. No effect on paths, git, or workspaces. Missing/empty =
+   *  ungrouped. */
+  group?: string;
 }
 
 /** Per-member entry on a multi-repo Project. Self-contained: a member is
