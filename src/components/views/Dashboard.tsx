@@ -111,7 +111,10 @@ export function Dashboard() {
                           <button
                             key={w.id}
                             onClick={() => setActive(w.id)}
-                            className="group flex items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-[var(--color-hover)]"
+                            // Dim the task name to match the sidebar's task rows
+                            // (fg-dim by default, fg on hover); the "on" / branch
+                            // keep their own explicit colors.
+                            className="group flex items-center gap-3 rounded-md px-3 py-2 text-left text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                           >
                             {/* Use the CLI brand icon for main-checkout rows
                                 too — matches the sidebar's unified rendering.
