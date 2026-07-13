@@ -91,7 +91,7 @@ describe("prefs: currentMinimumContrastRatio", () => {
   it("follows a custom theme's colorScheme (light custom -> 4.5)", async () => {
     const { usePrefs, currentMinimumContrastRatio } = await import("./prefs");
     const custom = {
-      id: "custom:paper", name: "Paper", colorScheme: "light" as const,
+      id: "custom:paper" as const, name: "Paper", colorScheme: "light" as const,
       ui: {}, terminal: {},
     };
     usePrefs.setState({ customThemes: [custom as any] });
