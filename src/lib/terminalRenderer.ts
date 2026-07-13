@@ -42,7 +42,13 @@ function dumpRenderer(addon: WebglAddon | null): void {
  *  700). `document.fonts.check` on the concrete family is stricter than
  *  terminalFontsSettled(): the latter uses `document.fonts.load`, which on
  *  WebKit can reject and fall back to `document.fonts.ready`, resolving
- *  before the face is actually usable. This is the source of truth. */
+ *  before the face is actually usable. This is the source of truth.
+ *
+ *  Checking JetBrains Mono alone covers every terminal font: it is the only
+ *  lazy @font-face in the app, currentTerminalStack() always appends it as
+ *  the fallback, and installed system fonts never participate in FontFaceSet
+ *  loading (check() is true for them from the start). If a second webfont
+ *  ever ships, this must widen to the selected family too. */
 const bundledFontActive = (): boolean =>
   document.fonts.check('400 1em "JetBrains Mono"') &&
   document.fonts.check('700 1em "JetBrains Mono"');
@@ -90,15 +96,23 @@ export async function awaitTerminalFonts(
   ]);
 
   let tries = 50;   // ~5s at 100ms; a face this slow is effectively hung
-  const heal = () => {
+  // `preSpawn` is true only for the synchronous first attempt, which the
+  // caller awaits — so no PTY exists or can be in flight yet, and the fit()
+  // below simply feeds the caller's own spawn. Pushing a resize there would
+  // poll for a pid just to restate the dims the spawn already used. Every
+  // later attempt runs off the poll, i.e. after we returned and the caller
+  // may have spawned (or be mid-spawn, before term.onResize is wired), so it
+  // must push the resize explicitly or the PTY silently desyncs.
+  const heal = (preSpawn: boolean) => {
     if (isCancelled()) return;
     if (!bundledFontActive()) {
-      if (tries-- > 0) window.setTimeout(heal, 100);
+      if (tries-- > 0) window.setTimeout(() => heal(false), 100);
       return;
     }
     try { term.clearTextureAtlas(); } catch {}
     if (host.offsetWidth === 0 || host.offsetHeight === 0) return;
     try { fit.fit(); } catch {}
+    if (preSpawn) return;
     let rtries = 20;
     const push = () => {
       if (isCancelled() || rtries-- <= 0) return;
@@ -108,7 +122,7 @@ export async function awaitTerminalFonts(
     };
     push();
   };
-  heal();
+  heal(true);
 }
 
 export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
