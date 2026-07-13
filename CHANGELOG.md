@@ -4,6 +4,34 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.21.0] - 2026-07-13
+
+Project folders, a prompt palette, and in-pane image and PDF previews, thanks to our contributors.
+
+### Features
+- Project groups: give any project a group label and it collapses under a folder in the sidebar, so a fleet of similarly named repos (app-ios, app-android, service-auth) clusters by product or layer while staying visible at a glance. Right-click a project to move it into a group, or drag it into, out of, or between folders; drag a folder header to reorder whole groups. Folders take Finder-style color tags, and a collapsed folder still shows a dot when one of its hidden agents needs you. (#84)
+- Prompt palette: press Option+Cmd+P to search your prompt library by name and fire one straight at the focused agent, or pick a destination when there isn't one. While the search box is empty, keys 1 through 9 fire the top prompts instantly. (#81)
+- Whole-app zoom: Cmd+= and Cmd+- scale the entire interface like a browser, Cmd+0 resets to 100%, and the level persists across launches. (#91)
+- Image and PDF preview: click an image or a PDF in the file tree and it opens in the pane, rendered natively, right alongside your agents and diffs. (#75)
+- Reopen closed sessions: the "+" tab menu now lists sessions you have closed in a task, so you can pick one back up instead of starting over. (#88)
+- Find in the markdown preview: Cmd+F now searches within the rendered preview, and wins over the editor's own find when the preview pane has focus. (#71)
+- New worktrees branch from a fresh base: task creation fetches the base ref first, so a new branch starts from the up-to-date base instead of a stale local copy. (#86)
+- Remote images in the markdown preview are off by default now, behind a new setting, so opening a document can't silently reach out to the network until you opt in. (#85)
+- Project discovery reaches one level deeper inside grouping folders, so nested repo layouts show up without adding each repo by hand. (#89)
+
+### Bug fixes
+- A single Claude agent no longer shows two "working" indicators at once. (#78)
+- Directory links in the markdown preview reveal the folder in the file tree instead of opening Finder. (#87)
+- Terminals wait for the font to load before spawning, so the first frame can't cache fallback glyphs into the WebGL atlas. (#70)
+- The command palette moved to Shift+Cmd+P, and Cmd+K now clears the terminal, matching VS Code and standard terminals. Both remain rebindable in Settings, under Shortcuts.
+
+### Thanks
+This release leans heavily on community contributions. Thank you:
+- Adam Matan (@adamatan) for the prompt palette, image and PDF preview, off-by-default remote images, and reopening closed sessions.
+- MHohlios (@MHohlios) for project groups, drag-and-drop folders with Finder-style color tags.
+- Orel Ohayon (@Orellius) for reaching one level deeper when discovering repos.
+- Ehtasham Yasin (@Ehtasham-Yasin) for fixing the duplicate agent working indicators.
+
 ## [0.20.1] - 2026-07-10
 
 Workspaces are now Tasks, and you can create one in two clicks from the sidebar.
