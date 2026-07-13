@@ -171,6 +171,12 @@ export function TerminalPane({ task, tab, active }: Props) {
   const lastSpawnWasResumeRef = useRef(false);
   const failedResumeRef = useRef(false);
   const RESUME_FAILURE_MS = 2000;
+  // The uuid a resume attempt failed on during THIS app run. Only used to
+  // word the recovery banner: the stashed session is a known-bad resume
+  // ("Couldn't resume") when it matches, and a still-usable session we
+  // swapped away from ("switch back") when it doesn't (including after a
+  // restart, where the failure is no longer news).
+  const [failedUuid, setFailedUuid] = useState<string | null>(null);
 
   const patchTab = useApp(s => s.patchTab);
   const markAttention = useApp(s => s.markAttention);
@@ -1388,7 +1394,15 @@ const captureArmedRef = useRef(false);
               // turns that into permanent conversation loss. Stash it as the
               // tab's previous session so the recover banner can offer it,
               // then clear the live slot so the immediate retry mints fresh.
-              if (storedUuid) useApp.getState().setTabPreviousSessionId(task.id, tab.id, storedUuid);
+              // An occupied stash is left alone: it holds the session we
+              // swapped away from to try this one, which is worth keeping
+              // over a uuid that just proved unresumable.
+              const stashed = (useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as
+                TerminalTab | undefined)?.previousSessionId;
+              if (storedUuid) {
+                if (!stashed) useApp.getState().setTabPreviousSessionId(task.id, tab.id, storedUuid);
+                setFailedUuid(storedUuid);
+              }
               useApp.getState().setTabSessionId(task.id, tab.id, "");
             } else if (!useIdResume) {
               // Worktree rapid-exit on `--continue` = "no conversation"
@@ -1910,28 +1924,36 @@ const captureArmedRef = useRef(false);
         // A --resume attempt fast-exited and we fell back to a fresh session;
         // the old session id was stashed, not discarded, so offer to recover
         // it. In-flow (like the exited banner) so it pushes the live terminal
-        // down instead of covering it.
+        // down instead of covering it. The banner outlives the failure (it's
+        // persisted, and the fallback session may be days old by the time it's
+        // clicked), so it swaps the two uuids rather than dropping the live
+        // one, and words itself by whether the stashed session is the one that
+        // failed to resume in this run.
         <TerminalExitedBanner
-          label="Couldn't resume your previous session."
-          actionLabel="Resume it"
+          label={tab.previousSessionId === failedUuid
+            ? "Couldn't resume your previous session."
+            : "Your previous session is still available."}
+          actionLabel={tab.previousSessionId === failedUuid ? "Resume it" : "Switch back"}
           tone="warning"
           onAction={() => {
             const live = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as
-              import("@/lib/types").TerminalTab | undefined;
+              TerminalTab | undefined;
             const prev = live?.previousSessionId;
             if (!prev) return;
-            // Promote the stashed uuid back to the live slot and clear the
-            // offer, then respawn: reset the fail flag + bump gen so the spawn
-            // effect re-reads the uuid live and resumes it via --resume.
+            // SWAP, don't discard: the session we're leaving is a real
+            // conversation too (the user may have been working in it since the
+            // failed resume), and dropping its uuid is the same permanent loss
+            // this banner exists to prevent. Then respawn: reset the fail flag
+            // + bump gen so the spawn effect re-reads the uuid live and resumes
+            // it via --resume.
             useApp.getState().setTabSessionId(task.id, tab.id, prev);
-            useApp.getState().setTabPreviousSessionId(task.id, tab.id, "");
+            useApp.getState().setTabPreviousSessionId(task.id, tab.id, live?.sessionId ?? "");
             failedResumeRef.current = false;
-            setExited(false);
             setGen(g => g + 1);
           }}
           secondary={{
             label: "Dismiss",
-            title: "Keep the new session and forget the previous one",
+            title: "Keep the current session and forget the previous one",
             icon: X,
             onAction: () => useApp.getState().setTabPreviousSessionId(task.id, tab.id, ""),
           }}
