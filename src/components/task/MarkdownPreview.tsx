@@ -539,6 +539,28 @@ export function attemptReveal(state: RevealState, host: HTMLElement | null, visi
 const HL_ALL = "md-find";
 const HL_CURRENT = "md-find-current";
 
+/** Match colors for the two highlight registries. Injected at runtime instead
+ *  of living in index.css because lightningcss (Vite's CSS minifier) doesn't
+ *  parse the ::highlight() pseudo-element and warns on every build. The CSS
+ *  vars resolve at paint time, so theme switches keep working. All matches get
+ *  a soft accent wash; the active one a solid accent fill (its Highlight is
+ *  registered at higher priority so it wins the overlap). */
+let findStyleInjected = false;
+function ensureFindHighlightStyle(): void {
+  if (findStyleInjected) return;
+  findStyleInjected = true;
+  const style = document.createElement("style");
+  style.textContent = `
+    ::highlight(${HL_ALL}) {
+      background-color: var(--color-accent-soft);
+    }
+    ::highlight(${HL_CURRENT}) {
+      background-color: var(--color-accent);
+      color: var(--color-accent-fg);
+    }`;
+  document.head.appendChild(style);
+}
+
 /** Case-insensitive Ranges for every occurrence of `query` in the text under
  *  `host`. Skips mermaid diagram subtrees: their rendered SVG text isn't
  *  meaningfully searchable and Ranges inside <svg> don't highlight. */
@@ -575,6 +597,7 @@ function paintFindHighlights(all: Range[], current: Range | null): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const H = (globalThis as any).Highlight;
   if (!reg || !H) return;
+  ensureFindHighlightStyle();
   reg.set(HL_ALL, new H(...all));
   if (current) {
     const cur = new H(current);

@@ -675,15 +675,7 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   border: 1px solid var(--color-border-soft);
 }
 
-/* Find-in-preview (issue #71): the CSS Custom Highlight API paints matches
-   over the rendered markdown without touching its DOM, so mermaid SVGs and
-   hydrated images survive. All matches get a soft accent wash; the active one
-   gets a solid accent fill (registered at higher priority so it wins the
-   overlap). */
-::highlight(md-find) {
-  background-color: var(--color-accent-soft);
-}
-::highlight(md-find-current) {
-  background-color: var(--color-accent);
-  color: var(--color-accent-fg);
-}
+/* Find-in-preview match colors (::highlight(md-find) rules) live in
+   MarkdownPreview.tsx, injected at runtime: lightningcss, Vite's CSS
+   minifier, doesn't parse the ::highlight() pseudo-element and warns on
+   every build if the rules sit in this file. */
