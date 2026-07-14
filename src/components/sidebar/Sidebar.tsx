@@ -185,8 +185,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const r1 = requestAnimationFrame(() => {
       const r2 = requestAnimationFrame(() => {
         if (cancelled) return;
+        // Focus + select unconditionally (same as PendingRepoRootRow's
+        // name prompt): when the rename starts AFTER the menu's
+        // focus-restore already settled (e.g. new-group, where async IPC
+        // delays setRenaming), autoFocus wins — but the suggested name
+        // must still be selected so typing replaces it.
         const el = renameInputRef.current;
-        if (el && document.activeElement !== el) { el.focus(); el.select(); }
+        if (el) { el.focus(); el.select(); }
       });
       if (cancelled) cancelAnimationFrame(r2);
     });
