@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.22.0",
+      "date": "2026-07-14",
+      "summary": "Signed and notarized by Apple, adopt existing worktrees, custom work-done signals."
+    },
+    {
       "version": "0.21.0",
       "date": "2026-07-13",
       "summary": "Project folders, a prompt palette, and in-pane image and PDF previews, thanks to our contributors."

@@ -4,6 +4,29 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.22.0] - 2026-07-14
+
+Signed and notarized by Apple, adopt existing worktrees, custom work-done signals.
+
+### Features
+- Termic is signed and notarized by Apple now. A `.dmg` you download opens on first launch: no "unidentified developer" warning, no right-click to Open, nothing to strip from the command line. macOS also remembers the microphone permission across updates instead of asking again on every release.
+- Adopt an existing worktree when you make a task. The launcher menu lists worktrees already on disk, so you can pick one up where you left it instead of branching a new one.
+- Custom work-done signal detection for custom CLIs. Give your own agent the patterns that mean "finished" and Termic notices when it is done, the same way it does for claude, gemini, and codex. (#68, #97)
+- Each agent's live title heuristics show as the signal placeholders, so you can see what Termic is actually matching on instead of guessing.
+- A bigger starter prompt library. (#93)
+- Group folder colors use per-theme palette shades, so a Finder-style color tag looks right in every theme instead of only the one it was picked in. (#95)
+- Settings field groups sit in full-bleed bands, so a switch visibly owns the section it governs.
+
+### Bug fixes
+- A failed session resume keeps the live session instead of discarding it, and a later recovery swaps the two rather than overwriting whichever one you are actually working in. (#94)
+- Light theme: raised terminal contrast so truecolor text from CLIs stays readable. (#83, #98)
+- The output-scan switch is disabled until you give it patterns, since it does nothing without them.
+- New task names count worktree rows in the sidebar, so the default name does not collide with a task you already have.
+
+### Thanks
+- Orel Ohayon (@Orellius) for the expanded prompt library, custom work-done signals, the light-theme contrast fix, and preserving the session on a failed resume.
+- MHohlios (@MHohlios) for per-theme palette shades on group folder colors.
+
 ## [0.21.0] - 2026-07-13
 
 Project folders, a prompt palette, and in-pane image and PDF previews, thanks to our contributors.
