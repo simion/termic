@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
 import { taskRename, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate, projectSetGroup } from "@/lib/ipc";
+import { copyToClipboard } from "@/lib/clipboard";
 import { groupOf, projectSections } from "@/lib/projectGroups";
 import { createQuickTask, derivedBranch, type NewTaskMode } from "@/lib/quickTask";
 import { confirmAndArchive } from "@/lib/archiveTask";
@@ -121,10 +122,20 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   /** Build a mailto: URL with prefilled subject + body and hand it to
    *  the OS's default mail handler via `open_path` (the same Rust
    *  command the Open button uses for preview URLs — it shells out to
-   *  macOS `open`, which DTRT for mailto: too). */
+   *  macOS `open`, which DTRT for mailto: too).
+   *
+   *  `open` always exits 0 once it hands the URL to *some* app, even
+   *  when that app can't do anything useful with a mailto: link — on
+   *  macOS the mailto: scheme handler in LaunchServices isn't tied to
+   *  the "default email reader" setting, and can end up pointing at a
+   *  browser (e.g. Chrome) instead of Mail/Outlook, which just opens a
+   *  blank tab (#103). There's no reliable way to detect that failure
+   *  from here, so always copy the address too: whatever mailto: does,
+   *  the user still walks away with contact@termic.dev in hand. */
   const openMailto = (to: string, subject: string, body: string) => {
     const url = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     openPath(url).catch(() => {});
+    copyToClipboard(to, to);
   };
   /** Open a prefilled "New issue" on the public GitHub tracker. Same
    *  query-string shape as openMailto so both support buttons route through
