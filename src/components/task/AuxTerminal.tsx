@@ -88,6 +88,8 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
       scrollback: Math.round(usePrefs.getState().terminalScrollback / 2),
       // Option-as-Meta for terminal editors. See TerminalPane. (issue #11)
       macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
+      // Allow bypassing mouse reporting for text selection by holding Option.
+      macOptionClickForcesSelection: true,
       // OSC 8 hyperlinks (anchor text like "Learn more"). Same Cmd/Ctrl gate;
       // without a linkHandler xterm parses them but activates nothing.
       linkHandler: {

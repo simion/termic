@@ -409,6 +409,9 @@ const captureArmedRef = useRef(false);
       // Option-as-Meta for terminal editors (vim/emacs/nano). Off by default;
       // pref lives in Appearance. (issue #11)
       macOptionIsMeta: usePrefs.getState().terminalOptionAsMeta,
+      // Allow bypassing mouse reporting (e.g. in vim/tmux) for text selection
+      // by holding the Option key, matching iTerm2/xterm.js convention.
+      macOptionClickForcesSelection: true,
       // OSC 8 hyperlinks (anchor text like "Learn more" with the URL only in
       // the escape sequence). Same Cmd/Ctrl gate as visible URLs; without a
       // linkHandler xterm parses these links but activates nothing.
