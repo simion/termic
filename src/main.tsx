@@ -3,6 +3,10 @@
 import "@/lib/lsMigration";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+// GH #70: register + start loading the terminal's owned JetBrains Mono faces at
+// boot so the WebGL glyph-atlas gate (lib/terminalFontReady) resolves before the
+// first terminal spawns, not on first paint.
+import "@/lib/terminalFontReady";
 import { App } from "./App";
 import { logLine } from "@/lib/ipc";
 import { initTerminalDropHandler } from "@/lib/terminalDrop";

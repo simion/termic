@@ -8,7 +8,8 @@
 
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { Terminal } from "@xterm/xterm";
-import { usePrefs, terminalFontsSettled } from "@/store/prefs";
+import { usePrefs } from "@/store/prefs";
+import { terminalFontReady, isTerminalFontReady } from "@/lib/terminalFontReady";
 import * as ipc from "@/lib/ipc";
 
 function dumpRenderer(addon: WebglAddon | null): void {
@@ -37,24 +38,29 @@ function dumpRenderer(addon: WebglAddon | null): void {
  *  and typing crawls), the load is skipped and xterm's built-in DOM renderer
  *  remains. Read once at mount; toggling the pref takes effect on the next
  *  terminal spawn (relaunch to switch every open terminal). */
-/** GH #70: hold the first fit + PTY spawn until the terminal font's faces
- *  are active. The bundled JetBrains Mono is a lazy @font-face; if output
- *  is rasterized before it activates, xterm's WebGL atlas caches those
- *  glyphs drawn with the fallback monospace — keyed per (char, fg, bg,
- *  style), with the font only in the atlas config — so the same char keeps
- *  its wrong-height glyph until the cell happens to re-rasterize (selection
- *  changes the bg → new key → correct glyph, which is why selecting text
- *  "fixed" it). Gating the spawn means metrics AND glyphs come from the
- *  real font from the start: no post-hoc refit, no atlas churn.
+/** GH #70: the bundled JetBrains Mono is a lazy @font-face; xterm's WebGL atlas
+ *  keys glyphs per (char, fg, bg, ext) with no font in the key, so a glyph
+ *  rasterized against the fallback stays wrong-height until the cell happens to
+ *  re-rasterize (selection changes the bg, new key, correct glyph, which is why
+ *  selecting text "fixed" it).
  *
- *  prefs warms the load at module start, so this normally resolves in a
- *  microtask and adds zero spawn latency. The wait is capped so a hung
- *  load can never stall a spawn; on that (practically unreachable) path a
- *  one-shot repair runs when the face finally lands, guarded against the
- *  two hazards a late fit() has: zero-geometry hosts (collapsed split —
- *  same reason the panes' ResizeObservers bail at 0x0) and the mid-spawn
- *  window where term.onResize isn't registered yet, which would silently
- *  desync PTY cols/rows (hence the explicit ptyResize with retry). */
+ *  The previous gate polled `document.fonts` for the family, but check() and
+ *  load() both report a family READY before it is registered in the FontFaceSet
+ *  (check() returns true and load() resolves with zero faces for an unregistered
+ *  family, reproduced on WKWebView). Since fontsource registers "JetBrains Mono"
+ *  via async CSS @font-face, that vacuous window is the poison window on a cold
+ *  spawn. So correctness now comes from loadTerminalRenderer holding the WebGL
+ *  attach until `terminalFontReady` resolves: real FontFace handles we own and
+ *  await (lib/terminalFontReady). The atlas is then built against the real face
+ *  and never poisoned, so nothing is cleared under a live renderer (the
+ *  disproven #70 path). This fn is the spawn-side gate: it waits the same
+ *  promise, then RE-FITS so the PTY cols/rows match the real metrics.
+ *
+ *  Warm path (faces already loaded, the norm thanks to the boot warm-up in
+ *  main.tsx): return immediately, zero cost. The re-fit is guarded against
+ *  zero-geometry hosts (collapsed split, same reason the panes' ResizeObservers
+ *  bail at 0x0) and the mid-spawn window where term.onResize isn't registered
+ *  yet, which would silently desync PTY cols/rows (hence the ptyResize retry). */
 export async function awaitTerminalFonts(
   term: Terminal,
   fit: { fit(): void },
@@ -62,31 +68,30 @@ export async function awaitTerminalFonts(
   isCancelled: () => boolean,
   ptyId: () => string | null,
 ): Promise<void> {
-  let ready = false;
-  await Promise.race([
-    terminalFontsSettled().then(() => { ready = true; }),
-    new Promise<void>(r => window.setTimeout(r, 800)),
-  ]);
-  if (ready || isCancelled()) return;
-  terminalFontsSettled().then(() => {
-    if (isCancelled()) return;
-    try { term.clearTextureAtlas(); } catch {}
-    if (host.offsetWidth === 0 || host.offsetHeight === 0) return;
-    try { fit.fit(); } catch {}
-    let tries = 20;
-    const push = () => {
-      if (isCancelled() || tries-- <= 0) return;
-      const pid = ptyId();
-      if (pid) ipc.ptyResize(pid, term.rows, term.cols).catch(() => {});
-      else window.setTimeout(push, 250);
-    };
-    push();
-  });
+  if (isTerminalFontReady()) return;
+  await terminalFontReady;
+  if (isCancelled()) return;
+  // Faces are genuinely loaded now, so cols/rows measured against the fallback
+  // are stale: re-fit. No clearTextureAtlas (the WebGL renderer only attached
+  // once the faces were loaded, so the atlas was never poisoned).
+  if (host.offsetWidth === 0 || host.offsetHeight === 0) return;
+  try { fit.fit(); } catch {}
+  let tries = 20;
+  const push = () => {
+    if (isCancelled() || tries-- <= 0) return;
+    const pid = ptyId();
+    if (pid) ipc.ptyResize(pid, term.rows, term.cols).catch(() => {});
+    else window.setTimeout(push, 250);
+  };
+  push();
 }
 
 export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
   let addon: WebglAddon | null = null;
-  if (usePrefs.getState().terminalGpuEnabled) {
+  let disposed = false;
+
+  const attach = () => {
+    if (disposed || addon || !usePrefs.getState().terminalGpuEnabled) return;
     try {
       const a = new WebglAddon();
       a.onContextLoss(() => a.dispose());
@@ -95,6 +100,20 @@ export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
     } catch {
       addon = null;  // WebGL unsupported → xterm's DOM renderer remains
     }
+  };
+
+  // GH #70: hold the FIRST attach until the owned faces are genuinely loaded
+  // (terminalFontReady is real FontFace handles, not document.fonts.check(),
+  // which is vacuously true before the family is registered). The addon then
+  // builds its glyph atlas against the real face instead of caching
+  // fallback-height glyphs that never correct, so nothing is ever cleared under
+  // a live renderer. xterm's DOM renderer covers the gap. GPU-off and warm-face
+  // attach right away; a face that never loads still resolves terminalFontReady
+  // and gets GPU (consistent fallback, not the mixed-height "waves").
+  if (isTerminalFontReady() || !usePrefs.getState().terminalGpuEnabled) {
+    attach();
+  } else {
+    terminalFontReady.then(() => { if (!disposed && !addon) attach(); });
   }
 
   // TEMP diagnostic. Auto-dumps the launch state; the global lets the
@@ -105,6 +124,7 @@ export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
 
   return {
     dispose() {
+      disposed = true;
       dumpTimers.forEach(t => window.clearTimeout(t));
       try { addon?.dispose(); } catch { /* already gone */ }
     },
