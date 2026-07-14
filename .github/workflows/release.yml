@@ -258,6 +258,50 @@ jobs:
             echo "::error::Build failed for a reason unrelated to notarization; not retrying."
             exit "$status"
           done
+      - name: Notarize & staple the DMG
+        # tauri notarizes and staples the .app, NOT the .dmg that wraps it.
+        # Verified against a real build: the resulting DMG is Developer ID
+        # signed but spctl reports `rejected / source=Unnotarized Developer
+        # ID`, so double-clicking the download still raises "can't be opened
+        # because Apple cannot check it for malicious software" - the exact
+        # wall notarization is supposed to remove. The .app inside is fine;
+        # the disk image people actually download is not. Apple's guidance is
+        # to notarize the artifact you distribute, so we submit the DMG too.
+        #
+        # ORDER IS LOAD-BEARING: stapling REWRITES the dmg, changing its
+        # sha256. This must run BEFORE "Compute SHA256", or the Homebrew cask
+        # would carry the hash of the pre-staple file and every `brew install`
+        # would fail checksum verification.
+        if: steps.signing.outputs.notarize == 'true'
+        run: |
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/${{ steps.meta.outputs.dmg_name }}"
+          for i in 1 2 3; do
+            echo "→ notarytool submit, attempt $i/3"
+            set +e
+            xcrun notarytool submit "$DMG" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER" \
+              --wait 2>&1 | tee "notary-$i.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            [ "$status" -eq 0 ] && break
+
+            # "Invalid" is Apple's verdict on the artifact itself, not a
+            # transient. Retrying it just buys the same answer three times, so
+            # fail now and print the log URL that says what Apple objected to.
+            if grep -q 'status: Invalid' "notary-$i.log"; then
+              echo "::error::Apple rejected the DMG (status: Invalid). Not a transient; fetch the log with 'xcrun notarytool log <id>' using the submission id above."
+              exit 1
+            fi
+            if [ "$i" -eq 3 ]; then
+              echo "::error::notarytool failed to accept the DMG after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::notarytool attempt $i failed (Apple's service or the network). Retrying in $((i * 30))s."
+            sleep $((i * 30))
+          done
+          xcrun stapler staple "$DMG"
       - name: Verify signature & notarization
         # The assertion the pipeline was missing. Everything above can succeed
         # and still hand us an artifact macOS refuses to open, because tauri
@@ -289,16 +333,20 @@ jobs:
           echo "→ stapled ticket (app)"
           xcrun stapler validate "$APP"
 
-          # The DMG is the download path for everyone not on Homebrew. Tauri
-          # staples the .app for certain; whether it also staples the DMG has
-          # varied across CLI versions, and an unstapled DMG still passes
-          # Gatekeeper via an online check. So: warn, don't fail. Promote this
-          # to a hard failure if the first notarized release shows it passing.
-          echo "→ stapled ticket (dmg, advisory)"
-          xcrun stapler validate "$DMG" || \
-            echo "::warning::DMG is not stapled (the .app inside it is). First launch will need a network round-trip to Apple. Harmless, but worth knowing."
+          # The DMG is the download path for everyone not on Homebrew, and it
+          # is assessed by Gatekeeper in its own right - a notarized .app in
+          # an unnotarized .dmg still gets the "Apple cannot check it" wall on
+          # double-click. Both of these are hard failures: they are exactly
+          # what the previous step exists to guarantee.
+          echo "→ stapled ticket (dmg)"
+          xcrun stapler validate "$DMG"
 
-          echo "✓ Signed, notarized, stapled."
+          echo "→ Gatekeeper assessment of the DMG itself"
+          spctl -a -vvv -t open --context context:primary-signature "$DMG" 2>&1 | tee /tmp/spctl-dmg.txt || true
+          grep -q 'source=Notarized Developer ID' /tmp/spctl-dmg.txt || {
+            echo "::error::The DMG is not assessed as 'Notarized Developer ID'. Downloading it and double-clicking would still hit the Gatekeeper wall."; exit 1; }
+
+          echo "✓ App and DMG both signed, notarized, stapled."
       - name: Compute SHA256 + read .sig
         id: hashes
         run: |
