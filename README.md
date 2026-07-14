@@ -39,8 +39,9 @@ brew install --cask simion/termic/termic
 ```
 
 That single command auto-taps `simion/homebrew-termic`, downloads the
-latest `.dmg`, and installs `Termic.app` into `/Applications`. No
-Gatekeeper warning — the tap is configured to bypass it.
+latest `.dmg`, and installs `Termic.app` into `/Applications`. Termic is
+signed with a Developer ID certificate and notarized by Apple, so there's
+no Gatekeeper warning.
 
 Updates: Termic ships with a self-updater. When a new release lands you'll
 see an **Update X.Y.Z** pill in the top-right of the toolbar; click it
@@ -53,13 +54,9 @@ brew upgrade --cask termic
 ### Direct download
 
 `.dmg`, `.app.tar.gz`, and the ed25519 signature for each version live at
-the [Releases](https://github.com/simion/termic/releases) page. First
-launch may show the "unidentified developer" Gatekeeper prompt — right-click
-the app → Open, or strip the quarantine attribute:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Termic.app
-```
+the [Releases](https://github.com/simion/termic/releases) page. The `.dmg`
+is signed and notarized by Apple, so it opens on first launch with nothing
+else to do.
 
 ### Linux (AppImage)
 
