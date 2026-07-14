@@ -16,6 +16,15 @@ export default defineConfig({
     alias: { "@": path.resolve(__dirname, "./src") },
   },
   clearScreen: false,
+  build: {
+    // The main chunk (~2.3 MB: react + xterm/webgl + radix + app code) is all
+    // genuinely needed at startup, and it loads from disk via Tauri's asset
+    // protocol, not a network. Heavy optional deps (mermaid + its d3/katex
+    // tree, CodeMirror's EditorPane, markdown-it) are already lazy chunks.
+    // Splitting the main chunk further buys nothing but lazy-load flicker,
+    // so raise the warning limit instead of chasing it.
+    chunkSizeWarningLimit: 2500,
+  },
   server: {
     port: devPort,
     strictPort: true,
