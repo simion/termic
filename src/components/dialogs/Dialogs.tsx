@@ -14,6 +14,8 @@ import { ShortcutsHelpDialog } from "./ShortcutsHelpDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
 import { ChangelogDialog } from "./ChangelogDialog";
 import { BroadcastDialog } from "./BroadcastDialog";
+import { RaceDialog } from "./RaceDialog";
+import { RaceCompare } from "@/components/task/RaceCompare";
 import { TaskSandboxDialog } from "./TaskSandboxDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { TerminalDropDialog } from "./TerminalDropDialog";
@@ -46,6 +48,8 @@ export function Dialogs() {
       <WelcomeDialog />
       <ChangelogDialog />
       <BroadcastDialog />
+      <RaceDialog />
+      <RaceCompare />
       <TaskSandboxDialog />
       <ConfirmDialog />
       <TerminalDropDialog />

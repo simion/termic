@@ -16,7 +16,7 @@ import { createQuickTask, importQuickWorktree, readNewTaskMode, writeNewTaskMode
 import { taskImportableWorktrees, taskRestore } from "@/lib/ipc";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { DropdownItem, DropdownLabel, DropdownSeparator } from "@/components/ui/Dropdown";
-import { GitBranch, GitBranchPlus, Link2, TerminalSquare, SquareChevronRight, Settings2, FolderGit2 } from "lucide-react";
+import { GitBranch, GitBranchPlus, Link2, TerminalSquare, SquareChevronRight, Settings2, FolderGit2, Flag } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ImportableWorktree } from "@/lib/types";
 
@@ -58,6 +58,7 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
   const agents = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const openNewTask = useUI(s => s.openNewTask);
+  const openRace = useUI(s => s.openRace);
   const openCustomCommand = useUI(s => s.openCustomCommand);
   const setActiveTask = useApp(s => s.setActiveTask);
   const loadAll = useApp(s => s.loadAll);
@@ -213,6 +214,22 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
           </span>
         </div>
       </DropdownItem>
+
+      {/* Agent Race: one prompt, several agents, each in its own worktree.
+          Single-repo git projects only (needs worktree isolation); multi-repo
+          is a later slice. Defers a frame like openAdvanced so the dropdown's
+          focus teardown doesn't steal the dialog's autofocus. */}
+      {!isNonGit && !isMulti && (
+        <DropdownItem onSelect={() => requestAnimationFrame(() => openRace(projectId))}>
+          <Flag className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate">Start a race…</span>
+            <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">
+              One prompt, several agents, pick a winner.
+            </span>
+          </div>
+        </DropdownItem>
+      )}
 
       <DropdownSeparator />
 

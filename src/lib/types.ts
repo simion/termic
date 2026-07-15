@@ -667,6 +667,17 @@ export interface DiffTab extends BaseTab {
   path: string;
 }
 
+/** The complete delta a task produced vs its base (`task_diff`). `diff` folds
+ *  tracked changes plus new untracked files into one unified-diff string. */
+export interface TaskDiffSummary {
+  commits: string;
+  diff: string;
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  untracked: number;
+}
+
 export interface EditTab extends BaseTab {
   type: "edit";
   path: string;

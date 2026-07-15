@@ -4474,18 +4474,75 @@ fn task_run_script(id: String, which: String) -> Result<String, String> {
     run_script(&script, Path::new(&w.path), w.port, &w.name).map_err(|e| e.to_string())
 }
 
+/// The complete delta a task (worktree) produced vs its base, for the Agent
+/// Race compare view and any "what did this task change" surface.
+#[derive(Clone, Debug, Serialize)]
+pub struct TaskDiffSummary {
+    /// `git log --oneline base..HEAD` - the agent's commits, if it made any.
+    pub commits: String,
+    /// The full unified diff of the work: tracked changes (committed + staged
+    /// + unstaged) followed by each new untracked file as an all-added block.
+    pub diff: String,
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+    /// How many untracked (new) files were folded into `diff`.
+    pub untracked: usize,
+}
+
 #[tauri::command]
-fn task_diff(id: String) -> Result<String, String> {
+fn task_diff(id: String) -> Result<TaskDiffSummary, String> {
     let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
-    let p = load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
-    let repo = PathBuf::from(&p.root_path);
+    load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
     let base = w.base_branch.clone();
     let wt = PathBuf::from(&w.path);
-    let log = git(&["--no-pager", "log", "--oneline", &format!("{base}..HEAD")], &wt).unwrap_or_default();
-    let stat = git(&["--no-pager", "diff", "--stat", &format!("{base}..HEAD")], &wt).unwrap_or_default();
-    let diff = git(&["--no-pager", "diff", &format!("{base}..HEAD")], &wt).unwrap_or_default();
-    let _ = repo;
-    Ok(format!("=== commits ===\n{log}\n\n=== stat ===\n{stat}\n\n=== diff ===\n{diff}"))
+
+    // Diff base..working-tree, NOT base..HEAD: a raced agent usually leaves its
+    // work uncommitted, so base..HEAD would show nothing. `git diff <base>` is
+    // the cumulative delta of commits + staged + unstaged (same reasoning as
+    // task_send_diff_to_main) - everything the agent actually produced.
+    let commits = git(&["--no-pager", "log", "--oneline", &format!("{base}..HEAD")], &wt).unwrap_or_default();
+    let mut diff = git(&["--no-pager", "diff", &base], &wt).unwrap_or_default();
+
+    // Precise counts from --numstat (`<ins>\t<del>\t<path>` per file; binary
+    // files emit `-\t-`, which parse to 0).
+    let numstat = git(&["--no-pager", "diff", "--numstat", &base], &wt).unwrap_or_default();
+    let mut files_changed = 0usize;
+    let mut insertions = 0usize;
+    let mut deletions = 0usize;
+    for line in numstat.lines().filter(|l| !l.trim().is_empty()) {
+        let mut cols = line.split('\t');
+        insertions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+        deletions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+        files_changed += 1;
+    }
+
+    // Untracked (new) files, honoring .gitignore, folded in as additions so an
+    // agent that solved the task by writing a new file isn't invisible.
+    let untracked_list = git(&["ls-files", "--others", "--exclude-standard", "-z"], &wt).unwrap_or_default();
+    let mut untracked = 0usize;
+    for rel in untracked_list.split('\0').filter(|s| !s.is_empty()) {
+        // `git diff --no-index /dev/null <file>` renders the whole file as
+        // added; it exits 1 whenever the files differ (always, here), so run it
+        // directly and accept the non-zero status the git() helper would reject.
+        let out = Command::new("git")
+            .args(["--no-pager", "diff", "--no-index", "--", "/dev/null", rel])
+            .current_dir(&wt)
+            .env("PATH", shell_env::resolved_path())
+            .output();
+        if let Ok(out) = out {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if !text.trim().is_empty() {
+                if !diff.is_empty() && !diff.ends_with('\n') { diff.push('\n'); }
+                diff.push_str(&text);
+                insertions += text.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
+                untracked += 1;
+            }
+        }
+    }
+    files_changed += untracked;
+
+    Ok(TaskDiffSummary { commits, diff, files_changed, insertions, deletions, untracked })
 }
 
 #[derive(Clone, Debug, Serialize)]

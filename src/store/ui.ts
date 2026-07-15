@@ -80,6 +80,13 @@ interface UIState {
    *  of every task in this project. null = closed. Mutually exclusive
    *  with broadcastForTaskId (both cleared by closeBroadcast). */
   broadcastForProjectId: string | null;
+  /** Agent Race launcher: project id to start a race for, null = closed.
+   *  UI-store (not app) so opening it doesn't churn the task tree. */
+  raceProjectId: string | null;
+  /** Agent Race compare surface: race id whose racers' worktree diffs are
+   *  shown N-up, null = closed. Separate from the launcher so a finished
+   *  race can be re-compared without relaunching. */
+  raceCompareId: string | null;
   /** Open the Edit Sandbox dialog for a specific task. null = closed.
    *  Lives in UI store (not app) so flipping it doesn't churn the
    *  task tree on every re-render. */
@@ -158,6 +165,10 @@ interface UIState {
   openBroadcast: (taskId: string) => void;
   openProjectBroadcast: (projectId: string) => void;
   closeBroadcast: () => void;
+  openRace: (projectId: string) => void;
+  closeRace: () => void;
+  openRaceCompare: (raceId: string) => void;
+  closeRaceCompare: () => void;
   openSandbox: (taskId: string) => void;
   closeSandbox: () => void;
   openFileFinder: (taskId: string) => void;
@@ -241,6 +252,8 @@ export const useUI = create<UIState>(set => ({
   changelogOpen: false,
   broadcastForTaskId: null,
   broadcastForProjectId: null,
+  raceProjectId: null,
+  raceCompareId: null,
   sandboxForTaskId: null,
   fileFinderTaskId: null,
   findInFilesTaskId: null,
@@ -277,6 +290,10 @@ export const useUI = create<UIState>(set => ({
   openBroadcast:     (taskId) => set({ broadcastForTaskId: taskId, broadcastForProjectId: null }),
   openProjectBroadcast: (projectId) => set({ broadcastForProjectId: projectId, broadcastForTaskId: null }),
   closeBroadcast:    () => set({ broadcastForTaskId: null, broadcastForProjectId: null }),
+  openRace:          (projectId) => set({ raceProjectId: projectId }),
+  closeRace:         () => set({ raceProjectId: null }),
+  openRaceCompare:   (raceId) => set({ raceCompareId: raceId }),
+  closeRaceCompare:  () => set({ raceCompareId: null }),
   openSandbox:       (taskId) => set({ sandboxForTaskId: taskId }),
   closeSandbox:      () => set({ sandboxForTaskId: null }),
   openFileFinder:    (taskId) => set({ fileFinderTaskId: taskId }),

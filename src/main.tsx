@@ -34,10 +34,11 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // of production bundles (import.meta.env.DEV is statically false there).
 if (import.meta.env.DEV) {
   void (async () => {
-    const [app, ui, prefs, ipc, core] = await Promise.all([
+    const [app, ui, prefs, race, ipc, core] = await Promise.all([
       import("@/store/app"),
       import("@/store/ui"),
       import("@/store/prefs"),
+      import("@/store/race"),
       import("@/lib/ipc"),
       import("@tauri-apps/api/core"),
     ]);
@@ -45,6 +46,7 @@ if (import.meta.env.DEV) {
       useApp: app.useApp,
       useUI: ui.useUI,
       usePrefs: prefs.usePrefs,
+      useRace: race.useRace,
       ipc,
       invoke: core.invoke,
     };
