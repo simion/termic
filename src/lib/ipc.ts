@@ -452,6 +452,10 @@ export const themesDir  = () => invoke<string>("themes_dir");
 export const settingsSave  = (s: Settings) => invoke<void>("settings_save", { s });
 export const agentsSave    = (agents: Agent[]) => invoke<void>("agents_save", { agents });
 export const discoverRepos = (dir: string) => invoke<DiscoveredRepo[]>("discover_repos", { dir });
+/** Hide (`dismissed=true`) or restore (`false`) a discovered repo from the
+ *  Add Project picker. Persists to settings; discovery keeps finding it. */
+export const discoveryDismiss = (path: string, dismissed: boolean) =>
+  invoke<void>("discovery_dismiss", { path, dismissed });
 export const detectClis    = () => invoke<CliInfo[]>("detect_clis");
 export const listMonospaceFonts = () => invoke<string[]>("list_monospace_fonts");
 /** True when this debug instance is driven by the e2e automation bridge
