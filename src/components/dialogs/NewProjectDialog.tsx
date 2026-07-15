@@ -7,9 +7,9 @@ import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { projectAdd, projectAddMulti, discoverRepos, settingsLoad, pathIsGitRepo } from "@/lib/ipc";
+import { projectAdd, projectAddMulti, discoverRepos, discoveryDismiss, settingsLoad, pathIsGitRepo } from "@/lib/ipc";
 import type { DiscoveredRepo, Project, ProjectMember } from "@/lib/types";
-import { Folder, FolderPlus, Layers, X } from "lucide-react";
+import { Folder, FolderPlus, Layers, RotateCcw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Where a non-git folder is being added — drives the confirm copy. We no
@@ -60,6 +60,8 @@ export function NewProjectDialog() {
   // dialog stays uncluttered for small repos folders. Case-insensitive
   // substring match against name + path.
   const [filter, setFilter] = useState("");
+  // Reveal the dismissed-repos section (repos the user hid from discovery).
+  const [showHidden, setShowHidden] = useState(false);
   // Multi-repo: self-contained inline member rows (order = display order),
   // keyed by root_path. No project registration — a member is just a path
   // plus its per-project scripts.
@@ -72,7 +74,7 @@ export function NewProjectDialog() {
   useEffect(() => {
     if (!open) return;
     setMode("repo");
-    setPath(""); setErr(null); setFilter("");
+    setPath(""); setErr(null); setFilter(""); setShowHidden(false);
     setNonGit(false);
     setConfirm(null);
     setMemberRows([]);
@@ -137,6 +139,20 @@ export function NewProjectDialog() {
       }
       if (p === path) close();
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+  }
+
+  // Hide a discovered repo from the picker (or restore it). Optimistic:
+  // flip the local flag now, revert if the IPC fails. Clear the selection
+  // if the repo being hidden was the picked one.
+  async function dismissRepo(p: string, dismissed: boolean) {
+    setDiscovered(prev => prev.map(r => (r.path === p ? { ...r, dismissed } : r)));
+    if (dismissed && path === p) setPath("");
+    try {
+      await discoveryDismiss(p, dismissed);
+    } catch (e) {
+      setDiscovered(prev => prev.map(r => (r.path === p ? { ...r, dismissed: !dismissed } : r)));
+      setErr(String(e));
+    }
   }
 
   // Single-repo Add: detect git, confirm if it's a plain folder, then add.
@@ -408,22 +424,28 @@ export function NewProjectDialog() {
         </>
       ) : (
       <>
-      {discovered.length > 0 && (() => {
+      {(() => {
+        // Dismissed repos (Rust flags them via settings.discovery_dismissed)
+        // are still discovered but hidden from the main list — a dormant local
+        // clone can stop cluttering the picker without being deleted.
+        const visible = discovered.filter(r => !r.dismissed);
+        const hidden = discovered.filter(r => r.dismissed);
+        if (visible.length === 0 && hidden.length === 0) return null;
         const q = filter.trim().toLowerCase();
         const filtered = q
-          ? discovered.filter(r =>
+          ? visible.filter(r =>
               r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q),
             )
-          : discovered;
+          : visible;
         return (
         <div className="mb-3">
           <div className="mb-1.5 flex items-baseline justify-between text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">
             <span>Discovered repos</span>
             <span className="font-mono normal-case text-[11.5px] text-[var(--color-fg-faint)]">
-              {q ? `${filtered.length} of ${discovered.length}` : discovered.length} in {reposDir}
+              {q ? `${filtered.length} of ${visible.length}` : visible.length} in {reposDir}
             </span>
           </div>
-          {discovered.length > 5 && (
+          {visible.length > 5 && (
             <Input
               value={filter}
               onChange={e => setFilter(e.target.value)}
@@ -436,35 +458,76 @@ export function NewProjectDialog() {
               spellCheck={false}
             />
           )}
+          {visible.length > 0 && (
           <div className="max-h-[220px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
             {filtered.length === 0 ? (
               <div className="px-3 py-3 text-[12.5px] text-[var(--color-fg-faint)]">
                 No repos match "{filter}".
               </div>
             ) : filtered.map(r => (
-              <button key={r.path} onClick={() => { setPath(r.path); setNonGit(false); }} disabled={busy}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[14px] hover:bg-[var(--color-hover)] disabled:opacity-50",
-                  path === r.path && "bg-[var(--color-accent-deep)]/10",
-                )}
-                title={r.path}
-              >
-                <Folder className={cn("h-4 w-4 shrink-0", path === r.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
-                <span className="shrink-0 truncate">{r.name}</span>
-                {/* Full path, faded, right-aligned. dir=rtl truncates from the
-                    LEFT so the meaningful tail (…/repo) stays readable. */}
-                <span
-                  dir="rtl"
-                  className="min-w-0 flex-1 truncate text-right text-[11px] text-[var(--color-fg-faint)] opacity-50"
+              <div key={r.path} className="group flex w-full items-center">
+                <button onClick={() => { setPath(r.path); setNonGit(false); }} disabled={busy}
+                  className={cn(
+                    "flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-[14px] hover:bg-[var(--color-hover)] disabled:opacity-50",
+                    path === r.path && "bg-[var(--color-accent-deep)]/10",
+                  )}
+                  title={r.path}
                 >
-                  {r.path}
-                </span>
-                {path === r.path && (
-                  <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Selected</span>
-                )}
-              </button>
+                  <Folder className={cn("h-4 w-4 shrink-0", path === r.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
+                  <span className="shrink-0 truncate">{r.name}</span>
+                  {/* Full path, faded, right-aligned. dir=rtl truncates from the
+                      LEFT so the meaningful tail (…/repo) stays readable. */}
+                  <span
+                    dir="rtl"
+                    className="min-w-0 flex-1 truncate text-right text-[11px] text-[var(--color-fg-faint)] opacity-50"
+                  >
+                    {r.path}
+                  </span>
+                  {path === r.path && (
+                    <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Selected</span>
+                  )}
+                </button>
+                <button
+                  onClick={() => dismissRepo(r.path, true)}
+                  title="Hide from discovery"
+                  aria-label={`Hide ${r.name} from discovery`}
+                  className="mr-1 shrink-0 rounded p-1 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             ))}
           </div>
+          )}
+          {hidden.length > 0 && (
+            <div className="mt-1.5">
+              <button
+                onClick={() => setShowHidden(v => !v)}
+                className="text-[11.5px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
+              >
+                {showHidden ? "Hide" : "Show"} {hidden.length} hidden
+              </button>
+              {showHidden && (
+                <div className="mt-1 max-h-[140px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
+                  {hidden.map(r => (
+                    <div key={r.path} className="flex w-full items-center gap-2 px-3 py-1.5 text-[13px]">
+                      <Folder className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)] opacity-50" />
+                      <span className="shrink-0 truncate text-[var(--color-fg-dim)]">{r.name}</span>
+                      <span dir="rtl" className="min-w-0 flex-1 truncate text-right text-[11px] text-[var(--color-fg-faint)] opacity-50">{r.path}</span>
+                      <button
+                        onClick={() => dismissRepo(r.path, false)}
+                        title="Restore to discovery"
+                        aria-label={`Restore ${r.name} to discovery`}
+                        className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="relative my-3 text-center">
             <div className="absolute inset-x-0 top-1/2 h-px bg-[var(--color-border-soft)]" />
             <span className="relative bg-[var(--color-bg-1)] px-2 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">or add manually</span>
