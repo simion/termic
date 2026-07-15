@@ -416,12 +416,18 @@ export interface Settings {
    *  commit instead of a stale local `origin/*` (GH #79). Absent = on; set
    *  false to opt out. The fetch is always time-bounded and non-fatal. */
   fetch_before_create?: boolean;
+  /** Canonical repo paths hidden from the Add Project discovery list.
+   *  Discovery still finds them; the picker filters them out until restored. */
+  discovery_dismissed?: string[];
 }
 
 export interface DiscoveredRepo {
   path: string;
   name: string;
   already_added: boolean;
+  /** User hid this repo from discovery. Still returned so the picker can
+   *  offer a restore; hidden from the main list by default. */
+  dismissed: boolean;
 }
 
 /** A git worktree of a project's repo that isn't yet tracked as a

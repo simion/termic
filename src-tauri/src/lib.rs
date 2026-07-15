@@ -7194,6 +7194,12 @@ pub struct Settings {
     /// non-fatal regardless of this toggle.
     #[serde(default)]
     pub fetch_before_create: Option<bool>,
+    /// Canonical repo paths the user has hidden from the Add Project
+    /// discovery list. Discovery still finds them (they exist on disk),
+    /// but the UI filters them out until restored — lets a dormant local
+    /// clone stop cluttering the picker without deleting it.
+    #[serde(default)]
+    pub discovery_dismissed: Vec<String>,
 }
 
 /// Whether the pre-create base fetch (GH #79) is enabled. Default-on: only an
@@ -7782,6 +7788,29 @@ fn settings_save(s: Settings) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Hide (`dismissed = true`) or restore (`false`) a discovered repo from the
+/// Add Project picker. Persists the CANONICAL path in Settings so the choice
+/// survives restarts; discovery keeps finding the repo but flags it dismissed.
+#[tauri::command]
+fn discovery_dismiss(path: String, dismissed: bool) -> Result<(), String> {
+    // Match discover_repos, which returns canonical paths — canonicalize so a
+    // symlinked or non-normalized input still lands on the same key. A deleted
+    // repo can't canonicalize; fall back to the raw path so a stale entry is
+    // still removable.
+    let canon = fs::canonicalize(&path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(path);
+    let mut s = load_settings_inner();
+    if dismissed {
+        if !s.discovery_dismissed.contains(&canon) {
+            s.discovery_dismissed.push(canon);
+        }
+    } else {
+        s.discovery_dismissed.retain(|p| p != &canon);
+    }
+    settings_save(s)
+}
+
 /// Replace just the agents list, preserving the rest of settings (repos_dir,
 /// welcomed, etc.). Used by the Settings → Agents page so the user can edit
 /// CLI commands, args, and YOLO flags without us shipping a new release every
@@ -7925,6 +7954,10 @@ pub struct DiscoveredRepo {
     /// True if this repo is already in projects.json (so the UI can render it
     /// disabled / labeled "added" instead of hiding it — less surprising).
     pub already_added: bool,
+    /// True if the user dismissed this repo from discovery (Settings
+    /// `discovery_dismissed`). Still returned so the UI can offer a restore;
+    /// the picker hides it by default.
+    pub dismissed: bool,
 }
 
 /// Best-effort "last activity" time for a repo, used to sort the discovery
@@ -7952,13 +7985,25 @@ fn repo_activity_time(repo: &Path) -> std::time::SystemTime {
 #[tauri::command]
 fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
     let root = PathBuf::from(shellexpand(&dir));
-    if !root.is_dir() {
-        return Err(format!("not a directory: {}", root.display()));
-    }
     let added: std::collections::HashSet<String> = load_projects()
         .into_iter()
         .map(|p| p.root_path)
         .collect();
+    let dismissed: std::collections::HashSet<String> =
+        load_settings_inner().discovery_dismissed.into_iter().collect();
+    discover_repos_inner(&root, &added, &dismissed)
+}
+
+/// Pure scan, split from the command so the `added` / `dismissed` sets can be
+/// injected in tests without touching settings.json / projects.json.
+fn discover_repos_inner(
+    root: &Path,
+    added: &std::collections::HashSet<String>,
+    dismissed: &std::collections::HashSet<String>,
+) -> Result<Vec<DiscoveredRepo>, String> {
+    if !root.is_dir() {
+        return Err(format!("not a directory: {}", root.display()));
+    }
     let mut out: Vec<(DiscoveredRepo, std::time::SystemTime)> = Vec::new();
     // Dedup by CANONICAL path: a repo can be reachable both directly and via a
     // grouping folder (e.g. a `code/all -> code` symlink, or the two-level
@@ -7973,8 +8018,9 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
         if !seen.insert(path_str.clone()) { return; } // already discovered
         let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
         let already_added = added.contains(&path_str);
+        let dismissed_flag = dismissed.contains(&path_str);
         let activity = repo_activity_time(&canon);
-        out.push((DiscoveredRepo { path: path_str, name, already_added }, activity));
+        out.push((DiscoveredRepo { path: path_str, name, already_added, dismissed: dismissed_flag }, activity));
     };
     let skip = |p: &PathBuf| -> bool {
         match p.file_name().and_then(|s| s.to_str()) {
@@ -7982,7 +8028,7 @@ fn discover_repos(dir: String) -> Result<Vec<DiscoveredRepo>, String> {
             None => true,
         }
     };
-    let rd = fs::read_dir(&root).map_err(|e| e.to_string())?;
+    let rd = fs::read_dir(root).map_err(|e| e.to_string())?;
     for entry in rd.flatten() {
         let path = entry.path();
         if !path.is_dir() || skip(&path) { continue; }
@@ -8442,7 +8488,7 @@ pub fn run() {
             task_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             notify, open_path, reveal_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
-            settings_load, settings_save, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
+            settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
             list_monospace_fonts,
@@ -8762,6 +8808,19 @@ mod tests {
         mkrepo(root.path(), "repo-a");
         mkrepo(root.path(), "repo-b");
         assert_eq!(discovered_names(root.path()), ["repo-a", "repo-b"].map(String::from).into());
+    }
+
+    #[test]
+    fn discover_repos_flags_dismissed() {
+        let root = tempdir().unwrap();
+        mkrepo(root.path(), "keep");
+        mkrepo(root.path(), "hide");
+        let hide_canon = fs::canonicalize(root.path().join("hide"))
+            .unwrap().to_string_lossy().into_owned();
+        let dismissed: std::collections::HashSet<String> = [hide_canon].into();
+        let repos = discover_repos_inner(root.path(), &Default::default(), &dismissed).unwrap();
+        assert!(repos.iter().find(|r| r.name == "hide").unwrap().dismissed);
+        assert!(!repos.iter().find(|r| r.name == "keep").unwrap().dismissed);
     }
 
     #[test]
