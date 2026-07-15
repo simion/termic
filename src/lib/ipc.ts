@@ -454,6 +454,10 @@ export const agentsSave    = (agents: Agent[]) => invoke<void>("agents_save", { 
 export const discoverRepos = (dir: string) => invoke<DiscoveredRepo[]>("discover_repos", { dir });
 export const detectClis    = () => invoke<CliInfo[]>("detect_clis");
 export const listMonospaceFonts = () => invoke<string[]>("list_monospace_fonts");
+/** Every installed font family, unfiltered — for hiding curated picker
+ *  entries whose font isn't installed. See list_font_families in lib.rs
+ *  for why this can't reuse the monospace-filtered list. */
+export const listFontFamilies = () => invoke<string[]>("list_font_families");
 /** True when this debug instance is driven by the e2e automation bridge
  *  (TERMIC_AUTOMATION=1). Always false in release builds. */
 export const automationArmed = () => invoke<boolean>("automation_armed");
