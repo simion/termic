@@ -815,6 +815,70 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Repo-root config dirs symlinked into each new worktree when the checkout
+/// didn't already produce them. Scoped to agent config: `.claude/` holds the
+/// project's subagents, skills, commands, and permissions, which an agent must
+/// see to work - and which are commonly gitignored (or built from symlinks to
+/// a shared dir), so `git worktree add` + files_to_copy leave them out of the
+/// worktree. An agent spawned there then loses every project-local agent, which
+/// is what breaks subagent fan-out for worktree tasks.
+const AGENT_CONFIG_LINKS: &[&str] = &[".claude"];
+
+/// Symlink `<repo>/<name>` into `<wt>/<name>` as an ABSOLUTE link, unless the
+/// worktree already has an entry there (a tracked, checked-out dir) or the repo
+/// has none. Absolute so it resolves from the worktree's own depth, and so any
+/// relative symlinks *inside* it (e.g. `.claude/agents -> ../../.claude/agents`)
+/// still resolve back at the real repo location. Best-effort: a failure never
+/// blocks task creation. NOTE: a sandboxed task additionally needs the resolved
+/// target on its readable path - this covers the common uncaged case.
+fn link_config_dir(repo: &Path, wt: &Path, name: &str) {
+    let src = repo.join(name);
+    if !src.exists() {
+        return;
+    }
+    let dst = wt.join(name);
+    // symlink_metadata (not exists) so ANY existing entry - including a broken
+    // link or a real tracked dir from checkout - counts as "already there" and
+    // we never clobber it.
+    if dst.symlink_metadata().is_ok() {
+        return;
+    }
+    let target = fs::canonicalize(&src).unwrap_or(src);
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&target, &dst).is_ok();
+    #[cfg(not(unix))]
+    let linked = std::os::windows::fs::symlink_dir(&target, &dst).is_ok();
+    if linked {
+        // The link is a symlink, which git's `<name>/` (directory) ignore
+        // patterns do NOT match - so without this it shows as an untracked
+        // entry in the Git panel and gets stashed on every branch switch. Add
+        // a bare `<name>` line to the repo's LOCAL excludes (never the
+        // committed .gitignore) so the link is invisible to git everywhere.
+        ensure_git_excluded(repo, name);
+    }
+}
+
+/// Append `name` to the repo's `.git/info/exclude` (shared across the repo's
+/// worktrees, local + never committed) if not already present. Best-effort.
+fn ensure_git_excluded(repo: &Path, name: &str) {
+    let info = repo.join(".git").join("info");
+    let exclude = info.join("exclude");
+    let existing = fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == name) {
+        return;
+    }
+    if fs::create_dir_all(&info).is_err() {
+        return;
+    }
+    let mut body = existing;
+    if !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str(name);
+    body.push('\n');
+    let _ = fs::write(&exclude, body);
+}
+
 /// Write `schema_version = TASKS_SCHEMA_VERSION` into settings.json directly
 /// (the migration's commit marker). Written LAST so a crash before this leaves
 /// the guard un-bumped and the migration re-runs cleanly.
@@ -2561,6 +2625,13 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
     // the repo's `.termic.yaml` list merged with the project override.
     for pat in &effective_files_to_copy(&proj) {
         copy_matching(&repo, &wt_path, pat);
+    }
+
+    // Link the project's agent config (`.claude/`) into the worktree so agents
+    // spawned here keep their project subagents / skills / commands, instead of
+    // failing to fan out. Only when the checkout/copy didn't already provide it.
+    for name in AGENT_CONFIG_LINKS {
+        link_config_dir(&repo, &wt_path, name);
     }
 
     // Allocate port (18100 + index).
