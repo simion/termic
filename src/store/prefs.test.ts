@@ -169,3 +169,83 @@ describe("prefs: mergeFontOptions", () => {
     expect(rest[0]).toBe("aardvark mono");
   });
 });
+
+// "Show all installed fonts" (follow-up to the installed-only filter): a
+// default-off escape hatch for monos that is_monospace() misses. Plain
+// persisted boolean, reset with the rest of the Appearance page.
+describe("prefs: showAllInstalledFonts", () => {
+  const LS = "showAllInstalledFonts";
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("defaults to false with nothing in localStorage", async () => {
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().showAllInstalledFonts).toBe(false);
+  });
+
+  it("picks up a persisted true value as the initial state on load", async () => {
+    localStorage.setItem(LS, "1");
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().showAllInstalledFonts).toBe(true);
+  });
+
+  it("setShowAllInstalledFonts updates state and persists it", async () => {
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setShowAllInstalledFonts(true);
+    expect(usePrefs.getState().showAllInstalledFonts).toBe(true);
+    expect(localStorage.getItem(LS)).toBe("1");
+  });
+
+  it("resetAppearance restores it to off", async () => {
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setShowAllInstalledFonts(true);
+    usePrefs.getState().resetAppearance();
+    expect(usePrefs.getState().showAllInstalledFonts).toBe(false);
+    expect(localStorage.getItem(LS)).toBe("0");
+  });
+});
+
+// availableMonoFontsAsync(showAll): showAll widens the system: extras source
+// from the is_monospace() subset to the full family catalog. The curated
+// installed-only filter is unchanged either way. IPC is mocked (importOriginal
+// keeps the module's other exports real) so both toggle states can be observed
+// against the same fake catalog, including after the lists are cached.
+describe("prefs: availableMonoFontsAsync showAll", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+    vi.doMock("@/lib/ipc", async (importOriginal) => ({
+      ...(await importOriginal<object>()),
+      listFontFamilies: async () => ["Menlo", "Comic Sans MS"],
+      listMonospaceFonts: async () => ["Menlo"],
+    }));
+  });
+  afterEach(() => {
+    vi.doUnmock("@/lib/ipc");
+    vi.unstubAllGlobals();
+  });
+
+  it("hides non-monospace families by default", async () => {
+    const { availableMonoFontsAsync } = await import("./prefs");
+    const ids = (await availableMonoFontsAsync()).map(o => o.id);
+    expect(ids).not.toContain("system:Comic Sans MS");
+    expect(ids).toContain("menlo");
+  });
+
+  it("lists every installed family as a system: extra when showAll is on", async () => {
+    const { availableMonoFontsAsync } = await import("./prefs");
+    // First call caches the enumerated lists; the showAll call must
+    // re-merge from those caches, not serve the filtered result.
+    await availableMonoFontsAsync();
+    const ids = (await availableMonoFontsAsync(true)).map(o => o.id);
+    expect(ids).toContain("system:Comic Sans MS");
+    // curated handling is untouched: Menlo stays curated (no system:
+    // duplicate), uninstalled curated entries stay hidden
+    expect(ids).toContain("menlo");
+    expect(ids).not.toContain("system:Menlo");
+    expect(ids).not.toContain("hack");
+  });
+});

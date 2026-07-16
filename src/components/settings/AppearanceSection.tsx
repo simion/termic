@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { AuxTerminal } from "@/components/task/AuxTerminal";
 import { homeDir } from "@/lib/ipc";
 import { IS_MAC, ALT_LABEL, CMD_LABEL } from "@/lib/shortcuts";
@@ -37,6 +38,7 @@ export function AppearanceSection() {
   const setUiScale = usePrefs(s => s.setUiScale);
   const codeLigatures = usePrefs(s => s.codeLigatures);
   const setCodeLigatures = usePrefs(s => s.setCodeLigatures);
+  const showAllInstalledFonts = usePrefs(s => s.showAllInstalledFonts);
   const resetAppearance = usePrefs(s => s.resetAppearance);
 
   // Start with the curated subset so the picker is usable instantly, then
@@ -46,9 +48,16 @@ export function AppearanceSection() {
   // native popup won't take options added while it's open.
   const [fonts, setFonts] = useState(() =>
     withSelectedFonts(availableMonoFonts(), [editorFontId, terminalFontId]));
+  // Re-runs when the show-all toggle flips: the font lists are cached
+  // process-wide after the first enumeration, so the re-merge is instant.
+  // The cancelled flag matters during that first enumeration window — a
+  // flip mid-flight would otherwise race two calls, and the earlier
+  // mode's result could resolve last and win.
   useEffect(() => {
-    availableMonoFontsAsync()
+    let cancelled = false;
+    availableMonoFontsAsync(showAllInstalledFonts)
       .then(list => {
+        if (cancelled) return;
         // Read the selected ids at resolve time, not mount time: the async
         // list is a filtered SUBSET of the instant curated list, so a pick
         // made while font-kit was still enumerating would otherwise vanish
@@ -57,7 +66,8 @@ export function AppearanceSection() {
         setFonts(withSelectedFonts(list, [editorFontId, terminalFontId]));
       })
       .catch(() => {});
-  }, []);
+    return () => { cancelled = true; };
+  }, [showAllInstalledFonts]);
 
   // Disable the reset button when every appearance pref already matches
   // the factory defaults — nothing to undo.
@@ -71,7 +81,8 @@ export function AppearanceSection() {
     terminalGpuEnabled    === APPEARANCE_DEFAULTS.terminalGpuEnabled &&
     editorFontSize        === APPEARANCE_DEFAULTS.editorFontSize &&
     uiScale               === APPEARANCE_DEFAULTS.uiScale &&
-    codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures;
+    codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures &&
+    showAllInstalledFonts === APPEARANCE_DEFAULTS.showAllInstalledFonts;
 
   return (
     <div className="flex flex-col gap-8">
@@ -82,7 +93,7 @@ export function AppearanceSection() {
           size="sm"
           disabled={atDefaults}
           onClick={resetAppearance}
-          title="Restore fonts, sizes, zoom, letter spacing and ligatures to their defaults."
+          title="Restore fonts, sizes, zoom, letter spacing, ligatures and font list filtering to their defaults."
         >
           Reset to defaults
         </Button>
@@ -287,6 +298,11 @@ function FontSelect({ value, onChange, fonts }: {
   onChange: (id: string) => void;
   fonts: typeof MONO_FONT_OPTIONS;
 }) {
+  // One shared pref rendered on each picker (it widens the list both feed
+  // from), so the affordance sits with the control it affects instead of
+  // as a page-level toggle that looks tied to whichever picker it's near.
+  const showAll = usePrefs(s => s.showAllInstalledFonts);
+  const setShowAll = usePrefs(s => s.setShowAllInstalledFonts);
   // The bundled default is pinned first by sortFontOptions; give it its own
   // labeled group so it doesn't read as a sorting glitch above the A-Z list.
   const bundled = fonts.filter(f => f.id === BUNDLED_FONT_ID);
@@ -295,14 +311,26 @@ function FontSelect({ value, onChange, fonts }: {
     <option key={f.id} value={f.id} style={{ fontFamily: f.stack }}>{f.label}</option>
   );
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[180px]"
-    >
-      <optgroup label="Bundled">{bundled.map(renderOption)}</optgroup>
-      <optgroup label="Installed">{installed.map(renderOption)}</optgroup>
-    </select>
+    <div className="flex flex-col items-end gap-1.5">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[180px]"
+      >
+        <optgroup label="Bundled">{bundled.map(renderOption)}</optgroup>
+        <optgroup label="Installed">{installed.map(renderOption)}</optgroup>
+      </select>
+      {/* Checkbox stops propagation on its own click, so the row's
+          onClick only fires for the text part — no double-toggle. */}
+      <div
+        onClick={() => setShowAll(!showAll)}
+        title="List every installed font family, not just fonts detected as monospace. Applies to both font pickers. Proportional fonts will misalign terminal output."
+        className="flex cursor-pointer select-none items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+      >
+        <Checkbox checked={showAll} onChange={setShowAll} className="h-3.5 w-3.5" />
+        <span>Show all fonts</span>
+      </div>
+    </div>
   );
 }
 
