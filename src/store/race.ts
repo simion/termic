@@ -18,7 +18,10 @@ const LS_RACES = "agentRaces";
 
 export interface Race {
   id: string;
-  /** The shared prompt's first line, shown as the board's label. */
+  /** User-chosen race name (also the branches' middle segment). Preferred
+   *  over `prompt` as the board's label when present. */
+  name?: string;
+  /** The shared prompt's first line, the board's label for unnamed races. */
   prompt: string;
   /** The cohort: one task id per raced agent, in launch order. */
   taskIds: string[];
@@ -37,6 +40,7 @@ function load(): RaceMap {
       if (r && typeof r.id === "string" && Array.isArray(r.taskIds)) {
         out[k] = {
           id: r.id,
+          ...(typeof r.name === "string" && r.name ? { name: r.name } : {}),
           prompt: String(r.prompt ?? ""),
           taskIds: r.taskIds.filter((t): t is string => typeof t === "string"),
           createdAt: Number(r.createdAt) || 0,

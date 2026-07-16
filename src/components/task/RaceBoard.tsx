@@ -54,7 +54,7 @@ export function RaceBoard() {
         className="hidden shrink-0 max-w-[28%] truncate text-[12px] text-[var(--color-fg-dim)] sm:inline"
         title={race.prompt}
       >
-        {race.prompt}
+        {race.name || race.prompt}
       </span>
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         {racers.map(({ task, state }) => {

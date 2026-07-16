@@ -16,7 +16,7 @@ vi.mock("@/lib/agentSend", () => ({ sendMessageToPty: vi.fn() }));
 
 import { useApp } from "@/store/app";
 import { useRace, latestRace } from "@/store/race";
-import { startRace } from "@/lib/agentRace";
+import { startRace, suggestRaceName } from "@/lib/agentRace";
 import { taskCreate } from "@/lib/ipc";
 import { sendMessageToPty } from "@/lib/agentSend";
 import type { TerminalTab } from "@/lib/types";
@@ -108,6 +108,42 @@ describe("startRace", () => {
     expect(race.prompt).toBe("refactor the parser");
     expect(useApp.getState().activeTaskId).toBe(ids[0]);
     for (const id of ids) expect(useApp.getState().mountedTasks.has(id)).toBe(true);
+  });
+
+  // A named race (the "name the branch/task yourself" follow-up): the slug
+  // replaces the random middle branch segment, the raw name prefixes the task
+  // names, and the race record carries it for the board label.
+  it("uses the race name for branches, task names, and the cohort record", async () => {
+    await startRace({
+      projectId: "p1",
+      racers: [{ cli: "claude", n: 1 }, { cli: "codex", n: 1 }],
+      prompt: "improve the SEO",
+      name: "SEO pass",
+    });
+
+    const branches = createCalls().map(c => c[0].branch as string);
+    expect(branches).toEqual(["race/seo-pass/claude-1", "race/seo-pass/codex-1"]);
+
+    const names = createCalls().map(c => c[0].name as string);
+    expect(names).toEqual(["SEO pass: Claude #1", "SEO pass: Codex #1"]);
+
+    const race = latestRace(useRace.getState().races)!;
+    expect(race.name).toBe("SEO pass");
+    expect(race.prompt).toBe("improve the SEO");
+  });
+
+  it("treats a blank or unsluggable name as absent (random-id branches, bare task names)", async () => {
+    await startRace({
+      projectId: "p1",
+      racers: [{ cli: "claude", n: 1 }, { cli: "claude", n: 2 }],
+      prompt: "do the thing",
+      name: "  ??? ",
+    });
+
+    const branches = createCalls().map(c => c[0].branch as string);
+    expect(branches[0]).toMatch(/^race\/[0-9a-f]{8}\/claude-1$/);
+    expect(createCalls().map(c => c[0].name)).toEqual(["Claude #1", "Claude #2"]);
+    expect(latestRace(useRace.getState().races)!.name).toBeUndefined();
   });
 
   it("seeds the shared prompt into each agent once its PTY is up, after the settle", async () => {
