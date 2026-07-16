@@ -2,7 +2,7 @@
 // Mirrors Termic's split: "Mono Font" governs the editor; "Terminal Font"
 // governs xterm. Sizes are independent.
 
-import { usePrefs, resolveTheme, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, stackFor } from "@/store/prefs";
+import { usePrefs, resolveTheme, BUNDLED_FONT_ID, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, sortFontOptions, stackFor } from "@/store/prefs";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EDITOR_THEMES, resolveEditorTheme, editorSurfaceTheme } from "@/lib/editorTheme";
@@ -48,10 +48,15 @@ export function AppearanceSection() {
     withSelectedFonts(availableMonoFonts(), [editorFontId, terminalFontId]));
   useEffect(() => {
     availableMonoFontsAsync()
-      .then(list => setFonts(withSelectedFonts(list, [editorFontId, terminalFontId])))
+      .then(list => {
+        // Read the selected ids at resolve time, not mount time: the async
+        // list is a filtered SUBSET of the instant curated list, so a pick
+        // made while font-kit was still enumerating would otherwise vanish
+        // from the list and blank the <select>.
+        const { editorFontId, terminalFontId } = usePrefs.getState();
+        setFonts(withSelectedFonts(list, [editorFontId, terminalFontId]));
+      })
       .catch(() => {});
-    // Mount-time ids are enough: later picks can only come FROM the list.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Disable the reset button when every appearance pref already matches
@@ -259,15 +264,22 @@ function Field({ label, hint, control }: { label: string; hint?: string; control
   );
 }
 
-/** Ensure every selected `system:` font id has an entry in the option list,
- *  synthesizing one from the id itself (the family name lives in the id, so
- *  no enumeration is needed). Keeps the pick visible even if the system scan
- *  hasn't finished, or the font was uninstalled since it was chosen. */
+/** Ensure every selected font id has an entry in the option list — a
+ *  <select> whose value has no matching <option> renders blank. Covers two
+ *  cases: `system:` ids before the system scan finishes (the family name
+ *  lives in the id, so an entry is synthesized from it), and curated ids
+ *  whose font the installed-only filter dropped (the font was uninstalled
+ *  after being chosen — the pick must stay visible and re-selectable). */
 function withSelectedFonts(list: typeof MONO_FONT_OPTIONS, ids: string[]) {
   const extras = [...new Set(ids)]
-    .filter(id => id.startsWith("system:") && !list.some(o => o.id === id))
-    .map(id => ({ id, label: id.slice(7), stack: stackFor(id) }));
-  return extras.length ? [...list, ...extras] : list;
+    .filter(id => !list.some(o => o.id === id))
+    .flatMap(id => {
+      if (id.startsWith("system:")) return [{ id, label: id.slice(7), stack: stackFor(id) }];
+      const curated = MONO_FONT_OPTIONS.find(o => o.id === id);
+      return curated ? [curated] : [];
+    });
+  // Re-sort so rescued entries land in alphabetical position, not at the end.
+  return extras.length ? sortFontOptions([...list, ...extras]) : list;
 }
 
 function FontSelect({ value, onChange, fonts }: {
@@ -275,15 +287,21 @@ function FontSelect({ value, onChange, fonts }: {
   onChange: (id: string) => void;
   fonts: typeof MONO_FONT_OPTIONS;
 }) {
+  // The bundled default is pinned first by sortFontOptions; give it its own
+  // labeled group so it doesn't read as a sorting glitch above the A-Z list.
+  const bundled = fonts.filter(f => f.id === BUNDLED_FONT_ID);
+  const installed = fonts.filter(f => f.id !== BUNDLED_FONT_ID);
+  const renderOption = (f: typeof MONO_FONT_OPTIONS[number]) => (
+    <option key={f.id} value={f.id} style={{ fontFamily: f.stack }}>{f.label}</option>
+  );
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
       className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[180px]"
     >
-      {fonts.map(f => (
-        <option key={f.id} value={f.id} style={{ fontFamily: f.stack }}>{f.label}</option>
-      ))}
+      <optgroup label="Bundled">{bundled.map(renderOption)}</optgroup>
+      <optgroup label="Installed">{installed.map(renderOption)}</optgroup>
     </select>
   );
 }

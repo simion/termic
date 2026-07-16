@@ -507,6 +507,15 @@ export interface GitStatus {
   repos_changed: number;
 }
 
+/** Result of a Git-tab branch switch. `stashed` = local work was parked and
+ *  re-applied; `conflicted` = the re-apply hit conflicts (markers left in the
+ *  tree, stash retained). */
+export interface CheckoutResult {
+  branch: string;
+  stashed: boolean;
+  conflicted: boolean;
+}
+
 export interface FileEntry {
   name: string;
   is_dir: boolean;

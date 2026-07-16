@@ -4962,6 +4962,62 @@ async fn task_git_status(id: String) -> Result<GitStatus, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Result of a branch switch: which branch we're on, whether local work was
+/// stashed to get there, and whether re-applying that stash hit conflicts
+/// (conflict markers are left in the tree and the stash is retained).
+#[derive(Serialize)]
+struct CheckoutResult {
+    branch: String,
+    stashed: bool,
+    conflicted: bool,
+}
+
+/// Local branch names for a task's repo (host, or a member when `dir_name` is
+/// set). Used by the Git tab's branch switcher.
+#[tauri::command]
+async fn task_git_branches(id: String, dir_name: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        let out = git(&["branch", "--format=%(refname:short)"], &cwd).map_err(|e| e.to_string())?;
+        Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Fork-style branch switch: stash local work (including untracked files),
+/// check out `branch`, then re-apply the stash. A failed checkout (e.g. the
+/// branch is already checked out in another worktree) restores the stash and
+/// errors. A pop conflict is reported, not swallowed - the caller warns the
+/// user so they resolve it instead of silently losing the changes.
+#[tauri::command]
+async fn task_git_checkout(id: String, dir_name: String, branch: String) -> Result<CheckoutResult, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<CheckoutResult, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        let dirty = !git(&["status", "--porcelain"], &cwd).map_err(|e| e.to_string())?.trim().is_empty();
+        let mut stashed = false;
+        if dirty {
+            git(&["stash", "push", "-u", "-m", &format!("termic: switch to {branch}")], &cwd)
+                .map_err(|e| e.to_string())?;
+            stashed = true;
+        }
+        if let Err(e) = git(&["checkout", &branch], &cwd) {
+            // Put the user's work back exactly where it was before erroring out.
+            if stashed { let _ = git(&["stash", "pop"], &cwd); }
+            return Err(e.to_string());
+        }
+        let mut conflicted = false;
+        if stashed && git(&["stash", "pop"], &cwd).is_err() {
+            conflicted = true;
+        }
+        Ok(CheckoutResult { branch, stashed, conflicted })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Resolve the git cwd for a stage/commit op: the host task path
 /// when `dir_name` is empty, otherwise the matching composition member.
 fn repo_cwd(w: &Task, dir_name: &str) -> Result<PathBuf, String> {
@@ -8170,6 +8226,39 @@ async fn list_monospace_fonts() -> Vec<String> {
     computed
 }
 
+/// Enumerate EVERY installed font family, with no monospace filter. The
+/// Appearance picker uses this to hide curated entries whose font isn't
+/// installed. Deliberately separate from list_monospace_fonts: that one
+/// trusts the post-table isFixedPitch bit, which many genuinely monospace
+/// fonts leave unset (Nerd Font patched variants in particular) —
+/// "is installed" and "is monospace" are different questions, and using
+/// the filtered list here would hide fonts the user really has.
+///
+/// Same async + spawn_blocking discipline as list_monospace_fonts, though
+/// this path is much cheaper (family names only, no face loading).
+#[tauri::command]
+async fn list_font_families() -> Vec<String> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Vec<String>> = OnceLock::new();
+    if let Some(v) = CACHE.get() { return v.clone(); }
+    let computed = tauri::async_runtime::spawn_blocking(|| {
+        use font_kit::source::SystemSource;
+        let mut out: Vec<String> = SystemSource::new()
+            .all_families()
+            .unwrap_or_default()
+            .into_iter()
+            // Hide PostScript-style names (those starting with a dot like
+            // ".AppleSystemUIFont") — they're internal to the OS.
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        out.dedup();
+        out
+    }).await.unwrap_or_default();
+    let _ = CACHE.set(computed.clone());
+    computed
+}
+
 /// Probe each registered agent's `command` to see whether it resolves.
 /// Drives the install-status badge in Settings → Agent CLIs and the
 /// "hide uninstalled" filtering of the CLI pickers. Registry-driven, so
@@ -8539,7 +8628,7 @@ pub fn run() {
             task_grep_start, task_grep_cancel,
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_files, task_list_files_for_finder, task_send_diff_to_main,
-            task_changes, task_git_status, task_stage, task_unstage, task_commit, task_discard,
+            task_changes, task_git_status, task_git_branches, task_git_checkout, task_stage, task_unstage, task_commit, task_discard,
             task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,
@@ -8548,7 +8637,7 @@ pub fn run() {
             settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
-            list_monospace_fonts,
+            list_monospace_fonts, list_font_families,
             themes_list, themes_dir,
         ])
         .build(tauri::generate_context!())
