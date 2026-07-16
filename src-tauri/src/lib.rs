@@ -2618,12 +2618,14 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
         copy_matching(&repo, &wt_path, pat);
     }
 
+    // Personal settings, loaded once and reused for the sandbox defaults below.
+    let globals = load_settings_inner();
     // Link the project's agent config dirs (`.claude/` and friends) into the
     // worktree so agents spawned here keep their project subagents / skills /
     // commands instead of failing to fan out. The list is user-configurable
     // (Settings.worktree_symlink_paths); each entry is linked only when it
     // exists in the repo and the checkout/copy didn't already provide it.
-    for name in &load_settings_inner().worktree_symlink_paths {
+    for name in &globals.worktree_symlink_paths {
         link_config_dir(&repo, &wt_path, name);
     }
 
@@ -2662,8 +2664,7 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
     // General) and the PROJECT's per-repo defaults. The dialog
     // already merges these for the user, so when args.x is Some we
     // honor it verbatim; when it's None (older callers / non-UI
-    // entry points) we still get the merged set.
-    let globals = load_settings_inner();
+    // entry points) we still get the merged set. `globals` loaded once above.
     let merge = |g: &[String], p: &[String]| -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -7729,8 +7730,13 @@ fn settings_file() -> Result<PathBuf> {
 pub(crate) fn load_settings_inner() -> Settings {
     let f = match settings_file() { Ok(p) => p, Err(_) => return seeded_defaults() };
     let mut s: Settings = match fs::read_to_string(&f) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => Settings::default(),
+        // Fall back to seeded_defaults(), NOT bare Settings::default(): the
+        // latter derives EMPTY seeded lists (worktree_symlink_paths), which is
+        // indistinguishable from a user who cleared them. A fresh install (the
+        // missing-file arm, then the welcome wizard saves the object) or a
+        // corrupt file would otherwise be born with the linking off for good.
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| seeded_defaults()),
+        Err(_) => seeded_defaults(),
     };
     // Seed defaults if the agents list is empty (first launch OR pre-agents
     // upgrade). We also re-merge the 3 built-ins back in if the user removed
@@ -8931,8 +8937,14 @@ mod tests {
         // Explicit list -> used verbatim.
         let custom: Settings = serde_json::from_str(r#"{"worktree_symlink_paths":[".claude",".foo"]}"#).unwrap();
         assert_eq!(custom.worktree_symlink_paths, vec![".claude".to_string(), ".foo".to_string()]);
-        // New installs seed the pre-filled defaults too.
+        // New installs + corrupt files seed the pre-filled defaults, NOT an
+        // empty vec. `load_settings_inner`'s fallback arms both use
+        // seeded_defaults(); this is the exact expression the corrupt-file arm
+        // runs (simion's catch: bare Settings::default() would birth the linking
+        // permanently off).
         assert_eq!(seeded_defaults().worktree_symlink_paths, default_worktree_symlink_paths());
+        let corrupt: Settings = serde_json::from_str("not valid json").unwrap_or_else(|_| seeded_defaults());
+        assert_eq!(corrupt.worktree_symlink_paths, default_worktree_symlink_paths());
     }
 
     #[test]
