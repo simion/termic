@@ -4,7 +4,7 @@
 
 import { create } from "zustand";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { listMonospaceFonts, themesList } from "@/lib/ipc";
+import { listFontFamilies, listMonospaceFonts, themesList } from "@/lib/ipc";
 import {
   applyCustomVars, clearCustomVars, clearThemeCache, isCustomId, mergeTerminal,
   readThemeCache, sanitizeTheme, writeThemeCache, type CustomTheme,
@@ -302,50 +302,113 @@ export const MONO_FONT_OPTIONS: { id: string; label: string; stack: string }[] =
 ];
 
 
-/** Returns the subset of MONO_FONT_OPTIONS whose primary face is actually
- *  installed (always includes the bundled JetBrains Mono). Synchronous —
- *  for the *full* system enumeration use availableMonoFontsAsync(). */
-export function availableMonoFonts() {
-  // Always return the full curated list. Canvas-based installed-detection
-  // is unreliable inside WKWebView for faces with unusual naming (Meslo's
-  // "Meslo LG S" vs "MesloLGS", Powerline / Nerd Font variants, etc.) —
-  // previous filter dropped Meslo entirely on macs that clearly had it
-  // installed. If the user picks a font they don't have, the CSS stack
-  // falls back to `monospace`, which is harmless.
-  return MONO_FONT_OPTIONS;
+/** The one font guaranteed on every install — ships with the app as a
+ *  webfont (@fontsource), so the OS font catalog never sees it and the
+ *  installed-only filter must exempt it explicitly. Exported so the picker
+ *  can render it in its own "Bundled" optgroup. */
+export const BUNDLED_FONT_ID = "jetbrains";
+
+// CSS generic family keywords — never real installed families, so they
+// don't participate in the installed check.
+const CSS_GENERIC_FAMILIES = new Set(["monospace", "ui-monospace"]);
+
+/** Concrete (non-generic) family names in a CSS stack, lowercased. */
+function stackFamiliesLower(stack: string): string[] {
+  return stack.split(",")
+    .map(f => f.trim().replace(/^"|"$/g, ""))
+    .filter(f => f && !CSS_GENERIC_FAMILIES.has(f.toLowerCase()))
+    .map(f => f.toLowerCase());
 }
 
-// Process-wide cache for the Rust-enumerated list. Populated by the first
-// availableMonoFontsAsync() call, kept until the app exits.
-let _systemFontsCache: string[] | null = null;
+/** Label-sort (case-insensitive) with the bundled default pinned first. */
+export function sortFontOptions(list: typeof MONO_FONT_OPTIONS): typeof MONO_FONT_OPTIONS {
+  return [...list].sort((a, b) => {
+    if (a.id === BUNDLED_FONT_ID) return -1;
+    if (b.id === BUNDLED_FONT_ID) return 1;
+    return a.label.toLowerCase().localeCompare(b.label.toLowerCase());
+  });
+}
 
-/** Returns the curated installed list MERGED with every monospace font Rust
- *  finds via font-kit. Fonts not in the curated map get an auto-generated
- *  entry (id = "system:<name>", label = family name, stack = family). */
-export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTIONS> {
-  const curated = availableMonoFonts();
-  let system = _systemFontsCache;
-  if (!system) {
-    // Failures are NOT cached: an enumeration that dies (e.g. fired before
-    // the IPC bridge settles) must retry on the next call, not permanently
-    // hide every system font behind an empty cached list.
-    try { system = _systemFontsCache = await listMonospaceFonts(); }
-    catch { system = []; }
-  }
-  // Names already covered by curated (case-insensitive match against the
-  // first family in each stack) — we keep the curated entry so the brand
-  // label / id stays stable across launches.
-  const covered = new Set(curated.map(o =>
-    o.stack.split(",")[0].trim().replace(/^"|"$/g, "").toLowerCase()
-  ));
-  const extras = system
+/** Pure core of availableMonoFontsAsync, split out for tests.
+ *
+ *  - installedFamilies: every family the OS reports (unfiltered — lib.rs
+ *    list_font_families)
+ *  - monospaceFamilies: the is_monospace()-filtered subset (lib.rs
+ *    list_monospace_fonts), which becomes the `system:` extras
+ *
+ *  A curated entry survives only when one of its concrete families is
+ *  installed (case-insensitive). Exemptions:
+ *  - the bundled JetBrains Mono: a webfont, invisible to the OS catalog
+ *  - stacks leaning on the `ui-monospace` generic: stock macOS registers
+ *    SF Mono only as a hidden dot-family the catalog can't vouch for, but
+ *    the generic resolves to it anyway
+ *  - installedFamilies empty (enumeration failed / not settled yet):
+ *    filtering is skipped rather than hiding everything
+ *
+ *  Extras dedup checks ALL families of each kept entry, not just the
+ *  first — an entry kept via a fallback name ("MesloLGS NF" installed as
+ *  "MesloLGS Nerd Font") must not reappear as a system: duplicate. */
+export function mergeFontOptions(
+  curated: typeof MONO_FONT_OPTIONS,
+  installedFamilies: string[],
+  monospaceFamilies: string[],
+): typeof MONO_FONT_OPTIONS {
+  const installed = new Set(installedFamilies.map(n => n.toLowerCase()));
+  const kept = installed.size === 0 ? curated : curated.filter(o =>
+    o.id === BUNDLED_FONT_ID ||
+    /\bui-monospace\b/i.test(o.stack) ||
+    stackFamiliesLower(o.stack).some(f => installed.has(f))
+  );
+  const covered = new Set(kept.flatMap(o => stackFamiliesLower(o.stack)));
+  const extras = monospaceFamilies
     .filter(name => !covered.has(name.toLowerCase()))
     .map(name => ({
       id: `system:${name}`,
       label: name,
       stack: `"${name}", monospace`,
     }));
-  return [...curated, ...extras];
+  return sortFontOptions([...kept, ...extras]);
+}
+
+/** The curated list, unfiltered but display-sorted. Synchronous fallback so
+ *  the picker renders instantly; availableMonoFontsAsync() replaces it with
+ *  the installed-only list once font-kit answers. No webview-side installed
+ *  detection here: canvas probing proved unreliable in WKWebView for faces
+ *  with unusual naming (dropped Meslo on macs that clearly had it) — the
+ *  Rust enumeration is the only trusted source. */
+export function availableMonoFonts() {
+  return sortFontOptions(MONO_FONT_OPTIONS);
+}
+
+// Process-wide caches for the Rust-enumerated lists. Populated by the first
+// successful availableMonoFontsAsync() call, kept until the app exits.
+let _systemFontsCache: string[] | null = null;
+let _familiesCache: string[] | null = null;
+
+/** Returns the curated entries whose font is actually installed, MERGED with
+ *  every monospace font Rust finds via font-kit. Fonts not in the curated map
+ *  get an auto-generated entry (id = "system:<name>", label = family name,
+ *  stack = family). Sorted for display (bundled default first, then A→Z). */
+export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTIONS> {
+  let system = _systemFontsCache;
+  let families = _familiesCache;
+  if (!system || !families) {
+    // Failures are NOT cached: an enumeration that dies (e.g. fired before
+    // the IPC bridge settles) must retry on the next call, not permanently
+    // hide every system font behind an empty cached list.
+    try {
+      [system, families] = await Promise.all([listMonospaceFonts(), listFontFamilies()]);
+      _systemFontsCache = system;
+      _familiesCache = families;
+    } catch {
+      // Both caches are only ever set together, so reaching here means
+      // neither list is available — empty lists make mergeFontOptions
+      // skip filtering entirely rather than hide everything.
+      system = [];
+      families = [];
+    }
+  }
+  return mergeFontOptions(MONO_FONT_OPTIONS, families, system);
 }
 
 /** Resolve a font id → CSS font-family stack, defaulting to JetBrains.

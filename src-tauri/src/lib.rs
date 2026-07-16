@@ -8113,6 +8113,39 @@ async fn list_monospace_fonts() -> Vec<String> {
     computed
 }
 
+/// Enumerate EVERY installed font family, with no monospace filter. The
+/// Appearance picker uses this to hide curated entries whose font isn't
+/// installed. Deliberately separate from list_monospace_fonts: that one
+/// trusts the post-table isFixedPitch bit, which many genuinely monospace
+/// fonts leave unset (Nerd Font patched variants in particular) —
+/// "is installed" and "is monospace" are different questions, and using
+/// the filtered list here would hide fonts the user really has.
+///
+/// Same async + spawn_blocking discipline as list_monospace_fonts, though
+/// this path is much cheaper (family names only, no face loading).
+#[tauri::command]
+async fn list_font_families() -> Vec<String> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Vec<String>> = OnceLock::new();
+    if let Some(v) = CACHE.get() { return v.clone(); }
+    let computed = tauri::async_runtime::spawn_blocking(|| {
+        use font_kit::source::SystemSource;
+        let mut out: Vec<String> = SystemSource::new()
+            .all_families()
+            .unwrap_or_default()
+            .into_iter()
+            // Hide PostScript-style names (those starting with a dot like
+            // ".AppleSystemUIFont") — they're internal to the OS.
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        out.dedup();
+        out
+    }).await.unwrap_or_default();
+    let _ = CACHE.set(computed.clone());
+    computed
+}
+
 /// Probe each registered agent's `command` to see whether it resolves.
 /// Drives the install-status badge in Settings → Agent CLIs and the
 /// "hide uninstalled" filtering of the CLI pickers. Registry-driven, so
@@ -8491,7 +8524,7 @@ pub fn run() {
             settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
-            list_monospace_fonts,
+            list_monospace_fonts, list_font_families,
             themes_list, themes_dir,
         ])
         .build(tauri::generate_context!())
