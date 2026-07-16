@@ -320,16 +320,13 @@ function FontSelect({ value, onChange, fonts }: {
         <optgroup label="Bundled">{bundled.map(renderOption)}</optgroup>
         <optgroup label="Installed">{installed.map(renderOption)}</optgroup>
       </select>
-      {/* Checkbox stops propagation on its own click, so the row's
-          onClick only fires for the text part — no double-toggle. */}
-      <div
-        onClick={() => setShowAll(!showAll)}
+      <label
         title="List every installed font family, not just fonts detected as monospace. Applies to both font pickers. Proportional fonts will misalign terminal output."
         className="flex cursor-pointer select-none items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
       >
         <Checkbox checked={showAll} onChange={setShowAll} className="h-3.5 w-3.5" />
         <span>Show all fonts</span>
-      </div>
+      </label>
     </div>
   );
 }
