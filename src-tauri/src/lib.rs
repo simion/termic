@@ -7455,7 +7455,12 @@ fn default_agents() -> Vec<Agent> {
                 signals: AgentSignals::default(),
                 match_output: false,
             },
-            env: std::collections::HashMap::new(),
+            // Never blocks startup (claude updates in the background), but a
+            // self-update mid-session inside a worktree is churn we don't
+            // need; `claude update` stays available to the user.
+            env: std::collections::HashMap::from([
+                ("DISABLE_AUTOUPDATER".to_string(), "1".to_string()),
+            ]),
             sandbox_allowed_paths: vec![
                 // Covers $HOME/.claude/, $HOME/.claude.json,
                 // $HOME/.claude.lock, $HOME/.claude.json.lock, and
@@ -7481,7 +7486,13 @@ fn default_agents() -> Vec<Agent> {
             id: "codex".into(),
             display_name: "codex".into(),
             command: "codex".into(),
-            args: vec![],
+            // Suppress the startup "Update available!" menu: it grabs the
+            // composer, so a prompt injected shortly after boot (run-prompt,
+            // broadcast, races) lands in the menu instead of the input box,
+            // and Enter selects "Update now". Official key, confirmed present
+            // since at least codex 0.144.x; `-c` is a global flag, so it
+            // composes with the `resume --last` subcommand placed after.
+            args: vec!["-c".into(), "check_for_update_on_startup=false".into()],
             icon_id: "codex".into(),
             color: "#16a34a".into(),
             builtin: true,
@@ -7619,7 +7630,9 @@ fn default_agents() -> Vec<Agent> {
             id: "grok".into(),
             display_name: "grok".into(),
             command: "grok".into(),
-            args: vec![],
+            // Skip the background update check; xAI's own headless docs
+            // recommend this flag for scripted/automated launches.
+            args: vec!["--no-auto-update".into()],
             icon_id: "grok".into(),
             color: "#cbd5e1".into(),
             builtin: true,
@@ -7793,6 +7806,24 @@ pub(crate) fn load_settings_inner() -> Settings {
         if c.name_args.is_empty() && !d.name_args.is_empty() {
             c.name_args = d.name_args.clone();
             migrated = true;
+        }
+    }
+    // Migration: update-check suppression (codex's startup "Update available!"
+    // menu steals injected prompts; grok's background check is the same class).
+    // Same seed-if-empty rule as above: only builtin agents, only when the
+    // user hasn't set their own base args / that env key, so customized
+    // configs are left alone.
+    for a in s.agents.iter_mut().filter(|a| a.builtin) {
+        let Some(def) = defaults.iter().find(|d| d.id == a.id) else { continue; };
+        if a.args.is_empty() && !def.args.is_empty() {
+            a.args = def.args.clone();
+            migrated = true;
+        }
+        for (k, v) in &def.env {
+            if !a.env.contains_key(k) {
+                a.env.insert(k.clone(), v.clone());
+                migrated = true;
+            }
         }
     }
     // Persist the migration so jq / external tooling sees the fields,
