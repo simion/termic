@@ -35,6 +35,11 @@ export function GeneralSection() {
   // dirty check.
   const [fileExclude, setFileExclude] = useState<string[]>([]);
   const [fileExcludeOriginal, setFileExcludeOriginal] = useState("");
+  // Worktree config-dir symlinks (personal). One path per line, cleaned on
+  // save. Empty disables the linking; absent in settings means the pre-filled
+  // agent-dir defaults.
+  const [symlinkPaths, setSymlinkPaths] = useState("");
+  const [symlinkPathsOriginal, setSymlinkPathsOriginal] = useState("");
   // Pre-create base fetch (GH #79). Backend Settings field; saved immediately
   // on toggle. Absent in settings = on.
   const [fetchBeforeCreate, setFetchBeforeCreate] = useState(true);
@@ -97,6 +102,9 @@ export function GeneralSection() {
       const ex = s.file_tree_exclude ?? [];
       setFileExclude(ex);
       setFileExcludeOriginal(ex.join("\n"));
+      const links = (s.worktree_symlink_paths ?? []).join("\n");
+      setSymlinkPaths(links);
+      setSymlinkPathsOriginal(links);
       setFetchBeforeCreate(s.fetch_before_create !== false);
     }).catch(() => {});
   }, []);
@@ -113,6 +121,7 @@ export function GeneralSection() {
 
   const sbDirty = sbRw !== sbOriginal.rw || sbHosts !== sbOriginal.hosts;
   const excludeDirty = fileExclude.join("\n") !== fileExcludeOriginal;
+  const symlinkDirty = symlinkPaths !== symlinkPathsOriginal;
   const dirty = reposDir !== originalDir;
 
   async function browse() {
@@ -159,6 +168,18 @@ export function GeneralSection() {
       // The file tree is hidden behind this Settings overlay; force it to
       // re-read so the new excludes apply the moment the user looks back.
       useUI.getState().reloadFileTree();
+    } finally { setBusy(false); }
+  }
+  async function saveSymlinkPaths() {
+    if (!settings) return;
+    setBusy(true);
+    try {
+      const cleaned = cleanLines(symlinkPaths);
+      const next: Settings = { ...settings, worktree_symlink_paths: cleaned };
+      await settingsSave(next);
+      setSettings(next);
+      setSymlinkPaths(cleaned.join("\n"));
+      setSymlinkPathsOriginal(cleaned.join("\n"));
     } finally { setBusy(false); }
   }
 
@@ -436,6 +457,26 @@ export function GeneralSection() {
         <div className="mt-3">
           <Button variant="primary" disabled={!excludeDirty || busy} onClick={saveExclude}>
             {busy ? "Saving…" : "Save hidden files"}
+          </Button>
+        </div>
+      </div>
+
+      {/* Worktree config symlinks (personal). A project's agent config
+          (.claude/ etc.) is often gitignored, so a plain worktree checkout
+          omits it and agents there lose their project subagents/skills. These
+          repo-root dirs get symlinked into each new worktree task. Only ones
+          that exist in the repo are linked; clear the list to disable. */}
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <div className="text-[14px] font-medium">Worktree config symlinks</div>
+        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+          Repo-root dirs symlinked into each new worktree task, one per line, so agents keep project config (subagents, skills, commands) that is gitignored out of a plain checkout. Only dirs that exist in the repo are linked. Clear the list to turn this off.
+        </div>
+        <div className="mt-3">
+          <SbField label="Paths to symlink" placeholder={".claude\n.gemini\n.codex"} value={symlinkPaths} onChange={setSymlinkPaths} />
+        </div>
+        <div className="mt-3">
+          <Button variant="primary" disabled={!symlinkDirty || busy} onClick={saveSymlinkPaths}>
+            {busy ? "Saving…" : "Save symlink paths"}
           </Button>
         </div>
       </div>

@@ -815,6 +815,61 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Symlink `<repo>/<name>` into `<wt>/<name>` as an ABSOLUTE link, unless the
+/// worktree already has an entry there (a tracked, checked-out dir) or the repo
+/// has none. Absolute so it resolves from the worktree's own depth, and so any
+/// relative symlinks *inside* it (e.g. `.claude/agents -> ../../.claude/agents`)
+/// still resolve back at the real repo location. Best-effort: a failure never
+/// blocks task creation. NOTE: a sandboxed task additionally needs the resolved
+/// target on its readable path - this covers the common uncaged case.
+fn link_config_dir(repo: &Path, wt: &Path, name: &str) {
+    let src = repo.join(name);
+    if !src.exists() {
+        return;
+    }
+    let dst = wt.join(name);
+    // symlink_metadata (not exists) so ANY existing entry - including a broken
+    // link or a real tracked dir from checkout - counts as "already there" and
+    // we never clobber it.
+    if dst.symlink_metadata().is_ok() {
+        return;
+    }
+    let target = fs::canonicalize(&src).unwrap_or(src);
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&target, &dst).is_ok();
+    #[cfg(not(unix))]
+    let linked = std::os::windows::fs::symlink_dir(&target, &dst).is_ok();
+    if linked {
+        // The link is a symlink, which git's `<name>/` (directory) ignore
+        // patterns do NOT match - so without this it shows as an untracked
+        // entry in the Git panel and gets stashed on every branch switch. Add
+        // a bare `<name>` line to the repo's LOCAL excludes (never the
+        // committed .gitignore) so the link is invisible to git everywhere.
+        ensure_git_excluded(repo, name);
+    }
+}
+
+/// Append `name` to the repo's `.git/info/exclude` (shared across the repo's
+/// worktrees, local + never committed) if not already present. Best-effort.
+fn ensure_git_excluded(repo: &Path, name: &str) {
+    let info = repo.join(".git").join("info");
+    let exclude = info.join("exclude");
+    let existing = fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == name) {
+        return;
+    }
+    if fs::create_dir_all(&info).is_err() {
+        return;
+    }
+    let mut body = existing;
+    if !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str(name);
+    body.push('\n');
+    let _ = fs::write(&exclude, body);
+}
+
 /// Write `schema_version = TASKS_SCHEMA_VERSION` into settings.json directly
 /// (the migration's commit marker). Written LAST so a crash before this leaves
 /// the guard un-bumped and the migration re-runs cleanly.
@@ -2563,6 +2618,17 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
         copy_matching(&repo, &wt_path, pat);
     }
 
+    // Personal settings, loaded once and reused for the sandbox defaults below.
+    let globals = load_settings_inner();
+    // Link the project's agent config dirs (`.claude/` and friends) into the
+    // worktree so agents spawned here keep their project subagents / skills /
+    // commands instead of failing to fan out. The list is user-configurable
+    // (Settings.worktree_symlink_paths); each entry is linked only when it
+    // exists in the repo and the checkout/copy didn't already provide it.
+    for name in &globals.worktree_symlink_paths {
+        link_config_dir(&repo, &wt_path, name);
+    }
+
     // Allocate port (18100 + index).
     let port = 18100 + (load_tasks().len() as u16);
 
@@ -2598,8 +2664,7 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
     // General) and the PROJECT's per-repo defaults. The dialog
     // already merges these for the user, so when args.x is Some we
     // honor it verbatim; when it's None (older callers / non-UI
-    // entry points) we still get the merged set.
-    let globals = load_settings_inner();
+    // entry points) we still get the merged set. `globals` loaded once above.
     let merge = |g: &[String], p: &[String]| -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -7281,6 +7346,14 @@ fn open_command(os: &str, target: &str) -> (&'static str, Vec<String>) {
 // wizard fires exactly once per install). Keep this struct additive — fields
 // are serde(default) so old files keep parsing as we grow it.
 
+/// Repo-root config dirs symlinked into each new worktree by default: the
+/// common per-project agent-config dirs (Claude Code, Gemini, Codex). Each is
+/// only linked when it actually exists in the repo, so listing one a given repo
+/// lacks is harmless. Just the pre-filled starting point - users edit the list.
+fn default_worktree_symlink_paths() -> Vec<String> {
+    vec![".claude".into(), ".gemini".into(), ".codex".into()]
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
@@ -7323,6 +7396,16 @@ pub struct Settings {
     /// clone stop cluttering the picker without deleting it.
     #[serde(default)]
     pub discovery_dismissed: Vec<String>,
+    /// Repo-root config dirs symlinked into each NEW worktree task (when the
+    /// checkout didn't already provide them). `.claude/` and friends hold a
+    /// project's subagents / skills / commands, which are commonly gitignored
+    /// (or built from symlinks to a shared dir) so `git worktree add` leaves
+    /// them out - an agent spawned there would otherwise lose all project-local
+    /// config. Pre-filled with the common agent dirs; edit or clear it in
+    /// Settings (an empty list disables the linking). Absent in old files means
+    /// pre-filled, not off, so upgraders keep the original behavior.
+    #[serde(default = "default_worktree_symlink_paths")]
+    pub worktree_symlink_paths: Vec<String>,
 }
 
 /// Whether the pre-create base fetch (GH #79) is enabled. Default-on: only an
@@ -7777,8 +7860,13 @@ fn settings_file() -> Result<PathBuf> {
 pub(crate) fn load_settings_inner() -> Settings {
     let f = match settings_file() { Ok(p) => p, Err(_) => return seeded_defaults() };
     let mut s: Settings = match fs::read_to_string(&f) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => Settings::default(),
+        // Fall back to seeded_defaults(), NOT bare Settings::default(): the
+        // latter derives EMPTY seeded lists (worktree_symlink_paths), which is
+        // indistinguishable from a user who cleared them. A fresh install (the
+        // missing-file arm, then the welcome wizard saves the object) or a
+        // corrupt file would otherwise be born with the linking off for good.
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| seeded_defaults()),
+        Err(_) => seeded_defaults(),
     };
     // Seed defaults if the agents list is empty (first launch OR pre-agents
     // upgrade). We also re-merge the 3 built-ins back in if the user removed
@@ -7903,7 +7991,11 @@ pub(crate) fn load_settings_inner() -> Settings {
 }
 
 fn seeded_defaults() -> Settings {
-    Settings { agents: default_agents(), ..Settings::default() }
+    Settings {
+        agents: default_agents(),
+        worktree_symlink_paths: default_worktree_symlink_paths(),
+        ..Settings::default()
+    }
 }
 
 #[tauri::command]
@@ -9011,6 +9103,30 @@ mod tests {
         mkrepo(root.path(), "work/repo-c");
         mkrepo(root.path(), "oss/repo-d");
         assert_eq!(discovered_names(root.path()), ["repo-c", "repo-d"].map(String::from).into());
+    }
+
+    #[test]
+    fn worktree_symlink_paths_absent_vs_cleared() {
+        // Absent in an old settings.json -> pre-filled defaults, so upgraders
+        // keep the original .claude-linking behavior instead of silently losing it.
+        let absent: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.worktree_symlink_paths, default_worktree_symlink_paths());
+        assert!(!absent.worktree_symlink_paths.is_empty());
+        // Present-but-empty -> respected: a user who cleared the list to disable
+        // the linking must NOT get the defaults forced back on.
+        let cleared: Settings = serde_json::from_str(r#"{"worktree_symlink_paths":[]}"#).unwrap();
+        assert!(cleared.worktree_symlink_paths.is_empty());
+        // Explicit list -> used verbatim.
+        let custom: Settings = serde_json::from_str(r#"{"worktree_symlink_paths":[".claude",".foo"]}"#).unwrap();
+        assert_eq!(custom.worktree_symlink_paths, vec![".claude".to_string(), ".foo".to_string()]);
+        // New installs + corrupt files seed the pre-filled defaults, NOT an
+        // empty vec. `load_settings_inner`'s fallback arms both use
+        // seeded_defaults(); this is the exact expression the corrupt-file arm
+        // runs (simion's catch: bare Settings::default() would birth the linking
+        // permanently off).
+        assert_eq!(seeded_defaults().worktree_symlink_paths, default_worktree_symlink_paths());
+        let corrupt: Settings = serde_json::from_str("not valid json").unwrap_or_else(|_| seeded_defaults());
+        assert_eq!(corrupt.worktree_symlink_paths, default_worktree_symlink_paths());
     }
 
     #[test]

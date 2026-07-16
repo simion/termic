@@ -419,6 +419,11 @@ export interface Settings {
   /** Canonical repo paths hidden from the Add Project discovery list.
    *  Discovery still finds them; the picker filters them out until restored. */
   discovery_dismissed?: string[];
+  /** Repo-root config dirs symlinked into each new worktree task (agent config
+   *  like `.claude/` that is commonly gitignored, so a plain worktree checkout
+   *  omits it). Pre-filled with the common agent dirs; an empty list disables
+   *  the linking. Absent = the pre-filled defaults, not off. */
+  worktree_symlink_paths?: string[];
 }
 
 export interface DiscoveredRepo {
