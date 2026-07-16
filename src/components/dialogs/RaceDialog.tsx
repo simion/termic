@@ -13,7 +13,7 @@ import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
 import { startRace, suggestRaceName, type Racer } from "@/lib/agentRace";
 import { cn, slugify } from "@/lib/utils";
-import { Flag, Minus, Plus } from "lucide-react";
+import { Flag, Loader2, Minus, Plus } from "lucide-react";
 
 // Cap per CLI so a fat-fingered stepper can't spawn a dozen worktrees.
 const MAX_PER_CLI = 4;
@@ -35,12 +35,16 @@ export function RaceDialog() {
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Worktree creation is sequential and 1-2s+ apiece, so a 4-agent race
+  // keeps the dialog up for many seconds; this is what stops it reading
+  // as a hang. Null until the first create starts.
+  const [progress, setProgress] = useState<{ n: number; total: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setCounts({}); setPrompt(""); setName(""); setNameEdited(false);
-    setErr(null); setBusy(false);
+    setErr(null); setBusy(false); setProgress(null);
   }, [projectId, open]);
 
   // The name auto-fills from the prompt, but ONLY until the user touches the
@@ -65,10 +69,15 @@ export function RaceDialog() {
     }
     setBusy(true); setErr(null);
     try {
-      await startRace({ projectId, racers, prompt: prompt.trim(), name: name.trim() || undefined });
+      await startRace({
+        projectId, racers,
+        prompt: prompt.trim(),
+        name: name.trim() || undefined,
+        onProgress: (n, total) => setProgress({ n, total }),
+      });
       close();
     } catch (e) {
-      setErr(String(e)); setBusy(false);
+      setErr(String(e)); setBusy(false); setProgress(null);
     }
   }
 
@@ -153,11 +162,18 @@ export function RaceDialog() {
 
       {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-[12px] text-[var(--color-fg-faint)]">
-          {total < 2 ? "Pick at least 2 agents" : `${total} agents racing`}
-        </span>
+        {busy && progress ? (
+          <span className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)]">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Creating worktree {progress.n} of {progress.total}…
+          </span>
+        ) : (
+          <span className="text-[12px] text-[var(--color-fg-faint)]">
+            {total < 2 ? "Pick at least 2 agents" : `${total} agents racing`}
+          </span>
+        )}
         <Button variant="primary" size="sm" disabled={!canStart} onClick={start}>
-          <Flag className="h-3.5 w-3.5" />
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Flag className="h-3.5 w-3.5" />}
           Start race
         </Button>
       </div>

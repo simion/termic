@@ -101,6 +101,11 @@ export async function startRace(opts: {
    *  same-named race are NOT auto-suffixed: task_create fails and the dialog
    *  shows the error, same contract as the New Task dialog. */
   name?: string;
+  /** Fired just before racer `n` (1-based) of `total` starts creating its
+   *  worktree. Worktree creation is the slow, sequential part of a launch
+   *  (git worktree add + files_to_copy, 1-2s+ each on a chunky repo), so
+   *  this is what the dialog renders as progress. */
+  onProgress?: (n: number, total: number) => void;
 }): Promise<string[]> {
   const { projectId, racers, prompt } = opts;
   const raceId = crypto.randomUUID();
@@ -113,7 +118,8 @@ export async function startRace(opts: {
   const taskIds: string[] = [];
   // Sequential: `git worktree add` contends on the repo index, so N concurrent
   // creates would race the lock. One at a time is safe and fast enough.
-  for (const r of racers) {
+  for (const [idx, r] of racers.entries()) {
+    opts.onProgress?.(idx + 1, racers.length);
     const id = crypto.randomUUID();
     const agentLabel = `${agentDisplayName(r.cli)} #${r.n}`;
     await taskCreate({
