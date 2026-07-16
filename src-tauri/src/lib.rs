@@ -7455,12 +7455,7 @@ fn default_agents() -> Vec<Agent> {
                 signals: AgentSignals::default(),
                 match_output: false,
             },
-            // Never blocks startup (claude updates in the background), but a
-            // self-update mid-session inside a worktree is churn we don't
-            // need; `claude update` stays available to the user.
-            env: std::collections::HashMap::from([
-                ("DISABLE_AUTOUPDATER".to_string(), "1".to_string()),
-            ]),
+            env: std::collections::HashMap::new(),
             sandbox_allowed_paths: vec![
                 // Covers $HOME/.claude/, $HOME/.claude.json,
                 // $HOME/.claude.lock, $HOME/.claude.json.lock, and
@@ -7811,19 +7806,13 @@ pub(crate) fn load_settings_inner() -> Settings {
     // Migration: update-check suppression (codex's startup "Update available!"
     // menu steals injected prompts; grok's background check is the same class).
     // Same seed-if-empty rule as above: only builtin agents, only when the
-    // user hasn't set their own base args / that env key, so customized
-    // configs are left alone.
+    // user hasn't set their own base args, so customized configs are left
+    // alone.
     for a in s.agents.iter_mut().filter(|a| a.builtin) {
         let Some(def) = defaults.iter().find(|d| d.id == a.id) else { continue; };
         if a.args.is_empty() && !def.args.is_empty() {
             a.args = def.args.clone();
             migrated = true;
-        }
-        for (k, v) in &def.env {
-            if !a.env.contains_key(k) {
-                a.env.insert(k.clone(), v.clone());
-                migrated = true;
-            }
         }
     }
     // Persist the migration so jq / external tooling sees the fields,
