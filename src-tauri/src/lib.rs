@@ -4905,6 +4905,62 @@ async fn task_git_status(id: String) -> Result<GitStatus, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Result of a branch switch: which branch we're on, whether local work was
+/// stashed to get there, and whether re-applying that stash hit conflicts
+/// (conflict markers are left in the tree and the stash is retained).
+#[derive(Serialize)]
+struct CheckoutResult {
+    branch: String,
+    stashed: bool,
+    conflicted: bool,
+}
+
+/// Local branch names for a task's repo (host, or a member when `dir_name` is
+/// set). Used by the Git tab's branch switcher.
+#[tauri::command]
+async fn task_git_branches(id: String, dir_name: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        let out = git(&["branch", "--format=%(refname:short)"], &cwd).map_err(|e| e.to_string())?;
+        Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Fork-style branch switch: stash local work (including untracked files),
+/// check out `branch`, then re-apply the stash. A failed checkout (e.g. the
+/// branch is already checked out in another worktree) restores the stash and
+/// errors. A pop conflict is reported, not swallowed - the caller warns the
+/// user so they resolve it instead of silently losing the changes.
+#[tauri::command]
+async fn task_git_checkout(id: String, dir_name: String, branch: String) -> Result<CheckoutResult, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<CheckoutResult, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        let dirty = !git(&["status", "--porcelain"], &cwd).map_err(|e| e.to_string())?.trim().is_empty();
+        let mut stashed = false;
+        if dirty {
+            git(&["stash", "push", "-u", "-m", &format!("termic: switch to {branch}")], &cwd)
+                .map_err(|e| e.to_string())?;
+            stashed = true;
+        }
+        if let Err(e) = git(&["checkout", &branch], &cwd) {
+            // Put the user's work back exactly where it was before erroring out.
+            if stashed { let _ = git(&["stash", "pop"], &cwd); }
+            return Err(e.to_string());
+        }
+        let mut conflicted = false;
+        if stashed && git(&["stash", "pop"], &cwd).is_err() {
+            conflicted = true;
+        }
+        Ok(CheckoutResult { branch, stashed, conflicted })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Resolve the git cwd for a stage/commit op: the host task path
 /// when `dir_name` is empty, otherwise the matching composition member.
 fn repo_cwd(w: &Task, dir_name: &str) -> Result<PathBuf, String> {
@@ -8515,7 +8571,7 @@ pub fn run() {
             task_grep_start, task_grep_cancel,
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_files, task_list_files_for_finder, task_send_diff_to_main,
-            task_changes, task_git_status, task_stage, task_unstage, task_commit, task_discard,
+            task_changes, task_git_status, task_git_branches, task_git_checkout, task_stage, task_unstage, task_commit, task_discard,
             task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,

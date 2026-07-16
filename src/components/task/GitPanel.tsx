@@ -18,10 +18,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare,
+  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare, Loader2, GitBranch,
 } from "lucide-react";
 import type { Task, GitStatus, GitRepo, GitFile } from "@/lib/types";
-import { taskStage, taskUnstage, taskCommit, taskDiscard } from "@/lib/ipc";
+import { taskStage, taskUnstage, taskCommit, taskDiscard, taskGitBranches, taskGitCheckout } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
@@ -346,10 +346,13 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
   }
   if (!repo || (status.total_changed === 0 && !pinnedExists)) {
     return (
-      <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
-        {nonGit
-          ? "Not a git repository. Changes aren't tracked here."
-          : "No changes. Working tree is clean."}
+      <div className="flex h-full flex-col">
+        {!nonGit && <BranchBar task={task} branch={status.repos[0]?.branch ?? task.branch} dir="" refresh={refresh} />}
+        <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
+          {nonGit
+            ? "Not a git repository. Changes aren't tracked here."
+            : "No changes. Working tree is clean."}
+        </div>
       </div>
     );
   }
@@ -384,6 +387,8 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
 
   return (
     <div className="flex h-full flex-col">
+      {/* 0. Current branch + switcher (fork-style: stash, checkout, re-apply) */}
+      {!nonGit && <BranchBar task={task} branch={repo?.branch ?? task.branch} dir={dir} refresh={refresh} />}
       {/* 1. Repo sub-tabs (wrapping pills) */}
       {showSubTabs && (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-[var(--color-border-soft)] px-2 py-1.5">
@@ -544,6 +549,88 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
           </DropdownRoot>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Current-branch chip + switcher (issue #101). The chip shows the live branch
+// (from git status, so it's always the true HEAD even after a switch). Opening
+// the dropdown lazily lists local branches; picking one does a Fork-style
+// switch (stash local work, checkout, re-apply) via task_git_checkout. A pop
+// conflict is surfaced as an error toast, not swallowed.
+function BranchBar({ task, branch, dir, refresh }: {
+  task: Task;
+  branch: string;
+  dir: string;
+  refresh: () => void;
+}) {
+  const pushToast = useUI(s => s.pushToast);
+  const [branches, setBranches] = useState<string[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [switching, setSwitching] = useState(false);
+
+  const loadBranches = () => {
+    if (loading) return;
+    setLoading(true);
+    taskGitBranches(task.id, dir)
+      .then(setBranches)
+      .catch(e => pushToast(String(e), "error"))
+      .finally(() => setLoading(false));
+  };
+
+  const switchTo = (target: string) => {
+    if (switching || target === branch) return;
+    setSwitching(true);
+    taskGitCheckout(task.id, dir, target)
+      .then(r => {
+        setBranches(null);   // stale after a switch - reload on next open
+        refresh();
+        if (r.conflicted) {
+          pushToast(`Switched to ${r.branch}. Your stashed changes conflicted on re-apply; resolve them.`, "error", { ttlMs: 8000 });
+        } else if (r.stashed) {
+          pushToast(`Switched to ${r.branch}. Local changes stashed and re-applied.`);
+        } else {
+          pushToast(`Switched to ${r.branch}.`);
+        }
+      })
+      .catch(e => pushToast(String(e), "error"))
+      .finally(() => setSwitching(false));
+  };
+
+  return (
+    <div className="flex h-8 shrink-0 items-center border-b border-[var(--color-border-soft)] px-2">
+      <DropdownRoot>
+        <DropdownTrigger asChild>
+          <button
+            onClick={loadBranches}
+            disabled={switching}
+            title="Switch branch (stashes and re-applies local changes)"
+            className="flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12px] transition-colors hover:border-[var(--color-accent-soft)] disabled:opacity-50"
+          >
+            {switching
+              ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--color-fg-faint)]" />
+              : <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+            <span className="truncate font-mono text-[var(--color-fg)]">{branch || "detached HEAD"}</span>
+            <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />
+          </button>
+        </DropdownTrigger>
+        <DropdownMenu align="start">
+          {loading ? (
+            <div className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading branches…
+            </div>
+          ) : !branches || branches.length === 0 ? (
+            <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">No local branches.</div>
+          ) : (
+            branches.map(b => (
+              <DropdownItem key={b} onSelect={() => switchTo(b)} className="items-center">
+                <Check className={cn("h-3.5 w-3.5", b !== branch && "opacity-0")} />
+                <span className="truncate font-mono text-[12px]">{b}</span>
+              </DropdownItem>
+            ))
+          )}
+        </DropdownMenu>
+      </DropdownRoot>
     </div>
   );
 }
