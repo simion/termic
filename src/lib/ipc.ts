@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
-  ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, FileEntry, Agent, RepoConfig,
+  ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, FileEntry, Agent, RepoConfig,
   SandboxMode,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
@@ -362,6 +362,12 @@ export const taskRevealPath = (id: string, path: string) =>
 export const taskChanges  = (id: string) => invoke<Changes>("task_changes", { id });
 // Fork-style staging: staged/unstaged split per repo + stage/unstage/commit.
 export const taskGitStatus = (id: string) => invoke<GitStatus>("task_git_status", { id });
+/** Local branch names for a task's repo (host, or a member via dirName). */
+export const taskGitBranches = (id: string, dirName: string) =>
+  invoke<string[]>("task_git_branches", { id, dirName });
+/** Fork-style switch: stash local work, checkout `branch`, re-apply the stash. */
+export const taskGitCheckout = (id: string, dirName: string, branch: string) =>
+  invoke<CheckoutResult>("task_git_checkout", { id, dirName, branch });
 export const taskStage   = (id: string, dirName: string, paths: string[]) =>
   invoke<void>("task_stage", { id, dirName, paths });
 export const taskUnstage = (id: string, dirName: string, paths: string[]) =>
