@@ -28,6 +28,28 @@ import type { TerminalTab } from "@/lib/types";
  *  (so two claudes become "Claude #1" / "Claude #2" with distinct branches). */
 export interface Racer { cli: string; n: number; }
 
+// Suggested-name bounds: enough to tell races apart, short enough that the
+// task name's "<name>: Claude #1" tail survives sidebar truncation.
+const SUGGEST_MAX_WORDS = 4;
+const SUGGEST_MAX_CHARS = 24;
+
+/** Suggest a race name from the prompt: the first line, slugified and capped
+ *  to a few short words ("find SEO improvements for this website" →
+ *  "find-seo-improvements"). Used by the RaceDialog to pre-fill the name
+ *  field; empty prompt suggests nothing. A single overlong first word is
+ *  kept whole rather than suggesting "". */
+export function suggestRaceName(prompt: string): string {
+  const words = slugify(prompt.trim().split("\n")[0] ?? "").split("-").filter(Boolean);
+  let out = "";
+  for (const w of words) {
+    const next = out ? `${out}-${w}` : w;
+    if (out && next.length > SUGGEST_MAX_CHARS) break;
+    out = next;
+    if (out.split("-").length >= SUGGEST_MAX_WORDS) break;
+  }
+  return out;
+}
+
 // N agents boot at once here and contend for CPU, so give the TUIs a beat
 // longer than the single-spawn path (runPrompt's 5s) to reach the input box
 // before we type, so the prompt lands in the box, not on a splash screen.
@@ -71,23 +93,36 @@ export async function startRace(opts: {
   projectId: string;
   racers: Racer[];
   prompt: string;
+  /** Optional user-chosen race name. Slugified it becomes the branch's middle
+   *  segment (race/<slug>/claude-1) and verbatim it prefixes the task names
+   *  ("seo: Claude #1"). Absent, branches fall back to the race id's first 8
+   *  chars and task names stay bare. A name that slugifies to nothing (e.g.
+   *  "???") is treated as absent. Collisions with a branch left by an earlier
+   *  same-named race are NOT auto-suffixed: task_create fails and the dialog
+   *  shows the error, same contract as the New Task dialog. */
+  name?: string;
 }): Promise<string[]> {
   const { projectId, racers, prompt } = opts;
   const raceId = crypto.randomUUID();
-  const shortId = raceId.slice(0, 8);
+  const slug = slugify(opts.name?.trim() ?? "");
+  // Tied together: a name that can't produce a branch segment is dropped
+  // everywhere, so task names never carry a name the branches don't.
+  const name = slug ? opts.name!.trim() : undefined;
+  const branchMid = slug || raceId.slice(0, 8);
 
   const taskIds: string[] = [];
   // Sequential: `git worktree add` contends on the repo index, so N concurrent
   // creates would race the lock. One at a time is safe and fast enough.
   for (const r of racers) {
     const id = crypto.randomUUID();
+    const agentLabel = `${agentDisplayName(r.cli)} #${r.n}`;
     await taskCreate({
       id,
       project_id: projectId,
-      name: `${agentDisplayName(r.cli)} #${r.n}`,
+      name: name ? `${name}: ${agentLabel}` : agentLabel,
       cli: r.cli,
       base_branch: null,
-      branch: `race/${shortId}/${slugify(r.cli)}-${r.n}`,
+      branch: `race/${branchMid}/${slugify(r.cli)}-${r.n}`,
     });
     taskIds.push(id);
   }
@@ -95,7 +130,7 @@ export async function startRace(opts: {
   // Record the cohort BEFORE anything mounts: the default-tab seed
   // (app.ensureTabs) checks the race store to mark racer tabs unattended,
   // so the record must exist by the time the first TaskView renders.
-  useRace.getState().start({ id: raceId, prompt: firstLine(prompt), taskIds, createdAt: Date.now() });
+  useRace.getState().start({ id: raceId, name, prompt: firstLine(prompt), taskIds, createdAt: Date.now() });
 
   await useApp.getState().loadAll();
   // Mount every racer (without stealing focus N times) so each TaskView seeds

@@ -11,8 +11,8 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
-import { startRace, type Racer } from "@/lib/agentRace";
-import { cn } from "@/lib/utils";
+import { startRace, suggestRaceName, type Racer } from "@/lib/agentRace";
+import { cn, slugify } from "@/lib/utils";
 import { Flag, Minus, Plus } from "lucide-react";
 
 // Cap per CLI so a fat-fingered stepper can't spawn a dozen worktrees.
@@ -32,13 +32,23 @@ export function RaceDialog() {
 
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [prompt, setPrompt] = useState("");
+  const [name, setName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setCounts({}); setPrompt(""); setErr(null); setBusy(false);
+    setCounts({}); setPrompt(""); setName(""); setNameEdited(false);
+    setErr(null); setBusy(false);
   }, [projectId, open]);
+
+  // The name auto-fills from the prompt, but ONLY until the user touches the
+  // field — after that it's theirs (same never-clobber rule as the New Task
+  // branch field). Cleared = unnamed: branches fall back to the race id.
+  const suggested = useMemo(() => suggestRaceName(prompt), [prompt]);
+  useEffect(() => { if (!nameEdited) setName(suggested); }, [suggested, nameEdited]);
+  const slug = slugify(name.trim());
 
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const canStart = total >= 2 && prompt.trim().length > 0 && !busy;
@@ -55,7 +65,7 @@ export function RaceDialog() {
     }
     setBusy(true); setErr(null);
     try {
-      await startRace({ projectId, racers, prompt: prompt.trim() });
+      await startRace({ projectId, racers, prompt: prompt.trim(), name: name.trim() || undefined });
       close();
     } catch (e) {
       setErr(String(e)); setBusy(false);
@@ -117,6 +127,29 @@ export function RaceDialog() {
         placeholder="The prompt every agent runs…"
         className="mt-3 max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
       />
+
+      <div className="mt-3 flex items-center gap-2.5">
+        <label
+          htmlFor="race-name"
+          title="Names the race: branches become race/<name>/agent-n and tasks become <name>: Agent #n. Leave empty for an auto-generated id."
+          className="shrink-0 text-[12.5px] text-[var(--color-fg-dim)]"
+        >
+          Name
+        </label>
+        <input
+          id="race-name"
+          autoCorrect="off" autoCapitalize="off" autoComplete="off" spellCheck={false}
+          value={name}
+          onChange={e => { setName(e.target.value); setNameEdited(true); }}
+          placeholder="optional"
+          className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
+        />
+        {slug && (
+          <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">
+            race/{slug}/…
+          </span>
+        )}
+      </div>
 
       {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
       <div className="mt-3 flex items-center justify-between">
