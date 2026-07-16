@@ -113,6 +113,24 @@ describe("spawnArgsForCli", () => {
     expect(args).toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
+  it("unattended codex spawns suppress the update check, before the resume subcommand", () => {
+    const args = spawnArgsForCli("codex", { yolo: false, resume: true, unattended: true });
+    const flag = args.indexOf("-c");
+    expect(args[flag + 1]).toBe("check_for_update_on_startup=false");
+    // `-c` is a root-binary global; it must precede `resume --last`.
+    expect(flag).toBeLessThan(args.indexOf("resume"));
+  });
+
+  it("attended spawns keep the CLI's normal update behavior", () => {
+    expect(spawnArgsForCli("codex", { yolo: false, resume: false })).not.toContain("-c");
+    expect(spawnArgsForCli("grok", { yolo: false, resume: false })).not.toContain("--no-auto-update");
+  });
+
+  it("unattended grok spawns pass --no-auto-update", () => {
+    expect(spawnArgsForCli("grok", { yolo: false, resume: false, unattended: true }))
+      .toContain("--no-auto-update");
+  });
+
   it("falls back gracefully for unknown cli", () => {
     const args = spawnArgsForCli("totally-unknown-agent", { yolo: false, resume: false });
     expect(Array.isArray(args)).toBe(true);

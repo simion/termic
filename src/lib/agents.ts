@@ -486,6 +486,21 @@ export function decideResume(opts: {
  *         (`codex resume --last <yolo>`) attaches its global flag to
  *         the subcommand instead of the root binary.
  */
+/** Extra args composed into UNATTENDED spawns only (a prompt will be
+ *  injected with no human at the keyboard, e.g. run-prompt "new agent"):
+ *  suppress startup update checks so a blocking "Update available!" menu
+ *  can't swallow the injected prompt (codex's preselects "Update now", so
+ *  the injected Enter would launch a curl|sh self-update). Attended spawns
+ *  deliberately keep the CLI's normal startup behavior: asking about
+ *  updates is fine when someone is watching. */
+export const UNATTENDED_SPAWN_ARGS: Record<string, string[]> = {
+  // Official config key (verified live on codex 0.144.1); `-c` is a global
+  // flag, so it composes with the `resume --last` subcommand placed after.
+  codex: ["-c", "check_for_update_on_startup=false"],
+  // xAI's documented flag for scripted/automated launches.
+  grok: ["--no-auto-update"],
+};
+
 export function spawnArgsForCli(
   cli: string,
   opts: {
@@ -507,6 +522,10 @@ export function spawnArgsForCli(
      *  mint / `opts.resume` so they don't double up. The agent owns the
      *  "session not found" case, so there's no fast-exit fallback. */
     resumeOverride?: string;
+    /** True when a prompt will be injected without a human at the keyboard.
+     *  Composes UNATTENDED_SPAWN_ARGS so startup update menus can't
+     *  swallow the injection. */
+    unattended?: boolean;
   },
 ): string[] {
   const { args, caps } = findAgent(cli);
@@ -537,6 +556,9 @@ export function spawnArgsForCli(
 
   const composed = [
     ...args,
+    // Before the resume block: codex's resume is a subcommand, and these
+    // are root-binary globals.
+    ...(opts.unattended ? (UNATTENDED_SPAWN_ARGS[cli] ?? []) : []),
     ...resumeBlock,
     // name_args on every primary-tab spawn (worktree or repo-root, mint or
     // resume) so claude always shows the task name. Skipped for

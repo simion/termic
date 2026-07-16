@@ -628,6 +628,12 @@ export interface TerminalTab extends BaseTab {
    *  prompt is sent (or the spawn times out). The string is the prompt title,
    *  shown in the overlay. */
   promptPendingTitle?: string | null;
+  /** True when this tab was created to receive an injected prompt with no
+   *  human at the keyboard (run-prompt "new agent" today; agent races later).
+   *  Spawns compose the CLI's unattended args (lib/agents UNATTENDED_SPAWN_ARGS)
+   *  so a startup update menu can't swallow the injected prompt. Attended
+   *  tabs keep the CLI's normal startup behavior. */
+  unattended?: boolean;
   /** Optional 0..100 progress percentage from ConEmu OSC 9;4;1|2|4;<pct>.
    *  Null/undefined means "indeterminate" — render the spinner without
    *  a bar. Drives the slim progress strip on the tab pill. */

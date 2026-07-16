@@ -1241,6 +1241,7 @@ const captureArmedRef = useRef(false);
           sessionUuid,
           resumeKnown,
           resumeOverride,
+          unattended: !!(tab as TerminalTab).unattended,
           task,
         });
         const spawn = await ipc.ptySpawn({
