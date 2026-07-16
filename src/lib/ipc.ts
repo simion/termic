@@ -7,7 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, FileEntry, Agent, RepoConfig,
-  SandboxMode,
+  SandboxMode, TaskDiffSummary,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
 import {
@@ -305,7 +305,7 @@ export const agentsDefaults = () => invoke<import("@/lib/types").Agent[]>("agent
  *  agent creates its first session. */
 export const runCaptureCommand = (cmd: string, cwd: string) =>
   invoke<string>("run_capture_command", { cmd, cwd });
-export const taskDiff     = (id: string) => invoke<string>("task_diff", { id });
+export const taskDiff     = (id: string) => invoke<TaskDiffSummary>("task_diff", { id });
 export const taskSendDiffToMain = (id: string) =>
   invoke<{ tracked_files: number; untracked_files: number }>("task_send_diff_to_main", { id });
 

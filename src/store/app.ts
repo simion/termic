@@ -10,6 +10,7 @@ import {
 } from "@/lib/splitTree";
 import * as ipc from "@/lib/ipc";
 import { groupOf } from "@/lib/projectGroups";
+import { useRace } from "@/store/race";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
 
@@ -143,6 +144,10 @@ export interface AppState {
    *  deliberately NOT on every window focus. */
   refreshClis: () => Promise<void>;
   setActiveTask: (id: string | null) => void;
+  /** Union `ids` into mountedTasks WITHOUT changing the active task, so their
+   *  TaskViews mount (and their agents spawn) while focus stays put. Agent
+   *  Race uses this to boot N agents at once from one action. */
+  mountTasks: (ids: string[]) => void;
   setView: (page: View["page"]) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
@@ -469,6 +474,10 @@ export const useApp = create<AppState>((set, get) => ({
       try { localStorage.setItem(LS_GROUP_COLORS, JSON.stringify(groupColors)); } catch {}
     }
     set({ projects, tasks, collapsedGroups, groupColors, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [] });
+    // Same housekeeping for Agent Race cohorts: once every task in a race is
+    // archived or deleted, drop the race so the board and its localStorage
+    // don't accumulate dead entries.
+    useRace.getState().prune(new Set(tasks.filter(t => !t.archived).map(t => t.id)));
   },
 
   refreshClis: async () => {
@@ -481,6 +490,13 @@ export const useApp = create<AppState>((set, get) => ({
       // Keep prior results; an empty map just means "show all".
     }
   },
+
+  mountTasks: (ids) => set(s => {
+    let changed = false;
+    const next = new Set(s.mountedTasks);
+    for (const id of ids) if (!next.has(id)) { next.add(id); changed = true; }
+    return changed ? { mountedTasks: next } : s;
+  }),
 
   setActiveTask: (id) => {
     const prev = get().activeTaskId;

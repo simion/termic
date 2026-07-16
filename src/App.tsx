@@ -15,6 +15,7 @@ import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
 import { MainArea } from "@/components/task/MainArea";
 import { RightPanel } from "@/components/task/RightPanel";
+import { RaceBoard } from "@/components/task/RaceBoard";
 import { Settings } from "@/components/settings/Settings";
 import { Dialogs } from "@/components/dialogs/Dialogs";
 import { Toaster } from "@/components/ui/Toaster";
@@ -166,6 +167,7 @@ export function App() {
         >
           <SidebarSlot />
           <main className="flex min-w-0 flex-col bg-[var(--color-bg)]">
+            <RaceBoard />
             <ErrorBoundary label="MainArea"><MainArea /></ErrorBoundary>
           </main>
           {showRP && <ErrorBoundary label="RightPanel"><RightPanel /></ErrorBoundary>}
