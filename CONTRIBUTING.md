@@ -88,6 +88,12 @@ get a feature merged:
 2. **Sketch of where it'd live** — which file in `src/components/`, what
    the IPC contract looks like, etc. Saves the maintainer half the work.
 
+### Claiming an issue
+
+Comment `/assign` on the issue to have it assigned to you (a workflow
+does it — GitHub only lets collaborators be assigned by hand). Comment
+`/unassign` to step back.
+
 ### Pull requests
 
 1. **Branch off `main`.** Termic doesn't use long-lived branches.
