@@ -101,7 +101,6 @@ describe("prefs: currentMinimumContrastRatio", () => {
 describe("prefs: mergeFontOptions", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", fakeLocalStorage());
-    (document as any).fonts = { load: () => Promise.resolve(), ready: Promise.resolve() };
     vi.resetModules();
   });
   afterEach(() => { vi.unstubAllGlobals(); });
