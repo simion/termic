@@ -27,9 +27,8 @@ import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { taskDiff, taskSendDiffToMain, taskArchive } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { Loader2, ArrowUpToLine } from "lucide-react";
+import { StateDot, type WorkDot } from "@/components/task/RaceBoard";
 import type { Task, TerminalTab, TaskDiffSummary } from "@/lib/types";
-
-type WorkDot = "idle" | "working" | "done";
 
 // A pathological agent could produce a huge diff; rendering every line as DOM
 // across N columns would jank. Cap per column and note the truncation rather
@@ -282,13 +281,4 @@ function classifyLine(text: string): { text: string; cls: string } {
   if (text.startsWith("+")) return { text, cls: "bg-[var(--color-ok)]/12 text-[var(--color-ok)]" };
   if (text.startsWith("-")) return { text, cls: "bg-[var(--color-err)]/12 text-[var(--color-err)]" };
   return { text, cls: "text-[var(--color-fg-dim)]" };
-}
-
-// A small round status light (a circle, not a pill tag), matching RaceBoard.
-function StateDot({ state }: { state: WorkDot }) {
-  const cls =
-    state === "working" ? "bg-[var(--color-accent)] animate-pulse" :
-    state === "done"    ? "bg-[var(--color-ok)]" :
-                          "bg-[var(--color-fg-faint)]";
-  return <span className={cn("h-2 w-2 shrink-0 rounded-[50%]", cls)} title={state} />;
 }
