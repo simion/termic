@@ -10,10 +10,10 @@ import { useRace, latestRace } from "@/store/race";
 import { useUI } from "@/store/ui";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { cn } from "@/lib/utils";
-import { Flag, X, Columns2 } from "lucide-react";
+import { Flag, X, Columns2, Loader2 } from "lucide-react";
 import type { TerminalTab } from "@/lib/types";
 
-type WorkDot = "idle" | "working" | "done";
+export type WorkDot = "idle" | "working" | "done";
 
 export function RaceBoard() {
   const races = useRace(s => s.races);
@@ -106,12 +106,30 @@ export function RaceBoard() {
   );
 }
 
-// A small round status light (border-radius 50%, a circle, not a pill tag):
-// pulsing accent while the agent works, green when done, faint when idle.
-function StateDot({ state }: { state: WorkDot }) {
-  const cls =
-    state === "working" ? "bg-[var(--color-accent)] animate-pulse" :
-    state === "done"    ? "bg-[var(--color-ok)]" :
-                          "bg-[var(--color-fg-faint)]";
-  return <span className={cn("h-2 w-2 shrink-0 rounded-[50%]", cls)} title={state} />;
+// Per-racer status, in the sidebar TabBadge's visual vocabulary so the same
+// state reads the same everywhere: Loader2 spinner while the agent works,
+// solid --color-info bullet when done, faint dot when idle. Unlike the
+// sidebar's opt-in working indicator (off by default, noisy-TUI misfires),
+// the spinner here is always on: watching progress is the strip's job, and
+// a misfire costs nothing when every racer is expected to be working anyway.
+// Shared with RaceCompare's column headers.
+export function StateDot({ state }: { state: WorkDot }) {
+  if (state === "working") {
+    return (
+      <span className="shrink-0 text-[var(--color-fg-faint)]" title="Agent working" aria-label="Working">
+        <Loader2 className="h-3 w-3 animate-spin" />
+      </span>
+    );
+  }
+  if (state === "done") {
+    return (
+      <span
+        className="block h-2 w-2 shrink-0 rounded-full"
+        style={{ backgroundColor: "var(--color-info)" }}
+        title="Agent finished a turn"
+        aria-label="Work done"
+      />
+    );
+  }
+  return <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--color-fg-faint)]" title="Idle" />;
 }
