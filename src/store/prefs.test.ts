@@ -3,17 +3,13 @@
 // load, so its default-value behavior can only be observed with a FRESH
 // module instance per scenario — vi.resetModules() + a dynamic import.
 //
-// Two things need stubbing before that import can succeed at all, both
+// One thing needs stubbing before that import can succeed at all,
 // pre-existing and unrelated to loadRemoteImages itself:
 //  - localStorage: Node's own experimental global `localStorage` (present
 //    without a DOM environment, and seemingly winning out over happy-dom's
 //    in this vitest setup too) throws/warns without `--localstorage-file`,
 //    so neither the plain "node" nor "happy-dom" environment gives a
 //    working one here. A fake Map-backed one is stubbed directly instead.
-//  - document.fonts: prefs.ts calls terminalFontsSettled() unconditionally
-//    at module load (warms the terminal font faces at startup) which reads
-//    document.fonts — the CSS Font Loading API, which happy-dom doesn't
-//    implement. Stubbed as a no-op so the import doesn't throw.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 const LS_KEY = "loadRemoteImages";
@@ -31,7 +27,6 @@ function fakeLocalStorage() {
 describe("prefs: loadRemoteImages", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", fakeLocalStorage());
-    (document as any).fonts = { load: () => Promise.resolve(), ready: Promise.resolve() };
     vi.resetModules();
   });
   afterEach(() => { vi.unstubAllGlobals(); });
@@ -69,7 +64,6 @@ describe("prefs: loadRemoteImages", () => {
 describe("prefs: currentMinimumContrastRatio", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", fakeLocalStorage());
-    (document as any).fonts = { load: () => Promise.resolve(), ready: Promise.resolve() };
     vi.resetModules();
   });
   afterEach(() => { vi.unstubAllGlobals(); });
