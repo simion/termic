@@ -146,6 +146,21 @@ describe("startRace", () => {
     expect(latestRace(useRace.getState().races)!.name).toBeUndefined();
   });
 
+  it("reports 1-based progress before each sequential worktree create", async () => {
+    const seen: Array<[number, number]> = [];
+    await startRace({
+      projectId: "p1",
+      racers: [{ cli: "claude", n: 1 }, { cli: "claude", n: 2 }, { cli: "codex", n: 1 }],
+      prompt: "do the thing",
+      onProgress: (n, total) => {
+        seen.push([n, total]);
+        // "before": racer n's create hasn't happened yet when its tick fires.
+        expect(createCalls().length).toBe(n - 1);
+      },
+    });
+    expect(seen).toEqual([[1, 3], [2, 3], [3, 3]]);
+  });
+
   it("seeds the shared prompt into each agent once its PTY is up, after the settle", async () => {
     vi.useFakeTimers();
     try {
