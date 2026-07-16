@@ -1429,10 +1429,16 @@ export const useApp = create<AppState>((set, get) => ({
     // same session. `syncDurableTabs` carries this into `persisted_tabs`
     // (the Rust merge honors a payload session_id on a tab's first write).
     const legacyUuid = task?.agent_session_ids?.[cli];
+    // Racers get their prompt injected with nobody at the keyboard, so the
+    // spawn must suppress startup update menus (UNATTENDED_SPAWN_ARGS in
+    // lib/agents); startRace records the cohort before mounting, so a race
+    // task's seed always sees itself here.
+    const raced = Object.values(useRace.getState().races).some(r => r.taskIds.includes(taskId));
     const tab: TerminalTab = {
       id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true,
       ...(isCustom && task?.custom_command ? { command: task.custom_command } : {}),
       ...(legacyUuid ? { sessionId: legacyUuid } : {}),
+      ...(raced ? { unattended: true } : {}),
     };
     set(state => ({
       // Merge rather than replace, seed tab FIRST — see the restore-path

@@ -92,6 +92,11 @@ export async function startRace(opts: {
     taskIds.push(id);
   }
 
+  // Record the cohort BEFORE anything mounts: the default-tab seed
+  // (app.ensureTabs) checks the race store to mark racer tabs unattended,
+  // so the record must exist by the time the first TaskView renders.
+  useRace.getState().start({ id: raceId, prompt: firstLine(prompt), taskIds, createdAt: Date.now() });
+
   await useApp.getState().loadAll();
   // Mount every racer (without stealing focus N times) so each TaskView seeds
   // its default agent tab and TerminalPane spawns its PTY. Focus the first.
@@ -102,7 +107,6 @@ export async function startRace(opts: {
   // Seed the shared prompt into each agent once it's input-ready.
   for (const id of taskIds) seedPromptWhenReady(id, prompt);
 
-  useRace.getState().start({ id: raceId, prompt: firstLine(prompt), taskIds, createdAt: Date.now() });
   useUI.getState().pushToast(`Race started: ${racers.length} agents on one prompt.`, "success");
   return taskIds;
 }
