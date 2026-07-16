@@ -1025,26 +1025,6 @@ export const currentTerminalStack = () => {
   return stack.replace(/\bmonospace\s*$/, '"JetBrains Mono", monospace');
 };
 
-/** Resolves once every loadable face in the current terminal stack is
- *  active (400 + 700, the two weights xterm uses). The bundled JetBrains
- *  Mono is a lazy woff2 @font-face — it only starts loading when text
- *  first uses the family — so anything that rasterizes terminal glyphs
- *  must not run before this settles; see awaitTerminalFonts
- *  (lib/terminalRenderer.ts) and the GH #70 gotcha. Installed system
- *  fonts never participate in FontFaceSet loading, so for them this
- *  resolves in a microtask. If load() rejects (a shorthand WebKit can't
- *  parse), fall back to the whole FontFaceSet settling rather than
- *  resolving before the faces are actually active. */
-export const terminalFontsSettled = (): Promise<unknown> => {
-  const stack = currentTerminalStack();
-  return Promise.all([
-    document.fonts.load(`400 1em ${stack}`),
-    document.fonts.load(`700 1em ${stack}`),
-  ])
-    .catch(() => document.fonts.ready)
-    .catch(() => {});
-};
-
 // Apply editor font at module load so the first paint uses the right font.
 applyEditorFont(initialEditorFont);
 
@@ -1056,10 +1036,3 @@ applyUiScale(initialUiScale);
 // dropdown open raced the scan and only showed the curated subset (the
 // native select popup won't take options added while it's open).
 availableMonoFontsAsync().catch(() => {});
-
-// Kick the bundled terminal font faces now instead of on first terminal
-// paint — @font-face loads are lazy, and any glyph the WebGL atlas caches
-// before the face activates keeps the fallback font's height (GH #70).
-// The panes' awaitTerminalFonts() spawn gate is the correctness
-// guarantee; this warm-up makes that gate resolve in a microtask.
-terminalFontsSettled();

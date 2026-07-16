@@ -39,7 +39,7 @@ declare global {
 const FAMILY = "JetBrains Mono";
 
 const makeFace = (url: string, weight: string): FontFace =>
-  new FontFace(FAMILY, `url(${url}) format("woff2")`, {
+  new FontFace(FAMILY, `url("${url}") format("woff2")`, {
     weight,
     style: "normal",
     display: "swap", // mirror the fontsource CSS: fallback text, not invisible, while loading
@@ -47,11 +47,20 @@ const makeFace = (url: string, weight: string): FontFace =>
 
 let ready = false;
 
+// Cap on the face loads. The woff2s are bundled local assets, so load() should
+// settle near-instantly; the cap exists because the catch below only covers a
+// load() that REJECTS, not one that never settles. awaitTerminalFonts gates
+// every PTY spawn on this promise, so a hung load without a cap would turn
+// "wrong glyph heights" into "no terminal ever spawns", app-wide. Timing out
+// resolves false, the same degradation as a failed load.
+const LOAD_CAP_MS = 5000;
+
 /** Resolves `true` once both owned latin faces (400 + 700) are genuinely
- *  loaded. Resolves `false` (never rejects, never hangs) if FontFace is
- *  unavailable or a load fails, so a font that will not load still lets the
- *  terminal attach its GPU renderer: a consistent fallback height beats the
- *  #70 mixed-height waves and beats a terminal stuck on the DOM renderer. */
+ *  loaded. Resolves `false` (never rejects, never hangs: loads are capped at
+ *  LOAD_CAP_MS) if FontFace is unavailable or a load fails, so a font that
+ *  will not load still lets the terminal attach its GPU renderer: a
+ *  consistent fallback height beats the #70 mixed-height waves and beats a
+ *  terminal stuck on the DOM renderer. */
 export const terminalFontReady: Promise<boolean> = (async () => {
   if (typeof FontFace === "undefined" || !document.fonts) {
     ready = true;
@@ -60,9 +69,12 @@ export const terminalFontReady: Promise<boolean> = (async () => {
   try {
     const faces = [makeFace(url400, "400"), makeFace(url700, "700")];
     faces.forEach(f => document.fonts.add(f));
-    await Promise.all(faces.map(f => f.load()));
+    const loaded = await Promise.race([
+      Promise.all(faces.map(f => f.load())).then(() => true),
+      new Promise<boolean>(r => window.setTimeout(() => r(false), LOAD_CAP_MS)),
+    ]);
     ready = true;
-    return true;
+    return loaded;
   } catch {
     ready = true;
     return false;
