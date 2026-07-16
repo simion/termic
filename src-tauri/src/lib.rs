@@ -815,15 +815,6 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Repo-root config dirs symlinked into each new worktree when the checkout
-/// didn't already produce them. Scoped to agent config: `.claude/` holds the
-/// project's subagents, skills, commands, and permissions, which an agent must
-/// see to work - and which are commonly gitignored (or built from symlinks to
-/// a shared dir), so `git worktree add` + files_to_copy leave them out of the
-/// worktree. An agent spawned there then loses every project-local agent, which
-/// is what breaks subagent fan-out for worktree tasks.
-const AGENT_CONFIG_LINKS: &[&str] = &[".claude"];
-
 /// Symlink `<repo>/<name>` into `<wt>/<name>` as an ABSOLUTE link, unless the
 /// worktree already has an entry there (a tracked, checked-out dir) or the repo
 /// has none. Absolute so it resolves from the worktree's own depth, and so any
@@ -2627,10 +2618,12 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
         copy_matching(&repo, &wt_path, pat);
     }
 
-    // Link the project's agent config (`.claude/`) into the worktree so agents
-    // spawned here keep their project subagents / skills / commands, instead of
-    // failing to fan out. Only when the checkout/copy didn't already provide it.
-    for name in AGENT_CONFIG_LINKS {
+    // Link the project's agent config dirs (`.claude/` and friends) into the
+    // worktree so agents spawned here keep their project subagents / skills /
+    // commands instead of failing to fan out. The list is user-configurable
+    // (Settings.worktree_symlink_paths); each entry is linked only when it
+    // exists in the repo and the checkout/copy didn't already provide it.
+    for name in &load_settings_inner().worktree_symlink_paths {
         link_config_dir(&repo, &wt_path, name);
     }
 
@@ -7229,6 +7222,14 @@ fn open_command(os: &str, target: &str) -> (&'static str, Vec<String>) {
 // wizard fires exactly once per install). Keep this struct additive — fields
 // are serde(default) so old files keep parsing as we grow it.
 
+/// Repo-root config dirs symlinked into each new worktree by default: the
+/// common per-project agent-config dirs (Claude Code, Gemini, Codex). Each is
+/// only linked when it actually exists in the repo, so listing one a given repo
+/// lacks is harmless. Just the pre-filled starting point - users edit the list.
+fn default_worktree_symlink_paths() -> Vec<String> {
+    vec![".claude".into(), ".gemini".into(), ".codex".into()]
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
@@ -7271,6 +7272,16 @@ pub struct Settings {
     /// clone stop cluttering the picker without deleting it.
     #[serde(default)]
     pub discovery_dismissed: Vec<String>,
+    /// Repo-root config dirs symlinked into each NEW worktree task (when the
+    /// checkout didn't already provide them). `.claude/` and friends hold a
+    /// project's subagents / skills / commands, which are commonly gitignored
+    /// (or built from symlinks to a shared dir) so `git worktree add` leaves
+    /// them out - an agent spawned there would otherwise lose all project-local
+    /// config. Pre-filled with the common agent dirs; edit or clear it in
+    /// Settings (an empty list disables the linking). Absent in old files means
+    /// pre-filled, not off, so upgraders keep the original behavior.
+    #[serde(default = "default_worktree_symlink_paths")]
+    pub worktree_symlink_paths: Vec<String>,
 }
 
 /// Whether the pre-create base fetch (GH #79) is enabled. Default-on: only an
@@ -7825,7 +7836,11 @@ pub(crate) fn load_settings_inner() -> Settings {
 }
 
 fn seeded_defaults() -> Settings {
-    Settings { agents: default_agents(), ..Settings::default() }
+    Settings {
+        agents: default_agents(),
+        worktree_symlink_paths: default_worktree_symlink_paths(),
+        ..Settings::default()
+    }
 }
 
 #[tauri::command]
@@ -8900,6 +8915,24 @@ mod tests {
         mkrepo(root.path(), "work/repo-c");
         mkrepo(root.path(), "oss/repo-d");
         assert_eq!(discovered_names(root.path()), ["repo-c", "repo-d"].map(String::from).into());
+    }
+
+    #[test]
+    fn worktree_symlink_paths_absent_vs_cleared() {
+        // Absent in an old settings.json -> pre-filled defaults, so upgraders
+        // keep the original .claude-linking behavior instead of silently losing it.
+        let absent: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.worktree_symlink_paths, default_worktree_symlink_paths());
+        assert!(!absent.worktree_symlink_paths.is_empty());
+        // Present-but-empty -> respected: a user who cleared the list to disable
+        // the linking must NOT get the defaults forced back on.
+        let cleared: Settings = serde_json::from_str(r#"{"worktree_symlink_paths":[]}"#).unwrap();
+        assert!(cleared.worktree_symlink_paths.is_empty());
+        // Explicit list -> used verbatim.
+        let custom: Settings = serde_json::from_str(r#"{"worktree_symlink_paths":[".claude",".foo"]}"#).unwrap();
+        assert_eq!(custom.worktree_symlink_paths, vec![".claude".to_string(), ".foo".to_string()]);
+        // New installs seed the pre-filled defaults too.
+        assert_eq!(seeded_defaults().worktree_symlink_paths, default_worktree_symlink_paths());
     }
 
     #[test]
