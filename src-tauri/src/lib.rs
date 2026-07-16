@@ -7481,13 +7481,12 @@ fn default_agents() -> Vec<Agent> {
             id: "codex".into(),
             display_name: "codex".into(),
             command: "codex".into(),
-            // Suppress the startup "Update available!" menu: it grabs the
-            // composer, so a prompt injected shortly after boot (run-prompt,
-            // broadcast, races) lands in the menu instead of the input box,
-            // and Enter selects "Update now". Official key, confirmed present
-            // since at least codex 0.144.x; `-c` is a global flag, so it
-            // composes with the `resume --last` subcommand placed after.
-            args: vec!["-c".into(), "check_for_update_on_startup=false".into()],
+            // No update-check suppression here: base args apply to EVERY
+            // spawn, and the startup "Update available!" menu is fine when a
+            // human is watching. Unattended spawns (a prompt is injected with
+            // nobody at the keyboard) compose it at spawn time instead — see
+            // UNATTENDED_SPAWN_ARGS in lib/agents.ts.
+            args: vec![],
             icon_id: "codex".into(),
             color: "#16a34a".into(),
             builtin: true,
@@ -7625,9 +7624,9 @@ fn default_agents() -> Vec<Agent> {
             id: "grok".into(),
             display_name: "grok".into(),
             command: "grok".into(),
-            // Skip the background update check; xAI's own headless docs
-            // recommend this flag for scripted/automated launches.
-            args: vec!["--no-auto-update".into()],
+            // Update-check suppression is unattended-spawn-only, composed in
+            // lib/agents.ts (UNATTENDED_SPAWN_ARGS), not a base arg.
+            args: vec![],
             icon_id: "grok".into(),
             color: "#cbd5e1".into(),
             builtin: true,
@@ -7803,17 +7802,24 @@ pub(crate) fn load_settings_inner() -> Settings {
             migrated = true;
         }
     }
-    // Migration: update-check suppression (codex's startup "Update available!"
-    // menu steals injected prompts; grok's background check is the same class).
-    // Same seed-if-empty rule as above: only builtin agents, only when the
-    // user hasn't set their own base args, so customized configs are left
-    // alone.
+    // Migration (reversal): two v0.22.x dev builds seeded update-check
+    // suppression into codex/grok BASE args, which silenced update prompts
+    // for attended spawns too. Suppression is unattended-spawn-only now
+    // (lib/agents.ts UNATTENDED_SPAWN_ARGS), so strip exactly the tokens
+    // those builds seeded. Users who typed the same args by hand lose them
+    // too; acceptable, the unattended path re-adds them where it matters.
     for a in s.agents.iter_mut().filter(|a| a.builtin) {
-        let Some(def) = defaults.iter().find(|d| d.id == a.id) else { continue; };
-        if a.args.is_empty() && !def.args.is_empty() {
-            a.args = def.args.clone();
-            migrated = true;
+        let before = a.args.len();
+        if a.id == "codex" {
+            if let Some(i) = a.args.windows(2).position(|w|
+                w[0] == "-c" && w[1] == "check_for_update_on_startup=false")
+            {
+                a.args.drain(i..i + 2);
+            }
+        } else if a.id == "grok" {
+            a.args.retain(|x| x != "--no-auto-update");
         }
+        if a.args.len() != before { migrated = true; }
     }
     // Persist the migration so jq / external tooling sees the fields,
     // and so subsequent loads don't re-do the same work. Best-effort:

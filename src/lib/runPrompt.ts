@@ -68,6 +68,9 @@ function spawnAgentWithPrompt(taskId: string, prompt: Prompt, explicitCli?: stri
   s.addTab(taskId, {
     id: newTabId, type: "terminal", title: `${agentDisplayName(cli)} · ${prompt.title}`, cli,
     promptPendingTitle: prompt.title,
+    // Nobody is at the keyboard for this spawn: suppress startup update
+    // menus (UNATTENDED_SPAWN_ARGS) so they can't swallow the injection.
+    unattended: true,
   });
 
   // Wait for TerminalPane to spawn the PTY, then let the agent initialize
