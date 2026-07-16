@@ -4490,8 +4490,18 @@ pub struct TaskDiffSummary {
     pub untracked: usize,
 }
 
+/// Async + spawn_blocking (docs/ipc.md discipline): this runs several git
+/// subprocesses, one PER untracked file, and RaceCompare fires it for every
+/// racer at once when the N-up compare opens. Sync would serialize all of
+/// that on the main thread and freeze the UI.
 #[tauri::command]
-fn task_diff(id: String) -> Result<TaskDiffSummary, String> {
+async fn task_diff(id: String) -> Result<TaskDiffSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || task_diff_inner(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn task_diff_inner(id: String) -> Result<TaskDiffSummary, String> {
     let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
     let base = w.base_branch.clone();

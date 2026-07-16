@@ -8,7 +8,7 @@
 // branches + recording the cohort, and the poll -> settle -> inject timing
 // that seeds the shared prompt into each agent once its PTY is up.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/ipc", () => ({ taskCreate: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/runTabs", () => ({ launchSetupTab: vi.fn().mockResolvedValue(true) }));
@@ -23,9 +23,23 @@ import type { TerminalTab } from "@/lib/types";
 
 const createCalls = () => (taskCreate as unknown as { mock: { calls: any[][] } }).mock.calls;
 
+// Map-backed localStorage stub: Node's own experimental `localStorage`
+// global shadows happy-dom's on some setups and is unusable without
+// `--localstorage-file` (same issue documented in prefs.test.ts), so the
+// real global can't be relied on here.
+function fakeLocalStorage() {
+  const store = new Map<string, string>();
+  return {
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => { store.set(k, v); },
+    removeItem: (k: string) => { store.delete(k); },
+    clear: () => { store.clear(); },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  localStorage.clear();
+  vi.stubGlobal("localStorage", fakeLocalStorage());
   useRace.setState({ races: {} });
   useApp.setState({
     tabs: {}, activeTab: {}, activeTaskId: null,
@@ -35,6 +49,8 @@ beforeEach(() => {
     loadAll: async () => {},
   });
 });
+
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("race cohort store", () => {
   it("records a cohort, latestRace picks the newest, end removes it", () => {
