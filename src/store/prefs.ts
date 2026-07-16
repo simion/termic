@@ -54,6 +54,7 @@ const LS_SHORTCUTS     = "shortcutBindings";
 const LS_PANE_DIM      = "splitPaneDim";
 const LS_PANE_DIM_AMT  = "splitPaneDimAmount";
 const LS_UI_SCALE      = "uiScale";
+const LS_SHOW_ALL_FONTS = "showAllInstalledFonts";
 
 /** UI zoom bounds (percent). The whole webview is scaled via the CSS
  *  `zoom` property, so these are browser-zoom-style limits. */
@@ -388,8 +389,13 @@ let _familiesCache: string[] | null = null;
 /** Returns the curated entries whose font is actually installed, MERGED with
  *  every monospace font Rust finds via font-kit. Fonts not in the curated map
  *  get an auto-generated entry (id = "system:<name>", label = family name,
- *  stack = family). Sorted for display (bundled default first, then A→Z). */
-export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTIONS> {
+ *  stack = family). Sorted for display (bundled default first, then A→Z).
+ *
+ *  `showAll` widens the extras source from the is_monospace() subset to the
+ *  full family catalog — the escape hatch for monos the detection misses
+ *  (see PrefsState.showAllInstalledFonts). Curated entries are still
+ *  installed-filtered either way; only the monospace wall moves. */
+export async function availableMonoFontsAsync(showAll = false): Promise<typeof MONO_FONT_OPTIONS> {
   let system = _systemFontsCache;
   let families = _familiesCache;
   if (!system || !families) {
@@ -408,7 +414,7 @@ export async function availableMonoFontsAsync(): Promise<typeof MONO_FONT_OPTION
       families = [];
     }
   }
-  return mergeFontOptions(MONO_FONT_OPTIONS, families, system);
+  return mergeFontOptions(MONO_FONT_OPTIONS, families, showAll ? families : system);
 }
 
 /** Resolve a font id → CSS font-family stack, defaulting to JetBrains.
@@ -534,6 +540,12 @@ interface PrefsState {
   uiScale: number;
   /** Enable font ligatures (=>, !==, ...) in the editor. */
   codeLigatures: boolean;
+  /** List EVERY installed font family in the font pickers, not just the
+   *  is_monospace()-detected subset. OFF by default: the wall exists because
+   *  proportional fonts break terminal column math, but font-kit's monospace
+   *  detection misses some legitimate monos (unusual naming, missing OS/2
+   *  flags) and this is the escape hatch. */
+  showAllInstalledFonts: boolean;
   /** How a task row's tab list (its "agents") expands in the sidebar:
    *  - "chevron": only the chevron toggles. Row click just activates.
    *               No auto-expand. Default — most predictable.
@@ -585,6 +597,7 @@ interface PrefsState {
   /** Bump zoom by one step in either direction (for the Cmd +/- shortcuts). */
   nudgeUiScale:       (dir: 1 | -1) => void;
   setCodeLigatures:   (v: boolean) => void;
+  setShowAllInstalledFonts: (v: boolean) => void;
   /** Restore every Appearance-section pref (fonts, sizes, weight,
    *  letter-spacing, ligatures) to `APPEARANCE_DEFAULTS`. Theme is
    *  left alone — it's not part of the Appearance page. */
@@ -678,6 +691,7 @@ export const APPEARANCE_DEFAULTS = {
   editorFontSize:        13,
   uiScale:               100,
   codeLigatures:         true,
+  showAllInstalledFonts: false,
 } as const;
 
 const initialEditorFont   = lsGet(LS_EDITOR_FONT, APPEARANCE_DEFAULTS.editorFontId);
@@ -692,6 +706,7 @@ const initialTerminalCopyOnSelect  = lsGetBool(LS_TERMINAL_COPY_ON_SELECT, true)
 const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
 const initialUiScale      = clampUiScale(lsGetNum(LS_UI_SCALE, APPEARANCE_DEFAULTS.uiScale));
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
+const initialShowAllFonts = lsGetBool(LS_SHOW_ALL_FONTS, APPEARANCE_DEFAULTS.showAllInstalledFonts);
 const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
 const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
 const initialCompletionSound = readCompletionSoundEnabled();
@@ -760,6 +775,7 @@ export const usePrefs = create<PrefsState>(set => ({
   editorFontSize: initialEditorSize,
   uiScale: initialUiScale,
   codeLigatures: initialLigatures,
+  showAllInstalledFonts: initialShowAllFonts,
   taskExpandMode: initialTaskExpandMode,
   hideInactiveProjects: initialHideInactiveProjects,
   markdownDefaultView: initialMarkdownView,
@@ -829,6 +845,10 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_LIGATURES, v ? "1" : "0"); } catch {}
     set({ codeLigatures: v });
   },
+  setShowAllInstalledFonts: (v) => {
+    try { localStorage.setItem(LS_SHOW_ALL_FONTS, v ? "1" : "0"); } catch {}
+    set({ showAllInstalledFonts: v });
+  },
   resetAppearance: () => {
     // Route through the individual setters so each one's side
     // effects fire (localStorage write, applyEditorFont, clamps).
@@ -844,6 +864,7 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setEditorFontSize(d.editorFontSize);
     s.setUiScale(d.uiScale);
     s.setCodeLigatures(d.codeLigatures);
+    s.setShowAllInstalledFonts(d.showAllInstalledFonts);
   },
   setThemeMode: (m) => {
     // Picking a custom theme refreshes the first-paint cache so applyTheme
