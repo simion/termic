@@ -650,10 +650,15 @@ function BranchBar({ task, branch, dir, refresh }: {
 
   return (
     <div className="flex h-8 shrink-0 items-center border-b border-[var(--color-border-soft)] px-2">
-      <DropdownRoot>
+      {/* Load on OPEN, not on the trigger's onClick: Radix opens the menu on
+          pointerdown and its modal layer sets pointer-events:none on the rest
+          of the page before the mouse button is released, so with a REAL
+          mouse the trigger never receives the click and the load never ran
+          ("No local branches." forever). A programmatic .click() bypasses
+          hit-testing, which is why tests missed it. */}
+      <DropdownRoot onOpenChange={o => { if (o) loadBranches(); }}>
         <DropdownTrigger asChild>
           <button
-            onClick={loadBranches}
             disabled={switching || updating}
             title="Switch branch or update from the base (stashes and re-applies local changes)"
             className="flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12px] transition-colors hover:border-[var(--color-accent-soft)] disabled:opacity-50"
