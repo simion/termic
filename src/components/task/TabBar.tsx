@@ -29,16 +29,17 @@ const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 // runaway render loop. A shared empty array keeps the reference stable.
 const NO_CLOSED_TABS: ClosedTabEntry[] = [];
 
-/** Coarse "Nm ago" label for a closed-tab timestamp. Closed tabs are
- *  always recent (session-only list), so minute/hour granularity is
- *  enough — no need for History's day/week/month buckets. */
+/** Compact "10m" / "17h" / "2d" label for a closed-tab timestamp. Closed
+ *  tabs are always recent (session-only list), so minute/hour granularity
+ *  is enough — no need for History's day/week/month buckets. Terse on
+ *  purpose: it sits inline before the row's title, one row per line. */
 function relativeTime(iso: string): string {
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 /** "Resume" section rows — recently closed secondary agent tabs (see
@@ -52,14 +53,15 @@ function ResumeMenuItems({ entries, agents, onResume }: {
       {entries.map(entry => {
         const iconId = resolveIconId(entry.cli, agents);
         return (
-          <DropdownItem key={entry.id} onSelect={() => onResume(entry.id)}>
+          <DropdownItem key={entry.id} onSelect={() => onResume(entry.id)} className="items-center">
             <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
               <CliIcon cli={iconId} className="h-4 w-4" />
             </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate">{entry.title}</div>
-              <div className="text-[11px] text-[var(--color-fg-faint)]">{relativeTime(entry.closedAt)}</div>
-            </div>
+            {/* Fixed-width right-aligned age so the titles line up. */}
+            <span className="w-7 shrink-0 text-right text-[11px] tabular-nums text-[var(--color-fg-faint)]">
+              {relativeTime(entry.closedAt)}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{entry.title}</span>
           </DropdownItem>
         );
       })}
