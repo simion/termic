@@ -57,8 +57,8 @@ function ResumeMenuItems({ entries, agents, onResume }: {
             <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
               <CliIcon cli={iconId} className="h-4 w-4" />
             </span>
-            {/* Fixed-width right-aligned age so the titles line up. */}
-            <span className="w-7 shrink-0 text-right text-[11px] tabular-nums text-[var(--color-fg-faint)]">
+            {/* Fixed-width left-aligned age so the titles line up. */}
+            <span className="w-7 shrink-0 text-left text-[11px] tabular-nums text-[var(--color-fg-faint)]">
               {relativeTime(entry.closedAt)}
             </span>
             <span className="min-w-0 flex-1 truncate">{entry.title}</span>

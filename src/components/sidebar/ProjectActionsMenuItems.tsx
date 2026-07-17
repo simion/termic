@@ -321,9 +321,9 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
                 <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
                   <CliIcon cli={iconId} className="h-4 w-4" />
                 </span>
-                {/* Fixed-width right-aligned age (wide enough for a short
+                {/* Fixed-width left-aligned age (wide enough for a short
                     date like "Jul 3") so the titles line up. */}
-                <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-[var(--color-fg-faint)]">
+                <span className="w-10 shrink-0 text-left text-[11px] tabular-nums text-[var(--color-fg-faint)]">
                   {relativeArchivedTime(t.archived_at ?? t.created)}
                 </span>
                 <span className="min-w-0 flex-1 truncate">{t.name}</span>
