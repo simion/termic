@@ -10,14 +10,17 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-vi.mock("@/lib/ipc", () => ({ taskCreate: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@/lib/ipc", () => ({
+  taskCreate: vi.fn().mockResolvedValue(undefined),
+  taskSetYolo: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("@/lib/runTabs", () => ({ launchSetupTab: vi.fn().mockResolvedValue(true) }));
 vi.mock("@/lib/agentSend", () => ({ sendMessageToPty: vi.fn() }));
 
 import { useApp } from "@/store/app";
 import { useRace, latestRace, raceOf } from "@/store/race";
 import { startRace, suggestRaceName } from "@/lib/agentRace";
-import { taskCreate } from "@/lib/ipc";
+import { taskCreate, taskSetYolo } from "@/lib/ipc";
 import { sendMessageToPty } from "@/lib/agentSend";
 import type { TerminalTab } from "@/lib/types";
 
@@ -159,6 +162,37 @@ describe("startRace", () => {
     expect(branches).toEqual(["race/seo-try-2/claude-1", "race/seo-try-2/codex-1"]);
     expect(createCalls().map(c => c[0].name)).toEqual(["SEO pass: Claude #1", "SEO pass: Codex #1"]);
     expect(latestRace(useRace.getState().races)!.name).toBe("SEO pass");
+  });
+
+  // Unattended racers stall on permission prompts, so the dialog offers a
+  // sandbox pin (Enforce = YOLO auto-on at spawn, no task flag needed) and
+  // the dangerous no-cage YOLO (task.yolo set before anything mounts).
+  it("sandbox pins Enforce on every racer; yolo sets the task flag pre-mount", async () => {
+    await startRace({
+      projectId: "p1",
+      racers: [{ cli: "claude", n: 1 }, { cli: "codex", n: 1 }],
+      prompt: "do the thing",
+      sandbox: true,
+    });
+    for (const c of createCalls()) {
+      expect(c[0].sandbox_enabled).toBe(true);
+      expect(c[0].sandbox_mode).toBe("enforce");
+    }
+    expect(taskSetYolo).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    const ids = await startRace({
+      projectId: "p1",
+      racers: [{ cli: "claude", n: 1 }, { cli: "codex", n: 1 }],
+      prompt: "do the thing",
+      sandbox: false,
+      yolo: true,
+    });
+    for (const c of createCalls()) {
+      expect(c[0].sandbox_enabled).toBe(false);
+      expect(c[0].sandbox_mode).toBe("off");
+    }
+    for (const id of ids) expect(taskSetYolo).toHaveBeenCalledWith(id, true);
   });
 
   it("treats a blank or unsluggable name as absent (random-id branches, bare task names)", async () => {

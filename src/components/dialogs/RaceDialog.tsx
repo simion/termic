@@ -7,6 +7,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
+import { usePrefs } from "@/store/prefs";
+import { isSandboxEnforced } from "@/lib/types";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
@@ -36,6 +38,8 @@ export function RaceDialog() {
   const [nameEdited, setNameEdited] = useState(false);
   const [branchMid, setBranchMid] = useState("");
   const [branchEdited, setBranchEdited] = useState(false);
+  const [sandbox, setSandbox] = useState(false);
+  const [yolo, setYolo] = useState(false);
   const [busy, setBusy] = useState(false);
   // Worktree creation is sequential and 1-2s+ apiece, so a 4-agent race
   // keeps the dialog up for many seconds; this is what stops it reading
@@ -47,6 +51,13 @@ export function RaceDialog() {
     if (!open) return;
     setCounts({}); setPrompt(""); setName(""); setNameEdited(false);
     setBranchMid(""); setBranchEdited(false);
+    // Sandbox seeds from what a plain New Task in this project would get
+    // (project default, then the global default); YOLO always starts off.
+    const p = useApp.getState().projects.find(p => p.id === projectId);
+    setSandbox(p?.default_sandbox_mode
+      ? isSandboxEnforced(p.default_sandbox_mode)
+      : (!!p?.default_sandbox || usePrefs.getState().globalDefaultSandbox));
+    setYolo(false);
     setErr(null); setBusy(false); setProgress(null);
   }, [projectId, open]);
 
@@ -80,6 +91,10 @@ export function RaceDialog() {
         prompt: prompt.trim(),
         name: name.trim() || undefined,
         branch: branchMid.trim() || undefined,
+        sandbox,
+        // Under an enforced cage YOLO is auto-on at spawn; only the
+        // dangerous no-cage variant needs the task flag.
+        yolo: !sandbox && yolo,
         onProgress: (n, total) => setProgress({ n, total }),
       });
       close();
@@ -186,6 +201,46 @@ export function RaceDialog() {
           />
           <span className="shrink-0 text-[var(--color-fg-faint)]">/agent-n</span>
         </div>
+      </div>
+
+      {/* Racers get an injected prompt with nobody watching, so permission
+          prompts stall the whole race. Sandbox is the safe answer (YOLO
+          auto-on inside the cage); bare YOLO is the dangerous one and shows
+          red, same vocabulary as the sidebar's zap badge. */}
+      <div className="mt-3 flex items-center gap-5">
+        <label
+          title="Create every racer sandboxed (Enforce). Agents auto-approve inside the cage, so the race runs unattended without prompts."
+          className="flex cursor-pointer select-none items-center gap-2 text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+        >
+          <input
+            type="checkbox"
+            checked={sandbox}
+            onChange={e => setSandbox(e.target.checked)}
+            className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0"
+          />
+          Sandbox
+        </label>
+        <label
+          title={sandbox
+            ? "YOLO: auto-on (Enforcing). Inside the cage, skipping prompts is safe."
+            : "Skip permission prompts with NO sandbox: every racer runs unconfined. Same red zap as the sidebar badge."}
+          className={cn(
+            "flex items-center gap-2 text-[12.5px] select-none",
+            sandbox
+              ? "cursor-default text-[var(--color-fg-faint)]"
+              : "cursor-pointer text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+            !sandbox && yolo && "text-[var(--color-err)] hover:text-[var(--color-err)]",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={sandbox || yolo}
+            disabled={sandbox}
+            onChange={e => setYolo(e.target.checked)}
+            className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0 disabled:cursor-default"
+          />
+          YOLO{sandbox ? " (auto)" : ""}
+        </label>
       </div>
 
       {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
