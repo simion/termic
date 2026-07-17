@@ -20,18 +20,19 @@ import { GitBranch, GitBranchPlus, Link2, TerminalSquare, SquareChevronRight, Se
 import { cn } from "@/lib/utils";
 import type { ImportableWorktree } from "@/lib/types";
 
-/** Coarse relative label for an archived-task timestamp. Unlike the tab
- *  strip's Resume entries (always seconds/minutes old), a task can sit
- *  archived for a long time, so this scales from minutes up through a
- *  short date instead of capping at hours. */
+/** Compact "10m" / "17h" / "2d" label for an archived-task timestamp.
+ *  Unlike the tab strip's Resume entries (always seconds/minutes old), a
+ *  task can sit archived for a long time, so this scales up through a
+ *  short date instead of capping at hours. Terse on purpose: it sits
+ *  inline before the row's title, one row per line. */
 function relativeArchivedTime(iso: string): string {
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return `${days}d`;
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(iso));
 }
 
@@ -316,14 +317,16 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
                 } catch (err) {
                   console.error("task_restore failed:", err);
                 }
-              }}>
+              }} className="items-center">
                 <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>
                   <CliIcon cli={iconId} className="h-4 w-4" />
                 </span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate">{t.name}</div>
-                  <div className="text-[11px] text-[var(--color-fg-faint)]">{relativeArchivedTime(t.archived_at ?? t.created)}</div>
-                </div>
+                {/* Fixed-width right-aligned age (wide enough for a short
+                    date like "Jul 3") so the titles line up. */}
+                <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-[var(--color-fg-faint)]">
+                  {relativeArchivedTime(t.archived_at ?? t.created)}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{t.name}</span>
               </DropdownItem>
             );
           })}
