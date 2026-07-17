@@ -14,7 +14,7 @@
 // the settle, race store cohort = N taskIds). The prompt visibly landing in
 // each agent's input box needs eyes (hidden-pane timing probes fabricate).
 
-import { taskCreate } from "@/lib/ipc";
+import { taskCreate, taskSetYolo } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useRace } from "@/store/race";
 import { useUI } from "@/store/ui";
@@ -105,6 +105,14 @@ export async function startRace(opts: {
    *  dialog's Branch field. Slugified defensively here; empty or unsluggable
    *  falls back to the slugified name, then to the race id's first 8 chars. */
   branch?: string;
+  /** Explicit sandbox pin for every racer: true creates them Enforcing
+   *  (spawn treats the cage as YOLO auto-on, so permission prompts
+   *  self-approve INSIDE the sandbox), false pins the sandbox off.
+   *  Undefined leaves the project's default to the Rust fallback. */
+  sandbox?: boolean;
+  /** Dangerous YOLO without the cage: sets task.yolo on each racer BEFORE
+   *  anything mounts, so yolo_args land on the very first PTY spawn. */
+  yolo?: boolean;
   /** Fired just before racer `n` (1-based) of `total` starts creating its
    *  worktree. Worktree creation is the slow, sequential part of a launch
    *  (git worktree add + files_to_copy, 1-2s+ each on a chunky repo), so
@@ -136,7 +144,13 @@ export async function startRace(opts: {
       cli: r.cli,
       base_branch: null,
       branch: `race/${branchMid}/${slugify(r.cli)}-${r.n}`,
+      ...(opts.sandbox !== undefined
+        ? { sandbox_enabled: opts.sandbox, sandbox_mode: opts.sandbox ? "enforce" as const : "off" as const }
+        : {}),
     });
+    // Before loadAll/mount, so the tasks the frontend loads already carry
+    // yolo and the first spawn composes yolo_args in.
+    if (opts.yolo) await taskSetYolo(id, true);
     taskIds.push(id);
   }
 
