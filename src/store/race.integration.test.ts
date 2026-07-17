@@ -15,7 +15,7 @@ vi.mock("@/lib/runTabs", () => ({ launchSetupTab: vi.fn().mockResolvedValue(true
 vi.mock("@/lib/agentSend", () => ({ sendMessageToPty: vi.fn() }));
 
 import { useApp } from "@/store/app";
-import { useRace, latestRace, latestRaceFor } from "@/store/race";
+import { useRace, latestRace, raceOf } from "@/store/race";
 import { startRace, suggestRaceName } from "@/lib/agentRace";
 import { taskCreate } from "@/lib/ipc";
 import { sendMessageToPty } from "@/lib/agentSend";
@@ -67,18 +67,16 @@ describe("race cohort store", () => {
     expect(JSON.parse(localStorage.getItem("agentRaces")!).r1.taskIds).toEqual(["t1"]);
   });
 
-  // The board scopes to the active project via latestRaceFor: project A's
-  // race must not render over project B's tasks (the membership predicate is
-  // "live task in the project on screen").
-  it("latestRaceFor picks the newest race with a matching member, not the global newest", () => {
+  // The board's picker: the strip shows only on the racers themselves, so a
+  // race must not render over bystander tasks (same project or not).
+  it("raceOf finds the race containing a task, null for bystanders", () => {
     useRace.getState().start({ id: "rA", prompt: "a", taskIds: ["a1", "a2"], createdAt: 100 });
     useRace.getState().start({ id: "rB", prompt: "b", taskIds: ["b1"], createdAt: 200 });
-    const project = new Map([["a1", "pA"], ["a2", "pA"], ["b1", "pB"]]);
-    const inProject = (p: string) => (id: string) => project.get(id) === p;
 
-    expect(latestRaceFor(useRace.getState().races, inProject("pA"))?.id).toBe("rA");
-    expect(latestRaceFor(useRace.getState().races, inProject("pB"))?.id).toBe("rB");
-    expect(latestRaceFor(useRace.getState().races, inProject("pC"))).toBeNull();
+    expect(raceOf(useRace.getState().races, "a2")?.id).toBe("rA");
+    expect(raceOf(useRace.getState().races, "b1")?.id).toBe("rB");
+    expect(raceOf(useRace.getState().races, "bystander")).toBeNull();
+    expect(raceOf(useRace.getState().races, null)).toBeNull();
   });
 
   it("prune drops dead task ids and removes fully-dead races", () => {
