@@ -477,7 +477,7 @@ const captureArmedRef = useRef(false);
             setPathMenu({ x, y, candidates: matches, line: target.line, col: target.col });
           }
         })
-        .catch(() => {});
+        .catch(() => useUI.getState().pushToast("Couldn't list files to open that path", "error"));
     }
     const onActivate = (target: ClickTarget, x: number, y: number) => {
       if (target.kind === "url") openLink("capture")(target.uri);
@@ -2052,6 +2052,13 @@ const captureArmedRef = useRef(false);
           candidates={pathMenu.candidates}
           onPick={(path) => { openPathFile(path, pathMenu.line, pathMenu.col); setPathMenu(null); }}
           onClose={() => setPathMenu(null)}
+          onCloseAutoFocus={(e, picked) => {
+            // The anchor is an invisible, non-focusable div, so never let Radix
+            // return focus to it. On dismiss, hand focus back to the terminal;
+            // on a pick, leave it for the editor that just opened.
+            e.preventDefault();
+            if (!picked) termRef.current?.focus();
+          }}
         />
       )}
       {searchOpen && (

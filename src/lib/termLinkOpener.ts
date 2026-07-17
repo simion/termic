@@ -64,9 +64,14 @@ function osc8LinkAt(term: Terminal, absRow: number, col: number): string | null 
   }
 }
 
-/** URL or file-path reference at the mouse position, or null. URLs win: the
- *  URL scan runs before the path scan over the same click index. */
-function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): ClickTarget | null {
+interface ClickContext { absRow: number; col: number; text: string; clickIdx: number; }
+
+/** The clicked cell plus the LOGICAL line under it (soft-wrapped rows joined),
+ *  with the clicked cell's index into that line. translateToString(false)
+ *  keeps trailing spaces so column math stays aligned across rows. (Wide CJK
+ *  glyphs before the token can shift the index; accepted.) Null if the click
+ *  isn't over a cell. Shared by urlAt/pathAt so the join runs once. */
+function clickContext(term: Terminal, host: HTMLElement, ev: MouseEvent): ClickContext | null {
   const screen = host.querySelector(".xterm-screen") as HTMLElement | null;
   if (!screen) return null;
   const rect = screen.getBoundingClientRect();
@@ -75,16 +80,6 @@ function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): ClickTarget 
   const row = Math.floor((ev.clientY - rect.top) / (rect.height / term.rows));
   if (col < 0 || col >= term.cols || row < 0 || row >= term.rows) return null;
 
-  // OSC 8 first: if the clicked cell carries an explicit hyperlink, that
-  // beats any text-scrape guess.
-  const osc8 = osc8LinkAt(term, term.buffer.active.viewportY + row, col);
-  if (osc8) return { kind: "url", uri: osc8 };
-
-  // Reconstruct the LOGICAL line under the click (soft-wrapped rows joined),
-  // tracking the clicked cell's character index. translateToString(false)
-  // keeps trailing spaces so column math stays aligned across rows. (Wide
-  // CJK glyphs before the URL can shift the index; accepted — URLs and the
-  // text around them are overwhelmingly single-width.)
   const buf = term.buffer.active;
   const clickedLine = buf.viewportY + row;
   let start = clickedLine;
@@ -98,18 +93,30 @@ function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): ClickTarget 
     text += line.translateToString(false);
   }
   if (clickIdx < 0) return null;
+  return { absRow: clickedLine, col, text, clickIdx };
+}
 
+/** URL at the click: an OSC 8 hyperlink on the cell (explicit, so it beats any
+ *  text scrape), else a scraped http(s) URL. Null if neither. */
+function urlAt(term: Terminal, ctx: ClickContext): ClickTarget | null {
+  const osc8 = osc8LinkAt(term, ctx.absRow, ctx.col);
+  if (osc8) return { kind: "url", uri: osc8 };
   URL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = URL_RE.exec(text))) {
-    if (clickIdx >= m.index && clickIdx < m.index + m[0].length) {
+  while ((m = URL_RE.exec(ctx.text))) {
+    if (ctx.clickIdx >= m.index && ctx.clickIdx < m.index + m[0].length) {
       return { kind: "url", uri: m[0].replace(TRAILING_PUNCT_RE, "") };
     }
   }
+  return null;
+}
 
+/** File-path reference at the click, or null. */
+function pathAt(ctx: ClickContext): ClickTarget | null {
   PATH_TOKEN_RE_G.lastIndex = 0;
-  while ((m = PATH_TOKEN_RE_G.exec(text))) {
-    if (clickIdx >= m.index && clickIdx < m.index + m[0].length) {
+  let m: RegExpExecArray | null;
+  while ((m = PATH_TOKEN_RE_G.exec(ctx.text))) {
+    if (ctx.clickIdx >= m.index && ctx.clickIdx < m.index + m[0].length) {
       const { path, line, col } = parsePathToken(m[0].replace(TRAILING_PUNCT_RE, ""));
       return { kind: "path", path, line, col };
     }
@@ -122,6 +129,7 @@ export function attachCmdClickLinkOpener(
   term: Terminal,
   host: HTMLElement,
   onActivate: (target: ClickTarget, clientX: number, clientY: number) => void,
+  opts?: { urlsOnly?: boolean },
 ): () => void {
   // Armed between mousedown and the trailing click event so the whole
   // gesture is swallowed as one unit (mouse reporting never sees any of it,
@@ -131,7 +139,10 @@ export function attachCmdClickLinkOpener(
   function onDown(ev: MouseEvent) {
     armed = null;
     if (ev.button !== 0 || !(ev.metaKey || ev.ctrlKey)) return;
-    const target = linkAt(term, host, ev);
+    const ctx = clickContext(term, host, ev);
+    if (!ctx) return;
+    // URLs win over paths; the scratch shell (urlsOnly) never resolves paths.
+    const target = urlAt(term, ctx) ?? (opts?.urlsOnly ? null : pathAt(ctx));
     if (!target) return;
     armed = { target, x: ev.clientX, y: ev.clientY };
     ev.preventDefault();
@@ -174,8 +185,8 @@ export function registerPathLinkProvider(
       const y0 = bufferLineNumber - 1;
       let start = y0;
       while (start > 0 && buf.getLine(start)?.isWrapped) start--;
-      // Reconstruct the wrapped logical line (as in linkAt), tracking each
-      // row's start offset. Single-width assumption: wide CJK can shift it.
+      // Reconstruct the wrapped logical line (as in clickContext), tracking
+      // each row's start offset. Single-width assumption: wide CJK can shift it.
       let text = "";
       const rowStart: number[] = [];
       for (let ln = start; ln - start < 100; ln++) {
@@ -199,11 +210,12 @@ export function registerPathLinkProvider(
         const raw = m[0].replace(TRAILING_PUNCT_RE, "");
         if (!raw) continue;
         const s = toPos(m.index);
-        const e = toPos(m.index + raw.length);
+        // End on the last char (+1 -> 1-based inclusive), not one-past: a token
+        // ending on a soft wrap would otherwise land at col 0 of the next row.
+        const e = toPos(m.index + raw.length - 1);
         const { path, line, col } = parsePathToken(raw);
         links.push({
-          // end.x has no +1: xterm's 1-based end == the 0-based "one past last" column.
-          range: { start: { x: s.col + 1, y: s.row + 1 }, end: { x: e.col, y: e.row + 1 } },
+          range: { start: { x: s.col + 1, y: s.row + 1 }, end: { x: e.col + 1, y: e.row + 1 } },
           text: raw,
           activate: (event) => onActivate(path, line, col, event),
         });
