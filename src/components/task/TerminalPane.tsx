@@ -11,7 +11,9 @@ import { cn } from "@/lib/utils";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { attachCmdClickLinkOpener } from "@/lib/termLinkOpener";
+import { attachCmdClickLinkOpener, registerPathLinkProvider, type ClickTarget } from "@/lib/termLinkOpener";
+import { resolvePathClick } from "@/lib/pathMatch";
+import { TerminalPathMenu } from "@/components/task/TerminalPathMenu";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Osc52Base64 } from "@/lib/osc52";
@@ -121,6 +123,15 @@ export function TerminalPane({ task, tab, active }: Props) {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [pathMenu, setPathMenu] = useState<{ x: number; y: number; candidates: string[]; line?: number; col?: number } | null>(null);
+  const openPathFile = useCallback((path: string, line?: number, col?: number) => {
+    useApp.getState().openPreviewTab(task.id, {
+      type: "edit",
+      path,
+      title: path.split("/").pop() || path,
+      revealAt: line ? { line, col } : undefined,
+    });
+  }, [task.id]);
   const unlistenDataRef = useRef<(() => void) | null>(null);
   const unlistenExitRef = useRef<(() => void) | null>(null);
   const ptyRef = useRef<string | null>(null);
@@ -444,6 +455,10 @@ const captureArmedRef = useRef(false);
     term.loadAddon(new WebLinksAddon((event, uri) => {
       if (event.metaKey || event.ctrlKey) openLink("addon")(uri);
     }));
+    // Hover-underline for file-path references, mirroring the URL addon above.
+    const disposePathLinks = registerPathLinkProvider(term, (path, line, col, event) => {
+      if (event.metaKey || event.ctrlKey) handlePathTarget({ path, line, col }, event.clientX, event.clientY);
+    });
     term.open(host);
     // GH #58: when the agent TUI enables xterm mouse reporting, the modified
     // click is consumed by the mouse pipeline before the addon's activation
@@ -451,7 +466,24 @@ const captureArmedRef = useRef(false);
     // sees the gesture first, resolves the URL from the buffer itself, and
     // swallows the click so nothing double-fires. Must attach AFTER
     // term.open (it reads .xterm-screen geometry).
-    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, openLink("capture"));
+    // GH #117: the same opener also resolves file-path references.
+    function handlePathTarget(target: { path: string; line?: number; col?: number }, x: number, y: number) {
+      ipc.taskListFilesForFinder(task.id)
+        .then(files => {
+          const matches = resolvePathClick(files, target.path);
+          if (matches.length === 1) {
+            openPathFile(matches[0], target.line, target.col);
+          } else {
+            setPathMenu({ x, y, candidates: matches, line: target.line, col: target.col });
+          }
+        })
+        .catch(() => useUI.getState().pushToast("Couldn't list files to open that path", "error"));
+    }
+    const onActivate = (target: ClickTarget, x: number, y: number) => {
+      if (target.kind === "url") openLink("capture")(target.uri);
+      else handlePathTarget(target, x, y);
+    };
+    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, onActivate);
     termRef.current = term;
     fitRef.current = fit;
 
@@ -1612,6 +1644,7 @@ const captureArmedRef = useRef(false);
       ro.disconnect();
       disposeCopyOnSelect();
       disposeLinkOpener();
+      disposePathLinks.dispose();
       unregisterDrop();
       disposeImeBridge();
       unlistenDataRef.current?.();
@@ -2012,6 +2045,22 @@ const captureArmedRef = useRef(false);
         />
       )}
       <div ref={hostRef} className="min-h-0 flex-1 bg-[var(--color-bg)]" />
+      {pathMenu && (
+        <TerminalPathMenu
+          x={pathMenu.x}
+          y={pathMenu.y}
+          candidates={pathMenu.candidates}
+          onPick={(path) => { openPathFile(path, pathMenu.line, pathMenu.col); setPathMenu(null); }}
+          onClose={() => setPathMenu(null)}
+          onCloseAutoFocus={(e, picked) => {
+            // The anchor is an invisible, non-focusable div, so never let Radix
+            // return focus to it. On dismiss, hand focus back to the terminal;
+            // on a pick, leave it for the editor that just opened.
+            e.preventDefault();
+            if (!picked) termRef.current?.focus();
+          }}
+        />
+      )}
       {searchOpen && (
         <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 shadow-lg">
           <input
