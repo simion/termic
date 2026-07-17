@@ -144,6 +144,23 @@ describe("startRace", () => {
     expect(race.prompt).toBe("improve the SEO");
   });
 
+  // The dialog's Branch field: an explicit middle segment wins over the
+  // name's slug for branches, while the name still prefixes task names.
+  it("an explicit branch segment overrides the name slug for branches only", async () => {
+    await startRace({
+      projectId: "p1",
+      racers: [{ cli: "claude", n: 1 }, { cli: "codex", n: 1 }],
+      prompt: "improve the SEO",
+      name: "SEO pass",
+      branch: "Seo Try 2",
+    });
+
+    const branches = createCalls().map(c => c[0].branch as string);
+    expect(branches).toEqual(["race/seo-try-2/claude-1", "race/seo-try-2/codex-1"]);
+    expect(createCalls().map(c => c[0].name)).toEqual(["SEO pass: Claude #1", "SEO pass: Codex #1"]);
+    expect(latestRace(useRace.getState().races)!.name).toBe("SEO pass");
+  });
+
   it("treats a blank or unsluggable name as absent (random-id branches, bare task names)", async () => {
     await startRace({
       projectId: "p1",

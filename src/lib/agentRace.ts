@@ -101,6 +101,10 @@ export async function startRace(opts: {
    *  same-named race are NOT auto-suffixed: task_create fails and the dialog
    *  shows the error, same contract as the New Task dialog. */
   name?: string;
+  /** Optional branch middle segment (race/<this>/claude-1), editable in the
+   *  dialog's Branch field. Slugified defensively here; empty or unsluggable
+   *  falls back to the slugified name, then to the race id's first 8 chars. */
+  branch?: string;
   /** Fired just before racer `n` (1-based) of `total` starts creating its
    *  worktree. Worktree creation is the slow, sequential part of a launch
    *  (git worktree add + files_to_copy, 1-2s+ each on a chunky repo), so
@@ -109,11 +113,14 @@ export async function startRace(opts: {
 }): Promise<string[]> {
   const { projectId, racers, prompt } = opts;
   const raceId = crypto.randomUUID();
-  const slug = slugify(opts.name?.trim() ?? "");
-  // Tied together: a name that can't produce a branch segment is dropped
-  // everywhere, so task names never carry a name the branches don't.
-  const name = slug ? opts.name!.trim() : undefined;
-  const branchMid = slug || raceId.slice(0, 8);
+  const branchOverride = slugify(opts.branch?.trim() ?? "");
+  const nameTrim = opts.name?.trim() ?? "";
+  const nameSlug = slugify(nameTrim);
+  const branchMid = branchOverride || nameSlug || raceId.slice(0, 8);
+  // Tied together: a name that can't produce ANY branch segment (its own slug
+  // or an explicit override) is dropped everywhere, so task names never carry
+  // a name the branches don't.
+  const name = nameTrim && (nameSlug || branchOverride) ? nameTrim : undefined;
 
   const taskIds: string[] = [];
   // Sequential: `git worktree add` contends on the repo index, so N concurrent

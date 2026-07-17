@@ -34,6 +34,8 @@ export function RaceDialog() {
   const [prompt, setPrompt] = useState("");
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
+  const [branchMid, setBranchMid] = useState("");
+  const [branchEdited, setBranchEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   // Worktree creation is sequential and 1-2s+ apiece, so a 4-agent race
   // keeps the dialog up for many seconds; this is what stops it reading
@@ -44,6 +46,7 @@ export function RaceDialog() {
   useEffect(() => {
     if (!open) return;
     setCounts({}); setPrompt(""); setName(""); setNameEdited(false);
+    setBranchMid(""); setBranchEdited(false);
     setErr(null); setBusy(false); setProgress(null);
   }, [projectId, open]);
 
@@ -52,7 +55,10 @@ export function RaceDialog() {
   // branch field). Cleared = unnamed: branches fall back to the race id.
   const suggested = useMemo(() => suggestRaceName(prompt), [prompt]);
   useEffect(() => { if (!nameEdited) setName(suggested); }, [suggested, nameEdited]);
+  // The branch segment chains off the name with the same never-clobber rule:
+  // it follows slugify(name) until the user touches IT, then it's theirs.
   const slug = slugify(name.trim());
+  useEffect(() => { if (!branchEdited) setBranchMid(slug); }, [slug, branchEdited]);
 
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const canStart = total >= 2 && prompt.trim().length > 0 && !busy;
@@ -73,6 +79,7 @@ export function RaceDialog() {
         projectId, racers,
         prompt: prompt.trim(),
         name: name.trim() || undefined,
+        branch: branchMid.trim() || undefined,
         onProgress: (n, total) => setProgress({ n, total }),
       });
       close();
@@ -140,8 +147,8 @@ export function RaceDialog() {
       <div className="mt-3 flex items-center gap-2.5">
         <label
           htmlFor="race-name"
-          title="Names the race: branches become race/<name>/agent-n and tasks become <name>: Agent #n. Leave empty for an auto-generated id."
-          className="shrink-0 text-[12.5px] text-[var(--color-fg-dim)]"
+          title="Names the race: tasks become <name>: Agent #n. Leave empty for an auto-generated id."
+          className="w-14 shrink-0 text-[12.5px] text-[var(--color-fg-dim)]"
         >
           Name
         </label>
@@ -153,11 +160,32 @@ export function RaceDialog() {
           placeholder="optional"
           className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
         />
-        {slug && (
-          <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">
-            race/{slug}/…
-          </span>
-        )}
+      </div>
+      <div className="mt-2 flex items-center gap-2.5">
+        <label
+          htmlFor="race-branch"
+          title="The branches' middle segment: each racer gets race/<this>/agent-n. Leave empty for an auto-generated id."
+          className="w-14 shrink-0 text-[12.5px] text-[var(--color-fg-dim)]"
+        >
+          Branch
+        </label>
+        <div className="flex min-w-0 flex-1 items-center rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] focus-within:border-[var(--color-accent-soft)]">
+          <span className="shrink-0 text-[var(--color-fg-faint)]">race/</span>
+          <input
+            id="race-branch"
+            autoCorrect="off" autoCapitalize="off" autoComplete="off" spellCheck={false}
+            value={branchMid}
+            // Sanitize like slugify but WITHOUT trimming edge dashes, or a
+            // dash would vanish as it's typed. startRace slugifies fully.
+            onChange={e => {
+              setBranchMid(e.target.value.toLowerCase().replace(/[^a-z0-9-_]+/g, "-"));
+              setBranchEdited(true);
+            }}
+            placeholder="auto"
+            className="min-w-0 flex-1 bg-transparent text-[var(--color-fg)] outline-none"
+          />
+          <span className="shrink-0 text-[var(--color-fg-faint)]">/agent-n</span>
+        </div>
       </div>
 
       {err && <p className="mt-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
