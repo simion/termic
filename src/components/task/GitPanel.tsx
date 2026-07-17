@@ -578,9 +578,18 @@ function BranchBar({ task, branch, dir, refresh }: {
   const loadBranches = () => {
     if (loading) return;
     setLoading(true);
-    Promise.all([taskGitBranches(task.id, dir), taskGitUpdateInfo(task.id, dir)])
-      .then(([bs, i]) => { setBranches(bs); setInfo(i); })
-      .catch(e => pushToast(String(e), "error"))
+    // Settled independently: a task_git_update_info failure must not blank
+    // the branch list it happens to share a menu with (Promise.all did, and
+    // a binary predating the command rendered "No local branches." on a
+    // repo full of them). The update section is optional sugar, so its
+    // failure degrades silently to "no Update items"; the switcher is the
+    // menu's core and its failure gets the toast.
+    Promise.allSettled([taskGitBranches(task.id, dir), taskGitUpdateInfo(task.id, dir)])
+      .then(([bs, i]) => {
+        if (bs.status === "fulfilled") setBranches(bs.value);
+        else pushToast(String(bs.reason), "error");
+        setInfo(i.status === "fulfilled" ? i.value : null);
+      })
       .finally(() => setLoading(false));
   };
 
