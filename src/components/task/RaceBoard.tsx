@@ -56,7 +56,7 @@ export function RaceBoard() {
       >
         {race.name || race.prompt}
       </span>
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
+      <div className="termic-tabstrip flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         {racers.map(({ task, state }) => {
           const iconId = resolveIconId(task.cli, agents);
           const isActive = task.id === activeId;
