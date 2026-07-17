@@ -1,12 +1,12 @@
 // The Agent Race strip. While a race is live, a thin bar above the main area
-// shows every racer, its live work-state dot, and click-to-focus. This is the
-// "side by side" surface for Slice 1; the actual N-up diff / compare is a
-// later slice. Returns null when no race is active, so it costs nothing in the
-// common case.
+// shows every racer, its live work-state dot, and click-to-focus. Scoped to
+// the project the user is looking at: a race in project A must not render
+// over project B's tasks. Returns null when the active project has no race,
+// so it costs nothing in the common case.
 
 import { useMemo } from "react";
 import { useApp } from "@/store/app";
-import { useRace, latestRace } from "@/store/race";
+import { useRace, latestRaceFor } from "@/store/race";
 import { useUI } from "@/store/ui";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,20 @@ export function RaceBoard() {
   const setActiveTask = useApp(s => s.setActiveTask);
   const openCompare = useUI(s => s.openRaceCompare);
 
-  const race = useMemo(() => latestRace(races), [races]);
+  // Latest race in the ACTIVE task's project only. Race records carry no
+  // projectId (and persisted ones predate the idea), so membership is derived
+  // from the cohort's live tasks.
+  const activeProjectId = useMemo(
+    () => tasks.find(t => t.id === activeId)?.project_id,
+    [tasks, activeId],
+  );
+  const race = useMemo(() => {
+    if (!activeProjectId) return null;
+    return latestRaceFor(races, id => {
+      const t = tasks.find(t => t.id === id);
+      return !!t && !t.archived && t.project_id === activeProjectId;
+    });
+  }, [races, tasks, activeProjectId]);
 
   const racers = useMemo(() => {
     if (!race) return [];

@@ -99,3 +99,18 @@ export function latestRace(races: RaceMap): Race | null {
   for (const r of Object.values(races)) if (!best || r.createdAt > best.createdAt) best = r;
   return best;
 }
+
+/** The most-recent race with at least one cohort member accepted by
+ *  `isMember`, or null. The board passes "live task in the project on
+ *  screen": unscoped, the newest race would render over every OTHER
+ *  project's main area too. A predicate rather than a task list keeps this
+ *  store free of app imports; races predate a projectId field, so project
+ *  membership is derived from the cohort's tasks (which also covers races
+ *  persisted before scoping existed). */
+export function latestRaceFor(races: RaceMap, isMember: (taskId: string) => boolean): Race | null {
+  let best: Race | null = null;
+  for (const r of Object.values(races)) {
+    if ((!best || r.createdAt > best.createdAt) && r.taskIds.some(isMember)) best = r;
+  }
+  return best;
+}

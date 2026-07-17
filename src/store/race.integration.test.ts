@@ -15,7 +15,7 @@ vi.mock("@/lib/runTabs", () => ({ launchSetupTab: vi.fn().mockResolvedValue(true
 vi.mock("@/lib/agentSend", () => ({ sendMessageToPty: vi.fn() }));
 
 import { useApp } from "@/store/app";
-import { useRace, latestRace } from "@/store/race";
+import { useRace, latestRace, latestRaceFor } from "@/store/race";
 import { startRace, suggestRaceName } from "@/lib/agentRace";
 import { taskCreate } from "@/lib/ipc";
 import { sendMessageToPty } from "@/lib/agentSend";
@@ -65,6 +65,20 @@ describe("race cohort store", () => {
   it("persists to localStorage so a race survives restart", () => {
     useRace.getState().start({ id: "r1", prompt: "a", taskIds: ["t1"], createdAt: 100 });
     expect(JSON.parse(localStorage.getItem("agentRaces")!).r1.taskIds).toEqual(["t1"]);
+  });
+
+  // The board scopes to the active project via latestRaceFor: project A's
+  // race must not render over project B's tasks (the membership predicate is
+  // "live task in the project on screen").
+  it("latestRaceFor picks the newest race with a matching member, not the global newest", () => {
+    useRace.getState().start({ id: "rA", prompt: "a", taskIds: ["a1", "a2"], createdAt: 100 });
+    useRace.getState().start({ id: "rB", prompt: "b", taskIds: ["b1"], createdAt: 200 });
+    const project = new Map([["a1", "pA"], ["a2", "pA"], ["b1", "pB"]]);
+    const inProject = (p: string) => (id: string) => project.get(id) === p;
+
+    expect(latestRaceFor(useRace.getState().races, inProject("pA"))?.id).toBe("rA");
+    expect(latestRaceFor(useRace.getState().races, inProject("pB"))?.id).toBe("rB");
+    expect(latestRaceFor(useRace.getState().races, inProject("pC"))).toBeNull();
   });
 
   it("prune drops dead task ids and removes fully-dead races", () => {
