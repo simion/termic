@@ -138,5 +138,8 @@ export function StateDot({ state }: { state: WorkDot }) {
       />
     );
   }
-  return <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--color-fg-faint)]" title="Idle" />;
+  // Hollow ring, NOT a filled dot: a small filled bullet on a tab-shaped
+  // chip reads as the universal "modified, unsaved" marker. An empty ring
+  // reads "not started", which is what idle means here.
+  return <span className="h-2 w-2 shrink-0 rounded-full border border-[var(--color-fg-faint)]" title="Idle" />;
 }
