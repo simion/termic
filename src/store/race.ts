@@ -100,17 +100,16 @@ export function latestRace(races: RaceMap): Race | null {
   return best;
 }
 
-/** The most-recent race with at least one cohort member accepted by
- *  `isMember`, or null. The board passes "live task in the project on
- *  screen": unscoped, the newest race would render over every OTHER
- *  project's main area too. A predicate rather than a task list keeps this
- *  store free of app imports; races predate a projectId field, so project
- *  membership is derived from the cohort's tasks (which also covers races
- *  persisted before scoping existed). */
-export function latestRaceFor(races: RaceMap, isMember: (taskId: string) => boolean): Race | null {
+/** The race whose cohort contains `taskId`, or null. The board's picker: the
+ *  strip is race chrome, shown ONLY on the racers themselves, never on
+ *  bystander tasks (a race in project A once rendered over every project's
+ *  main area). Cohorts don't overlap in practice; if one ever did, the
+ *  newest race wins. */
+export function raceOf(races: RaceMap, taskId: string | null): Race | null {
+  if (!taskId) return null;
   let best: Race | null = null;
   for (const r of Object.values(races)) {
-    if ((!best || r.createdAt > best.createdAt) && r.taskIds.some(isMember)) best = r;
+    if ((!best || r.createdAt > best.createdAt) && r.taskIds.includes(taskId)) best = r;
   }
   return best;
 }
