@@ -24,9 +24,45 @@ import type { Terminal, ILink, IDisposable } from "@xterm/xterm";
 const URL_RE = /https?:\/\/[^\s"'`<>{}|\\^\[\]]+/g;
 // File-path-like token: dir-qualified, or a bare filename with a letter-led
 // extension (so version strings like "1.2.3" don't match), plus optional
-// trailing :line[:col].
-export const PATH_TOKEN_RE = /(?:(?:[\w.-]+\/)+[\w.-]+|[\w.-]+\.[A-Za-z]\w{0,9})(?::\d+(?::\d+)?)?/;
-const PATH_TOKEN_RE_G = new RegExp(PATH_TOKEN_RE.source, "g");
+// trailing :line[:col]. `@` is a valid path char so retina assets
+// (`logo@2x.png`) and scoped packages (`@types/node`) resolve; the cost is a
+// bare `user@host` email underlining and resolving to nothing (harmless).
+// Each segment run is bounded ({1,255}, the max filename length) so a long
+// slash-less/dot-less blob (base64, a hash) can't drive the regex into O(n^2)
+// backtracking and stall the hover-underline pass.
+export const PATH_TOKEN_RE = /(?:(?:[\w.@-]{1,255}\/)+[\w.@-]{1,255}|[\w.@-]{1,255}\.[A-Za-z]\w{0,9})(?::\d+(?::\d+)?)?/;
+
+// Single scan that recognises three things so a fragment of one can't leak as
+// another (e.g. the `host/path.ts` inside a URL, or the two halves of an scp
+// remote, being mistaken for paths). Only the `path` group is ours:
+//   url  - a schemed URL. WebLinksAddon draws its own hover-underline, so we
+//          consume-and-skip it here to avoid a double underline. Scheme bounded
+//          ({0,15}) so it can't backtrack on a long slash-less run.
+//   junk - an scp-style `host:path` git remote: a colon glued straight onto a
+//          path char (not `:line:col`, not a `(path): prose` colon). Consumed
+//          so neither the host nor the path half underlines.
+//   path - PATH_TOKEN_RE.
+const PATH_SCAN_RE_G = new RegExp(
+  "(?<url>[a-zA-Z][\\w+.-]{0,15}:\\/\\/\\S+)" +
+  "|(?<junk>[\\w.@-]{1,255}:(?=[A-Za-z_~./])[\\w.@:/-]*)" +
+  "|(?<path>" + PATH_TOKEN_RE.source + ")",
+  "g",
+);
+
+/** File-path tokens in `text`, skipping URLs and scp `host:path` compounds.
+ *  Each result carries the token's start index so callers can hit-test a click
+ *  or build a hover range; `raw` has trailing prose punctuation trimmed. */
+export function scanPathTokens(text: string): { raw: string; index: number }[] {
+  PATH_SCAN_RE_G.lastIndex = 0;
+  const out: { raw: string; index: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = PATH_SCAN_RE_G.exec(text))) {
+    if (m.groups?.path === undefined) continue; // url / junk: not ours
+    const raw = m[0].replace(TRAILING_PUNCT_RE, "");
+    if (raw) out.push({ raw, index: m.index });
+  }
+  return out;
+}
 const TRAILING_LINE_COL_RE = /:(\d+)(?::(\d+))?$/;
 const TRAILING_PUNCT_RE = /[.,;:!?)\]}>'"]+$/;
 
@@ -113,11 +149,9 @@ function urlAt(term: Terminal, ctx: ClickContext): ClickTarget | null {
 
 /** File-path reference at the click, or null. */
 function pathAt(ctx: ClickContext): ClickTarget | null {
-  PATH_TOKEN_RE_G.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = PATH_TOKEN_RE_G.exec(ctx.text))) {
-    if (ctx.clickIdx >= m.index && ctx.clickIdx < m.index + m[0].length) {
-      const { path, line, col } = parsePathToken(m[0].replace(TRAILING_PUNCT_RE, ""));
+  for (const { raw, index } of scanPathTokens(ctx.text)) {
+    if (ctx.clickIdx >= index && ctx.clickIdx < index + raw.length) {
+      const { path, line, col } = parsePathToken(raw);
       return { kind: "path", path, line, col };
     }
   }
@@ -203,16 +237,12 @@ export function registerPathLinkProvider(
         return { row: start + i, col: offset - rowStart[i] };
       };
 
-      PATH_TOKEN_RE_G.lastIndex = 0;
       const links: ILink[] = [];
-      let m: RegExpExecArray | null;
-      while ((m = PATH_TOKEN_RE_G.exec(text))) {
-        const raw = m[0].replace(TRAILING_PUNCT_RE, "");
-        if (!raw) continue;
-        const s = toPos(m.index);
+      for (const { raw, index } of scanPathTokens(text)) {
+        const s = toPos(index);
         // End on the last char (+1 -> 1-based inclusive), not one-past: a token
         // ending on a soft wrap would otherwise land at col 0 of the next row.
-        const e = toPos(m.index + raw.length - 1);
+        const e = toPos(index + raw.length - 1);
         const { path, line, col } = parsePathToken(raw);
         links.push({
           range: { start: { x: s.col + 1, y: s.row + 1 }, end: { x: e.col + 1, y: e.row + 1 } },
