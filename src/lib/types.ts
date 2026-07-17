@@ -521,6 +521,36 @@ export interface CheckoutResult {
   conflicted: boolean;
 }
 
+/** How a Git-tab update brings the branch up to date. `pull` takes the
+ *  branch's own upstream; `merge` / `rebase` take the task's base branch. */
+export type UpdateMode = "pull" | "merge" | "rebase";
+
+/** Result of a Git-tab update. `target` is what we updated FROM (the upstream
+ *  for `pull`, the base branch otherwise). `stashed` = local work was
+ *  auto-stashed; git re-applies it when the op concludes, so on `conflicted`
+ *  it is still pending until the user finishes the merge or rebase. */
+export interface UpdateResult {
+  branch: string;
+  target: string;
+  stashed: boolean;
+  /** The merge / rebase itself stopped on conflicts and is left in progress. */
+  conflicted: boolean;
+  /** The update landed, but re-applying the auto-stashed local changes hit
+   *  conflicts. The stash is RETAINED - never report this as "restored". */
+  stash_conflicted: boolean;
+  up_to_date: boolean;
+}
+
+/** What the update menu can offer. `upstream` is empty until the branch has
+ *  been pushed (task branches are cut with --no-track). `base` is empty when
+ *  unresolvable, and equals `branch` for repo-root / adopted tasks whose
+ *  original base ref isn't known - both mean "no merge or rebase to offer". */
+export interface UpdateInfo {
+  branch: string;
+  upstream: string;
+  base: string;
+}
+
 export interface FileEntry {
   name: string;
   is_dir: boolean;
