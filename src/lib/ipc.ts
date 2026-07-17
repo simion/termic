@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
-  ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, FileEntry, Agent, RepoConfig,
+  ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
@@ -368,6 +368,13 @@ export const taskGitBranches = (id: string, dirName: string) =>
 /** Fork-style switch: stash local work, checkout `branch`, re-apply the stash. */
 export const taskGitCheckout = (id: string, dirName: string, branch: string) =>
   invoke<CheckoutResult>("task_git_checkout", { id, dirName, branch });
+/** Bring the branch up to date: from its upstream (`pull`) or from the task's
+ *  base branch (`merge` / `rebase`). Fetches first; auto-stashes local work. */
+export const taskGitUpdate = (id: string, dirName: string, mode: UpdateMode) =>
+  invoke<UpdateResult>("task_git_update", { id, dirName, mode });
+/** Branch + upstream + base for the update menu. Resolved on dropdown-open. */
+export const taskGitUpdateInfo = (id: string, dirName: string) =>
+  invoke<UpdateInfo>("task_git_update_info", { id, dirName });
 export const taskStage   = (id: string, dirName: string, paths: string[]) =>
   invoke<void>("task_stage", { id, dirName, paths });
 export const taskUnstage = (id: string, dirName: string, paths: string[]) =>

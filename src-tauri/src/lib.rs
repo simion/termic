@@ -1086,33 +1086,28 @@ fn git(args: &[&str], cwd: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Best-effort, time-bounded fetch of a single base ref before a new task
-/// branch is cut from it, so the branch starts from the latest remote commit
-/// instead of whatever the local `origin/*` happened to point at at the last
-/// manual fetch (GH #79). `base_full` is like "origin/develop": the leading
-/// path segment is the remote, the rest is the ref. A base with no remote
-/// prefix (a purely local branch) is left alone.
+/// Time-bounded fetch of a single ref. `remote_ref` is like "origin/develop":
+/// the leading path segment is the remote, the rest is the ref. A ref with no
+/// remote prefix (a purely local branch), or whose prefix isn't a configured
+/// remote, is a no-op `Ok` — there is nothing to fetch.
 ///
-/// This is NEVER fatal: auth failure, offline, or a dead/prompting remote just
-/// logs and returns, and create proceeds off the existing local ref (today's
-/// behavior). It is also hard-bounded — a hung transfer or credential prompt
-/// can't wedge task creation:
+/// Hard-bounded, so a hung transfer or credential prompt can't wedge the
+/// calling `spawn_blocking` thread:
 ///   - `GIT_TERMINAL_PROMPT=0` + batch-mode SSH with a short connect timeout
 ///     make a credential-less remote fail fast instead of blocking on a prompt.
 ///   - a wall-clock deadline SIGKILLs the child on expiry.
-/// Callers run on a `spawn_blocking` thread (see `task_create`), so the network
-/// wait never touches the UI thread.
-fn git_fetch_base(repo: &Path, base_full: &str) {
-    // Split "remote/ref". No '/' → a local branch, nothing to fetch. Verify
-    // the first segment is a configured remote so a local branch that merely
-    // contains a slash (e.g. "feature/x") isn't mistaken for "<remote>/x".
-    let Some((remote, refname)) = base_full.split_once('/') else { return };
+/// The plain `git()` helper has none of this, so every network git op must go
+/// through here rather than shelling out directly.
+fn fetch_ref(repo: &Path, remote_ref: &str) -> std::result::Result<(), String> {
+    // Verify the first segment is a configured remote so a local branch that
+    // merely contains a slash (e.g. "feature/x") isn't mistaken for "<remote>/x".
+    let Some((remote, refname)) = remote_ref.split_once('/') else { return Ok(()) };
     if remote.is_empty() || refname.is_empty() {
-        return;
+        return Ok(());
     }
     let remotes = git(&["remote"], repo).unwrap_or_default();
     if !remotes.lines().any(|r| r.trim() == remote) {
-        return;
+        return Ok(());
     }
 
     let mut cmd = Command::new("git");
@@ -1132,14 +1127,24 @@ fn git_fetch_base(repo: &Path, base_full: &str) {
     cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=10");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("git_fetch_base: spawn fetch {remote}/{refname}: {e}");
-            return;
-        }
+    let mut child = cmd.spawn().map_err(|e| format!("spawn fetch {remote}/{refname}: {e}"))?;
+
+    // Drain stderr on its own thread. Reading only after exit would let a
+    // chatty remote (SSH banner, verbose proxy rejection) fill the pipe
+    // buffer, block the child mid-write, and stall us to the deadline — the
+    // message we wanted would be lost to a bogus "timed out".
+    let stderr_reader = child.stderr.take().map(|mut s| {
+        thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            buf
+        })
+    });
+    let collect_err = |h: Option<thread::JoinHandle<String>>| -> String {
+        h.and_then(|h| h.join().ok()).unwrap_or_default().trim().to_string()
     };
 
     // Poll to a hard deadline; SIGKILL on expiry. 15s covers a normal
@@ -1149,26 +1154,43 @@ fn git_fetch_base(repo: &Path, base_full: &str) {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                if !status.success() {
-                    // Non-fatal: branch off the local ref as before.
-                    eprintln!("git_fetch_base: fetch {remote}/{refname} exited unsuccessfully ({status}); using local ref");
+                if status.success() {
+                    return Ok(());
                 }
-                return;
+                let err = collect_err(stderr_reader);
+                return Err(if err.is_empty() {
+                    format!("fetch {remote}/{refname} failed ({status})")
+                } else {
+                    format!("fetch {remote}/{refname} failed: {err}")
+                });
             }
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    eprintln!("git_fetch_base: fetch {remote}/{refname} timed out; using local ref");
-                    return;
+                    let err = collect_err(stderr_reader);
+                    return Err(if err.is_empty() {
+                        format!("fetch {remote}/{refname} timed out")
+                    } else {
+                        format!("fetch {remote}/{refname} timed out: {err}")
+                    });
                 }
                 thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => {
-                eprintln!("git_fetch_base: wait fetch {remote}/{refname}: {e}");
-                return;
-            }
+            Err(e) => return Err(format!("wait fetch {remote}/{refname}: {e}")),
         }
+    }
+}
+
+/// Best-effort fetch of a base ref before a new task branch is cut from it, so
+/// the branch starts from the latest remote commit instead of whatever the
+/// local `origin/*` happened to point at at the last manual fetch (GH #79).
+///
+/// NEVER fatal: auth failure, offline, or a dead/prompting remote just logs,
+/// and create proceeds off the existing local ref (today's behavior).
+fn git_fetch_base(repo: &Path, base_full: &str) {
+    if let Err(e) = fetch_ref(repo, base_full) {
+        eprintln!("git_fetch_base: {e}; using local ref");
     }
 }
 
@@ -5093,6 +5115,231 @@ async fn task_git_checkout(id: String, dir_name: String, branch: String) -> Resu
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum UpdateMode {
+    Pull,
+    Merge,
+    Rebase,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateResult {
+    branch: String,
+    /// What we updated FROM: the branch's own upstream for Pull, the task's
+    /// base branch for Merge / Rebase. Not interchangeable with `base` — a
+    /// toast that names the wrong one is a real UX bug.
+    target: String,
+    stashed: bool,
+    /// The merge / rebase itself stopped on conflicts and is left in progress
+    /// for the user to finish.
+    conflicted: bool,
+    /// The merge / rebase landed, but re-applying the autostashed local changes
+    /// collided with it. Mutually exclusive with `conflicted` (git holds the
+    /// autostash until the op concludes). The stash is RETAINED, so the user
+    /// must be told: a "restored" message here would be a lie.
+    stash_conflicted: bool,
+    up_to_date: bool,
+}
+
+#[derive(Serialize)]
+struct UpdateInfo {
+    branch: String,
+    /// Empty when the branch has no upstream. Task branches are cut with
+    /// `--no-track`, so this stays empty until the branch is first pushed.
+    upstream: String,
+    /// Empty when unresolvable, and may equal `branch` for repo-root or
+    /// adopted tasks whose original base ref isn't known.
+    base: String,
+}
+
+/// The base ref a task's repo should merge / rebase from. The host task keeps
+/// its own `base_branch`; a composition member doesn't record one, so it's
+/// joined from the owning project's member entry by `repo_path`. Unresolvable
+/// resolves to empty, which the caller refuses — better no menu item than a
+/// merge from the wrong ref.
+fn repo_base_branch(w: &Task, dir_name: &str, projects: &[Project]) -> String {
+    if dir_name.is_empty() {
+        return w.base_branch.clone();
+    }
+    let Some(m) = w.composition.iter().find(|m| m.dir_name == dir_name) else {
+        return String::new();
+    };
+    let Some(p) = projects.iter().find(|p| p.id == w.project_id) else {
+        return String::new();
+    };
+    if !m.repo_path.is_empty() {
+        if let Some(pm) = p.members.iter().find(|pm| pm.root_path == m.repo_path) {
+            return pm.base_branch.clone();
+        }
+    }
+    // Legacy compositions predate `repo_path` and referenced a Project by id.
+    if !m.project_id.is_empty() {
+        if let Some(lp) = projects.iter().find(|p| p.id == m.project_id) {
+            return lp.base_branch.clone();
+        }
+    }
+    String::new()
+}
+
+/// The ref an update pulls FROM, per mode. Errors carry the reason the user
+/// needs to act on, since these are the states where the op can't run at all.
+fn update_target(cwd: &Path, mode: UpdateMode, base: &str, branch: &str) -> Result<String, String> {
+    match mode {
+        UpdateMode::Pull => git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd)
+            .map(|s| s.trim().to_string())
+            .map_err(|_| format!("'{branch}' has no upstream yet. Push it first.")),
+        UpdateMode::Merge | UpdateMode::Rebase => {
+            if base.is_empty() {
+                return Err("no base branch recorded for this task.".into());
+            }
+            if base == branch {
+                return Err(format!("'{branch}' is its own base branch; nothing to merge."));
+            }
+            Ok(base.to_string())
+        }
+    }
+}
+
+/// True when the repo is sitting in a half-finished merge or rebase. Checked
+/// by state rather than by matching git's stderr, which is locale-dependent.
+fn merge_or_rebase_in_progress(cwd: &Path) -> bool {
+    if git(&["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd).is_ok() {
+        return true;
+    }
+    for d in &["rebase-merge", "rebase-apply"] {
+        if let Ok(p) = git(&["rev-parse", "--git-path", d], cwd) {
+            // In a worktree `--git-path` returns an ABSOLUTE path (the private
+            // .git/worktrees/<name>/ state), and `join` on an absolute arg
+            // discards the base — which is exactly what we want. Don't
+            // "fix" this to a manual concat.
+            if cwd.join(p.trim()).is_dir() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Paths git has left in an unmerged (`UU`, `AA`, ...) state.
+fn has_unresolved_conflicts(cwd: &Path) -> bool {
+    git(&["diff", "--name-only", "--diff-filter=U"], cwd)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Bring `branch` up to date from its upstream (Pull) or from `base`
+/// (Merge / Rebase). Split from the command so tests can drive it against a
+/// tempdir repo without app state.
+///
+/// `--autostash` rather than a hand-rolled stash push/pop: git holds the
+/// autostash outside `stash list` and applies it exactly when the op
+/// concludes, including after a `rebase --continue`. Hand-stashing around a
+/// conflicting rebase strands the user's work behind a half-finished op.
+///
+/// A conflict is reported, not aborted: every task has a terminal attached, so
+/// the user resolves in place. Auto-aborting would throw away a resolvable
+/// merge. Everything that CAN fail is checked before the tree is touched.
+fn git_update_repo(cwd: &Path, mode: UpdateMode, base: &str) -> Result<UpdateResult, String> {
+    let branch = git(&["branch", "--show-current"], cwd)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    if branch.is_empty() {
+        return Err("cannot update: detached HEAD.".into());
+    }
+    let target = update_target(cwd, mode, base, &branch)?;
+    // An explicit user action must surface a failed fetch, never silently
+    // report "up to date" off a stale local ref. `fetch_ref` no-ops on an
+    // unconfigured remote (correct for its best-effort create-path caller), so
+    // that case is caught here instead of inheriting the silence. A local
+    // branch that merely contains a slash ("feature/x") is not a remote ref,
+    // so resolve refs/heads/ first rather than splitting blindly.
+    let is_local_branch = git(&["rev-parse", "--verify", &format!("refs/heads/{target}")], cwd).is_ok();
+    if !is_local_branch {
+        if let Some((remote, _)) = target.split_once('/') {
+            let remotes = git(&["remote"], cwd).map_err(|e| e.to_string())?;
+            if !remotes.lines().any(|r| r.trim() == remote) {
+                return Err(format!(
+                    "remote '{remote}' is no longer configured, so '{target}' cannot be fetched. Re-add the remote or pick a different base branch."
+                ));
+            }
+        }
+    }
+    fetch_ref(cwd, &target)?;
+
+    // Tracked-only: that's exactly what autostash acts on. Untracked files
+    // don't block a merge or rebase.
+    let stashed = !git(&["status", "--porcelain", "--untracked-files=no"], cwd)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .is_empty();
+    let before = git(&["rev-parse", "HEAD"], cwd).map_err(|e| e.to_string())?;
+
+    let ran = match mode {
+        UpdateMode::Pull | UpdateMode::Merge => git(&["merge", "--autostash", &target], cwd),
+        UpdateMode::Rebase => git(&["rebase", "--autostash", &target], cwd),
+    };
+    let mut conflicted = false;
+    if let Err(e) = ran {
+        conflicted = merge_or_rebase_in_progress(cwd);
+        if !conflicted {
+            // Nothing started: bad ref, would-overwrite, etc. Tree untouched.
+            return Err(e.to_string());
+        }
+    }
+    // A conflicting autostash re-apply does NOT fail the op: git commits the
+    // merge / rebase, prints "Applying autostash resulted in conflicts", and
+    // exits 0 with markers in the tree and the stash retained. Detect it by
+    // state, or we would report the user's work as restored while it sits in a
+    // stash they were never told about.
+    let stash_conflicted = !conflicted && stashed && has_unresolved_conflicts(cwd);
+    let after = git(&["rev-parse", "HEAD"], cwd).map_err(|e| e.to_string())?;
+    Ok(UpdateResult {
+        branch,
+        target,
+        stashed,
+        conflicted,
+        stash_conflicted,
+        // A conflicted merge leaves HEAD unchanged but is not up to date.
+        up_to_date: !conflicted && before.trim() == after.trim(),
+    })
+}
+
+/// Merge / rebase a task's repo from its base, or pull it from its upstream.
+#[tauri::command]
+async fn task_git_update(id: String, dir_name: String, mode: UpdateMode) -> Result<UpdateResult, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<UpdateResult, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        let base = repo_base_branch(&w, &dir_name, &load_projects());
+        git_update_repo(&cwd, mode, &base)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What the Git tab's update menu can offer for this repo. Resolved lazily on
+/// dropdown-open rather than carried on the 4s-polled status payload — two
+/// extra subprocesses per repo per poll to serve a menu nobody opened.
+#[tauri::command]
+async fn task_git_update_info(id: String, dir_name: String) -> Result<UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<UpdateInfo, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        let branch = git(&["branch", "--show-current"], &cwd)
+            .map_err(|e| e.to_string())?
+            .trim()
+            .to_string();
+        let upstream = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], &cwd)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        Ok(UpdateInfo { branch, upstream, base: repo_base_branch(&w, &dir_name, &load_projects()) })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Resolve the git cwd for a stage/commit op: the host task path
 /// when `dir_name` is empty, otherwise the matching composition member.
 fn repo_cwd(w: &Task, dir_name: &str) -> Result<PathBuf, String> {
@@ -8756,7 +9003,7 @@ pub fn run() {
             task_grep_start, task_grep_cancel,
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_files, task_list_files_for_finder, task_send_diff_to_main,
-            task_changes, task_git_status, task_git_branches, task_git_checkout, task_stage, task_unstage, task_commit, task_discard,
+            task_changes, task_git_status, task_git_branches, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,
@@ -9691,6 +9938,276 @@ mod tests {
             .current_dir(repo)
             .output().unwrap();
         String::from_utf8_lossy(&out.stdout).trim().is_empty()
+    }
+
+    // ──────────────── git_update_repo (issue #101) ────────────────
+
+    /// Pin a committer identity in the repo's own config. `git_init_with_commit`
+    /// passes `-c user.*` per command, leaving the repo itself identity-less, so
+    /// a merge or rebase commit here would otherwise depend on the machine's
+    /// global git config. Worktrees share this config.
+    fn git_set_identity(repo: &Path) {
+        for args in [["config", "user.name", "Test"], ["config", "user.email", "t@t"]] {
+            let out = std::process::Command::new("git").args(args).current_dir(repo).output().unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        }
+    }
+
+    fn git_run(repo: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git").args(args).current_dir(repo).output().unwrap();
+        assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// Write `name` with `content` in `repo` and commit it.
+    fn git_commit_file(repo: &Path, name: &str, content: &str, msg: &str) {
+        fs::write(repo.join(name), content).unwrap();
+        git_run(repo, &["add", "."]);
+        git_run(repo, &["commit", "-m", msg]);
+    }
+
+    /// A main repo (identity pinned, one commit) plus a worktree on `task`.
+    /// Returns the two tempdirs (kept alive by the caller) and their paths.
+    fn update_fixture() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, PathBuf) {
+        let main_dir = tempdir().unwrap();
+        let wt_dir = tempdir().unwrap();
+        let main = main_dir.path().to_path_buf();
+        git_init_with_commit(&main);
+        git_set_identity(&main);
+        let wt = wt_dir.path().join("wt");
+        git_worktree_add(&main, &wt, "task");
+        (main_dir, wt_dir, main, wt)
+    }
+
+    #[test]
+    fn update_merge_brings_base_commits() {
+        let (_m, _w, main, wt) = update_fixture();
+        git_commit_file(&main, "from_base.txt", "base moved\n", "base work");
+        git_commit_file(&wt, "from_task.txt", "task work\n", "task work");
+
+        let r = git_update_repo(&wt, UpdateMode::Merge, "main").unwrap();
+        assert!(!r.conflicted);
+        assert!(!r.up_to_date);
+        assert_eq!(r.branch, "task");
+        assert_eq!(r.target, "main");
+        assert!(wt.join("from_base.txt").exists(), "base commit did not land in the worktree");
+    }
+
+    #[test]
+    fn update_merge_up_to_date_when_base_unmoved() {
+        let (_m, _w, _main, wt) = update_fixture();
+        let before = git_head(&wt);
+        let r = git_update_repo(&wt, UpdateMode::Merge, "main").unwrap();
+        assert!(r.up_to_date);
+        assert!(!r.conflicted);
+        assert_eq!(git_head(&wt), before, "up-to-date merge must not move HEAD");
+    }
+
+    #[test]
+    fn update_merge_conflict_leaves_merge_in_progress() {
+        let (_m, _w, main, wt) = update_fixture();
+        git_commit_file(&main, "base.txt", "base side\n", "base edit");
+        git_commit_file(&wt, "base.txt", "task side\n", "task edit");
+
+        let r = git_update_repo(&wt, UpdateMode::Merge, "main").unwrap();
+        assert!(r.conflicted, "conflicting merge must report conflicted, not error");
+        assert!(!r.up_to_date);
+        assert!(merge_or_rebase_in_progress(&wt), "merge must be left in progress for the user to resolve");
+    }
+
+    #[test]
+    fn update_rebase_replays_onto_moved_base() {
+        let (_m, _w, main, wt) = update_fixture();
+        git_commit_file(&main, "from_base.txt", "base moved\n", "base work");
+        git_commit_file(&wt, "from_task.txt", "task work\n", "task work");
+        let base_sha = git_rev(&main, "main");
+
+        let r = git_update_repo(&wt, UpdateMode::Rebase, "main").unwrap();
+        assert!(!r.conflicted);
+        assert!(!r.up_to_date);
+        let merge_base = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .args(["merge-base", "HEAD", &base_sha])
+                .current_dir(&wt)
+                .output().unwrap().stdout,
+        ).trim().to_string();
+        assert_eq!(merge_base, base_sha, "task branch must be replayed on top of the moved base");
+    }
+
+    #[test]
+    fn update_rebase_conflict_leaves_rebase_in_progress() {
+        let (_m, _w, main, wt) = update_fixture();
+        git_commit_file(&main, "base.txt", "base side\n", "base edit");
+        git_commit_file(&wt, "base.txt", "task side\n", "task edit");
+
+        let r = git_update_repo(&wt, UpdateMode::Rebase, "main").unwrap();
+        assert!(r.conflicted);
+        assert!(merge_or_rebase_in_progress(&wt), "rebase must be left in progress for the user to resolve");
+    }
+
+    /// The stash contract: a dirty tracked file survives a clean merge. Pins
+    /// the `--autostash` behavior the whole design rests on.
+    #[test]
+    fn update_autostash_preserves_dirty_tree_on_clean_merge() {
+        let (_m, _w, main, wt) = update_fixture();
+        // Base touches a DIFFERENT file, so the autostash re-apply can't conflict.
+        git_commit_file(&main, "from_base.txt", "base moved\n", "base work");
+        fs::write(wt.join("base.txt"), "uncommitted work in progress\n").unwrap();
+
+        let r = git_update_repo(&wt, UpdateMode::Merge, "main").unwrap();
+        assert!(r.stashed, "dirty tracked file must be reported as stashed");
+        assert!(!r.conflicted);
+        assert!(!r.up_to_date);
+        assert_eq!(
+            fs::read_to_string(wt.join("base.txt")).unwrap(),
+            "uncommitted work in progress\n",
+            "autostash must restore the dirty tree after the merge",
+        );
+        assert!(wt.join("from_base.txt").exists(), "base commit did not land");
+    }
+
+    /// The op itself can succeed (exit 0) while the autostash RE-APPLY
+    /// conflicts: git commits the merge, then reports "Applying autostash
+    /// resulted in conflicts. Your changes are safe in the stash." and exits 0,
+    /// leaving `UU` markers and a retained stash. Reporting that as a clean
+    /// update tells the user their work was restored when it is actually
+    /// parked in a stash they were never told about.
+    #[test]
+    fn update_reports_conflict_when_autostash_reapply_fails() {
+        let (_m, _w, main, wt) = update_fixture();
+        // Base and the dirty tree touch the SAME file, so the re-apply collides.
+        git_commit_file(&main, "base.txt", "base side\n", "base edit");
+        fs::write(wt.join("base.txt"), "local wip\n").unwrap();
+
+        let r = git_update_repo(&wt, UpdateMode::Merge, "main").unwrap();
+        assert!(r.stashed);
+        assert!(!r.conflicted, "the merge itself did not stop; it committed");
+        assert!(
+            r.stash_conflicted,
+            "a conflicting autostash re-apply must be reported, not passed off as restored",
+        );
+        assert!(
+            !git_is_clean(&wt),
+            "sanity: the re-apply really did leave conflict markers",
+        );
+    }
+
+    /// The real remote path: a configured file:// remote, so `fetch_ref`
+    /// actually shells out to `git fetch` instead of short-circuiting. Proves
+    /// the fetch is load-bearing - without it the merge would report
+    /// up-to-date off a stale `origin/main`.
+    #[test]
+    fn update_merge_fetches_configured_remote_before_merging() {
+        let origin_dir = tempdir().unwrap();
+        let clone_dir = tempdir().unwrap();
+        let origin = origin_dir.path();
+        git_init_with_commit(origin);
+        git_set_identity(origin);
+
+        let clone = clone_dir.path().join("clone");
+        let out = std::process::Command::new("git")
+            .args(["clone", "-q", &origin.to_string_lossy(), &clone.to_string_lossy()])
+            .output().unwrap();
+        assert!(out.status.success(), "clone failed: {}", String::from_utf8_lossy(&out.stderr));
+        git_set_identity(&clone);
+        git_run(&clone, &["checkout", "-q", "-b", "task"]);
+
+        // Move the origin AFTER cloning, so the clone's origin/main is stale.
+        git_commit_file(origin, "from_origin.txt", "remote moved\n", "origin work");
+        let stale = git_rev(&clone, "origin/main");
+
+        let r = git_update_repo(&clone, UpdateMode::Merge, "origin/main").unwrap();
+        assert!(!r.up_to_date, "a stale origin/main would falsely report up-to-date");
+        assert!(!r.conflicted);
+        assert_ne!(git_rev(&clone, "origin/main"), stale, "fetch must advance origin/main");
+        assert!(clone.join("from_origin.txt").exists(), "the remote commit did not land");
+    }
+
+    #[test]
+    fn update_rejects_removed_remote() {
+        let (_m, _w, _main, wt) = update_fixture();
+        // No remotes configured, so "origin/main" cannot be fetched. Silence
+        // here would merge a stale local-tracking ref.
+        let e = git_update_repo(&wt, UpdateMode::Merge, "origin/main").unwrap_err();
+        assert!(e.contains("no longer configured"), "unexpected error: {e}");
+    }
+
+    /// A local branch whose name contains a slash must not be mistaken for
+    /// "<remote>/<ref>" and rejected as a missing remote.
+    #[test]
+    fn update_merges_local_branch_containing_a_slash() {
+        let (_m, _w, main, wt) = update_fixture();
+        git_run(&main, &["branch", "feature/base"]);
+        git_run(&main, &["checkout", "-q", "feature/base"]);
+        git_commit_file(&main, "slashy.txt", "from slashy base\n", "slashy work");
+        git_run(&main, &["checkout", "-q", "main"]);
+
+        let r = git_update_repo(&wt, UpdateMode::Merge, "feature/base").unwrap();
+        assert!(!r.up_to_date);
+        assert!(wt.join("slashy.txt").exists(), "local slashed branch must merge, not error");
+    }
+
+    #[test]
+    fn update_rejects_detached_head() {
+        let (_m, _w, _main, wt) = update_fixture();
+        git_run(&wt, &["checkout", "--detach"]);
+        let before = git_head(&wt);
+        let e = git_update_repo(&wt, UpdateMode::Merge, "main").unwrap_err();
+        assert!(e.contains("detached HEAD"), "unexpected error: {e}");
+        assert_eq!(git_head(&wt), before);
+    }
+
+    /// Repo-root and adopted tasks record their own branch as the base.
+    #[test]
+    fn update_rejects_self_base() {
+        let (_m, _w, _main, wt) = update_fixture();
+        let e = git_update_repo(&wt, UpdateMode::Merge, "task").unwrap_err();
+        assert!(e.contains("its own base branch"), "unexpected error: {e}");
+    }
+
+    #[test]
+    fn update_rejects_missing_base_ref() {
+        let (_m, _w, _main, wt) = update_fixture();
+        let before = git_head(&wt);
+        // A base that is neither a local branch nor a remote ref: git refuses
+        // before touching the tree.
+        assert!(git_update_repo(&wt, UpdateMode::Merge, "no-such-branch").is_err());
+        assert_eq!(git_head(&wt), before);
+        assert!(git_is_clean(&wt), "a failed update must leave the tree untouched");
+    }
+
+    #[test]
+    fn update_pull_without_upstream_errors() {
+        let (_m, _w, _main, wt) = update_fixture();
+        // Task branches are cut --no-track, so there is no upstream until push.
+        let e = git_update_repo(&wt, UpdateMode::Pull, "main").unwrap_err();
+        assert!(e.contains("no upstream"), "unexpected error: {e}");
+    }
+
+    #[test]
+    fn repo_base_branch_resolves_member_via_project() {
+        let task = Task {
+            project_id: "p1".into(),
+            base_branch: "origin/main".into(),
+            composition: vec![TaskMember {
+                dir_name: "api".into(),
+                repo_path: "/repos/api".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let projects = vec![Project {
+            id: "p1".into(),
+            members: vec![ProjectMember {
+                root_path: "/repos/api".into(),
+                base_branch: "origin/develop".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+
+        assert_eq!(repo_base_branch(&task, "", &projects), "origin/main", "host uses the task's own base");
+        assert_eq!(repo_base_branch(&task, "api", &projects), "origin/develop", "member joins via repo_path");
+        assert_eq!(repo_base_branch(&task, "nope", &projects), "", "unknown member resolves to empty, not a wrong base");
     }
 
     #[test]

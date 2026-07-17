@@ -18,10 +18,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare, Loader2, GitBranch,
+  ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare, Loader2, GitBranch, GitMerge, RotateCw,
 } from "lucide-react";
-import type { Task, GitStatus, GitRepo, GitFile } from "@/lib/types";
-import { taskStage, taskUnstage, taskCommit, taskDiscard, taskGitBranches, taskGitCheckout } from "@/lib/ipc";
+import type { Task, GitStatus, GitRepo, GitFile, UpdateMode, UpdateInfo } from "@/lib/types";
+import { taskStage, taskUnstage, taskCommit, taskDiscard, taskGitBranches, taskGitCheckout, taskGitUpdate, taskGitUpdateInfo } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
@@ -31,7 +31,7 @@ import { bindingMatches, bindingGlyphs } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { Button } from "@/components/ui/Button";
-import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
+import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { Tip } from "@/components/ui/Tooltip";
 import { CopyPathItems } from "./CopyPathItems";
@@ -553,11 +553,15 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
   );
 }
 
-// Current-branch chip + switcher (issue #101). The chip shows the live branch
-// (from git status, so it's always the true HEAD even after a switch). Opening
-// the dropdown lazily lists local branches; picking one does a Fork-style
-// switch (stash local work, checkout, re-apply) via task_git_checkout. A pop
-// conflict is surfaced as an error toast, not swallowed.
+// Current-branch chip + switcher + update menu (issue #101). The chip shows the
+// live branch (from git status, so it's always the true HEAD even after a
+// switch). Opening the dropdown lazily lists local branches and resolves what
+// the update section can offer; picking a branch does a Fork-style switch
+// (stash local work, checkout, re-apply) via task_git_checkout. Update brings
+// the branch up to date from its upstream (pull) or the task's base (merge /
+// rebase) via task_git_update. Conflicts are surfaced as error toasts, not
+// swallowed - the op is left in progress for the user to resolve in the
+// terminal.
 function BranchBar({ task, branch, dir, refresh }: {
   task: Task;
   branch: string;
@@ -566,16 +570,54 @@ function BranchBar({ task, branch, dir, refresh }: {
 }) {
   const pushToast = useUI(s => s.pushToast);
   const [branches, setBranches] = useState<string[] | null>(null);
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [updating, setUpdating] = useState(false);
 
   const loadBranches = () => {
     if (loading) return;
     setLoading(true);
-    taskGitBranches(task.id, dir)
-      .then(setBranches)
+    Promise.all([taskGitBranches(task.id, dir), taskGitUpdateInfo(task.id, dir)])
+      .then(([bs, i]) => { setBranches(bs); setInfo(i); })
       .catch(e => pushToast(String(e), "error"))
       .finally(() => setLoading(false));
+  };
+
+  const runUpdate = (mode: UpdateMode) => {
+    if (updating || switching) return;
+    setUpdating(true);
+    taskGitUpdate(task.id, dir, mode)
+      .then(r => {
+        setBranches(null);   // stale after an update - reload on next open
+        setInfo(null);
+        refresh();
+        const verb = mode === "rebase" ? "Rebase" : "Merge";
+        if (r.conflicted) {
+          const finish = mode === "rebase"
+            ? "then run git rebase --continue."
+            : "then commit the result.";
+          pushToast(
+            `${verb} of ${r.branch} from ${r.target} hit conflicts. Resolve them in the terminal, ${finish}`,
+            "error",
+            { ttlMs: 8000 },
+          );
+        } else if (r.stash_conflicted) {
+          pushToast(
+            `Updated ${r.branch} from ${r.target}, but re-applying your local changes hit conflicts. Resolve them in the terminal; a copy is kept in git stash list.`,
+            "error",
+            { ttlMs: 8000 },
+          );
+        } else if (r.up_to_date) {
+          pushToast(`${r.branch} is already up to date with ${r.target}.`);
+        } else if (r.stashed) {
+          pushToast(`Updated ${r.branch} from ${r.target}. Local changes were auto-stashed and restored.`);
+        } else {
+          pushToast(`Updated ${r.branch} from ${r.target}.`);
+        }
+      })
+      .catch(e => pushToast(String(e), "error"))
+      .finally(() => setUpdating(false));
   };
 
   const switchTo = (target: string) => {
@@ -603,11 +645,11 @@ function BranchBar({ task, branch, dir, refresh }: {
         <DropdownTrigger asChild>
           <button
             onClick={loadBranches}
-            disabled={switching}
-            title="Switch branch (stashes and re-applies local changes)"
+            disabled={switching || updating}
+            title="Switch branch or update from the base (stashes and re-applies local changes)"
             className="flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12px] transition-colors hover:border-[var(--color-accent-soft)] disabled:opacity-50"
           >
-            {switching
+            {switching || updating
               ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--color-fg-faint)]" />
               : <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
             <span className="truncate font-mono text-[var(--color-fg)]">{branch || "detached HEAD"}</span>
@@ -619,15 +661,58 @@ function BranchBar({ task, branch, dir, refresh }: {
             <div className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">
               <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading branches…
             </div>
-          ) : !branches || branches.length === 0 ? (
-            <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">No local branches.</div>
           ) : (
-            branches.map(b => (
-              <DropdownItem key={b} onSelect={() => switchTo(b)} className="items-center">
-                <Check className={cn("h-3.5 w-3.5", b !== branch && "opacity-0")} />
-                <span className="truncate font-mono text-[12px]">{b}</span>
-              </DropdownItem>
-            ))
+            <>
+              {(() => {
+                // Pull needs an upstream (task branches are cut --no-track, so
+                // it appears only after a first push). Merge / rebase need a
+                // base that isn't the branch itself (repo-root and adopted
+                // tasks record their own branch as the base).
+                const canPull = !!info?.upstream;
+                const canBase = !!info?.base && info.base !== info.branch;
+                if (!canPull && !canBase) return null;
+                return (
+                  <>
+                    <DropdownLabel>Update</DropdownLabel>
+                    {canPull && (
+                      <DropdownItem onSelect={() => runUpdate("pull")} className="items-center">
+                        <ArrowDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
+                        <span className="truncate text-[12px]">
+                          Pull from <span className="font-mono">{info!.upstream}</span>
+                        </span>
+                      </DropdownItem>
+                    )}
+                    {canBase && (
+                      <>
+                        <DropdownItem onSelect={() => runUpdate("merge")} className="items-center">
+                          <GitMerge className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
+                          <span className="truncate text-[12px]">
+                            Merge <span className="font-mono">{info!.base}</span> into this branch
+                          </span>
+                        </DropdownItem>
+                        <DropdownItem onSelect={() => runUpdate("rebase")} className="items-center">
+                          <RotateCw className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
+                          <span className="truncate text-[12px]">
+                            Rebase onto <span className="font-mono">{info!.base}</span>
+                          </span>
+                        </DropdownItem>
+                      </>
+                    )}
+                    <DropdownSeparator />
+                  </>
+                );
+              })()}
+              {!branches || branches.length === 0 ? (
+                <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">No local branches.</div>
+              ) : (
+                branches.map(b => (
+                  <DropdownItem key={b} onSelect={() => switchTo(b)} className="items-center">
+                    <Check className={cn("h-3.5 w-3.5", b !== branch && "opacity-0")} />
+                    <span className="truncate font-mono text-[12px]">{b}</span>
+                  </DropdownItem>
+                ))
+              )}
+            </>
           )}
         </DropdownMenu>
       </DropdownRoot>
