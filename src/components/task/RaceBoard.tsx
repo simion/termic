@@ -4,7 +4,7 @@
 // task (same project or not) must not carry UI about work that isn't its
 // own. Returns null everywhere else, so it costs nothing in the common case.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useApp } from "@/store/app";
 import { useRace, raceOf } from "@/store/race";
 import { useUI } from "@/store/ui";
@@ -17,7 +17,6 @@ export type WorkDot = "idle" | "working" | "done";
 
 export function RaceBoard() {
   const races = useRace(s => s.races);
-  const end = useRace(s => s.end);
   const agents = useApp(s => s.agents);
   const tasks = useApp(s => s.tasks);
   const tabs = useApp(s => s.tabs);
@@ -26,6 +25,14 @@ export function RaceBoard() {
   const openCompare = useUI(s => s.openRaceCompare);
 
   const race = useMemo(() => raceOf(races, activeId), [races, activeId]);
+
+  // The X hides the strip, it must NOT delete the race: this board is the
+  // only entry to Compare, so ending the cohort on a misclick would forfeit
+  // the compare / adopt step after the agents did all the work. Session-only
+  // and in-memory on purpose (this component stays mounted in App.tsx for the
+  // app's lifetime): a relaunch brings the strip back, and races actually END
+  // via adopt (RaceCompare) or by archiving the racers (store prune).
+  const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set());
 
   const racers = useMemo(() => {
     if (!race) return [];
@@ -45,7 +52,7 @@ export function RaceBoard() {
   // 1-agent "race" has nothing to compare against).
   const canCompare = racers.length >= 2 && racers.every(r => r.state === "done");
 
-  if (!race || racers.length === 0) return null;
+  if (!race || hiddenIds.has(race.id) || racers.length === 0) return null;
 
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-3 py-1.5">
@@ -96,8 +103,8 @@ export function RaceBoard() {
         <span className="hidden sm:inline">Compare</span>
       </button>
       <button
-        onClick={() => end(race.id)}
-        title="Dismiss race"
+        onClick={() => setHiddenIds(prev => new Set(prev).add(race.id))}
+        title="Hide the race bar for this session (the race keeps running)"
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
       >
         <X className="h-3.5 w-3.5" />
