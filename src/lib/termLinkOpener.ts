@@ -11,13 +11,39 @@
 // from the buffer, open it, and swallow the gesture so neither xterm's mouse
 // reporting nor the addon double-handles it. The addon stays loaded for
 // hover-underline and as the opener when no TUI is intercepting.
+//
+// GH #117: the opener also resolves file-path references. Their hover-underline
+// can't reuse WebLinksAddon: its link computer runs every match through
+// `new URL()`, which throws for scheme-less paths and drops them.
+// registerPathLinkProvider below uses xterm's link API directly.
 
-import type { Terminal } from "@xterm/xterm";
+import type { Terminal, ILink, IDisposable } from "@xterm/xterm";
 
 // Slightly looser than the WebLinksAddon regex; trailing punctuation that
 // prose tends to glue onto a URL is trimmed after matching.
 const URL_RE = /https?:\/\/[^\s"'`<>{}|\\^\[\]]+/g;
+// File-path-like token: dir-qualified, or a bare filename with a letter-led
+// extension (so version strings like "1.2.3" don't match), plus optional
+// trailing :line[:col].
+export const PATH_TOKEN_RE = /(?:(?:[\w.-]+\/)+[\w.-]+|[\w.-]+\.[A-Za-z]\w{0,9})(?::\d+(?::\d+)?)?/;
+const PATH_TOKEN_RE_G = new RegExp(PATH_TOKEN_RE.source, "g");
+const TRAILING_LINE_COL_RE = /:(\d+)(?::(\d+))?$/;
 const TRAILING_PUNCT_RE = /[.,;:!?)\]}>'"]+$/;
+
+export type ClickTarget =
+  | { kind: "url"; uri: string }
+  | { kind: "path"; path: string; line?: number; col?: number };
+
+/** Split "src/file.ts:123:5" into { path, line, col }. */
+export function parsePathToken(full: string): { path: string; line?: number; col?: number } {
+  const lc = TRAILING_LINE_COL_RE.exec(full);
+  if (!lc) return { path: full };
+  return {
+    path: full.slice(0, lc.index),
+    line: parseInt(lc[1], 10),
+    col: lc[2] !== undefined ? parseInt(lc[2], 10) : undefined,
+  };
+}
 
 /** OSC 8 hyperlink at a buffer cell, or null. Anchor-text links ("Learn
  *  more") carry their URL only in the escape sequence, never in the visible
@@ -38,8 +64,9 @@ function osc8LinkAt(term: Terminal, absRow: number, col: number): string | null 
   }
 }
 
-/** URL in the terminal buffer at the mouse position, or null. */
-function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): string | null {
+/** URL or file-path reference at the mouse position, or null. URLs win: the
+ *  URL scan runs before the path scan over the same click index. */
+function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): ClickTarget | null {
   const screen = host.querySelector(".xterm-screen") as HTMLElement | null;
   if (!screen) return null;
   const rect = screen.getBoundingClientRect();
@@ -51,7 +78,7 @@ function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): string | nul
   // OSC 8 first: if the clicked cell carries an explicit hyperlink, that
   // beats any text-scrape guess.
   const osc8 = osc8LinkAt(term, term.buffer.active.viewportY + row, col);
-  if (osc8) return osc8;
+  if (osc8) return { kind: "url", uri: osc8 };
 
   // Reconstruct the LOGICAL line under the click (soft-wrapped rows joined),
   // tracking the clicked cell's character index. translateToString(false)
@@ -76,7 +103,15 @@ function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): string | nul
   let m: RegExpExecArray | null;
   while ((m = URL_RE.exec(text))) {
     if (clickIdx >= m.index && clickIdx < m.index + m[0].length) {
-      return m[0].replace(TRAILING_PUNCT_RE, "");
+      return { kind: "url", uri: m[0].replace(TRAILING_PUNCT_RE, "") };
+    }
+  }
+
+  PATH_TOKEN_RE_G.lastIndex = 0;
+  while ((m = PATH_TOKEN_RE_G.exec(text))) {
+    if (clickIdx >= m.index && clickIdx < m.index + m[0].length) {
+      const { path, line, col } = parsePathToken(m[0].replace(TRAILING_PUNCT_RE, ""));
+      return { kind: "path", path, line, col };
     }
   }
   return null;
@@ -86,33 +121,33 @@ function linkAt(term: Terminal, host: HTMLElement, ev: MouseEvent): string | nul
 export function attachCmdClickLinkOpener(
   term: Terminal,
   host: HTMLElement,
-  open: (uri: string) => void,
+  onActivate: (target: ClickTarget, clientX: number, clientY: number) => void,
 ): () => void {
   // Armed between mousedown and the trailing click event so the whole
   // gesture is swallowed as one unit (mouse reporting never sees any of it,
   // and the WebLinksAddon can't double-open).
-  let armedUri: string | null = null;
+  let armed: { target: ClickTarget; x: number; y: number } | null = null;
 
   function onDown(ev: MouseEvent) {
-    armedUri = null;
+    armed = null;
     if (ev.button !== 0 || !(ev.metaKey || ev.ctrlKey)) return;
-    const uri = linkAt(term, host, ev);
-    if (!uri) return;
-    armedUri = uri;
+    const target = linkAt(term, host, ev);
+    if (!target) return;
+    armed = { target, x: ev.clientX, y: ev.clientY };
     ev.preventDefault();
     ev.stopPropagation();
   }
   function onUp(ev: MouseEvent) {
-    if (!armedUri) return;
+    if (!armed) return;
     ev.preventDefault();
     ev.stopPropagation();
-    open(armedUri);
+    onActivate(armed.target, armed.x, armed.y);
     // Clear AFTER the browser dispatches the trailing click (same turn),
     // so onClick below still sees the armed state and swallows it.
-    setTimeout(() => { armedUri = null; }, 0);
+    setTimeout(() => { armed = null; }, 0);
   }
   function onClick(ev: MouseEvent) {
-    if (!armedUri) return;
+    if (!armed) return;
     ev.preventDefault();
     ev.stopPropagation();
   }
@@ -125,4 +160,55 @@ export function attachCmdClickLinkOpener(
     host.removeEventListener("mouseup", onUp, true);
     host.removeEventListener("click", onClick, true);
   };
+}
+
+/** Hover-underline for file-path references. Activation is a fallback; real
+ *  clicks go through the capture-phase opener above. */
+export function registerPathLinkProvider(
+  term: Terminal,
+  onActivate: (path: string, line: number | undefined, col: number | undefined, event: MouseEvent) => void,
+): IDisposable {
+  return term.registerLinkProvider({
+    provideLinks(bufferLineNumber, callback) {
+      const buf = term.buffer.active;
+      const y0 = bufferLineNumber - 1;
+      let start = y0;
+      while (start > 0 && buf.getLine(start)?.isWrapped) start--;
+      // Reconstruct the wrapped logical line (as in linkAt), tracking each
+      // row's start offset. Single-width assumption: wide CJK can shift it.
+      let text = "";
+      const rowStart: number[] = [];
+      for (let ln = start; ln - start < 100; ln++) {
+        const line = buf.getLine(ln);
+        if (!line || (ln !== start && !line.isWrapped)) break;
+        rowStart.push(text.length);
+        text += line.translateToString(false);
+      }
+      if (rowStart.length === 0) { callback(undefined); return; }
+
+      const toPos = (offset: number) => {
+        let i = 0;
+        while (i + 1 < rowStart.length && rowStart[i + 1] <= offset) i++;
+        return { row: start + i, col: offset - rowStart[i] };
+      };
+
+      PATH_TOKEN_RE_G.lastIndex = 0;
+      const links: ILink[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = PATH_TOKEN_RE_G.exec(text))) {
+        const raw = m[0].replace(TRAILING_PUNCT_RE, "");
+        if (!raw) continue;
+        const s = toPos(m.index);
+        const e = toPos(m.index + raw.length);
+        const { path, line, col } = parsePathToken(raw);
+        links.push({
+          // end.x has no +1: xterm's 1-based end == the 0-based "one past last" column.
+          range: { start: { x: s.col + 1, y: s.row + 1 }, end: { x: e.col, y: e.row + 1 } },
+          text: raw,
+          activate: (event) => onActivate(path, line, col, event),
+        });
+      }
+      callback(links.length ? links : undefined);
+    },
+  });
 }

@@ -112,7 +112,10 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
     // GH #58: mouse-reporting-proof Cmd/Ctrl+click opener — the user can run
     // a TUI in the scratch shell too (htop, an agent CLI by hand). See
     // TerminalPane / lib/termLinkOpener.
-    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, openLink("capture"));
+    const disposeLinkOpener = attachCmdClickLinkOpener(term, host, (target) => {
+      // URLs only; file-path open is a TerminalPane feature.
+      if (target.kind === "url") openLink("capture")(target.uri);
+    });
     // Korean/CJK IME (WKWebView). WebKit composes via textarea `input` events
     // (insertText + insertReplacementText), not compositionstart/end, and
     // xterm drops the replacement events — so input gets mangled (안녕 → ㅇㄴ).
