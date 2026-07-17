@@ -452,9 +452,9 @@ interface PrefsState {
    *  edit-tab closes are never gated by this; that confirm always fires. */
   confirmBeforeCloseAgentTab: boolean;
   /** Show a spinner on an agent's tab (and sidebar icon) WHILE it's
-   *  working. OFF by default — experimental. The "working" workState is
-   *  always tracked internally to drive work-done detection; this pref only
-   *  controls whether it's surfaced. Work detection can occasionally get a
+   *  working. ON by default (an explicit off in localStorage is kept). The
+   *  "working" workState is always tracked internally to drive work-done
+   *  detection; this pref only controls whether it's surfaced. Work detection can occasionally get a
    *  signal stuck, so TerminalPane has an absolute ceiling that force-clears
    *  a stale "working" state regardless of sender signals. */
   workingIndicator: boolean;
@@ -723,7 +723,7 @@ const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
 const initialConfirmCloseAgentTab = lsGetBool(LS_CONFIRM_CLOSE_AGENT_TAB, true);
 // OFF by default — experimental re-introduction of the work-in-progress
 // spinner. Opt in via Settings → General.
-const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, false);
+const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, true);
 // OFF by default (issue #69): closing the remote-image sandbox gap must not
 // silently start firing image requests for existing users.
 const initialLoadRemoteImages = lsGetBool(LS_LOAD_REMOTE_IMAGES, false);

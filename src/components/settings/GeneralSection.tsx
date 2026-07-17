@@ -283,7 +283,7 @@ export function GeneralSection() {
       <div className="border-t border-[var(--color-border-soft)] pt-6">
         <Toggle
           label="Work-in-progress indicator"
-          hint="Show a spinner on an agent's tab and sidebar icon while it's working. Experimental: it relies on work detection, which can occasionally misfire. A stuck spinner auto-clears after a few minutes."
+          hint="Show a spinner on an agent's tab and sidebar icon while it's working. On by default. Relies on work detection, which can occasionally misfire on noisy TUIs; a stuck spinner auto-clears after a few minutes."
           value={workingIndicator}
           onChange={setWorkingIndicator}
         />
