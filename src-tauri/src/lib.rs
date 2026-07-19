@@ -16,7 +16,7 @@
 //   BE → FE: emits "pty-exit://<id>" with payload = exit code (i32 or null)
 
 use anyhow::{anyhow, Context, Result};
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 extern crate libc;
 use serde::{Deserialize, Serialize};
@@ -1565,10 +1565,17 @@ fn pty_spawn(
     // The flusher coalesces those into ~8-16 events at 60 fps, cutting IPC
     // load by ~100× for large writes while adding ≤8 ms latency to interactive
     // responses (imperceptible in practice).
-    let pty_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    // The buffer is paired with a Condvar so the flusher (and the waiter
+    // below) BLOCK when there is nothing to do. The previous flusher looped
+    // `sleep(8ms)` unconditionally — 125 timer wakeups/s per PTY around the
+    // clock, even for a completely quiet terminal — which kept the CPU from
+    // ever reaching deep sleep. Now a quiet PTY costs zero wakeups.
+    let pty_buf: Arc<(Mutex<Vec<u8>>, Condvar)> =
+        Arc::new((Mutex::new(Vec::new()), Condvar::new()));
     let reader_done: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
-    // Reader thread: drain PTY bytes into the shared buffer.
+    // Reader thread: drain PTY bytes into the shared buffer and wake the
+    // flusher only when there is actually something to flush.
     let buf_r = pty_buf.clone();
     let done_r = reader_done.clone();
     let app_final = app.clone();
@@ -1580,28 +1587,54 @@ fn pty_spawn(
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    buf_r.lock().extend_from_slice(&buf[..n]);
+                    buf_r.0.lock().extend_from_slice(&buf[..n]);
+                    buf_r.1.notify_all();
                 }
             }
         }
         // Emit any bytes the flusher hasn't picked up yet, then signal done
         // so the waiter can fire pty-exit after all output is on the wire.
-        let remaining = std::mem::take(&mut *buf_r.lock());
+        let remaining = std::mem::take(&mut *buf_r.0.lock());
         if !remaining.is_empty() {
             let _ = app_final.emit(&format!("pty://{}", id_final), PtyChunk { data: remaining });
         }
-        done_r.store(true, Ordering::Release);
+        // Set `done` and notify UNDER the buffer mutex. The flusher and the
+        // waiter both check `done` while holding it, then park; a store
+        // without the lock can land exactly between a consumer's check and
+        // its wait(), so the notify hits nobody and the consumer parks
+        // forever (lost wakeup: pty-exit never fires, the slot never leaves
+        // the map). Taking the mutex forces the store to happen either
+        // before the consumer's check (it sees `done`, never parks) or after
+        // it parked (the notify reaches it). The final-data emit above must
+        // stay BEFORE this block so pty-exit can't overtake the last bytes.
+        {
+            let _b = buf_r.0.lock();
+            done_r.store(true, Ordering::Release);
+            buf_r.1.notify_all();
+        }
     });
 
-    // Flusher thread: drain the shared buffer and emit at most every 8 ms.
+    // Flusher thread: block until the reader signals fresh output, then
+    // sleep ONE 8 ms coalescing window (so bulk output still batches into
+    // few events), drain, emit. While the PTY is quiet this thread is
+    // parked on the condvar — no timer, no wakeups.
     let buf_f = pty_buf.clone();
     let done_f = reader_done.clone();
     let app_f = app.clone();
     thread::spawn(move || {
         let interval = Duration::from_millis(8);
         loop {
+            {
+                let mut b = buf_f.0.lock();
+                while b.is_empty() && !done_f.load(Ordering::Acquire) {
+                    buf_f.1.wait(&mut b);
+                }
+                if b.is_empty() {
+                    break; // reader done and its final flush already emitted
+                }
+            }
             thread::sleep(interval);
-            let data = std::mem::take(&mut *buf_f.lock());
+            let data = std::mem::take(&mut *buf_f.0.lock());
             if !data.is_empty() {
                 let _ = app_f.emit(&format!("pty://{}", id_r), PtyChunk { data });
             }
@@ -1620,6 +1653,7 @@ fn pty_spawn(
     let ws_for_waiter = args.task_id.clone();
     let pid_for_waiter = child_pid;
     let done_w = reader_done.clone();
+    let buf_w = pty_buf.clone();
     thread::spawn(move || {
         let status = child.wait().ok();
         let code = status.and_then(|s| i32::try_from(s.exit_code()).ok());
@@ -1627,8 +1661,15 @@ fn pty_spawn(
         // Wait for the reader to drain and emit all remaining PTY output
         // before firing pty-exit. Without this the frontend could process
         // exit before the last bytes arrive and tear down the listener.
-        while !done_w.load(Ordering::Acquire) {
-            thread::sleep(Duration::from_millis(1));
+        // Blocks on the same condvar the reader signals — the previous
+        // `sleep(1ms)` spin burned ~1000 wakeups/s, and if an orphaned
+        // grandchild kept the PTY slave open (reader never hits EOF) it
+        // spun forever, long after the pane was closed.
+        {
+            let mut b = buf_w.0.lock();
+            while !done_w.load(Ordering::Acquire) {
+                buf_w.1.wait(&mut b);
+            }
         }
         let _ = app_w.emit(&format!("pty-exit://{}", id_w), PtyExit { code });
         // Drop this PID from the sandbox's PID set so the path watcher
