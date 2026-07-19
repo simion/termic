@@ -2,8 +2,11 @@
 // scratch shell terminal on the bottom half so the user can run git/grep/etc.
 // without leaving the agent up top.
 //
-// Per-tab content stays mounted across tab switches (we toggle visibility
+// Per-tab content stays mounted across tab switches (we toggle `display`
 // instead of unmount) — terminals MUST keep their xterm instances alive.
+// display:none (NOT visibility:hidden) is load-bearing: xterm's renderer
+// only pauses on zero geometry, so a visibility-hidden terminal still runs
+// WebGL draws for every TUI repaint. See MainArea for the full story.
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Task, Tab, TerminalTab } from "@/lib/types";
@@ -331,7 +334,9 @@ export function TaskView({ task }: { task: Task }) {
                   {...attrs}
                   tabIndex={-1}
                   className="pointer-events-auto absolute overflow-hidden outline-none"
-                  style={{ ...style, visibility: visible ? "visible" : "hidden", zIndex: visible ? 1 : 0 }}
+                  // display:none, not visibility:hidden — pauses the hidden
+                  // tab's xterm/CodeMirror rendering (see file header).
+                  style={{ ...style, display: visible ? undefined : "none", zIndex: visible ? 1 : 0 }}
                   onMouseDown={() => {
                     const target = leaf ? leaf.id : mainLeafId;
                     if (target && splitActivePaneId !== target) setActivePaneId(task.id, target);
@@ -448,8 +453,8 @@ export function TaskView({ task }: { task: Task }) {
                 </div>
               </div>
               {/* Terminals: render each tab as an AuxTerminal kept mounted with
-                  visibility toggle, same as the main tabs — switching tabs must
-                  not respawn the shell. */}
+                  a display toggle, same as the main tabs — switching tabs must
+                  not respawn the shell, and hidden shells must not render. */}
               <div
                 className="relative min-h-0 flex-1"
                 // display:none keeps the AuxTerminals in the React tree (so
@@ -469,7 +474,7 @@ export function TaskView({ task }: { task: Task }) {
                     key={t.id}
                     data-tab-id={t.id}
                     className="absolute inset-0"
-                    style={{ visibility: t.id === activeBottom ? "visible" : "hidden", zIndex: t.id === activeBottom ? 1 : 0 }}
+                    style={{ display: t.id === activeBottom ? undefined : "none", zIndex: t.id === activeBottom ? 1 : 0 }}
                   >
                     <AuxTerminal
                       taskId={task.id}
