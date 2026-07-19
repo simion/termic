@@ -144,6 +144,15 @@ export function TerminalPane({ task, tab, active }: Props) {
   // timestamp is older than QUIET_MS, force `done`. More robust than
   // content-hash for TUIs that repaint status bars during/after work.
   const lastDataAtRef = useRef(0);
+  // Last time we wrote lastOutputAt into the store. The data handler
+  // coalesces that write to one per 500 ms: a streaming agent delivers up
+  // to ~125 chunks/s, and patching the tabs array per chunk re-rendered
+  // every tabs subscriber (TabBar, sidebar rows) at chunk rate — per
+  // terminal. Nothing in-app reads lastOutputAt at finer granularity
+  // (settled detection uses lastDataAtRef above); the write is kept, not
+  // deleted, because the automation bridge / e2e flows assert PTY
+  // liveness through it (.claude/skills/e2e).
+  const lastOutputPatchRef = useRef(0);
   // Scrollback line count over time. Real work GROWS the scrollback
   // (agent prints lines that scroll off). Status-bar ticks ("Cooking
   // for 5s"), cursor blinks, and in-place repaints do NOT — they
@@ -1402,7 +1411,10 @@ const captureArmedRef = useRef(false);
           oscSniffer?.(u8);
           const now = Date.now();
           lastDataAtRef.current = now;
-          patchTab(task.id, tab.id, { lastOutputAt: now });
+          if (now - lastOutputPatchRef.current >= 500) {
+            lastOutputPatchRef.current = now;
+            patchTab(task.id, tab.id, { lastOutputAt: now });
+          }
           if (outputSignals) scanOutputLines(u8);
           if (ptyDebugOn) dbg("data", decodeForDebug(u8));
           // Output activity extends the OSC 9;4 done timer — even if
@@ -1669,7 +1681,7 @@ const captureArmedRef = useRef(false);
 
   // Refit + focus when the tab becomes active OR when its task
   // becomes the active task (e.g., clicking a task in the
-  // sidebar). Mounted tasks stay rendered with visibility-hidden, so
+  // sidebar). Mounted tasks stay rendered with display:none, so
   // the tab's `active` prop alone doesn't change on task switch —
   // we have to also watch the global activeTaskId to know when this
   // pane just became the one the user is looking at.
