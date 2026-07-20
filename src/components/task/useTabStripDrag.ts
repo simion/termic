@@ -207,11 +207,23 @@ export function useTabStripDrag(opts: {
     window.addEventListener("pointercancel", onPointerCancel);
   }
 
+  // After a reorder shifts the pills, re-sync the drag transform so the pill
+  // stays under the cursor. Key on the tab-id ORDER, not the `stripTabs` array:
+  // TabBar derives stripTabs with `.filter()`, so it gets a fresh identity every
+  // render and keying on it re-runs this effect after every render — including
+  // the one setDragTx itself triggers. computeTx reads getBoundingClientRect()
+  // and, on fractionally scaled displays, WebKit rounds .left to device pixels a
+  // hair differently from the applied translateX, so the value drifts by a
+  // subpixel each pass and setDragTx never settles: the effect keeps re-firing
+  // until React's nested-update limit throws (#185, "MainArea crashed" mid-drag,
+  // issue #127). An id-order string only changes on a real reorder, so the
+  // resync runs once per reorder and can't feed itself.
+  const orderKey = stripTabs.map(t => t.id).join(" ");
   useLayoutEffect(() => {
     const d = dragRef.current;
     if (d?.started) setDragTx(computeTx(d.pointerX));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stripTabs]);
+  }, [orderKey]);
   useEffect(() => () => {
     hideDragGhost();
     clearDropTarget();
