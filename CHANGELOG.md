@@ -4,6 +4,18 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.23.2] - 2026-07-20
+
+Fixes clipped dialogs on scaled displays, a terminal scroll lock, and Cmd+click file links.
+
+### Bug fixes
+- Dialogs no longer cut off their right edge (the Browse and Add buttons in Add project, Import worktree) on fractionally scaled displays. (#120, #126)
+- Terminals no longer lock scrolling to the bottom after their pane was hidden and shown again. (#128)
+- Cmd/Ctrl+click in terminal output now opens gitignored files too, and path detection requires a file extension so plain words stop turning into links. (#117)
+
+### Thanks
+- Michael Hohlios (@MHohlios) for the terminal scroll-lock fix.
+
 ## [0.23.1] - 2026-07-20
 
 Agent races, Git branch switching, big battery savings, stop tasks, crisper terminal text.
