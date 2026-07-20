@@ -1,9 +1,9 @@
 {
   "versions": [
     {
-      "version": "0.23.2",
+      "version": "0.23.3",
       "date": "2026-07-20",
-      "summary": "Fixes clipped dialogs on scaled displays, a terminal scroll lock, and Cmd+click file links."
+      "summary": "Fixes a tab-drag crash and clipped dialogs on scaled displays, plus terminal fixes."
     },
     {
       "version": "0.23.1",
