@@ -151,8 +151,11 @@ export function TerminalPane({ task, tab, active }: Props) {
   // terminal. Nothing in-app reads lastOutputAt at finer granularity
   // (settled detection uses lastDataAtRef above); the write is kept, not
   // deleted, because the automation bridge / e2e flows assert PTY
-  // liveness through it (.claude/skills/e2e).
+  // liveness through it (.claude/skills/e2e). A trailing-edge timer
+  // (below) stamps the final value once the burst ends, so the store
+  // never understates the real last-output time by the window width.
   const lastOutputPatchRef = useRef(0);
+  const lastOutputTrailerRef = useRef<number | null>(null);
   // Scrollback line count over time. Real work GROWS the scrollback
   // (agent prints lines that scroll off). Status-bar ticks ("Cooking
   // for 5s"), cursor blinks, and in-place repaints do NOT — they
@@ -1414,6 +1417,16 @@ const captureArmedRef = useRef(false);
           if (now - lastOutputPatchRef.current >= 500) {
             lastOutputPatchRef.current = now;
             patchTab(task.id, tab.id, { lastOutputAt: now });
+          } else if (lastOutputTrailerRef.current === null) {
+            // Chunks landing inside the window would otherwise be lost if
+            // the burst ends before the next >=500ms chunk: schedule one
+            // trailing write for when the window closes.
+            lastOutputTrailerRef.current = window.setTimeout(() => {
+              lastOutputTrailerRef.current = null;
+              const t = lastDataAtRef.current;
+              lastOutputPatchRef.current = t;
+              patchTab(task.id, tab.id, { lastOutputAt: t });
+            }, 500 - (now - lastOutputPatchRef.current));
           }
           if (outputSignals) scanOutputLines(u8);
           if (ptyDebugOn) dbg("data", decodeForDebug(u8));
@@ -1661,6 +1674,12 @@ const captureArmedRef = useRef(false);
       disposeImeBridge();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();
+      // A pending trailing lastOutputAt write must not fire into the next
+      // PTY session (gen-bump Restart reuses this component).
+      if (lastOutputTrailerRef.current !== null) {
+        clearTimeout(lastOutputTrailerRef.current);
+        lastOutputTrailerRef.current = null;
+      }
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose the renderer addon FIRST so its render loop can't fire
       // on a half-disposed terminal.
