@@ -28,6 +28,17 @@ describe("PATH_TOKEN_RE", () => {
     expect(firstMatch("README")).toBeNull();
     expect(firstMatch("just words here")).toBeNull();
   });
+  it("does not match extension-less prose with slashes (GH #117)", () => {
+    // The old rule matched any slash-joined words, so plain English lit up.
+    expect(firstMatch("Originator/Reviewer/Approver")).toBeNull();
+    expect(firstMatch("and/or")).toBeNull();
+    expect(firstMatch("TCP/IP")).toBeNull();
+    expect(firstMatch("read/write")).toBeNull();
+  });
+  it("still matches a dir-qualified path whose file has an extension", () => {
+    expect(firstMatch("docs/02-test-management/project-instantiation.md"))
+      .toBe("docs/02-test-management/project-instantiation.md");
+  });
   it("matches an @ filename (retina asset)", () => {
     expect(firstMatch("logo@2x.png")).toBe("logo@2x.png");
   });
@@ -60,8 +71,10 @@ describe("scanPathTokens", () => {
     expect(scan("retina logo@2x.png and node_modules/@types/node/index.d.ts"))
       .toEqual(["logo@2x.png", "node_modules/@types/node/index.d.ts"]);
   });
-  it("still underlines bare domains (addon does not; they are path-shaped)", () => {
-    expect(scan("bare example.com/page utils.ts")).toEqual(["example.com/page", "utils.ts"]);
+  it("still underlines a bare domain but not its extension-less path tail", () => {
+    // `example.com` reads as file+extension; the trailing `/page` has no
+    // extension so it no longer extends the token (GH #117).
+    expect(scan("bare example.com/page utils.ts")).toEqual(["example.com", "utils.ts"]);
   });
   it("stays fast on a long connector-heavy blob (bounded first run)", () => {
     const blob = ("x".repeat(300) + ":").repeat(200) + "@".repeat(40000);

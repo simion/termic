@@ -22,15 +22,18 @@ import type { Terminal, ILink, IDisposable } from "@xterm/xterm";
 // Slightly looser than the WebLinksAddon regex; trailing punctuation that
 // prose tends to glue onto a URL is trimmed after matching.
 const URL_RE = /https?:\/\/[^\s"'`<>{}|\\^\[\]]+/g;
-// File-path-like token: dir-qualified, or a bare filename with a letter-led
-// extension (so version strings like "1.2.3" don't match), plus optional
-// trailing :line[:col]. `@` is a valid path char so retina assets
-// (`logo@2x.png`) and scoped packages (`@types/node`) resolve; the cost is a
-// bare `user@host` email underlining and resolving to nothing (harmless).
-// Each segment run is bounded ({1,255}, the max filename length) so a long
-// slash-less/dot-less blob (base64, a hash) can't drive the regex into O(n^2)
-// backtracking and stall the hover-underline pass.
-export const PATH_TOKEN_RE = /(?:(?:[\w.@-]{1,255}\/)+[\w.@-]{1,255}|[\w.@-]{1,255}\.[A-Za-z]\w{0,9})(?::\d+(?::\d+)?)?/;
+// File-path-like token: a filename with a letter-led extension, optionally
+// directory-qualified, plus optional trailing :line[:col]. Requiring the
+// extension is what keeps prose with slashes ("Originator/Reviewer/Approver",
+// "and/or", "TCP/IP") and version strings ("1.2.3") from underlining — the old
+// rule matched ANY slash-joined words, so plain English lit up (GH #117). `@`
+// is a valid path char so retina assets (`logo@2x.png`) and scoped packages
+// (`@types/node/index.d.ts`) resolve; the cost is a `user@host.com` email
+// underlining and resolving to nothing (harmless). Every quantifier is bounded
+// (segment runs {1,255}, dir depth {0,64}) so a long slash-/dot-heavy blob
+// (base64, a hash) can't drive the required-dot backtracking into O(n^2) and
+// stall the hover-underline pass.
+export const PATH_TOKEN_RE = /(?:[\w.@-]{1,255}\/){0,64}[\w.@-]{1,255}\.[A-Za-z]\w{0,9}(?::\d+(?::\d+)?)?/;
 
 // Single scan that recognises three things so a fragment of one can't leak as
 // another (e.g. the `host/path.ts` inside a URL, or the two halves of an scp
