@@ -1,10 +1,11 @@
 // WKWebView zeroes a scroll container's offsets when any ancestor toggles
 // display:none — the mechanism MainArea/TaskView use to keep hidden panes
-// mounted (docs/performance.md bear trap 2). xterm survives because it
-// re-syncs its viewport from internal buffer state on render; CodeMirror
-// and plain overflow divs treat the DOM as the source of truth, so their
-// position dies with the box. This records offsets while the element is
-// visible and re-applies them when the box comes back.
+// mounted (docs/performance.md bear trap 2). xterm keeps its buffer
+// position but needs its own DOM-scroller repair on reveal (see
+// lib/xtermViewportSync); CodeMirror and plain overflow divs treat the DOM
+// as the source of truth, so their position dies with the box. This
+// records offsets while the element is visible and re-applies them when
+// the box comes back.
 //
 // The offsets can't be snapshotted at hide time: React applies the
 // display change before any effect runs, so scrollTop is already 0 by
