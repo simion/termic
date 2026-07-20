@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.23.0] - 2026-07-20
+## [0.23.1] - 2026-07-20
 
 Agent races, Git branch switching, big battery savings, stop tasks, crisper terminal text.
 
@@ -32,6 +32,7 @@ Agent races, Git branch switching, big battery savings, stop tasks, crisper term
 - Creating a group pre-selects the suggested name so you can type straight over it. (#107)
 - Clicking a changed file shows the diff its pane implies: an Unstaged row diffs the index against your working tree, a Staged row diffs HEAD against the index (what git diff and git diff --cached show). A file staged and then edited again no longer shows the same full diff from both rows. (#122)
 - The built-in diff viewer stays precise on large files (pnpm-lock.yaml) instead of painting whole regions as changed; it matches git diff now. (#118)
+- The Git tab no longer fills several gigabytes of RAM when a large directory (e.g. `node_modules` after `npm install`) is untracked. File lists are now capped at 5 000 entries per pane and rendered with virtual scrolling. A banner appears when the cap is hit. (#123)
 
 ### Thanks
 - Orel Ohayon (@Orellius) for agent races, branch switching and updates with stash re-apply, worktree config symlinks, dormant repo dismissal, and the terminal font atlas fix.
