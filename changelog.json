@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.23.0",
+      "date": "2026-07-20",
+      "summary": "Agent races, Git branch switching, big battery savings, stop tasks, crisper terminal text."
+    },
+    {
       "version": "0.22.0",
       "date": "2026-07-14",
       "summary": "Signed and notarized by Apple, adopt existing worktrees, custom work-done signals."
