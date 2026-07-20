@@ -810,3 +810,59 @@ describe("group UI state", () => {
     expect(JSON.parse(localStorage.getItem("groupColors")!)).toEqual({});
   });
 });
+
+// ── stopTask (GH #119) ────────────────────────────────────────────────
+
+describe("stopTask", () => {
+  const taskId = "ws1";
+
+  function seedRunningTask() {
+    useApp.setState({ tasks: [makeTask()] });
+    addTab(taskId, makeTermTab({
+      id: "t1",
+      ptyId: "pty-live",
+      sessionId: "sess-uuid",
+      previousSessionId: "prev-uuid",
+      lastInputAt: 111,
+      lastOutputAt: 222,
+      workState: "working",
+    }));
+    useApp.setState({ mountedTasks: new Set([taskId]), activeTaskId: taskId });
+  }
+
+  it("evicts the task and clears runtime-only tab fields, keeping resume keys", () => {
+    seedRunningTask();
+    useApp.getState().stopTask(taskId);
+    const s = useApp.getState();
+    expect(s.mountedTasks.has(taskId)).toBe(false);
+    const tab = s.tabs[taskId][0] as TerminalTab;
+    expect(tab.ptyId).toBeUndefined();
+    expect(tab.lastInputAt).toBeNull();
+    expect(tab.lastOutputAt).toBeNull();
+    expect(tab.workState).toBeUndefined();
+    // The whole point of Stop vs Archive: the session survives.
+    expect(tab.sessionId).toBe("sess-uuid");
+    expect(tab.previousSessionId).toBe("prev-uuid");
+  });
+
+  it("falls back to the dashboard when stopping the active task", () => {
+    seedRunningTask();
+    useApp.getState().stopTask(taskId);
+    expect(useApp.getState().activeTaskId).toBeNull();
+  });
+
+  it("leaves a background task's active selection alone", () => {
+    seedRunningTask();
+    useApp.setState({ activeTaskId: "other-task" });
+    useApp.getState().stopTask(taskId);
+    expect(useApp.getState().activeTaskId).toBe("other-task");
+  });
+
+  it("is a no-op for a task that is not mounted", () => {
+    seedRunningTask();
+    useApp.setState({ mountedTasks: new Set(), activeTaskId: null });
+    const before = useApp.getState().tabs;
+    useApp.getState().stopTask(taskId);
+    expect(useApp.getState().tabs).toBe(before);
+  });
+});

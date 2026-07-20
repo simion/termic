@@ -6,7 +6,7 @@ import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, Loader2, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bell, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Loader2, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -88,6 +88,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const setView = useApp(s => s.setView);
   const currentView = useApp(s => s.view.page);
   const tabs = useApp(s => s.tabs);
+  const mountedTasks = useApp(s => s.mountedTasks);
   const loadAll = useApp(s => s.loadAll);
   const openNewProject = useUI(s => s.openNewProject);
   const openNewTask = useUI(s => s.openNewTask);
@@ -1089,6 +1090,27 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       </ContextMenuItem>
                     );
                   })()}
+                  {/* Stop every live task in this project without archiving
+                      (GH #119) — the issue's original ask. */}
+                  {(() => {
+                    const live = taskList.filter(w => mountedTasks.has(w.id));
+                    if (live.length === 0) return null;
+                    return (
+                      <ContextMenuItem
+                        onSelect={() => {
+                          const st = useApp.getState();
+                          for (const w of live) st.stopTask(w.id);
+                          useUI.getState().pushToast(
+                            live.length === 1 ? `Stopped ${live[0].name}` : `Stopped ${live.length} tasks`,
+                            "success",
+                          );
+                        }}
+                      >
+                        <CircleStop />
+                        Stop all tasks ({live.length})
+                      </ContextMenuItem>
+                    );
+                  })()}
                   <ContextMenuSeparator />
                   <ContextMenuItem onSelect={() => openSettings("repositories", p.id)}>
                     <Cog />
@@ -1787,6 +1809,11 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
   const spotlightAvailable = !w.is_main_checkout && !!project?.spotlight_enabled && project?.type !== "multi" && !project?.non_git;
 
   const isActive = activeTaskId === w.id;
+  // Live this session = mounted (its TaskView is rendered and owns PTYs).
+  // Gates the Stop menu item; a never-visited or already-stopped task has
+  // nothing to stop.
+  const isMounted = useApp(s => s.mountedTasks.has(w.id));
+  const stopTask = useApp(s => s.stopTask);
   // Sidebar only shows main-pane terminal tabs; split-pane tabs live in SplitView.
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
   const isLoaded = terminalTabs.some(t => t.ptyId);
@@ -2224,6 +2251,22 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
                 </DropdownItem>
               )}
               <DropdownSeparator />
+              {/* Stop without archiving (GH #119): kill the agents, free
+                  the memory, keep the session. Opening the task again
+                  respawns with resume — same lifecycle as restarting
+                  termic, scoped to one task. */}
+              {isMounted && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  onSelect={() => {
+                    stopTask(w.id);
+                    useUI.getState().pushToast(`Stopped ${w.name}`, "success");
+                  }}
+                >
+                  <CircleStop className="h-4 w-4" />
+                  <span>Stop task</span>
+                </DropdownItem>
+              )}
               <DropdownItem
                 className="items-center [&>svg]:mt-0"
                 onSelect={async () => {
