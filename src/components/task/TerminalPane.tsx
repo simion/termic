@@ -22,6 +22,7 @@ import { ImageAddon } from "@xterm/addon-image";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
+import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { setupImeReplacementBridge } from "@/lib/ime";
@@ -1667,12 +1668,24 @@ const captureArmedRef = useRef(false);
     // collapse both yield zero-geometry callbacks that would resize the PTY
     // to 0 cols/rows. The agent re-paints on the new dims, then the second
     // callback (on un-hide) re-grows everything — visible as a flicker.
+    //
+    // The zero → non-zero edge is also where we repair the viewport
+    // scroller: WKWebView zeroes .xterm-viewport's scrollTop while the pane
+    // sits in a display:none subtree, and when fit() lands on unchanged
+    // dims xterm has no event that re-syncs it — scrolling reads as
+    // "locked" (wheel-up dead at the bottom, or bottom unreachable) until
+    // new output happens to scroll the buffer. See lib/xtermViewportSync.
+    let wasHiddenAtZeroGeometry = false;
     const ro = new ResizeObserver((entries) => {
       for (const e of entries) {
         const r = e.contentRect;
-        if (r.width === 0 || r.height === 0) return;
+        if (r.width === 0 || r.height === 0) { wasHiddenAtZeroGeometry = true; return; }
       }
       try { fit.fit(); } catch {}
+      if (wasHiddenAtZeroGeometry) {
+        wasHiddenAtZeroGeometry = false;
+        resyncViewportAfterReveal(term);
+      }
     });
     ro.observe(host);
 
