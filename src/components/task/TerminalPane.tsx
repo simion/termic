@@ -12,7 +12,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { attachCmdClickLinkOpener, registerPathLinkProvider, type ClickTarget } from "@/lib/termLinkOpener";
-import { resolvePathClick } from "@/lib/pathMatch";
+import { resolvePathClick, normalizePath } from "@/lib/pathMatch";
 import { TerminalPathMenu } from "@/components/task/TerminalPathMenu";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
@@ -481,13 +481,25 @@ const captureArmedRef = useRef(false);
     // GH #117: the same opener also resolves file-path references.
     function handlePathTarget(target: { path: string; line?: number; col?: number }, x: number, y: number) {
       ipc.taskListFilesForFinder(task.id)
-        .then(files => {
+        .then(async files => {
           const matches = resolvePathClick(files, target.path);
           if (matches.length === 1) {
             openPathFile(matches[0], target.line, target.col);
-          } else {
-            setPathMenu({ x, y, candidates: matches, line: target.line, col: target.col });
+            return;
           }
+          if (matches.length === 0) {
+            // The finder list is git-tracked + untracked-not-ignored only, so a
+            // gitignored path (build output, .env, node_modules/…) never has a
+            // suffix match. Fall back to a direct on-disk check on the clicked
+            // path and open it if it's a real file. (GH #117)
+            const rel = normalizePath(target.path);
+            const stat = await ipc.taskPathStat(task.id, rel).catch(() => null);
+            if (stat?.exists && !stat.is_dir) {
+              openPathFile(rel, target.line, target.col);
+              return;
+            }
+          }
+          setPathMenu({ x, y, candidates: matches, line: target.line, col: target.col });
         })
         .catch(() => useUI.getState().pushToast("Couldn't list files to open that path", "error"));
     }
