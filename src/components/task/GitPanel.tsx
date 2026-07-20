@@ -473,7 +473,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
           onToggle={doStage}
           onDiscard={(paths) => doDiscard(paths, paths.length === 1 ? { pane: "unstaged" } : undefined)}
           rowActionIcon="down"
-          root={task.path} repoDir={dir}
+          root={task.path} repoDir={dir} truncated={repo?.truncated}
           style={{ flexBasis: `${ratio * 100}%`, flexGrow: 0, flexShrink: 0 }}
         />
         <div className="relative h-px shrink-0 bg-[var(--color-border-soft)]">
@@ -778,13 +778,14 @@ interface PaneProps {
    *  `repoDir` (empty for the host repo). */
   root: string;
   repoDir: string;
+  truncated?: boolean;
   className?: string;
   style?: React.CSSProperties;
 }
 
 function Pane({
   title, files, pane, viewMode, collapsed, setCollapsed, clickable, selectedKey, stageGlyph,
-  taskId, viewedCount = 0, headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, className, style,
+  taskId, viewedCount = 0, headerAction, onRowClick, onToggle, onDiscard, rowActionIcon, root, repoDir, truncated, className, style,
 }: PaneProps) {
   return (
     <div className={cn("flex flex-col overflow-hidden", className)} style={style}>
@@ -808,7 +809,12 @@ function Pane({
           </button>
         )}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto py-0.5">
+      {truncated && (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-2.5 py-1 text-[11px] text-[var(--color-fg-faint)]">
+          File list capped at 5 000 entries. Add large dirs to .gitignore.
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-hidden">
         {files.length === 0 ? (
           <div className="px-3 py-1.5 text-[12px] text-[var(--color-fg-faint)]">
             {pane === "unstaged" ? "Nothing to stage" : "Nothing staged"}
@@ -829,37 +835,43 @@ function Pane({
 }
 
 function FileList(props: Omit<PaneProps, "title" | "headerAction" | "className" | "style">) {
-  const { files, viewMode } = props;
-  if (viewMode === "list") {
-    const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
-    return <>{sorted.map(f => <FileRow key={f.path} file={f} label={f.path} {...rowProps(props)} />)}</>;
-  }
-  if (viewMode === "combined") {
-    // Group by parent dir; dir shown once as a dim subheader.
-    const groups = new Map<string, GitFile[]>();
-    for (const f of files) {
-      const slash = f.path.lastIndexOf("/");
-      const d = slash === -1 ? "" : f.path.slice(0, slash);
-      (groups.get(d) ?? groups.set(d, []).get(d)!).push(f);
-    }
-    const dirs = [...groups.keys()].sort((a, b) => a.localeCompare(b));
-    return (
-      <>
-        {dirs.map(d => (
-          <div key={d || "."}>
-            {d && (
-              <div className="truncate px-2.5 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-dim)]">{d}</div>
-            )}
-            {groups.get(d)!.sort((a, b) => a.path.localeCompare(b.path)).map(f => (
-              <FileRow key={f.path} file={f} label={f.path.split("/").pop() || f.path} depth={d ? 1 : 0} {...rowProps(props)} />
-            ))}
-          </div>
-        ))}
-      </>
-    );
-  }
-  // Tree view.
-  return <TreeView {...props} />;
+  const { files, viewMode, collapsed, pane } = props;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerH, setContainerH] = useState(400);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setContainerH(el.clientHeight));
+    ro.observe(el);
+    setContainerH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  const rows = useMemo(
+    () => flattenRows(files, viewMode, collapsed, pane),
+    [files, viewMode, collapsed, pane],
+  );
+
+  const ROW_H = 26;
+  const OVERSCAN = 5;
+  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  const endIdx = Math.min(rows.length - 1, Math.ceil((scrollTop + containerH) / ROW_H) + OVERSCAN);
+  const paddingTop = startIdx * ROW_H;
+  const paddingBottom = Math.max(0, (rows.length - 1 - endIdx) * ROW_H);
+
+  return (
+    <div
+      ref={containerRef}
+      className="h-full overflow-auto py-0.5"
+      onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      {paddingTop > 0 && <div style={{ height: paddingTop }} aria-hidden />}
+      {rows.slice(startIdx, endIdx + 1).map(row => renderFlatRow(row, props))}
+      {paddingBottom > 0 && <div style={{ height: paddingBottom }} aria-hidden />}
+    </div>
+  );
 }
 
 function rowProps(p: Omit<PaneProps, "title" | "headerAction" | "className" | "style">) {
@@ -888,6 +900,152 @@ function collectLeafPaths(node: TreeNode): string[] {
   };
   walk(node);
   return out;
+}
+
+// ── virtual-scroll flat rows ──
+
+type FlatRow =
+  | { kind: "file"; file: GitFile; label: string; depth: number }
+  | { kind: "dir"; name: string; dirPath: string; depth: number; leaves: string[]; isCollapsed: boolean }
+  | { kind: "dirhdr"; label: string };
+
+function flattenRows(files: GitFile[], viewMode: ViewMode, collapsed: Set<string>, pane: string): FlatRow[] {
+  if (viewMode === "list") {
+    return [...files]
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map(f => ({ kind: "file" as const, file: f, label: f.path, depth: 0 }));
+  }
+  if (viewMode === "combined") {
+    const groups = new Map<string, GitFile[]>();
+    for (const f of files) {
+      const slash = f.path.lastIndexOf("/");
+      const d = slash === -1 ? "" : f.path.slice(0, slash);
+      (groups.get(d) ?? groups.set(d, []).get(d)!).push(f);
+    }
+    const rows: FlatRow[] = [];
+    for (const d of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
+      if (d) rows.push({ kind: "dirhdr", label: d });
+      for (const f of groups.get(d)!.sort((a, b) => a.path.localeCompare(b.path))) {
+        rows.push({ kind: "file", file: f, label: f.path.split("/").pop() || f.path, depth: d ? 1 : 0 });
+      }
+    }
+    return rows;
+  }
+  // Tree: flatten depth-first, folders before files at each level, respecting collapsed state.
+  const root = buildTree(files);
+  const rows: FlatRow[] = [];
+  const walk = (node: TreeNode, depth: number) => {
+    const kids = [...node.children.values()].sort((a, b) => {
+      const ad = a.children.size > 0 ? 0 : 1;
+      const bd = b.children.size > 0 ? 0 : 1;
+      return ad !== bd ? ad - bd : a.name.localeCompare(b.name);
+    });
+    for (const k of kids) {
+      if (k.children.size > 0) {
+        const isCollapsed = collapsed.has(`${pane}\0${k.path}`);
+        rows.push({ kind: "dir", name: k.name, dirPath: k.path, depth, leaves: collectLeafPaths(k), isCollapsed });
+        if (!isCollapsed) walk(k, depth + 1);
+      } else if (k.file) {
+        rows.push({ kind: "file", file: k.file, label: k.name, depth });
+      }
+    }
+  };
+  walk(root, 0);
+  return rows;
+}
+
+function renderFlatRow(row: FlatRow, props: Omit<PaneProps, "title" | "headerAction" | "className" | "style">) {
+  if (row.kind === "dirhdr") {
+    return (
+      <div key={`h:${row.label}`} className="truncate px-2.5 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-dim)]">
+        {row.label}
+      </div>
+    );
+  }
+  if (row.kind === "dir") {
+    return (
+      <DirRow
+        key={`d:${row.dirPath}`}
+        row={row}
+        pane={props.pane}
+        setCollapsed={props.setCollapsed}
+        onToggle={props.onToggle}
+        onDiscard={props.onDiscard}
+        rowActionIcon={props.rowActionIcon}
+        stageGlyph={props.stageGlyph}
+        root={props.root}
+        repoDir={props.repoDir}
+      />
+    );
+  }
+  return <FileRow key={`f:${props.pane}:${row.file.path}`} file={row.file} label={row.label} depth={row.depth} {...rowProps(props)} />;
+}
+
+function DirRow({ row, pane, setCollapsed, onToggle, onDiscard, rowActionIcon, stageGlyph, root, repoDir }: {
+  row: FlatRow & { kind: "dir" };
+  pane: string;
+  setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>;
+  onToggle: (paths: string[]) => void;
+  onDiscard: (paths: string[]) => void;
+  rowActionIcon: "up" | "down";
+  stageGlyph: string;
+  root: string;
+  repoDir: string;
+}) {
+  const { name, dirPath, depth, leaves, isCollapsed } = row;
+  const DirActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
+  const dirLabel = rowActionIcon === "down" ? "Stage folder" : "Unstage folder";
+  const toggle = useCallback(() => {
+    const key = `${pane}\0${dirPath}`;
+    setCollapsed(prev => {
+      const n = new Set(prev);
+      if (n.has(key)) n.delete(key); else n.add(key);
+      return n;
+    });
+  }, [pane, dirPath, setCollapsed]);
+  return (
+    <ContextMenuRoot>
+      <ContextMenuTrigger asChild>
+        <div
+          onClick={toggle}
+          className="group flex h-[24px] w-full cursor-pointer items-center gap-1.5 px-2 pr-1 text-left text-[12.5px] text-[var(--color-fg)]/85 hover:bg-[var(--color-hover)]"
+          style={{ paddingLeft: 6 + depth * 12 }}
+        >
+          <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] transition-transform", !isCollapsed && "rotate-90")} />
+          <img src={folderIconUrl(name, !isCollapsed)} alt="" className="h-4 w-4 shrink-0 file-icon" />
+          <span className="truncate flex-1 font-medium">{name}</span>
+          <Tip
+            side="left"
+            content={
+              <span className="flex items-center gap-1.5">
+                {dirLabel}
+                <kbd className="rounded bg-[var(--color-bg-3)] px-1 text-[10.5px] text-[var(--color-fg-faint)]">{stageGlyph}</kbd>
+              </span>
+            }
+          >
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggle(leaves); }}
+              className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
+            >
+              <DirActionIcon className="h-3.5 w-3.5" />
+            </button>
+          </Tip>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => onToggle(leaves)}>
+          <DirActionIcon />
+          {rowActionIcon === "down" ? "Stage" : "Unstage"} <span className="font-medium">"{name}"</span>
+        </ContextMenuItem>
+        <ContextMenuItem destructive onSelect={() => onDiscard(leaves)}>
+          <Trash2 />
+          Discard <span className="font-medium">"{name}"</span>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <CopyPathItems rel={repoDir ? `${repoDir}/${dirPath}` : dirPath} root={root} isDir />
+      </ContextMenuContent>
+    </ContextMenuRoot>
+  );
 }
 
 // ── tree ──

@@ -4995,6 +4995,10 @@ pub struct GitRepo {
     /// prefill the commit form when the user ticks Amend. Empty on an
     /// unborn branch (no commits yet).
     pub last_commit_message: String,
+    /// True when the file lists were capped — the repo has more changes
+    /// than shown. Typical cause: large untracked dirs (e.g. node_modules)
+    /// not in .gitignore.
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Default)]
@@ -5068,11 +5072,18 @@ async fn task_git_status(id: String) -> Result<GitStatus, String> {
                 if let Some(mut f) = s { f.fp = fp.clone(); seen.insert(f.path.clone()); staged.push(f); }
                 if let Some(mut f) = u { f.fp = fp;          seen.insert(f.path.clone()); unstaged.push(f); }
             }
+            const MAX_FILES: usize = 5_000;
+            let truncated = staged.len() + unstaged.len() > MAX_FILES;
+            if truncated {
+                staged.truncate(MAX_FILES / 2);
+                unstaged.truncate(MAX_FILES / 2);
+            }
             GitRepo {
                 name, branch: branch_of(p), kind: kind.to_string(), dir_name,
                 changed: seen.len(),
                 last_commit_message: last_msg(p),
                 staged, unstaged,
+                truncated,
             }
         };
 

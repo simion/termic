@@ -504,6 +504,8 @@ export interface GitRepo {
   changed: number;
   /** `git log -1 --pretty=%B`, for Amend prefill. */
   last_commit_message: string;
+  /** True when the file lists were capped at 5 000 entries. */
+  truncated?: boolean;
 }
 
 export interface GitStatus {
