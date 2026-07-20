@@ -271,6 +271,14 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
       // an out-of-flow overlay, which is a lot more machinery for this.
       const commentExt = reviewCommentsExtension(task.id, tab.path);
 
+      // GH #118: @codemirror/merge's default diffConfig caps the precise
+      // diff at scanLimit 500 changed characters per scanned range; a big
+      // file with many changes (pnpm-lock.yaml) trips it and falls back
+      // to a coarse diff that paints far more as changed than `git diff`
+      // reports. Deepen the scan and bound the work by wall-clock instead,
+      // so a pathological pair degrades gracefully rather than freezing.
+      const diffConfig = { scanLimit: 50_000, timeout: 1_500 };
+
       if (mode === "side" && !degenerate) {
         mergeRef.current = new MergeView({
           parent: hostRef.current,
@@ -279,6 +287,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
           highlightChanges: true,
           gutter: true,
           collapseUnchanged: { margin: 3, minSize: 6 },
+          diffConfig,
         });
         setCommentable(true);
       } else {
@@ -295,6 +304,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
               syntaxHighlightDeletions: true,
               mergeControls: false,
               collapseUnchanged: { margin: 3, minSize: 6 },
+              diffConfig,
             }),
           ],
         });
