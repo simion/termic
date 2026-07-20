@@ -19,6 +19,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { attachCmdClickLinkOpener } from "@/lib/termLinkOpener";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
+import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
@@ -240,12 +241,23 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
     // and the PTY re-grows. The double resize is visible as a flicker
     // inside the terminal text. Bailing early avoids the spurious resize
     // entirely; the next non-zero RO fire on expand still calls fit().
+    // The zero → non-zero edge also repairs the viewport scroller: WKWebView
+    // zeroes .xterm-viewport's scrollTop inside a display:none subtree
+    // (collapsed split, inactive bottom tab, hidden task), and a fit() that
+    // lands on unchanged dims gives xterm no event to re-sync it — the shell
+    // reads as scroll-locked until output scrolls the buffer. See
+    // lib/xtermViewportSync.
+    let wasHiddenAtZeroGeometry = false;
     const ro = new ResizeObserver((entries) => {
       for (const e of entries) {
         const r = e.contentRect;
-        if (r.width === 0 || r.height === 0) return;
+        if (r.width === 0 || r.height === 0) { wasHiddenAtZeroGeometry = true; return; }
       }
       try { fit.fit(); } catch {}
+      if (wasHiddenAtZeroGeometry) {
+        wasHiddenAtZeroGeometry = false;
+        resyncViewportAfterReveal(term);
+      }
     });
     ro.observe(hostRef.current);
 
