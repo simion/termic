@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "0.23.2",
+      "date": "2026-07-20",
+      "summary": "Fixes clipped dialogs on scaled displays, a terminal scroll lock, and Cmd+click file links."
+    },
+    {
       "version": "0.23.1",
       "date": "2026-07-20",
       "summary": "Agent races, Git branch switching, big battery savings, stop tasks, crisper terminal text."
