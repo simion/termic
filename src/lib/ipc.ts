@@ -321,9 +321,9 @@ export const taskSpotlightStatus  = ()           => invoke<Record<string, string
 export const terminalStageFile = (taskId: string, src: string) =>
   invoke<string>("terminal_stage_file", { taskId, src });
 export const taskFileDiff = (id: string, path: string) => invoke<string>("task_file_diff", { id, path });
-export const taskFileDiffSides = (id: string, path: string) =>
+export const taskFileDiffSides = (id: string, path: string, scope?: "unstaged" | "staged") =>
   invoke<{ original: string; modified: string; original_exists: boolean; modified_exists: boolean; fp: string }>(
-    "task_file_diff_sides", { id, path },
+    "task_file_diff_sides", { id, path, scope: scope ?? null },
   );
 export const taskFileRead = (id: string, path: string) => invoke<string>("task_file_read", { id, path });
 /** Read a task image or PDF as base64, for the markdown preview's inline
