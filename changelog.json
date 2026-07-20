@@ -1,9 +1,9 @@
 {
   "versions": [
     {
-      "version": "0.23.3",
+      "version": "0.23.4",
       "date": "2026-07-20",
-      "summary": "Fixes a tab-drag crash and clipped dialogs on scaled displays, plus terminal fixes."
+      "summary": "Fixes a tab-drag crash and clipped dialogs on scaled displays, plus tab and terminal fixes."
     },
     {
       "version": "0.23.1",

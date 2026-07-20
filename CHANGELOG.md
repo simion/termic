@@ -4,11 +4,12 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [0.23.3] - 2026-07-20
+## [0.23.4] - 2026-07-20
 
-Fixes a tab-drag crash and clipped dialogs on scaled displays, plus terminal fixes.
+Fixes a tab-drag crash and clipped dialogs on scaled displays, plus tab and terminal fixes.
 
 ### Bug fixes
+- Closing a split pane's last tab with the X now collapses the pane, matching ⌘W, instead of leaving an empty pane behind.
 - Reordering tabs by dragging no longer crashes the task view on fractionally scaled displays. (#127)
 - Dialogs no longer cut off their right edge (the Browse and Add buttons in Add project, Import worktree) on fractionally scaled displays. (#120, #126)
 - Terminals no longer lock scrolling to the bottom after their pane was hidden and shown again. (#128)
