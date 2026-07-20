@@ -292,7 +292,7 @@ export interface AppState {
   resumeClosedTab: (taskId: string, entryId: string) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
   persistTab: (taskId: string, tabId: string) => void;
-  openPreviewTab: (taskId: string, data: { type: "edit" | "diff"; path: string; title: string; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
+  openPreviewTab: (taskId: string, data: { type: "edit" | "diff"; path: string; title: string; scope?: "unstaged" | "staged"; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
   /** Clear an edit tab's `revealAt` after EditorPane has consumed it,
    *  so a re-render doesn't re-jump the cursor. */
   consumeReveal: (taskId: string, tabId: string) => void;
@@ -1892,6 +1892,10 @@ export const useApp = create<AppState>((set, get) => ({
       revealAt: data.type === "edit" ? data.revealAt : undefined,
       revealHeading: data.type === "edit" ? data.revealHeading : undefined,
       remoteImagesUnblocked: undefined as boolean | undefined,
+      // Diff-side scope (GH #122) is part of the tab's identity: recycling
+      // a preview slot to another file (or the same file from the other
+      // Git pane) must adopt the new scope, never keep the old one.
+      scope: data.type === "diff" ? data.scope : undefined,
     };
     // Used instead by the "already open, same file" branches: only a field
     // the caller explicitly supplied is ever applied. Unlike the recycle
@@ -1922,7 +1926,8 @@ export const useApp = create<AppState>((set, get) => ({
       });
 
       // Already open in this pane?
-      const existing = paneTabs.find(t => t.type === data.type && (t as any).path === data.path);
+      const existing = paneTabs.find(t => t.type === data.type && (t as any).path === data.path
+        && (t.type !== "diff" || (t as any).scope === (data.type === "diff" ? data.scope : undefined)));
       if (existing) {
         const next = withNewRevealOnly(existing);
         const newTree = setLeafActiveTabId(tree, activePaneLeaf.id, existing.id);
@@ -1961,7 +1966,8 @@ export const useApp = create<AppState>((set, get) => ({
     const setActive = (id: string): Partial<AppState> =>
       ({ activeTab: { ...s.activeTab, [taskId]: id } });
 
-    const existing = mainList.find(t => t.type === data.type && (t as any).path === data.path);
+    const existing = mainList.find(t => t.type === data.type && (t as any).path === data.path
+      && (t.type !== "diff" || (t as any).scope === (data.type === "diff" ? data.scope : undefined)));
     if (existing) {
       const next = withNewRevealOnly(existing);
       return { tabs: { ...s.tabs, [taskId]: next }, ...setActive(existing.id) };

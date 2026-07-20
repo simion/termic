@@ -715,6 +715,10 @@ export interface QueueItem {
 export interface DiffTab extends BaseTab {
   type: "diff";
   path: string;
+  /** Which Git-panel pane the diff was opened from (GH #122):
+   *  "staged" diffs HEAD→index, "unstaged" diffs index→worktree.
+   *  Absent → HEAD→worktree (the full uncommitted delta). */
+  scope?: "unstaged" | "staged";
 }
 
 /** The complete delta a task produced vs its base (`task_diff`). `diff` folds

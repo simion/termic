@@ -66,8 +66,10 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
   task: Task;
   status: GitStatus | null;
   refresh: () => void;
-  /** Opens a diff tab for a task-relative path (already prefixed). */
-  onOpenDiff: (path: string) => void;
+  /** Opens a diff tab for a task-relative path (already prefixed).
+   *  `pane` picks the diff's sides (GH #122): staged → HEAD→index,
+   *  unstaged → index→worktree. */
+  onOpenDiff: (path: string, pane: "unstaged" | "staged") => void;
   onDoubleClickDiff: (path: string) => void;
 }) {
   const pushToast = useUI(s => s.pushToast);
@@ -197,7 +199,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
     const next = idx >= 0 ? list[idx + 1] : undefined;
     if (next) {
       setSelected(`${pane} ${next}`);
-      if (clickable) onOpenDiff(dir ? `${dir}/${next}` : next);
+      if (clickable) onOpenDiff(dir ? `${dir}/${next}` : next, pane);
       return;
     }
     closePreviewDiff();
@@ -382,7 +384,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
   void onDoubleClickDiff;
   const activate = (pane: "unstaged" | "staged", p: string) => {
     setSelected(`${pane} ${p}`);
-    if (clickable) onOpenDiff(dir ? `${dir}/${p}` : p);
+    if (clickable) onOpenDiff(dir ? `${dir}/${p}` : p, pane);
   };
 
   return (

@@ -440,7 +440,7 @@ export function RightPanel() {
             task={task}
             status={gitStatus}
             refresh={refreshGit}
-            onOpenDiff={(path) => useApp.getState().openPreviewTab(task.id, { type: "diff", path, title: `Δ ${path.split("/").pop()}` })}
+            onOpenDiff={(path, pane) => useApp.getState().openPreviewTab(task.id, { type: "diff", path, scope: pane, title: `Δ ${path.split("/").pop()}` })}
             onDoubleClickDiff={(path) => {
               const currentTabs = useApp.getState().tabs[task.id] || [];
               const existing = currentTabs.find(t => t.type === "diff" && t.path === path);

@@ -5920,16 +5920,32 @@ fn resolve_task_git_path(w: &Task, path: &str) -> Result<(PathBuf, String), Stri
     resolve_task_git_path_ex(w, path, false)
 }
 
-fn task_file_diff_sides_for_task(w: &Task, path: &str) -> Result<FileDiffSides, String> {
+fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> Result<FileDiffSides, String> {
     let (cwd, rel_path) = resolve_task_git_path(w, path)?;
-    // `git show` fails for a path not in HEAD (untracked/added file);
+    // Which two sides to compare depends on where the click came from
+    // (GH #122):
+    //   "staged"   → HEAD vs index          (what `git diff --cached` shows)
+    //   "unstaged" → index vs working tree  (what `git diff` shows)
+    //   None       → HEAD vs working tree   (full uncommitted delta; the
+    //                pre-#122 behavior, kept for callers with no pane)
+    // Without the split, a file staged and then edited again showed the
+    // full uncommitted diff from BOTH rows.
+    //
+    // `git show :0:path` reads the index (stage 0); it fails for an
+    // untracked path just like `show HEAD:path` fails for a new file.
     // read_to_string fails for non-UTF8. Either way the side is
     // unrenderable → exists=false, content "".
-    let original = git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
     let modified_path = safe_task_path(&cwd, &rel_path).ok();
-    let modified = match &modified_path {
+    let read_worktree = || match &modified_path {
         Some(p) if p.exists() => fs::read_to_string(p).ok(),
         _ => None,
+    };
+    let show_head = || git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
+    let show_index = || git(&["--no-pager", "show", &format!(":0:{rel_path}")], &cwd).ok();
+    let (original, modified) = match scope {
+        Some("staged") => (show_head(), show_index()),
+        Some("unstaged") => (show_index(), read_worktree()),
+        _ => (show_head(), read_worktree()),
     };
     let fp = modified_path.as_deref().map(file_fp).unwrap_or_default();
     Ok(FileDiffSides {
@@ -5976,9 +5992,9 @@ fn task_file_diff_for_task(w: &Task, path: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn task_file_diff_sides(id: String, path: String) -> Result<FileDiffSides, String> {
+fn task_file_diff_sides(id: String, path: String, scope: Option<String>) -> Result<FileDiffSides, String> {
     let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
-    task_file_diff_sides_for_task(&w, &path)
+    task_file_diff_sides_for_task(&w, &path, scope.as_deref())
 }
 
 #[tauri::command]
@@ -9906,13 +9922,46 @@ mod tests {
             ..Default::default()
         };
 
-        let sides = task_file_diff_sides_for_task(&task, "frontend/base.txt").unwrap();
+        let sides = task_file_diff_sides_for_task(&task, "frontend/base.txt", None).unwrap();
         assert!(sides.original.contains("base content"));
         assert!(sides.modified.contains("member changed"));
 
         let diff = task_file_diff_for_task(&task, "frontend/base.txt").unwrap();
         assert!(diff.contains("member changed"));
         assert!(diff.contains("diff --git a/base.txt b/base.txt"));
+    }
+
+    #[test]
+    fn diff_sides_scope_splits_staged_and_unstaged() {
+        // GH #122: a file staged and then edited again must show
+        // index→worktree from the Unstaged row and HEAD→index from the
+        // Staged row — not the full uncommitted diff from both.
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(dir.path()).output().unwrap();
+            assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        fs::write(dir.path().join("base.txt"), "staged content\n").unwrap();
+        run(&["add", "base.txt"]);
+        fs::write(dir.path().join("base.txt"), "worktree content\n").unwrap();
+
+        let task = Task {
+            path: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let full = task_file_diff_sides_for_task(&task, "base.txt", None).unwrap();
+        assert_eq!(full.original, "base content\n");
+        assert_eq!(full.modified, "worktree content\n");
+
+        let staged = task_file_diff_sides_for_task(&task, "base.txt", Some("staged")).unwrap();
+        assert_eq!(staged.original, "base content\n");
+        assert_eq!(staged.modified, "staged content\n");
+
+        let unstaged = task_file_diff_sides_for_task(&task, "base.txt", Some("unstaged")).unwrap();
+        assert_eq!(unstaged.original, "staged content\n");
+        assert_eq!(unstaged.modified, "worktree content\n");
     }
 
     // ──────────────── spotlight git mechanics ────────────────

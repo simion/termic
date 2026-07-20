@@ -109,19 +109,24 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
         const rel = pfx ? tab.path.slice(pfx.length) : tab.path;
         const filt = (fs: GitFile[]) => hideUntracked ? fs.filter(f => f.status !== "?") : fs;
         const ordered = [
-          ...orderedFiles(filt(r.unstaged), viewMode),
-          ...orderedFiles(filt(r.staged), viewMode),
+          ...orderedFiles(filt(r.unstaged), viewMode).map(f => ({ f, pane: "unstaged" as const })),
+          ...orderedFiles(filt(r.staged), viewMode).map(f => ({ f, pane: "staged" as const })),
         ];
-        const idx = ordered.findIndex(f => f.path === rel);
+        // A partially-staged file appears in BOTH panes — anchor the walk
+        // at the occurrence this tab was opened from, not the first one.
+        const idx = ordered.findIndex(x => x.f.path === rel && (!tab.scope || x.pane === tab.scope));
         if (idx === -1) continue; // file lives in a different repo
         const next = ordered
           .slice(idx + 1)
-          .find(f => f.fp !== "" && seen[pfx + f.path] !== f.fp);
+          .find(x => x.f.fp !== "" && seen[pfx + x.f.path] !== x.f.fp);
         if (next) {
           useApp.getState().openPreviewTab(task.id, {
             type: "diff",
-            path: pfx + next.path,
-            title: `Δ ${next.path.split("/").pop()}`,
+            path: pfx + next.f.path,
+            // Keep the pane the file came from so the walked-to diff
+            // shows the same sides a click on its row would (GH #122).
+            scope: next.pane,
+            title: `Δ ${next.f.path.split("/").pop()}`,
           });
         }
         return;
@@ -146,7 +151,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
     let alive = true;
     setErr(null);
     setCommentable(false);
-    taskFileDiffSides(task.id, tab.path).then(sides => {
+    taskFileDiffSides(task.id, tab.path, tab.scope).then(sides => {
       if (!alive || !hostRef.current) return;
       // Existence flags, not content emptiness — "" is what BOTH a missing
       // side and an empty (or non-UTF8) file serialize to, and a file
@@ -301,7 +306,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
       mergeRef.current?.destroy(); mergeRef.current = null;
       editorRef.current?.destroy(); editorRef.current = null;
     };
-  }, [task.id, tab.path, editorFontSize, mode, editorThemeId, appIsLight]);
+  }, [task.id, tab.path, tab.scope, editorFontSize, mode, editorThemeId, appIsLight]);
 
   const effectiveMode: Mode = oneSided ? "unified" : mode;
 
