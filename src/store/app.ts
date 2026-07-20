@@ -148,6 +148,13 @@ export interface AppState {
    *  TaskViews mount (and their agents spawn) while focus stays put. Agent
    *  Race uses this to boot N agents at once from one action. */
   mountTasks: (ids: string[]) => void;
+  /** Stop a task without archiving it (GH #119): evict it from mountedTasks
+   *  so its TaskView unmounts and every PTY dies (TerminalPane/AuxTerminal
+   *  cleanup), then clear the runtime-only tab fields so the task looks like
+   *  one not yet visited this session. The resume keys (sessionId /
+   *  previousSessionId) survive, so opening the task again respawns the
+   *  agents with their conversations resumed. */
+  stopTask: (taskId: string) => void;
   setView: (page: View["page"]) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
@@ -497,6 +504,30 @@ export const useApp = create<AppState>((set, get) => ({
     for (const id of ids) if (!next.has(id)) { next.add(id); changed = true; }
     return changed ? { mountedTasks: next } : s;
   }),
+
+  stopTask: (taskId) => {
+    // Fall back to the dashboard first (the same path archiveAndRefresh
+    // takes) so activeTaskId never points at a view that is about to
+    // leave the tree.
+    if (get().activeTaskId === taskId) get().setActiveTask(null);
+    set(s => {
+      if (!s.mountedTasks.has(taskId)) return s;
+      const mounted = new Set(s.mountedTasks);
+      mounted.delete(taskId);
+      // The unmount kills the PTYs; clear the fields that imply a live
+      // one. Broadcast targets tabs by `ptyId`, and a stale "working"
+      // workState would spin the sidebar indicator forever.
+      const cleared = (s.tabs[taskId] ?? []).map(t =>
+        t.type === "terminal"
+          ? { ...t, ptyId: undefined, lastInputAt: null, lastOutputAt: null, workState: undefined }
+          : t,
+      );
+      return {
+        mountedTasks: mounted,
+        tabs: { ...s.tabs, [taskId]: cleared },
+      };
+    });
+  },
 
   setActiveTask: (id) => {
     const prev = get().activeTaskId;
