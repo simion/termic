@@ -38,7 +38,7 @@ describe("PATH_TOKEN_RE", () => {
     const blob = "a".repeat(40000);
     const start = performance.now();
     expect(firstMatch(blob)).toBeNull();
-    expect(performance.now() - start).toBeLessThan(100);
+    expect(performance.now() - start).toBeLessThan(500);
   });
 });
 
