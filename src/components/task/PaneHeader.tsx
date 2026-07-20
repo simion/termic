@@ -232,7 +232,17 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
               // focusPaneTab: keyboard focus must follow the click so ⌘W (which
               // derives the pane from DOM focus) targets THIS pane afterwards.
               onSelect={() => { setPaneActiveTab(task.id, paneId, tab.id); focusPaneTab(tab.id); }}
-              onClose={() => { void requestClosePaneTab(task.id, paneId, tab.id); }}
+              // Closing the pane's last tab collapses the pane, matching ⌘W
+              // (useShortcuts). Without this the X leaves an empty "New pane"
+              // behind while ⌘W removes it. Capture wasLastTab before the
+              // async confirm, and only collapse if the close actually went
+              // through (onClose === closePane for this leaf).
+              onClose={() => {
+                const wasLastTab = (leaf.tabIds?.length ?? 1) <= 1;
+                void requestClosePaneTab(task.id, paneId, tab.id).then(closed => {
+                  if (closed && wasLastTab) onClose();
+                });
+              }}
               renaming={null}
               onStartRename={() => {}}
               onChangeRename={() => {}}
