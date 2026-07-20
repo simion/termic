@@ -58,7 +58,14 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
           <Dialog.Content
             onCloseAutoFocus={onCloseAutoFocus}
             className={cn(
-              "relative grid w-full max-w-md gap-2 pointer-events-auto",
+              // Single-column flex, NOT `grid` (shadcn's default): WebKit on
+              // fractionally scaled displays (e.g. "More Space" on macOS 26)
+              // sizes grid tracks inside an overflow container against the
+              // padding box, laying children ~2×padding too wide and clipping
+              // the right edge (Browse/Add buttons unreachable, issues #120,
+              // #126). Flex-column stretch resolves widths on the plain block
+              // path, which doesn't have the rounding bug.
+              "relative flex flex-col w-full max-w-md gap-2 pointer-events-auto",
               "rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-1)] p-5 shadow-2xl",
               // Always cap at viewport height with internal scroll so
               // tall content (multi-repo project create with many
