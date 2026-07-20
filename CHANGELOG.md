@@ -4,6 +4,43 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [0.23.0] - 2026-07-20
+
+Agent races, Git branch switching, big battery savings, stop tasks, crisper terminal text.
+
+### Features
+- Agent races: fire one prompt at several agents at once, each in its own fresh worktree, and watch them attempt the same task side by side. When every racer finishes, compare their diffs in an N-up view and adopt the winner into your main checkout, optionally archiving the rest in the same step. Races take a name and an editable branch segment, and can launch sandboxed or in YOLO so permission prompts don't stall unattended racers. The launch dialog shows live progress while the worktrees spin up, and a race strip above the racers tracks each one with a live work-state badge. Start one from a project's actions menu. (#113)
+- The Git tab shows your current branch and lets you switch to another local branch, Fork-style: local work (including untracked files) is stashed, the branch is checked out, and the stash is re-applied. A failed checkout rolls the stash back, and a re-apply conflict is surfaced instead of losing your changes. (#101, #111)
+- Update a task branch without leaving the Git tab: pull from its upstream, or merge or rebase the task's base branch. Each op fetches first and auto-stashes local work. Conflicts are left in place for you to resolve in the task's terminal, and a conflicting stash re-apply is reported instead of being passed off as restored. (#101, #116)
+- Worktree tasks symlink the project's agent config folders (.claude, .gemini, .codex by default, editable in Settings) so an agent working in a worktree keeps its skills, subagents, and permissions. (#112)
+- Dismiss repos you no longer care about from the Add Project picker; a "Show hidden" row brings them back. The choice survives restarts without deleting anything from disk. (#109)
+- A default-off "Show all fonts" checkbox in the font pickers widens the list from detected monospace fonts to the full installed catalog, for monospace fonts the detector misses. (#114)
+- The work-in-progress spinner (agent tab and sidebar icon) is on by default now. If you turned it off, your choice sticks.
+- Resume lists (the tab strip's + menu and the New task launcher) are one-line rows now: a compact greyed age (10m, 2d) sits before the name instead of a second line under it.
+- Stop a task without archiving it: "Stop task" in the task row menu (and "Stop all tasks" on the project) kills its agents and frees the memory while keeping every session. Opening the task again resumes the conversations where they left off. (#119)
+- Cmd/Ctrl+click a file path in terminal output to open it in the editor. (#117)
+
+### Improvements
+- Termic no longer drains your battery while idle. The PTY backend stopped sleep-polling (about 1,900 CPU wakeups per second, gone) and hidden panes stop rendering entirely instead of drawing every background repaint. Combined power drops up to 37% while agents stream, 15% at idle. (#121)
+
+### Bug fixes
+- Terminals no longer render mixed-height, wavy text after a cold start. The WebGL glyph atlas now waits on font faces Termic owns instead of trusting the browser's font registry, which reported ready before the font was. (#70, #100)
+- The font pickers list only fonts actually installed on your machine, alphabetized, instead of offering curated names that silently fell back to the bundled font when picked. (#110)
+- Option+click makes a selection in terminal panes even when the running program has captured the mouse. (#105)
+- codex and grok no longer pop a startup update menu that swallows an injected prompt on unattended spawns (run-prompt into a new agent). When you are at the keyboard they still ask.
+- The contact link copies the email address to the clipboard as a fallback when a hijacked mailto: handler eats the click. (#106)
+- Creating a group pre-selects the suggested name so you can type straight over it. (#107)
+- Clicking a changed file shows the diff its pane implies: an Unstaged row diffs the index against your working tree, a Staged row diffs HEAD against the index (what git diff and git diff --cached show). A file staged and then edited again no longer shows the same full diff from both rows. (#122)
+- The built-in diff viewer stays precise on large files (pnpm-lock.yaml) instead of painting whole regions as changed; it matches git diff now. (#118)
+
+### Thanks
+- Orel Ohayon (@Orellius) for agent races, branch switching and updates with stash re-apply, worktree config symlinks, dormant repo dismissal, and the terminal font atlas fix.
+- Michael Hohlios (@MHohlios) for the installed-fonts picker, the show-all-fonts escape hatch, the group-name pre-select, and for hunting down the idle battery drain (PTY sleep-polling plus hidden panes that never stopped rendering).
+- @dancras for Cmd/Ctrl+click to open file paths from terminal output.
+- @shimonenator for the bug reports behind both diff fixes and for the stop-without-archiving request.
+- Nikhil Verma (@nikhilweee) for Option+click selection.
+- Adam Matan (@adamatan) for the mailto fallback.
+
 ## [0.22.0] - 2026-07-14
 
 Signed and notarized by Apple, adopt existing worktrees, custom work-done signals.
