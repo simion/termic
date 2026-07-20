@@ -24,6 +24,7 @@ import { reviewCommentsExtension, dispatchFileComment } from "./reviewCommentsEx
 import { MessageSquarePlus } from "lucide-react";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
+import { attachHiddenScrollRestore } from "@/lib/hiddenScrollRestore";
 
 type Mode = "side" | "unified";
 const LS_DIFF_MODE = "diffMode";
@@ -68,6 +69,15 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   const [fp, setFp] = useState("");
   const viewed = useIsViewed(task.id, tab.path, fp);
   const hostRef = useRef<HTMLDivElement>(null);
+  // The host div is the scroll container for both modes; its position
+  // dies with the box when a hidden task/tab goes display:none in
+  // WKWebView — record and re-apply it. The host outlives mode/file
+  // swaps (only innerHTML is replaced), so attach once.
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return;
+    return attachHiddenScrollRestore(el);
+  }, []);
   // Only one of these is mounted at a time depending on `mode`.
   const mergeRef = useRef<MergeView | null>(null);
   const editorRef = useRef<EditorView | null>(null);
