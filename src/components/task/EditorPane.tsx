@@ -29,6 +29,7 @@ import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { properties } from "@codemirror/legacy-modes/mode/properties";
 import { taskFileRead, taskFileWrite } from "@/lib/ipc";
+import { attachHiddenScrollRestore } from "@/lib/hiddenScrollRestore";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -183,6 +184,7 @@ export function EditorPane({ task, tab, active, onContent }: {
 
   useEffect(() => {
     let alive = true;
+    let detachScrollRestore: (() => void) | null = null;
     // Reset per-load state up front. This effect re-runs when the path
     // changes (preview tabs reuse one instance + swap tab.path), so a
     // stale error from a prior file — e.g. a binary like .DS_Store that
@@ -259,6 +261,9 @@ export function EditorPane({ task, tab, active, onContent }: {
           parent: hostRef.current,
         });
         viewRef.current = view;
+        // Scroll position dies with the box when a hidden task/tab goes
+        // display:none in WKWebView — record and re-apply it.
+        detachScrollRestore = attachHiddenScrollRestore(view.scrollDOM);
         setLoading(false);
         // Seed the preview/split wrapper with the live view so it can
         // render before the user makes any edit.
@@ -281,7 +286,7 @@ export function EditorPane({ task, tab, active, onContent }: {
         setLoading(false);
       }
     })();
-    return () => { alive = false; viewRef.current?.destroy(); viewRef.current = null; };
+    return () => { alive = false; detachScrollRestore?.(); viewRef.current?.destroy(); viewRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id, tab.path]);
 
