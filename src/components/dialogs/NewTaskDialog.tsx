@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
-import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo } from "@/lib/ipc";
+import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches } from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
 import { slugify, branchify, cn } from "@/lib/utils";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
@@ -20,6 +20,23 @@ import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
+
+// Nudge a proposed branch off any name that already exists in the repo — a
+// task archived without deleting its branch leaves the name behind, and reusing
+// it fails or silently checks out stale commits (issue #129). If the base ends
+// in `-<n>` we bump that number; otherwise we append `-2`, then `-3`, ... until
+// the name is free. Only the auto-filled default is adjusted; a branch the user
+// typed is never touched (empty `existing` short-circuits here).
+function uniqueBranch(base: string, existing: string[]): string {
+  if (!base || existing.length === 0) return base;
+  const taken = new Set(existing);
+  if (!taken.has(base)) return base;
+  const m = base.match(/^(.*)-(\d+)$/);
+  const stem = m ? m[1] : base;
+  let n = m ? parseInt(m[2], 10) + 1 : 2;
+  while (taken.has(`${stem}-${n}`)) n++;
+  return `${stem}-${n}`;
+}
 
 // Remember the user's last-used task type + sandbox mode across opens —
 // most people always work one way (always worktree, always enforce), so
@@ -134,6 +151,10 @@ export function NewTaskDialog() {
   const [importList, setImportList] = useState<ImportableWorktree[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [importSelected, setImportSelected] = useState<string | null>(null);
+  // Existing local branch names in the project's repo, loaded on open so the
+  // auto-filled branch can dodge one still hanging around from an archived
+  // task (issue #129). Empty until loaded / for non-git / multi projects.
+  const [existingBranches, setExistingBranches] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   // Ref guard against double-submit. React batches setBusy(true) so the
   // button's `disabled` only updates on the next render — but during a
@@ -261,6 +282,12 @@ export function NewTaskDialog() {
     const wantImport = !!seed?.importMode && canImp;
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setImportMode(wantImport);
+    // Load existing branches so `derived` can auto-number past a collision
+    // (#129). Only meaningful for single-repo git projects (worktree mode).
+    setExistingBranches([]);
+    if (canImp) {
+      projectGitBranches(projectId).then(setExistingBranches).catch(() => {});
+    }
     // Non-git folders can't be worktreed → force repo_root. Everything else
     // restores the user's last-used type (main checkout by default). Shares
     // the `newTaskLastMode` key with the sidebar quick menu, so the toggle
@@ -302,13 +329,17 @@ export function NewTaskDialog() {
   const derived = useMemo(() => {
     const trimmed = name.trim();
     if (!trimmed) return "";
-    if (trimmed.includes("/")) return branchify(trimmed);
-    // Normalize the user's prefix at use time: drop surrounding slashes /
-    // whitespace. An empty prefix yields a bare slug (no leading slash).
-    const prefix = branchPrefix.trim().replace(/^\/+|\/+$/g, "");
-    const slug = slugify(trimmed);
-    return prefix ? `${prefix}/${slug}` : slug;
-  }, [name, branchPrefix]);
+    const base = trimmed.includes("/")
+      ? branchify(trimmed)
+      // Normalize the user's prefix at use time: drop surrounding slashes /
+      // whitespace. An empty prefix yields a bare slug (no leading slash).
+      : (() => {
+          const prefix = branchPrefix.trim().replace(/^\/+|\/+$/g, "");
+          const slug = slugify(trimmed);
+          return prefix ? `${prefix}/${slug}` : slug;
+        })();
+    return uniqueBranch(base, existingBranches);
+  }, [name, branchPrefix, existingBranches]);
   useEffect(() => { if (!branchEdited) setBranch(derived); }, [derived, branchEdited]);
 
   // Load the project's importable (existing, unopened) worktrees.

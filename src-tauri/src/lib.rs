@@ -5121,6 +5121,24 @@ struct CheckoutResult {
     conflicted: bool,
 }
 
+/// Local branch names for a project's repo, before any task exists. Used by
+/// the New Task dialog to auto-number the proposed branch away from a name
+/// that's still around from an archived task (issue #129). Empty for non-git
+/// projects (nothing to collide with).
+#[tauri::command]
+async fn project_git_branches(project_id: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let proj = load_projects().into_iter().find(|p| p.id == project_id)
+            .ok_or("project not found")?;
+        if proj.non_git { return Ok(Vec::new()); }
+        let repo = PathBuf::from(&proj.root_path);
+        let out = git(&["branch", "--format=%(refname:short)"], &repo).map_err(|e| e.to_string())?;
+        Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Local branch names for a task's repo (host, or a member when `dir_name` is
 /// set). Used by the Git tab's branch switcher.
 #[tauri::command]
@@ -9071,7 +9089,7 @@ pub fn run() {
             task_grep_start, task_grep_cancel,
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_files, task_list_files_for_finder, task_send_diff_to_main,
-            task_changes, task_git_status, task_git_branches, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
+            task_changes, task_git_status, task_git_branches, project_git_branches, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,
