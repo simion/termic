@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Termic uses your microphone for Claude Code voice input.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Termic uses your local network so terminal processes can connect to development services and devices on your network.</string>
 </dict>
 </plist>
