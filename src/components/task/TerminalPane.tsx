@@ -483,7 +483,7 @@ const captureArmedRef = useRef(false);
     function handlePathTarget(target: { path: string; line?: number; col?: number }, x: number, y: number) {
       ipc.taskListFilesForFinder(task.id)
         .then(async files => {
-          const matches = resolvePathClick(files, target.path);
+          let matches = resolvePathClick(files, target.path);
           if (matches.length === 1) {
             openPathFile(matches[0], target.line, target.col);
             return;
@@ -497,6 +497,15 @@ const captureArmedRef = useRef(false);
             const stat = await ipc.taskPathStat(task.id, rel).catch(() => null);
             if (stat?.exists && !stat.is_dir) {
               openPathFile(rel, target.line, target.col);
+              return;
+            }
+            // Still nothing: same exact suffix match, but over the whole
+            // working tree including gitignored files (an agent printing
+            // "meeting/agenda.md" from an ignored scratch folder). Rust
+            // filters and caps, so the big listing never crosses IPC.
+            matches = await ipc.taskMatchIgnoredFiles(task.id, rel).catch(() => []);
+            if (matches.length === 1) {
+              openPathFile(matches[0], target.line, target.col);
               return;
             }
           }

@@ -6277,6 +6277,71 @@ async fn task_list_files_for_finder(id: String) -> Result<Vec<String>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Segment-boundary suffix match, mirroring `matchesSuffix` in
+/// src/lib/pathMatch.ts: `clicked` must equal the path or match a whole
+/// trailing run of its segments ("agenda.md" matches "notes/agenda.md"
+/// but not "old-agenda.md").
+fn path_suffix_matches(path: &str, clicked: &str) -> bool {
+    path == clicked || path.ends_with(&format!("/{clicked}"))
+}
+
+/// Exact suffix matches for a cmd-clicked path over the WHOLE working
+/// tree, gitignored files included (`git ls-files` without
+/// `--exclude-standard`). Fallback for clicks the finder list can't
+/// resolve (build output, ignored scratch folders); the match runs here
+/// so a node_modules-sized listing never crosses IPC. Personal exclude
+/// globs still apply: a path hidden from the tree and ⌘P must not leak
+/// back in via a click. Shallowest paths first, capped.
+#[tauri::command]
+async fn task_match_ignored_files(id: String, clicked: String) -> Result<Vec<String>, String> {
+    const MAX_MATCHES: usize = 30;
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let q = clicked.trim_start_matches("./").trim_start_matches('/');
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut matches: Vec<String> = Vec::new();
+        let mut scan = |dir: &str, prefix: &str, patterns: &[glob::Pattern]| {
+            if let Ok(o) = std::process::Command::new("git")
+                .args(["ls-files", "--cached", "--others"])
+                .current_dir(dir)
+                .output()
+            {
+                if o.status.success() {
+                    for l in String::from_utf8_lossy(&o.stdout).lines() {
+                        if l.is_empty() || path_is_excluded(patterns, l) {
+                            continue;
+                        }
+                        let p = format!("{prefix}{l}");
+                        if path_suffix_matches(&p, q) {
+                            matches.push(p);
+                        }
+                    }
+                }
+            }
+        };
+        let host_repo_path = load_projects().into_iter().find(|p| p.id == w.project_id)
+            .map(|p| p.root_path).unwrap_or_default();
+        scan(&w.path, "", &compile_exclude_patterns(&host_repo_path));
+        for m in &w.composition {
+            if Path::new(&m.path).exists() {
+                let patterns = compile_exclude_patterns(&member_repo_path(m));
+                scan(&m.path, &format!("{}/", m.dir_name), &patterns);
+            }
+        }
+        matches.sort_by(|a, b| {
+            let da = a.matches('/').count();
+            let db = b.matches('/').count();
+            da.cmp(&db).then_with(|| a.cmp(b))
+        });
+        matches.truncate(MAX_MATCHES);
+        Ok(matches)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ───────────────────────────── helpers ─────────────────────────────
 
 fn slugify(s: &str) -> String {
@@ -9088,7 +9153,7 @@ pub fn run() {
             task_set_right_tabs, task_set_right_tab_session_id,
             task_grep_start, task_grep_cancel,
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
-            task_diff, task_files, task_list_files_for_finder, task_send_diff_to_main,
+            task_diff, task_files, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
             task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
@@ -9918,6 +9983,19 @@ mod tests {
         let (cwd, rel) = resolve_task_git_path_ex(&ws, "frontend", true).unwrap();
         assert_eq!(cwd, member.path());
         assert_eq!(rel, "");
+    }
+
+    #[test]
+    fn path_suffix_matches_respects_segment_boundaries() {
+        assert!(path_suffix_matches("agenda.md", "agenda.md"));
+        assert!(path_suffix_matches("notes/meeting/agenda.md", "agenda.md"));
+        assert!(path_suffix_matches("notes/meeting/agenda.md", "meeting/agenda.md"));
+        // A partial segment is not a match.
+        assert!(!path_suffix_matches("notes/old-agenda.md", "agenda.md"));
+        assert!(!path_suffix_matches("notes/meeting/agenda.md", "eeting/agenda.md"));
+        // The clicked path must be a suffix, not a prefix or infix.
+        assert!(!path_suffix_matches("notes/agenda.md.bak", "agenda.md"));
+        assert!(!path_suffix_matches("agenda.md", "notes/agenda.md"));
     }
 
     #[test]
