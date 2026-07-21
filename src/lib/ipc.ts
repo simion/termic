@@ -365,6 +365,10 @@ export const taskGitStatus = (id: string) => invoke<GitStatus>("task_git_status"
 /** Local branch names for a task's repo (host, or a member via dirName). */
 export const taskGitBranches = (id: string, dirName: string) =>
   invoke<string[]>("task_git_branches", { id, dirName });
+/** Local branch names for a project's repo, before any task exists. Feeds the
+ *  New Task dialog's auto-numbering of the proposed branch (issue #129). */
+export const projectGitBranches = (projectId: string) =>
+  invoke<string[]>("project_git_branches", { projectId });
 /** Fork-style switch: stash local work, checkout `branch`, re-apply the stash. */
 export const taskGitCheckout = (id: string, dirName: string, branch: string) =>
   invoke<CheckoutResult>("task_git_checkout", { id, dirName, branch });
