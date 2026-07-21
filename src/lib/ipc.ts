@@ -111,6 +111,13 @@ export const taskSetYolo = (id: string, yolo: boolean) =>
 export const taskListFilesForFinder = (id: string) =>
   invoke<string[]>("task_list_files_for_finder", { id });
 
+/** Exact-suffix fallback for cmd-clicked paths the finder list can't
+ *  resolve: same segment-boundary rule as resolvePathClick but over the
+ *  whole working tree, gitignored files included. Rust does the
+ *  filtering; only the (capped) matches cross IPC. */
+export const taskMatchIgnoredFiles = (id: string, clicked: string) =>
+  invoke<string[]>("task_match_ignored_files", { id, clicked });
+
 // ───────────────────────────── find in files ─────────────────────────────
 
 export interface GrepHit { path: string; line: number; col: number; preview: string }
