@@ -1168,7 +1168,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     <FolderOpen />
                     Reveal in Finder
                   </ContextMenuItem>
-                  <ContextMenuItem onSelect={() => navigator.clipboard.writeText(p.root_path).catch(() => {})}>
+                  <ContextMenuItem onSelect={() => copyToClipboard(p.root_path, "path")}>
                     <Copy />
                     Copy path
                   </ContextMenuItem>
@@ -2222,12 +2222,7 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
               {w.branch && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
-                  onSelect={() => {
-                    navigator.clipboard.writeText(w.branch).then(
-                      () => useUI.getState().pushToast(`Copied "${w.branch}"`, "success"),
-                      () => useUI.getState().pushToast("Couldn't copy branch name", "error"),
-                    );
-                  }}
+                  onSelect={() => copyToClipboard(w.branch, `"${w.branch}"`)}
                 >
                   <Copy className="h-4 w-4" />
                   <span>Copy branch name</span>
