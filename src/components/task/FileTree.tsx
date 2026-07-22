@@ -285,6 +285,9 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
       await taskPathRename(taskId, rel, name);
       closeStaleTabs(rel);
       refetch(parentRel);
+      // The tree just refetched itself; git status still shows the old
+      // path until the Git tab hears about it.
+      useApp.getState().bumpGitRevision(taskId);
     } catch (e) {
       useUI.getState().pushToast(String(e), "error");
       submittingRef.current = false;
@@ -305,6 +308,8 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
       await taskPathDelete(taskId, rel);
       closeStaleTabs(rel);
       refetch(parentRel);
+      // Same as rename: tree is fresh, tell the Git tab.
+      useApp.getState().bumpGitRevision(taskId);
     } catch (e) {
       useUI.getState().pushToast(String(e), "error");
     }

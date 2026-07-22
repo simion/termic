@@ -214,6 +214,13 @@ export function EditorPane({ task, tab, active, onContent }: {
               dirtyRef.current = false;
               useApp.getState().patchTab(task.id, tab.id, { dirty: false });
               useUI.getState().pushToast(`Saved ${name}`, "success");
+              // Git-only tick (NOT bumpFsRevision: that would make every
+              // open editor — this one included — re-read from disk, and a
+              // keystroke landing between the write and that re-read would
+              // pop a spurious "changed on disk" banner). Must stay in this
+              // .then(): bumped before the write resolves, the status could
+              // be computed against the old file.
+              useApp.getState().bumpGitRevision(task.id);
             })
             .catch(e => useUI.getState().pushToast(`Save failed: ${e}`, "error"));
           return true;

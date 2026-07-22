@@ -327,6 +327,15 @@ export interface AppState {
    *  re-read on the rising edge. Ephemeral (not persisted). */
   fsRevision: Record<string, number>;
   bumpFsRevision: (taskId: string) => void;
+  /** Per-task "git status may have changed" tick — the lighter sibling of
+   *  `fsRevision` for mutations that can't have changed the visible file
+   *  tree or any open editor buffer (an editor ⌘S, a tree rename/delete
+   *  that already refetched its own dir). Only the Git panel re-fetches.
+   *  Using `fsRevision` for these would make every open editor re-read
+   *  its file; after a save that re-read can race fresh keystrokes and
+   *  pop a spurious "changed on disk" banner. Ephemeral (not persisted). */
+  gitRevision: Record<string, number>;
+  bumpGitRevision: (taskId: string) => void;
 }
 
 const LS_COMPACT = "compactSidebar";
@@ -420,6 +429,7 @@ export const useApp = create<AppState>((set, get) => ({
   activeTab: {},
   closedTabs: {},
   fsRevision: {},
+  gitRevision: {},
   view: { page: "dashboard" },
   compactSidebar: initialCompact,
   rightPanelHidden: initialHidden,
@@ -2124,6 +2134,10 @@ export const useApp = create<AppState>((set, get) => ({
 
   bumpFsRevision: (taskId) => set(s => ({
     fsRevision: { ...s.fsRevision, [taskId]: (s.fsRevision[taskId] ?? 0) + 1 },
+  })),
+
+  bumpGitRevision: (taskId) => set(s => ({
+    gitRevision: { ...s.gitRevision, [taskId]: (s.gitRevision[taskId] ?? 0) + 1 },
   })),
 
   setWorkProgress: (taskId, tabId, pct, kind) => set(s => {

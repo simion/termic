@@ -4,6 +4,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveTask } from "@/store/app";
 import { useUI } from "@/store/ui";
 import {
@@ -69,6 +70,13 @@ export function RightPanel() {
   // the file tree + Git refresh below so on-disk changes appear without a
   // window focus cycle or the 4s poll, and without a heavy FS watcher.
   const fsRevision = useApp(s => (task ? s.fsRevision[task.id] ?? 0 : 0));
+  // Lighter sibling: git-status-only tick (editor save, tree rename/delete).
+  // Refreshes the Git tab without forcing the tree or open editors to re-read.
+  const gitRevision = useApp(s => (task ? s.gitRevision[task.id] ?? 0 : 0));
+  // Bumped on window refocus (rate-limited) so files changed externally
+  // while away show up in the tree. Folded into FileTree's reloadToken;
+  // its sameChildren gate makes the no-change case render-free.
+  const [focusReload, setFocusReload] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   // Multi-repo tasks add a Target selector to the footer so
   // Setup/Run can target a composition member. Stored as the
@@ -109,46 +117,92 @@ export function RightPanel() {
     return () => ro.disconnect();
   }, []);
 
+  // Swap a fresh status in ONLY when it actually differs. The 4s poll
+  // mostly returns an identical payload; keeping the previous reference
+  // skips the RightPanel + GitPanel re-render that a fresh object would
+  // force every tick. Deterministic serialization (serde preserves field
+  // order) makes the stringify compare sound, and the per-file `fp`
+  // fingerprints mean any content change defeats it.
+  const applyGitStatus = React.useCallback((next: GitStatus) => {
+    setGitStatus(prev =>
+      prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+  }, []);
+
   // Poll git status (staged/unstaged split) for the Git tab badges + panel.
   // The fetch is reused by GitPanel via the `refreshGit` callback so a
   // stage/unstage/commit reflects immediately instead of waiting for the
   // 4s tick.
   const refreshGit = React.useCallback(() => {
     if (!task) return;
-    taskGitStatus(task.id).then(setGitStatus).catch(() => {});
-  }, [task?.id]);
+    taskGitStatus(task.id).then(applyGitStatus).catch(() => {});
+  }, [task?.id, applyGitStatus]);
+
+  // Window focus mirror for gating the poll. Tauri's onFocusChanged (not
+  // DOM focus/blur): proven reliable in this webview (useAttentionNotifier
+  // uses the same event). A ref, not state — a focus flip must not re-run
+  // the poll effect, just steer the next tick.
+  const winFocused = useRef(true);
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      try {
+        const u = await getCurrentWindow().onFocusChanged(({ payload }) => {
+          winFocused.current = payload;
+        });
+        if (!alive) u(); else unlisten = u;
+      } catch { /* keep polling unconditionally if the event isn't available */ }
+    })();
+    return () => { alive = false; unlisten?.(); };
+  }, []);
+
   // Clear + reload ONLY on a real task switch (task.id), not on every
   // task-object re-patch (window refocus, attention/settled updates re-create the
   // object) — clearing then flashed the Git panel to "Loading…". The poll and
   // the focus refresh below swap fresh status in WITHOUT clearing.
+  // Ticks are skipped while the window is unfocused (3 git subprocesses per
+  // repo per tick add up in the background); the focus handler below does
+  // the catch-up fetch on return.
   useEffect(() => {
     if (!task) { setGitStatus(null); return; }
     setGitStatus(null);
     taskGitStatus(task.id).then(setGitStatus).catch(() => {});
     const id = window.setInterval(() => {
-      taskGitStatus(task.id).then(setGitStatus).catch(() => {});
+      if (!winFocused.current) return;
+      taskGitStatus(task.id).then(applyGitStatus).catch(() => {});
     }, 4000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task?.id]);
 
   // Window regained focus: the user may have run git in an external terminal
-  // while away. Refresh in place (no clear, no "Loading…" flash).
+  // while away. Refresh in place (no clear, no "Loading…" flash), and give
+  // the file tree a rate-limited nudge so externally created/deleted files
+  // appear too (its sameChildren gate keeps the no-change case free). The
+  // limiter absorbs rapid Cmd+Tab flips.
+  const lastFocusReloadAt = useRef(0);
   useEffect(() => {
     if (!task) return;
-    const onFocus = () => refreshGit();
+    const onFocus = () => {
+      refreshGit();
+      const now = Date.now();
+      if (now - lastFocusReloadAt.current > 3000) {
+        lastFocusReloadAt.current = now;
+        setFocusReload(n => n + 1);
+      }
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [task?.id, refreshGit]);
 
-  // Agent terminal settled → its file edits are reflected in git status too.
-  // Refresh in place on the same signal that reloads the file tree below.
-  // Skip the first run (initial fetch above already covers it).
+  // Agent terminal settled (fsRevision) or a git-only mutation happened
+  // (gitRevision: editor save, tree rename/delete) → refresh git status in
+  // place. Skip the first run (initial fetch above already covers it).
   const fsGitFirst = useRef(true);
   useEffect(() => {
     if (fsGitFirst.current) { fsGitFirst.current = false; return; }
     refreshGit();
-  }, [fsRevision, refreshGit]);
+  }, [fsRevision, gitRevision, refreshGit]);
 
   // Header refresh button: re-read both the file tree and git status. The
   // brief `refreshing` flag spins the icon for feedback.
@@ -181,7 +235,12 @@ export function RightPanel() {
             if (!cancelled) appendLine(taskId, kind, ev.payload.line, member);
           });
           const u2 = await listen<{ code: number | null; success: boolean }>(`script-done://${taskId}:${topicMember}:${kind}`, ev => {
-            if (!cancelled) finish(taskId, kind, ev.payload.code, ev.payload.success, member);
+            if (cancelled) return;
+            finish(taskId, kind, ev.payload.code, ev.payload.success, member);
+            // A finished setup/run has usually written to disk (deps,
+            // lockfiles, build output) — fan out the same refresh an agent
+            // settle does. Consumers dedupe, so a no-op script is cheap.
+            useApp.getState().bumpFsRevision(taskId);
           });
           unlisteners.push(u1, u2);
         }
@@ -432,7 +491,7 @@ export function RightPanel() {
           scrolling so it gets the bare flex-1 height with no overflow. */}
       {view === "files" ? (
         <div className="min-h-0 flex-1 overflow-auto py-1">
-          <FileTree taskId={task.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision} refreshToken={fileTreeReload} />
+          <FileTree taskId={task.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision + focusReload} refreshToken={fileTreeReload} />
         </div>
       ) : (
         <div className="min-h-0 flex-1">
@@ -616,7 +675,7 @@ export function RightPanel() {
                   zIndex: footTab === "term" ? 1 : 0,
                 }}
               >
-                <AuxTerminal taskPath={task.path} active={footTab === "term"} />
+                <AuxTerminal taskId={task.id} taskPath={task.path} active={footTab === "term"} />
               </div>
             )}
           </div>
