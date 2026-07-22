@@ -189,6 +189,10 @@ install: build ## Build a release .app, copy it to /Applications (replacing any 
 # --bundles app: just the .app. No .dmg (nothing to distribute) and no updater
 # tarball, which is what wanted TAURI_SIGNING_PRIVATE_KEY.
 beta: ## Build the CURRENT BRANCH as `Termic Beta.app` (parallel install, shared data dir) and launch it.
+	@# A freshly pulled commit can add npm deps (tsc then fails with
+	@# TS2307 "Cannot find module"). npm install is a ~1s no-op when
+	@# node_modules is already in sync, so always run it first.
+	@npm install --no-fund --no-audit
 	@BRANCH="$$(git rev-parse --abbrev-ref HEAD)"; \
 	SHA="$$(git rev-parse --short HEAD)"; \
 	DIRTY=""; \
