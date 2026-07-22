@@ -265,11 +265,17 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
         .then(() => {
           if (opts?.pane && paths.length === 1) focusNext(opts.pane, paths[0]);
           else closePreviewDiff();
-          refresh();
+          // Discard mutates the WORKING TREE (restores tracked files,
+          // deletes untracked ones) — a plain refresh() would update git
+          // status but leave the file tree listing deleted files and open
+          // editors holding the discarded buffer (where a ⌘S would
+          // resurrect it). bumpFsRevision fans out to all of them, git
+          // status included.
+          useApp.getState().bumpFsRevision(task.id);
         })
         .catch(err => pushToast(String(err), "error"));
     });
-  }, [task.id, dir, focusNext, closePreviewDiff, refresh, pushToast]);
+  }, [task.id, dir, focusNext, closePreviewDiff, pushToast]);
 
   const doCommit = (push: boolean) => {
     if (!subject.trim() || committing) return;
@@ -349,7 +355,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
   if (!repo || (status.total_changed === 0 && !pinnedExists)) {
     return (
       <div className="flex h-full flex-col">
-        {!nonGit && <BranchBar task={task} branch={status.repos[0]?.branch ?? task.branch} dir="" refresh={refresh} />}
+        {!nonGit && <BranchBar task={task} branch={status.repos[0]?.branch ?? task.branch} dir="" />}
         <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
           {nonGit
             ? "Not a git repository. Changes aren't tracked here."
@@ -390,7 +396,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
   return (
     <div className="flex h-full flex-col">
       {/* 0. Current branch + switcher (fork-style: stash, checkout, re-apply) */}
-      {!nonGit && <BranchBar task={task} branch={repo?.branch ?? task.branch} dir={dir} refresh={refresh} />}
+      {!nonGit && <BranchBar task={task} branch={repo?.branch ?? task.branch} dir={dir} />}
       {/* 1. Repo sub-tabs (wrapping pills) */}
       {showSubTabs && (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-[var(--color-border-soft)] px-2 py-1.5">
@@ -564,11 +570,10 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff 
 // rebase) via task_git_update. Conflicts are surfaced as error toasts, not
 // swallowed - the op is left in progress for the user to resolve in the
 // terminal.
-function BranchBar({ task, branch, dir, refresh }: {
+function BranchBar({ task, branch, dir }: {
   task: Task;
   branch: string;
   dir: string;
-  refresh: () => void;
 }) {
   const pushToast = useUI(s => s.pushToast);
   const [branches, setBranches] = useState<string[] | null>(null);
@@ -602,7 +607,9 @@ function BranchBar({ task, branch, dir, refresh }: {
       .then(r => {
         setBranches(null);   // stale after an update - reload on next open
         setInfo(null);
-        refresh();
+        // Merge/rebase rewrote the working tree — refresh the file tree and
+        // open editors too, not just git status (same reasoning as discard).
+        useApp.getState().bumpFsRevision(task.id);
         const verb = mode === "rebase" ? "Rebase" : "Merge";
         if (r.conflicted) {
           const finish = mode === "rebase"
@@ -637,7 +644,8 @@ function BranchBar({ task, branch, dir, refresh }: {
     taskGitCheckout(task.id, dir, target)
       .then(r => {
         setBranches(null);   // stale after a switch - reload on next open
-        refresh();
+        // Checkout rewrote the working tree — full fan-out, not just status.
+        useApp.getState().bumpFsRevision(task.id);
         if (r.conflicted) {
           pushToast(`Switched to ${r.branch}. Your stashed changes conflicted on re-apply; resolve them.`, "error", { ttlMs: 8000 });
         } else if (r.stashed) {

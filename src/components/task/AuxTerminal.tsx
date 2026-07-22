@@ -48,6 +48,25 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
   // the cleanup runs (disposes the dead xterm) and the body re-runs (spawns
   // a fresh PTY + xterm).
   const [gen, setGen] = useState(0);
+  // Scratch shells have no agent-settle detection, so commands run here
+  // (git, npm, rm) were invisible to the file tree / Git tab until the next
+  // poll or agent turn. Cheap stand-in: Enter in the shell + the shell's
+  // OSC 0/2 title updates (precmd/preexec in most zsh setups) both hint
+  // "a command ran" — debounce them into one bumpFsRevision. False fires
+  // are fine: every consumer dedupes against unchanged content.
+  const fsBumpTimer = useRef<number | null>(null);
+  const scheduleFsBump = () => {
+    if (!taskId) return;
+    const id = taskId;
+    if (fsBumpTimer.current !== null) window.clearTimeout(fsBumpTimer.current);
+    fsBumpTimer.current = window.setTimeout(() => {
+      fsBumpTimer.current = null;
+      useApp.getState().bumpFsRevision(id);
+    }, 750);
+  };
+  useEffect(() => () => {
+    if (fsBumpTimer.current !== null) window.clearTimeout(fsBumpTimer.current);
+  }, []);
   // Visible when the PTY exits — overlays the dead terminal with a CTA.
   const [exited, setExited] = useState(false);
 
@@ -214,11 +233,17 @@ export function AuxTerminal({ taskId, taskPath, active, autoFocus, onExited, onT
           if (onExited) onExited();
           else setExited(true);
         });
-        term.onData(d => ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(d))).catch(() => {}));
+        term.onData(d => {
+          if (d.includes("\r")) scheduleFsBump();
+          ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(d))).catch(() => {});
+        });
         term.onResize(({ cols, rows }) => ipc.ptyResize(ptyId, rows, cols).catch(() => {}));
         // Surface the shell's OSC 0/2 title (running command / cwd) so the
-        // bottom tab can show it, matching the main agent tabs.
-        term.onTitleChange(t => onTitleRef.current?.(t));
+        // bottom tab can show it, matching the main agent tabs. Title
+        // changes also feed the debounced fs bump: shells that set the
+        // title from precmd fire it right when a command finishes, which
+        // catches commands that outlive the Enter-keyed debounce.
+        term.onTitleChange(t => { onTitleRef.current?.(t); scheduleFsBump(); });
         setTimeout(() => { try { fit.fit(); } catch {} }, 200);
         // Reliable focus for user-created scratch shells (⇧⌘D / + / ⌘T).
         // We do it HERE, once the PTY is live and the grid has rendered,
