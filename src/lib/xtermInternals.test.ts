@@ -35,3 +35,23 @@ describe("xterm bundle still exposes our private reach-ins", () => {
     });
   }
 });
+
+const webglBundle = readFileSync(require.resolve("@xterm/addon-webgl"), "utf8");
+
+// name → the module that reaches for it (same canary contract as above).
+const WEBGL_REACH_INS: Record<string, string> = {
+  // Addon's handle to its WebglRenderer (dumpRenderer + atlasCanvasGuard).
+  _renderer: "terminalRenderer, atlasCanvasGuard",
+  // lib/atlasCanvasGuard.ts — glyph-atlas scratch canvas adoption.
+  _charAtlas: "atlasCanvasGuard",
+  _tmpCanvas: "atlasCanvasGuard",
+  _tmpCtx: "atlasCanvasGuard",
+};
+
+describe("addon-webgl bundle still exposes our private reach-ins", () => {
+  for (const [name, usedBy] of Object.entries(WEBGL_REACH_INS)) {
+    it(`${name} (used by ${usedBy})`, () => {
+      expect(webglBundle.includes(name), `"${name}" is gone from the installed @xterm/addon-webgl bundle; the reach-in in ${usedBy} is now a silent no-op — re-derive it against the new internals`).toBe(true);
+    });
+  }
+});
