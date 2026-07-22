@@ -8987,6 +8987,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        // Rust-side clipboard (NSPasteboard). navigator.clipboard.writeText
+        // is user-activation-gated in WKWebView, and Radix menu onSelect
+        // fires from a synthetic event that carries no activation — every
+        // context-menu "Copy …" silently failed. This has no gesture or
+        // focus requirement. See src/lib/clipboard.ts.
+        .plugin(tauri_plugin_clipboard_manager::init())
         // In-app self-update. Reads its endpoint + pubkey from
         // tauri.conf.json → plugins.updater. Frontend calls
         // `check()` / `downloadAndInstall()` via @tauri-apps/plugin-updater.

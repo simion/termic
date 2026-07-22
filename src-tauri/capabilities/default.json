@@ -9,6 +9,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
     "core:window:allow-minimize",
+    "clipboard-manager:allow-write-text",
     "opener:default",
     "notification:default",
     "dialog:default",

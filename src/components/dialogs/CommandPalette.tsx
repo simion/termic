@@ -14,6 +14,7 @@ import {
   Check, ChevronLeft, type LucideIcon,
 } from "lucide-react";
 import { useUI } from "@/store/ui";
+import { copyToClipboard } from "@/lib/clipboard";
 import { useApp } from "@/store/app";
 import { usePrefs, type BuiltinThemeMode, type ThemeMode } from "@/store/prefs";
 import { useUpdate } from "@/store/update";
@@ -180,10 +181,7 @@ export function CommandPalette() {
         cmds.push({
           id: "copy-branch", section: "Task", label: "Copy branch name",
           suffix: task.branch, icon: GitBranch, keywords: "git clipboard",
-          run: act(() => {
-            navigator.clipboard.writeText(task.branch).catch(() => {});
-            useUI.getState().pushToast(`Copied "${task.branch}"`);
-          }),
+          run: act(() => { void copyToClipboard(task.branch, `"${task.branch}"`); }),
         });
       }
       cmds.push({

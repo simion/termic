@@ -53,6 +53,7 @@ base64 = "0.22"
 # handler (native PDF preview). Already in the tree via tauri/url, so pinning
 # it direct doesn't change resolution.
 percent-encoding = "2"
+tauri-plugin-clipboard-manager = "2.3.2"
 
 # macOS-only: raw Objective-C bridge used to round the window's content
 # layer on macOS Tahoe (26+) so the WKWebView corners match the system's
