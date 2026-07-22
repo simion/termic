@@ -10,6 +10,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import type { Terminal } from "@xterm/xterm";
 import { usePrefs } from "@/store/prefs";
 import { terminalFontReady, isTerminalFontReady } from "@/lib/terminalFontReady";
+import { keepAtlasCanvasConnected } from "@/lib/atlasCanvasGuard";
 import * as ipc from "@/lib/ipc";
 
 function dumpRenderer(addon: WebglAddon | null): void {
@@ -95,8 +96,14 @@ export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
     try {
       const a = new WebglAddon();
       a.onContextLoss(() => a.dispose());
+      // Atlas swaps (font/theme/dpr). Microtask: the event fires before the
+      // renderer stores the new atlas; its warm-up runs later, on idle.
+      a.onChangeTextureAtlas(() => queueMicrotask(() => { if (!disposed) keepAtlasCanvasConnected(a); }));
       term.loadAddon(a);
       addon = a;
+      // Initial atlas (born inside loadAddon; fires the event too early for
+      // the addon to forward it). Park before the idle warm-up rasterizes.
+      keepAtlasCanvasConnected(a);
     } catch {
       addon = null;  // WebGL unsupported → xterm's DOM renderer remains
     }
@@ -126,6 +133,8 @@ export function loadTerminalRenderer(term: Terminal): { dispose(): void } {
     dispose() {
       disposed = true;
       dumpTimers.forEach(t => window.clearTimeout(t));
+      // Park the shared atlas canvas before this pane's DOM unmounts with it.
+      keepAtlasCanvasConnected(addon, term.element);
       try { addon?.dispose(); } catch { /* already gone */ }
     },
   };
