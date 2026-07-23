@@ -1,0 +1,31 @@
+[package]
+name = "termic-cli"
+version = "0.1.0"
+description = "Thin client for the Termic app's control socket. Bundled in Termic.app as a sidecar; installed onto PATH as `termic`."
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+workspace = "../src-tauri"
+
+# The on-disk binary is `termic-cli`, NOT `termic`: tauri-build rejects a
+# sidecar named like the app's cargo package, and `Termic` vs `termic`
+# would collide inside Contents/MacOS on case-insensitive APFS anyway.
+# The PATH install symlinks it as `termic`; clap's display name is
+# "termic" regardless of argv[0].
+[[bin]]
+name = "termic-cli"
+path = "src/main.rs"
+
+[lib]
+name = "termic_cli"
+path = "src/lib.rs"
+
+# Links ONLY termic-proto, never the app's lib.rs (docs/plans/cli.md).
+# Keep this list short: the CLI must stay milliseconds-fast and
+# dependency-light.
+[dependencies]
+termic-proto = { path = "../termic-proto" }
+serde = "1"
+serde_json = "1"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+dirs = "5"
