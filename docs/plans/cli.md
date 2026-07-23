@@ -2,8 +2,12 @@
 
 Status: Phase 0 implemented (PR #132) - `termic-proto` + `termic-cli`,
 the socket server, `open`/`list`/`status`, sidecar bundling, PATH install,
-and single-instance-per-data-dir. Phase 1+ pending. Sections below note
-where the implementation refined the original design.
+and single-instance-per-data-dir. Phase 1 implemented on top - `new`
+(setup streaming, delivery-confirmed prompt injection, `--wait`), `wait`,
+`archive`, `project add|list|remove`, the Rust-side agent-state cache,
+`help --json`, and the `TERMIC_TASK`/`TERMIC_CLI` env advertisement
+(protocol v2). Phase 2+ pending. Sections below note where the
+implementation refined the original design.
 
 A `termic` command that creates tasks, lists them with live agent state, focuses
 the GUI, injects prompts, and attaches a real TTY to an agent's PTY, from any
@@ -353,6 +357,35 @@ then the MCP-native upgrade for orchestrators that want tools instead of a
 shell - same CLI, same auth, same policy underneath. Env advertisement and
 the help conventions land with Phase 1, when the verbs an agent needs exist.
 
+Two conventions field testing settled (Phase 1):
+
+- **The result convention is a file drop.** Agent terminal output is not
+  readable from the CLI (PTY bytes are rendered by xterm, retained
+  nowhere server-side), so the documented pattern - stated in `new
+  --help` and the agent skill - is: the prompt tells the created agent
+  to write its deliverable to a named file in the task directory;
+  `--wait` + exit 0 + read `<path>/RESULT.md` closes the loop.
+  Candidate Phase 2 upgrades, recorded so scoping starts here: a small
+  Rust-side per-PTY ring buffer enabling `termic logs <task>` (and
+  attach-with-backlog); and `termic result <task>`, reading the agent's
+  last message from its session transcript via the task's persisted
+  session id (agent-specific: trivial for claude's JSONL, per-agent
+  readers otherwise - the file convention stays the agent-agnostic
+  floor). Unattended runs also need `--sandbox enforce` (the cage
+  self-approves permission prompts) or `--yolo`, or the agent stops at
+  its first permission dialog; `new --help` says so.
+- **Agent know-how ships vendor-neutral.** Passive help relies on agent
+  initiative, so two agnostic layers close the gap: `TERMIC_CLI_HELP`
+  (injected beside `TERMIC_CLI`, the `TERMIC_SANDBOX_HELP` precedent)
+  carries a two-line version of the conventions every agent sees in its
+  env; and docs/cli-agent-instructions.md is the canonical instructions
+  block that drops unchanged into `AGENTS.md` (codex / gemini / cursor),
+  `CLAUDE.md`, or any agent's instruction channel. A vendor-specific
+  skill wrapper was considered and rejected: Claude-only distribution
+  is not worth maintaining a second copy. Phase 2 adds an install
+  action for the block; `termic mcp` (Phase 3) supersedes all of it
+  for MCP-native orchestrators.
+
 ## Security: the socket is a sandbox boundary
 
 This is the trap. The whole point of Enforce mode is that the agent's PTY
@@ -553,6 +586,49 @@ protocol change.
   path for Claude Code agents specifically: install Stop/Notification hooks
   into spawned agents for exact push-based done/needs-input signals instead
   of heuristics.
+
+  Phase 1 implementation notes, where reality refined the sketch:
+  - The push channel is `cli_agent_states`: the webview
+    (src/lib/cliAgentState.ts) pushes a FULL per-task snapshot `{state,
+    tabs, queued, capable}` on every debounced store flip plus a 20s
+    unchanged re-push as a freshness heartbeat; the server treats a cache
+    older than 120s as "the UI stopped reporting" and fails waits instead
+    of trusting a frozen snapshot (but answers first if the cached state
+    is already quiescent - an idle occluded webview is not a dead one).
+  - Quiescence = settled AND `queued == 0` (the per-tab message queues),
+    exactly as designed; `capable` (workDoneCapable per tab) is what lets
+    `wait` refuse opted-out agents server-side.
+  - Delivery confirmation is `cli_prompt_report`: the server mints a
+    prompt id, registers interest BEFORE the webview learns it, and the
+    injection path (deliverMessage, which resolves only after text + CR
+    are written) reports delivered/failed. No report inside 90s = exit 9.
+    One honesty compromise: if delivery confirmed but the turn's
+    "working" edge is never observed (classifier miss) and the agent
+    sits idle 30s, the wait calls it settled rather than hanging.
+  - Streamed replies are NDJSON events (`setup_output`, `created`,
+    `prompt_delivered`, `state`, `heartbeat`) before the final Reply;
+    heartbeats every ~10s keep the CLI's 30s read timeout honest during
+    silent setups and long waits, and a failed heartbeat write is how a
+    server-side watch notices the client hung up (Ctrl-C) and stops.
+  - Setup streaming tees the setup TAB's PTY output (the webview
+    subscribes to the same `pty://<id>` events xterm renders and
+    forwards chunks as RPC progress), so the CLI sees exactly what the
+    GUI's setup tab shows, and only until spawn.
+  - Creation goes through one app-wide create lock in the webview
+    (src/lib/createLock.ts), now shared by the New Task dialog, quick
+    create, agent races AND the CLI handler, closing the destructive
+    same-name interleave for the GUI paths too. Branches auto-number
+    past existing names (the dialog's uniqueBranch, now shared).
+  - `new -p` marks the task's default tab unattended
+    (lib/unattendedSpawns.ts) so UNATTENDED_SPAWN_ARGS compose in and a
+    startup update menu can't swallow the injected prompt - the same
+    mechanism race cohorts use.
+  - The CLI reconnects before any post-confirmation request (archive,
+    project remove, the unregistered-project add flow): a human can sit
+    on a y/N prompt longer than the server's 30s idle timeout.
+  - Protocol bumped to v2; the version check is direction-aware ("Termic
+    updated, rerun" vs "restart Termic") since a stale RUNNING app under
+    a fresh bundle is the likelier skew after an auto-update.
 - **Phase 2**: `termic send` (same `--wait`), `termic apply`, `termic attach`
   with `--shell` (Rust-side PTY
   tee, raw mode, SIGWINCH -> `pty_resize`, detach key).
