@@ -47,6 +47,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `find-in-files.e2e.ts` |
 | ✅ Editor search | Mod-f opens the CodeMirror search panel | `editor.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
+| ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
+| ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
 
 ## Roadmap (todo)
 
@@ -73,7 +75,7 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Create/rename/delete a file via context menu.
 
 ### Run & scripts (#54, #124)
-- ⬜ P1 Configure run scripts via the **Run config modal** (.termic.yaml); the **Run** button launches/streams them.
+- ⬜ P1 Configure `.termic.yaml` run scripts and launch them via the **Run** button.
 - ⬜ P1 **Stop** a running script; Setup script.
 - ⬜ P2 Run at repo root (spotlight).
 
@@ -85,7 +87,6 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Discover repos (scan folder); multi-member project; repo config.
 
 ### Settings (broader)
-- ⬜ P1 **Agents** section: add/edit/disable an agent CLI.
 - ⬜ P1 **Sandbox** settings (global default; per-task enable → SIGKILLs live PTYs).
 - ⬜ P2 Fonts (editor/terminal); prompts management; keybindings.
 
