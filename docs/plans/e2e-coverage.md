@@ -43,6 +43,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ File finder | ⌘P lists the repo's files; selecting one opens an editor tab | `file-finder.e2e.ts` |
 | ✅ Git stage/commit | Stage a changed file (moves to staged); commit → tree clean | `git-commit.e2e.ts` |
 | ✅ Task rename/delete | Rename updates store+sidebar; delete removes the task entirely | `task-lifecycle.e2e.ts` |
+| ✅ Git diff | Open a diff tab for a changed file | `git-dirty.e2e.ts` |
+| ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `find-in-files.e2e.ts` |
 
 ## Roadmap (todo)
 
@@ -61,13 +63,11 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Image/PDF preview; language highlighting.
 
 ### Git & diff
-- ⬜ P1 Open a **diff** (DiffPane) for a changed file.
 - ⬜ P1 Unstage a file; commit-and-push (mock remote).
 - ⬜ P2 Multi-repo project status.
 
 ### File tree
 - ⬜ P1 Expand/collapse folders; reveal/locate.
-- ⬜ P1 **Find in files** (⌘⇧F).
 - ⬜ P2 Create/rename/delete a file via context menu.
 
 ### Run & scripts (#54, #124)

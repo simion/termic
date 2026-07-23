@@ -60,4 +60,27 @@ describe("git dirty tree", () => {
 
     await browser.saveScreenshot(artifact("git-dirty.png"));
   });
+
+  it("opens a diff tab for the changed file", async () => {
+    // README is dirty from the previous case; open its unstaged diff.
+    await browser.execute((id) => {
+      window.__termic!.useApp.getState().openPreviewTab(id, {
+        type: "diff",
+        path: "README.md",
+        title: "README.md",
+        scope: "unstaged",
+      });
+    }, taskId);
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) =>
+            (window.__termic!.useApp.getState().tabs[id] ?? []).some(
+              (t: any) => t.type === "diff" && t.path === "README.md",
+            ),
+          taskId,
+        ),
+      { timeout: 8_000, timeoutMsg: "diff tab never opened" },
+    );
+  });
 });
