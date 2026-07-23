@@ -70,4 +70,22 @@ describe("editor open", () => {
       timeoutMsg: "double-click did not persist the preview tab",
     });
   });
+
+  it("opens the search panel with Mod-f", async () => {
+    // Mod-f opens CodeMirror's search panel on the open editor. (Match
+    // highlighting is driven by CM's own input handling, which a synthetic
+    // input event doesn't reliably trigger; asserting the panel opens is the
+    // robust check that search is wired.)
+    await browser.execute(() => {
+      document
+        .querySelector(".cm-content")!
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true }),
+        );
+    });
+    await browser.waitUntil(
+      () => browser.execute(() => !!document.querySelector(".cm-search input")),
+      { timeout: 5_000, timeoutMsg: "search panel never opened" },
+    );
+  });
 });

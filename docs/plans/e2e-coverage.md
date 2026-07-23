@@ -45,6 +45,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ Task rename/delete | Rename updates store+sidebar; delete removes the task entirely | `task-lifecycle.e2e.ts` |
 | ✅ Git diff | Open a diff tab for a changed file | `git-dirty.e2e.ts` |
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `find-in-files.e2e.ts` |
+| ✅ Editor search | Mod-f opens the CodeMirror search panel | `editor.e2e.ts` |
+| ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 
 ## Roadmap (todo)
 
@@ -59,7 +61,7 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Second agent in one task; YOLO toggle; AuxTerminal (bottom terminal).
 
 ### Editor
-- ⬜ P1 Search/replace panel; markdown preview / split.
+- ⬜ P1 Markdown preview / split; replace-in-file.
 - ⬜ P2 Image/PDF preview; language highlighting.
 
 ### Git & diff
@@ -79,7 +81,7 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Sidebar toggle; right-panel toggle.
 
 ### Projects
-- ⬜ P1 **Add a project** (NewProjectDialog); rename / remove / reorder.
+- ⬜ P1 Project rename / reorder / group (add & remove covered).
 - ⬜ P2 Discover repos (scan folder); multi-member project; repo config.
 
 ### Settings (broader)
