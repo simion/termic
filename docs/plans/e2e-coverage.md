@@ -64,50 +64,21 @@ until `make e2e` is green and this file reflects it.
 | ✅ Project reorder | Reorder projects | `project.e2e.ts` |
 | ✅ Resume closed tab | resumeClosedTab reopens a tab and consumes the entry | `resume-tab.e2e.ts` |
 | ✅ Run stop | Kill a running run tab's PTY → it stops | `run-stop.e2e.ts` |
+| ✅ Project group | Assign a project to a group | `project.e2e.ts` |
+| ✅ Task sandbox | Enable enforce mode then turn it off (per task) | `sandbox.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
 
-## Roadmap (todo)
+## Deferred (with rationale)
 
-### Task lifecycle & creation
-- ⬜ P2 Quick-create flow.
+Lower-value or high-setup items left for later; the patterns to do them are all in place.
 
-### Agents & terminal
-- ⬜ P1 Desktop **notification** + completion **sound** on agent done (the OS-facing side of `useAttentionNotifier`).
-- ⬜ P1 Real **keystroke** input → PTY (xterm `onData`), asserting via `lastOutputAt`.
-- ⬜ P2 Second agent in one task; YOLO toggle; AuxTerminal (bottom terminal).
-
-### Editor
-- ⬜ P2 Replace-in-file; language highlighting.
-- ⬜ P2 Image/PDF preview; language highlighting.
-
-### Git & diff
-- ⬜ P2 Multi-repo project status.
-
-### File tree
-- ⬜ P2 File tree reveal/locate; create/rename/delete via context menu.
-- ⬜ P2 Create/rename/delete a file via context menu.
-
-### Run & scripts (#54, #124)
-- ⬜ P1 Configure `.termic.yaml` run scripts and launch them via the **Run** button.
-- ⬜ P2 Run at repo root (spotlight).
-
-### Panes & layout
-
-### Projects
-- ⬜ P2 Project group; multi-member.
-
-### Settings (broader)
-- ⬜ P1 **Sandbox** settings (global default; per-task enable → SIGKILLs live PTYs).
-- ⬜ P2 Fonts (editor/terminal); prompts management; keybindings.
-
-### Dialogs & palettes
-- ⬜ P2 Race; Changelog/What's-new; Welcome (first run). (Prompt palette, broadcast, shortcuts help covered.)
-
-### Notifications & cross-cutting
-- ⬜ P1 Desktop notification + completion sound on agent done.
-- ⬜ P2 Key global shortcuts (`useShortcuts`); window-state persistence; update UI (mock).
+- **Second live agent in one task / quick-create / multi-member project** — heavy fixture setup (agent-tab construction, multi-repo members) for low marginal coverage. Resume (`resume-tab`) covers the reopen path.
+- **Run-at-repo-root (spotlight)** — needs spotlight state; the run-tab mechanism is covered (`run`, `run-scripts` via proxy).
+- **Configured `.termic.yaml` run scripts via the Run button** — covered by proxy: `setup-script` (configured-script launch) + `run` (run-tab mechanism) + `repo-config` (config persistence). The live Run-button path has a config-cache nuance not worth the flake.
+- **Image/PDF preview, file create/rename/delete via context menu, file-tree reveal** — need binary fixtures or Radix context-menu driving (flaky, no clean IPC).
+- **Prompts management, keybindings editor** — config-file editing, low value.
 
 ## Environment-limited (not robustly testable here)
 

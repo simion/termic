@@ -70,6 +70,25 @@ describe("project add/remove", () => {
     );
   });
 
+  it("assigns the project to a group", async () => {
+    const id = projectId!;
+    await browser.execute(async (i) => {
+      await window.__termic!.ipc.projectSetGroup([i], "e2e-group");
+      await window.__termic!.useApp.getState().loadAll();
+    }, id);
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (i) =>
+            window.__termic!.useApp
+              .getState()
+              .projects.find((p: any) => p.id === i)?.group === "e2e-group",
+          id,
+        ),
+      { timeout: 8_000, timeoutMsg: "project group never applied" },
+    );
+  });
+
   it("renames the project", async () => {
     const id = projectId!;
     await browser.execute(async (i) => {
