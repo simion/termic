@@ -61,13 +61,24 @@ export function loadPersonalRunConfig(projectId: string): RunConfig {
 
 /** Read the committed (`.termic.yaml`) run config. Empty on missing config. */
 export async function loadSharedRunConfig(projectId: string): Promise<RunConfig> {
+  return (await loadRunConfigs(projectId)).shared;
+}
+
+/** Load both run configs plus whether the repo has a committed `.termic.yaml`.
+ *  `hasSharedFile` drives the dialog's default tab: yaml when a committed file
+ *  exists (matching Settings), else personal. One config read, not two. */
+export async function loadRunConfigs(projectId: string): Promise<{ personal: RunConfig; shared: RunConfig; hasSharedFile: boolean }> {
   const yaml = await repoConfigLoad(projectId).catch(() => null);
   const s = yaml?.scripts;
   return {
-    run: s?.run ?? "",
-    setup: s?.setup ?? "",
-    preview: s?.preview_url ?? "",
-    commands: s?.run_scripts ?? [],
+    personal: loadPersonalRunConfig(projectId),
+    shared: {
+      run: s?.run ?? "",
+      setup: s?.setup ?? "",
+      preview: s?.preview_url ?? "",
+      commands: s?.run_scripts ?? [],
+    },
+    hasSharedFile: !!yaml,
   };
 }
 

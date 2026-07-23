@@ -60,7 +60,7 @@ interface UIState {
    *  commands to manage, null = closed. `initialAdd`, when set, pre-appends a
    *  new row (e.g. opened from a file-tree "Add to Run scripts"). Lives in the
    *  UI store so opening it doesn't churn the project/task trees. */
-  runCommandsDialog: { projectId: string; initialAdd?: { label: string; command: string; source: "personal" | "yaml" } } | null;
+  runCommandsDialog: { projectId: string; initialAdd?: { label: string; command: string } } | null;
   /** Task id whose resume-args override is being edited, null =
    *  closed. Lives in UI store so opening doesn't churn the task
    *  tree. */
@@ -158,7 +158,7 @@ interface UIState {
   closeCustomCommand: () => void;
   openEditCommand: (taskId: string) => void;
   closeEditCommand: () => void;
-  openRunCommands: (projectId: string, initialAdd?: { label: string; command: string; source: "personal" | "yaml" }) => void;
+  openRunCommands: (projectId: string, initialAdd?: { label: string; command: string }) => void;
   closeRunCommands: () => void;
   openResumeOverride: (taskId: string) => void;
   closeResumeOverride: () => void;

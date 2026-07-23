@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/Input";
 import { ScriptField } from "@/components/settings/ScriptField";
 import { RunCommandsEditor } from "@/components/settings/RunCommandsEditor";
 import {
-  loadPersonalRunConfig, loadSharedRunConfig,
+  loadRunConfigs,
   savePersonalRunConfig, saveSharedRunConfig,
   type RunConfig,
 } from "@/lib/runCommands";
@@ -40,22 +40,25 @@ export function RunCommandsDialog() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Load both configs when the dialog opens, applying any `initialAdd` as a
-  // pre-filled new command on the requested store (and focusing that tab).
+  // Load both configs when the dialog opens. The default tab mirrors Settings:
+  // .termic.yaml when the repo has a committed file, else Personal. Any
+  // `initialAdd` (from a file-tree "Add to Run scripts") is seeded as a new
+  // command on that same default store, so the row is visible on the tab that
+  // opens.
   useEffect(() => {
     if (!open || !projectId) return;
     setErr(null); setBusy(false);
     const add = req?.initialAdd;
-    const p = loadPersonalRunConfig(projectId);
-    setPersonal(add?.source === "personal"
-      ? { ...p, commands: [...p.commands, { label: add.label, command: add.command }] }
-      : p);
-    setTab(add?.source === "yaml" ? "yaml" : "personal");
-    loadSharedRunConfig(projectId)
-      .then(s => setShared(add?.source === "yaml"
-        ? { ...s, commands: [...s.commands, { label: add.label, command: add.command }] }
-        : s))
-      .catch(() => setShared(EMPTY));
+    loadRunConfigs(projectId)
+      .then(({ personal, shared, hasSharedFile }) => {
+        const target: Store = hasSharedFile ? "yaml" : "personal";
+        const seed = (cfg: RunConfig): RunConfig =>
+          add ? { ...cfg, commands: [...cfg.commands, { label: add.label, command: add.command }] } : cfg;
+        setPersonal(target === "personal" ? seed(personal) : personal);
+        setShared(target === "yaml" ? seed(shared) : shared);
+        setTab(target);
+      })
+      .catch(() => { setPersonal(EMPTY); setShared(EMPTY); setTab("personal"); });
   }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cfg = tab === "personal" ? personal : shared;
