@@ -5,16 +5,11 @@
 // backs both the personal (projects.json) and committed (.termic.yaml) lists.
 
 import type { RunCommand } from "@/lib/types";
-import { Trash2, Plus, Play } from "lucide-react";
+import { Trash2, Plus } from "lucide-react";
 
-export function RunCommandsEditor({ value, onChange, onTest, testDisabled }: {
+export function RunCommandsEditor({ value, onChange }: {
   value: RunCommand[];
   onChange: (next: RunCommand[]) => void;
-  /** When provided, each row gets a Run button that fires this with the row's
-   *  command so the user can test it without leaving the editor. */
-  onTest?: (cmd: RunCommand) => void;
-  /** Disable the per-row test button (e.g. no task to run in). */
-  testDisabled?: boolean;
 }) {
   function update(i: number, patch: Partial<RunCommand>) {
     onChange(value.map((c, j) => (j === i ? { ...c, ...patch } : c)));
@@ -45,17 +40,6 @@ export function RunCommandsEditor({ value, onChange, onTest, testDisabled }: {
                 autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
                 className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
-              {onTest && (
-                <button
-                  type="button"
-                  onClick={() => onTest(cmd)}
-                  disabled={testDisabled || !cmd.command.trim()}
-                  title={testDisabled ? "Open a task to test" : "Run this command now"}
-                  className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <Play className="h-3.5 w-3.5" />
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => remove(i)}

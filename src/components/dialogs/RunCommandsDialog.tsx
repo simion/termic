@@ -7,7 +7,7 @@
 // Reuses ScriptField + RunCommandsEditor for the fields and the runCommands.ts
 // load/save helpers for persistence — no field↔store mapping lives here.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -15,13 +15,11 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { ScriptField } from "@/components/settings/ScriptField";
 import { RunCommandsEditor } from "@/components/settings/RunCommandsEditor";
-import { launchCustomRun } from "@/lib/runTabs";
 import {
   loadPersonalRunConfig, loadSharedRunConfig,
   savePersonalRunConfig, saveSharedRunConfig,
   type RunConfig,
 } from "@/lib/runCommands";
-import type { RunCommand } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
 
@@ -35,14 +33,6 @@ export function RunCommandsDialog() {
   const open = projectId !== null;
 
   const project = useApp(s => s.projects.find(p => p.id === projectId));
-  // A task of this project to run test commands in: prefer the active task,
-  // else the first non-archived one. Test is disabled when there's none.
-  const testTaskId = useApp(s => {
-    if (!projectId) return null;
-    const active = s.tasks.find(w => w.id === s.activeTaskId);
-    if (active && active.project_id === projectId && !active.archived) return active.id;
-    return s.tasks.find(w => w.project_id === projectId && !w.archived)?.id ?? null;
-  });
 
   const [tab, setTab] = useState<Store>("personal");
   const [personal, setPersonal] = useState<RunConfig>(EMPTY);
@@ -72,10 +62,6 @@ export function RunCommandsDialog() {
   const setCfg = tab === "personal" ? setPersonal : setShared;
   const patch = (p: Partial<RunConfig>) => setCfg(c => ({ ...c, ...p }));
 
-  const test = useMemo(() => testTaskId
-    ? (cmd: RunCommand) => launchCustomRun(testTaskId, { label: cmd.label || cmd.command, command: cmd.command })
-    : undefined, [testTaskId]);
-
   async function save() {
     if (!projectId || busy) return;
     setBusy(true); setErr(null);
@@ -101,6 +87,10 @@ export function RunCommandsDialog() {
       onOpenChange={(v) => (v ? null : close())}
       title="Run configuration"
       className="max-w-2xl"
+      // Don't auto-focus the first control (the Personal tab) on open — the
+      // focus ring on the tab reads as a mis-styled button. Focus lands
+      // naturally once the user interacts, same as the Settings tabs.
+      onOpenAutoFocus={(e) => e.preventDefault()}
     >
       <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
         Run setup for <span className="font-mono">{project?.name ?? "this repo"}</span>. <b>Personal</b> stays on this machine; <b>.termic.yaml</b> is committed and shared with your team. Right-clicking a file seeds a command as <span className="font-mono">./file</span> — edit it to anything and press play to test.
@@ -124,20 +114,6 @@ export function RunCommandsDialog() {
       </div>
 
       <div className="flex flex-col gap-5">
-        <ScriptField
-          label="Run script"
-          hint={<>Runs when you click the Run button. Use <span className="font-mono">$TERMIC_PORT</span> so each task gets its own port.</>}
-          value={cfg.run}
-          onChange={(v) => patch({ run: v })}
-          placeholder="PORT=$TERMIC_PORT npm run dev"
-        />
-        <ScriptField
-          label="Setup script"
-          hint="Runs once when a new task is created."
-          value={cfg.setup}
-          onChange={(v) => patch({ setup: v })}
-          placeholder="npm install"
-        />
         <div>
           <div className="text-[13.5px] font-medium">Preview URL</div>
           <div className="mt-0.5 text-[12px] text-[var(--color-fg-dim)]">
@@ -150,6 +126,20 @@ export function RunCommandsDialog() {
             className="mt-2 font-mono"
           />
         </div>
+        <ScriptField
+          label="Setup script"
+          hint="Runs once when a new task is created."
+          value={cfg.setup}
+          onChange={(v) => patch({ setup: v })}
+          placeholder="npm install"
+        />
+        <ScriptField
+          label="Run script"
+          hint={<>Runs when you click the Run button. Use <span className="font-mono">$TERMIC_PORT</span> so each task gets its own port.</>}
+          value={cfg.run}
+          onChange={(v) => patch({ run: v })}
+          placeholder="PORT=$TERMIC_PORT npm run dev"
+        />
         <div>
           <div className="text-[13.5px] font-medium">Run commands</div>
           <div className="mt-0.5 mb-2 text-[12px] text-[var(--color-fg-dim)]">
@@ -158,8 +148,6 @@ export function RunCommandsDialog() {
           <RunCommandsEditor
             value={cfg.commands}
             onChange={(commands) => patch({ commands })}
-            onTest={test}
-            testDisabled={!testTaskId}
           />
         </div>
       </div>

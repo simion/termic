@@ -21,10 +21,14 @@ interface Props {
    *  `(e) => e.preventDefault()` when the caller handles focus itself
    *  (e.g. ConfirmDialog, where closeTab moves focus to the next tab). */
   onCloseAutoFocus?: (e: Event) => void;
+  /** Override Radix's default focus-on-open (which rings the first
+   *  focusable control). Pass `(e) => e.preventDefault()` for dialogs
+   *  where auto-focusing the first control looks wrong (e.g. a tab strip). */
+  onOpenAutoFocus?: (e: Event) => void;
   children: ReactNode;
 }
 
-export function AppDialog({ open, onOpenChange, title, description, className, hideClose, overlayClassName, onCloseAutoFocus, children }: Props) {
+export function AppDialog({ open, onOpenChange, title, description, className, hideClose, overlayClassName, onCloseAutoFocus, onOpenAutoFocus, children }: Props) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -57,6 +61,7 @@ export function AppDialog({ open, onOpenChange, title, description, className, h
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
           <Dialog.Content
             onCloseAutoFocus={onCloseAutoFocus}
+            onOpenAutoFocus={onOpenAutoFocus}
             className={cn(
               // Single-column flex, NOT `grid` (shadcn's default): WebKit on
               // fractionally scaled displays (e.g. "More Space" on macOS 26)
