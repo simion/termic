@@ -11,6 +11,7 @@ import { useApp } from "@/store/app";
 import { taskSpotlightStatus } from "@/lib/ipc";
 import { installPointerEventsGuard } from "@/lib/pointerEventsGuard";
 import { initCliRpc } from "@/lib/cliRpc";
+import { initAgentStatePush } from "@/lib/cliAgentState";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
@@ -83,9 +84,12 @@ export function App() {
       "spotlight://status",
       ev => useApp.getState().setSpotlight(ev.payload.project_id, ev.payload.ws_id),
     );
-    // Answer the `termic` CLI control socket's work-state / open-task RPCs
+    // Answer the `termic` CLI control socket's orchestration RPCs
     // (src-tauri/src/cli_server.rs). Idempotent; runs in release builds.
     const unlistenCliRpc = initCliRpc();
+    // Push per-task agent state down to the Rust cache the CLI's
+    // list/status/wait verbs read (lib/cliAgentState.ts).
+    const stopAgentPush = initAgentStatePush();
     const onFocus = () => {
       loadAll();
       // Restore focus to whichever terminal/editor was last active when the
@@ -116,6 +120,7 @@ export function App() {
       window.removeEventListener("focus", onFocus);
       unlistenStatus.then(u => u());
       unlistenCliRpc.then(u => u());
+      stopAgentPush();
     };
   }, [loadAll]);
 

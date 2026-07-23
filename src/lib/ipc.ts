@@ -459,6 +459,9 @@ export const defaultShell = () => invoke<string>("default_shell");
 export function onPtyData(ptyId: string, cb: (data: Uint8Array) => void): Promise<UnlistenFn> {
   return listen<{ data: number[] }>(`pty://${ptyId}`, ev => cb(new Uint8Array(ev.payload.data)));
 }
+/** Whether a PTY slot is still live (pty_write silently no-ops on a
+ *  dead id, so delivery confirmation re-checks with this). */
+export const ptyAlive = (ptyId: string) => invoke<boolean>("pty_alive", { id: ptyId });
 /** Listen for PTY exit. Rust emits `PtyExit { code: Option<i32> }`. */
 export function onPtyExit(ptyId: string, cb: (code: number | null) => void): Promise<UnlistenFn> {
   return listen<{ code: number | null }>(`pty-exit://${ptyId}`, ev => cb(ev.payload.code));
