@@ -212,11 +212,11 @@ export function RunControls({ task }: { task: Task }) {
           )}
           <DropdownItem onSelect={() => useUI.getState().openRunCommands(task.project_id)}>
             <SlidersHorizontal className="h-4 w-4" />
-            <span>Manage run commands…</span>
+            <span>Run configuration…</span>
           </DropdownItem>
           <DropdownItem onSelect={() => useApp.getState().openSettings("repositories", task.project_id)}>
             <Settings className="h-4 w-4" />
-            <span>Configure</span>
+            <span>Repository settings…</span>
           </DropdownItem>
         </DropdownMenu>
       </DropdownRoot>
