@@ -9,6 +9,7 @@ import { NewTaskDialog } from "./NewTaskDialog";
 import { QuickCreateProgressDialog } from "./QuickCreateProgressDialog";
 import { CustomCommandDialog } from "./CustomCommandDialog";
 import { EditCommandDialog } from "./EditCommandDialog";
+import { RunCommandsDialog } from "./RunCommandsDialog";
 import { ResumeOverrideDialog } from "./ResumeOverrideDialog";
 import { ShortcutsHelpDialog } from "./ShortcutsHelpDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
@@ -43,6 +44,7 @@ export function Dialogs() {
       <QuickCreateProgressDialog />
       <CustomCommandDialog />
       <EditCommandDialog />
+      <RunCommandsDialog />
       <ResumeOverrideDialog />
       <ShortcutsHelpDialog />
       <WelcomeDialog />

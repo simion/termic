@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { useShallow } from "zustand/react/shallow";
 import type { Task, TerminalTab } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
@@ -22,7 +23,7 @@ import {
 import { ptyKill, openPath } from "@/lib/ipc";
 import { launchRunTabs, launchSetupTab, launchCustomRun, customRunMember, resolveRunTargets, runsAtRepoRoot, type RunTarget } from "@/lib/runTabs";
 import { resolveCustomCommands, type ResolvedCommand } from "@/lib/runCommands";
-import { Play, Square, ChevronDown, Wrench, Globe, Settings } from "lucide-react";
+import { Play, Square, ChevronDown, Wrench, Globe, Settings, SlidersHorizontal } from "lucide-react";
 
 export function RunControls({ task }: { task: Task }) {
   // ALL run tabs — multi-repo tasks have one per repo (host + members).
@@ -133,11 +134,13 @@ export function RunControls({ task }: { task: Task }) {
           </Button>
         </DropdownTrigger>
         {/* All items here are single-line, so vertically center the leading
-            icon against the label. The shared DropdownItem top-aligns (with a
-            small nudge) for the two-line items used in other menus, which
-            leaves single-line icons ~1.5px high — scope the centering here so
-            only the Run dropdown changes. */}
-        <DropdownMenu align="end" className="[&_[role=menuitem]]:items-center [&_[role=menuitem]>svg]:mt-0">
+            icon against the label (the shared DropdownItem top-aligns for the
+            two-line items other menus use, which leaves single-line icons
+            high). The extra 1px nudge optically centers the icon against the
+            lowercase-heavy labels (file names, command labels), whose visual
+            mass sits below the font box center. Scoped here so only the Run
+            dropdown changes. */}
+        <DropdownMenu align="end" className="[&_[role=menuitem]]:items-center [&_[role=menuitem]>svg]:mt-0 [&_[role=menuitem]>svg]:translate-y-[1px]">
           {isMultiRepo && targets.length > 0 && (
             <>
               <DropdownLabel>Run scripts</DropdownLabel>
@@ -207,6 +210,10 @@ export function RunControls({ task }: { task: Task }) {
               <span>Open {previewUrl}</span>
             </DropdownItem>
           )}
+          <DropdownItem onSelect={() => useUI.getState().openRunCommands(task.project_id)}>
+            <SlidersHorizontal className="h-4 w-4" />
+            <span>Manage run commands…</span>
+          </DropdownItem>
           <DropdownItem onSelect={() => useApp.getState().openSettings("repositories", task.project_id)}>
             <Settings className="h-4 w-4" />
             <span>Configure</span>

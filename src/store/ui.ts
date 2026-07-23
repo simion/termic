@@ -56,6 +56,11 @@ interface UIState {
    *  tasks. Lives in UI store so opening doesn't churn the
    *  task tree. */
   editCommandTaskId: string | null;
+  /** "Run commands" manager dialog (GH #124). `projectId` = which repo's
+   *  commands to manage, null = closed. `initialAdd`, when set, pre-appends a
+   *  new row (e.g. opened from a file-tree "Add to Run scripts"). Lives in the
+   *  UI store so opening it doesn't churn the project/task trees. */
+  runCommandsDialog: { projectId: string; initialAdd?: { label: string; command: string; source: "personal" | "yaml" } } | null;
   /** Task id whose resume-args override is being edited, null =
    *  closed. Lives in UI store so opening doesn't churn the task
    *  tree. */
@@ -153,6 +158,8 @@ interface UIState {
   closeCustomCommand: () => void;
   openEditCommand: (taskId: string) => void;
   closeEditCommand: () => void;
+  openRunCommands: (projectId: string, initialAdd?: { label: string; command: string; source: "personal" | "yaml" }) => void;
+  closeRunCommands: () => void;
   openResumeOverride: (taskId: string) => void;
   closeResumeOverride: () => void;
   setTaskCreateProgress: (p: { phase: "creating" | "error"; err: string | null } | null) => void;
@@ -245,6 +252,7 @@ export const useUI = create<UIState>(set => ({
   customCommandProjectId: null,
   customCommandMode: "repo_root",
   editCommandTaskId: null,
+  runCommandsDialog: null,
   resumeOverrideTaskId: null,
   taskCreateProgress: null,
   shortcutsHelpOpen: false,
@@ -278,6 +286,8 @@ export const useUI = create<UIState>(set => ({
   closeCustomCommand: () => set({ customCommandProjectId: null }),
   openEditCommand:    (taskId) => set({ editCommandTaskId: taskId }),
   closeEditCommand:   () => set({ editCommandTaskId: null }),
+  openRunCommands:    (projectId, initialAdd) => set({ runCommandsDialog: { projectId, initialAdd } }),
+  closeRunCommands:   () => set({ runCommandsDialog: null }),
   openResumeOverride: (taskId) => set({ resumeOverrideTaskId: taskId }),
   closeResumeOverride:() => set({ resumeOverrideTaskId: null }),
   setTaskCreateProgress: (p) => set({ taskCreateProgress: p }),

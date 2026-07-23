@@ -37,16 +37,98 @@ function emptyRepoConfig(): RepoConfig {
   };
 }
 
+/** The per-store run configuration edited by the Run configuration dialog:
+ *  the primary run script, the setup script, the preview URL, and the extra
+ *  run-command list. Personal lives on the Project (projects.json); shared
+ *  lives in `.termic.yaml`. */
+export interface RunConfig {
+  run: string;
+  setup: string;
+  preview: string;
+  commands: RunCommand[];
+}
+
+/** Read the personal (projects.json) run config from the store. */
+export function loadPersonalRunConfig(projectId: string): RunConfig {
+  const p = useApp.getState().projects.find(pr => pr.id === projectId);
+  return {
+    run: p?.run_script ?? "",
+    setup: p?.setup_script ?? "",
+    preview: p?.preview_url ?? "",
+    commands: p?.run_scripts ?? [],
+  };
+}
+
+/** Read the committed (`.termic.yaml`) run config. Empty on missing config. */
+export async function loadSharedRunConfig(projectId: string): Promise<RunConfig> {
+  const yaml = await repoConfigLoad(projectId).catch(() => null);
+  const s = yaml?.scripts;
+  return {
+    run: s?.run ?? "",
+    setup: s?.setup ?? "",
+    preview: s?.preview_url ?? "",
+    commands: s?.run_scripts ?? [],
+  };
+}
+
+/** Persist the personal run config (projects.json) and refresh the store. */
+export async function savePersonalRunConfig(projectId: string, cfg: RunConfig): Promise<void> {
+  const project = useApp.getState().projects.find(p => p.id === projectId);
+  if (!project) return;
+  await projectUpdate({
+    ...project,
+    run_script: cfg.run,
+    setup_script: cfg.setup,
+    preview_url: cfg.preview,
+    run_scripts: cfg.commands,
+  });
+  await useApp.getState().loadAll();
+}
+
+/** Persist the committed run config (`.termic.yaml`), preserving the other
+ *  `scripts` fields (archive, files_to_copy) and the rest of the config. */
+export async function saveSharedRunConfig(projectId: string, cfg: RunConfig): Promise<void> {
+  const base = (await repoConfigLoad(projectId).catch(() => null)) ?? emptyRepoConfig();
+  await repoConfigSave(projectId, {
+    ...base,
+    scripts: { ...base.scripts, run: cfg.run, setup: cfg.setup, preview_url: cfg.preview, run_scripts: cfg.commands },
+  });
+}
+
+/** The personal (projects.json) run-command list, read from the store. */
+export function loadPersonalCommands(projectId: string): RunCommand[] {
+  return useApp.getState().projects.find(p => p.id === projectId)?.run_scripts ?? [];
+}
+
+/** The committed (`.termic.yaml`) run-command list. Empty on missing /
+ *  malformed config. */
+export async function loadSharedCommands(projectId: string): Promise<RunCommand[]> {
+  const yaml = await repoConfigLoad(projectId).catch(() => null);
+  return yaml?.scripts.run_scripts ?? [];
+}
+
+/** Persist the whole personal list (projects.json) and refresh the store. */
+export async function savePersonalCommands(projectId: string, list: RunCommand[]): Promise<void> {
+  const project = useApp.getState().projects.find(p => p.id === projectId);
+  if (!project) return;
+  await projectUpdate({ ...project, run_scripts: list });
+  await useApp.getState().loadAll();
+}
+
+/** Persist the whole committed list (`.termic.yaml`). */
+export async function saveSharedCommands(projectId: string, list: RunCommand[]): Promise<void> {
+  const cfg = (await repoConfigLoad(projectId).catch(() => null)) ?? emptyRepoConfig();
+  await repoConfigSave(projectId, { ...cfg, scripts: { ...cfg.scripts, run_scripts: list } });
+}
+
 /** Merge a project's personal + committed custom run commands. Personal
  *  first, then the committed `.termic.yaml` list. Never throws — a malformed
  *  `.termic.yaml` just yields the personal list. */
 export async function resolveCustomCommands(projectId: string): Promise<ResolvedCommand[]> {
-  const project = useApp.getState().projects.find(p => p.id === projectId);
-  const personal: ResolvedCommand[] = (project?.run_scripts ?? [])
+  const personal: ResolvedCommand[] = loadPersonalCommands(projectId)
     .filter(c => c.command.trim())
     .map(c => ({ ...c, source: "personal" as const }));
-  const yaml = await repoConfigLoad(projectId).catch(() => null);
-  const shared: ResolvedCommand[] = (yaml?.scripts.run_scripts ?? [])
+  const shared: ResolvedCommand[] = (await loadSharedCommands(projectId))
     .filter(c => c.command.trim())
     .map(c => ({ ...c, source: "yaml" as const }));
   return [...personal, ...shared];
@@ -54,33 +136,24 @@ export async function resolveCustomCommands(projectId: string): Promise<Resolved
 
 /** Append a command to the personal (projects.json) list and persist. */
 export async function addPersonalCommand(projectId: string, cmd: RunCommand): Promise<void> {
-  const project = useApp.getState().projects.find(p => p.id === projectId);
-  if (!project) return;
-  const list = [...(project.run_scripts ?? []), cmd];
-  await projectUpdate({ ...project, run_scripts: list });
-  await useApp.getState().loadAll();
+  await savePersonalCommands(projectId, [...loadPersonalCommands(projectId), cmd]);
 }
 
 /** Append a command to the committed `.termic.yaml` list and persist. */
 export async function addSharedCommand(projectId: string, cmd: RunCommand): Promise<void> {
-  const cfg = (await repoConfigLoad(projectId).catch(() => null)) ?? emptyRepoConfig();
-  const list = [...(cfg.scripts.run_scripts ?? []), cmd];
-  await repoConfigSave(projectId, { ...cfg, scripts: { ...cfg.scripts, run_scripts: list } });
+  await saveSharedCommands(projectId, [...(await loadSharedCommands(projectId)), cmd]);
 }
 
 /** Remove every entry whose command matches, from whichever store holds it.
  *  Used by the file-tree "Remove from Run scripts" toggle, which knows the
  *  command string but not the source. */
 export async function removeCommandByCommand(projectId: string, command: string): Promise<void> {
-  const project = useApp.getState().projects.find(p => p.id === projectId);
-  if (project && (project.run_scripts ?? []).some(c => c.command === command)) {
-    const list = (project.run_scripts ?? []).filter(c => c.command !== command);
-    await projectUpdate({ ...project, run_scripts: list });
-    await useApp.getState().loadAll();
+  const personal = loadPersonalCommands(projectId);
+  if (personal.some(c => c.command === command)) {
+    await savePersonalCommands(projectId, personal.filter(c => c.command !== command));
   }
-  const cfg = await repoConfigLoad(projectId).catch(() => null);
-  if (cfg && (cfg.scripts.run_scripts ?? []).some(c => c.command === command)) {
-    const list = (cfg.scripts.run_scripts ?? []).filter(c => c.command !== command);
-    await repoConfigSave(projectId, { ...cfg, scripts: { ...cfg.scripts, run_scripts: list } });
+  const shared = await loadSharedCommands(projectId);
+  if (shared.some(c => c.command === command)) {
+    await saveSharedCommands(projectId, shared.filter(c => c.command !== command));
   }
 }

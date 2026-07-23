@@ -12,10 +12,10 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
-import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
 import { launchCustomRun } from "@/lib/runTabs";
-import { resolveCustomCommands, addPersonalCommand, addSharedCommand, removeCommandByCommand, defaultCommandFor } from "@/lib/runCommands";
+import { resolveCustomCommands, removeCommandByCommand, defaultCommandFor } from "@/lib/runCommands";
 
 interface Props {
   taskId: string;
@@ -71,7 +71,11 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
       .then(cmds => setSavedCmds(new Set(cmds.map(c => c.command))))
       .catch(() => {});
   }, [projectId]);
-  useEffect(() => { reloadCmds(); }, [reloadCmds]);
+  // Re-resolve when the personal list changes (store) and when the Run
+  // commands dialog closes (which may have edited the committed list).
+  const projectRunScripts = useApp(s => s.tasks.find(w => w.id === taskId) && s.projects.find(p => p.id === projectId)?.run_scripts);
+  const rcDialogOpen = useUI(s => !!s.runCommandsDialog);
+  useEffect(() => { reloadCmds(); }, [reloadCmds, projectRunScripts, rcDialogOpen]);
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   // Per-dir cache of children, keyed by rel-path ("" = root).
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
@@ -346,14 +350,10 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
   function runOnce() {
     launchCustomRun(taskId, { label: entry.name, command: cmdString });
   }
-  async function addRun(source: "personal" | "yaml") {
-    try {
-      const cmd = { label: entry.name, command: cmdString };
-      if (source === "personal") await addPersonalCommand(projectId, cmd);
-      else await addSharedCommand(projectId, cmd);
-      reloadCmds();
-      useUI.getState().pushToast(`Added "${entry.name}" to Run scripts`, "success");
-    } catch (e) { useUI.getState().pushToast(String(e), "error"); }
+  // Open the Run commands manager with this file pre-filled as a new personal
+  // command (./file, editable + testable there before saving).
+  function addRun() {
+    useUI.getState().openRunCommands(projectId, { label: entry.name, command: cmdString, source: "personal" });
   }
   async function removeRun() {
     try { await removeCommandByCommand(projectId, cmdString); reloadCmds(); }
@@ -456,19 +456,9 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
                 <Minus /> Remove from Run scripts
               </ContextMenuItem>
             ) : (
-              <ContextMenuSub>
-                <ContextMenuSubTrigger>
-                  <Plus /> Add to Run scripts
-                </ContextMenuSubTrigger>
-                <ContextMenuSubContent>
-                  <ContextMenuItem onSelect={() => addRun("personal")}>
-                    This repo (personal)
-                  </ContextMenuItem>
-                  <ContextMenuItem onSelect={() => addRun("yaml")}>
-                    Shared (.termic.yaml)
-                  </ContextMenuItem>
-                </ContextMenuSubContent>
-              </ContextMenuSub>
+              <ContextMenuItem onSelect={addRun}>
+                <Plus /> Add to Run scripts…
+              </ContextMenuItem>
             )}
           </>
         )}

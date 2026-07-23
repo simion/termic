@@ -9,12 +9,13 @@ import { useUI } from "@/store/ui";
 import { projectUpdate, projectRemove, projectSetMembers, pathIsGitRepo, repoConfigLoad, repoConfigSave } from "@/lib/ipc";
 import { stopSpotlight } from "@/lib/spotlight";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { Project, ProjectMember, RepoConfig, RunCommand } from "@/lib/types";
+import type { Project, ProjectMember, RepoConfig } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Trash2, Check, Layers, X, AudioWaveform, Plus } from "lucide-react";
 import { ExcludeEditor } from "./ExcludeEditor";
+import { ScriptField } from "./ScriptField";
 import { cn, cleanLines } from "@/lib/utils";
 import { isTerminalEntry } from "@/lib/agents";
 
@@ -243,16 +244,6 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       return next;
     });
   }
-  // Extra run commands (GH #124) written to .termic.yaml. The personal
-  // equivalent goes through patch("run_scripts", …) below.
-  function patchRcRunScripts(next: RunCommand[]) {
-    setRc(prev => {
-      if (!prev) return prev;
-      const updated = { ...prev, scripts: { ...prev.scripts, run_scripts: next } };
-      scheduleRcSave(updated);
-      return updated;
-    });
-  }
   // File-tree excludes live at the top level of .termic.yaml (not under
   // scripts). The ExcludeEditor hands back the full pattern array; we save
   // it and nudge the file tree to re-read so the change is visible behind
@@ -467,21 +458,18 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           )}
 
           {/* Extra run commands (GH #124). Only for single-repo — multi-repo
-              runs are driven per-member in the Members editor above. Reads /
-              writes the same personal-vs-.termic.yaml target as the scripts. */}
+              runs are driven per-member in the Members editor above. Managed
+              (personal + committed, with a test button) in a dedicated modal. */}
           {!isMulti && (
             <div className="border-t border-[var(--color-border-soft)] pt-6">
               <div className="text-[14px] font-medium">Run commands</div>
               <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                Extra commands shown in the Run dropdown, each opening its own run tab. Separate from the single Run script above. Add one quickly by right-clicking a file in the tree, or below.
+                Extra commands shown in the Run dropdown, each opening its own run tab. Separate from the single Run script above. Manage personal + shared commands, and test them, in one place. You can also add one by right-clicking a file in the tree.
               </div>
               <div className="mt-3">
-                <RunCommandsEditor
-                  value={scriptTarget === "yaml" ? (rc?.scripts.run_scripts ?? []) : (draft.run_scripts ?? [])}
-                  onChange={(next) => scriptTarget === "yaml"
-                    ? patchRcRunScripts(next)
-                    : patch("run_scripts", next)}
-                />
+                <Button variant="secondary" size="sm" onClick={() => useUI.getState().openRunCommands(projectId)}>
+                  <Plus className="h-3.5 w-3.5" /> Manage run commands…
+                </Button>
               </div>
             </div>
           )}
@@ -774,93 +762,6 @@ function Field({ label, hint, control }: { label: string; hint?: string; control
       <div className="text-[14px] font-medium">{label}</div>
       {hint && <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{hint}</div>}
       <div className="mt-2">{control}</div>
-    </div>
-  );
-}
-
-function ScriptField({ label, hint, value, onChange, placeholder, flash }: {
-  label: string;
-  hint: React.ReactNode;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  /** When true (set by the parent for ~2s after a successful save
-   *  of this field), the textarea gets a soft green ring. */
-  flash?: boolean;
-}) {
-  return (
-    <div>
-      <div className="text-[13.5px] font-medium">{label}</div>
-      <div className="mt-0.5 text-[12px] text-[var(--color-fg-dim)]">{hint}</div>
-      <textarea
-        value={value} onChange={(e) => onChange(e.target.value)} rows={2} placeholder={placeholder}
-        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-        className={cn(
-          "mt-2 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]",
-          "transition-colors",
-          flash && "!border-[var(--color-ok)] focus:!border-[var(--color-ok)]",
-        )}
-      />
-    </div>
-  );
-}
-
-/** Editor for the extra Run commands list (GH #124). Each row is a
- *  label + command pair; an empty label falls back to the command at launch
- *  time via RunControls. Edits are debounced-saved by the parent through
- *  `onChange` (same personal / .termic.yaml target as the scripts above). */
-function RunCommandsEditor({ value, onChange }: {
-  value: RunCommand[];
-  onChange: (next: RunCommand[]) => void;
-}) {
-  function update(i: number, patch: Partial<RunCommand>) {
-    onChange(value.map((c, j) => (j === i ? { ...c, ...patch } : c)));
-  }
-  function remove(i: number) {
-    onChange(value.filter((_, j) => j !== i));
-  }
-  function add() {
-    onChange([...value, { label: "", command: "" }]);
-  }
-  return (
-    <div className="flex flex-col gap-2">
-      {value.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {value.map((cmd, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input
-                value={cmd.label}
-                onChange={(e) => update(i, { label: e.target.value })}
-                placeholder="Label"
-                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-                className="w-40 shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-              />
-              <input
-                value={cmd.command}
-                onChange={(e) => update(i, { command: e.target.value })}
-                placeholder="./build.sh"
-                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-                className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-              />
-              <button
-                type="button"
-                onClick={() => remove(i)}
-                title="Remove"
-                className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={add}
-        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-      >
-        <Plus className="h-3.5 w-3.5" /> Add command
-      </button>
     </div>
   );
 }
