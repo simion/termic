@@ -47,6 +47,29 @@ describe("project add/remove", () => {
     );
   });
 
+  it("reorders projects", async () => {
+    // Put the newly-added project first, then restore original order.
+    const ids = await browser.execute(
+      () => window.__termic!.useApp.getState().projects.map((p: any) => p.id),
+      );
+    const reordered = [
+      projectId!,
+      ...(ids as string[]).filter((i) => i !== projectId),
+    ];
+    await browser.execute(async (order) => {
+      await window.__termic!.ipc.projectReorder(order);
+      await window.__termic!.useApp.getState().loadAll();
+    }, reordered);
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (first) => window.__termic!.useApp.getState().projects[0]?.id === first,
+          projectId,
+        ),
+      { timeout: 8_000, timeoutMsg: "project order never changed" },
+    );
+  });
+
   it("renames the project", async () => {
     const id = projectId!;
     await browser.execute(async (i) => {

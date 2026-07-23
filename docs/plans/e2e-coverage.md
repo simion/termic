@@ -60,6 +60,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ Code editor | Open a .py file → CodeMirror renders with highlight tokens | `code-editor.e2e.ts` |
 | ✅ Commit & push | Commit with push to a bare remote; remote receives it | `commit-push.e2e.ts` |
 | ✅ Discover repos | Scan a folder → returns its git repos | `discover.e2e.ts` |
+| ✅ Import worktree | Lists importable (unopened) worktrees for a project | `import-worktree.e2e.ts` |
+| ✅ Project reorder | Reorder projects | `project.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -67,7 +69,7 @@ until `make e2e` is green and this file reflects it.
 ## Roadmap (todo)
 
 ### Task lifecycle & creation
-- ⬜ P2 Import an existing worktree; quick-create flow.
+- ⬜ P2 Quick-create flow.
 
 ### Agents & terminal
 - ⬜ P1 Desktop **notification** + completion **sound** on agent done (the OS-facing side of `useAttentionNotifier`).
@@ -94,7 +96,7 @@ until `make e2e` is green and this file reflects it.
 ### Panes & layout
 
 ### Projects
-- ⬜ P2 Project reorder / group; multi-member.
+- ⬜ P2 Project group; multi-member.
 
 ### Settings (broader)
 - ⬜ P1 **Sandbox** settings (global default; per-task enable → SIGKILLs live PTYs).
