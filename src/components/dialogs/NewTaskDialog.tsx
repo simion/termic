@@ -13,6 +13,8 @@ import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { visibleCliIds } from "@/lib/agents";
 import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches } from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
+import { withCreateLock } from "@/lib/createLock";
+import { uniqueBranch } from "@/lib/quickTask";
 import { slugify, branchify, cn } from "@/lib/utils";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus } from "lucide-react";
 import { SandboxModeSelector } from "@/components/SandboxModeSelector";
@@ -20,23 +22,6 @@ import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
 import type { MemberMode, ImportableWorktree, SandboxMode } from "@/lib/types";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
-
-// Nudge a proposed branch off any name that already exists in the repo — a
-// task archived without deleting its branch leaves the name behind, and reusing
-// it fails or silently checks out stale commits (issue #129). If the base ends
-// in `-<n>` we bump that number; otherwise we append `-2`, then `-3`, ... until
-// the name is free. Only the auto-filled default is adjusted; a branch the user
-// typed is never touched (empty `existing` short-circuits here).
-function uniqueBranch(base: string, existing: string[]): string {
-  if (!base || existing.length === 0) return base;
-  const taken = new Set(existing);
-  if (!taken.has(base)) return base;
-  const m = base.match(/^(.*)-(\d+)$/);
-  const stem = m ? m[1] : base;
-  let n = m ? parseInt(m[2], 10) + 1 : 2;
-  while (taken.has(`${stem}-${n}`)) n++;
-  return `${stem}-${n}`;
-}
 
 // Remember the user's last-used task type + sandbox mode across opens —
 // most people always work one way (always worktree, always enforce), so
@@ -378,10 +363,10 @@ export function NewTaskDialog() {
     setBusy(true); setErr(null);
     try {
       const splitLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
-      const w = await taskImportWorktree(
+      const w = await withCreateLock(() => taskImportWorktree(
         projectId, importSelected, name.trim(), cli,
         { enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
-      );
+      ));
       await loadAll();
       setActive(w.id);
       close();
@@ -403,10 +388,12 @@ export function NewTaskDialog() {
     setBusy(true); setErr(null);
     try {
       const splitLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
-      const w = await taskOpenRepo(
+      // Serialized behind the app-wide create lock, same as every
+      // other create path (createLock.ts).
+      const w = await withCreateLock(() => taskOpenRepo(
         projectId, cli, name.trim(),
         { enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
-      );
+      ));
       await loadAll();
       setActive(w.id);
       close();
@@ -475,7 +462,7 @@ export function NewTaskDialog() {
       const splitLines = (s: string) =>
         s.split("\n").map(l => l.trim()).filter(Boolean);
       if (isMulti) {
-        await taskCreateMulti({
+        await withCreateLock(() => taskCreateMulti({
           id: taskId,
           project_id: projectId,
           name: name.trim(),
@@ -495,14 +482,14 @@ export function NewTaskDialog() {
           sandbox_mode: sandboxMode,
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
-        });
+        }));
         await loadAll();
         setPhase("setup");
         // On success, submittingRef stays true until the dialog closes —
         // guards against any re-submit during the streaming-setup phase.
         return;
       }
-      await taskCreate({
+      await withCreateLock(() => taskCreate({
         id: taskId,
         project_id: projectId,
         name: name.trim(),
@@ -515,7 +502,7 @@ export function NewTaskDialog() {
         // for unsandboxed tasks (they don't need these saved).
         sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
         sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
-      });
+      }));
       await loadAll();
       // Single-repo worktree: open immediately and focus the main agent —
       // no blocking "running setup…" phase. If the project has a setup

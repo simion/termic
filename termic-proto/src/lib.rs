@@ -21,7 +21,12 @@ use std::io::{self, BufRead, Read, Write};
 /// Bumped whenever the wire shape changes incompatibly. The unauthenticated
 /// hello carries it so a CLI left resolved in an old shell fails with
 /// "Termic updated, rerun your command" instead of garbage.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// v2 (Phase 1): `new` / `wait` / `archive` / `project_*` verbs, streamed
+/// events, `ErrorBody.data`. A v1 server would reject the new commands as
+/// "malformed request", so the version gate turns phase skew into the two
+/// clear restart/rerun messages instead.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Socket + token file names inside the app's data dir.
 pub const SOCKET_FILE: &str = "termic.sock";
@@ -33,8 +38,16 @@ pub const TOKEN_FILE: &str = "cli-token";
 pub const CLI_DISABLED_MESSAGE: &str =
     "Termic is running but the CLI is disabled, enable it in Settings";
 
-/// Printed by the CLI when the server's protocol version differs.
+/// Printed by the CLI when the server speaks a NEWER protocol (the app
+/// updated under a shell that resolved an old binary; re-executing picks
+/// up the new one).
 pub const VERSION_MISMATCH_MESSAGE: &str = "Termic updated, rerun your command";
+
+/// Printed when the server speaks an OLDER protocol (a stale Termic is
+/// still running while the bundle on disk, and so the CLI symlink, moved
+/// on). Rerunning would not help; restarting the app does.
+pub const VERSION_STALE_APP_MESSAGE: &str =
+    "the running Termic is older than this CLI, restart Termic";
 
 /// Hard cap on a single NDJSON line, both directions. A request or reply
 /// larger than this is a bug or an attack, not traffic.
@@ -43,16 +56,16 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// The pinned exit-code contract (docs/plans/cli.md, Command surface).
 /// Public API once shipped: scripts branch on these numbers. 2 is
 /// RESERVED because clap already exits 2 on usage errors; domain codes
-/// start at 3 in the spec's order. Phase 0 only produces 0, 1, 2, 4, 5,
-/// 6 and 8; the rest are pinned now so later phases cannot renumber.
+/// start at 3 in the spec's order. Phase 1 produces everything except 10,
+/// which stays pinned for `apply` (Phase 2).
 pub mod exit_code {
-    /// Success (for `--wait` verbs later: agent settled done).
+    /// Success (for `--wait` verbs: the agent settled done).
     pub const OK: i32 = 0;
     /// Generic error.
     pub const ERROR: i32 = 1;
     /// Usage / parse error. Reserved for clap; never used for domain errors.
     pub const USAGE: i32 = 2;
-    /// Agent stopped needing input (attention), later phases.
+    /// The agent stopped but is asking for input (attention).
     pub const AGENT_NEEDS_INPUT: i32 = 3;
     /// App not running (under --no-launch) or did not start after launch.
     pub const APP_NOT_RUNNING: i32 = 4;
@@ -60,14 +73,41 @@ pub mod exit_code {
     pub const CLI_DISABLED: i32 = 5;
     /// Refused: auth or scope (bad/missing token, in-cage caller).
     pub const REFUSED: i32 = 6;
-    /// --wait --timeout expiry, later phases.
+    /// --wait / `wait` --timeout expiry.
     pub const WAIT_TIMEOUT: i32 = 7;
     /// Connection lost mid-command (app quit under us).
     pub const CONNECTION_LOST: i32 = 8;
-    /// Prompt never delivered, later phases.
+    /// The prompt was never delivered (webview reload, spawn failure).
     pub const PROMPT_NOT_DELIVERED: i32 = 9;
     /// Apply left main conflicted, later phases.
     pub const APPLY_CONFLICT: i32 = 10;
+}
+
+/// How a watched run ended (`wait`, `new --wait`). Ordered by the exit
+/// code it maps to; the mapping is part of the public contract.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitOutcome {
+    /// The agent settled with a finished turn and an empty message queue.
+    Done,
+    /// The agent stopped but is asking for input.
+    NeedsInput,
+    /// --timeout expired first. The task keeps running.
+    Timeout,
+    /// The prompt never reached the agent (webview reload during the
+    /// settle window, spawn failure). The task itself exists.
+    NotDelivered,
+}
+
+impl WaitOutcome {
+    pub fn exit_code(self) -> i32 {
+        match self {
+            WaitOutcome::Done => exit_code::OK,
+            WaitOutcome::NeedsInput => exit_code::AGENT_NEEDS_INPUT,
+            WaitOutcome::Timeout => exit_code::WAIT_TIMEOUT,
+            WaitOutcome::NotDelivered => exit_code::PROMPT_NOT_DELIVERED,
+        }
+    }
 }
 
 // ───────────────────────────── requests ─────────────────────────────
@@ -105,11 +145,15 @@ pub enum Command {
         #[serde(default)]
         quiet: bool,
     },
-    /// One task in depth.
+    /// One task in depth (cwd-aware when `task` absent).
     Status {
-        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     /// Raise the window and select a task (cwd-aware when `task` absent).
     Open {
@@ -121,6 +165,77 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
+    /// Create a task (and optionally inject a prompt). Streamed reply:
+    /// setup output events until the agent spawns, a `created` event,
+    /// then (under `wait`) state events until the final Reply.
+    New {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        /// "worktree" | "main". Absent = the GUI's remembered mode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        /// Base branch for a worktree task. Absent = the repo default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
+        /// "off" | "monitor" | "enforce" | "enforce-fs". Absent = the
+        /// project's sandbox seeds (same fallback the GUI uses).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox: Option<String>,
+        #[serde(default)]
+        yolo: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// Select the new task in the GUI and raise the window.
+        #[serde(default)]
+        open: bool,
+        /// Hold the reply until the injected prompt's turn settles
+        /// (delivery-confirmed) or, without a prompt, until quiescent.
+        #[serde(default)]
+        wait: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        /// The CLI's working directory, for project resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Block until the task's agent is quiescent: settled AND its
+    /// message queue is empty. Streamed reply (state + heartbeat
+    /// events). cwd-aware when `task` absent.
+    Wait {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Archive a task. Live agent PTYs are SIGKILLed first. The
+    /// confirmation prompt is the CLI's job (`--yes` skips it); the
+    /// server never asks.
+    Archive {
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// Register a directory as a project (absolute path; the CLI
+    /// canonicalizes before sending). `non_git` opts a plain folder in
+    /// (the GUI's "add as plain folder" confirmation, as a flag).
+    ProjectAdd {
+        path: String,
+        #[serde(default)]
+        non_git: bool,
+    },
+    /// Registered projects with live-task counts.
+    ProjectList,
+    /// Unregister a project. Archives and deletes ALL its tasks; the
+    /// CLI confirms before sending.
+    ProjectRemove { name: String },
 }
 
 // ───────────────────────────── replies ──────────────────────────────
@@ -145,7 +260,21 @@ impl Reply {
             id: id.to_string(),
             ok: false,
             data: None,
-            error: Some(ErrorBody { code, message: message.into() }),
+            error: Some(ErrorBody { code, message: message.into(), data: None }),
+        }
+    }
+    /// An error carrying machine-readable detail (see `ErrorBody.data`).
+    pub fn err_with(
+        id: &str,
+        code: ErrorCode,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Reply {
+            id: id.to_string(),
+            ok: false,
+            data: None,
+            error: Some(ErrorBody { code, message: message.into(), data: Some(data) }),
         }
     }
 }
@@ -157,6 +286,12 @@ pub enum ReplyData {
     List(ListData),
     Status(StatusData),
     Open(OpenData),
+    New(NewData),
+    Wait(WaitData),
+    Archive(ArchiveData),
+    ProjectList(ProjectListData),
+    ProjectAdd(ProjectAddData),
+    ProjectRemove(ProjectRemoveData),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -183,6 +318,71 @@ pub struct OpenData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<TaskSummary>,
     pub raised: bool,
+}
+
+/// How a watched run ended, plus the last observed agent state
+/// ("done", "waiting", "idle", ...) when the cache had one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WaitResult {
+    pub outcome: WaitOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Human-readable context for non-success outcomes (why a prompt
+    /// counts as never delivered).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NewData {
+    pub task: TaskSummary,
+    /// Present under `wait`: how the watched run ended. Absent when the
+    /// reply was sent at spawn (no wait; delivery not confirmed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<WaitResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WaitData {
+    pub task_id: String,
+    #[serde(flatten)]
+    pub result: WaitResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArchiveData {
+    pub task_id: String,
+    pub name: String,
+    pub project: String,
+    /// Live agent PTYs SIGKILLed before the archive ran.
+    pub killed_agents: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ProjectInfo {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+    /// Live (non-archived) task count.
+    pub tasks: u32,
+    pub default_agent: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectListData {
+    pub projects: Vec<ProjectInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectAddData {
+    pub project: ProjectInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectRemoveData {
+    pub name: String,
+    /// Tasks archived and deleted along with the project.
+    pub removed_tasks: u32,
 }
 
 /// One task row for `list` (and embedded in `status` / `open`).
@@ -244,6 +444,11 @@ pub struct TaskStatus {
 pub struct ErrorBody {
     pub code: ErrorCode,
     pub message: String,
+    /// Machine-readable detail for errors the CLI can act on (e.g.
+    /// `unregistered_project` carries `{"root": "<repo root>"}` so the
+    /// CLI can offer to register it). Additive; absent for most errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,6 +464,14 @@ pub enum ErrorCode {
     NotFound,
     /// A name matched tasks in more than one project.
     Ambiguous,
+    /// The cwd is a git repo but not a registered project (`new`).
+    /// `data.root` carries the repo root.
+    UnregisteredProject,
+    /// The target already exists (same-name task in the project).
+    Conflict,
+    /// The verb cannot work on this target (e.g. `wait` on an agent
+    /// with work-done detection disabled, or with no agent open).
+    Unsupported,
     /// Server-side failure.
     Internal,
 }
@@ -272,8 +485,88 @@ impl ErrorCode {
             ErrorCode::BadRequest
             | ErrorCode::NotFound
             | ErrorCode::Ambiguous
+            | ErrorCode::UnregisteredProject
+            | ErrorCode::Conflict
+            | ErrorCode::Unsupported
             | ErrorCode::Internal => exit_code::ERROR,
         }
+    }
+}
+
+// ───────────────────────────── stream events ─────────────────────────
+
+/// One streamed line of a `stream: true` reply sequence (`new`, `wait`).
+/// Events interleave before exactly one final `Reply`. Deliberately a
+/// LOOSE struct (a tag string plus optional fields) rather than a tagged
+/// enum: consumers must IGNORE unknown event tags (additive contract),
+/// which a serde enum would reject.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StreamEvent {
+    /// Echo of the request id.
+    pub id: String,
+    /// Always true; discriminates an event line from the final Reply.
+    pub stream: bool,
+    /// "setup_output" | "created" | "prompt_delivered" | "state" |
+    /// "heartbeat". New tags may appear; skip what you don't know.
+    pub event: String,
+    /// setup_output: raw script output (UTF-8 lossy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// created: the new task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskSummary>,
+    /// state: an observed agent work-state transition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+}
+
+impl StreamEvent {
+    fn base(id: &str, event: &str) -> Self {
+        StreamEvent {
+            id: id.to_string(),
+            stream: true,
+            event: event.to_string(),
+            data: None,
+            task: None,
+            state: None,
+        }
+    }
+    pub fn setup_output(id: &str, data: String) -> Self {
+        StreamEvent { data: Some(data), ..Self::base(id, "setup_output") }
+    }
+    pub fn created(id: &str, task: TaskSummary) -> Self {
+        StreamEvent { task: Some(task), ..Self::base(id, "created") }
+    }
+    pub fn prompt_delivered(id: &str) -> Self {
+        Self::base(id, "prompt_delivered")
+    }
+    pub fn state(id: &str, state: String) -> Self {
+        StreamEvent { state: Some(state), ..Self::base(id, "state") }
+    }
+    pub fn heartbeat(id: &str) -> Self {
+        Self::base(id, "heartbeat")
+    }
+}
+
+/// One line of a streamed reply, as the CLI reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamLine {
+    Event(StreamEvent),
+    Done(Reply),
+}
+
+/// Decode one line of a (possibly streamed) reply. Lines carrying
+/// `"stream": true` are events; anything else is the final Reply.
+pub fn parse_stream_line(line: &str) -> Result<StreamLine, String> {
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    if v.get("stream").and_then(|s| s.as_bool()) == Some(true) {
+        serde_json::from_value::<StreamEvent>(v)
+            .map(StreamLine::Event)
+            .map_err(|e| e.to_string())
+    } else {
+        serde_json::from_value::<Reply>(v)
+            .map(StreamLine::Done)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -324,12 +617,15 @@ pub fn read_msg<R: BufRead, T: DeserializeOwned>(r: &mut R) -> io::Result<Option
     }
 }
 
-/// Version-gate helper: the CLI calls this with the server's hello.
+/// Version-gate helper: the CLI calls this with the server's hello. The
+/// message is direction-aware: a NEWER server means rerunning resolves
+/// the fresh CLI; an OLDER server means the stale app must restart.
 pub fn check_protocol(server_protocol: u32) -> Result<(), String> {
-    if server_protocol == PROTOCOL_VERSION {
-        Ok(())
-    } else {
-        Err(VERSION_MISMATCH_MESSAGE.to_string())
+    use std::cmp::Ordering;
+    match server_protocol.cmp(&PROTOCOL_VERSION) {
+        Ordering::Equal => Ok(()),
+        Ordering::Greater => Err(VERSION_MISMATCH_MESSAGE.to_string()),
+        Ordering::Less => Err(VERSION_STALE_APP_MESSAGE.to_string()),
     }
 }
 
@@ -355,9 +651,54 @@ mod tests {
             Command::Raise,
             Command::List { project: None, quiet: false },
             Command::List { project: Some("web".into()), quiet: true },
-            Command::Status { task: "fix-auth".into(), project: Some("web".into()) },
+            Command::Status {
+                task: Some("fix-auth".into()),
+                project: Some("web".into()),
+                cwd: None,
+            },
+            Command::Status { task: None, project: None, cwd: Some("/tasks/web/x".into()) },
             Command::Open { task: None, project: None, cwd: Some("/tmp/x".into()) },
             Command::Open { task: Some("fix-auth".into()), project: None, cwd: None },
+            Command::New {
+                name: "fix-auth".into(),
+                prompt: Some("fix the login redirect".into()),
+                agent: Some("claude".into()),
+                mode: Some("worktree".into()),
+                base: Some("develop".into()),
+                sandbox: Some("enforce-fs".into()),
+                yolo: true,
+                project: Some("web".into()),
+                open: true,
+                wait: true,
+                timeout_ms: Some(60_000),
+                cwd: Some("/repo/web".into()),
+            },
+            Command::New {
+                name: "bare".into(),
+                prompt: None,
+                agent: None,
+                mode: None,
+                base: None,
+                sandbox: None,
+                yolo: false,
+                project: None,
+                open: false,
+                wait: false,
+                timeout_ms: None,
+                cwd: None,
+            },
+            Command::Wait {
+                task: Some("fix-auth".into()),
+                project: None,
+                timeout_ms: Some(1000),
+                cwd: None,
+            },
+            Command::Wait { task: None, project: None, timeout_ms: None, cwd: Some("/t".into()) },
+            Command::Archive { task: "fix-auth".into(), project: Some("web".into()) },
+            Command::ProjectAdd { path: "/repo/web".into(), non_git: false },
+            Command::ProjectAdd { path: "/notes/plain".into(), non_git: true },
+            Command::ProjectList,
+            Command::ProjectRemove { name: "web".into() },
         ] {
             roundtrip(&Request { id: "r1".into(), token: Some("t".into()), cmd });
         }
@@ -396,10 +737,101 @@ mod tests {
             }),
             ReplyData::Open(OpenData { task: Some(summary.clone()), raised: true }),
             ReplyData::Open(OpenData { task: None, raised: true }),
+            ReplyData::New(NewData { task: summary.clone(), wait: None }),
+            ReplyData::New(NewData {
+                task: summary.clone(),
+                wait: Some(WaitResult {
+                    outcome: WaitOutcome::Done,
+                    state: Some("done".into()),
+                    detail: None,
+                }),
+            }),
+            ReplyData::Wait(WaitData {
+                task_id: "w1".into(),
+                result: WaitResult { outcome: WaitOutcome::NeedsInput, state: Some("waiting".into()), detail: None },
+            }),
+            ReplyData::Wait(WaitData {
+                task_id: "w1".into(),
+                result: WaitResult { outcome: WaitOutcome::Timeout, state: None, detail: Some("x".into()) },
+            }),
+            ReplyData::Archive(ArchiveData {
+                task_id: "w1".into(),
+                name: "fix-auth".into(),
+                project: "web".into(),
+                killed_agents: 2,
+            }),
+            ReplyData::ProjectList(ProjectListData {
+                projects: vec![ProjectInfo {
+                    id: "p1".into(),
+                    name: "web".into(),
+                    root_path: "/repo/web".into(),
+                    tasks: 3,
+                    default_agent: "claude".into(),
+                }],
+            }),
+            ReplyData::ProjectAdd(ProjectAddData { project: ProjectInfo::default() }),
+            ReplyData::ProjectRemove(ProjectRemoveData { name: "web".into(), removed_tasks: 2 }),
         ] {
             roundtrip(&Reply::ok("r1", data));
         }
         roundtrip(&Reply::err("r1", ErrorCode::CliDisabled, CLI_DISABLED_MESSAGE));
+        roundtrip(&Reply::err_with(
+            "r1",
+            ErrorCode::UnregisteredProject,
+            "not a registered project",
+            serde_json::json!({ "root": "/repo/web" }),
+        ));
+    }
+
+    #[test]
+    fn roundtrip_stream_events_and_line_discrimination() {
+        let task = TaskSummary { id: "w1".into(), name: "fix-auth".into(), ..Default::default() };
+        for ev in [
+            StreamEvent::setup_output("r1", "npm install\n".into()),
+            StreamEvent::created("r1", task),
+            StreamEvent::prompt_delivered("r1"),
+            StreamEvent::state("r1", "working".into()),
+            StreamEvent::heartbeat("r1"),
+        ] {
+            roundtrip(&ev);
+            let line = serde_json::to_string(&ev).unwrap();
+            match parse_stream_line(&line).unwrap() {
+                StreamLine::Event(back) => assert_eq!(back, ev),
+                other => panic!("expected event, got {other:?}"),
+            }
+        }
+        // The final Reply of a stream has no `stream` field.
+        let reply = Reply::ok(
+            "r1",
+            ReplyData::Wait(WaitData {
+                task_id: "w1".into(),
+                result: WaitResult { outcome: WaitOutcome::Done, state: Some("done".into()), detail: None },
+            }),
+        );
+        let line = serde_json::to_string(&reply).unwrap();
+        match parse_stream_line(&line).unwrap() {
+            StreamLine::Done(back) => assert_eq!(back, reply),
+            other => panic!("expected done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_stream_event_tags_still_parse() {
+        // Additive contract: a newer server may emit event tags this CLI
+        // does not know. They must parse (and be skippable), not error.
+        let line = r#"{"id":"r1","stream":true,"event":"totally_new","extra":1}"#;
+        match parse_stream_line(line).unwrap() {
+            StreamLine::Event(ev) => assert_eq!(ev.event, "totally_new"),
+            other => panic!("expected event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_outcomes_map_to_pinned_exits() {
+        assert_eq!(WaitOutcome::Done.exit_code(), 0);
+        assert_eq!(WaitOutcome::NeedsInput.exit_code(), 3);
+        assert_eq!(WaitOutcome::Timeout.exit_code(), 7);
+        assert_eq!(WaitOutcome::NotDelivered.exit_code(), 9);
     }
 
     #[test]
@@ -444,11 +876,14 @@ mod tests {
     }
 
     #[test]
-    fn version_mismatch_message() {
+    fn version_mismatch_messages_are_direction_aware() {
         assert!(check_protocol(PROTOCOL_VERSION).is_ok());
+        // Newer server: rerunning resolves the fresh CLI symlink.
         let msg = check_protocol(PROTOCOL_VERSION + 1).unwrap_err();
         assert_eq!(msg, VERSION_MISMATCH_MESSAGE);
-        assert!(!msg.contains('\u{2014}'), "copy rule: no em dashes");
+        // Older server: the stale running app must restart.
+        let msg = check_protocol(PROTOCOL_VERSION - 1).unwrap_err();
+        assert_eq!(msg, VERSION_STALE_APP_MESSAGE);
     }
 
     #[test]
@@ -462,7 +897,7 @@ mod tests {
     #[test]
     fn canned_messages_obey_copy_rules() {
         // Repo copy rule: no em dashes anywhere in user-visible text.
-        for s in [CLI_DISABLED_MESSAGE, VERSION_MISMATCH_MESSAGE] {
+        for s in [CLI_DISABLED_MESSAGE, VERSION_MISMATCH_MESSAGE, VERSION_STALE_APP_MESSAGE] {
             assert!(!s.contains('\u{2014}'), "em dash in {s:?}");
         }
     }
