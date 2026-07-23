@@ -353,7 +353,7 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
   // Open the Run commands manager with this file pre-filled as a new personal
   // command (./file, editable + testable there before saving).
   function addRun() {
-    useUI.getState().openRunCommands(projectId, { label: entry.name, command: cmdString, source: "personal" });
+    useUI.getState().openRunCommands(projectId, { label: entry.name, command: cmdString });
   }
   async function removeRun() {
     try { await removeCommandByCommand(projectId, cmdString); reloadCmds(); }
