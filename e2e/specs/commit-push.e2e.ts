@@ -13,7 +13,7 @@ import {
 // P1: commit-and-push. Points the fixture at a throwaway bare remote, commits
 // with push=true, and asserts the remote received the commit. Fully restores
 // the fixture (reset, remove remote, clean) on teardown.
-const fixture = path.join(process.cwd(), ".e2e", "fixture-repo");
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 
 describe("git commit & push", () => {
   let taskId: string | undefined;

@@ -11,7 +11,7 @@ import {
 
 // P1: the file tree. Guards expanding/collapsing a folder. Creates a throwaway
 // nested file so there's a folder to toggle, then git-cleans it away.
-const fixture = path.join(process.cwd(), ".e2e", "fixture-repo");
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 
 describe("file tree", () => {
   let taskId: string | undefined;

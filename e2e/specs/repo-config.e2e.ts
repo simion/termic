@@ -4,7 +4,7 @@ import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: per-repo config (.termic.yaml). Save a config field and read it back.
 // Git-cleans the written .termic.yaml on teardown.
-const fixture = path.join(process.cwd(), ".e2e", "fixture-repo");
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 
 describe("repo config", () => {
   after(() => {

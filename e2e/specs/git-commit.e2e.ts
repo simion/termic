@@ -11,7 +11,7 @@ import {
 // P1: the staging + commit backend (Fork-style). Cases: a changed file can be
 // staged (moves to the staged list), and committing it leaves the tree clean.
 // Teardown hard-resets the fixture repo so its HEAD/tree are exactly restored.
-const fixture = path.join(process.cwd(), ".e2e", "fixture-repo");
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 
 describe("git stage & commit", () => {
   let taskId: string | undefined;

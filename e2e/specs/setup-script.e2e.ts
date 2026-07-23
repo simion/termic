@@ -10,7 +10,7 @@ import {
 
 // P1: the Setup script. Configure a setup command in the repo config, launch
 // it, and assert a Setup tab spawns and runs. Cleans the .termic.yaml away.
-const fixture = path.join(process.cwd(), ".e2e", "fixture-repo");
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 
 describe("setup script", () => {
   let taskId: string | undefined;

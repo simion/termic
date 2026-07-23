@@ -12,7 +12,7 @@ import {
 // P2: the editor handles non-markdown code files (CodeMirror language support).
 // Creates a Python file, opens it, asserts CodeMirror renders it with
 // syntax-highlight token spans. Git-cleans the file away.
-const fixture = path.join(process.cwd(), ".e2e", "fixture-repo");
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 
 describe("code editor", () => {
   let taskId: string | undefined;

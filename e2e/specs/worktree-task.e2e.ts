@@ -5,7 +5,7 @@ import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 // P2: creating a WORKTREE task (branch in its own working dir), vs the repo-root
 // tasks the rest of the suite uses. Verifies it lands on its own branch, then
 // archives it (removes the worktree) and prunes the branch.
-const fixture = path.join(process.cwd(), ".e2e", "fixture-repo");
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
 const BRANCH = "e2e-wt-branch";
 
 describe("worktree task", () => {
