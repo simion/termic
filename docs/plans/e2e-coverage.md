@@ -58,6 +58,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ Setup script | Configure + launch a Setup tab that spawns | `setup-script.e2e.ts` |
 | ✅ Sidebar layout | Sidebar width setter persists | `layout.e2e.ts` |
 | ✅ Code editor | Open a .py file → CodeMirror renders with highlight tokens | `code-editor.e2e.ts` |
+| ✅ Commit & push | Commit with push to a bare remote; remote receives it | `commit-push.e2e.ts` |
+| ✅ Discover repos | Scan a folder → returns its git repos | `discover.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -78,7 +80,6 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Image/PDF preview; language highlighting.
 
 ### Git & diff
-- ⬜ P1 Commit-and-push (mock remote).
 - ⬜ P2 Multi-repo project status.
 
 ### File tree
@@ -93,7 +94,7 @@ until `make e2e` is green and this file reflects it.
 ### Panes & layout
 
 ### Projects
-- ⬜ P2 Project reorder / group; discover repos (scan folder); multi-member.
+- ⬜ P2 Project reorder / group; multi-member.
 
 ### Settings (broader)
 - ⬜ P1 **Sandbox** settings (global default; per-task enable → SIGKILLs live PTYs).
