@@ -47,6 +47,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `find-in-files.e2e.ts` |
 | ✅ Editor search | Mod-f opens the CodeMirror search panel | `editor.e2e.ts` |
 | ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
+| ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `file-tree.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -72,7 +73,7 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Multi-repo project status.
 
 ### File tree
-- ⬜ P1 Expand/collapse folders; reveal/locate.
+- ⬜ P2 File tree reveal/locate; create/rename/delete via context menu.
 - ⬜ P2 Create/rename/delete a file via context menu.
 
 ### Run & scripts (#54, #124)
