@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { taskSpotlightStatus } from "@/lib/ipc";
 import { installPointerEventsGuard } from "@/lib/pointerEventsGuard";
+import { initCliRpc } from "@/lib/cliRpc";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
@@ -82,6 +83,9 @@ export function App() {
       "spotlight://status",
       ev => useApp.getState().setSpotlight(ev.payload.project_id, ev.payload.ws_id),
     );
+    // Answer the `termic` CLI control socket's work-state / open-task RPCs
+    // (src-tauri/src/cli_server.rs). Idempotent; runs in release builds.
+    const unlistenCliRpc = initCliRpc();
     const onFocus = () => {
       loadAll();
       // Restore focus to whichever terminal/editor was last active when the
@@ -111,6 +115,7 @@ export function App() {
     return () => {
       window.removeEventListener("focus", onFocus);
       unlistenStatus.then(u => u());
+      unlistenCliRpc.then(u => u());
     };
   }, [loadAll]);
 

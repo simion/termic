@@ -65,6 +65,18 @@ gate, not a CSP tweak, per the note below.
 **Before widening the CSP again, remember it is app-wide.** `connect-src` or
 `script-src` would be materially worse than `img-src` is.
 
+## Known gap: Monitor mode reaches the CLI control plane
+
+The CLI control socket (docs/plans/cli.md) is denied to `Enforce` /
+`EnforceFs` agents as the final SBPL rules (socket + data-dir denies). It
+is deliberately NOT denied in `Monitor` mode, whose contract is
+observe-never-block: a monitored agent renders `(allow default (with
+report))`, so if the CLI is enabled it can reach the socket and read the
+token, and that access simply shows up in the file-op / activity log. This
+is the accepted trade-off of Monitoring being a pure observer; the cage
+that actually enforces the boundary is `Enforce`/`EnforceFs`. (Same spirit
+as the webview gap above: a documented, accepted exposure, not a leak.)
+
 ## Do NOT
 
 - Sandbox AuxTerminal, setup, run, or archive scripts.

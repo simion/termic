@@ -1,6 +1,9 @@
 # termic CLI (design)
 
-Status: proposed, not started.
+Status: Phase 0 implemented (PR #132) - `termic-proto` + `termic-cli`,
+the socket server, `open`/`list`/`status`, sidecar bundling, PATH install,
+and single-instance-per-data-dir. Phase 1+ pending. Sections below note
+where the implementation refined the original design.
 
 A `termic` command that creates tasks, lists them with live agent state, focuses
 the GUI, injects prompts, and attaches a real TTY to an agent's PTY, from any
@@ -127,8 +130,11 @@ termic (CLI, thin)  ──unix socket──  Termic.app
   auto-updates under a shell that resolved `termic` at login. Bind-time
   check against sun_path's 104-byte Darwin limit with a clear error. Debug
   builds already use a separate data dir (`termic_dev` via `APP_DIR`,
-  lib.rs:545), so dev and release sockets never collide; a hypothetical Beta
-  RELEASE build would share the release socket - accepted for v1, noted.
+  lib.rs:545), so dev and release sockets never collide. Beta shares the
+  release data dir + socket by design (it is long-term prod testing);
+  Phase 0 enforces one instance per data dir (see the launch bullet), so
+  beta and prod are mutually exclusive rather than colliding - launching
+  one while the other runs raises the running one and exits.
   `TERMIC_SOCKET` overrides for cross-targeting. Requests carry a per-boot token (below). Responses
   are either one object or a `stream: true` sequence (setup output, attach)
   ending in a final `done` object.
@@ -145,10 +151,19 @@ termic (CLI, thin)  ──unix socket──  Termic.app
 - **App discovery/launch**: every command requires the running app; there is
   no offline mode and no disk-fallback read path. No socket -> `open -ga
   Termic` (background, no focus steal), poll the socket with a deadline, then
-  fail with "Termic did not start" rather than hanging. `--no-launch` swaps
-  auto-launch for an immediate "Termic must be open" error, for scripts.
-  Concurrent invocations racing `open -ga` are deduped by LaunchServices; if
-  doubles ever show up anyway, tmux's flock'd spawn lock is the known fix.
+  fail with "Termic did not start" rather than hanging. Auto-launch is
+  RELEASE-only: a debug CLI targets the `termic_dev` socket, so it never
+  launches the release app (it fail-fasts with a pointer at `TERMIC_SOCKET`
+  instead). `--no-launch` swaps auto-launch for an immediate "Termic must be
+  open" error, for scripts. Concurrent invocations racing `open -ga` are
+  deduped by LaunchServices. Phase 0 additionally enforces ONE INSTANCE PER
+  DATA DIR: on startup a release build connects to its data dir's socket and,
+  if a live termic answers, asks it to raise its window (a new unauthenticated
+  `raise` verb) and exits, so a second launch (prod vs beta, or a direct
+  binary run) never opens a duplicate racing the shared projects.json/tasks/.
+  Debug is newest-wins (relaunching `make dev` steals the socket). The
+  tmux-style flock'd spawn lock remains the known fix for the residual
+  simultaneous-launch race (two launches within the pre-bind window).
 - **Remote is out of scope.** The auth model is deliberately local-only
   primitives (unix socket, `getpeereid`, 0600 token file) and remote would
   break all three; nothing in this plan designs for it. Worth recording why
@@ -493,11 +508,21 @@ this design; the socket server adds no new webview egress.
 
 Bundled in `Termic.app` via Tauri's `externalBin` (sidecar) mechanism, so the
 CLI updates in lockstep with the app updater and there is never a version-skew
-matrix in v1. PATH install like VS Code: a Settings action (plus a first-run
-hint) symlinks the bundled binary into `/usr/local/bin` (admin prompt) or
-`~/.local/bin` (fallback, no prompt). The hello handshake carries a protocol
-version anyway, so a later Homebrew formula (CLI-only installs, version skew
-becomes real) needs no protocol change.
+matrix in v1. PATH install like VS Code, refined in Phase 0: enabling the CLI
+auto-installs it with no prompt into `~/.local/bin` and shows whether that dir
+is on the login PATH; a "system-wide" Settings action upgrades to
+`/usr/local/bin` (admin prompt, macOS only). The installed command name is
+build-aware - `termic` (release), `termic-dev` (debug, targets the `termic_dev`
+data dir), `termic-beta` (beta bundle) - so dev, beta, and prod coexist on
+PATH; the on-disk sidecar is always `termic-cli`, only the symlink name varies.
+
+The CLI's `--version` reports the APP version, not the crate version: it is
+injected at build time via `TERMIC_APP_VERSION` (set by `src-tauri/build.rs`
+and `scripts/build-cli.mjs`, read through `option_env!` with the crate version
+as the dev fallback), so a bundled CLI is always versioned with the app it
+ships in. The hello handshake carries a protocol version anyway, so a later
+Homebrew formula (CLI-only installs, version skew becomes real) needs no
+protocol change.
 
 ## Phasing
 
@@ -589,10 +614,11 @@ Merged is not live; exposure is controlled independently of review:
 - Verbs are gated behind an "Enable CLI" setting (default off initially).
   The server always binds once its phase ships and answers hello/status
   regardless, so a disabled CLI fails fast with "Termic is running but the
-  CLI is disabled, enable it in Settings". The unauthenticated hello
-  intentionally discloses app-is-running plus protocol version to any
-  same-uid process; that disclosure is the price of the clear error and is
-  accepted. (The obvious alternative, bind
+  CLI is disabled, enable it in Settings". The unauthenticated surface is
+  `hello` (discloses app-is-running + protocol version) and `raise` (brings
+  the window to front, used by the single-instance handshake); neither leaks
+  anything sensitive to a same-uid process, and that disclosure is the price
+  of the clear error plus single-instance, and is accepted. (The obvious alternative, bind
   only when enabled, creates a first-run dead end: `termic new` auto-launches
   the app, polls a socket that will never bind, and times out with the WRONG
   error, "Termic did not start".) A merged phase is dormant behavior until

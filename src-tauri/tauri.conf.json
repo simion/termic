@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && node scripts/build-cli.mjs"
   },
   "app": {
     "withGlobalTauri": false,
@@ -20,6 +20,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "externalBin": [
+      "binaries/termic-cli"
+    ],
     "resources": [
       "resources/sounds/choo_choo.caf"
     ],

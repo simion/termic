@@ -416,6 +416,11 @@ export interface Settings {
    *  commit instead of a stale local `origin/*` (GH #79). Absent = on; set
    *  false to opt out. The fetch is always time-bounded and non-fatal. */
   fetch_before_create?: boolean;
+  /** "Enable CLI": gates every authenticated verb of the `termic` control
+   *  socket. Default off. The socket always binds and answers hello, so a
+   *  disabled CLI fails fast with a clear error rather than a launch
+   *  timeout. See docs/plans/cli.md. */
+  cli_enabled?: boolean;
   /** Canonical repo paths hidden from the Add Project discovery list.
    *  Discovery still finds them; the picker filters them out until restored. */
   discovery_dismissed?: string[];
@@ -424,6 +429,16 @@ export interface Settings {
    *  omits it). Pre-filled with the common agent dirs; an empty list disables
    *  the linking. Absent = the pre-filled defaults, not off. */
   worktree_symlink_paths?: string[];
+}
+
+/** Install state of the bundled CLI on PATH (cli_install_status). */
+export interface CliInstallStatus {
+  /** Absolute path of the installed symlink, or null when not installed. */
+  path: string | null;
+  /** Command name for this build: `termic`, `termic-dev`, or `termic-beta`. */
+  name: string;
+  /** True when the installed location is on the user's login PATH. */
+  on_path: boolean;
 }
 
 export interface DiscoveredRepo {
