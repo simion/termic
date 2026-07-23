@@ -1419,6 +1419,15 @@ fn effective_files_to_copy(proj: &Project) -> Vec<String> {
     repo_config_for(proj).scripts.files_to_copy
 }
 
+/// Whether a PTY slot is still live. The CLI's delivery confirmation
+/// re-checks this after typing: pty_write silently no-ops on an id
+/// that has left the map, so "the writes resolved" does not mean "the
+/// agent received them".
+#[tauri::command]
+fn pty_alive(state: State<'_, PtyManager>, id: String) -> bool {
+    state.inner.lock().contains_key(&id)
+}
+
 #[tauri::command]
 fn pty_spawn(
     app: AppHandle,
@@ -1518,6 +1527,7 @@ fn pty_spawn(
     // Multi-repo: expose sibling ports so the agent (or anything the
     // user runs in this PTY) can `curl localhost:$TERMIC_PORT_API`
     // without hardcoding. Same scheme as the script-stream spawn.
+    let mut task_name: Option<String> = None;
     if let Some(wid) = args.task_id.as_deref() {
         if let Some(task) = load_tasks().into_iter().find(|w| w.id == wid) {
             for (i, m) in task.composition.iter().enumerate() {
@@ -1527,6 +1537,40 @@ fn pty_spawn(
                     .collect();
                 cmd.env(format!("TERMIC_PORT_{sanitized}"), p.to_string());
             }
+            // Reused below for TERMIC_TASK, saving a third load_tasks
+            // disk scan per spawn.
+            task_name = Some(task.name.clone());
+        }
+    }
+    // Task identity + control-plane advertisement (docs/plans/cli.md,
+    // "Agents as users"). TERMIC_TASK carries the task NAME, matching
+    // what setup/run scripts have always received; TERMIC_TASK_ID is
+    // the unambiguous handle (names can repeat across projects), and
+    // the CLI resolves either. TERMIC_CLI is the absolute path of the
+    // bundled binary, injected only while "Enable CLI" is on so the
+    // advertisement is never a lie; an ENFORCING-caged agent still sees
+    // it, runs it, and gets the explicit "control plane unavailable"
+    // refusal (cheap, clear failed discovery); a Monitor-caged agent is
+    // allowed through by contract (observe, never block). The TOKEN is
+    // deliberately never here: pty_spawn hands this env to every child,
+    // caged included (cli_server.rs).
+    if let Some(wid) = args.task_id.as_deref() {
+        cmd.env("TERMIC_TASK_ID", wid);
+        if let Some(name) = &task_name {
+            cmd.env("TERMIC_TASK", name);
+        }
+    }
+    if load_settings_inner().cli_enabled {
+        if let Ok(cli) = cli_server::bundled_cli_path() {
+            cmd.env("TERMIC_CLI", cli);
+            // Agent-agnostic discovery hint, the TERMIC_SANDBOX_HELP
+            // precedent: any agent that inspects its env learns how to
+            // use the control plane without a vendor-specific skill
+            // file. Keep it to the two rules agents get wrong.
+            cmd.env(
+                "TERMIC_CLI_HELP",
+                "TERMIC_CLI is the Termic control CLI. Run `\"$TERMIC_CLI\" help --json` for the full command surface. To create a task that returns a result: `\"$TERMIC_CLI\" new <name> --sandbox enforce --wait -p \"<task>; write your findings to RESULT.md\"`, then read RESULT.md from the task path (agent terminal output is not readable from the CLI). Branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused).",
+            );
         }
     }
     cmd.env("TERM", "xterm-256color");
@@ -1808,11 +1852,15 @@ fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, Stri
             return Err(format!("{} is not a directory", expanded));
         }
     } else if git(&["rev-parse", "--git-dir"], &pb).is_err() {
+        // NOTE: the "not a git repo" substring is load-bearing for
+        // cli_server::handle_project_add's --non-git hint.
         return Err(format!("{} is not a git repo. Confirm adding it as a plain folder.", expanded));
     }
     let mut list = load_projects();
     let canon = fs::canonicalize(&pb).map_err(|e| e.to_string())?;
     if list.iter().any(|p| p.root_path == canon.to_string_lossy()) {
+        // NOTE: the "project already added" substring is load-bearing for
+        // cli_server::handle_project_add's idempotent re-add.
         return Err("project already added".into());
     }
     let name = canon.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
@@ -4047,28 +4095,30 @@ fn task_set_sandbox(
         return Ok(0);
     }
 
-    // Find + SIGKILL every live PTY belonging to this task. We
-    // hold the manager lock only long enough to collect (id, pid)
-    // pairs - kill(2) outside the lock so a slow signal can't stall
-    // unrelated PTY ops.
-    let victims: Vec<(String, Option<u32>)> = {
-        let map = state.inner.lock();
+    Ok(kill_task_ptys(&state, &id))
+}
+
+/// Find + SIGKILL every live PTY belonging to a task. Shared by
+/// `task_set_sandbox` (profile change requires a respawn) and the CLI's
+/// `archive` (removing a worktree under a live agent is undefined). The
+/// manager lock is held only long enough to collect (id, pid) pairs -
+/// kill(2) runs outside it so a slow signal can't stall unrelated PTY
+/// ops. The waiter thread cleans up each slot after wait() returns; we
+/// don't preemptively remove entries here to avoid a race with the
+/// per-PTY emit thread.
+pub(crate) fn kill_task_ptys(manager: &PtyManager, task_id: &str) -> usize {
+    let victims: Vec<Option<u32>> = {
+        let map = manager.inner.lock();
         map.iter()
-            .filter(|(_, slot)| slot.task_id.as_deref() == Some(&id))
-            .map(|(pty_id, slot)| (pty_id.clone(), slot.child_pid))
+            .filter(|(_, slot)| slot.task_id.as_deref() == Some(task_id))
+            .map(|(_, slot)| slot.child_pid)
             .collect()
     };
     let count = victims.len();
-    for (pty_id, pid) in victims {
-        if let Some(p) = pid {
-            unsafe { libc::kill(p as i32, libc::SIGKILL); }
-        }
-        // The waiter thread cleans up the slot after wait() returns;
-        // we don't preemptively remove the entry here to avoid a
-        // race with the per-PTY emit thread.
-        let _ = pty_id;
+    for pid in victims.into_iter().flatten() {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL); }
     }
-    Ok(count)
+    count
 }
 
 /// Set the per-task YOLO flag and persist. No PTY kill — it only
@@ -9200,7 +9250,12 @@ pub fn run() {
             settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
+            pty_alive,
             cli_server::cli_rpc_result,
+            cli_server::cli_rpc_ready,
+            cli_server::cli_rpc_progress,
+            cli_server::cli_agent_states,
+            cli_server::cli_prompt_report,
             cli_server::cli_install_symlink,
             cli_server::cli_install_status,
             list_monospace_fonts, list_font_families,
