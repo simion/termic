@@ -72,3 +72,5 @@ Deeper references — read when working in that area:
 - [docs/ui.md](docs/ui.md) — UI conventions, window chrome/drag, right-panel footer, settled detection
 - [docs/gotchas.md](docs/gotchas.md) — common bugs (encountered + fixed), React/Zustand traps
 - [docs/automation.md](docs/automation.md) — automation bridge, E2E testing (use the `e2e` skill, don't improvise)
+- [docs/e2e-tests.md](docs/e2e-tests.md) — written WebdriverIO e2e suite (run via `make e2e`); authoring lives in the `e2e` skill
+- [docs/plans/e2e-coverage.md](docs/plans/e2e-coverage.md) — e2e coverage checklist + roadmap (what's tested, what's next)

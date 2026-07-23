@@ -8994,7 +8994,18 @@ pub fn run() {
             dlog("[gpu] non-NVIDIA GPU (or nouveau/offload); keeping WebKitGTK DMA-BUF renderer on");
         }
     }
-    tauri::Builder::default()
+    // `mut` is only used when the e2e plugin is compiled in.
+    #[cfg_attr(not(feature = "e2e"), allow(unused_mut))]
+    let mut builder = tauri::Builder::default();
+    // E2E-ONLY (`--features e2e`): embed the WebDriver HTTP server so the
+    // WebdriverIO e2e suite can drive this WKWebView window. Absent from
+    // every normal dev and release build. The plugin exposes no IPC
+    // commands, so it needs no capability/ACL entry.
+    #[cfg(feature = "e2e")]
+    {
+        builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    }
+    builder
         // skip_initial_state("main"): we now create the main window
         // programmatically in `setup` (to pick the macOS traffic-light
         // inset per-OS), so we restore its saved bounds OURSELVES in a

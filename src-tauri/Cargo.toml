@@ -64,6 +64,8 @@ tauri-plugin-clipboard-manager = "2.3.2"
 # Wire types + framing for the CLI control socket (cli_server.rs). The
 # same crate termic-cli links, so server and client cannot drift.
 termic-proto = { path = "../termic-proto" }
+# Optional: only pulled in by the `e2e` feature (WebdriverIO harness).
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 
 # macOS-only: raw Objective-C bridge used to round the window's content
 # layer on macOS Tahoe (26+) so the WKWebView corners match the system's
@@ -81,3 +83,14 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRe
 
 [dev-dependencies]
 tempfile = "3"
+
+# The WebdriverIO e2e harness, behind an opt-in feature so it is NEVER in a
+# normal dev or release build. `tauri-plugin-wdio-webdriver` embeds a W3C
+# WebDriver HTTP server (port 4445) in the webview so @wdio/tauri-service can
+# drive the real WKWebView window (clicks, screenshots) on macOS. It exposes
+# no IPC commands and needs no capability grant. Build the e2e binary with
+# `tauri build --debug --features e2e`; every other build omits all of it.
+# (cfg(debug_assertions) can't gate deps — Cargo ignores it — so this is a
+# feature, not a profile check.)
+[features]
+e2e = ["dep:tauri-plugin-wdio-webdriver"]

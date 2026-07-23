@@ -1,253 +1,154 @@
 ---
 name: e2e
-description: Launch termic in dev mode and drive the live app via the localhost automation bridge - eval JS in the webview, read stores, click UI, take screenshots. Use when the user asks to verify/test something in the running app, AND proactively before declaring done on changes that impact UI flows (workspace create/archive, PTY spawn/resume, tabs, sidebar, dialogs, settings).
+description: Write and maintain termic's automated end-to-end tests (WebdriverIO driving the real macOS window). Use whenever you develop a NEW feature (add a spec that exercises its flow), CHANGE an existing feature (update its spec), or need to verify a UI flow before declaring done. This is how termic avoids UI regressions. Replaces the old automation-bridge driving skill.
 ---
 
-# Drive termic (dev automation bridge)
+# Authoring & maintaining termic e2e tests
 
-The bridge (src-tauri/src/automation.rs) is a localhost HTTP server inside
-DEBUG builds, armed only when `TERMIC_AUTOMATION=1`. It can eval JS in the
-webview (with results), screenshot the window, and quit the app.
+Automated, repeatable tests that launch the **real** Termic window, click
+through real flows, read real app state, and screenshot. The point is
+regression safety: **every new feature with a UI/flow surface gets a spec, and
+every change to an existing feature updates its spec.** Don't skip it.
 
-## Launch (persistent E2E profile - seed once, reuse forever)
+Full architecture + prod-safety rationale: [docs/e2e-tests.md](../../../docs/e2e-tests.md).
 
-Never drive the user's own session. The repo keeps a gitignored
-persistent profile at `.e2e/` so the seeding (fixture repo + fake agent)
-happened ONCE and every later run reuses it:
+## The workflow (do this every time)
 
-```
-.e2e/profile/        TERMIC_DATA_DIR: settings.json, projects.json, workspaces/
-.e2e/fixture-repo/   tiny git repo, registered as project "fixture-repo"
-```
+**New feature** → add `e2e/specs/<feature>.e2e.ts` covering its main
+user-observable outcome(s). **Changed feature** → open that feature's spec,
+adjust the assertion/selectors to the new behavior (keep asserting the
+*outcome*, not incidental markup), and re-run. **Before declaring done** on any
+UI-affecting change → `make e2e` must be green.
 
-Recreate only if `.e2e/` is missing:
-
-```sh
-mkdir -p .e2e/profile && echo '{"welcomed": true}' > .e2e/profile/settings.json
-git init -q .e2e/fixture-repo && (cd .e2e/fixture-repo && echo "# e2e fixture" > README.md \
-  && git add . && git -c user.email=e2e@termic.dev -c user.name=e2e commit -qm "init fixture")
-```
-
-Launch with FIXED automation port + token so every command below is
-copy-paste (no grepping for random values):
+## Run
 
 ```sh
-TERMIC_AUTOMATION=1 TERMIC_AUTOMATION_PORT=45901 \
-TERMIC_AUTOMATION_TOKEN=e2e-local-$(id -u) \
-TERMIC_DATA_DIR="$PWD/.e2e/profile" PORT=1599 make dev   # run in background
-B=http://127.0.0.1:45901; T=e2e-local-$(id -u)
+make e2e            # build the --features e2e binary + run the whole suite
 ```
 
-Wait for readiness by polling the log (NOT sleeps) - the listening line
-goes to BOTH the debug log and the dev stdout:
+Iterating on spec files only? Skip the rebuild:
 
 ```sh
-LOG="$(python3 -c 'import tempfile;print(tempfile.gettempdir()+"/termic-debug.log")')"
-grep "\[automation\] listening on 127.0.0.1:45901" "$LOG" | tail -1
+npm run test:e2e    # just runs wdio against the last-built binary
 ```
 
-First build after a Rust change takes 1-2 min; the app window appears on
-screen (it is a real GUI instance - usually unfocused/behind; `POST
-/raise?on=1` floats it for the user to watch).
+Rebuild (`npm run e2e:build`, or `make e2e`) **after any Rust or frontend
+change** — the frontend is embedded in the e2e binary. Screenshots land in
+`.e2e/artifacts/` (gitignored). Local Mac only; there is no CI job by design
+(the tests launch a GUI window).
 
-## Drive it
+Never build the e2e binary with a bare `cargo build` — that produces a binary
+that points at the (unrunning) dev server and the window comes up blank. Always
+go through `npm run e2e:build` / `make e2e` (it runs `tauri build`, which
+embeds the frontend). If a run shows `url: about:blank` / a white window, this
+is the cause.
 
-All requests carry the token: `?t=TOKEN` or `X-Automation-Token: TOKEN`.
+## Writing a spec
 
-```sh
-BASE=http://127.0.0.1:PORT
-curl -s "$BASE/info?t=TOKEN"                          # version, pid, data dir, window rect
-curl -s -X POST --data-binary 'return 1+1' "$BASE/eval?t=TOKEN"
-curl -s "$BASE/screenshot?t=TOKEN" -o /tmp/termic.png  # then Read the png
-curl -s -X POST "$BASE/quit?t=TOKEN"                   # teardown
+Use the shared helpers in [e2e/helpers.ts](../../../e2e/helpers.ts) so specs
+stay short and a UI change is a one-place fix. Reference example:
+[e2e/specs/smoke.e2e.ts](../../../e2e/specs/smoke.e2e.ts).
+
+```ts
+import { waitForAppShell, clickByText, waitForText } from "../helpers.js";
+
+describe("archive a task", () => {
+  it("moves the task to History", async () => {
+    await waitForAppShell();
+    await clickByText("Archive");
+    await waitForText("No archived tasks."); // auto-retries; no sleep
+  });
+});
 ```
 
-`/eval` bodies are the BODY OF AN ASYNC FUNCTION - `return` produces the
-response value (JSON: `{ok, value}`). `window.__termic` (dev-only, main.tsx)
-exposes the app's internals:
+One `it` = one user-observable outcome. All `it`s in a file share ONE launched
+window (boot once, assert many) — order them so earlier tests don't leave state
+that breaks later ones, or reset between them.
 
-- `__termic.useApp / useUI / usePrefs` - the zustand stores (`.getState()`)
-- `__termic.ipc` - every wrapper from src/lib/ipc.ts
-- `__termic.invoke` - raw Tauri invoke
+## Reading real app state (prefer this over DOM scraping)
 
-Examples:
+The e2e binary exposes `window.__termic` (stores + ipc + invoke — same handle
+the dev bridge uses; enabled via `VITE_E2E=1`, stripped from real release
+builds). Read state or drive real IPC through `browser.execute`:
 
-```js
-// Read state
-return __termic.useApp.getState().workspaces.map(w => w.name);
+```ts
+// Read store state
+const names = await browser.execute(() =>
+  window.__termic!.useApp.getState().workspaces.map((w: any) => w.name));
 
-// Drive real flows through the app's own IPC
-const p = await __termic.ipc.projectAdd("/path/to/repo");
-const ws = await __termic.invoke("workspace_open_repo", { projectId: p.id, cli: "fakeagent", name: null });
-await __termic.useApp.getState().loadAll();
-__termic.useApp.getState().setActiveWorkspace(ws.id);
-return ws.id;
-
-// Click UI by DOM (semantic clicks; the whole app is one webview)
-[...document.querySelectorAll("button")].find(b => b.textContent === "Git").click();
-return document.body.textContent.includes("No uncommitted changes");
+// Set up state fast by driving the app's own IPC (no clicking through wizards)
+const wsId = await browser.execute(async () => {
+  const t = window.__termic!;
+  const proj = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
+  const ws = await t.invoke("workspace_open_repo",
+    { projectId: proj.id, cli: "fakeagent", name: null });
+  await t.useApp.getState().loadAll();
+  t.useApp.getState().setActiveWorkspace(ws.id);
+  return ws.id;
+});
 ```
 
-## Seeding (already done in the committed-profile flow; idempotent)
+`requireTermicApi()` asserts the handle is present (fails loudly if you ran an
+old/non-e2e binary).
 
-The persistent profile already contains the `fakeagent` agent
-(`scripts/fake-agent.sh` - real PTY, echoes its argv + stdin, zero
-tokens) and the `fixture-repo` project. This eval re-seeds ONLY what is
-missing, so it is safe to run unconditionally as step 1 of any session:
+## Stability rules (non-negotiable — this is what keeps the suite non-fuzzy)
 
-```js
-await __termic.useApp.getState().loadAll();
-const st = __termic.useApp.getState();
-if (!st.agents.some(a => a.id === "fakeagent")) {
-  const defs = await __termic.ipc.agentsDefaults();
-  // Clone a default - the Agent schema has required fields (icon_id...);
-  // never hand-write the object.
-  const fake = JSON.parse(JSON.stringify(defs.find(a => a.id === "claude")));
-  fake.id = "fakeagent"; fake.display_name = "FakeAgent";
-  fake.command = "<ABS REPO PATH>/scripts/fake-agent.sh";
-  fake.args = []; fake.yolo_args = [];
-  await __termic.ipc.agentsSave([...(st.agents.length ? st.agents : defs), fake]);
-}
-// NOTE: project root_path is CANONICALIZED on add (symlinks resolved),
-// so match by name, not by the path you passed in.
-if (!st.projects.some(p => p.name === "fixture-repo")) {
-  await __termic.ipc.projectAdd("<ABS REPO PATH>/.e2e/fixture-repo");
-}
-await __termic.useApp.getState().loadAll();
-return __termic.useApp.getState().projects.map(p => p.name);
-```
+1. **Never sleep.** No `setTimeout` / fixed waits. Use `browser.waitUntil`, the
+   `waitFor*` helpers, or auto-retrying `expect`. Every wait is a *condition*.
+2. **Assert on state / DOM text, not pixels.** Screenshots are for humans to
+   eyeball, never for assertions.
+3. **Terminal content is NOT in the DOM.** xterm renders to a WebGL canvas, so
+   `innerText` never contains PTY output no matter how long you wait. Assert
+   terminal activity via store state — e.g. `tab.lastOutputAt` (bytes flowed)
+   or `tab.liveTitle` (the agent's OSC title) read through `window.__termic`.
+   All OTHER UI (sidebar, tabs, dialogs, Git panel) is normal DOM.
+   `scripts/fake-agent.sh` mimics claude: it drives the OSC title with claude's
+   glyphs (`✳` idle / Braille spinner working). NOTE: `tab.workState ===
+   "working"` won't flip from a raw `ipc.ptyWrite` — termic gates the working
+   indicator on a real submit through its input path, so assert `liveTitle` for
+   OSC-title checks, not `workState`. See `e2e/specs/task-spawn.e2e.ts`.
+4. **Semantic selectors.** Match by role / visible text (`clickByText`). Add a
+   `data-testid` only where text is ambiguous or localized. Never depend on
+   generated class names.
+5. **Deterministic fixtures.** Runs use the isolated `.e2e/profile`
+   (`welcomed` + the `fixture-repo` project + the zero-token `fakeagent`).
+   Agent flows use `fakeagent` (`scripts/fake-agent.sh`, real PTY, zero tokens).
+   Don't depend on state a previous test left behind.
 
-## Worked example (verified end to end, 2026-06-11)
+## Fixtures / isolation
 
-The complete reference flow, run live against the persistent profile:
-seed check, workspace reuse-or-create through real IPC, spawn assert,
-argv receipt, PTY round-trip, UI click. Every step's assertion shape is
-exactly what worked.
+`wdio.conf.ts` launches the app against `TERMIC_DATA_DIR=.e2e/profile`, a
+throwaway profile seeded once (the same one the ad-hoc bridge used), so a run
+never touches your real `termic_dev` data. Paths round-trip canonicalized on
+`projectAdd` (symlinks resolved), so match projects by `name`, not by the path
+you passed in.
 
-```sh
-# 1. Launch (see above). B/T are the fixed base URL + token.
-curl -s "$B/info?t=$T"   # sanity: data_dir must be .../.e2e/profile
+## Debugging a failing spec
 
-# 2. Seed-if-missing (the eval from "Seeding" above). No-op on reuse.
+- **See what's actually on screen:** the spec should `saveScreenshot` into
+  `.e2e/artifacts/`; open it. A blank white window ⇒ the about:blank build
+  issue above.
+- **Wrong webview / empty DOM:** enumerate handles —
+  `await browser.getWindowHandles()` then `switchToWindow(h)` and log
+  `location.href` per handle. The app content is the `main` handle at a
+  `tauri://` URL, not `about:blank`.
+- **Occluded window:** if the window is on another Space / behind others,
+  `document.visibilityState` is `hidden` and rAF is frozen. `browser.execute`,
+  IPC, and store reads still work; only rAF-driven visual updates stall.
+- **`window.__termic` undefined:** you're running a non-e2e binary — `make e2e`.
 
-# 3. Repo-root workspace: REUSE if one is live, create otherwise.
-#    (Repo-root = no worktree, archive never rm -rfs; ideal fixture.)
-curl -s -X POST --data-binary '
-const st = __termic.useApp.getState();
-const proj = st.projects.find(p => p.name === "fixture-repo");
-let ws = st.workspaces.find(w => !w.archived && w.project_id === proj.id);
-if (!ws) {
-  ws = await __termic.invoke("workspace_open_repo", { projectId: proj.id, cli: "fakeagent", name: null });
-  await __termic.useApp.getState().loadAll();
-}
-__termic.useApp.getState().setActiveWorkspace(ws.id);
-return { wsId: ws.id, isRepoRoot: ws.is_repo_root };' "$B/eval?t=$T"
+## Ad-hoc / exploratory driving (not a written test)
 
-# 4. Assert the spawn (poll until hasPty; usually first try, ~2-5s max):
-curl -s -X POST --data-binary '
-const s = __termic.useApp.getState();
-const ws = s.workspaces.find(w => !w.archived);
-return (s.tabs[ws.id] ?? []).map(t => ({ cli: t.cli, hasPty: !!t.ptyId, sessionId: t.sessionId ?? null }));
-' "$B/eval?t=$T"
-# ...and the argv receipt in the debug log (proves resume flags). The log
-# write can land a beat AFTER hasPty flips - re-grep before concluding:
-grep "pty_spawn.*fake-agent" "$LOG" | tail -1
-# → [pty_spawn] sandbox=OFF cmd=.../fake-agent.sh args=["--session-id", "<uuid>", "--name", "main"]
+For one-off manual poking where you don't (yet) want a spec, the dev automation
+bridge still exists (`src-tauri/src/automation.rs`, `TERMIC_AUTOMATION=1` under
+`tauri dev`) — see [docs/automation.md](../../../docs/automation.md). But
+anything meant to prevent a regression belongs in a spec here, not a throwaway
+eval.
 
-# 5. PTY round-trip (fake agent echoes stdin). Assert via lastOutputAt,
-#    NOT innerText - xterm renders on a WebGL canvas, so terminal content
-#    NEVER appears in the DOM (see operational rules).
-curl -s -X POST --data-binary '
-const s = __termic.useApp.getState();
-const ws = s.workspaces.find(w => !w.archived);
-const tab = s.tabs[ws.id][0];
-await __termic.ipc.ptyWrite(tab.ptyId, Array.from(new TextEncoder().encode("ping\r")));
-await new Promise(r => setTimeout(r, 800));
-return { gotOutput: !!__termic.useApp.getState().tabs[ws.id][0].lastOutputAt };
-' "$B/eval?t=$T"
+## Maturity caveat
 
-# 6. UI interaction by DOM + assertion (non-terminal UI IS in the DOM):
-curl -s -X POST --data-binary '
-[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Git").click();
-await new Promise(r => setTimeout(r, 600));
-return document.body.innerText.includes("Working tree is clean");
-' "$B/eval?t=$T"
-
-# 7. Teardown: SIGTERM the dev.mjs node process (NOT /quit alone).
-#    Leave the workspace in place - the next run reuses it via step 3.
-kill -TERM "$(ps aux | grep '[n]ode scripts/dev.mjs' | awk '{print $2}')"
-```
-
-## Production impact: none (verified)
-
-- `window.__termic` is behind `import.meta.env.DEV` - confirmed absent
-  from the built bundle (`grep __termic dist/assets/*.js` finds only
-  unrelated pre-existing strings).
-- `automation.rs` arms only when `cfg!(debug_assertions) && TERMIC_AUTOMATION=1`;
-  in release builds `armed()` is constant-false, `start()` returns
-  immediately (no thread, no socket) and the `automation_result` command
-  rejects.
-- The one production-visible change is the TerminalPane rAF fallback,
-  which FIXES a real stall (spawn waited forever when the window was
-  occluded) at the cost of one setTimeout per spawn.
-
-## Hard-won operational rules (each cost a debugging cycle)
-
-- Check `ps aux | grep target/debug/termic` BEFORE launching: never reuse
-  or kill an instance you did not start. Verify ownership before any kill
-  via `ps -E -p PID | grep TERMIC_DATA_DIR`.
-- TEARDOWN = `kill -TERM <dev.mjs pid>` (its sweep USUALLY reaps the whole
-  tree, including reparented orphans). `/quit` alone kills only the app;
-  vite can survive and squat on the port. CAVEAT: if a SECOND termic runs
-  (your own session alongside the e2e one), `grep dev.mjs` matches both
-  pids and the sweep may still leave the app child (`target/debug/termic`)
-  alive. Discriminate ownership by ENV, not by guessing: `ps -E -p PID |
-  grep -o 'TERMIC_AUTOMATION_PORT=45901'` (or `TERMIC_DATA_DIR=.../.e2e`)
-  matches ONLY your e2e processes. After SIGTERM, re-`ps` and `kill -KILL`
-  any surviving e2e-owned app child; never touch a pid without the e2e env.
-- NEVER edit src-tauri/ while a driven instance runs: tauri-dev's watcher
-  rebuilds and RESTARTS the app, stranding the old app process and
-  invalidating the bridge. For Rust changes: tear down, rebuild, relaunch.
-  Frontend changes: eval `location.reload()` re-applies the bundle
-  in-place (HMR does not hot-apply store/effect changes).
-- The driven window usually reports `document.visibilityState ===
-  "hidden"` (occluded / other Space / Stage Manager) and rAF is FROZEN
-  there. PTY spawns still work (TerminalPane has a timeout fallback on
-  its rAF gate - do not remove it), and eval/IPC/stores all work hidden.
-  `POST /raise?on=1` floats the window (always-on-top + all-Spaces +
-  fullscreen-auxiliary + app activation) but may still not unhide it on
-  every setup; do not block on visibility for state-level assertions.
-- TERMINAL CONTENT IS NOT IN THE DOM. xterm renders to a WebGL canvas;
-  `document.body.innerText` will never contain PTY output, no matter how
-  long you wait. Assert terminal activity via `tab.lastOutputAt`, the
-  store, or the debug-log argv receipt. All OTHER app UI (sidebar, tabs,
-  dialogs, Git panel) is normal DOM and innerText-assertable.
-- TO TEST PURE FRONTEND LOGIC NOT REACHABLE VIA STORES/IPC/CLICKS (input
-  handlers, IME/WebKit input quirks, parsers, formatters): in dev, vite
-  serves the source tree, so `const m = await import("/src/lib/foo.ts")`
-  inside an /eval pulls the REAL production module into the live WKWebView.
-  You then drive it against real DOM events in the actual engine - the
-  only way to catch WebKit-specific behavior that happy-dom unit tests
-  cannot. Verified pattern (the CJK-IME fix, PR #30): build a real
-  `<textarea class="xterm-helper-textarea">`, `setupImeReplacementBridge`
-  onto it with a capturing `write`, dispatch the exact WebKit
-  `new InputEvent("input",{inputType,data})` sequence, and assert the
-  reconstructed bytes. Run the buggy path (bridge off) as a negative
-  control so a pass proves the fix, not just that code ran. NOTE: xterm's
-  own listener on the REAL terminal textarea also fires (full wired path:
-  textarea -> bridge -> real `ipc.ptyWrite` -> PTY -> fake-agent echo ->
-  `lastOutputAt` advances); use a FRESH detached textarea when you want to
-  capture only your handler's output in isolation.
-- Paths round-trip canonicalized: `projectAdd("/Users/x/r/termic/...")`
-  stores `root_path` with symlinks resolved (`/Users/x/Work/Repos/...`).
-  Idempotence checks must match by `name` (or endsWith), never by the
-  path you passed in.
-- /screenshot additionally needs (a) the window actually visible and
-  (b) Screen Recording permission granted to the dev binary (TCC prompts
-  on first use; "could not create image" also means locked/asleep
-  display). Prefer store/DOM assertions; screenshots are the garnish.
-  Verified failure mode: `screencapture failed (Screen Recording
-  permission?)` until the user grants it to the terminal app once in
-  System Settings → Privacy & Security → Screen Recording.
-- The bridge refuses everything in release builds; do not try to use it
-  against an installed termic.app.
+`@wdio/tauri-service` + `tauri-plugin-wdio-webdriver` are young (1.x, 2026) and
+maintained by the WebdriverIO org. `package.json` pins `@wdio/native-utils` to
+`2.5.0` via `overrides` to work around a broken pin in tauri-service 1.2.0. If a
+future upgrade breaks, pin the `@wdio/*` packages and `tauri-plugin-wdio-webdriver`
+in lockstep to the last-known-good set.

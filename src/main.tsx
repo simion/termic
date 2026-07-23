@@ -28,11 +28,14 @@ window.addEventListener("contextmenu", (e) => e.preventDefault());
 // log for this tag after ⌘R; if it's missing, you're on stale code.
 logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 
-// Dev-only automation hooks for the localhost bridge (src-tauri/src/
-// automation.rs): /eval scripts reach the zustand stores + ipc wrappers
-// through `window.__termic` instead of scraping the DOM. Tree-shaken out
-// of production bundles (import.meta.env.DEV is statically false there).
-if (import.meta.env.DEV) {
+// Test/automation hooks: expose the zustand stores + ipc wrappers on
+// `window.__termic` so tests reach real app state/IPC instead of scraping
+// the DOM. Available in `tauri dev` (the automation.rs bridge, see
+// docs/automation.md) AND in the WebdriverIO e2e binary, which is a
+// production frontend build but is compiled with VITE_E2E=1 (see the
+// `e2e:build` npm script + the `e2e` skill). Tree-shaken out of real
+// release bundles: both flags are statically false there.
+if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
     const [app, ui, prefs, race, ipc, core] = await Promise.all([
       import("@/store/app"),

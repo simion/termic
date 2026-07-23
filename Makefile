@@ -138,6 +138,11 @@ check-web: ## Type-check the frontend (no Vite bundle — fast).
 check-all: check check-web ## Run everything: rust + frontend type checks. CI-style.
 .PHONY: check-all
 
+e2e: ## Build the e2e binary (--features e2e) and run the WebdriverIO suite. Real window, local Mac only. See docs/e2e-tests.md.
+	@npm run e2e:build
+	@npm run test:e2e
+.PHONY: e2e
+
 # ─── release ──────────────────────────────────────────────────────────
 
 # `make release` defaults to a patch bump. Override with BUMP=...

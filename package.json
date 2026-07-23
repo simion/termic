@@ -14,12 +14,17 @@
     "url": "https://github.com/simion/termic/issues"
   },
   "type": "module",
+  "overrides": {
+    "@wdio/native-utils": "2.5.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:signals": "node scripts/dev.signals.test.mjs",
+    "e2e:build": "VITE_E2E=1 tauri build --debug --no-bundle --features e2e",
+    "test:e2e": "wdio run ./wdio.conf.ts",
     "tauri": "tauri",
     "tauri:dev": "node scripts/dev.mjs",
     "tauri:build": "tauri build"
@@ -100,10 +105,18 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "@wdio/cli": "^9.30.0",
+    "@wdio/local-runner": "^9.30.0",
+    "@wdio/mocha-framework": "^9.30.0",
+    "@wdio/spec-reporter": "^9.29.1",
+    "@wdio/tauri-service": "^1.2.0",
+    "expect-webdriverio": "^5.7.0",
     "happy-dom": "^20.9.0",
     "tailwindcss": "^4.1.16",
+    "tsx": "^4.23.1",
     "typescript": "~5.7.0",
     "vite": "^8.0.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "webdriverio": "^9.30.0"
   }
 }
