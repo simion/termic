@@ -18,6 +18,7 @@ import { taskCreate, taskSetYolo } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useRace } from "@/store/race";
 import { useUI } from "@/store/ui";
+import { withCreateLock } from "@/lib/createLock";
 import { launchSetupTab } from "@/lib/runTabs";
 import { sendMessageToPty } from "@/lib/agentSend";
 import { agentDisplayName } from "@/lib/agents";
@@ -132,12 +133,13 @@ export async function startRace(opts: {
 
   const taskIds: string[] = [];
   // Sequential: `git worktree add` contends on the repo index, so N concurrent
-  // creates would race the lock. One at a time is safe and fast enough.
+  // creates would race the lock. Each create also takes the app-wide lock
+  // (createLock.ts) so a GUI or CLI create can't interleave with the race's.
   for (const [idx, r] of racers.entries()) {
     opts.onProgress?.(idx + 1, racers.length);
     const id = crypto.randomUUID();
     const agentLabel = `${agentDisplayName(r.cli)} #${r.n}`;
-    await taskCreate({
+    await withCreateLock(() => taskCreate({
       id,
       project_id: projectId,
       name: name ? `${name}: ${agentLabel}` : agentLabel,
@@ -147,7 +149,7 @@ export async function startRace(opts: {
       ...(opts.sandbox !== undefined
         ? { sandbox_enabled: opts.sandbox, sandbox_mode: opts.sandbox ? "enforce" as const : "off" as const }
         : {}),
-    });
+    }));
     // Before loadAll/mount, so the tasks the frontend loads already carry
     // yolo and the first spawn composes yolo_args in.
     if (opts.yolo) await taskSetYolo(id, true);

@@ -11,6 +11,7 @@ import {
 import * as ipc from "@/lib/ipc";
 import { groupOf } from "@/lib/projectGroups";
 import { useRace } from "@/store/race";
+import { takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName } from "@/lib/agents";
 
@@ -1473,8 +1474,10 @@ export const useApp = create<AppState>((set, get) => ({
     // Racers get their prompt injected with nobody at the keyboard, so the
     // spawn must suppress startup update menus (UNATTENDED_SPAWN_ARGS in
     // lib/agents); startRace records the cohort before mounting, so a race
-    // task's seed always sees itself here.
-    const raced = Object.values(useRace.getState().races).some(r => r.taskIds.includes(taskId));
+    // task's seed always sees itself here. The CLI's `new -p` marks its
+    // task the same way (lib/unattendedSpawns) before mounting.
+    const raced = Object.values(useRace.getState().races).some(r => r.taskIds.includes(taskId))
+      || takeUnattendedSpawn(taskId);
     const tab: TerminalTab = {
       id: crypto.randomUUID(), type: "terminal", title, cli, is_default: true,
       ...(isCustom && task?.custom_command ? { command: task.custom_command } : {}),
