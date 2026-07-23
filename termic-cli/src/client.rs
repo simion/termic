@@ -69,6 +69,22 @@ pub struct Conn {
     writer: UnixStream,
 }
 
+/// Read-timeout ceiling for verbs whose single reply legitimately takes
+/// minutes (archive scripts, project removal archiving N tasks). The
+/// server allows itself 300s for those webview RPCs; this adds margin.
+pub const SLOW_VERB_READ_TIMEOUT: Duration = Duration::from_secs(330);
+/// project add: server budget 60s + margin.
+pub const PROJECT_ADD_READ_TIMEOUT: Duration = Duration::from_secs(90);
+
+impl Conn {
+    /// Raise (or lower) the reply read timeout for the next requests on
+    /// this connection. The default 30s fits quick reads and streamed
+    /// verbs (heartbeats); slow single-reply verbs must widen it.
+    pub fn set_read_timeout(&self, dur: Duration) {
+        let _ = self.reader.get_ref().set_read_timeout(Some(dur));
+    }
+}
+
 fn try_connect(paths: &SocketPaths) -> std::io::Result<Conn> {
     let stream = UnixStream::connect(&paths.socket)?;
     // Replies for these read verbs are quick; the generous ceiling only
@@ -207,6 +223,33 @@ pub fn request(
         &proto::Request { id: "1".into(), token: Some(token.to_string()), cmd },
     )?;
     reply_to_result(reply)
+}
+
+/// Send one STREAMING verb (`new`, `wait`) and read events until the
+/// final Reply, forwarding each event to `on_event` (heartbeats
+/// included; the caller filters). The server heartbeats every ~10s, so
+/// the socket's 30s read timeout only fires when the app is truly
+/// wedged or gone; either way that is "connection lost" (exit 8), never
+/// a hang.
+pub fn exchange_streamed(
+    conn: &mut Conn,
+    cmd: proto::Command,
+    token: &str,
+    on_event: &mut dyn FnMut(&proto::StreamEvent),
+) -> Result<proto::Reply, CliError> {
+    let req = proto::Request { id: "1".into(), token: Some(token.to_string()), cmd };
+    proto::write_msg(&mut conn.writer, &req).map_err(lost)?;
+    loop {
+        let line = match proto::read_line(&mut conn.reader) {
+            Ok(Some(l)) => l,
+            Ok(None) => return Err(lost("server closed the connection")),
+            Err(e) => return Err(lost(e)),
+        };
+        match proto::parse_stream_line(&line).map_err(lost)? {
+            proto::StreamLine::Event(ev) => on_event(&ev),
+            proto::StreamLine::Done(reply) => return Ok(reply),
+        }
+    }
 }
 
 /// Map a reply envelope onto the exit-code contract. Pure, unit-tested.
