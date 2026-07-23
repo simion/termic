@@ -42,9 +42,25 @@ describe("setup script", () => {
       await window.__termic!.ipc.repoConfigSave(proj.id, cfg);
     });
 
-    // Launch it.
+    // Wait until the saved config is readable back (launchSetupTab resolves it
+    // live; on a slow runner the write→read can lag).
+    await browser.waitUntil(
+      () =>
+        browser.execute(async () => {
+          const proj = window.__termic!.useApp
+            .getState()
+            .projects.find((p: any) => p.name === "fixture-repo");
+          const cfg = await window.__termic!.ipc.repoConfigLoad(proj.id);
+          return cfg?.scripts?.setup === "echo setup-ran";
+        }),
+      { timeout: 10_000, timeoutMsg: "setup config never persisted" },
+    );
+
+    // Launch it (await the async resolve so the tab is added before asserting).
     await browser.execute(
-      (id) => window.__termic!.runTabs.launchSetupTab(id),
+      async (id) => {
+        await window.__termic!.runTabs.launchSetupTab(id);
+      },
       taskId,
     );
 
@@ -57,7 +73,7 @@ describe("setup script", () => {
           );
           return !!tab?.ptyId;
         }, taskId),
-      { timeout: 15_000, interval: 250, timeoutMsg: "setup tab never spawned" },
+      { timeout: 30_000, interval: 250, timeoutMsg: "setup tab never spawned" },
     );
     await snap("setup-script.png");
   });

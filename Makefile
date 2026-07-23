@@ -50,6 +50,8 @@ setup: ## One-shot dev env bootstrap (brew/rust/node + npm install + cargo check
 	fi
 	@echo "→ Installing npm packages"
 	@npm install
+	@echo "→ Seeding the e2e fixture profile"
+	@node scripts/e2e-seed.mjs || true
 	@echo "→ Pre-fetching Rust crate index (cargo check)"
 	@# Homebrew's rustup is keg-only, so cargo AND rustc live in its keg bin
 	@# (not on PATH). Prepend it so cargo can find rustc; a normal (official
@@ -139,6 +141,13 @@ check-all: check check-web ## Run everything: rust + frontend type checks. CI-st
 .PHONY: check-all
 
 e2e: ## Build the e2e binary (--features e2e) and run the WebdriverIO suite. Real window, local Mac only. See docs/e2e-tests.md.
+	@# Self-sufficient: install JS deps + (re)seed the throwaway fixture profile
+	@# if needed, so a fresh checkout can `make e2e` with no manual steps. Uses
+	@# the embedded WebDriver (tauri-plugin-wdio-webdriver, compiled in by the
+	@# e2e feature) — no external tauri-driver needed; its "not found" line is a
+	@# harmless diagnostic.
+	@[ -x node_modules/.bin/wdio ] || npm install
+	@node scripts/e2e-seed.mjs
 	@npm run e2e:build
 	@npm run test:e2e
 .PHONY: e2e
