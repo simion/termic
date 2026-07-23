@@ -16,17 +16,33 @@ describe("create task wizard", () => {
     if (taskId) await archiveTask(taskId);
   });
 
-  // Click a button inside the open dialog by its exact text.
-  const clickDialogButton = (text: string) =>
-    browser.execute((t) => {
-      const dlg = document.querySelector('[role="dialog"]');
-      if (!dlg) throw new Error("new task dialog not open");
-      const btn = [...dlg.querySelectorAll("button")].find(
+  // Click a button by its exact text inside the NewTaskDialog specifically
+  // (scoped via the name input's dialog — there can be more than one
+  // [role="dialog"] in the DOM). Waits for the button first: the dialog renders
+  // progressively (the mode toggle lands after an async worktree scan).
+  const clickDialogButton = async (text: string) => {
+    await browser.waitUntil(
+      () =>
+        browser.execute((t) => {
+          const dlg = document
+            .querySelector('input[placeholder="fix login bug"]')
+            ?.closest('[role="dialog"]');
+          return [...(dlg?.querySelectorAll("button") ?? [])].some(
+            (b) => b.textContent?.trim() === t,
+          );
+        }, text),
+      { timeout: 8_000, timeoutMsg: `dialog button never appeared: ${text}` },
+    );
+    await browser.execute((t) => {
+      const dlg = document
+        .querySelector('input[placeholder="fix login bug"]')
+        ?.closest('[role="dialog"]');
+      const btn = [...(dlg?.querySelectorAll("button") ?? [])].find(
         (b) => b.textContent?.trim() === t,
       );
-      if (!btn) throw new Error(`dialog button not found: ${t}`);
       (btn as HTMLElement).click();
     }, text);
+  };
 
   it("creates a repo-root shell task via NewTaskDialog", async () => {
     await waitForAppShell();

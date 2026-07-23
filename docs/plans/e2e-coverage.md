@@ -40,6 +40,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ Split panes | Unsplit start; split-right → 2 leaves; split-below → 3 | `split-pane.e2e.ts` |
 | ✅ Message queue | Message held while working, drains on idle | `message-queue.e2e.ts` |
 | ✅ Command palette | Opens/lists; filters; command activation closes it; Escape closes | `command-palette.e2e.ts` |
+| ✅ File finder | ⌘P lists the repo's files; selecting one opens an editor tab | `file-finder.e2e.ts` |
+| ✅ Git stage/commit | Stage a changed file (moves to staged); commit → tree clean | `git-commit.e2e.ts` |
 
 ## Roadmap (todo)
 
@@ -61,12 +63,12 @@ until `make e2e` is green and this file reflects it.
 
 ### Git & diff
 - ⬜ P1 Open a **diff** (DiffPane) for a changed file.
-- ⬜ P1 Stage/unstage → **commit**; commit-and-push (mock remote).
+- ⬜ P1 Unstage a file; commit-and-push (mock remote).
 - ⬜ P2 Multi-repo project status.
 
 ### File tree
 - ⬜ P1 Expand/collapse folders; reveal/locate.
-- ⬜ P1 **File finder** (⌘P) → jump to file; **Find in files** (⌘⇧F).
+- ⬜ P1 **Find in files** (⌘⇧F).
 - ⬜ P2 Create/rename/delete a file via context menu.
 
 ### Run & scripts (#54, #124)
