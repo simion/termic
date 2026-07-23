@@ -69,6 +69,11 @@ pub struct SandboxBundle {
     /// couldn't start. Killed on Drop.
     #[allow(dead_code)]
     pub path_watcher: Option<PathWatcher>,
+    /// The mode this bundle was provisioned for. wrap_command
+    /// advertises it (TERMIC_SANDBOX_MODE) so the termic CLI can
+    /// distinguish enforcing cages (control plane refused) from
+    /// Monitor (observe-never-block: CLI use is allowed and logged).
+    pub mode: crate::SandboxMode,
 }
 
 pub struct PathWatcher {
@@ -1710,7 +1715,7 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
         .with_context(|| format!("write {}", profile_path.display()))?;
     dlog(&format!("[sandbox/{}] profile written: {}", task.id, profile_path.display()));
 
-    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher })
+    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher, mode })
 }
 
 /// Wrap an agent command with `sandbox-exec -f <profile> env <vars>
@@ -1735,6 +1740,19 @@ pub fn wrap_command(
     //    isn't on the task's writable list. Tell the user to
     //    add it via the Sandbox dialog or disable the cage."
     new_args.push("TERMIC_SANDBOX=1".into());
+    // Which cage: the termic CLI refuses the control plane only for
+    // ENFORCING modes. Monitor's contract is observe-never-block
+    // (docs/plans/cli.md): a monitored agent reaches the socket by
+    // design, its token read and CLI use just show up in the log.
+    new_args.push(format!(
+        "TERMIC_SANDBOX_MODE={}",
+        match bundle.mode {
+            crate::SandboxMode::Off => "off",
+            crate::SandboxMode::Monitor => "monitor",
+            crate::SandboxMode::Enforce => "enforce",
+            crate::SandboxMode::EnforceFs => "enforce-fs",
+        }
+    ));
     new_args.push("TERMIC_SANDBOX_HELP=Filesystem EPERM on paths outside the task = blocked by Termic sandbox, not by macOS TCC. Network 403 with header `X-Termic-Sandbox: blocked-by-allowlist` = same cause. Fix: open the Sandbox dialog (shield icon on the task) and add the path/host, or disable the cage.".into());
     if let Some(proxy) = &bundle.proxy {
         let url = format!("http://127.0.0.1:{}", proxy.port);
@@ -2050,6 +2068,38 @@ fn sbpl_escape(s: &str) -> String {
 /// Calling sbpl_escape here doubles every `\` and corrupts the pattern.
 fn sbpl_regex_escape(s: &str) -> String {
     s.replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod mode_env_tests {
+    use super::*;
+
+    fn bundle(mode: crate::SandboxMode) -> SandboxBundle {
+        SandboxBundle {
+            profile_path: "/tmp/x.sb".into(),
+            filter_path: "/tmp/x.filter".into(),
+            proxy: None,
+            path_watcher: None,
+            mode,
+        }
+    }
+
+    #[test]
+    fn wrap_command_pins_the_mode_strings_the_cli_matches() {
+        // termic-cli's cage_refused exempts exactly "monitor"; a rename
+        // here would fail closed (Monitor loses CLI access) with no
+        // other test noticing. These strings are wire-ish API.
+        for (mode, expect) in [
+            (crate::SandboxMode::Monitor, "TERMIC_SANDBOX_MODE=monitor"),
+            (crate::SandboxMode::Enforce, "TERMIC_SANDBOX_MODE=enforce"),
+            (crate::SandboxMode::EnforceFs, "TERMIC_SANDBOX_MODE=enforce-fs"),
+        ] {
+            let (cmd, args) = wrap_command(&bundle(mode), "claude", &["--foo".into()]);
+            assert_eq!(cmd, "sandbox-exec");
+            assert!(args.iter().any(|a| a == expect), "{mode:?}: {args:?}");
+            assert!(args.iter().any(|a| a == "TERMIC_SANDBOX=1"));
+        }
+    }
 }
 
 #[cfg(test)]

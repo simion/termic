@@ -29,30 +29,62 @@
 //! that only borrows the debug bridge's correlation-id pattern; the
 //! bridge itself (automation.rs, `/eval`) is never armed or reused here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tauri::{Emitter, Manager};
 use termic_proto as proto;
-use termic_proto::{Command, ErrorCode, Reply, ReplyData, Request};
+use termic_proto::{Command, ErrorCode, Reply, ReplyData, Request, StreamEvent, WaitOutcome};
 
 use crate::{dlog, Project, Task};
 
 /// Darwin's sockaddr_un.sun_path is 104 bytes including the NUL.
 const MAX_SUN_PATH: usize = 103;
 
-/// How long list/status wait for the webview before degrading to
-/// work_state = null. Wall-clock, never rAF: occluded windows freeze rAF
-/// (docs/automation.md) and for a CLI the window is always backgrounded.
-const WORK_STATE_TIMEOUT: Duration = Duration::from_millis(3000);
 /// `open` is user-visible feedback; give a busy webview a little longer.
 const OPEN_TIMEOUT: Duration = Duration::from_millis(10_000);
+/// Simple read-modify webview RPCs (project add / remove w/o tasks).
+const PROJECT_RPC_TIMEOUT: Duration = Duration::from_secs(60);
+/// `new_task` covers worktree add + optional base fetch + mount; big
+/// repos are slow. Setup streaming keeps the connection visibly alive.
+const NEW_TASK_TIMEOUT: Duration = Duration::from_secs(180);
+/// `archive_task` / `project_remove` run archive scripts + worktree
+/// removal, per task for a project remove.
+const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Keepalive cadence on streamed replies (10s in production). Must stay
+/// well under the CLI's 30s socket read timeout. Tests shrink every
+/// watch-loop constant so the timing paths run in milliseconds.
+const HEARTBEAT_EVERY: Duration = Duration::from_millis(if cfg!(test) { 50 } else { 10_000 });
+/// Condvar wait slice while a delivery report is pending (reports do
+/// not bump the cache seq, so this bounds their detection latency).
+const CV_SLICE: Duration = Duration::from_millis(if cfg!(test) { 10 } else { 1000 });
+/// How long a spawned prompt gets to confirm delivery (90s in
+/// production): PTY spawn deadline (15s) + agent settle (6s) + generous
+/// margin for a loaded machine. After this, the prompt counts as never
+/// delivered.
+const DELIVERY_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 90_000 });
+/// Grace for the webview's first agent-state push (app just launched)
+/// and for a fresh task to appear in the pushed map. 15s in production.
+const POPULATE_GRACE: Duration = Duration::from_millis(if cfg!(test) { 150 } else { 15_000 });
+/// A cache older than this mid-wait means the webview stopped
+/// reporting (reload that never came back, wedged UI): fail the wait
+/// rather than trusting a frozen snapshot. 120s in production: the push
+/// module re-pushes every 20s regardless of changes, and the wide
+/// margin also rides out App Nap throttling of a fully idle, occluded
+/// webview.
+const CACHE_STALE_AFTER: Duration = Duration::from_millis(if cfg!(test) { 800 } else { 120_000 });
+/// Own-prompt waits (30s in production): if the turn's "working" edge
+/// was never observed (classifier miss) and the agent has sat idle this
+/// long after confirmed delivery, call it settled. Heuristic honesty is
+/// part of the contract (--help says "the agent stopped, not the work
+/// is right"); hanging forever on a missed signal would be worse.
+const IDLE_SETTLE_GRACE: Duration = Duration::from_millis(if cfg!(test) { 200 } else { 30_000 });
 
 // ───────────────────────────── lifecycle ─────────────────────────────
 
@@ -215,7 +247,10 @@ fn serve_conn(stream: UnixStream, host: &dyn CliHost) {
             Err(_) => return,   // timeout / oversized / mid-line EOF
         };
         let reply = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => handle_request(&req, host),
+            Ok(req) => {
+                let mut sink = SocketSink { writer: &mut writer };
+                handle_request(&req, host, &mut sink)
+            }
             Err(e) => Reply::err("", ErrorCode::BadRequest, format!("malformed request: {e}")),
         };
         if proto::write_msg(&mut writer, &reply).is_err() {
@@ -226,6 +261,36 @@ fn serve_conn(stream: UnixStream, host: &dyn CliHost) {
 
 // ───────────────────────────── dispatch ──────────────────────────────
 
+/// Where streamed events go on their way to the client. The socket
+/// writer in production; a Vec in tests. An Err from `emit` means the
+/// client is gone: streaming verbs abort their watch instead of
+/// blocking a dead connection's thread forever.
+pub(crate) trait EventSink {
+    fn emit(&mut self, ev: &StreamEvent) -> std::io::Result<()>;
+}
+
+struct SocketSink<'a> {
+    writer: &'a mut UnixStream,
+}
+
+impl EventSink for SocketSink<'_> {
+    fn emit(&mut self, ev: &StreamEvent) -> std::io::Result<()> {
+        proto::write_msg(self.writer, ev)
+    }
+}
+
+/// One registered agent CLI, as the verbs need it: enough to validate
+/// `--agent` and refuse `wait` on an agent with no settle signal.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentMeta {
+    pub id: String,
+    /// "agent" or "terminal" (terminal entries have no work-done
+    /// machinery at all).
+    pub kind: String,
+    pub work_done: bool,
+    pub disabled: bool,
+}
+
 /// Everything the request handler needs from the app, behind a trait so
 /// the dispatch + resolution logic is testable without a running Tauri.
 pub(crate) trait CliHost: Send + Sync {
@@ -233,12 +298,42 @@ pub(crate) trait CliHost: Send + Sync {
     fn token(&self) -> &str;
     fn app_version(&self) -> String;
     fn projects_tasks(&self) -> (Vec<Project>, Vec<Task>);
-    /// Webview work-state query. `None` = the webview did not answer
-    /// (busy, still booting); per-task entries may still be missing.
+    /// Per-task agent state for `list`/`status` rows. Since Phase 1
+    /// this reads the webview-pushed cache, not a webview round-trip.
+    /// `None` = the webview has never pushed (still booting); per-task
+    /// entries may still be missing.
     fn work_states(&self, ids: &[String]) -> Option<HashMap<String, WorkStateInfo>>;
     fn open_task_in_ui(&self, task_id: &str) -> Result<(), String>;
     fn raise_window(&self);
     fn diff_stat(&self, task: &Task) -> Option<proto::DiffStat>;
+    /// Registered agent CLIs (Settings registry).
+    fn agents(&self) -> Vec<AgentMeta>;
+    /// Typed webview RPC, no progress.
+    fn rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String>;
+    /// Typed webview RPC with a progress callback (setup output
+    /// streaming; idle ticks drive keepalive heartbeats).
+    fn rpc_stream(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+        on_progress: &mut dyn FnMut(RpcProgress),
+    ) -> Result<serde_json::Value, String>;
+    /// The webview-pushed agent-state cache `wait` blocks on.
+    fn agent_cache(&self) -> &AgentCache;
+    /// Delivery confirmations for CLI-injected prompts.
+    fn prompt_reports(&self) -> &PromptReports;
+    /// SIGKILL every live PTY of a task (the task_set_sandbox
+    /// precedent); returns the victim count.
+    fn kill_task_ptys(&self, task_id: &str) -> u32;
+    /// `git rev-parse --show-toplevel` for `new` run outside any
+    /// registered project: is the cwd a repo we could register?
+    fn git_toplevel(&self, cwd: &str) -> Option<String>;
 }
 
 #[derive(Debug, Clone)]
@@ -247,7 +342,7 @@ pub(crate) struct WorkStateInfo {
     pub tabs: u32,
 }
 
-pub(crate) fn handle_request(req: &Request, host: &dyn CliHost) -> Reply {
+pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
     // Hello is the whole unauthenticated surface: app-running + protocol
     // version. Nothing else leaks before the token check.
     if let Command::Hello = req.cmd {
@@ -280,12 +375,24 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost) -> Reply {
         Command::List { project, quiet } => {
             handle_list(&req.id, host, project.as_deref(), *quiet)
         }
-        Command::Status { task, project } => {
-            handle_status(&req.id, host, task, project.as_deref())
+        Command::Status { task, project, cwd } => {
+            handle_status(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref())
         }
         Command::Open { task, project, cwd } => {
             handle_open(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref())
         }
+        Command::New { .. } => handle_new(req, host, sink),
+        Command::Wait { task, project, timeout_ms, cwd } => {
+            handle_wait(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), *timeout_ms, sink)
+        }
+        Command::Archive { task, project } => {
+            handle_archive(&req.id, host, task, project.as_deref())
+        }
+        Command::ProjectAdd { path, non_git } => {
+            handle_project_add(&req.id, host, path, *non_git)
+        }
+        Command::ProjectList => handle_project_list(&req.id, host),
+        Command::ProjectRemove { name } => handle_project_remove(&req.id, host, name),
     }
 }
 
@@ -319,9 +426,15 @@ fn handle_list(id: &str, host: &dyn CliHost, project: Option<&str>, quiet: bool)
     Reply::ok(id, ReplyData::List(proto::ListData { tasks: rows }))
 }
 
-fn handle_status(id: &str, host: &dyn CliHost, task: &str, project: Option<&str>) -> Reply {
+fn handle_status(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+) -> Reply {
     let (projects, tasks) = host.projects_tasks();
-    let t = match resolve_by_name(&projects, &tasks, task, project) {
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
         Ok(t) => t,
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
@@ -373,6 +486,717 @@ fn handle_open(
     host.raise_window();
     let summary = resolved.map(|t| summarize(t, &projects, None, None));
     Reply::ok(id, ReplyData::Open(proto::OpenData { task: summary, raised: true }))
+}
+
+// ───────────────────────────── new ───────────────────────────────────
+
+/// Resolve which project `new` targets: worktree task first (creating
+/// from inside a task worktree lands in that task's project), then the
+/// longest registered project-root prefix. `Err` distinguishes "a git
+/// repo you could register" from "nowhere at all".
+pub(crate) fn resolve_project_for_new<'a>(
+    projects: &'a [Project],
+    tasks: &[Task],
+    host: &dyn CliHost,
+    cwd: Option<&str>,
+) -> Result<&'a Project, proto::ErrorBody> {
+    let Some(cwd) = cwd else {
+        return Err(proto::ErrorBody {
+            code: ErrorCode::NotFound,
+            message: "no working directory given; use --project".into(),
+            data: None,
+        });
+    };
+    // Inside a task worktree? That task's project wins (worktree-first,
+    // docs/plans/cli.md Traps). Ambiguity here means shared main
+    // checkouts, which still agree on the project via longest prefix.
+    if let Ok(Some(t)) = resolve_by_cwd(projects, tasks, cwd) {
+        if let Some(p) = projects.iter().find(|p| p.id == t.project_id) {
+            return Ok(p);
+        }
+    }
+    let canon_cwd = canon(cwd);
+    let mut best: Option<&Project> = None;
+    for p in projects {
+        let root = canon(&p.root_path);
+        if under(&canon_cwd, &root)
+            && best.is_none_or(|b| canon(&b.root_path).len() < root.len())
+        {
+            best = Some(p);
+        }
+    }
+    if let Some(p) = best {
+        return Ok(p);
+    }
+    match host.git_toplevel(cwd) {
+        Some(root) => Err(proto::ErrorBody {
+            code: ErrorCode::UnregisteredProject,
+            message: format!(
+                "{root} is a git repository but not a registered Termic project. Register it with `termic project add {root}`, or pass --project."
+            ),
+            data: Some(serde_json::json!({ "root": root })),
+        }),
+        None => Err(proto::ErrorBody {
+            code: ErrorCode::NotFound,
+            message: "not inside a registered project or a git repository; use --project <name> or a qualified <project>/<task> name".into(),
+            data: None,
+        }),
+    }
+}
+
+fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
+    let Command::New {
+        name,
+        prompt,
+        agent,
+        mode,
+        base,
+        sandbox,
+        yolo,
+        project,
+        open,
+        wait,
+        timeout_ms,
+        cwd,
+    } = &req.cmd
+    else {
+        unreachable!("handle_new called with a non-new command")
+    };
+    let id = &req.id;
+    let fail = |code, msg: String| Reply::err(id, code, msg);
+
+    // Validate the enums FIRST: cheap, side-effect free.
+    if let Some(m) = mode.as_deref() {
+        if m != "worktree" && m != "main" {
+            return fail(ErrorCode::BadRequest, format!("unknown mode \"{m}\" (worktree or main)"));
+        }
+    }
+    if let Some(s) = sandbox.as_deref() {
+        if !["off", "monitor", "enforce", "enforce-fs"].contains(&s) {
+            return fail(
+                ErrorCode::BadRequest,
+                format!("unknown sandbox mode \"{s}\" (off, monitor, enforce or enforce-fs)"),
+            );
+        }
+    }
+    let mut trimmed = name.trim();
+    if trimmed.is_empty() {
+        return fail(ErrorCode::BadRequest, "the task name is empty".into());
+    }
+    // An empty prompt would mint a prompt id nothing ever reports on
+    // and burn the whole delivery timeout under --wait.
+    let prompt = prompt.as_ref().filter(|p| !p.trim().is_empty());
+
+    let (projects, tasks) = host.projects_tasks();
+    // `new web/fix-auth` targets project web, like the read verbs'
+    // qualified form. Only without --project (an explicit --project
+    // keeps the name literal, the escape hatch for slash-NAMED tasks
+    // whose prefix collides with a project name) and only when the
+    // prefix actually names a registered project; otherwise the slash
+    // stays part of the task name and seeds the branch, as in the GUI.
+    let qualified = match project {
+        Some(_) => None,
+        None => trimmed.split_once('/').and_then(|(prefix, rest)| {
+            let rest = rest.trim();
+            (!rest.is_empty())
+                .then(|| find_project(&projects, prefix).map(|p| (p, rest)))
+                .flatten()
+        }),
+    };
+    let proj = match (qualified, project.as_deref()) {
+        (Some((p, rest)), _) => {
+            trimmed = rest;
+            p
+        }
+        (None, Some(pname)) => match find_project(&projects, pname) {
+            Some(p) => p,
+            None => return fail(ErrorCode::NotFound, format!("no project named \"{pname}\"")),
+        },
+        (None, None) => match resolve_project_for_new(&projects, &tasks, host, cwd.as_deref()) {
+            Ok(p) => p,
+            Err(e) => return Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
+        },
+    };
+
+    // Non-git projects cannot host worktrees (the GUI forces the main
+    // checkout for them); an explicit --worktree is an impossible ask,
+    // and an unspecified mode is pinned to main HERE, against the
+    // disk-read project, so a lagging webview store cannot fall back to
+    // a remembered worktree mode.
+    if proj.non_git && mode.as_deref() == Some("worktree") {
+        return fail(
+            ErrorCode::BadRequest,
+            format!(
+                "project \"{}\" is a plain folder (non-git); worktree tasks need git. Use --main or omit the mode.",
+                proj.name
+            ),
+        );
+    }
+    let mode = if proj.non_git { &Some("main".to_string()) } else { mode };
+
+    // Same-name collision is a clean error naming the existing task,
+    // never cleanup (docs/plans/cli.md: task_create_sync's orphan
+    // cleanup makes interleaved same-name creates destructive; the
+    // webview create lock serializes, this check keeps the error clear).
+    if let Some(existing) = tasks
+        .iter()
+        .find(|t| !t.archived && t.project_id == proj.id && t.name.eq_ignore_ascii_case(trimmed))
+    {
+        return fail(
+            ErrorCode::Conflict,
+            format!("task {}/{} already exists", proj.name, existing.name),
+        );
+    }
+
+    // Validate the agent against the registry (the project default is
+    // what the webview falls back to when None).
+    let agents = host.agents();
+    let effective_agent = agent.clone().unwrap_or_else(|| proj.default_cli.clone());
+    let known = agents.iter().find(|a| a.id == effective_agent && a.kind == "agent");
+    match known {
+        Some(meta) if meta.disabled => {
+            return fail(
+                ErrorCode::Unsupported,
+                format!("agent \"{effective_agent}\" is disabled in Settings; enable it there or pass a different --agent"),
+            );
+        }
+        None => {
+            let mut ids: Vec<&str> = agents
+                .iter()
+                .filter(|a| a.kind == "agent" && !a.disabled)
+                .map(|a| a.id.as_str())
+                .collect();
+            ids.sort();
+            return fail(
+                ErrorCode::NotFound,
+                format!("unknown agent \"{effective_agent}\" (available: {})", ids.join(", ")),
+            );
+        }
+        Some(meta) if *wait && !meta.work_done => {
+            return fail(
+                ErrorCode::Unsupported,
+                format!(
+                    "agent \"{effective_agent}\" has work-done detection disabled, so --wait has no settle signal. Create the task without --wait."
+                ),
+            );
+        }
+        Some(_) => {}
+    }
+
+    // Register delivery interest BEFORE the webview learns the id, so a
+    // fast report can never race past us.
+    let prompt_id = prompt.as_ref().map(|_| uuid::Uuid::new_v4().simple().to_string());
+    if let Some(pid) = &prompt_id {
+        host.prompt_reports().expect(pid);
+    }
+
+    let params = serde_json::json!({
+        "name": trimmed,
+        "agent": agent,
+        "mode": mode,
+        "base": base,
+        "sandbox": sandbox,
+        "yolo": yolo,
+        "projectId": proj.id,
+        "open": open,
+        "prompt": prompt,
+        "promptId": prompt_id,
+    });
+    // Forward setup output; heartbeat on idle. A dead client cannot
+    // cancel the create (it already committed app-side), so emit
+    // failures just stop the streaming.
+    let mut sink_dead = false;
+    let value = {
+        let mut on_progress = |p: RpcProgress| {
+            if sink_dead {
+                return;
+            }
+            sink_dead = match p {
+                RpcProgress::Value(v) => match v.get("setupOutput").and_then(|d| d.as_str()) {
+                    Some(data) => {
+                        sink.emit(&StreamEvent::setup_output(id, data.to_string())).is_err()
+                    }
+                    None => false,
+                },
+                RpcProgress::Idle => sink.emit(&StreamEvent::heartbeat(id)).is_err(),
+            };
+        };
+        host.rpc_stream("new_task", params, NEW_TASK_TIMEOUT, &mut on_progress)
+    };
+    let value = match value {
+        Ok(v) => v,
+        Err(e) => {
+            if let Some(pid) = &prompt_id {
+                host.prompt_reports().forget(pid);
+            }
+            return fail(ErrorCode::Internal, format!("could not create the task ({e})"));
+        }
+    };
+    let task_id = value
+        .get("taskId")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    // "spawned" = the default agent tab holds a live PTY. The prompt
+    // path folds a failed spawn into the delivery report (exit 9); the
+    // promptless --wait path must fail here or an idle dead task would
+    // read as quiescent (a false exit 0).
+    let spawned = value.get("spawned").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    // Reload: the create committed on disk; summarize the fresh task.
+    let (projects, tasks) = host.projects_tasks();
+    let Some(task) = tasks.iter().find(|t| t.id == task_id) else {
+        if let Some(pid) = &prompt_id {
+            host.prompt_reports().forget(pid);
+        }
+        return fail(
+            ErrorCode::Internal,
+            "the task was created but could not be read back".into(),
+        );
+    };
+    let states = host.work_states(std::slice::from_ref(&task_id));
+    let summary = summarize(task, &projects, states.as_ref(), None);
+    let _ = sink.emit(&StreamEvent::created(id, summary.clone()));
+    if *open {
+        host.raise_window();
+    }
+
+    if !*wait {
+        // Without --wait the reply lands at spawn. A prompt keeps
+        // injecting app-side, UNCONFIRMED by design; --wait is the
+        // strong contract (exit 0 = delivered + settled).
+        if let Some(pid) = &prompt_id {
+            host.prompt_reports().forget(pid);
+        }
+        return Reply::ok(id, ReplyData::New(proto::NewData { task: summary, wait: None }));
+    }
+
+    if !spawned && prompt_id.is_none() {
+        return fail(
+            ErrorCode::Internal,
+            format!(
+                "the task was created but its agent never spawned; open {}/{} in Termic",
+                summary.project, summary.name
+            ),
+        );
+    }
+    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    let watch = watch_agent(
+        host,
+        WatchOpts {
+            req_id: id,
+            task_id: &task_id,
+            prompt_id: prompt_id.as_deref(),
+            deadline,
+            strict_target: false,
+        },
+        sink,
+    );
+    match watch {
+        Ok(result) => {
+            // Refresh the state column so the final object tells the
+            // truth about where the agent landed.
+            let states = host.work_states(std::slice::from_ref(&task_id));
+            let mut summary = summary;
+            if let Some(info) = states.as_ref().and_then(|m| m.get(&task_id)) {
+                summary.work_state = Some(info.state.clone());
+                summary.open_tabs = Some(info.tabs);
+            }
+            Reply::ok(id, ReplyData::New(proto::NewData { task: summary, wait: Some(result) }))
+        }
+        Err(e) => Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
+    }
+}
+
+// ───────────────────────────── wait ──────────────────────────────────
+
+struct WatchOpts<'a> {
+    req_id: &'a str,
+    task_id: &'a str,
+    /// Some = track our OWN injected prompt: outcome requires confirmed
+    /// delivery plus that turn settling, not just any quiet.
+    prompt_id: Option<&'a str>,
+    deadline: Option<Instant>,
+    /// `wait` verb semantics: refuse an inactive or incapable target on
+    /// first sight instead of waiting on a signal that cannot come.
+    strict_target: bool,
+}
+
+fn outcome_for(state: &str) -> WaitOutcome {
+    match state {
+        "waiting" => WaitOutcome::NeedsInput,
+        _ => WaitOutcome::Done,
+    }
+}
+
+/// Block until the task's agent is quiescent (settled AND empty queue),
+/// riding the webview-pushed cache. Emits state transitions and
+/// heartbeats to `sink`; aborts early when the client hangs up.
+fn watch_agent(
+    host: &dyn CliHost,
+    opts: WatchOpts<'_>,
+    sink: &mut dyn EventSink,
+) -> Result<proto::WaitResult, proto::ErrorBody> {
+    let internal = |msg: &str| proto::ErrorBody {
+        code: ErrorCode::Internal,
+        message: msg.to_string(),
+        data: None,
+    };
+    let cache = host.agent_cache();
+    let reports = host.prompt_reports();
+    let started = Instant::now();
+    let mut awaiting_delivery = opts.prompt_id.is_some();
+    let mut delivered_at: Option<Instant> = None;
+    let mut last_state: Option<String> = None;
+    let mut seen_working = false;
+    let mut seen_active = false;
+    let mut last_seq = 0u64;
+    let mut last_heartbeat = Instant::now();
+    // A webview reload replaces the cache wholesale and can transiently
+    // push an EMPTY map (before loadAll hydrates); the entry-missing
+    // error therefore requires the entry to be CONTINUOUSLY absent for
+    // the grace window, never a single bad snapshot mid-wait.
+    let mut entry_missing_since: Option<Instant> = None;
+
+    let cleanup = |awaiting: bool| {
+        if awaiting {
+            if let Some(pid) = opts.prompt_id {
+                reports.forget(pid);
+            }
+        }
+    };
+
+    loop {
+        if let Some(d) = opts.deadline {
+            if Instant::now() >= d {
+                cleanup(awaiting_delivery);
+                return Ok(proto::WaitResult {
+                    outcome: WaitOutcome::Timeout,
+                    state: last_state,
+                    detail: None,
+                });
+            }
+        }
+
+        if awaiting_delivery {
+            if let Some(pid) = opts.prompt_id {
+                match reports.try_take(pid) {
+                    Some(Ok(())) => {
+                        awaiting_delivery = false;
+                        delivered_at = Some(Instant::now());
+                        let _ = sink.emit(&StreamEvent::prompt_delivered(opts.req_id));
+                    }
+                    Some(Err(reason)) => {
+                        return Ok(proto::WaitResult {
+                            outcome: WaitOutcome::NotDelivered,
+                            state: last_state,
+                            detail: Some(reason),
+                        });
+                    }
+                    None if started.elapsed() >= DELIVERY_TIMEOUT => {
+                        reports.forget(pid);
+                        return Ok(proto::WaitResult {
+                            outcome: WaitOutcome::NotDelivered,
+                            state: last_state,
+                            detail: Some(
+                                "no delivery confirmation from the Termic UI (a reload drops the injection)"
+                                    .into(),
+                            ),
+                        });
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        let snap = cache.snapshot();
+        match snap.age {
+            None => {
+                if started.elapsed() > POPULATE_GRACE {
+                    cleanup(awaiting_delivery);
+                    return Err(internal(
+                        "the Termic UI has not reported agent state (is the app still starting?)",
+                    ));
+                }
+            }
+            Some(age) => {
+                if let Some(entry) = snap.states.get(opts.task_id) {
+                    entry_missing_since = None;
+                    if opts.strict_target && last_state.is_none() {
+                        // First sight of the target under `wait`.
+                        if entry.state == "inactive" {
+                            return Err(proto::ErrorBody {
+                                code: ErrorCode::Unsupported,
+                                message:
+                                    "no agent is open in this task (open it in Termic, then rerun)"
+                                        .into(),
+                                data: None,
+                            });
+                        }
+                        if !entry.capable {
+                            return Err(proto::ErrorBody {
+                                code: ErrorCode::Unsupported,
+                                message: "this task's agent has work-done detection disabled, there is no settle signal to wait on".into(),
+                                data: None,
+                            });
+                        }
+                    }
+                    if last_state.as_deref() != Some(entry.state.as_str()) {
+                        last_state = Some(entry.state.clone());
+                        let _ = sink.emit(&StreamEvent::state(opts.req_id, entry.state.clone()));
+                    }
+                    if entry.state == "working" {
+                        seen_working = true;
+                    }
+                    if entry.state != "inactive" {
+                        seen_active = true;
+                    }
+                    if !awaiting_delivery {
+                        let quiescent = entry.state != "working" && entry.queued == 0;
+                        // A task the webview reports as inactive never
+                        // ran here: only count it as "stopped" once we
+                        // saw it alive (or gave the spawn a fair grace).
+                        let inactive_ok = entry.state != "inactive"
+                            || seen_active
+                            || started.elapsed() > IDLE_SETTLE_GRACE;
+                        let own_prompt_settled = opts.prompt_id.is_none()
+                            || seen_working
+                            || entry.state == "done"
+                            || entry.state == "waiting"
+                            || delivered_at.is_some_and(|t| t.elapsed() > IDLE_SETTLE_GRACE);
+                        if quiescent && inactive_ok && own_prompt_settled {
+                            return Ok(proto::WaitResult {
+                                outcome: outcome_for(&entry.state),
+                                state: Some(entry.state.clone()),
+                                detail: None,
+                            });
+                        }
+                    }
+                } else if entry_missing_since.get_or_insert_with(Instant::now).elapsed()
+                    > POPULATE_GRACE
+                {
+                    cleanup(awaiting_delivery);
+                    // Archived tasks drop out of the pushed map; say so
+                    // instead of blaming the UI.
+                    let archived = host
+                        .projects_tasks()
+                        .1
+                        .iter()
+                        .find(|t| t.id == opts.task_id)
+                        .is_none_or(|t| t.archived);
+                    if archived {
+                        return Err(internal("the task was archived while waiting"));
+                    }
+                    return Err(internal("the Termic UI is not reporting this task's state"));
+                }
+                // Staleness only matters when we KEEP waiting: an
+                // already-quiescent answer returned above even if the
+                // last push is old (an idle occluded webview is not a
+                // dead one). From here on, flips could not reach us.
+                if age > CACHE_STALE_AFTER {
+                    cleanup(awaiting_delivery);
+                    return Err(internal("the Termic UI stopped reporting agent state"));
+                }
+            }
+        }
+
+        if last_heartbeat.elapsed() >= HEARTBEAT_EVERY {
+            last_heartbeat = Instant::now();
+            if sink.emit(&StreamEvent::heartbeat(opts.req_id)).is_err() {
+                // Client hung up mid-wait: stop watching (the task keeps
+                // running); the reply write will fail the same way.
+                cleanup(awaiting_delivery);
+                return Ok(proto::WaitResult {
+                    outcome: WaitOutcome::Timeout,
+                    state: last_state,
+                    detail: Some("client disconnected".into()),
+                });
+            }
+        }
+
+        // Delivery reports don't bump the cache seq, so poll faster
+        // while one is pending; otherwise sleep until the next heartbeat
+        // is due (cache pushes wake us early), keeping the keepalive
+        // cadence tight against the CLI's 30s read timeout. Clamped to
+        // the caller's deadline so --timeout never overshoots by a
+        // sleep slice.
+        let mut slice = if awaiting_delivery {
+            CV_SLICE
+        } else {
+            HEARTBEAT_EVERY
+                .saturating_sub(last_heartbeat.elapsed())
+                .max(Duration::from_millis(20))
+        };
+        if let Some(d) = opts.deadline {
+            slice = slice
+                .min(d.saturating_duration_since(Instant::now()))
+                .max(Duration::from_millis(5));
+        }
+        last_seq = cache.wait_change(last_seq, slice);
+    }
+}
+
+fn handle_wait(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+    timeout_ms: Option<u64>,
+    sink: &mut dyn EventSink,
+) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t,
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    let watch = watch_agent(
+        host,
+        WatchOpts {
+            req_id: id,
+            task_id: &t.id,
+            prompt_id: None,
+            deadline,
+            strict_target: true,
+        },
+        sink,
+    );
+    match watch {
+        Ok(result) => Reply::ok(
+            id,
+            ReplyData::Wait(proto::WaitData { task_id: t.id.clone(), result }),
+        ),
+        Err(e) => Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    }
+}
+
+// ───────────────────────────── archive ───────────────────────────────
+
+fn handle_archive(id: &str, host: &dyn CliHost, task: &str, project: Option<&str>) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_by_name(&projects, &tasks, task, project) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let project_name = projects
+        .iter()
+        .find(|p| p.id == t.project_id)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| t.project_id.clone());
+    // Kill the task's live PTYs FIRST: removing a worktree under a live
+    // agent is undefined (docs/plans/cli.md; the GUI's archive copy
+    // already promises termination, the CLI actually delivers it).
+    let killed = host.kill_task_ptys(&t.id);
+    if let Err(e) = host.rpc(
+        "archive_task",
+        serde_json::json!({ "taskId": t.id }),
+        ARCHIVE_TIMEOUT,
+    ) {
+        return Reply::err(id, ErrorCode::Internal, format!("archive failed ({e})"));
+    }
+    Reply::ok(
+        id,
+        ReplyData::Archive(proto::ArchiveData {
+            task_id: t.id,
+            name: t.name,
+            project: project_name,
+            killed_agents: killed,
+        }),
+    )
+}
+
+// ───────────────────────────── projects ──────────────────────────────
+
+fn project_info(p: &Project, tasks: &[Task]) -> proto::ProjectInfo {
+    proto::ProjectInfo {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        root_path: p.root_path.clone(),
+        tasks: tasks.iter().filter(|t| !t.archived && t.project_id == p.id).count() as u32,
+        default_agent: p.default_cli.clone(),
+    }
+}
+
+fn handle_project_list(id: &str, host: &dyn CliHost) -> Reply {
+    let (mut projects, tasks) = host.projects_tasks();
+    projects.sort_by(|a, b| a.name.cmp(&b.name));
+    let projects = projects.iter().map(|p| project_info(p, &tasks)).collect();
+    Reply::ok(id, ReplyData::ProjectList(proto::ProjectListData { projects }))
+}
+
+fn handle_project_add(id: &str, host: &dyn CliHost, path: &str, non_git: bool) -> Reply {
+    let value = match host.rpc(
+        "project_add",
+        serde_json::json!({ "path": path, "nonGit": non_git }),
+        PROJECT_RPC_TIMEOUT,
+    ) {
+        Ok(v) => v,
+        // Idempotency is part of the help contract ("0 registered, or
+        // already registered"): agents defensively add before creating,
+        // and a healthy re-add must not read as failure. The substring
+        // is marked load-bearing at its lib.rs origin.
+        Err(e) if e.contains("project already added") => {
+            let (projects, tasks) = host.projects_tasks();
+            let canon_path = canon(path);
+            if let Some(p) = projects.iter().find(|p| canon(&p.root_path) == canon_path) {
+                return Reply::ok(
+                    id,
+                    ReplyData::ProjectAdd(proto::ProjectAddData {
+                        project: project_info(p, &tasks),
+                    }),
+                );
+            }
+            return Reply::err(id, ErrorCode::Internal, format!("could not add the project ({e})"));
+        }
+        // The backend's non-git message describes the GUI confirmation
+        // dialog; the CLI's version of that confirmation is a flag.
+        Err(e) if !non_git && e.contains("not a git repo") => {
+            return Reply::err(
+                id,
+                ErrorCode::BadRequest,
+                format!("{path} is not a git repository. Pass --non-git to register it as a plain folder."),
+            );
+        }
+        Err(e) => return Reply::err(id, ErrorCode::Internal, format!("could not add the project ({e})")),
+    };
+    let project_id = value.get("projectId").and_then(|v| v.as_str()).unwrap_or_default();
+    let (projects, tasks) = host.projects_tasks();
+    let Some(p) = projects.iter().find(|p| p.id == project_id) else {
+        return Reply::err(id, ErrorCode::Internal, "the project was added but could not be read back");
+    };
+    Reply::ok(
+        id,
+        ReplyData::ProjectAdd(proto::ProjectAddData { project: project_info(p, &tasks) }),
+    )
+}
+
+fn handle_project_remove(id: &str, host: &dyn CliHost, name: &str) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let Some(p) = find_project(&projects, name) else {
+        return Reply::err(id, ErrorCode::NotFound, format!("no project named \"{name}\""));
+    };
+    let removed_tasks =
+        tasks.iter().filter(|t| !t.archived && t.project_id == p.id).count() as u32;
+    // Every live agent in the project dies with it; same rule as
+    // archive (never remove a worktree under a live PTY).
+    for t in tasks.iter().filter(|t| !t.archived && t.project_id == p.id) {
+        host.kill_task_ptys(&t.id);
+    }
+    if let Err(e) = host.rpc(
+        "project_remove",
+        serde_json::json!({ "projectId": p.id }),
+        ARCHIVE_TIMEOUT,
+    ) {
+        return Reply::err(id, ErrorCode::Internal, format!("could not remove the project ({e})"));
+    }
+    Reply::ok(
+        id,
+        ReplyData::ProjectRemove(proto::ProjectRemoveData {
+            name: p.name.clone(),
+            removed_tasks,
+        }),
+    )
 }
 
 fn summarize(
@@ -428,6 +1252,41 @@ fn qualified(projects: &[Project], task: &Task) -> String {
     format!("{p}/{}", task.name)
 }
 
+/// Resolve a task from an optional name, falling back to the caller's
+/// cwd (worktree first, then main-checkout prefix), the same rule
+/// `open` uses. Verbs that read or wait go through this; destructive
+/// verbs (archive) deliberately require the explicit name.
+pub(crate) fn resolve_task_arg<'a>(
+    projects: &[Project],
+    tasks: &'a [Task],
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<&'a Task, proto::ErrorBody> {
+    if let Some(name) = task {
+        return resolve_by_name(projects, tasks, name, project);
+    }
+    // clap guards this in the shipped CLI (requires = "task"); the wire
+    // guard keeps a hand-rolled client from silently having its
+    // --project ignored on the cwd path.
+    if project.is_some() {
+        return Err(proto::ErrorBody {
+            code: ErrorCode::BadRequest,
+            message: "--project requires a task name".into(),
+            data: None,
+        });
+    }
+    let not_here = || proto::ErrorBody {
+        code: ErrorCode::NotFound,
+        message: "not inside a task worktree or project checkout; name the task".into(),
+        data: None,
+    };
+    match cwd {
+        Some(cwd) => resolve_by_cwd(projects, tasks, cwd)?.ok_or_else(not_here),
+        None => Err(not_here()),
+    }
+}
+
 /// Resolve a task by name, id, or qualified `project/name`; `--project`
 /// filters first. A name matching tasks in more than one project errors
 /// listing the candidates (docs/plans/cli.md).
@@ -440,6 +1299,7 @@ pub(crate) fn resolve_by_name<'a>(
     let not_found = |what: &str| proto::ErrorBody {
         code: ErrorCode::NotFound,
         message: what.to_string(),
+        data: None,
     };
     let live: Vec<&Task> = tasks.iter().filter(|t| !t.archived).collect();
 
@@ -488,6 +1348,7 @@ pub(crate) fn resolve_by_name<'a>(
                     "task \"{raw}\" exists in more than one project: {}. Disambiguate with --project or project/name.",
                     names.join(", ")
                 ),
+                data: None,
             })
         }
     }
@@ -563,6 +1424,7 @@ pub(crate) fn resolve_by_cwd<'a>(
                     "this directory belongs to more than one task: {}. Name the task explicitly.",
                     names.join(", ")
                 ),
+                data: None,
             });
         }
         _ => {}
@@ -588,6 +1450,7 @@ pub(crate) fn resolve_by_cwd<'a>(
                     "this checkout is shared by more than one task: {}. Name the task explicitly.",
                     names.join(", ")
                 ),
+                data: None,
             })
         }
     }
@@ -674,14 +1537,7 @@ impl CliHost for TauriHost {
         (crate::load_projects(), crate::load_tasks())
     }
     fn work_states(&self, ids: &[String]) -> Option<HashMap<String, WorkStateInfo>> {
-        let value = webview_rpc(
-            &self.app,
-            "work_state",
-            serde_json::json!({ "taskIds": ids }),
-            WORK_STATE_TIMEOUT,
-        )
-        .ok()?;
-        parse_work_states(&value)
+        cached_work_states(&global_agent_cache().snapshot(), ids)
     }
     fn open_task_in_ui(&self, task_id: &str) -> Result<(), String> {
         webview_rpc(
@@ -702,21 +1558,50 @@ impl CliHost for TauriHost {
     fn diff_stat(&self, task: &Task) -> Option<proto::DiffStat> {
         diff_stat(task)
     }
-}
-
-/// Parse the webview's work-state RPC reply. A single malformed entry is
-/// SKIPPED, never fatal: one bad row must not collapse the whole map to
-/// `None` and degrade every task to "UI did not answer". `None` only when
-/// the top-level shape is wrong (no `states` object).
-fn parse_work_states(value: &serde_json::Value) -> Option<HashMap<String, WorkStateInfo>> {
-    let states = value.get("states")?.as_object()?;
-    let mut out = HashMap::new();
-    for (id, v) in states {
-        let Some(state) = v.get("state").and_then(|s| s.as_str()) else { continue };
-        let tabs = v.get("tabs").and_then(|t| t.as_u64()).unwrap_or(0) as u32;
-        out.insert(id.clone(), WorkStateInfo { state: state.to_string(), tabs });
+    fn agents(&self) -> Vec<AgentMeta> {
+        crate::load_settings_inner()
+            .agents
+            .iter()
+            .map(|a| AgentMeta {
+                id: a.id.clone(),
+                kind: a.kind.clone(),
+                work_done: a.work_done,
+                disabled: a.disabled,
+            })
+            .collect()
     }
-    Some(out)
+    fn rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        webview_rpc(&self.app, method, params, timeout)
+    }
+    fn rpc_stream(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+        on_progress: &mut dyn FnMut(RpcProgress),
+    ) -> Result<serde_json::Value, String> {
+        webview_rpc_stream(&self.app, method, params, timeout, on_progress)
+    }
+    fn agent_cache(&self) -> &AgentCache {
+        global_agent_cache()
+    }
+    fn prompt_reports(&self) -> &PromptReports {
+        global_prompt_reports()
+    }
+    fn kill_task_ptys(&self, task_id: &str) -> u32 {
+        let manager = self.app.state::<crate::PtyManager>();
+        crate::kill_task_ptys(&manager, task_id) as u32
+    }
+    fn git_toplevel(&self, cwd: &str) -> Option<String> {
+        let out = crate::git(&["rev-parse", "--show-toplevel"], Path::new(cwd)).ok()?;
+        let root = out.trim();
+        (!root.is_empty()).then(|| root.to_string())
+    }
 }
 
 /// Cheap diff stat vs the base branch: one `git diff --numstat` plus one
@@ -745,12 +1630,286 @@ fn diff_stat(task: &Task) -> Option<proto::DiffStat> {
     Some(proto::DiffStat { files_changed, insertions, deletions, untracked })
 }
 
+// ───────────────────────── agent state cache ─────────────────────────
+
+/// One task's aggregated agent state, as pushed by the webview
+/// (src/lib/cliAgentState.ts). The webview is the only writer; the
+/// socket threads read it for `list`/`status` and block on it for
+/// `wait` (docs/plans/cli.md, Phase 1: the flips live in Rust, so the
+/// verbs work even while the webview is busy).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TaskAgentState {
+    /// "working" | "waiting" | "done" | "idle" | "inactive".
+    pub state: String,
+    /// Live terminal tabs for the task.
+    #[serde(default)]
+    pub tabs: u32,
+    /// Messages still queued to the task's agents (the ralph loop).
+    /// Quiescence requires 0: settle alone races `send`'s queueing.
+    #[serde(default)]
+    pub queued: u32,
+    /// Any tab has work-done detection (agent capability, not opted
+    /// out). Without it there is no settle signal to wait on.
+    #[serde(default)]
+    pub capable: bool,
+}
+
+struct AgentCacheInner {
+    states: HashMap<String, TaskAgentState>,
+    /// Bumped on every push; waiters detect change by seq, never by
+    /// polling field diffs.
+    seq: u64,
+    /// When the last push arrived. None = the webview never pushed
+    /// (still booting, or an old frontend).
+    last_push: Option<Instant>,
+}
+
+pub(crate) struct AgentCache {
+    inner: Mutex<AgentCacheInner>,
+    cv: Condvar,
+}
+
+/// A read of the cache at one instant.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentSnapshot {
+    pub states: HashMap<String, TaskAgentState>,
+    /// Age of the newest push; None = never pushed.
+    pub age: Option<Duration>,
+}
+
+impl AgentCache {
+    pub(crate) fn new() -> Self {
+        AgentCache {
+            inner: Mutex::new(AgentCacheInner { states: HashMap::new(), seq: 0, last_push: None }),
+            cv: Condvar::new(),
+        }
+    }
+
+    pub(crate) fn update(&self, states: HashMap<String, TaskAgentState>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.states = states;
+        inner.seq += 1;
+        inner.last_push = Some(Instant::now());
+        drop(inner);
+        self.cv.notify_all();
+    }
+
+    pub(crate) fn snapshot(&self) -> AgentSnapshot {
+        let inner = self.inner.lock().unwrap();
+        AgentSnapshot {
+            states: inner.states.clone(),
+            age: inner.last_push.map(|t| t.elapsed()),
+        }
+    }
+
+    /// Block until a push newer than `last_seq` lands or `timeout`
+    /// passes. Returns the current seq either way.
+    pub(crate) fn wait_change(&self, last_seq: u64, timeout: Duration) -> u64 {
+        let deadline = Instant::now() + timeout;
+        let mut inner = self.inner.lock().unwrap();
+        while inner.seq <= last_seq {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let (next, timed_out) = self
+                .cv
+                .wait_timeout(inner, deadline - now)
+                .unwrap_or_else(|p| p.into_inner());
+            inner = next;
+            if timed_out.timed_out() {
+                break;
+            }
+        }
+        inner.seq
+    }
+}
+
+fn global_agent_cache() -> &'static AgentCache {
+    static CACHE: OnceLock<AgentCache> = OnceLock::new();
+    CACHE.get_or_init(AgentCache::new)
+}
+
+/// Webview push target: the FULL per-task state map (idempotent
+/// snapshot, not a delta - deltas would desync on a webview reload).
+#[tauri::command]
+pub fn cli_agent_states(states: HashMap<String, TaskAgentState>) {
+    global_agent_cache().update(states);
+}
+
+/// list/status rows from a cache snapshot. Phase 1 reads the
+/// webview-pushed cache instead of a webview round-trip (works while
+/// the UI is busy; one less moving part). A cache past the staleness
+/// cutoff degrades to "unknown" like Phase 0's webview timeout did:
+/// frozen rows presented as live would be worse than no answer.
+pub(crate) fn cached_work_states(
+    snap: &AgentSnapshot,
+    ids: &[String],
+) -> Option<HashMap<String, WorkStateInfo>> {
+    snap.age.filter(|a| *a <= CACHE_STALE_AFTER)?;
+    let mut out = HashMap::new();
+    for id in ids {
+        if let Some(s) = snap.states.get(id) {
+            out.insert(id.clone(), WorkStateInfo { state: s.state.clone(), tabs: s.tabs });
+        }
+    }
+    Some(out)
+}
+
+// ───────────────────────── prompt delivery reports ───────────────────
+
+/// Delivery confirmations for CLI-injected prompts. The webview's
+/// injection path reports delivered/failed per prompt id; `new --wait`
+/// blocks on the report because the injection recipe itself can die
+/// silently (a webview reload during the settle window drops the timer
+/// chain while the Rust-owned PTY survives idle - exit 0 must mean
+/// CONFIRMED delivery, docs/plans/cli.md Phase 1).
+pub(crate) struct PromptReports {
+    inner: Mutex<PromptReportsInner>,
+}
+
+#[derive(Default)]
+struct PromptReportsInner {
+    /// Ids a server thread is (or will be) waiting on. Reports for
+    /// unknown ids are dropped, so a late or forged report can never
+    /// accumulate state. Waiters poll `try_take` on their existing
+    /// watch cadence, so no condvar is needed here.
+    expected: HashSet<String>,
+    results: HashMap<String, Result<(), String>>,
+}
+
+impl PromptReports {
+    pub(crate) fn new() -> Self {
+        PromptReports { inner: Mutex::new(PromptReportsInner::default()) }
+    }
+
+    /// Register interest BEFORE the webview learns the id, so a fast
+    /// report can never race past the waiter.
+    pub(crate) fn expect(&self, id: &str) {
+        self.inner.lock().unwrap().expected.insert(id.to_string());
+    }
+
+    /// Drop interest without waiting (error paths, waiter give-up).
+    pub(crate) fn forget(&self, id: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.expected.remove(id);
+        inner.results.remove(id);
+    }
+
+    pub(crate) fn resolve(&self, id: &str, result: Result<(), String>) {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.expected.contains(id) {
+            return;
+        }
+        inner.results.insert(id.to_string(), result);
+    }
+
+    /// Non-blocking probe; unregisters the id when a report is taken.
+    fn try_take(&self, id: &str) -> Option<Result<(), String>> {
+        let mut inner = self.inner.lock().unwrap();
+        let r = inner.results.remove(id);
+        if r.is_some() {
+            inner.expected.remove(id);
+        }
+        r
+    }
+}
+
+fn global_prompt_reports() -> &'static PromptReports {
+    static REPORTS: OnceLock<PromptReports> = OnceLock::new();
+    REPORTS.get_or_init(PromptReports::new)
+}
+
+/// Webview callback: delivery outcome for one injected prompt.
+#[tauri::command]
+pub fn cli_prompt_report(id: String, ok: bool, error: Option<String>) {
+    let result = if ok {
+        Ok(())
+    } else {
+        Err(error.unwrap_or_else(|| "prompt injection failed".into()))
+    };
+    global_prompt_reports().resolve(&id, result);
+}
+
 // ───────────────────────────── webview RPC ───────────────────────────
 
+/// One-way readiness latch: set when the webview's RPC listener has
+/// registered (`cli_rpc_ready`). Tauri events are NOT queued for future
+/// listeners, so an RPC emitted during app cold-launch (socket binds in
+/// setup(), React mounts seconds later) would vanish and the request
+/// would burn its whole timeout. Every RPC waits on this first.
+pub(crate) struct ReadyLatch {
+    inner: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl ReadyLatch {
+    pub(crate) fn new() -> Self {
+        ReadyLatch { inner: Mutex::new(false), cv: Condvar::new() }
+    }
+    pub(crate) fn set(&self) {
+        *self.inner.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+    /// True once set; false if `timeout` passes first.
+    pub(crate) fn wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut ready = self.inner.lock().unwrap();
+        while !*ready {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            ready = self
+                .cv
+                .wait_timeout(ready, deadline - now)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+        true
+    }
+}
+
+fn webview_ready() -> &'static ReadyLatch {
+    static READY: OnceLock<ReadyLatch> = OnceLock::new();
+    READY.get_or_init(ReadyLatch::new)
+}
+
+/// How long an RPC waits for the webview listener before emitting
+/// anyway (30s in production: cold app launch + React mount; the
+/// emit-anyway fallback preserves the old timeout behavior if the
+/// ready signal ever goes missing).
+const WEBVIEW_READY_TIMEOUT: Duration =
+    Duration::from_millis(if cfg!(test) { 50 } else { 30_000 });
+
+/// Invoked by src/lib/cliRpc.ts once its `cli-rpc://request` listener
+/// is registered. Idempotent; a webview reload re-invokes it.
+#[tauri::command]
+pub fn cli_rpc_ready() {
+    webview_ready().set();
+}
+
+enum RpcMsg {
+    /// Intermediate progress from a streaming handler (raw value JSON).
+    Progress(String),
+    /// The handler's final `{ok, value|error}` envelope.
+    Result(String),
+}
+
 /// Pending RPCs: correlation id -> channel the socket thread blocks on.
-fn pending() -> &'static Mutex<HashMap<String, mpsc::SyncSender<String>>> {
-    static PENDING: OnceLock<Mutex<HashMap<String, mpsc::SyncSender<String>>>> = OnceLock::new();
+/// Unbounded senders: `cli_rpc_result` / `cli_rpc_progress` run on the
+/// IPC thread and must NEVER block (docs/ipc.md).
+fn pending() -> &'static Mutex<HashMap<String, mpsc::Sender<RpcMsg>>> {
+    static PENDING: OnceLock<Mutex<HashMap<String, mpsc::Sender<RpcMsg>>>> = OnceLock::new();
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Progress signal for a streaming RPC: either a payload from the
+/// webview handler or an idle tick (about every `HEARTBEAT_EVERY` of
+/// silence) the caller can use to keep its socket stream alive.
+pub(crate) enum RpcProgress {
+    Value(serde_json::Value),
+    Idle,
 }
 
 fn webview_rpc(
@@ -759,31 +1918,80 @@ fn webview_rpc(
     params: serde_json::Value,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
+    webview_rpc_stream(app, method, params, timeout, &mut |_| {})
+}
+
+/// Emit a typed request into the webview and block for the final
+/// result, forwarding progress payloads (and idle ticks) to
+/// `on_progress`.
+fn webview_rpc_stream(
+    app: &tauri::AppHandle,
+    method: &str,
+    params: serde_json::Value,
+    timeout: Duration,
+    on_progress: &mut dyn FnMut(RpcProgress),
+) -> Result<serde_json::Value, String> {
+    // Cold-launch guard: don't emit into a webview that has no listener
+    // yet (the event would be dropped, not queued). Heartbeat THROUGH
+    // the wait: a slow webview boot must not starve a streaming client
+    // whose read timeout (30s) equals this latch budget. If the latch
+    // never sets, fall through and let the normal timeout produce the
+    // error.
+    let ready_deadline = Instant::now() + WEBVIEW_READY_TIMEOUT;
+    loop {
+        let remaining = ready_deadline.saturating_duration_since(Instant::now());
+        if webview_ready().wait(HEARTBEAT_EVERY.min(remaining)) || remaining.is_zero() {
+            break;
+        }
+        on_progress(RpcProgress::Idle);
+    }
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let (tx, rx) = mpsc::sync_channel::<String>(1);
+    let (tx, rx) = mpsc::channel::<RpcMsg>();
     pending().lock().unwrap().insert(id.clone(), tx);
     let payload = serde_json::json!({ "id": id, "method": method, "params": params });
     if let Err(e) = app.emit("cli-rpc://request", payload) {
         pending().lock().unwrap().remove(&id);
         return Err(format!("emit failed: {e}"));
     }
-    match rx.recv_timeout(timeout) {
-        Ok(raw) => {
-            let v: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|e| format!("bad rpc payload: {e}"))?;
-            if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
-                Ok(v.get("value").cloned().unwrap_or(serde_json::Value::Null))
-            } else {
-                Err(v
+    let deadline = Instant::now() + timeout;
+    let mut idle_since = Instant::now();
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            pending().lock().unwrap().remove(&id);
+            return Err(format!("the Termic UI did not answer within {}ms", timeout.as_millis()));
+        }
+        let slice = CV_SLICE.min(deadline - now);
+        match rx.recv_timeout(slice) {
+            Ok(RpcMsg::Progress(raw)) => {
+                idle_since = Instant::now();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    on_progress(RpcProgress::Value(v));
+                }
+            }
+            Ok(RpcMsg::Result(raw)) => {
+                pending().lock().unwrap().remove(&id);
+                let v: serde_json::Value =
+                    serde_json::from_str(&raw).map_err(|e| format!("bad rpc payload: {e}"))?;
+                if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+                    return Ok(v.get("value").cloned().unwrap_or(serde_json::Value::Null));
+                }
+                return Err(v
                     .get("error")
                     .and_then(|e| e.as_str())
                     .unwrap_or("webview handler failed")
-                    .to_string())
+                    .to_string());
             }
-        }
-        Err(_) => {
-            pending().lock().unwrap().remove(&id);
-            Err(format!("the Termic UI did not answer within {}ms", timeout.as_millis()))
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if idle_since.elapsed() >= HEARTBEAT_EVERY {
+                    idle_since = Instant::now();
+                    on_progress(RpcProgress::Idle);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                pending().lock().unwrap().remove(&id);
+                return Err("rpc channel closed".into());
+            }
         }
     }
 }
@@ -794,7 +2002,17 @@ fn webview_rpc(
 #[tauri::command]
 pub fn cli_rpc_result(id: String, payload: String) -> Result<(), String> {
     if let Some(tx) = pending().lock().unwrap().remove(&id) {
-        let _ = tx.send(payload);
+        let _ = tx.send(RpcMsg::Result(payload));
+    }
+    Ok(())
+}
+
+/// Intermediate progress for a streaming RPC (`new_task` setup output).
+/// The pending entry stays registered until the result lands.
+#[tauri::command]
+pub fn cli_rpc_progress(id: String, payload: String) -> Result<(), String> {
+    if let Some(tx) = pending().lock().unwrap().get(&id) {
+        let _ = tx.send(RpcMsg::Progress(payload));
     }
     Ok(())
 }
@@ -804,7 +2022,7 @@ pub fn cli_rpc_result(id: String, payload: String) -> Result<(), String> {
 /// Where the bundled sidecar lives: next to the app binary
 /// (Contents/MacOS/termic-cli in a bundle, target/<profile>/termic-cli
 /// in dev, both placed by tauri's externalBin machinery).
-fn bundled_cli_path() -> Result<PathBuf, String> {
+pub(crate) fn bundled_cli_path() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("app binary has no parent dir")?;
     let p = dir.join("termic-cli");
@@ -1008,6 +2226,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             root_path: root.into(),
+            default_cli: "claude".into(),
             ..Default::default()
         }
     }
@@ -1025,6 +2244,10 @@ mod tests {
         }
     }
 
+    fn agent_meta(id: &str, work_done: bool) -> AgentMeta {
+        AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false }
+    }
+
     struct StubHost {
         enabled: bool,
         token: String,
@@ -1033,6 +2256,23 @@ mod tests {
         states: Option<HashMap<String, WorkStateInfo>>,
         opened: Mutex<Vec<String>>,
         raised: Mutex<u32>,
+        agents: Vec<AgentMeta>,
+        /// method -> scripted result; unscripted methods error.
+        rpc_results: Mutex<HashMap<String, Result<serde_json::Value, String>>>,
+        /// Recorded (method, params) calls, in order.
+        rpc_calls: Mutex<Vec<(String, serde_json::Value)>>,
+        /// Setup chunks fed through on_progress before a new_task result.
+        setup_chunks: Vec<String>,
+        /// Tasks "created" by a scripted new_task rpc (appended to
+        /// `tasks` on the reload handle_new performs).
+        extra_tasks: Mutex<Vec<Task>>,
+        killed: Mutex<Vec<String>>,
+        /// Flat side-effect log ("kill:<id>", "rpc:<method>") so tests
+        /// can assert ORDER across kinds (archive must kill first).
+        ops: Mutex<Vec<String>>,
+        cache: AgentCache,
+        reports: PromptReports,
+        git_root: Option<String>,
     }
 
     impl Default for StubHost {
@@ -1051,7 +2291,32 @@ mod tests {
                 states: None,
                 opened: Mutex::new(Vec::new()),
                 raised: Mutex::new(0),
+                agents: vec![
+                    agent_meta("claude", true),
+                    agent_meta("codex", true),
+                    agent_meta("nodone", false),
+                ],
+                rpc_results: Mutex::new(HashMap::new()),
+                rpc_calls: Mutex::new(Vec::new()),
+                setup_chunks: Vec::new(),
+                extra_tasks: Mutex::new(Vec::new()),
+                killed: Mutex::new(Vec::new()),
+                ops: Mutex::new(Vec::new()),
+                cache: AgentCache::new(),
+                reports: PromptReports::new(),
+                git_root: None,
             }
+        }
+    }
+
+    impl StubHost {
+        fn script_rpc(&self, method: &str, result: Result<serde_json::Value, String>) {
+            self.rpc_results.lock().unwrap().insert(method.to_string(), result);
+        }
+        fn push_states(&self, entries: &[(&str, TaskAgentState)]) {
+            self.cache.update(
+                entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            );
         }
     }
 
@@ -1066,7 +2331,9 @@ mod tests {
             "0.0.0-test".into()
         }
         fn projects_tasks(&self) -> (Vec<Project>, Vec<Task>) {
-            (self.projects.clone(), self.tasks.clone())
+            let mut tasks = self.tasks.clone();
+            tasks.extend(self.extra_tasks.lock().unwrap().iter().cloned());
+            (self.projects.clone(), tasks)
         }
         fn work_states(&self, _ids: &[String]) -> Option<HashMap<String, WorkStateInfo>> {
             self.states.as_ref().map(|m| {
@@ -1085,10 +2352,94 @@ mod tests {
         fn diff_stat(&self, _task: &Task) -> Option<proto::DiffStat> {
             None
         }
+        fn agents(&self) -> Vec<AgentMeta> {
+            self.agents.clone()
+        }
+        fn rpc(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+            _timeout: Duration,
+        ) -> Result<serde_json::Value, String> {
+            self.rpc_calls.lock().unwrap().push((method.to_string(), params.clone()));
+            self.ops.lock().unwrap().push(format!("rpc:{method}"));
+            let result = self
+                .rpc_results
+                .lock()
+                .unwrap()
+                .get(method)
+                .cloned()
+                .unwrap_or_else(|| Err(format!("no scripted rpc result for {method}")));
+            if method == "new_task" {
+                if let Ok(v) = &result {
+                    // Mirror the webview: the create committed, so the
+                    // reload sees the task.
+                    if let Some(tid) = v.get("taskId").and_then(|t| t.as_str()) {
+                        let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("x");
+                        let pid =
+                            params.get("projectId").and_then(|p| p.as_str()).unwrap_or("p1");
+                        self.extra_tasks.lock().unwrap().push(task(
+                            tid,
+                            name,
+                            pid,
+                            &format!("/tasks/{name}"),
+                        ));
+                    }
+                }
+            }
+            result
+        }
+        fn rpc_stream(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+            timeout: Duration,
+            on_progress: &mut dyn FnMut(RpcProgress),
+        ) -> Result<serde_json::Value, String> {
+            for chunk in &self.setup_chunks {
+                on_progress(RpcProgress::Value(serde_json::json!({ "setupOutput": chunk })));
+            }
+            self.rpc(method, params, timeout)
+        }
+        fn agent_cache(&self) -> &AgentCache {
+            &self.cache
+        }
+        fn prompt_reports(&self) -> &PromptReports {
+            &self.reports
+        }
+        fn kill_task_ptys(&self, task_id: &str) -> u32 {
+            self.killed.lock().unwrap().push(task_id.to_string());
+            self.ops.lock().unwrap().push(format!("kill:{task_id}"));
+            1
+        }
+        fn git_toplevel(&self, _cwd: &str) -> Option<String> {
+            self.git_root.clone()
+        }
     }
 
     fn req(cmd: Command, token: Option<&str>) -> Request {
         Request { id: "r".into(), token: token.map(str::to_string), cmd }
+    }
+
+    /// Sink that records events; can simulate a hung-up client.
+    #[derive(Default)]
+    struct VecSink {
+        events: Vec<StreamEvent>,
+        fail: bool,
+    }
+
+    impl EventSink for VecSink {
+        fn emit(&mut self, ev: &StreamEvent) -> std::io::Result<()> {
+            if self.fail {
+                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client gone"));
+            }
+            self.events.push(ev.clone());
+            Ok(())
+        }
+    }
+
+    fn handle(req: &Request, host: &dyn CliHost) -> Reply {
+        handle_request(req, host, &mut VecSink::default())
     }
 
     // ── auth / gating ────────────────────────────────────────────────
@@ -1096,7 +2447,7 @@ mod tests {
     #[test]
     fn hello_needs_no_token_and_reports_protocol() {
         let host = StubHost { enabled: false, ..Default::default() };
-        let reply = handle_request(&req(Command::Hello, None), &host);
+        let reply = handle(&req(Command::Hello, None), &host);
         assert!(reply.ok);
         match reply.data {
             Some(ReplyData::Hello(h)) => assert_eq!(h.protocol, proto::PROTOCOL_VERSION),
@@ -1109,7 +2460,7 @@ mod tests {
         // Raise is unauthenticated (the single-instance handshake) and
         // must work even when the CLI is disabled.
         let host = StubHost { enabled: false, ..Default::default() };
-        let reply = handle_request(&req(Command::Raise, None), &host);
+        let reply = handle(&req(Command::Raise, None), &host);
         assert!(reply.ok);
         assert!(reply.data.is_none());
         assert_eq!(*host.raised.lock().unwrap(), 1);
@@ -1118,7 +2469,7 @@ mod tests {
     #[test]
     fn disabled_cli_gets_the_exact_error_before_any_token_check() {
         let host = StubHost { enabled: false, ..Default::default() };
-        let reply = handle_request(&req(Command::List { project: None, quiet: false }, Some("tok")), &host);
+        let reply = handle(&req(Command::List { project: None, quiet: false }, Some("tok")), &host);
         let err = reply.error.expect("error");
         assert_eq!(err.code, ErrorCode::CliDisabled);
         assert_eq!(err.message, proto::CLI_DISABLED_MESSAGE);
@@ -1128,7 +2479,7 @@ mod tests {
     fn bad_or_missing_token_is_refused() {
         let host = StubHost::default();
         for token in [None, Some("wrong")] {
-            let reply = handle_request(&req(Command::List { project: None, quiet: false }, token), &host);
+            let reply = handle(&req(Command::List { project: None, quiet: false }, token), &host);
             assert_eq!(reply.error.expect("error").code, ErrorCode::Auth);
         }
     }
@@ -1138,7 +2489,7 @@ mod tests {
     #[test]
     fn list_returns_tasks_sorted_and_degrades_without_webview() {
         let host = StubHost::default();
-        let reply = handle_request(&req(Command::List { project: None, quiet: false }, Some("tok")), &host);
+        let reply = handle(&req(Command::List { project: None, quiet: false }, Some("tok")), &host);
         match reply.data {
             Some(ReplyData::List(l)) => {
                 let names: Vec<String> =
@@ -1153,7 +2504,7 @@ mod tests {
     #[test]
     fn list_filters_by_project_and_rejects_unknown() {
         let host = StubHost::default();
-        let reply = handle_request(
+        let reply = handle(
             &req(Command::List { project: Some("api".into()), quiet: false }, Some("tok")),
             &host,
         );
@@ -1164,7 +2515,7 @@ mod tests {
             }
             other => panic!("expected list, got {other:?}"),
         }
-        let reply = handle_request(
+        let reply = handle(
             &req(Command::List { project: Some("nope".into()), quiet: false }, Some("tok")),
             &host,
         );
@@ -1176,7 +2527,7 @@ mod tests {
         let mut states = HashMap::new();
         states.insert("w3".to_string(), WorkStateInfo { state: "working".into(), tabs: 2 });
         let host = StubHost { states: Some(states), ..Default::default() };
-        let reply = handle_request(&req(Command::List { project: None, quiet: false }, Some("tok")), &host);
+        let reply = handle(&req(Command::List { project: None, quiet: false }, Some("tok")), &host);
         let Some(ReplyData::List(l)) = reply.data else { panic!() };
         let solo = l.tasks.iter().find(|t| t.name == "solo").unwrap();
         assert_eq!(solo.work_state.as_deref(), Some("working"));
@@ -1187,34 +2538,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_work_states_skips_malformed_entries() {
-        // One bad entry must NOT collapse the whole map (which would
-        // degrade every task to "UI did not answer").
-        let v = serde_json::json!({
-            "states": {
-                "w1": { "state": "working", "tabs": 2 },
-                "w2": { "state": 123 },       // state not a string -> skip
-                "w3": { "tabs": 1 },          // no state -> skip
-                "w4": { "state": "idle" },    // ok; tabs defaults to 0
-            }
-        });
-        let out = parse_work_states(&v).unwrap();
-        assert_eq!(out.len(), 2);
-        assert_eq!(out["w1"].state, "working");
-        assert_eq!(out["w1"].tabs, 2);
-        assert_eq!(out["w4"].state, "idle");
-        assert_eq!(out["w4"].tabs, 0);
-        assert!(!out.contains_key("w2"));
-        assert!(!out.contains_key("w3"));
-        // Only a wrong top-level shape (no `states` object) yields None.
-        assert!(parse_work_states(&serde_json::json!({})).is_none());
+    fn agent_cache_updates_bump_seq_and_wake_waiters() {
+        let cache = AgentCache::new();
+        assert!(cache.snapshot().age.is_none(), "no push yet");
+        let mut states = HashMap::new();
+        states.insert(
+            "w1".to_string(),
+            TaskAgentState { state: "working".into(), tabs: 2, queued: 1, capable: true },
+        );
+        cache.update(states);
+        let snap = cache.snapshot();
+        assert!(snap.age.is_some());
+        assert_eq!(snap.states["w1"].state, "working");
+        // A waiter behind the current seq returns immediately.
+        assert_eq!(cache.wait_change(0, Duration::from_millis(1)), 1);
+        // A waiter at the current seq times out without a push.
+        assert_eq!(cache.wait_change(1, Duration::from_millis(5)), 1);
     }
 
     #[test]
     fn status_resolves_and_reports_depth_fields() {
         let host = StubHost::default();
-        let reply = handle_request(
-            &req(Command::Status { task: "solo".into(), project: None }, Some("tok")),
+        let reply = handle(
+            &req(Command::Status { task: Some("solo".into()), project: None, cwd: None }, Some("tok")),
             &host,
         );
         match reply.data {
@@ -1231,7 +2577,7 @@ mod tests {
     #[test]
     fn open_by_name_selects_and_raises() {
         let host = StubHost::default();
-        let reply = handle_request(
+        let reply = handle(
             &req(
                 Command::Open { task: Some("solo".into()), project: None, cwd: None },
                 Some("tok"),
@@ -1247,7 +2593,7 @@ mod tests {
     #[test]
     fn open_without_match_still_raises() {
         let host = StubHost::default();
-        let reply = handle_request(
+        let reply = handle(
             &req(
                 Command::Open { task: None, project: None, cwd: Some("/elsewhere".into()) },
                 Some("tok"),
@@ -1344,6 +2690,885 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Ambiguous);
         assert!(err.message.contains("web/root-a"));
         assert!(err.message.contains("web/root-b"));
+    }
+
+    // ── new ──────────────────────────────────────────────────────────
+
+    fn new_cmd(name: &str, project: Option<&str>) -> Command {
+        Command::New {
+            name: name.into(),
+            prompt: None,
+            agent: None,
+            mode: None,
+            base: None,
+            sandbox: None,
+            yolo: false,
+            project: project.map(str::to_string),
+            open: false,
+            wait: false,
+            timeout_ms: None,
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn new_creates_streams_setup_and_replies_at_spawn() {
+        let mut host = StubHost::default();
+        host.setup_chunks = vec!["npm install\n".into(), "done\n".into()];
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        let mut sink = VecSink::default();
+        let reply = handle_request(&req(new_cmd("shiny", Some("web")), Some("tok")), &host, &mut sink);
+        let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
+        assert_eq!(n.task.id, "nw1");
+        assert_eq!(n.task.name, "shiny");
+        assert_eq!(n.task.project, "web");
+        assert!(n.wait.is_none(), "no --wait means reply at spawn");
+        let kinds: Vec<&str> = sink.events.iter().map(|e| e.event.as_str()).collect();
+        assert_eq!(kinds, ["setup_output", "setup_output", "created"]);
+        assert_eq!(sink.events[0].data.as_deref(), Some("npm install\n"));
+        assert_eq!(sink.events[2].task.as_ref().unwrap().id, "nw1");
+        // The webview got the resolved project and the raw inputs.
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "new_task");
+        assert_eq!(calls[0].1["projectId"], "p1");
+        assert_eq!(calls[0].1["name"], "shiny");
+        assert!(calls[0].1["promptId"].is_null(), "no prompt, no prompt id");
+    }
+
+    #[test]
+    fn new_resolves_project_from_cwd_worktree_first() {
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        let mut cmd = new_cmd("shiny", None);
+        if let Command::New { cwd, .. } = &mut cmd {
+            // Inside w2's worktree, which belongs to project api even
+            // though no project root contains this path.
+            *cwd = Some("/tasks/api/fix-auth/src".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        assert_eq!(host.rpc_calls.lock().unwrap()[0].1["projectId"], "p2");
+    }
+
+    #[test]
+    fn new_in_unregistered_repo_names_the_root() {
+        let mut host = StubHost::default();
+        host.git_root = Some("/repo/elsewhere".into());
+        let mut cmd = new_cmd("shiny", None);
+        if let Command::New { cwd, .. } = &mut cmd {
+            *cwd = Some("/repo/elsewhere/sub".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::UnregisteredProject);
+        assert_eq!(err.data.unwrap()["root"], "/repo/elsewhere");
+        // Nowhere at all: plain not-found pointing at --project.
+        let mut host = StubHost::default();
+        host.git_root = None;
+        let mut cmd = new_cmd("shiny", None);
+        if let Command::New { cwd, .. } = &mut cmd {
+            *cwd = Some("/nowhere".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.expect("error");
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("--project"), "{}", err.message);
+    }
+
+    #[test]
+    fn new_same_name_is_a_clean_conflict_not_cleanup() {
+        let host = StubHost::default();
+        let reply = handle(&req(new_cmd("fix-auth", Some("web")), Some("tok")), &host);
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert!(err.message.contains("web/fix-auth"), "{}", err.message);
+        // Nothing reached the webview: the create never started.
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_validates_mode_sandbox_and_agent() {
+        let host = StubHost::default();
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { mode, .. } = &mut cmd {
+            *mode = Some("detached".into());
+        }
+        assert_eq!(handle(&req(cmd, Some("tok")), &host).error.unwrap().code, ErrorCode::BadRequest);
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { sandbox, .. } = &mut cmd {
+            *sandbox = Some("jail".into());
+        }
+        assert_eq!(handle(&req(cmd, Some("tok")), &host).error.unwrap().code, ErrorCode::BadRequest);
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { agent, .. } = &mut cmd {
+            *agent = Some("gpt-9".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("claude"), "lists available agents: {}", err.message);
+        // --wait with a work-done-incapable agent is refused upfront.
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { agent, wait, .. } = &mut cmd {
+            *agent = Some("nodone".into());
+            *wait = true;
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn new_accepts_a_qualified_project_name() {
+        // `new api/shiny` from anywhere = project api, task shiny,
+        // mirroring the read verbs' qualified form.
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        let reply = handle(&req(new_cmd("api/shiny", None), Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls[0].1["projectId"], "p2");
+        assert_eq!(calls[0].1["name"], "shiny");
+        drop(calls);
+        // An explicit --project keeps a slash-name LITERAL: the escape
+        // hatch when a task name's prefix collides with a project name.
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw2" })));
+        let reply = handle(&req(new_cmd("api/shiny", Some("web")), Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls[0].1["projectId"], "p1");
+        assert_eq!(calls[0].1["name"], "api/shiny");
+        drop(calls);
+        // A prefix that is NOT a project stays part of the name and
+        // resolution falls through to cwd.
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw3" })));
+        let mut cmd = new_cmd("feat/shiny", None);
+        if let Command::New { cwd, .. } = &mut cmd {
+            *cwd = Some("/repo/web/src".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls[0].1["projectId"], "p1");
+        assert_eq!(calls[0].1["name"], "feat/shiny");
+    }
+
+    #[test]
+    fn new_forces_main_mode_semantics_for_non_git_projects() {
+        let mut host = StubHost::default();
+        host.projects[0].non_git = true;
+        // Explicit --worktree on a plain folder: impossible, clean error.
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { mode, .. } = &mut cmd {
+            *mode = Some("worktree".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("non-git"), "{}", err.message);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+        // Unspecified mode is fine: the webview handler falls back to
+        // the main checkout, like the GUI.
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        let reply = handle(&req(new_cmd("shiny", Some("web")), Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+    }
+
+    #[test]
+    fn new_wait_confirms_delivery_then_settles() {
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { prompt, wait, .. } = &mut cmd {
+            *prompt = Some("fix it".into());
+            *wait = true;
+        }
+        let request = req(cmd, Some("tok"));
+        std::thread::scope(|scope| {
+            let handle_thread = scope.spawn(|| {
+                let mut sink = VecSink::default();
+                let reply = handle_request(&request, &host, &mut sink);
+                (reply, sink)
+            });
+            // Wait for the webview call, then play the app's part:
+            // confirm delivery, run a turn, settle.
+            let prompt_id = loop {
+                if let Some((_, params)) =
+                    host.rpc_calls.lock().unwrap().iter().find(|(m, _)| m == "new_task")
+                {
+                    break params["promptId"].as_str().unwrap().to_string();
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            host.reports.resolve(&prompt_id, Ok(()));
+            host.push_states(&[(
+                "nw1",
+                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            )]);
+            std::thread::sleep(Duration::from_millis(50));
+            host.push_states(&[(
+                "nw1",
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+            )]);
+            let (reply, sink) = handle_thread.join().unwrap();
+            let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
+            let wait = n.wait.expect("wait result");
+            assert_eq!(wait.outcome, WaitOutcome::Done);
+            assert_eq!(wait.state.as_deref(), Some("done"));
+            let kinds: Vec<&str> = sink.events.iter().map(|e| e.event.as_str()).collect();
+            assert!(kinds.contains(&"created"), "{kinds:?}");
+            assert!(kinds.contains(&"prompt_delivered"), "{kinds:?}");
+            assert!(kinds.contains(&"state"), "{kinds:?}");
+        });
+    }
+
+    #[test]
+    fn new_wait_propagates_a_failed_delivery_reason() {
+        // An explicit failure report (agent PTY died mid-injection)
+        // must exit 9 WITH the webview's reason, not a generic line.
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { prompt, wait, .. } = &mut cmd {
+            *prompt = Some("fix it".into());
+            *wait = true;
+        }
+        let request = req(cmd, Some("tok"));
+        std::thread::scope(|scope| {
+            let t = scope.spawn(|| handle(&request, &host));
+            let prompt_id = loop {
+                if let Some((_, params)) =
+                    host.rpc_calls.lock().unwrap().iter().find(|(m, _)| m == "new_task")
+                {
+                    break params["promptId"].as_str().unwrap().to_string();
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            host.reports.resolve(&prompt_id, Err("the agent PTY exited while the prompt was being typed".into()));
+            let reply = t.join().unwrap();
+            let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
+            let wait = n.wait.expect("wait result");
+            assert_eq!(wait.outcome, WaitOutcome::NotDelivered);
+            assert!(wait.detail.as_deref().unwrap_or("").contains("PTY exited"), "{wait:?}");
+        });
+    }
+
+    #[test]
+    fn new_wait_idle_settle_grace_covers_a_classifier_miss() {
+        // Delivered, but the turn's "working" edge never shows (title
+        // classifier miss): after the idle grace the wait settles Done
+        // instead of hanging to the timeout.
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        host.push_states(&[(
+            "nw1",
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { prompt, wait, .. } = &mut cmd {
+            *prompt = Some("fix it".into());
+            *wait = true;
+        }
+        let request = req(cmd, Some("tok"));
+        std::thread::scope(|scope| {
+            let t = scope.spawn(|| handle(&request, &host));
+            let prompt_id = loop {
+                if let Some((_, params)) =
+                    host.rpc_calls.lock().unwrap().iter().find(|(m, _)| m == "new_task")
+                {
+                    break params["promptId"].as_str().unwrap().to_string();
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            host.reports.resolve(&prompt_id, Ok(()));
+            // Keep the cache fresh while idle (the push module would).
+            for _ in 0..6 {
+                std::thread::sleep(Duration::from_millis(60));
+                host.push_states(&[(
+                    "nw1",
+                    TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+                )]);
+            }
+            let reply = t.join().unwrap();
+            let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
+            let wait = n.wait.expect("wait result");
+            assert_eq!(wait.outcome, WaitOutcome::Done);
+            assert_eq!(wait.state.as_deref(), Some("idle"));
+        });
+    }
+
+    #[test]
+    fn new_wait_timeout_wins_over_a_pending_delivery() {
+        // --timeout shorter than the delivery window: expiry is exit 7
+        // (timeout), not exit 9, and it must not wait the full delivery
+        // budget first.
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        host.push_states(&[(
+            "nw1",
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { prompt, wait, timeout_ms, .. } = &mut cmd {
+            *prompt = Some("fix it".into());
+            *wait = true;
+            *timeout_ms = Some(120); // < DELIVERY_TIMEOUT (300ms in test)
+        }
+        let started = Instant::now();
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
+        assert_eq!(n.wait.expect("wait result").outcome, WaitOutcome::Timeout);
+        assert!(started.elapsed() < Duration::from_millis(290), "did not outlive the deadline");
+    }
+
+    #[test]
+    fn new_wait_errors_when_the_agent_never_spawned_promptless() {
+        // Promptless --wait on a task whose agent tab never got a PTY:
+        // an idle dead task must not read as quiescent (false exit 0).
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": false })));
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { wait, .. } = &mut cmd {
+            *wait = true;
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("never spawned"), "{}", err.message);
+    }
+
+    #[test]
+    fn wait_survives_a_transient_empty_push() {
+        // A webview reload can push an EMPTY map before loadAll
+        // hydrates; a wait in flight must ride it out (the entry must
+        // be CONTINUOUSLY absent for the grace window to fail).
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        std::thread::scope(|scope| {
+            let t = scope.spawn(|| handle(&req(wait_cmd("solo", None), Some("tok")), &host));
+            std::thread::sleep(Duration::from_millis(60));
+            host.push_states(&[]); // the reload's empty boot push
+            std::thread::sleep(Duration::from_millis(60));
+            host.push_states(&[(
+                "w3",
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+            )]);
+            let reply = t.join().unwrap();
+            let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+            assert_eq!(w.result.outcome, WaitOutcome::Done);
+        });
+    }
+
+    #[test]
+    fn archive_rpc_failure_reports_after_the_kill() {
+        // The kill is not undoable; a failed archive RPC must surface
+        // as an error while the ops log shows the pinned order.
+        let host = StubHost::default();
+        host.script_rpc("archive_task", Err("webview exploded".into()));
+        let reply = handle(
+            &req(Command::Archive { task: "solo".into(), project: None }, Some("tok")),
+            &host,
+        );
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("archive failed"), "{}", err.message);
+        assert_eq!(*host.ops.lock().unwrap(), vec!["kill:w3", "rpc:archive_task"]);
+    }
+
+    #[test]
+    fn new_wait_without_delivery_report_is_not_delivered() {
+        // A webview reload during the settle window drops the injection
+        // silently; the PTY survives idle. Exit 0 must not happen.
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        host.push_states(&[(
+            "nw1",
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { prompt, wait, .. } = &mut cmd {
+            *prompt = Some("fix it".into());
+            *wait = true;
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
+        let wait = n.wait.expect("wait result");
+        assert_eq!(wait.outcome, WaitOutcome::NotDelivered);
+        assert!(wait.detail.is_some(), "carries the reason");
+    }
+
+    // ── wait ─────────────────────────────────────────────────────────
+
+    fn wait_cmd(task: &str, timeout_ms: Option<u64>) -> Command {
+        Command::Wait { task: Some(task.into()), project: None, timeout_ms, cwd: None }
+    }
+
+    #[test]
+    fn wait_returns_immediately_when_quiescent() {
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
+        let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+        assert_eq!(w.task_id, "w3");
+        assert_eq!(w.result.outcome, WaitOutcome::Done);
+        // An agent parked on a question maps to needs-input (exit 3).
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
+        let Some(ReplyData::Wait(w)) = reply.data else { panic!() };
+        assert_eq!(w.result.outcome, WaitOutcome::NeedsInput);
+    }
+
+    #[test]
+    fn wait_refuses_inactive_and_incapable_targets() {
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "inactive".into(), tabs: 0, queued: 0, capable: false },
+        )]);
+        let err = handle(&req(wait_cmd("solo", None), Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("no agent is open"), "{}", err.message);
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: false },
+        )]);
+        let err = handle(&req(wait_cmd("solo", None), Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("work-done"), "{}", err.message);
+    }
+
+    #[test]
+    fn wait_quiescence_requires_an_empty_queue() {
+        // Settle alone races send's queueing (docs/plans/cli.md): a
+        // "done" agent with a queued message is NOT quiescent.
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 1, capable: true },
+        )]);
+        let reply = handle(&req(wait_cmd("solo", Some(120)), Some("tok")), &host);
+        let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+        assert_eq!(w.result.outcome, WaitOutcome::Timeout);
+    }
+
+    #[test]
+    fn wait_times_out_while_working() {
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let started = Instant::now();
+        let reply = handle(&req(wait_cmd("solo", Some(100)), Some("tok")), &host);
+        let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+        assert_eq!(w.result.outcome, WaitOutcome::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn wait_unblocks_on_a_push() {
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        std::thread::scope(|scope| {
+            let t = scope.spawn(|| handle(&req(wait_cmd("solo", None), Some("tok")), &host));
+            std::thread::sleep(Duration::from_millis(60));
+            host.push_states(&[(
+                "w3",
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+            )]);
+            let reply = t.join().unwrap();
+            let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+            assert_eq!(w.result.outcome, WaitOutcome::Done);
+            assert_eq!(w.result.state.as_deref(), Some("done"));
+        });
+    }
+
+    #[test]
+    fn wait_fails_when_the_cache_goes_stale_mid_wait() {
+        // The webview stopped reporting (reload that never came back):
+        // a frozen "working" snapshot must fail the wait, not hold it
+        // forever. CACHE_STALE_AFTER is test-shrunk to 800ms.
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let started = Instant::now();
+        let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("stopped reporting"), "{}", err.message);
+        assert!(started.elapsed() >= Duration::from_millis(700), "not before the cutoff");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn wait_answers_from_a_stale_cache_when_already_quiescent() {
+        // Staleness only matters when we would KEEP waiting: an idle
+        // occluded webview is not a dead one, so a quiescent cached
+        // state is returned even past the cutoff.
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        std::thread::sleep(Duration::from_millis(900)); // age past the 800ms test cutoff
+        let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
+        let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+        assert_eq!(w.result.outcome, WaitOutcome::Done);
+    }
+
+    #[test]
+    fn wait_reports_a_task_the_ui_does_not_know() {
+        // Cache populated, but no entry for this task (fresh create the
+        // store has not loaded, or it vanished): after the grace the
+        // error names the task, not a dead UI.
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w1",
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("this task"), "{}", err.message);
+    }
+
+    #[test]
+    fn ready_latch_blocks_until_set() {
+        let latch = ReadyLatch::new();
+        assert!(!latch.wait(Duration::from_millis(30)), "unset latch times out");
+        latch.set();
+        assert!(latch.wait(Duration::from_millis(1)), "set latch returns immediately");
+        // Cross-thread: a waiter wakes on set().
+        let latch = std::sync::Arc::new(ReadyLatch::new());
+        let l2 = latch.clone();
+        let t = std::thread::spawn(move || l2.wait(Duration::from_secs(5)));
+        std::thread::sleep(Duration::from_millis(20));
+        latch.set();
+        assert!(t.join().unwrap());
+    }
+
+    #[test]
+    fn new_rejects_a_disabled_agent() {
+        let mut host = StubHost::default();
+        host.agents.push(AgentMeta {
+            id: "parked".into(),
+            kind: "agent".into(),
+            work_done: true,
+            disabled: true,
+        });
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { agent, .. } = &mut cmd {
+            *agent = Some("parked".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("disabled"), "{}", err.message);
+        assert!(host.rpc_calls.lock().unwrap().is_empty(), "nothing reached the webview");
+    }
+
+    #[test]
+    fn new_treats_a_blank_prompt_as_no_prompt() {
+        // A whitespace prompt must not mint a prompt id nothing ever
+        // reports on (it would burn the delivery timeout under --wait).
+        let host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { prompt, .. } = &mut cmd {
+            *prompt = Some("   ".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        assert!(calls[0].1["prompt"].is_null());
+        assert!(calls[0].1["promptId"].is_null());
+    }
+
+    #[test]
+    fn wait_errors_when_the_ui_never_pushed() {
+        let host = StubHost::default();
+        let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("not reported"), "{}", err.message);
+    }
+
+    #[test]
+    fn watch_aborts_when_the_client_hangs_up() {
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let mut sink = VecSink { fail: true, ..Default::default() };
+        let started = Instant::now();
+        let reply =
+            handle_request(&req(wait_cmd("solo", None), Some("tok")), &host, &mut sink);
+        // The watch must END (not spin forever) once the heartbeat
+        // write fails; the reply itself would also fail to send.
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+        assert_eq!(w.result.detail.as_deref(), Some("client disconnected"));
+    }
+
+    // ── archive ──────────────────────────────────────────────────────
+
+    #[test]
+    fn archive_kills_ptys_before_the_webview_archive() {
+        let host = StubHost::default();
+        host.script_rpc("archive_task", Ok(serde_json::Value::Null));
+        let reply = handle(
+            &req(Command::Archive { task: "solo".into(), project: None }, Some("tok")),
+            &host,
+        );
+        let Some(ReplyData::Archive(a)) = reply.data else { panic!("expected archive, got {reply:?}") };
+        assert_eq!(a.task_id, "w3");
+        assert_eq!(a.project, "web");
+        assert_eq!(a.killed_agents, 1);
+        // Order is the point: SIGKILL strictly before the archive RPC
+        // (removing a worktree under a live agent is undefined).
+        assert_eq!(*host.ops.lock().unwrap(), vec!["kill:w3", "rpc:archive_task"]);
+    }
+
+    #[test]
+    fn archive_unknown_task_errors_without_side_effects() {
+        let host = StubHost::default();
+        let reply = handle(
+            &req(Command::Archive { task: "nope".into(), project: None }, Some("tok")),
+            &host,
+        );
+        assert_eq!(reply.error.unwrap().code, ErrorCode::NotFound);
+        assert!(host.ops.lock().unwrap().is_empty());
+    }
+
+    // ── projects ─────────────────────────────────────────────────────
+
+    #[test]
+    fn project_list_reports_live_task_counts_sorted() {
+        let mut host = StubHost::default();
+        host.tasks[2].archived = true; // solo out
+        let reply = handle(&req(Command::ProjectList, Some("tok")), &host);
+        let Some(ReplyData::ProjectList(l)) = reply.data else { panic!("expected list, got {reply:?}") };
+        let rows: Vec<(String, u32)> =
+            l.projects.iter().map(|p| (p.name.clone(), p.tasks)).collect();
+        assert_eq!(rows, vec![("api".into(), 1), ("web".into(), 1)]);
+        assert_eq!(l.projects[0].default_agent, "claude");
+    }
+
+    #[test]
+    fn project_add_goes_through_the_webview_and_reads_back() {
+        let host = StubHost::default();
+        host.script_rpc("project_add", Ok(serde_json::json!({ "projectId": "p2" })));
+        let reply = handle(
+            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false }, Some("tok")),
+            &host,
+        );
+        let Some(ReplyData::ProjectAdd(a)) = reply.data else { panic!("expected add, got {reply:?}") };
+        assert_eq!(a.project.name, "api");
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls[0].0, "project_add");
+        assert_eq!(calls[0].1["path"], "/repo/api");
+    }
+
+    #[test]
+    fn project_add_is_idempotent_for_an_already_registered_path() {
+        // The help promises "0 registered (or already registered)";
+        // agents defensively add before creating tasks.
+        let host = StubHost::default();
+        host.script_rpc("project_add", Err("project already added".into()));
+        let reply = handle(
+            &req(Command::ProjectAdd { path: "/repo/api".into(), non_git: false }, Some("tok")),
+            &host,
+        );
+        let Some(ReplyData::ProjectAdd(a)) = reply.data else { panic!("expected add, got {reply:?}") };
+        assert_eq!(a.project.name, "api");
+        // A path that matches NO registered project still errors.
+        let host = StubHost::default();
+        host.script_rpc("project_add", Err("project already added".into()));
+        let reply = handle(
+            &req(Command::ProjectAdd { path: "/repo/unknown".into(), non_git: false }, Some("tok")),
+            &host,
+        );
+        assert_eq!(reply.error.expect("error").code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn cached_work_states_degrades_past_the_staleness_cutoff() {
+        let fresh = AgentSnapshot {
+            states: HashMap::from([(
+                "w1".to_string(),
+                TaskAgentState { state: "working".into(), tabs: 2, queued: 0, capable: true },
+            )]),
+            age: Some(Duration::from_millis(1)),
+        };
+        let ids = vec!["w1".to_string()];
+        let out = cached_work_states(&fresh, &ids).expect("fresh cache answers");
+        assert_eq!(out["w1"].state, "working");
+        // Stale: unknown (None), never frozen rows presented as live.
+        let stale = AgentSnapshot { age: Some(CACHE_STALE_AFTER + Duration::from_millis(1)), ..fresh.clone() };
+        assert!(cached_work_states(&stale, &ids).is_none());
+        // Never pushed: unknown.
+        let never = AgentSnapshot { age: None, ..fresh };
+        assert!(cached_work_states(&never, &ids).is_none());
+    }
+
+    #[test]
+    fn resolve_task_arg_rejects_project_without_task() {
+        let host = StubHost::default();
+        let (projects, tasks) = host.projects_tasks();
+        let err = resolve_task_arg(&projects, &tasks, None, Some("web"), Some("/tasks/web/solo"))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    #[test]
+    fn project_add_maps_the_non_git_error_to_the_flag() {
+        // The backend's message describes the GUI confirmation dialog;
+        // the CLI's version of that confirmation is --non-git.
+        let host = StubHost::default();
+        host.script_rpc(
+            "project_add",
+            Err("/x/plain is not a git repo. Confirm adding it as a plain folder.".into()),
+        );
+        let reply = handle(
+            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: false }, Some("tok")),
+            &host,
+        );
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("--non-git"), "{}", err.message);
+        // With the flag, the choice is forwarded to the webview.
+        let host = StubHost::default();
+        host.script_rpc("project_add", Ok(serde_json::json!({ "projectId": "p2" })));
+        let reply = handle(
+            &req(Command::ProjectAdd { path: "/x/plain".into(), non_git: true }, Some("tok")),
+            &host,
+        );
+        assert!(reply.ok, "{reply:?}");
+        assert_eq!(host.rpc_calls.lock().unwrap()[0].1["nonGit"], true);
+    }
+
+    #[test]
+    fn project_remove_counts_tasks_and_kills_their_ptys_first() {
+        let host = StubHost::default();
+        host.script_rpc("project_remove", Ok(serde_json::Value::Null));
+        let reply = handle(
+            &req(Command::ProjectRemove { name: "web".into() }, Some("tok")),
+            &host,
+        );
+        let Some(ReplyData::ProjectRemove(r)) = reply.data else { panic!("expected remove, got {reply:?}") };
+        assert_eq!(r.name, "web");
+        assert_eq!(r.removed_tasks, 2);
+        let ops = host.ops.lock().unwrap();
+        assert_eq!(*ops, vec!["kill:w1", "kill:w3", "rpc:project_remove"]);
+        // Unknown project: clean error, no kills, no RPC.
+        drop(ops);
+        let host = StubHost::default();
+        let reply = handle(
+            &req(Command::ProjectRemove { name: "nope".into() }, Some("tok")),
+            &host,
+        );
+        assert_eq!(reply.error.unwrap().code, ErrorCode::NotFound);
+        assert!(host.ops.lock().unwrap().is_empty());
+    }
+
+    // ── streamed replies over the real socket ────────────────────────
+
+    #[test]
+    fn socket_streams_wait_events_before_the_final_reply() {
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let (sock, _guard) = spawn_server(host);
+        let mut stream = UnixStream::connect(&sock).unwrap();
+        proto::write_msg(&mut stream, &req(wait_cmd("solo", None), Some("tok"))).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut saw_state = false;
+        loop {
+            let line = proto::read_line(&mut reader).unwrap().expect("line");
+            match proto::parse_stream_line(&line).unwrap() {
+                proto::StreamLine::Event(ev) => {
+                    if ev.event == "state" {
+                        assert_eq!(ev.state.as_deref(), Some("done"));
+                        saw_state = true;
+                    }
+                }
+                proto::StreamLine::Done(reply) => {
+                    assert!(reply.ok, "{reply:?}");
+                    assert!(matches!(reply.data, Some(ReplyData::Wait(_))));
+                    break;
+                }
+            }
+        }
+        assert!(saw_state, "a state event precedes the reply");
+    }
+
+    // ── project resolution for new ───────────────────────────────────
+
+    #[test]
+    fn resolve_project_for_new_prefers_worktree_then_longest_root() {
+        let host = StubHost::default();
+        let (projects, tasks) = host.projects_tasks();
+        // Inside a worktree of api's task: api wins.
+        let p = resolve_project_for_new(&projects, &tasks, &host, Some("/tasks/api/fix-auth/deep"))
+            .unwrap();
+        assert_eq!(p.id, "p2");
+        // Inside a registered root: that project.
+        let p = resolve_project_for_new(&projects, &tasks, &host, Some("/repo/web/src")).unwrap();
+        assert_eq!(p.id, "p1");
+        // No cwd at all: told to use --project.
+        let err = resolve_project_for_new(&projects, &tasks, &host, None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("--project"));
+    }
+
+    #[test]
+    fn status_and_wait_resolve_from_cwd_like_open() {
+        let host = StubHost::default();
+        host.push_states(&[(
+            "w3",
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+        )]);
+        let status = handle(
+            &req(
+                Command::Status { task: None, project: None, cwd: Some("/tasks/web/solo/src".into()) },
+                Some("tok"),
+            ),
+            &host,
+        );
+        let Some(ReplyData::Status(s)) = status.data else { panic!("expected status, got {status:?}") };
+        assert_eq!(s.task.summary.name, "solo");
+        let wait = handle(
+            &req(
+                Command::Wait { task: None, project: None, timeout_ms: None, cwd: Some("/tasks/web/solo".into()) },
+                Some("tok"),
+            ),
+            &host,
+        );
+        let Some(ReplyData::Wait(w)) = wait.data else { panic!("expected wait, got {wait:?}") };
+        assert_eq!(w.task_id, "w3");
+        // Nowhere: a clear name-the-task error, not a resolution puzzle.
+        let miss = handle(
+            &req(Command::Status { task: None, project: None, cwd: Some("/elsewhere".into()) }, Some("tok")),
+            &host,
+        );
+        let err = miss.error.expect("error");
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("name the task"), "{}", err.message);
     }
 
     // ── token hygiene ────────────────────────────────────────────────

@@ -4756,6 +4756,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dirs 5.0.1",
+ "libc",
  "serde",
  "serde_json",
  "termic-proto",
