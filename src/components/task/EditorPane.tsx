@@ -268,6 +268,13 @@ export function EditorPane({ task, tab, active, onContent }: {
           parent: hostRef.current,
         });
         viewRef.current = view;
+        // E2E-only: expose the CodeMirror view on its DOM node so the
+        // WebdriverIO suite can drive real edits/saves through the editor's
+        // own API (synthetic key/text events don't route to a contenteditable
+        // reliably in WKWebView). Stripped from real builds (VITE_E2E unset).
+        if (import.meta.env.VITE_E2E) {
+          (view.dom as unknown as { __cmView: EditorView }).__cmView = view;
+        }
         // Scroll position dies with the box when a hidden task/tab goes
         // display:none in WKWebView — record and re-apply it.
         detachScrollRestore = attachHiddenScrollRestore(view.scrollDOM);

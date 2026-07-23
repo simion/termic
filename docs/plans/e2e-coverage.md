@@ -24,8 +24,10 @@ until `make e2e` is green and this file reflects it.
 | ✅ Task archive | Archived task leaves the active board | `task-archive.e2e.ts` |
 | ✅ Task restore | Archived task shows in History; restore returns it to active | `task-restore.e2e.ts` |
 | ✅ Multi-task | Two tasks, independent/distinct PTYs, survive going inactive, switching works | `multi-task.e2e.ts` |
-| ✅ Editor | Click a file → editor tab opens → CodeMirror loads the real contents | `editor.e2e.ts` |
-| ✅ Git panel | Clean working-tree status for the fixture repo | `git-panel.e2e.ts` |
+| ✅ Editor open | Click a file → editor tab opens → CodeMirror loads the real contents | `editor.e2e.ts` |
+| ✅ Editor save | Edit in CodeMirror → dirty dot → Cmd+S → written to disk | `editor-save.e2e.ts` |
+| ✅ Git clean | Clean working-tree status for the fixture repo | `git-panel.e2e.ts` |
+| ✅ Git dirty | Modify a file → Git panel leaves clean state, git status reports it | `git-dirty.e2e.ts` |
 | ✅ Settings | Toggling a preference lands in the prefs store + control reflects it | `settings.e2e.ts` |
 | ✅ Tabs | Add a terminal tab via the "+" menu; switch active tab | `tabs.e2e.ts` |
 | ✅ Tab rename | Double-click inline edit commits the new name | `rename.e2e.ts` |
@@ -49,13 +51,11 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Second agent in one task; YOLO toggle; AuxTerminal (bottom terminal).
 
 ### Editor
-- ⬜ P0 Edit → **dirty** flag → **save** (⌘S) → file written to disk.
 - ⬜ P1 Preview tab → **persist** (double-click); open multiple files.
 - ⬜ P1 Search/replace panel; markdown preview / split.
 - ⬜ P2 Image/PDF preview; language highlighting.
 
 ### Git & diff
-- ⬜ P0 **Dirty** tree: change a file → Git panel lists it (make + revert an edit in the fixture).
 - ⬜ P1 Open a **diff** (DiffPane) for a changed file.
 - ⬜ P1 Stage/unstage → **commit**; commit-and-push (mock remote).
 - ⬜ P2 Multi-repo project status.
