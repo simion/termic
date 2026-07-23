@@ -62,6 +62,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ Discover repos | Scan a folder → returns its git repos | `discover.e2e.ts` |
 | ✅ Import worktree | Lists importable (unopened) worktrees for a project | `import-worktree.e2e.ts` |
 | ✅ Project reorder | Reorder projects | `project.e2e.ts` |
+| ✅ Resume closed tab | resumeClosedTab reopens a tab and consumes the entry | `resume-tab.e2e.ts` |
+| ✅ Run stop | Kill a running run tab's PTY → it stops | `run-stop.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -73,7 +75,6 @@ until `make e2e` is green and this file reflects it.
 
 ### Agents & terminal
 - ⬜ P1 Desktop **notification** + completion **sound** on agent done (the OS-facing side of `useAttentionNotifier`).
-- ⬜ P1 **Resume** a closed agent tab with its session id (Resume menu).
 - ⬜ P1 Real **keystroke** input → PTY (xterm `onData`), asserting via `lastOutputAt`.
 - ⬜ P2 Second agent in one task; YOLO toggle; AuxTerminal (bottom terminal).
 
@@ -90,7 +91,6 @@ until `make e2e` is green and this file reflects it.
 
 ### Run & scripts (#54, #124)
 - ⬜ P1 Configure `.termic.yaml` run scripts and launch them via the **Run** button.
-- ⬜ P2 **Stop** a running script.
 - ⬜ P2 Run at repo root (spotlight).
 
 ### Panes & layout
