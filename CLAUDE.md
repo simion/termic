@@ -33,6 +33,12 @@ npm run build        # tsc -b && vite build
 
 ⌘+R when HMR can't push (effect/state shape changes, React.lazy swaps, xterm/CodeMirror init). Quit+relaunch after `tauri.conf.json` / capabilities / any Rust signature change.
 
+## Testing
+
+Unit/Rust: `npm test` (vitest) + `cargo test`. UI flows: the written e2e suite (`make e2e`, WebdriverIO on the real window; laptop-only, no CI).
+
+**When you implement or modify a feature, run the tests before committing and keep them green.** For a UI/flow change that means `make e2e` (rebuilds the `--features e2e` binary + runs the suite), plus add or update the spec that covers what you changed — a change and its test land in the same commit. The suite is a maintained asset: authoring rules live in the **`e2e` skill**, the coverage map + roadmap in [docs/plans/e2e-coverage.md](docs/plans/e2e-coverage.md). Each spec should cover a feature with several cases (happy path + edge/negative + state transitions), not just one, so it actually catches regressions.
+
 ## Releasing
 
 **Maintainer-only. Do NOT cut releases or write changelog entries as part of a contribution or agent task.** Never run `make release` / `make release-patch`, never bump the version, and never add or edit a `CHANGELOG.md` entry (or `changelog.json`) unless the maintainer explicitly asks you to in that request. A PR that fixes a bug or adds a feature must NOT touch `CHANGELOG.md` — the maintainer authors the entry when they cut the release. If you think a change is release-worthy, say so and stop; leave the versioning to them.
@@ -45,7 +51,7 @@ No em dashes (—) anywhere in user-visible text: dialogs, tooltips, buttons, `C
 
 ## What NOT to do without asking
 
-- Run e2e live testing (the `e2e` skill / automation bridge) proactively. Only run it when the user explicitly asks, or when it's absolutely necessary to confirm a change can't be verified any other way. Default to NOT launching the live app.
+- Ad-hoc live-drive the app (the automation bridge) proactively for exploration. Default to NOT launching the live app for one-off poking. (This does NOT apply to the written e2e suite: running `make e2e` before committing a UI change is expected, per ## Testing.)
 - Switch editor from CodeMirror 6 (Monaco is slower in WKWebView, verified).
 - Re-enable React StrictMode (async PTY race).
 - Add a server/backend daemon (app is entirely on-device).
