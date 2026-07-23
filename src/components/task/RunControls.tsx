@@ -132,7 +132,12 @@ export function RunControls({ task }: { task: Task }) {
             <ChevronDown className="h-3.5 w-3.5" />
           </Button>
         </DropdownTrigger>
-        <DropdownMenu align="end">
+        {/* All items here are single-line, so vertically center the leading
+            icon against the label. The shared DropdownItem top-aligns (with a
+            small nudge) for the two-line items used in other menus, which
+            leaves single-line icons ~1.5px high — scope the centering here so
+            only the Run dropdown changes. */}
+        <DropdownMenu align="end" className="[&_[role=menuitem]]:items-center [&_[role=menuitem]>svg]:mt-0">
           {isMultiRepo && targets.length > 0 && (
             <>
               <DropdownLabel>Run scripts</DropdownLabel>
