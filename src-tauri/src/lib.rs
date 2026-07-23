@@ -129,6 +129,14 @@ pub struct Project {
     /// workspaces. `None` / empty = ungrouped (renders at the top level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+
+    /// Personal (projects.json) extra run commands surfaced in the
+    /// RunControls dropdown (GH #124). Separate from the single `run_script`
+    /// (the Run button). Merged at read time with the committed, team-shared
+    /// list in `.termic.yaml` (`scripts.run_scripts`). Serde-default so all
+    /// existing rows load with an empty list.
+    #[serde(default)]
+    pub run_scripts: Vec<crate::repo_config::RunCommand>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -1861,6 +1869,7 @@ fn project_add(root_path: String, non_git: Option<bool>) -> Result<Project, Stri
         non_git,
         // New projects start ungrouped; grouping is a sidebar action.
         group: None,
+        run_scripts: Vec::new(),
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;
@@ -2037,6 +2046,7 @@ fn project_add_multi(root_path: String, name: String, members: Vec<ProjectMember
         spotlight_enabled: false,
         non_git,
         group: None,
+        run_scripts: Vec::new(),
     };
     list.push(p.clone());
     save_projects(&list).map_err(|e| e.to_string())?;

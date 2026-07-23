@@ -9,7 +9,7 @@
 // executes at the repo root (spawn-time cwd in TerminalPane) — the tooltip
 // says which mode the next run will use.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useApp } from "@/store/app";
 import { useShallow } from "zustand/react/shallow";
 import type { Task, TerminalTab } from "@/lib/types";
@@ -20,7 +20,8 @@ import {
   DropdownLabel, DropdownSeparator,
 } from "@/components/ui/Dropdown";
 import { ptyKill, openPath } from "@/lib/ipc";
-import { launchRunTabs, launchSetupTab, resolveRunTargets, runsAtRepoRoot, type RunTarget } from "@/lib/runTabs";
+import { launchRunTabs, launchSetupTab, launchCustomRun, customRunMember, resolveRunTargets, runsAtRepoRoot, type RunTarget } from "@/lib/runTabs";
+import { resolveCustomCommands, type ResolvedCommand } from "@/lib/runCommands";
 import { Play, Square, ChevronDown, Wrench, Globe, Settings } from "lucide-react";
 
 export function RunControls({ task }: { task: Task }) {
@@ -35,6 +36,11 @@ export function RunControls({ task }: { task: Task }) {
   const atRoot = runsAtRepoRoot(project);
   const isMultiRepo = (task.composition?.length ?? 0) > 0;
   const [targets, setTargets] = useState<RunTarget[]>([]);
+  // Custom run commands (GH #124), personal + committed. Ad-hoc, keyed by
+  // `cmd:<label>` run tabs, so they're kept OUT of the primary Run/Stop
+  // button below and get their own dropdown section instead.
+  const [customCmds, setCustomCmds] = useState<ResolvedCommand[]>([]);
+  const primaryRunTabs = runTabs.filter(t => !(t.runTab?.member ?? "").startsWith("cmd:"));
   const runLabel = isMultiRepo ? "Run all" : "Run";
   const stopLabel = isMultiRepo ? "Stop all" : "Stop";
   const stopTip = isMultiRepo ? "Stop all running scripts" : "Stop the running scripts";
@@ -45,8 +51,10 @@ export function RunControls({ task }: { task: Task }) {
       : atRoot && !task.is_main_checkout
         ? "Run in this worktree. Spotlighted tasks run at the repository root."
         : "Run (opens the run terminal tabs)";
-  // ptyId is cleared on process exit, so its presence ≈ "running".
-  const running = runTabs.some(t => !!t.ptyId);
+  // ptyId is cleared on process exit, so its presence ≈ "running". Only the
+  // PRIMARY run tabs (host + composition members) drive the main button —
+  // a running custom command must not flip Run into Stop.
+  const running = primaryRunTabs.some(t => !!t.ptyId);
   // Host preview URL resolved from CURRENT config (Settings / `.termic.yaml`),
   // not the run tab's launch-time snapshot — otherwise configuring preview
   // after a run started, or a single-repo task (no baked target), would
@@ -65,6 +73,17 @@ export function RunControls({ task }: { task: Task }) {
       .catch(() => { if (!cancelled) setTargets([]); });
     return () => { cancelled = true; };
   }, [task.id, task.composition, project?.run_script, project?.preview_url, task.port, task.name]);
+
+  // Resolve the custom run commands (personal + committed) for the dropdown.
+  // Runs on mount + personal-list change, and again whenever the dropdown
+  // opens so a just-added committed (`.termic.yaml`) command shows without a
+  // task switch.
+  const refreshCustomCmds = useCallback(() => {
+    resolveCustomCommands(task.project_id)
+      .then(setCustomCmds)
+      .catch(() => setCustomCmds([]));
+  }, [task.project_id]);
+  useEffect(() => { refreshCustomCmds(); }, [refreshCustomCmds, project?.run_scripts]);
 
   return (
     <>
@@ -86,7 +105,7 @@ export function RunControls({ task }: { task: Task }) {
         <Tip content={stopTip} side="bottom">
           <Button
             size="sm" variant="ghost" className="gap-1.5" data-no-drag
-            onClick={() => { for (const t of runTabs) if (t.ptyId) ptyKill(t.ptyId).catch(() => {}); }}
+            onClick={() => { for (const t of primaryRunTabs) if (t.ptyId) ptyKill(t.ptyId).catch(() => {}); }}
           >
             {/* Only the icon is red — a red label read as a constant alarm. */}
             <Square className="h-3 w-3 text-[var(--color-err)]" fill="currentColor" />
@@ -107,7 +126,7 @@ export function RunControls({ task }: { task: Task }) {
           </Button>
         </Tip>
       )}
-      <DropdownRoot>
+      <DropdownRoot onOpenChange={(open) => { if (open) refreshCustomCmds(); }}>
         <DropdownTrigger asChild>
           <Button size="sm" variant="ghost" className="px-1" data-no-drag>
             <ChevronDown className="h-3.5 w-3.5" />
@@ -135,6 +154,33 @@ export function RunControls({ task }: { task: Task }) {
                       ? <Square className="h-4 w-4 text-[var(--color-err)]" fill="currentColor" />
                       : <Play className="h-4 w-4" />}
                     <span>{target.label}</span>
+                  </DropdownItem>
+                );
+              })}
+              <DropdownSeparator />
+            </>
+          )}
+          {/* Custom run commands (GH #124) — the curated per-repo list,
+              personal + committed. Each toggles its own `cmd:<label>` run
+              tab; independent of the primary Run button above. */}
+          {customCmds.length > 0 && (
+            <>
+              <DropdownLabel>Run commands</DropdownLabel>
+              {customCmds.map((cmd, i) => {
+                const tab = runTabs.find(t => t.runTab?.member === customRunMember(cmd.label));
+                const runningCmd = !!tab?.ptyId;
+                return (
+                  <DropdownItem
+                    key={`${cmd.source}:${cmd.label}:${i}`}
+                    onSelect={() => {
+                      if (runningCmd && tab?.ptyId) ptyKill(tab.ptyId).catch(() => {});
+                      else launchCustomRun(task.id, cmd);
+                    }}
+                  >
+                    {runningCmd
+                      ? <Square className="h-4 w-4 text-[var(--color-err)]" fill="currentColor" />
+                      : <Play className="h-4 w-4" />}
+                    <span className="min-w-0 flex-1 truncate">{cmd.label}</span>
                   </DropdownItem>
                 );
               })}

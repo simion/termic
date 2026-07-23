@@ -55,6 +55,20 @@ pub struct RepoScripts {
     /// Globs copied from the repo root into each new task worktree.
     #[serde(deserialize_with = "de_vec")]
     pub files_to_copy: Vec<String>,
+    /// Extra named run commands, team-shared (GH #124). Surfaced in the
+    /// RunControls dropdown alongside the personal `Project.run_scripts`.
+    /// Distinct from the single primary `run` above (the Run button).
+    #[serde(deserialize_with = "de_vec")]
+    pub run_scripts: Vec<RunCommand>,
+}
+
+/// One named extra run command. Mirrors the TS `RunCommand`. `command` is
+/// a freeform shell line; `label` names the menu entry / run tab.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunCommand {
+    pub label: String,
+    pub command: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -75,11 +89,12 @@ pub struct RepoSandbox {
 /// Deserialize a list that may be written as YAML null (`key:` with no
 /// value) into an empty `Vec`. Plain `#[serde(default)]` only covers an
 /// absent key, not an explicit null.
-fn de_vec<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+fn de_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Ok(Option::<Vec<String>>::deserialize(d)?.unwrap_or_default())
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
 }
 
 // ───────────────────────────── load ─────────────────────────────
@@ -137,26 +152,48 @@ pub fn save(repo_root: &Path, cfg: &RepoConfig) -> Result<()> {
 /// ```
 fn indent_block_sequences(yaml: &str) -> String {
     let mut result: Vec<String> = Vec::new();
+    // Marks, per emitted line, whether it is sequence content (a `- ` item
+    // or a continuation line of a map-valued item). Used so the parent-key
+    // search skips over an item's own body.
+    let mut is_seq: Vec<bool> = Vec::new();
+    // The active sequence item being emitted: (dash's original indent, the
+    // extra indent we added to it). Continuation lines — the further-indented
+    // map fields of a `- label:` item — get the SAME shift so the map stays
+    // aligned; without this a multi-line item like `run_scripts` produces
+    // invalid YAML.
+    let mut active: Option<(usize, usize)> = None;
     for line in yaml.lines() {
         let trimmed = line.trim_start();
         let raw_indent = line.len() - trimmed.len();
-        if trimmed.starts_with("- ") || trimmed == "-" {
-            // Find the most-recent non-sequence-item line to determine
-            // the parent key's indentation.
+        let is_dash = trimmed.starts_with("- ") || trimmed == "-";
+        let is_cont = !is_dash
+            && !trimmed.is_empty()
+            && active.map_or(false, |(dash_indent, _)| raw_indent > dash_indent);
+        if is_dash {
+            // Parent key indent = the nearest previous line that ISN'T part
+            // of a sequence item's body.
             let parent_indent = result
                 .iter()
+                .zip(is_seq.iter())
                 .rev()
-                .find(|l| {
-                    let t = l.trim_start();
-                    !t.starts_with("- ") && t != "-" && !t.is_empty()
-                })
-                .map(|l| l.len() - l.trim_start().len())
+                .find(|(l, seq)| !**seq && !l.trim_start().is_empty())
+                .map(|(l, _)| l.len() - l.trim_start().len())
                 .unwrap_or(0);
             let target = parent_indent + 2;
             let extra = target.saturating_sub(raw_indent);
+            active = Some((raw_indent, extra));
             result.push(format!("{}{}", " ".repeat(extra), line));
+            is_seq.push(true);
+        } else if is_cont {
+            let extra = active.map(|(_, e)| e).unwrap_or(0);
+            result.push(format!("{}{}", " ".repeat(extra), line));
+            is_seq.push(true);
         } else {
+            if !trimmed.is_empty() {
+                active = None;
+            }
             result.push(line.to_string());
+            is_seq.push(false);
         }
     }
     let mut out = result.join("\n");
@@ -208,6 +245,10 @@ mod tests {
                 setup: "npm install\nnpm test".into(),
                 run: "npm run dev".into(),
                 files_to_copy: vec![".env".into(), ".env.local".into()],
+                run_scripts: vec![
+                    RunCommand { label: "Build".into(), command: "./build.sh".into() },
+                    RunCommand { label: "Build prod".into(), command: "npm run build:prod".into() },
+                ],
                 ..Default::default()
             },
             ..Default::default()
@@ -217,6 +258,9 @@ mod tests {
         assert_eq!(reloaded.scripts.setup, "npm install\nnpm test");
         assert_eq!(reloaded.scripts.run, "npm run dev");
         assert_eq!(reloaded.scripts.files_to_copy, vec![".env", ".env.local"]);
+        assert_eq!(reloaded.scripts.run_scripts.len(), 2);
+        assert_eq!(reloaded.scripts.run_scripts[0].label, "Build");
+        assert_eq!(reloaded.scripts.run_scripts[1].command, "npm run build:prod");
     }
 
     #[test]
