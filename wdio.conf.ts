@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 
 // End-to-end config for the termic app. WebdriverIO drives the REAL macOS
 // WKWebView window via @wdio/tauri-service's embedded WebDriver provider
@@ -66,5 +66,17 @@ export const config: WebdriverIO.Config = {
     // The app is launched as a child of this process and inherits env,
     // so point it at the throwaway profile before any session starts.
     process.env.TERMIC_DATA_DIR = dataDir;
+    // Purge accumulated tasks so every run starts from a lean profile. Specs
+    // create their own tasks; without this, archived tasks pile up across runs
+    // and bloat loadAll/sidebar/History enough to make late specs flake
+    // (the tab strip renders too slowly). Projects/agents/settings are kept.
+    const tasksDir = path.join(dataDir, "tasks");
+    try {
+      for (const f of readdirSync(tasksDir)) {
+        if (f.endsWith(".json")) rmSync(path.join(tasksDir, f), { force: true });
+      }
+    } catch {
+      /* no tasks dir yet */
+    }
   },
 };

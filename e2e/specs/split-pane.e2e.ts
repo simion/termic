@@ -25,18 +25,27 @@ describe("split pane", () => {
       return walk(tree);
     }, taskId);
 
-  const clickSplit = (lucideClass: string, label: string) =>
-    browser.execute(
-      (cls, lbl) => {
-        const btn = [...document.querySelectorAll("button")].find((b) =>
-          b.querySelector(`svg.${cls}`),
-        );
-        if (!btn) throw new Error(`${lbl} toggle not found`);
-        (btn as HTMLElement).click();
-      },
-      lucideClass,
-      label,
+  const clickSplit = async (lucideClass: string, label: string) => {
+    // Wait for the toggle to render (the tab strip mounts async after the task
+    // becomes active, and is slower under full-suite load).
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (cls) =>
+            [...document.querySelectorAll("button")].some((b) =>
+              b.querySelector(`svg.${cls}`),
+            ),
+          lucideClass,
+        ),
+      { timeout: 10_000, timeoutMsg: `${label} toggle never appeared` },
     );
+    await browser.execute((cls) => {
+      const btn = [...document.querySelectorAll("button")].find((b) =>
+        b.querySelector(`svg.${cls}`),
+      );
+      (btn as HTMLElement).click();
+    }, lucideClass);
+  };
 
   it("starts unsplit", async () => {
     await waitForAppShell();

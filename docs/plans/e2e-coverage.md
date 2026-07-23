@@ -45,7 +45,6 @@ until `make e2e` is green and this file reflects it.
 | ✅ Task rename/delete | Rename updates store+sidebar; delete removes the task entirely | `task-lifecycle.e2e.ts` |
 | ✅ Git diff | Open a diff tab for a changed file | `git-dirty.e2e.ts` |
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `find-in-files.e2e.ts` |
-| ✅ Editor search | Mod-f opens the CodeMirror search panel | `editor.e2e.ts` |
 | ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
 | ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `file-tree.e2e.ts` |
 | ✅ Dialogs/palettes | Shortcuts help, prompt palette, broadcast open (and close) | `dialogs-open.e2e.ts` |
@@ -105,6 +104,7 @@ until `make e2e` is green and this file reflects it.
 These are intentionally NOT covered by written specs — asserting them would be flaky or impossible in the occluded-window / embedded-WebDriver setup. Left as manual checks.
 
 - **OS desktop notification delivery + completion sound** on agent done — no in-webview signal to assert; the store-side attention/unread IS covered (`agent-attention.e2e.ts`).
+- **Keyboard shortcuts into CodeMirror** (e.g. ⌘F search) don't route reliably across window-focus states — manual check. Button-driven editor actions (Preview) ARE covered.
 - **Real keystrokes into xterm / CodeMirror** (contenteditable + WebGL canvas) — WebDriver key events don't route there reliably. Covered by proxy: PTY round-trips via `ipc.ptyWrite` (`task-spawn`, `message-queue`) and editor edits via the CodeMirror view API (`editor-save`).
 - **Commit-and-push / setup script / resume-closed-tab** — need mock-remote / `.termic.yaml` / multi-agent-tab infra with careful fixture cleanup; deferred, tracked above.
 

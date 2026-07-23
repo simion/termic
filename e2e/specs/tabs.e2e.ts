@@ -38,6 +38,19 @@ describe("tab management", () => {
     });
     const agentTabId = await activeTab();
 
+    // Wait for the tab strip's "+" button to render (it mounts async after the
+    // task activates, slower under full-suite load).
+    await browser.waitUntil(
+      () =>
+        browser.execute(() => {
+          const strip = document.querySelector("[data-main-strip]");
+          return [...(strip?.querySelectorAll("button") ?? [])].some((b) =>
+            b.querySelector("svg.lucide-plus"),
+          );
+        }),
+      { timeout: 10_000, timeoutMsg: "tab '+' button never appeared" },
+    );
+
     // Open the tab bar's "+" menu (the button carrying the lucide plus icon,
     // scoped to the main tab strip). Radix opens the menu on pointerdown, so a
     // bare .click() isn't enough — dispatch the pointer sequence.
