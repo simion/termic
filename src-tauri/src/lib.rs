@@ -37,6 +37,7 @@ mod proxy;
 mod repo_config;
 mod shell_env;
 mod automation;
+mod cli_server;
 use sandbox::SandboxBundle;
 
 // ───────────────────────────── data model ─────────────────────────────
@@ -7794,6 +7795,13 @@ pub struct Settings {
     /// clone stop cluttering the picker without deleting it.
     #[serde(default)]
     pub discovery_dismissed: Vec<String>,
+    /// "Enable CLI" (Settings, General): gates every authenticated verb of
+    /// the `termic` control socket. Default OFF; the server always binds and
+    /// answers hello regardless, so a disabled CLI fails fast with a clear
+    /// error instead of a launch-then-timeout dead end (docs/plans/cli.md,
+    /// Landing). Re-read per request, so flipping it applies live.
+    #[serde(default)]
+    pub cli_enabled: bool,
     /// Repo-root config dirs symlinked into each NEW worktree task (when the
     /// checkout didn't already provide them). `.claude/` and friends hold a
     /// project's subagents / skills / commands, which are commonly gitignored
@@ -9020,6 +9028,15 @@ pub fn run() {
         })
         .manage(PtyManager::default())
         .setup(|app| {
+            // Single instance per data dir (release only): if another
+            // termic already owns this data dir's control socket, raise it
+            // and exit BEFORE building a window, so a second launch (prod
+            // vs beta, a direct binary run) never opens a duplicate that
+            // races the shared projects.json/tasks/. Debug is newest-wins.
+            // See cli_server::another_instance_running.
+            if cli_server::another_instance_running() {
+                std::process::exit(0);
+            }
             // Resolve the user's login-shell PATH off the main thread
             // so the first PTY spawn doesn't wait on shell startup.
             shell_env::warm();
@@ -9128,6 +9145,10 @@ pub fn run() {
             // TERMIC_AUTOMATION=1) - lets an agent drive this instance
             // over localhost HTTP. See automation.rs.
             automation::start(app.handle().clone());
+            // Production CLI control socket (own thread, always binds;
+            // verbs stay behind the "Enable CLI" setting + per-boot
+            // token). See cli_server.rs + docs/plans/cli.md.
+            cli_server::start(app.handle().clone());
             let _ = win.set_focus();
             #[cfg(target_os = "macos")]
             {
@@ -9169,6 +9190,9 @@ pub fn run() {
             settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
+            cli_server::cli_rpc_result,
+            cli_server::cli_install_symlink,
+            cli_server::cli_install_status,
             list_monospace_fonts, list_font_families,
             themes_list, themes_dir,
         ])

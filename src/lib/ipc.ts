@@ -7,7 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
-  SandboxMode, TaskDiffSummary,
+  SandboxMode, TaskDiffSummary, CliInstallStatus,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
 import {
@@ -481,6 +481,18 @@ export const discoverRepos = (dir: string) => invoke<DiscoveredRepo[]>("discover
 export const discoveryDismiss = (path: string, dismissed: boolean) =>
   invoke<void>("discovery_dismiss", { path, dismissed });
 export const detectClis    = () => invoke<CliInfo[]>("detect_clis");
+
+// ───────────────────────────── CLI control plane ─────────────────────
+/** Symlink the bundled CLI onto PATH. `system=false` (the on-enable path)
+ *  installs into ~/.local/bin with no prompt; `system=true` installs into
+ *  /usr/local/bin via an admin prompt, falling back to ~/.local/bin.
+ *  Returns a human-readable result line; rejects with an error string. */
+export const cliInstallSymlink = (system: boolean) =>
+  invoke<string>("cli_install_symlink", { system });
+/** Where the CLI is installed for this build, the command name
+ *  (termic / termic-dev / termic-beta), and whether that location is on
+ *  the user's login PATH. */
+export const cliInstallStatus  = () => invoke<CliInstallStatus>("cli_install_status");
 export const listMonospaceFonts = () => invoke<string[]>("list_monospace_fonts");
 /** Every installed font family, unfiltered — for hiding curated picker
  *  entries whose font isn't installed. See list_font_families in lib.rs
