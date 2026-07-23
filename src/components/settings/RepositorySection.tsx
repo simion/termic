@@ -13,7 +13,7 @@ import type { Project, ProjectMember, RepoConfig } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { Trash2, Check, Layers, X, AudioWaveform, Plus } from "lucide-react";
+import { Trash2, Check, Layers, X, AudioWaveform, SlidersHorizontal } from "lucide-react";
 import { ExcludeEditor } from "./ExcludeEditor";
 import { ScriptField } from "./ScriptField";
 import { cn, cleanLines } from "@/lib/utils";
@@ -468,7 +468,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               </div>
               <div className="mt-3">
                 <Button variant="secondary" size="sm" onClick={() => useUI.getState().openRunCommands(projectId)}>
-                  <Plus className="h-3.5 w-3.5" /> Manage run commands…
+                  <SlidersHorizontal className="h-3.5 w-3.5" /> Run configuration…
                 </Button>
               </div>
             </div>
