@@ -88,4 +88,25 @@ describe("editor open", () => {
       { timeout: 5_000, timeoutMsg: "search panel never opened" },
     );
   });
+
+  it("renders the markdown Preview", async () => {
+    // README is a .md file → MarkdownPane. Switch to the Preview view and
+    // assert the rendered markdown (the "# e2e fixture" heading becomes an h1).
+    await browser.execute(() => {
+      const btn = [...document.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Preview",
+      );
+      if (!btn) throw new Error("Preview toggle not found");
+      (btn as HTMLElement).click();
+    });
+    await browser.waitUntil(
+      () =>
+        browser.execute(() =>
+          [...document.querySelectorAll("h1")].some((h) =>
+            h.textContent?.includes("fixture"),
+          ),
+        ),
+      { timeout: 8_000, timeoutMsg: "markdown preview never rendered" },
+    );
+  });
 });

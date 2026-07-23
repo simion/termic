@@ -58,7 +58,30 @@ describe("git stage & commit", () => {
     );
   });
 
+  it("unstages the file (back to unstaged)", async () => {
+    await browser.execute(
+      (id) => window.__termic!.ipc.taskUnstage(id, "", ["README.md"]),
+      taskId,
+    );
+    await browser.waitUntil(
+      async () => {
+        const st = await status();
+        const repo = st.repos?.[0];
+        return (
+          !(repo?.staged ?? []).some((f: any) => f.path.includes("README")) &&
+          (repo?.unstaged ?? []).some((f: any) => f.path.includes("README"))
+        );
+      },
+      { timeout: 8_000, timeoutMsg: "unstage did not move README back to unstaged" },
+    );
+  });
+
   it("commits the staged change and the tree goes clean", async () => {
+    // Re-stage (the previous case unstaged it), then commit.
+    await browser.execute(
+      (id) => window.__termic!.ipc.taskStage(id, "", ["README.md"]),
+      taskId,
+    );
     await browser.execute(
       (id) =>
         window.__termic!.ipc.taskCommit(id, "", "e2e commit", "", false, false),

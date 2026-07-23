@@ -41,11 +41,12 @@ until `make e2e` is green and this file reflects it.
 | ✅ Message queue | Message held while working, drains on idle | `message-queue.e2e.ts` |
 | ✅ Command palette | Opens/lists; filters; command activation closes it; Escape closes | `command-palette.e2e.ts` |
 | ✅ File finder | ⌘P lists the repo's files; selecting one opens an editor tab | `file-finder.e2e.ts` |
-| ✅ Git stage/commit | Stage a changed file (moves to staged); commit → tree clean | `git-commit.e2e.ts` |
+| ✅ Git stage/unstage/commit | Stage → unstage → re-stage + commit → clean | `git-commit.e2e.ts` |
 | ✅ Task rename/delete | Rename updates store+sidebar; delete removes the task entirely | `task-lifecycle.e2e.ts` |
 | ✅ Git diff | Open a diff tab for a changed file | `git-dirty.e2e.ts` |
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `find-in-files.e2e.ts` |
 | ✅ Editor search | Mod-f opens the CodeMirror search panel | `editor.e2e.ts` |
+| ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -63,11 +64,11 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Second agent in one task; YOLO toggle; AuxTerminal (bottom terminal).
 
 ### Editor
-- ⬜ P1 Markdown preview / split; replace-in-file.
+- ⬜ P2 Editor split view; replace-in-file.
 - ⬜ P2 Image/PDF preview; language highlighting.
 
 ### Git & diff
-- ⬜ P1 Unstage a file; commit-and-push (mock remote).
+- ⬜ P1 Commit-and-push (mock remote).
 - ⬜ P2 Multi-repo project status.
 
 ### File tree
