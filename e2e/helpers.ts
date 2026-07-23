@@ -54,6 +54,49 @@ declare global {
   }
 }
 
+/**
+ * Playwright-style waits, done with a FAST client-side visibility check inside
+ * the webview (getBoundingClientRect + computed style) — NOT WebdriverIO's
+ * native isDisplayed/waitForDisplayed, which triggers slow Tauri window-state
+ * calls on our offscreen window. Poll interval is the config's 100ms, so these
+ * fire the instant the element appears + is visible.
+ */
+export async function waitVisible(selector: string, timeout = 15_000): Promise<void> {
+  await browser.waitUntil(
+    () =>
+      browser.execute((sel) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const st = getComputedStyle(el);
+        return (
+          r.width > 0 &&
+          r.height > 0 &&
+          st.visibility !== "hidden" &&
+          st.display !== "none" &&
+          st.opacity !== "0"
+        );
+      }, selector),
+    { timeout, timeoutMsg: `never became visible: ${selector}` },
+  );
+}
+
+/** Wait for the element to appear + be visible, then click it. */
+export async function clickWhenVisible(selector: string, timeout = 15_000): Promise<void> {
+  await waitVisible(selector, timeout);
+  await browser.execute((sel) => {
+    (document.querySelector(sel) as HTMLElement).click();
+  }, selector);
+}
+
+/** Wait until the selector is gone from the DOM. */
+export async function waitGone(selector: string, timeout = 15_000): Promise<void> {
+  await browser.waitUntil(
+    () => browser.execute((sel) => !document.querySelector(sel), selector),
+    { timeout, timeoutMsg: `never disappeared: ${selector}` },
+  );
+}
+
 /** Wait for React to mount the app shell (not a fixed sleep). */
 export async function waitForAppShell(timeout = 30_000): Promise<void> {
   await browser.waitUntil(

@@ -1,4 +1,5 @@
 import {
+  waitVisible,
   waitForAppShell,
   requireTermicApi,
   openTask,
@@ -38,7 +39,7 @@ describe("dialogs & palettes open", () => {
       timeout: 8_000,
       timeoutMsg: "shortcuts help never opened",
     });
-    expect(await dialogPresent()).toBe(true);
+    await waitVisible('[role="dialog"]');
     await browser.execute(() =>
       window.__termic!.useUI.getState().closeShortcutsHelp(),
     );
@@ -67,10 +68,7 @@ describe("dialogs & palettes open", () => {
       (id) => window.__termic!.useUI.getState().openBroadcast(id),
       taskId,
     );
-    await browser.waitUntil(async () => (await dialogPresent()) === true, {
-      timeout: 8_000,
-      timeoutMsg: "broadcast dialog never opened",
-    });
+    await waitVisible('[role="dialog"]', 8_000);
     await snap("dialogs-open.png");
   });
 });

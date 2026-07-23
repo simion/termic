@@ -1,4 +1,5 @@
 import {
+  waitVisible,
   waitForAppShell,
   requireTermicApi,
   openTask,
@@ -45,13 +46,8 @@ describe("command palette", () => {
     await requireTermicApi();
     taskId = await openTask("e2e-palette");
     await open();
-    await browser.waitUntil(
-      () =>
-        browser.execute(
-          () => !!document.querySelector('input[placeholder*="Type a command"]'),
-        ),
-      { timeout: 8_000, timeoutMsg: "palette never opened" },
-    );
+    // Appeared + visible → continue (fast client-side check).
+    await waitVisible('input[placeholder*="Type a command"]', 8_000);
     expect(await rowCount()).toBeGreaterThan(1);
   });
 

@@ -61,6 +61,15 @@ export const config: WebdriverIO.Config = {
   logLevel: "warn",
   mochaOpts: { ui: "bdd", timeout: 60_000 },
 
+  // Poll conditions every 100ms (default is 500ms) so browser.waitUntil-based
+  // waits fire almost the instant the condition is met — responsive, not
+  // timeout-bound. NOTE: we deliberately do NOT use WebdriverIO's native
+  // element visibility (waitForDisplayed/isDisplayed): on this offscreen
+  // WKWebView it triggers Tauri window-state calls that time out (5s each).
+  // The `visible()`/`waitVisible()` helpers do a fast client-side check instead.
+  waitforTimeout: 15_000,
+  waitforInterval: 100,
+
   onPrepare() {
     mkdirSync(artifactsDir, { recursive: true });
     // The app is launched as a child of this process and inherits env,

@@ -97,6 +97,7 @@ These are intentionally NOT covered by written specs — asserting them would be
 - **Hover-gated controls** (theme picker, History "Restore →") need a dispatched `mouseover`/`mouseenter` first, or drive the underlying store/IPC.
 - **rAF-deferred effects are frozen when the window is occluded** (e.g. the command palette's `act()` → `requestAnimationFrame`). Assert the synchronous part, or drive the underlying store, rather than the deferred side effect.
 - **Run/Setup tab PTY spawn is rAF-gated** in TerminalPane, so a newly-added run tab's PTY lags on an occluded/offscreen window (CI). Assert the tab is *created* (launch wiring); PTY spawn/execution is covered by task-spawn's agent PTY.
+- **Don't use WebdriverIO's native visibility** (`$().waitForDisplayed()`/`isDisplayed()`): offscreen, it triggers Tauri window-state calls that time out 5s each (a trivial check took 47s). Use `waitVisible()`/`clickWhenVisible()` — a FAST client-side visibility check via `browser.execute`. The config polls every 100ms so waits fire on-condition, not on a timeout.
 - **No fixed sleeps, ever** — `waitUntil`/`waitFor*`/auto-retrying `expect` only.
 - **Screenshots are for humans**, never assertions (the xterm canvas even reads black in captures).
 - **Isolation:** each spec creates its own task via `openTask()` and archives it in `after`; never assume the app launched on a particular view (self-establish it).

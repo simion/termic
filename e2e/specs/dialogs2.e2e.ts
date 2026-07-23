@@ -1,4 +1,5 @@
-import { waitForAppShell, requireTermicApi, snap } from "../helpers";
+import {
+  waitVisible, waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: more dialogs — changelog, welcome, and the per-project Race dialog.
 describe("more dialogs open", () => {
@@ -36,7 +37,7 @@ describe("more dialogs open", () => {
       timeout: 8_000,
       timeoutMsg: "welcome never opened",
     });
-    expect(await dialogPresent()).toBe(true);
+    await waitVisible('[role="dialog"]');
     await browser.execute(() => window.__termic!.useUI.getState().closeWelcome());
     await browser.waitUntil(async () => (await flag("welcomeOpen")) === false, {
       timeout: 5_000,
@@ -51,10 +52,7 @@ describe("more dialogs open", () => {
         .projects.find((p: any) => p.name === "fixture-repo");
       window.__termic!.useUI.getState().openRace(proj.id);
     });
-    await browser.waitUntil(async () => (await dialogPresent()) === true, {
-      timeout: 8_000,
-      timeoutMsg: "race dialog never opened",
-    });
+    await waitVisible('[role="dialog"]', 8_000);
     await snap("dialogs2.png");
   });
 });
