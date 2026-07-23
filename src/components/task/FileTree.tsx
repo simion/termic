@@ -5,15 +5,17 @@
 // - Indentation reflects depth; chevrons rotate to indicate expansion state.
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { ChevronRight, Pencil, Trash2 } from "lucide-react";
+import { ChevronRight, Pencil, Trash2, Play, Plus, Minus } from "lucide-react";
 import type { FileEntry } from "@/lib/types";
 import { taskDirList, taskPathRename, taskPathDelete } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
-import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
+import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
+import { launchCustomRun } from "@/lib/runTabs";
+import { resolveCustomCommands, addPersonalCommand, addSharedCommand, removeCommandByCommand, defaultCommandFor } from "@/lib/runCommands";
 
 interface Props {
   taskId: string;
@@ -58,6 +60,18 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
   // Absolute task root, used to build the "Copy path" (absolute) item.
   // Tree `rel` paths are task-root-relative, so absolute = root/rel.
   const root = useApp(s => s.tasks.find(w => w.id === taskId)?.path ?? "");
+  const projectId = useApp(s => s.tasks.find(w => w.id === taskId)?.project_id ?? "");
+  // Commands already saved to this repo's Run-scripts list (personal +
+  // committed), as a Set of command strings. Drives the per-file "Add" vs
+  // "Remove" toggle in the context menu (GH #124).
+  const [savedCmds, setSavedCmds] = useState<Set<string>>(new Set());
+  const reloadCmds = useCallback(() => {
+    if (!projectId) return;
+    resolveCustomCommands(projectId)
+      .then(cmds => setSavedCmds(new Set(cmds.map(c => c.command))))
+      .catch(() => {});
+  }, [projectId]);
+  useEffect(() => { reloadCmds(); }, [reloadCmds]);
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   // Per-dir cache of children, keyed by rel-path ("" = root).
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
@@ -218,6 +232,7 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
         <TreeNode
           key={e.name} taskId={taskId} entry={e} depth={0} rel={e.name} root={root}
           expanded={expanded} children_={children} toggle={toggle} revealed={revealedRel} refetch={refetchDir}
+          projectId={projectId} savedCmds={savedCmds} reloadCmds={reloadCmds}
         />
       ))}
     </div>
@@ -237,9 +252,15 @@ interface NodeProps {
   revealed: string | null;
   /** Re-read a directory after a rename/delete mutates its contents. */
   refetch: (rel: string) => void;
+  /** Project id, for the "Add to Run scripts" actions (GH #124). */
+  projectId: string;
+  /** Commands already saved to the repo's Run-scripts list. */
+  savedCmds: Set<string>;
+  /** Refresh `savedCmds` after an add/remove. */
+  reloadCmds: () => void;
 }
 
-function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch }: NodeProps) {
+function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch, projectId, savedCmds, reloadCmds }: NodeProps) {
   const openPreviewTab = useApp(s => s.openPreviewTab);
   const persistTab = useApp(s => s.persistTab);
   const closeTab = useApp(s => s.closeTab);
@@ -313,6 +334,30 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
     } catch (e) {
       useUI.getState().pushToast(String(e), "error");
     }
+  }
+
+  // ── Custom run commands (GH #124). Right-clicking a file offers "Run"
+  // (one-off) plus an Add/Remove toggle onto the repo's Run-scripts list.
+  // The seeded command runs the file relative to the repo root; editable
+  // afterward in Settings. Membership is detected by that exact command,
+  // so editing the text in settings makes the file show "Add" again. ──
+  const cmdString = defaultCommandFor(rel);
+  const isSavedCmd = savedCmds.has(cmdString);
+  function runOnce() {
+    launchCustomRun(taskId, { label: entry.name, command: cmdString });
+  }
+  async function addRun(source: "personal" | "yaml") {
+    try {
+      const cmd = { label: entry.name, command: cmdString };
+      if (source === "personal") await addPersonalCommand(projectId, cmd);
+      else await addSharedCommand(projectId, cmd);
+      reloadCmds();
+      useUI.getState().pushToast(`Added "${entry.name}" to Run scripts`, "success");
+    } catch (e) { useUI.getState().pushToast(String(e), "error"); }
+  }
+  async function removeRun() {
+    try { await removeCommandByCommand(projectId, cmdString); reloadCmds(); }
+    catch (e) { useUI.getState().pushToast(String(e), "error"); }
   }
 
   const activeTab = tabs.find(t => t.id === activeTabId);
@@ -400,6 +445,33 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
       </ContextMenuTrigger>
       <ContextMenuContent>
         <CopyPathItems rel={rel} root={root} isDir={entry.is_dir} />
+        {!entry.is_dir && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={runOnce}>
+              <Play /> Run
+            </ContextMenuItem>
+            {isSavedCmd ? (
+              <ContextMenuItem onSelect={removeRun}>
+                <Minus /> Remove from Run scripts
+              </ContextMenuItem>
+            ) : (
+              <ContextMenuSub>
+                <ContextMenuSubTrigger>
+                  <Plus /> Add to Run scripts
+                </ContextMenuSubTrigger>
+                <ContextMenuSubContent>
+                  <ContextMenuItem onSelect={() => addRun("personal")}>
+                    This repo (personal)
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => addRun("yaml")}>
+                    Shared (.termic.yaml)
+                  </ContextMenuItem>
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            )}
+          </>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => { setDraft(entry.name); setRenaming(true); }}>
           <Pencil /> Rename
@@ -415,6 +487,7 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
         <TreeNode
           key={c.name} taskId={taskId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`} root={root}
           expanded={expanded} children_={children_} toggle={toggle} revealed={revealed} refetch={refetch}
+          projectId={projectId} savedCmds={savedCmds} reloadCmds={reloadCmds}
         />
       ))}
       {entry.is_dir && isOpen && !kids && (

@@ -86,6 +86,21 @@ export interface Project {
    *  list. No effect on paths, git, or workspaces. Missing/empty =
    *  ungrouped. */
   group?: string;
+  /** Personal (local, projects.json) extra run commands surfaced in the
+   *  RunControls dropdown and launched as terminal tabs (GH #124). Separate
+   *  from the single primary `run_script` (the Run button). The committed,
+   *  team-shared equivalent lives in `.termic.yaml` under
+   *  `scripts.run_scripts`; the two lists are merged at read time. */
+  run_scripts?: RunCommand[];
+}
+
+/** One named extra run command (GH #124). `command` is a freeform shell
+ *  line (`./build.sh`, `python run.py`, `npm run build`); `label` names the
+ *  menu entry + the run tab. Stored personally on `Project.run_scripts` and
+ *  team-shared in `.termic.yaml` `scripts.run_scripts`. */
+export interface RunCommand {
+  label: string;
+  command: string;
 }
 
 /** Per-member entry on a multi-repo Project. Self-contained: a member is
@@ -782,7 +797,7 @@ export type Tab = TerminalTab | DiffTab | EditTab;
  *  by the standalone `termic` CLI. */
 export interface RepoConfig {
   version: number;
-  scripts: { setup: string; run: string; archive: string; preview_url: string; files_to_copy: string[] };
+  scripts: { setup: string; run: string; archive: string; preview_url: string; files_to_copy: string[]; run_scripts: RunCommand[] };
   sandbox: {
     enabled_by_default: boolean;
     allowed_hosts: string[];

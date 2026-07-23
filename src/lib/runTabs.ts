@@ -155,6 +155,40 @@ export async function launchSetupTab(taskId: string, opts?: { focus?: boolean })
   return true;
 }
 
+/** The `runTab.member` value for an ad-hoc custom run command (GH #124).
+ *  Prefixed so RunControls can tell these apart from the primary host/member
+ *  run tabs — the primary Run/Stop button ignores anything `cmd:*`. */
+export function customRunMember(label: string): string {
+  return `cmd:${label}`;
+}
+
+/** Launch (or restart) a run tab for a user-configured custom command
+ *  (GH #124). Behaves exactly like a Run tab (RunPane, pill controls,
+ *  persistence) but is keyed by its label so it never collides with the
+ *  primary host run (`member: ""`) or a composition member. `customTitle`
+ *  is set so the label survives a persistence round-trip (restore otherwise
+ *  rebuilds run-tab titles from `member`). Runs in the task's worktree — the
+ *  PTY's spawn cwd; no spotlight repo-root redirect (that's host-only). */
+export function launchCustomRun(taskId: string, cmd: { label: string; command: string }): void {
+  const member = customRunMember(cmd.label);
+  const existing = (useApp.getState().tabs[taskId] ?? []).find(
+    (t): t is TerminalTab => t.type === "terminal" && (t as TerminalTab).runTab?.member === member,
+  );
+  if (existing) {
+    window.dispatchEvent(new CustomEvent("termic-run-tab-restart", { detail: { tabId: existing.id } }));
+    return;
+  }
+  useApp.getState().addTabToActivePane(taskId, {
+    id: crypto.randomUUID(),
+    type: "terminal",
+    title: cmd.label,
+    customTitle: true,
+    cli: "custom",
+    command: cmd.command,
+    runTab: { member, previewUrl: null },
+  });
+}
+
 /** Launch (or restart) the Run tab(s) for a task: one per target, host
  *  plus every composition member with a run script. Existing tabs are
  *  restarted in place instead of duplicated. Resolves `.termic.yaml`
