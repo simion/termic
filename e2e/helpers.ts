@@ -30,6 +30,8 @@ export interface TermicApi {
   useRace: { getState: () => any };
   ipc: any;
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any>;
+  runTabs: any;
+  scriptRuns: { getState: () => any };
 }
 
 declare global {

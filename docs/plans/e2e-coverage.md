@@ -20,7 +20,11 @@ until `make e2e` is green and this file reflects it.
 |---|---|---|
 | ✅ App shell | Renders; `__termic` exposes real store state | `smoke.e2e.ts` |
 | ✅ Navigation | Dashboard ↔ History via real clicks | `smoke.e2e.ts` |
+| ✅ Create (wizard) | NewTaskDialog: name + shell CLI + Main-checkout → Create → task exists | `create-wizard.e2e.ts` |
 | ✅ Task spawn | Task created; agent PTY comes alive; PTY write round-trips; agent OSC title reaches the app | `task-spawn.e2e.ts` |
+| ✅ Agent working | After a real submit, the agent enters the working state | `agent-working.e2e.ts` |
+| ✅ Agent attention | A backgrounded agent flags completion (unread/done) when it finishes | `agent-attention.e2e.ts` |
+| ✅ Run tabs | A custom run command opens a run tab whose PTY executes it | `run.e2e.ts` |
 | ✅ Task archive | Archived task leaves the active board | `task-archive.e2e.ts` |
 | ✅ Task restore | Archived task shows in History; restore returns it to active | `task-restore.e2e.ts` |
 | ✅ Multi-task | Two tasks, independent/distinct PTYs, survive going inactive, switching works | `multi-task.e2e.ts` |
@@ -36,15 +40,13 @@ until `make e2e` is green and this file reflects it.
 ## Roadmap (todo)
 
 ### Task lifecycle & creation
-- ⬜ P0 Create a task through the real **NewTaskDialog** wizard (project/cli/name → confirm → spawns). Complements the IPC-based spawn.
 - ⬜ P1 Create a **worktree** task (not repo-root); verify the worktree exists, and archive/delete removes it.
 - ⬜ P1 **Delete** a task (permanent) + optional branch delete.
 - ⬜ P1 Rename a **task** (sidebar context menu) — distinct from tab rename.
 - ⬜ P2 Import an existing worktree; quick-create flow.
 
 ### Agents & terminal
-- ⬜ P0 Agent **working → done** state via a real submit through the input path (the heuristic `task-spawn` intentionally bypasses).
-- ⬜ P0 **Attention/notification** on agent done (unread badge, `useAttentionNotifier`).
+- ⬜ P1 Desktop **notification** + completion **sound** on agent done (the OS-facing side of `useAttentionNotifier`).
 - ⬜ P1 **Resume** a closed agent tab with its session id (Resume menu).
 - ⬜ P1 **Message queue**: queue input while the agent is working; it sends on idle.
 - ⬜ P1 Real **keystroke** input → PTY (xterm `onData`), asserting via `lastOutputAt`.
@@ -66,8 +68,8 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Create/rename/delete a file via context menu.
 
 ### Run & scripts (#54, #124)
-- ⬜ P0 Configure run scripts via the **Run config modal**; Run → run tabs launch/stream.
-- ⬜ P1 **Stop** a running script; Setup script; custom run command.
+- ⬜ P1 Configure run scripts via the **Run config modal** (.termic.yaml); the **Run** button launches/streams them.
+- ⬜ P1 **Stop** a running script; Setup script.
 - ⬜ P2 Run at repo root (spotlight).
 
 ### Panes & layout
