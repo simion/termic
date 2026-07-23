@@ -42,13 +42,12 @@ until `make e2e` is green and this file reflects it.
 | ✅ Command palette | Opens/lists; filters; command activation closes it; Escape closes | `command-palette.e2e.ts` |
 | ✅ File finder | ⌘P lists the repo's files; selecting one opens an editor tab | `file-finder.e2e.ts` |
 | ✅ Git stage/commit | Stage a changed file (moves to staged); commit → tree clean | `git-commit.e2e.ts` |
+| ✅ Task rename/delete | Rename updates store+sidebar; delete removes the task entirely | `task-lifecycle.e2e.ts` |
 
 ## Roadmap (todo)
 
 ### Task lifecycle & creation
 - ⬜ P1 Create a **worktree** task (not repo-root); verify the worktree exists, and archive/delete removes it.
-- ⬜ P1 **Delete** a task (permanent) + optional branch delete.
-- ⬜ P1 Rename a **task** (sidebar context menu) — distinct from tab rename.
 - ⬜ P2 Import an existing worktree; quick-create flow.
 
 ### Agents & terminal
