@@ -36,6 +36,10 @@ until `make e2e` is green and this file reflects it.
 | ✅ Tabs | Add a terminal tab via the "+" menu; switch active tab | `tabs.e2e.ts` |
 | ✅ Tab rename | Double-click inline edit commits the new name | `rename.e2e.ts` |
 | ✅ Theme | Picker switches theme; palette class applied to `<html>` | `theme.e2e.ts` |
+| ✅ Editor persist | Single-click = preview tab; double-click persists it | `editor.e2e.ts` |
+| ✅ Split panes | Unsplit start; split-right → 2 leaves; split-below → 3 | `split-pane.e2e.ts` |
+| ✅ Message queue | Message held while working, drains on idle | `message-queue.e2e.ts` |
+| ✅ Command palette | Opens/lists; filters; command activation closes it; Escape closes | `command-palette.e2e.ts` |
 
 ## Roadmap (todo)
 
@@ -48,12 +52,10 @@ until `make e2e` is green and this file reflects it.
 ### Agents & terminal
 - ⬜ P1 Desktop **notification** + completion **sound** on agent done (the OS-facing side of `useAttentionNotifier`).
 - ⬜ P1 **Resume** a closed agent tab with its session id (Resume menu).
-- ⬜ P1 **Message queue**: queue input while the agent is working; it sends on idle.
 - ⬜ P1 Real **keystroke** input → PTY (xterm `onData`), asserting via `lastOutputAt`.
 - ⬜ P2 Second agent in one task; YOLO toggle; AuxTerminal (bottom terminal).
 
 ### Editor
-- ⬜ P1 Preview tab → **persist** (double-click); open multiple files.
 - ⬜ P1 Search/replace panel; markdown preview / split.
 - ⬜ P2 Image/PDF preview; language highlighting.
 
@@ -73,7 +75,6 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Run at repo root (spotlight).
 
 ### Panes & layout
-- ⬜ P1 **Split** pane right (⌘D) / below (⇧⌘D); close split; focus pane.
 - ⬜ P2 Sidebar toggle; right-panel toggle.
 
 ### Projects
@@ -86,7 +87,6 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Fonts (editor/terminal); prompts management; keybindings.
 
 ### Dialogs & palettes
-- ⬜ P1 **Command palette** (⌘K) → run a command.
 - ⬜ P2 Prompt palette; Broadcast (send to all agents); Race; Shortcuts help; Changelog/What's-new; Welcome (first run).
 
 ### Notifications & cross-cutting
@@ -99,6 +99,7 @@ until `make e2e` is green and this file reflects it.
 - **`workState === "working"`** won't flip from a raw `ipc.ptyWrite`; termic gates it on a real submit through the input path.
 - **Radix menus open on pointerdown** — dispatch `pointerdown`/`pointerup`, not just `.click()` (see `tabs.e2e.ts`).
 - **Hover-gated controls** (theme picker, History "Restore →") need a dispatched `mouseover`/`mouseenter` first, or drive the underlying store/IPC.
+- **rAF-deferred effects are frozen when the window is occluded** (e.g. the command palette's `act()` → `requestAnimationFrame`). Assert the synchronous part, or drive the underlying store, rather than the deferred side effect.
 - **No fixed sleeps, ever** — `waitUntil`/`waitFor*`/auto-retrying `expect` only.
 - **Screenshots are for humans**, never assertions (the xterm canvas even reads black in captures).
 - **Isolation:** each spec creates its own task via `openTask()` and archives it in `after`; never assume the app launched on a particular view (self-establish it).
