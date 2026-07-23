@@ -41,3 +41,37 @@ jobs:
         # termic-cli exit-code + output goldens) run alongside the app's
         # lib tests. The behavioral sandbox tests self-skip off macOS.
         run: cargo test --workspace --lib
+
+  e2e:
+    # Written WebdriverIO suite driving the real macOS WKWebView window
+    # (docs/e2e-tests.md + the `e2e` skill). macOS-only (WKWebView). NOT a
+    # required check yet — it's here to surface flakiness so we can harden it
+    # before gating merges on it. Screenshots are skipped in CI (CI=true).
+    name: E2E (WebdriverIO, macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Seed e2e fixture profile
+        run: node scripts/e2e-seed.mjs
+      - name: Build e2e binary
+        run: npm run e2e:build
+      - name: Run e2e suite
+        run: npm run test:e2e
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            .e2e/artifacts
+            /var/folders/**/termic-debug.log
+          if-no-files-found: ignore
