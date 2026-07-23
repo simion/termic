@@ -37,6 +37,10 @@ export function RunCommandsDialog() {
   const [tab, setTab] = useState<Store>("personal");
   const [personal, setPersonal] = useState<RunConfig>(EMPTY);
   const [shared, setShared] = useState<RunConfig>(EMPTY);
+  // Whether a committed `.termic.yaml` existed when the dialog opened. Gates
+  // the shared save so editing only the Personal tab doesn't materialize an
+  // empty `.termic.yaml` into the repo (an unwanted untracked committed file).
+  const [hadSharedFile, setHadSharedFile] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -56,9 +60,10 @@ export function RunCommandsDialog() {
           add ? { ...cfg, commands: [...cfg.commands, { label: add.label, command: add.command }] } : cfg;
         setPersonal(target === "personal" ? seed(personal) : personal);
         setShared(target === "yaml" ? seed(shared) : shared);
+        setHadSharedFile(hasSharedFile);
         setTab(target);
       })
-      .catch(() => { setPersonal(EMPTY); setShared(EMPTY); setTab("personal"); });
+      .catch(() => { setPersonal(EMPTY); setShared(EMPTY); setHadSharedFile(false); setTab("personal"); });
   }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cfg = tab === "personal" ? personal : shared;
@@ -70,7 +75,16 @@ export function RunCommandsDialog() {
     setBusy(true); setErr(null);
     try {
       await savePersonalRunConfig(projectId, { ...personal, commands: personal.commands.filter(c => c.command.trim()) });
-      await saveSharedRunConfig(projectId, { ...shared, commands: shared.commands.filter(c => c.command.trim()) });
+      // Only touch `.termic.yaml` when it already exists or the user actually
+      // put shared content in. Otherwise a Personal-only edit would write an
+      // empty committed file the user never asked for (shows up untracked in
+      // `git status`).
+      const sharedClean = { ...shared, commands: shared.commands.filter(c => c.command.trim()) };
+      const sharedEmpty = !sharedClean.run.trim() && !sharedClean.setup.trim()
+        && !sharedClean.preview.trim() && sharedClean.commands.length === 0;
+      if (hadSharedFile || !sharedEmpty) {
+        await saveSharedRunConfig(projectId, sharedClean);
+      }
       close();
     } catch (e) {
       setErr(String(e));
@@ -96,7 +110,7 @@ export function RunCommandsDialog() {
       onOpenAutoFocus={(e) => e.preventDefault()}
     >
       <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Run setup for <span className="font-mono">{project?.name ?? "this repo"}</span>. <b>Personal</b> stays on this machine; <b>.termic.yaml</b> is committed and shared with your team. Right-clicking a file seeds a command as <span className="font-mono">./file</span> — edit it to anything and press play to test.
+        Run setup for <span className="font-mono">{project?.name ?? "this repo"}</span>. <b>Personal</b> stays on this machine; <b>.termic.yaml</b> is committed and shared with your team. Right-clicking a file seeds a command as <span className="font-mono">./file</span>. Edit it to anything and press play to test.
       </p>
 
       {/* Personal / .termic.yaml tabs — same underline style as Settings. */}
