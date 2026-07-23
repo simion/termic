@@ -25,6 +25,8 @@ path = "src/lib.rs"
 # dependency-light.
 [dependencies]
 termic-proto = { path = "../termic-proto" }
+# SIGPIPE restoration only (main.rs); keep this list short.
+libc = "0.2"
 serde = "1"
 serde_json = "1"
 clap = { version = "4", features = ["derive", "wrap_help"] }
