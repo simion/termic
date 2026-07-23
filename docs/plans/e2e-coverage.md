@@ -55,6 +55,9 @@ until `make e2e` is green and this file reflects it.
 | ✅ Project rename | Rename a project (add covered too) | `project.e2e.ts` |
 | ✅ Editor split | Split view shows source + rendered preview together | `editor.e2e.ts` |
 | ✅ Repo config | Save a `.termic.yaml` field and read it back | `repo-config.e2e.ts` |
+| ✅ Setup script | Configure + launch a Setup tab that spawns | `setup-script.e2e.ts` |
+| ✅ Sidebar layout | Sidebar width setter persists | `layout.e2e.ts` |
+| ✅ Code editor | Open a .py file → CodeMirror renders with highlight tokens | `code-editor.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -84,11 +87,10 @@ until `make e2e` is green and this file reflects it.
 
 ### Run & scripts (#54, #124)
 - ⬜ P1 Configure `.termic.yaml` run scripts and launch them via the **Run** button.
-- ⬜ P1 **Stop** a running script; Setup script.
+- ⬜ P2 **Stop** a running script.
 - ⬜ P2 Run at repo root (spotlight).
 
 ### Panes & layout
-- ⬜ P2 Sidebar toggle; right-panel toggle.
 
 ### Projects
 - ⬜ P2 Project reorder / group; discover repos (scan folder); multi-member.
