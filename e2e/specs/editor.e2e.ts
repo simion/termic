@@ -6,54 +6,68 @@ import {
   artifact,
 } from "../helpers";
 
-// Editor is a crown-jewel feature (CodeMirror 6, perf-critical). This guards
-// the flow: click a file in the tree -> an editor tab opens -> the file's
-// contents load into CodeMirror. CodeMirror renders to the DOM (unlike the
-// xterm canvas), so we can assert its text directly.
-describe("editor", () => {
+// Editor (CodeMirror 6), open/preview/persist. Cases: single-click opens a
+// PREVIEW tab (italic, recyclable) with the file's real contents; double-click
+// PERSISTS it. Saving has its own spec (editor-save.e2e.ts).
+describe("editor open", () => {
   let taskId: string | undefined;
   after(async () => {
     if (taskId) await archiveTask(taskId);
   });
 
-  it("opens a file from the tree and loads it in CodeMirror", async () => {
+  const readmeSel = '[data-path="README.md"]';
+  const editTab = () =>
+    browser.execute(
+      (id) =>
+        (window.__termic!.useApp.getState().tabs[id] ?? []).find(
+          (t: any) => t.type === "edit" && t.path === "README.md",
+        ),
+      taskId,
+    );
+
+  it("opens a file as a preview tab and loads its content in CodeMirror", async () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-editor");
 
-    // The file tree (RightPanel "All files") reads the repo async; wait for
-    // the README row to appear, then click it like a user.
-    const readmeSel = '[data-path="README.md"]';
     await browser.waitUntil(
       () => browser.execute((s) => !!document.querySelector(s), readmeSel),
-      { timeout: 15_000, timeoutMsg: "README row never appeared in the file tree" },
+      { timeout: 15_000, timeoutMsg: "README row never appeared" },
     );
     await browser.execute((s) => {
       (document.querySelector(s) as HTMLElement).click();
     }, readmeSel);
 
-    // An editor ("edit") tab should open for the file.
+    // A single click opens a *preview* edit tab.
+    await browser.waitUntil(async () => (await editTab())?.preview === true, {
+      timeout: 10_000,
+      timeoutMsg: "single click did not open a preview edit tab",
+    });
+
+    // CodeMirror renders the real contents.
     await browser.waitUntil(
       () =>
-        browser.execute((id) => {
-          const tabs = window.__termic!.useApp.getState().tabs[id] ?? [];
-          return tabs.some(
-            (t: any) => t.type === "edit" && t.path === "README.md",
-          );
-        }, taskId),
-      { timeout: 10_000, timeoutMsg: "editor tab never opened for README.md" },
+        browser.execute(() =>
+          (document.querySelector(".cm-content")?.textContent ?? "").includes(
+            "e2e fixture",
+          ),
+        ),
+      { timeout: 10_000, timeoutMsg: "CodeMirror never showed the contents" },
     );
-
-    // CodeMirror should render the file's real contents ("# e2e fixture").
-    await browser.waitUntil(
-      () =>
-        browser.execute(() => {
-          const cm = document.querySelector(".cm-content");
-          return !!cm && (cm.textContent ?? "").includes("e2e fixture");
-        }),
-      { timeout: 10_000, timeoutMsg: "CodeMirror never showed the file contents" },
-    );
-
     await browser.saveScreenshot(artifact("editor.png"));
+  });
+
+  it("persists the preview tab on double-click", async () => {
+    const tab = await editTab();
+    await browser.execute((id) => {
+      document
+        .querySelector(`[data-tab-id="${id}"]`)!
+        .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    }, (tab as any).id);
+
+    await browser.waitUntil(async () => (await editTab())?.preview === false, {
+      timeout: 5_000,
+      timeoutMsg: "double-click did not persist the preview tab",
+    });
   });
 });
