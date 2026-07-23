@@ -893,13 +893,64 @@ fn subst_path(raw: &str, home: &str, task_path: &str) -> String {
     s
 }
 
+/// Control-plane paths the ENFORCING profiles must deny (docs/plans/cli.md,
+/// Security). `None` fields mean the app has no data dir at all, in which
+/// case no socket or token exists to protect either.
+pub struct ControlPlanePaths {
+    /// The app data dir: holds the CLI token, projects.json, tasks/.
+    pub data_dir: Option<String>,
+    /// The control socket path inside it.
+    pub socket: Option<String>,
+}
+
+/// Resolve the REAL control-plane paths. Canonicalized because seatbelt
+/// evaluates canonical paths.
+pub fn control_plane_paths() -> ControlPlanePaths {
+    match crate::data_dir() {
+        Ok(d) => {
+            let dd = canonicalize_or_keep(&d.to_string_lossy());
+            ControlPlanePaths {
+                socket: Some(format!("{dd}/{}", termic_proto::SOCKET_FILE)),
+                data_dir: Some(dd),
+            }
+        }
+        Err(_) => ControlPlanePaths { data_dir: None, socket: None },
+    }
+}
+
 pub fn render_profile(task: &Task, proxy_port: u16, agent_override: Option<&str>, mode: SandboxMode) -> Result<String> {
+    // Per-agent allowed paths from the agent registry (Settings → Agents).
+    // Resolved here so render_profile_with is a pure function of its
+    // arguments - the behavioral sandbox tests inject hostile lists
+    // through the same seam the real layers flow through.
+    let effective_cli = agent_override.unwrap_or(&task.cli).to_string();
+    let settings = crate::load_settings_inner();
+    let agent_paths: Vec<String> = settings
+        .agents
+        .iter()
+        .find(|a| a.id == effective_cli)
+        .map(|a| a.sandbox_allowed_paths.clone())
+        .unwrap_or_default();
+    render_profile_with(task, proxy_port, &effective_cli, &agent_paths, mode, &control_plane_paths())
+}
+
+pub(crate) fn render_profile_with(
+    task: &Task,
+    proxy_port: u16,
+    effective_cli: &str,
+    agent_paths: &[String],
+    mode: SandboxMode,
+    control: &ControlPlanePaths,
+) -> Result<String> {
     // MONITORING: allow everything but ask the kernel to REPORT every
     // operation (so the path watcher can log it), while still forcing
     // all network through the logging proxy. The would-block decision is
-    // computed app-side (MonitorPolicy), not by the kernel.
+    // computed app-side (MonitorPolicy), not by the kernel. Monitor's
+    // contract is observe-never-block, so the control-plane denies below
+    // deliberately do NOT apply: a monitored agent reaches the socket by
+    // design, and its token read shows up in the file-op log.
     if mode == SandboxMode::Monitor {
-        return Ok(render_monitor_profile(proxy_port, agent_override.unwrap_or(&task.cli)));
+        return Ok(render_monitor_profile(proxy_port, effective_cli));
     }
     let home = dirs::home_dir()
         .ok_or_else(|| anyhow!("no home dir"))?
@@ -977,19 +1028,12 @@ pub fn render_profile(task: &Task, proxy_port: u16, agent_override: Option<&str>
     // into the allow-list whenever that agent's CLI is launched in this
     // task. The user CANNOT remove them per-task — to drop an
     // entry they have to edit the agent (which affects every task
-    // using that agent). settings_load is best-effort: if the file is
-    // missing or corrupt, the registry falls back to seeded defaults via
-    // crate::load_settings_inner, which still returns the three built-ins.
+    // using that agent). Resolved by render_profile from the registry
+    // (best-effort settings load with seeded defaults) and passed in.
     let mut agent_allowed: Vec<String> = Vec::new();
     let mut agent_allowed_regexes: Vec<String> = Vec::new();
-    let settings = crate::load_settings_inner();
-    // Use the tab-specific agent override if the caller passed one
-    // (multi-CLI tasks); fall back to the task's primary CLI.
-    let effective_cli = agent_override.unwrap_or(&task.cli);
-    if let Some(a) = settings.agents.iter().find(|a| a.id == effective_cli) {
-        for p in &a.sandbox_allowed_paths {
-            split_regex(p, &mut agent_allowed, &mut agent_allowed_regexes);
-        }
+    for p in agent_paths {
+        split_regex(p, &mut agent_allowed, &mut agent_allowed_regexes);
     }
     dedupe(&mut agent_allowed);
     dedupe(&mut agent_allowed_regexes);
@@ -1169,6 +1213,38 @@ pub fn render_profile(task: &Task, proxy_port: u16, agent_override: Option<&str>
     // allow-list. Anything not carved out above is denied by the
     // header's `(deny default)` — including metadata/existence — so
     // there is nothing to "re-open" and nothing to back-stop.
+    //
+    // ONE exception, and it is load-bearing (docs/plans/cli.md,
+    // Security): the CLI control plane. Default-denied is NOT
+    // guaranteed-denied - the allow-list above is user-, repo-, and
+    // agent-extensible, so one broad ancestor entry (~, ~/Library,
+    // ~/Library/Application Support) silently places the CLI token and
+    // projects.json/tasks/ under an allowed subpath, and a caged agent
+    // holding the token has escaped the sandbox. SBPL is last-match-wins,
+    // so these MUST stay the FINAL filesystem rules of both enforcing
+    // branches - a deny placed before the allows would be silently
+    // overridden. The write deny also closes the rename/re-bind MITM on
+    // the socket path. Verified behaviorally in tests (a textual check
+    // cannot catch a rule rendered in a position where last-match-wins
+    // makes it inert).
+    if let Some(dd) = &control.data_dir {
+        out.push_str("\n;; --- Termic control plane: data dir (CLI token, projects.json,\n");
+        out.push_str(";;     tasks/) is NEVER accessible to caged agents. FINAL filesystem\n");
+        out.push_str(";;     rules; last-match-wins beats any ancestor allow above. ---\n");
+        out.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", sbpl_escape(dd)));
+        out.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", sbpl_escape(dd)));
+    }
+
+    // Control-plane socket deny, emitted per-branch below: it must be the
+    // FINAL network rule AFTER every allow that could match (the broad
+    // unix-socket allow, EnforceFs's `(allow network*)`, and the agy
+    // special case's blanket outbound allow).
+    let socket_deny = control.socket.as_ref().map(|sock| {
+        format!(
+            ";; --- Termic control plane: caged agents get NO CLI surface.\n;;     FINAL network rule; last-match-wins beats the allows above. ---\n(deny network-outbound (remote unix-socket (path-literal \"{}\")))\n",
+            sbpl_escape(sock)
+        )
+    });
 
     if mode == SandboxMode::EnforceFs {
         // FILESYSTEM-ONLY ENFORCE: the file cage above is identical to
@@ -1179,6 +1255,13 @@ pub fn render_profile(task: &Task, proxy_port: u16, agent_override: Option<&str>
         // leave egress to the user's own controls.
         out.push_str("\n;; --- Network: UNRESTRICTED (filesystem-only enforce) ---\n");
         out.push_str("(allow network*)\n");
+        // The socket deny applies in EnforceFs too: the network sandbox
+        // is off here, so without it the control socket is reachable
+        // from inside the FS cage.
+        if let Some(deny) = &socket_deny {
+            out.push('\n');
+            out.push_str(deny);
+        }
         return Ok(out);
     }
 
@@ -1192,10 +1275,16 @@ pub fn render_profile(task: &Task, proxy_port: u16, agent_override: Option<&str>
     out.push_str("(allow network-bind     (local  ip \"localhost:*\"))\n");
     out.push_str("(allow network-inbound  (local  ip \"localhost:*\"))\n");
 
-    let agent = agent_override.unwrap_or(&task.cli);
-    if agent == "agy" {
+    if effective_cli == "agy" {
         out.push_str("\n;; --- Antigravity: allow direct outbound connections to Google APIs ---\n");
         out.push_str("(allow network-outbound)\n");
+    }
+
+    // MUST stay last: after the broad unix-socket allow and the agy
+    // blanket outbound allow above.
+    if let Some(deny) = &socket_deny {
+        out.push('\n');
+        out.push_str(deny);
     }
 
     Ok(out)
@@ -2474,5 +2563,293 @@ mod tests {
             "enforce must pin outbound to the loopback proxy port");
         assert!(!profile.contains("\n(allow network*)"),
             "enforce must NOT blanket-allow network");
+    }
+
+    // ─── Control-plane containment (BEHAVIORAL) ──────────────────────────
+    //
+    // docs/plans/cli.md, Testing: a textual profile check cannot catch a
+    // deny rendered where last-match-wins makes it inert, nor an allow-
+    // listed ANCESTOR re-exposing a path whose literal never appears in
+    // the list. So these run REAL `sandbox-exec` and observe the outcome.
+    // Only ABSENCE is asserted textually (the token secret never appears);
+    // reachability is proven by running connect()/open() in the cage.
+
+    use crate::{SandboxMode, Task};
+    use std::os::unix::net::UnixListener;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// macOS + sandbox-exec + the toolchain-free binaries the in-cage
+    /// probes need. Deliberately NOT /usr/bin/python3 or /usr/bin/git:
+    /// those are xcrun shims that dlopen the Xcode/CLT toolchain, which
+    /// the FS cage blocks (the whole point). `/bin/cat` reads a file,
+    /// `/usr/bin/nc -U` connects a unix socket; both are plain Mach-O.
+    fn cage_available() -> bool {
+        available()
+            && Path::new("/bin/cat").exists()
+            && Path::new("/usr/bin/nc").exists()
+    }
+
+    /// A hostile fixture: a canonical temp tree standing in for `~/Library`,
+    /// with the app data dir (token, socket, projects.json) nested inside
+    /// it, plus a sibling file to serve as the positive control.
+    struct Fixture {
+        tmp: tempfile::TempDir,
+        ancestor: String,      // the ~/Library stand-in we allow-list
+        data_dir: String,      // <ancestor>/Application Support/termic
+        token_path: String,
+        socket_path: String,
+        control_file: String,  // <ancestor>/allowed.txt (readable proof)
+        control_socket: String, // a peer socket, NOT the control plane
+        secret: String,
+    }
+
+    fn fixture() -> Fixture {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize: seatbelt evaluates canonical paths, and macOS
+        // TMPDIR is /var/folders -> /private/var/folders. Everything below
+        // must therefore be canonical to match, and the allow-list entries
+        // must be too (subst_path does not canonicalize user paths).
+        let root = tmp.path().canonicalize().unwrap();
+        // Short nesting: the macOS TMPDIR prefix is already ~55 chars and
+        // the socket path must stay under the 104-byte sun_path limit. The
+        // containment property only needs data_dir nested UNDER the
+        // allow-listed ancestor; `lib`/`d` stand in for the real
+        // `~/Library` / `Application Support/termic` layout.
+        let ancestor = root.join("lib");
+        let data_dir = ancestor.join("d");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let secret = "S3CRET-cli-token-do-not-leak".to_string();
+        let token_path = data_dir.join(termic_proto::TOKEN_FILE);
+        std::fs::write(&token_path, &secret).unwrap();
+        let control_file = ancestor.join("allowed.txt");
+        std::fs::write(&control_file, "readable proof").unwrap();
+        // A live control-plane socket + an unrelated peer socket.
+        let socket_path = data_dir.join(termic_proto::SOCKET_FILE);
+        let _sock = UnixListener::bind(&socket_path).unwrap();
+        let control_socket = root.join("peer.sock");
+        let _peer = UnixListener::bind(&control_socket).unwrap();
+        // Leak the listeners for the test's lifetime (dropping would unlink
+        // the socket files). The TempDir cleans everything on drop.
+        std::mem::forget(_sock);
+        std::mem::forget(_peer);
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        Fixture {
+            tmp,
+            ancestor: s(ancestor),
+            data_dir: s(data_dir.clone()),
+            token_path: s(token_path),
+            socket_path: s(socket_path),
+            control_file: s(control_file),
+            control_socket: s(control_socket),
+            secret,
+        }
+    }
+
+    /// Render a hostile ENFORCING profile: `~/Library` is allow-listed
+    /// through BOTH render_profile seams at once - the task list (where
+    /// live_sandbox_lists deposits the global, task, project.json and
+    /// .termic.yaml layers, all concatenated) and the agent-registry list
+    /// (agent_sandbox_add_allowed_path). That covers every one of the four
+    /// unioned extension layers the spec names. Writes the profile to a
+    /// temp .sb and returns its path.
+    fn hostile_profile(fx: &Fixture, mode: SandboxMode) -> PathBuf {
+        let task = Task {
+            cli: "claude".into(),
+            path: format!("{}/worktree", fx.ancestor),
+            base_branch: "main".into(),
+            // The task allow-list layer (global + task + project layers all
+            // land here at spawn) allow-lists the ancestor as a subpath.
+            sandbox_rw_paths: vec![fx.ancestor.clone()],
+            ..Default::default()
+        };
+        // The agent-registry layer ALSO allow-lists it, as a subpath and a
+        // broad regex, exercising both emit forms.
+        let agent_paths = vec![
+            fx.ancestor.clone(),
+            format!("regex:^{}(/.*)?$", regex::escape(&fx.ancestor)),
+        ];
+        let control = ControlPlanePaths {
+            data_dir: Some(fx.data_dir.clone()),
+            socket: Some(fx.socket_path.clone()),
+        };
+        // A valid loopback proxy port: Enforce emits (remote ip
+        // "localhost:<port>"), which sandbox-exec rejects if it is 0.
+        // EnforceFs ignores the port (no proxy).
+        let profile =
+            render_profile_with(&task, 51999, "claude", &agent_paths, mode, &control).unwrap();
+        // Sanity: the ancestor really is allow-listed (so a pass proves the
+        // deny won, not that the path was simply never granted).
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", fx.ancestor)),
+            "fixture must allow-list the ancestor"
+        );
+        // Write the profile INSIDE this fixture's own TempDir, never a
+        // shared temp_dir()/<pid>-<mode>.sb: each test builds its own
+        // Fixture, so a per-fixture path can't be create/truncate/deleted
+        // out from under a parallel libtest thread (that race could make a
+        // security test spuriously report a containment breach). The
+        // TempDir cleans it up on drop, so no manual removal is needed.
+        let out = fx.tmp.path().join(format!("profile-{mode:?}.sb"));
+        std::fs::write(&out, profile).unwrap();
+        out
+    }
+
+    /// `/bin/cat <path>` inside the cage.
+    fn caged_cat(profile: &Path, path: &str) -> std::process::Output {
+        Command::new("/usr/bin/sandbox-exec")
+            .args(["-f".as_ref(), profile.as_os_str(), "/bin/cat".as_ref(), path.as_ref()])
+            .output()
+            .expect("spawn sandbox-exec cat")
+    }
+
+    /// `/usr/bin/nc -U -w1 <sock> </dev/null` inside the cage: exit 0 on a
+    /// successful connect, non-zero when seatbelt refuses it.
+    fn caged_connect(profile: &Path, sock: &str) -> std::process::Output {
+        use std::process::Stdio;
+        Command::new("/usr/bin/sandbox-exec")
+            .args([
+                "-f".as_ref(),
+                profile.as_os_str(),
+                "/usr/bin/nc".as_ref(),
+                "-U".as_ref(),
+                "-w1".as_ref(),
+                sock.as_ref(),
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn sandbox-exec nc")
+    }
+
+    #[test]
+    fn caged_agent_cannot_read_the_cli_token_even_with_library_allowlisted() {
+        if !cage_available() {
+            return;
+        }
+        let fx = fixture();
+        for mode in [SandboxMode::Enforce, SandboxMode::EnforceFs] {
+            let profile = hostile_profile(&fx, mode);
+
+            // Positive control: a sibling file under the SAME allow-listed
+            // ancestor IS readable, proving the allow-list is live and the
+            // final data-dir deny is what blocks the token.
+            let ok = caged_cat(&profile, &fx.control_file);
+            assert!(
+                ok.status.success(),
+                "{mode:?}: control file under the allow-listed ancestor should be readable; stderr={}",
+                String::from_utf8_lossy(&ok.stderr)
+            );
+
+            // The token read must be refused.
+            let denied = caged_cat(&profile, &fx.token_path);
+            assert!(
+                !denied.status.success(),
+                "{mode:?}: reading the CLI token must be denied inside the cage"
+            );
+            // Absence assertion (the only kind the spec permits here): the
+            // secret must not have leaked to stdout.
+            assert!(
+                !String::from_utf8_lossy(&denied.stdout).contains(&fx.secret),
+                "{mode:?}: token secret leaked out of the cage"
+            );
+        }
+    }
+
+    #[test]
+    fn caged_agent_cannot_connect_to_the_control_socket() {
+        if !cage_available() {
+            return;
+        }
+        let fx = fixture();
+        for mode in [SandboxMode::Enforce, SandboxMode::EnforceFs] {
+            let profile = hostile_profile(&fx, mode);
+
+            // Positive control: an unrelated peer unix socket IS reachable,
+            // proving unix sockets are allowed in general and only the
+            // control-plane path is denied (last-match-wins, after the
+            // broad unix-socket allow / EnforceFs's blanket allow).
+            let ok = caged_connect(&profile, &fx.control_socket);
+            assert!(
+                ok.status.success(),
+                "{mode:?}: a non-control unix socket should be connectable; stderr={}",
+                String::from_utf8_lossy(&ok.stderr)
+            );
+
+            let denied = caged_connect(&profile, &fx.socket_path);
+            assert!(
+                !denied.status.success(),
+                "{mode:?}: connect() to the control socket must be denied inside the cage"
+            );
+        }
+    }
+
+    #[test]
+    fn caged_spawn_env_carries_no_token() {
+        if !cage_available() {
+            return;
+        }
+        let fx = fixture();
+        // Guards the app-env invariant: pty_spawn copies the whole app env
+        // into every caged child, so the token must live ONLY in the
+        // server's memory, never in the process environment. We inherit
+        // THIS process's env (the app-process stand-in) into the caged
+        // `env` dump; the freshly-written token must not appear, because
+        // nothing ever exported it. Absence-only assertion, per spec.
+        let profile = hostile_profile(&fx, SandboxMode::Enforce);
+        let out = Command::new("/usr/bin/sandbox-exec")
+            .arg("-f")
+            .arg(&profile)
+            .arg("/usr/bin/env")
+            .output()
+            .expect("spawn env in cage");
+        let env_dump = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !env_dump.contains(&fx.secret),
+            "the CLI token must never reach a caged spawn's environment"
+        );
+        // And no token-shaped variable name exists either.
+        for line in env_dump.lines() {
+            let key = line.split('=').next().unwrap_or("");
+            assert!(
+                !(key.contains("TERMIC") && key.contains("TOKEN")),
+                "a token-shaped env var reached the cage: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn socket_deny_is_the_final_network_rule_in_both_enforcing_modes() {
+        // Structural backstop to the behavioral tests: the deny for the
+        // control socket must textually FOLLOW every network allow in both
+        // enforcing branches (last-match-wins). Not a substitute for the
+        // behavioral checks - a complement that pins the ordering.
+        let fx = fixture();
+        let control = ControlPlanePaths {
+            data_dir: Some(fx.data_dir.clone()),
+            socket: Some(fx.socket_path.clone()),
+        };
+        for (mode, agent) in
+            [(SandboxMode::Enforce, "claude"), (SandboxMode::EnforceFs, "claude"), (SandboxMode::Enforce, "agy")]
+        {
+            let task = Task { cli: agent.into(), ..Default::default() };
+            let profile =
+                render_profile_with(&task, 5, agent, &[], mode, &control).unwrap();
+            let deny_tok = format!("(path-literal \"{}\")", sbpl_escape(&fx.socket_path));
+            let deny_at = profile.find(&deny_tok).expect("socket deny must be present");
+            // No network ALLOW may appear after the deny.
+            let after = &profile[deny_at + deny_tok.len()..];
+            assert!(
+                !after.contains("(allow network"),
+                "{mode:?}/{agent}: a network allow follows the socket deny (would make it inert)"
+            );
+            // And the data-dir read deny is the final filesystem rule: no
+            // file allow after it.
+            let dd_deny = format!("(deny file-read* (subpath \"{}\"))", sbpl_escape(&fx.data_dir));
+            let dd_at = profile.find(&dd_deny).expect("data-dir read deny must be present");
+            assert!(
+                !profile[dd_at + dd_deny.len()..].contains("(allow file-"),
+                "{mode:?}/{agent}: a file allow follows the data-dir deny"
+            );
+        }
     }
 }

@@ -114,6 +114,15 @@ run_no_pill: ## Run dev with the DEV pill hidden (VITE_HIDE_DEV_PILL=1). For cle
 	@VITE_HIDE_DEV_PILL=1 node scripts/dev.mjs
 .PHONY: run_no_pill
 
+cli-dev: ## Build the debug termic-cli and symlink it as `termic-dev` in ~/.local/bin (talks to the dev app; coexists with a prod `termic`).
+	@cd src-tauri && TERMIC_APP_VERSION="$$(node -p "require('$(CURDIR)/package.json').version")" cargo build -p termic-cli
+	@mkdir -p "$$HOME/.local/bin"
+	@ln -sf "$(CURDIR)/src-tauri/target/debug/termic-cli" "$$HOME/.local/bin/termic-dev"
+	@echo "✓ termic-dev -> src-tauri/target/debug/termic-cli"
+	@case ":$$PATH:" in *":$$HOME/.local/bin:"*) echo "  ~/.local/bin is on your PATH; run: termic-dev list";; \
+	  *) echo "  note: add ~/.local/bin to your PATH, then run: termic-dev list";; esac
+.PHONY: cli-dev
+
 check: ## Type-check the Rust backend (fast — no codegen, no link).
 	@if command -v cargo >/dev/null 2>&1; then \
 	    cd src-tauri && cargo check; \

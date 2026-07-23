@@ -4,8 +4,8 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TextareaHTMLAttributes } from "react";
-import { settingsLoad, settingsSave, ensureNotifyPermission, previewCompletionSound } from "@/lib/ipc";
-import type { Settings } from "@/lib/types";
+import { settingsLoad, settingsSave, ensureNotifyPermission, previewCompletionSound, cliInstallSymlink, cliInstallStatus } from "@/lib/ipc";
+import type { Settings, CliInstallStatus } from "@/lib/types";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -43,6 +43,15 @@ export function GeneralSection() {
   // Pre-create base fetch (GH #79). Backend Settings field; saved immediately
   // on toggle. Absent in settings = on.
   const [fetchBeforeCreate, setFetchBeforeCreate] = useState(true);
+  // "Enable CLI": backend Settings field, saved immediately on toggle.
+  // Absent = off. Gates every authenticated verb of the `termic` control
+  // socket (docs/plans/cli.md).
+  const [cliEnabled, setCliEnabled] = useState(false);
+  // Install state (path / command name / PATH-awareness), plus the
+  // in-flight flag + last result line of an install action.
+  const [cliInstall, setCliInstall] = useState<CliInstallStatus | null>(null);
+  const [cliInstalling, setCliInstalling] = useState(false);
+  const [cliInstallMsg, setCliInstallMsg] = useState<string | null>(null);
 
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
@@ -106,8 +115,50 @@ export function GeneralSection() {
       setSymlinkPaths(links);
       setSymlinkPathsOriginal(links);
       setFetchBeforeCreate(s.fetch_before_create !== false);
+      setCliEnabled(s.cli_enabled === true);
     }).catch(() => {});
+    cliInstallStatus().then(setCliInstall).catch(() => {});
   }, []);
+
+  async function saveCliEnabled(v: boolean) {
+    // Ignore clicks until settings have loaded, so the toggle never flips
+    // visually without persisting.
+    if (!settings) return;
+    setCliEnabled(v);
+    const next: Settings = { ...settings, cli_enabled: v };
+    setSettings(next);
+    try {
+      await settingsSave(next);
+    } catch {
+      // Persist failed: revert rather than show a state we did not save.
+      setCliEnabled(!v);
+      setSettings(settings);
+      return;
+    }
+    // Enabling should hand you a working command with no extra step: do a
+    // no-prompt install into ~/.local/bin, then reflect whether it landed
+    // on PATH. Only auto-install when not already installed so re-enabling
+    // never resurrects a link the user removed on purpose.
+    if (v) {
+      const cur = await cliInstallStatus().catch(() => null);
+      if (!cur?.path) await installCli(false);
+      else setCliInstall(cur);
+    }
+  }
+
+  async function installCli(system: boolean) {
+    setCliInstalling(true);
+    setCliInstallMsg(null);
+    try {
+      const msg = await cliInstallSymlink(system);
+      setCliInstallMsg(msg);
+      setCliInstall(await cliInstallStatus());
+    } catch (e) {
+      setCliInstallMsg(String(e));
+    } finally {
+      setCliInstalling(false);
+    }
+  }
 
   // Persist the fetch-before-create toggle immediately (backend Settings),
   // merging into the cached object so we don't clobber other fields.
@@ -220,6 +271,60 @@ export function GeneralSection() {
           value={fetchBeforeCreate}
           onChange={saveFetchBeforeCreate}
         />
+      </div>
+
+      {/* termic CLI control plane. Off by default: the socket always binds
+          and answers hello, but every verb stays refused until this is on.
+          Enabling auto-installs the command (no prompt) into ~/.local/bin;
+          the button upgrades it to a system-wide /usr/local/bin install. */}
+      <div className="border-t border-[var(--color-border-soft)] pt-6">
+        <Toggle
+          label="Enable CLI"
+          hint="Let the termic command control this app from any shell (list tasks, check a task, focus the window). Off by default. Agents in an enforced sandbox never get access. Turning this off refuses every command immediately (the command stays installed)."
+          value={cliEnabled}
+          onChange={saveCliEnabled}
+        />
+        <div className={cn("mt-3", !cliEnabled && "pointer-events-none opacity-50 select-none")}>
+          {cliInstall?.path ? (
+            <p className="text-[12.5px] text-[var(--color-fg-dim)]">
+              <code className="font-mono">{cliInstall.name}</code> is installed at{" "}
+              <code className="font-mono">{cliInstall.path}</code>.{" "}
+              {cliInstall.on_path
+                ? <>Run <code className="font-mono">{cliInstall.name} list</code> from any shell.</>
+                : <span className="text-[var(--color-warn,inherit)]">That location is not on your PATH, so use Install system-wide below, or add <code className="font-mono">~/.local/bin</code> to your PATH.</span>}
+            </p>
+          ) : (
+            <p className="text-[12.5px] text-[var(--color-fg-dim)]">
+              Enabling installs <code className="font-mono">{cliInstall?.name ?? "termic"}</code> into <code className="font-mono">~/.local/bin</code> automatically.
+            </p>
+          )}
+          {/* The system-wide install is only a REQUIRED step when the
+              auto-install did not land on PATH. When it did (the common
+              case), keep it as a de-emphasized optional action so it does
+              not read as "you still need to do this". */}
+          {cliInstall?.path && cliInstall.on_path ? (
+            <button
+              type="button"
+              disabled={cliInstalling}
+              onClick={() => installCli(true)}
+              className="mt-2 text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)] disabled:opacity-50"
+            >
+              {cliInstalling ? "Installing…" : "Install system-wide instead (optional, uses /usr/local/bin)"}
+            </button>
+          ) : (
+            <div className="mt-2 flex items-center gap-2">
+              <Button variant="secondary" size="md" disabled={cliInstalling} onClick={() => installCli(true)}>
+                {cliInstalling ? "Installing…" : "Install system-wide"}
+              </Button>
+              <span className="text-[12px] text-[var(--color-fg-faint)]">
+                symlinks into <code className="font-mono">/usr/local/bin</code> (asks for your password)
+              </span>
+            </div>
+          )}
+          {cliInstallMsg && (
+            <p className="mt-2 text-[12px] text-[var(--color-fg-faint)]">{cliInstallMsg}</p>
+          )}
+        </div>
       </div>
 
       <div className="border-t border-[var(--color-border-soft)] pt-6">

@@ -1,3 +1,10 @@
+# Workspace root. The two CLI crates live BESIDE src-tauri (repo root)
+# per docs/plans/cli.md; keeping the workspace rooted here keeps
+# Cargo.lock and target/ where every script, CI cache key, and Makefile
+# path already expects them.
+[workspace]
+members = ["../termic-proto", "../termic-cli"]
+
 [package]
 name = "termic"
 version = "0.23.4"
@@ -54,6 +61,9 @@ base64 = "0.22"
 # it direct doesn't change resolution.
 percent-encoding = "2"
 tauri-plugin-clipboard-manager = "2.3.2"
+# Wire types + framing for the CLI control socket (cli_server.rs). The
+# same crate termic-cli links, so server and client cannot drift.
+termic-proto = { path = "../termic-proto" }
 
 # macOS-only: raw Objective-C bridge used to round the window's content
 # layer on macOS Tahoe (26+) so the WKWebView corners match the system's
