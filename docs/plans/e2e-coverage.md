@@ -48,6 +48,9 @@ until `make e2e` is green and this file reflects it.
 | ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
 | ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `file-tree.e2e.ts` |
 | ✅ Dialogs/palettes | Shortcuts help, prompt palette, broadcast open (and close) | `dialogs-open.e2e.ts` |
+| ✅ More dialogs | Changelog, welcome, race dialog open | `dialogs2.e2e.ts` |
+| ✅ Preferences | Sandbox default, editor font, terminal font setters | `prefs.e2e.ts` |
+| ✅ Agent extras | YOLO toggle; aux (bottom) terminal | `agent-extras.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
