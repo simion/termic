@@ -47,6 +47,25 @@ describe("project add/remove", () => {
     );
   });
 
+  it("renames the project", async () => {
+    const id = projectId!;
+    await browser.execute(async (i) => {
+      await window.__termic!.ipc.projectRename(i, "e2e-renamed-proj");
+      await window.__termic!.useApp.getState().loadAll();
+    }, id);
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (i) =>
+            window.__termic!.useApp
+              .getState()
+              .projects.find((p: any) => p.id === i)?.name === "e2e-renamed-proj",
+          id,
+        ),
+      { timeout: 8_000, timeoutMsg: "project name never updated" },
+    );
+  });
+
   it("removes the project", async () => {
     const id = projectId!;
     await browser.execute(async (i) => {

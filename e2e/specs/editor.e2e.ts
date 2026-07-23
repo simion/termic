@@ -96,4 +96,26 @@ describe("editor open", () => {
       { timeout: 8_000, timeoutMsg: "markdown preview never rendered" },
     );
   });
+
+  it("shows source and preview together in Split view", async () => {
+    await browser.execute(() => {
+      const btn = [...document.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Split",
+      );
+      if (!btn) throw new Error("Split toggle not found");
+      (btn as HTMLElement).click();
+    });
+    // Split shows both the CodeMirror source and the rendered markdown.
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          () =>
+            !!document.querySelector(".cm-content") &&
+            [...document.querySelectorAll("h1")].some((h) =>
+              h.textContent?.includes("fixture"),
+            ),
+        ),
+      { timeout: 8_000, timeoutMsg: "split view did not show both panes" },
+    );
+  });
 });

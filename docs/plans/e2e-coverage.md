@@ -51,6 +51,10 @@ until `make e2e` is green and this file reflects it.
 | ✅ More dialogs | Changelog, welcome, race dialog open | `dialogs2.e2e.ts` |
 | ✅ Preferences | Sandbox default, editor font, terminal font setters | `prefs.e2e.ts` |
 | ✅ Agent extras | YOLO toggle; aux (bottom) terminal | `agent-extras.e2e.ts` |
+| ✅ Worktree task | Create a task on its own worktree branch (not repo-root) | `worktree-task.e2e.ts` |
+| ✅ Project rename | Rename a project (add covered too) | `project.e2e.ts` |
+| ✅ Editor split | Split view shows source + rendered preview together | `editor.e2e.ts` |
+| ✅ Repo config | Save a `.termic.yaml` field and read it back | `repo-config.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -58,7 +62,6 @@ until `make e2e` is green and this file reflects it.
 ## Roadmap (todo)
 
 ### Task lifecycle & creation
-- ⬜ P1 Create a **worktree** task (not repo-root); verify the worktree exists, and archive/delete removes it.
 - ⬜ P2 Import an existing worktree; quick-create flow.
 
 ### Agents & terminal
@@ -68,7 +71,7 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Second agent in one task; YOLO toggle; AuxTerminal (bottom terminal).
 
 ### Editor
-- ⬜ P2 Editor split view; replace-in-file.
+- ⬜ P2 Replace-in-file; language highlighting.
 - ⬜ P2 Image/PDF preview; language highlighting.
 
 ### Git & diff
@@ -88,8 +91,7 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Sidebar toggle; right-panel toggle.
 
 ### Projects
-- ⬜ P1 Project rename / reorder / group (add & remove covered).
-- ⬜ P2 Discover repos (scan folder); multi-member project; repo config.
+- ⬜ P2 Project reorder / group; discover repos (scan folder); multi-member.
 
 ### Settings (broader)
 - ⬜ P1 **Sandbox** settings (global default; per-task enable → SIGKILLs live PTYs).
