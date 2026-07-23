@@ -37,4 +37,7 @@ jobs:
           workspaces: src-tauri
       - name: Run unit tests
         working-directory: src-tauri
-        run: cargo test --lib
+        # --workspace so the CLI crates (termic-proto wire round-trips,
+        # termic-cli exit-code + output goldens) run alongside the app's
+        # lib tests. The behavioral sandbox tests self-skip off macOS.
+        run: cargo test --workspace --lib

@@ -21,3 +21,7 @@ notarytool-history.plist
 # someone else's machine + breaks reproducible builds). Build script
 # regenerates on each tauri:build via the recipe.
 resources/tinyproxy
+
+# termic-cli sidecar staging (built by src-tauri/build.rs / scripts/build-cli.mjs
+# into binaries/termic-cli-<triple>; arch-specific, never committed).
+/binaries/
