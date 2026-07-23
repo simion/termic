@@ -48,6 +48,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Editor search | Mod-f opens the CodeMirror search panel | `editor.e2e.ts` |
 | ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
 | ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `file-tree.e2e.ts` |
+| ✅ Dialogs/palettes | Shortcuts help, prompt palette, broadcast open (and close) | `dialogs-open.e2e.ts` |
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `project.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent-settings.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run-config.e2e.ts` |
@@ -93,11 +94,19 @@ until `make e2e` is green and this file reflects it.
 - ⬜ P2 Fonts (editor/terminal); prompts management; keybindings.
 
 ### Dialogs & palettes
-- ⬜ P2 Prompt palette; Broadcast (send to all agents); Race; Shortcuts help; Changelog/What's-new; Welcome (first run).
+- ⬜ P2 Race; Changelog/What's-new; Welcome (first run). (Prompt palette, broadcast, shortcuts help covered.)
 
 ### Notifications & cross-cutting
 - ⬜ P1 Desktop notification + completion sound on agent done.
 - ⬜ P2 Key global shortcuts (`useShortcuts`); window-state persistence; update UI (mock).
+
+## Environment-limited (not robustly testable here)
+
+These are intentionally NOT covered by written specs — asserting them would be flaky or impossible in the occluded-window / embedded-WebDriver setup. Left as manual checks.
+
+- **OS desktop notification delivery + completion sound** on agent done — no in-webview signal to assert; the store-side attention/unread IS covered (`agent-attention.e2e.ts`).
+- **Real keystrokes into xterm / CodeMirror** (contenteditable + WebGL canvas) — WebDriver key events don't route there reliably. Covered by proxy: PTY round-trips via `ipc.ptyWrite` (`task-spawn`, `message-queue`) and editor edits via the CodeMirror view API (`editor-save`).
+- **Commit-and-push / setup script / resume-closed-tab** — need mock-remote / `.termic.yaml` / multi-agent-tab infra with careful fixture cleanup; deferred, tracked above.
 
 ## Known harness gotchas (read before writing a spec)
 
