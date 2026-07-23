@@ -5,7 +5,7 @@ import {
   archiveTask,
   clickByText,
   waitForTextGone,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P0: the Git panel must reflect real working-tree changes. Modifies README on
@@ -58,7 +58,7 @@ describe("git dirty tree", () => {
       { timeout: 10_000, timeoutMsg: "git status never reported README changed" },
     );
 
-    await browser.saveScreenshot(artifact("git-dirty.png"));
+    await snap("git-dirty.png");
   });
 
   it("opens a diff tab for the changed file", async () => {

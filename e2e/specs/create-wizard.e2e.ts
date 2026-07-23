@@ -2,7 +2,7 @@ import {
   waitForAppShell,
   requireTermicApi,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P0: create a task through the real NewTaskDialog wizard (the primary user
@@ -103,6 +103,6 @@ describe("create task wizard", () => {
           .tasks.find((t: any) => t.name === "e2e-wizard" && !t.archived)?.id,
     );
 
-    await browser.saveScreenshot(artifact("create-wizard.png"));
+    await snap("create-wizard.png");
   });
 });

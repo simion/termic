@@ -5,7 +5,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: the Setup script. Configure a setup command in the repo config, launch
@@ -59,6 +59,6 @@ describe("setup script", () => {
         }, taskId),
       { timeout: 15_000, interval: 250, timeoutMsg: "setup tab never spawned" },
     );
-    await browser.saveScreenshot(artifact("setup-script.png"));
+    await snap("setup-script.png");
   });
 });

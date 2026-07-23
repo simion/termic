@@ -1,4 +1,4 @@
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P1: the Run commands manager (GH #124). Guards that it opens for a project
 // and closes. (Persisting a command edits projects.json; opening + rendering is
@@ -33,6 +33,6 @@ describe("run config", () => {
         ),
       { timeout: 8_000, timeoutMsg: "run commands manager never opened" },
     );
-    await browser.saveScreenshot(artifact("run-config.png"));
+    await snap("run-config.png");
   });
 });

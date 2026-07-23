@@ -6,7 +6,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P2: the editor handles non-markdown code files (CodeMirror language support).
@@ -72,6 +72,6 @@ describe("code editor", () => {
         ),
       { timeout: 8_000, timeoutMsg: "no syntax-highlight token spans" },
     );
-    await browser.saveScreenshot(artifact("code-editor.png"));
+    await snap("code-editor.png");
   });
 });

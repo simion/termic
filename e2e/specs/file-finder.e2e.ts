@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: the file finder (⌘P). Cases: opens and lists the repo's files; selecting
@@ -55,6 +55,6 @@ describe("file finder", () => {
         ),
       { timeout: 8_000, timeoutMsg: "selecting a file did not open an editor tab" },
     );
-    await browser.saveScreenshot(artifact("file-finder.png"));
+    await snap("file-finder.png");
   });
 });

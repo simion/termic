@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: splitting a task into multiple panes (Sublime-style). Cases: no split to
@@ -76,6 +76,6 @@ describe("split pane", () => {
       timeout: 8_000,
       timeoutMsg: "split below did not produce 3 panes",
     });
-    await browser.saveScreenshot(artifact("split-pane.png"));
+    await snap("split-pane.png");
   });
 });

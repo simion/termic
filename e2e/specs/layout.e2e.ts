@@ -1,4 +1,4 @@
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: layout state. Guards the sidebar width setter (persisted layout pref).
 describe("layout", () => {
@@ -26,6 +26,6 @@ describe("layout", () => {
       timeout: 5_000,
       timeoutMsg: "sidebar width never applied",
     });
-    await browser.saveScreenshot(artifact("layout.png"));
+    await snap("layout.png");
   });
 });

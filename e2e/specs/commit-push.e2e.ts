@@ -7,7 +7,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: commit-and-push. Points the fixture at a throwaway bare remote, commits
@@ -72,6 +72,6 @@ describe("git commit & push", () => {
       `git -C "${bare}" log --oneline main 2>/dev/null || true`,
     ).toString();
     expect(log).toContain("e2e push commit");
-    await browser.saveScreenshot(artifact("commit-push.png"));
+    await snap("commit-push.png");
   });
 });

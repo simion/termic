@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import path from "node:path";
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: creating a WORKTREE task (branch in its own working dir), vs the repo-root
 // tasks the rest of the suite uses. Verifies it lands on its own branch, then
@@ -47,6 +47,6 @@ describe("worktree task", () => {
     // It's a worktree: on its own branch, not the main checkout.
     expect((t as any).branch).toBe(BRANCH);
     expect((t as any).is_main_checkout).not.toBe(true);
-    await browser.saveScreenshot(artifact("worktree-task.png"));
+    await snap("worktree-task.png");
   });
 });

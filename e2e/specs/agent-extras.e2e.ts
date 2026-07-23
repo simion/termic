@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P2: per-task agent extras. Cases: toggling YOLO mode; opening an aux (bottom)
@@ -56,6 +56,6 @@ describe("agent extras", () => {
         ),
       { timeout: 8_000, timeoutMsg: "aux terminal was not added" },
     );
-    await browser.saveScreenshot(artifact("agent-extras.png"));
+    await snap("agent-extras.png");
   });
 });

@@ -6,7 +6,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: the file tree. Guards expanding/collapsing a folder. Creates a throwaway
@@ -60,6 +60,6 @@ describe("file tree", () => {
       async () => (await rowExists("e2e-subdir/note.txt")) === false,
       { timeout: 8_000, timeoutMsg: "collapsing the folder did not hide its child" },
     );
-    await browser.saveScreenshot(artifact("file-tree.png"));
+    await snap("file-tree.png");
   });
 });

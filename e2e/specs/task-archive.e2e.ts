@@ -1,7 +1,7 @@
 import {
   waitForAppShell,
   requireTermicApi,
-  artifact,
+  snap,
 } from "../helpers";
 
 // The task lifecycle's other half: archiving. Guards the archive path (which
@@ -61,6 +61,6 @@ describe("task archive", () => {
     );
     expect(stillActive).toBe(false);
 
-    await browser.saveScreenshot(artifact("task-archive.png"));
+    await snap("task-archive.png");
   });
 });

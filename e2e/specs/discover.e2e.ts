@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: repo discovery (Add Project → Discover). Scans a folder and returns the
 // git repos in it.
@@ -29,6 +29,6 @@ describe("discover repos", () => {
     expect(
       (repos as any[]).some((r) => JSON.stringify(r).includes("sub-repo")),
     ).toBe(true);
-    await browser.saveScreenshot(artifact("discover.png"));
+    await snap("discover.png");
   });
 });

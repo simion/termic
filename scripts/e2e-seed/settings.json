@@ -1,0 +1,383 @@
+{
+  "repos_dir": "",
+  "welcomed": true,
+  "agents": [
+    {
+      "id": "claude",
+      "display_name": "claude",
+      "command": "claude",
+      "args": [],
+      "icon_id": "claude",
+      "color": "#d97757",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [
+          "--dangerously-skip-permissions"
+        ],
+        "runtime_yolo_command": "",
+        "runtime_default_command": "",
+        "resume_args": [
+          "--continue"
+        ],
+        "session_id_args": [
+          "--session-id",
+          "{UUID}"
+        ],
+        "resume_id_args": [
+          "--resume",
+          "{UUID}"
+        ],
+        "name_args": [
+          "--name",
+          "{WORKSPACE_SLUG}"
+        ],
+        "signals": {
+          "busy": [],
+          "idle": [],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "regex:^$HOME/\\.claude(\\.[^/]*|/.*)?$",
+        "$HOME/.config/claude",
+        "$HOME/.local/share/claude",
+        "$HOME/.local/state/claude",
+        "$HOME/Library/Application Support/Claude"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent"
+    },
+    {
+      "id": "codex",
+      "display_name": "codex",
+      "command": "codex",
+      "args": [],
+      "icon_id": "codex",
+      "color": "#16a34a",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [
+          "--dangerously-bypass-approvals-and-sandbox"
+        ],
+        "runtime_yolo_command": "",
+        "runtime_default_command": "",
+        "resume_args": [
+          "resume",
+          "--last"
+        ],
+        "session_id_args": [],
+        "resume_id_args": [],
+        "name_args": [],
+        "signals": {
+          "busy": [],
+          "idle": [],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "$HOME/.codex",
+        "$HOME/.config/codex",
+        "$HOME/.local/share/codex",
+        "$HOME/.local/state/codex",
+        "$HOME/Library/Application Support/Codex"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent"
+    },
+    {
+      "id": "agy",
+      "display_name": "Antigravity",
+      "command": "agy",
+      "args": [],
+      "icon_id": "agy",
+      "color": "#8b5cf6",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [
+          "--dangerously-skip-permissions"
+        ],
+        "runtime_yolo_command": "",
+        "runtime_default_command": "",
+        "resume_args": [
+          "--continue"
+        ],
+        "session_id_args": [],
+        "resume_id_args": [],
+        "name_args": [],
+        "signals": {
+          "busy": [],
+          "idle": [],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "$HOME/.gemini",
+        "$HOME/.antigravity",
+        "$HOME/.agy",
+        "$HOME/.config/antigravity",
+        "$HOME/.config/agy",
+        "$HOME/.local/share/antigravity",
+        "$HOME/.local/state/antigravity",
+        "$HOME/Library/Application Support/Antigravity"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent"
+    },
+    {
+      "id": "copilot",
+      "display_name": "copilot",
+      "command": "copilot",
+      "args": [],
+      "icon_id": "copilot",
+      "color": "#54aeff",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [
+          "--allow-all"
+        ],
+        "runtime_yolo_command": "/yolo on",
+        "runtime_default_command": "/yolo off",
+        "resume_args": [
+          "--continue"
+        ],
+        "session_id_args": [
+          "--session-id",
+          "{UUID}"
+        ],
+        "resume_id_args": [
+          "--session-id",
+          "{UUID}"
+        ],
+        "name_args": [
+          "--name",
+          "{WORKSPACE_SLUG}"
+        ],
+        "signals": {
+          "busy": [],
+          "idle": [],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "$HOME/.copilot",
+        "$HOME/.config/copilot",
+        "$HOME/.local/share/copilot",
+        "$HOME/.local/state/copilot",
+        "$HOME/Library/Application Support/GitHub Copilot"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent"
+    },
+    {
+      "id": "grok",
+      "display_name": "grok",
+      "command": "grok",
+      "args": [],
+      "icon_id": "grok",
+      "color": "#cbd5e1",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [
+          "--always-approve"
+        ],
+        "runtime_yolo_command": "",
+        "runtime_default_command": "",
+        "resume_args": [
+          "--continue"
+        ],
+        "session_id_args": [],
+        "resume_id_args": [],
+        "name_args": [],
+        "signals": {
+          "busy": [],
+          "idle": [],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "$HOME/.grok",
+        "$HOME/.config/grok",
+        "$HOME/.local/share/grok",
+        "$HOME/.local/state/grok",
+        "$HOME/Library/Application Support/Grok"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent"
+    },
+    {
+      "id": "opencode",
+      "display_name": "opencode",
+      "command": "opencode",
+      "args": [],
+      "icon_id": "opencode",
+      "color": "#cfcecd",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [],
+        "runtime_yolo_command": "",
+        "runtime_default_command": "",
+        "resume_args": [
+          "--continue"
+        ],
+        "session_id_args": [],
+        "resume_id_args": [
+          "--session",
+          "{UUID}"
+        ],
+        "name_args": [],
+        "signals": {
+          "busy": [],
+          "idle": [],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "$HOME/.config/opencode",
+        "$HOME/.local/share/opencode",
+        "$HOME/.local/state/opencode",
+        "$HOME/Library/Application Support/opencode"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent",
+      "post_launch_capture": {
+        "command": "opencode session list | grep -m1 '^ses_' | cut -d' ' -f1"
+      }
+    },
+    {
+      "id": "gemini",
+      "display_name": "gemini",
+      "command": "gemini",
+      "args": [],
+      "icon_id": "gemini",
+      "color": "#4c8bf5",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [
+          "--yolo"
+        ],
+        "runtime_yolo_command": "/approval-mode yolo",
+        "runtime_default_command": "/approval-mode default",
+        "resume_args": [
+          "--resume",
+          "latest"
+        ],
+        "session_id_args": [
+          "--session-id",
+          "{UUID}"
+        ],
+        "resume_id_args": [
+          "--resume",
+          "{UUID}"
+        ],
+        "name_args": [],
+        "signals": {
+          "busy": [],
+          "idle": [],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "$HOME/.gemini",
+        "$HOME/.config/gemini",
+        "$HOME/.local/share/gemini",
+        "$HOME/.local/state/gemini",
+        "$HOME/Library/Application Support/Gemini"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent"
+    },
+    {
+      "id": "fakeagent",
+      "display_name": "FakeAgent",
+      "command": "__REPO__/scripts/fake-agent.sh",
+      "args": [],
+      "icon_id": "claude",
+      "color": "#d97757",
+      "builtin": true,
+      "disabled": false,
+      "capabilities": {
+        "yolo_args": [
+          "--dangerously-skip-permissions"
+        ],
+        "runtime_yolo_command": "",
+        "runtime_default_command": "",
+        "resume_args": [
+          "--continue"
+        ],
+        "session_id_args": [
+          "--session-id",
+          "{UUID}"
+        ],
+        "resume_id_args": [
+          "--resume",
+          "{UUID}"
+        ],
+        "name_args": [
+          "--name",
+          "{WORKSPACE_SLUG}"
+        ],
+        "signals": {
+          "busy": [
+            "^\\s*[^A-Za-z0-9\\s✳]"
+          ],
+          "idle": [
+            "^\\s*✳"
+          ],
+          "attention": []
+        },
+        "match_output": false
+      },
+      "env": {},
+      "sandbox_allowed_paths": [
+        "regex:^$HOME/\\.claude(\\.[^/]*|/.*)?$",
+        "$HOME/.config/claude",
+        "$HOME/.local/share/claude",
+        "$HOME/.local/state/claude",
+        "$HOME/Library/Application Support/Claude"
+      ],
+      "sandbox_allowed_hosts": [],
+      "work_done": true,
+      "kind": "agent"
+    }
+  ],
+  "sandbox_default_rw_paths": [],
+  "sandbox_default_allowed_hosts": [],
+  "file_tree_exclude": [],
+  "schema_version": 1,
+  "fetch_before_create": null,
+  "discovery_dismissed": [],
+  "cli_enabled": false,
+  "worktree_symlink_paths": [
+    ".claude",
+    ".gemini",
+    ".codex"
+  ]
+}

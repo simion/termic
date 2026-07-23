@@ -18,6 +18,20 @@ export function artifact(name: string): string {
 }
 
 /**
+ * Save a screenshot for LOCAL debugging only. No-op in CI (`process.env.CI`)
+ * and never throws — screenshots are garnish, not assertions, and a runner has
+ * no display / Screen-Recording permission.
+ */
+export async function snap(name: string): Promise<void> {
+  if (process.env.CI) return;
+  try {
+    await browser.saveScreenshot(artifact(name));
+  } catch {
+    /* no display / permission — ignore */
+  }
+}
+
+/**
  * The stores + ipc handle exposed on `window.__termic` in the e2e binary
  * (main.tsx, gated on VITE_E2E). Lets specs read real app state and drive
  * real IPC instead of scraping the DOM. Typed loosely on purpose — mirror

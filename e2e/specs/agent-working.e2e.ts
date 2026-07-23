@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P0: after a real submit, termic must show the agent as "working". Work
@@ -53,6 +53,6 @@ describe("agent working state", () => {
       { timeout: 10_000, timeoutMsg: "agent never entered the working state" },
     );
 
-    await browser.saveScreenshot(artifact("agent-working.png"));
+    await snap("agent-working.png");
   });
 });

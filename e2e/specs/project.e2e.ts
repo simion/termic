@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -124,6 +124,6 @@ describe("project add/remove", () => {
       { timeout: 8_000, timeoutMsg: "removed project still present" },
     );
     projectId = null;
-    await browser.saveScreenshot(artifact("project.png"));
+    await snap("project.png");
   });
 });

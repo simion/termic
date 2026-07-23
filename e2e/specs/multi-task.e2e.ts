@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // termic's core promise: many parallel agents, each in its own task, all
@@ -61,6 +61,6 @@ describe("multi-task isolation", () => {
     );
     expect(await activeTask()).toBe(a);
 
-    await browser.saveScreenshot(artifact("multi-task.png"));
+    await snap("multi-task.png");
   });
 });

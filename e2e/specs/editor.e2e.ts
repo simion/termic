@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // Editor (CodeMirror 6), open/preview/persist. Cases: single-click opens a
@@ -54,7 +54,7 @@ describe("editor open", () => {
         ),
       { timeout: 10_000, timeoutMsg: "CodeMirror never showed the contents" },
     );
-    await browser.saveScreenshot(artifact("editor.png"));
+    await snap("editor.png");
   });
 
   it("persists the preview tab on double-click", async () => {

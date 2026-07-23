@@ -1,7 +1,7 @@
 import {
   waitForAppShell,
   requireTermicApi,
-  artifact,
+  snap,
 } from "../helpers";
 
 // The single most important flow in termic: create a task in a project and
@@ -94,6 +94,6 @@ describe("task spawn", () => {
       },
     );
 
-    await browser.saveScreenshot(artifact("task-spawn.png"));
+    await snap("task-spawn.png");
   });
 });

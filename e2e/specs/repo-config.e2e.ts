@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import path from "node:path";
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: per-repo config (.termic.yaml). Save a config field and read it back.
 // Git-cleans the written .termic.yaml on teardown.
@@ -34,6 +34,6 @@ describe("repo config", () => {
       return await window.__termic!.ipc.repoConfigLoad(proj.id);
     });
     expect((loaded as any).scripts.setup).toBe("echo e2e-setup");
-    await browser.saveScreenshot(artifact("repo-config.png"));
+    await snap("repo-config.png");
   });
 });

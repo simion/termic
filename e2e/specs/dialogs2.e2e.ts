@@ -1,4 +1,4 @@
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: more dialogs — changelog, welcome, and the per-project Race dialog.
 describe("more dialogs open", () => {
@@ -55,6 +55,6 @@ describe("more dialogs open", () => {
       timeout: 8_000,
       timeoutMsg: "race dialog never opened",
     });
-    await browser.saveScreenshot(artifact("dialogs2.png"));
+    await snap("dialogs2.png");
   });
 });

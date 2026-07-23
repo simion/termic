@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P0: when an agent you're NOT watching finishes, termic must raise attention
@@ -69,6 +69,6 @@ describe("agent attention", () => {
       },
     );
 
-    await browser.saveScreenshot(artifact("agent-attention.png"));
+    await snap("agent-attention.png");
   });
 });

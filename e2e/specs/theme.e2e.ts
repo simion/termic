@@ -2,7 +2,7 @@ import {
   waitForAppShell,
   requireTermicApi,
   clickByText,
-  artifact,
+  snap,
 } from "../helpers";
 
 // Theme switching is a visible, frequently-used preference. Guards that
@@ -62,6 +62,6 @@ describe("theme switching", () => {
       { timeout: 8_000, timeoutMsg: "Dark theme was not applied to <html>" },
     );
 
-    await browser.saveScreenshot(artifact("theme.png"));
+    await snap("theme.png");
   });
 });

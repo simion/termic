@@ -4,7 +4,7 @@ import {
   openTask,
   archiveTask,
   waitForText,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: task rename + permanent delete (distinct from archive). Cases: renaming
@@ -67,6 +67,6 @@ describe("task lifecycle", () => {
         ),
       { timeout: 8_000, timeoutMsg: "deleted task still present" },
     );
-    await browser.saveScreenshot(artifact("task-lifecycle.png"));
+    await snap("task-lifecycle.png");
   });
 });

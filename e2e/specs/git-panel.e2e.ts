@@ -5,7 +5,7 @@ import {
   archiveTask,
   clickByText,
   waitForText,
-  artifact,
+  snap,
 } from "../helpers";
 
 // Git integration is central to termic (every task is a worktree/checkout).
@@ -30,6 +30,6 @@ describe("git panel", () => {
     // resolves. waitForText auto-retries, so no sleep and no flake.
     await waitForText("Working tree is clean");
 
-    await browser.saveScreenshot(artifact("git-panel.png"));
+    await snap("git-panel.png");
   });
 });

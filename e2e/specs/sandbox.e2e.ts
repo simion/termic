@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: per-task sandbox. Enable enforce mode then turn it off via taskSetSandbox
@@ -53,6 +53,6 @@ describe("task sandbox", () => {
       timeout: 8_000,
       timeoutMsg: "sandbox never turned off",
     });
-    await browser.saveScreenshot(artifact("sandbox.png"));
+    await snap("sandbox.png");
   });
 });

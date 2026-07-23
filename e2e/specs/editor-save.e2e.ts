@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P0: editing a file and saving it. Guards the CodeMirror edit -> dirty dot ->
@@ -98,6 +98,6 @@ describe("editor save", () => {
     expect(saved).not.toBe(original);
     expect(saved).toContain("e2e fixture");
 
-    await browser.saveScreenshot(artifact("editor-save.png"));
+    await snap("editor-save.png");
   });
 });

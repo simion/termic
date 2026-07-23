@@ -1,4 +1,4 @@
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P1: the agent registry (Settings → Agent CLIs). Guards disabling/enabling an
 // agent CLI through agentsSave. Uses "gemini" (not the test agents) and always
@@ -49,6 +49,6 @@ describe("agent settings", () => {
       timeout: 8_000,
       timeoutMsg: "agent never re-enabled",
     });
-    await browser.saveScreenshot(artifact("agent-settings.png"));
+    await snap("agent-settings.png");
   });
 });

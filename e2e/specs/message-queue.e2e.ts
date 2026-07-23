@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: the message queue lets you line up input while an agent is busy; it
@@ -65,6 +65,6 @@ describe("message queue", () => {
       { timeout: 20_000, interval: 300, timeoutMsg: "queue never drained on idle" },
     );
 
-    await browser.saveScreenshot(artifact("message-queue.png"));
+    await snap("message-queue.png");
   });
 });

@@ -4,7 +4,7 @@ import {
   openTask,
   archiveTask,
   clickMenuItem,
-  artifact,
+  snap,
 } from "../helpers";
 
 // Tabs are how a task holds multiple terminals/agents/editors. Guards adding a
@@ -96,6 +96,6 @@ describe("tab management", () => {
       timeoutMsg: "clicking the agent tab did not re-activate it",
     });
 
-    await browser.saveScreenshot(artifact("tabs.png"));
+    await snap("tabs.png");
   });
 });

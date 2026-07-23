@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P2: stopping a running script. Launch a long-running custom run, then kill
@@ -54,6 +54,6 @@ describe("run stop", () => {
       interval: 250,
       timeoutMsg: "run tab PTY never cleared after stop",
     });
-    await browser.saveScreenshot(artifact("run-stop.png"));
+    await snap("run-stop.png");
   });
 });

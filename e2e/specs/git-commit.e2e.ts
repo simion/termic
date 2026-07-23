@@ -5,7 +5,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: the staging + commit backend (Fork-style). Cases: a changed file can be
@@ -91,6 +91,6 @@ describe("git stage & commit", () => {
       async () => (await status()).total_changed === 0,
       { timeout: 8_000, timeoutMsg: "tree was not clean after commit" },
     );
-    await browser.saveScreenshot(artifact("git-commit.png"));
+    await snap("git-commit.png");
   });
 });

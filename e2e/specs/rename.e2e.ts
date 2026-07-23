@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // Renaming a tab (double-click -> inline edit -> Enter) is a common action and
@@ -87,6 +87,6 @@ describe("tab rename", () => {
       { timeout: 5_000, timeoutMsg: "tab title never became the new name" },
     );
 
-    await browser.saveScreenshot(artifact("rename.png"));
+    await snap("rename.png");
   });
 });

@@ -2,7 +2,7 @@ import {
   waitForAppShell,
   requireTermicApi,
   waitForText,
-  artifact,
+  snap,
 } from "../helpers";
 
 // Settings/preferences subsystem. Guards that a real toggle in the Settings
@@ -72,6 +72,6 @@ describe("settings", () => {
     }, LABEL);
     expect(checked).toBe(String(now));
 
-    await browser.saveScreenshot(artifact("settings.png"));
+    await snap("settings.png");
   });
 });

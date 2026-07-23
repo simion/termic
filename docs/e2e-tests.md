@@ -60,8 +60,17 @@ The e2e binary is built with `VITE_E2E=1`, which exposes `window.__termic`
 That flag is unset in normal `npm run build`, so real release bundles still
 tree-shake `__termic` out.
 
-Tests run **on a real Mac only** — they launch a GUI window. There is no CI
-job; this is a local pre-merge / pre-release gate, by design.
+Tests run **on a real Mac only** — they launch a GUI window.
+
+## CI
+
+An `e2e` job in `.github/workflows/test.yml` runs the suite on `macos-14` for
+PRs and pushes to `main`. It is **not a required check yet** — it's there to
+surface flakiness under CI so we can harden it before gating merges. The
+gitignored `.e2e/` fixture profile is recreated by `node scripts/e2e-seed.mjs`
+(templates in `scripts/e2e-seed/`); screenshots are skipped when `CI` is set
+(the `snap()` helper). Artifacts upload on failure. To promote it to required,
+add it to branch protection once it's proven stable over ~20-30 runs.
 
 ## Isolation
 

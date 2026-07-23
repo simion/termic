@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  snap,
   waitForAppShell,
   waitForText,
   waitForTextGone,
@@ -28,7 +29,7 @@ describe("termic e2e pipeline", () => {
       () => window.__termic!.useApp.getState().projects.map((p: any) => p.name),
     );
     expect(projectNames).toContain("fixture-repo");
-    await browser.saveScreenshot(path.join(artifacts, "dashboard.png"));
+    await snap("dashboard.png");
   });
 
   it("navigates Dashboard -> History with a real click", async () => {
@@ -38,6 +39,6 @@ describe("termic e2e pipeline", () => {
     await waitForText("HOME FOR YOUR CLI CODING AGENTS");
     await clickByText("History");
     await waitForTextGone("HOME FOR YOUR CLI CODING AGENTS");
-    await browser.saveScreenshot(path.join(artifacts, "history.png"));
+    await snap("history.png");
   });
 });

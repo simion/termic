@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P0: the Run feature (#54/#124) launches commands in dedicated run tabs.
@@ -62,6 +62,6 @@ describe("run tabs", () => {
       },
     );
 
-    await browser.saveScreenshot(artifact("run.png"));
+    await snap("run.png");
   });
 });

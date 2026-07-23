@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: resuming a closed agent tab. Seeds a closedTabs entry (the same shape the
@@ -60,6 +60,6 @@ describe("resume closed tab", () => {
         ),
       { timeout: 10_000, timeoutMsg: "closed tab was not resumed" },
     );
-    await browser.saveScreenshot(artifact("resume-tab.png"));
+    await snap("resume-tab.png");
   });
 });

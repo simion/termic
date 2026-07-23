@@ -1,4 +1,4 @@
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: preference setters persist to the prefs store. Cases: global default
 // sandbox toggle, editor font, terminal font. Each restores its original.
@@ -51,6 +51,6 @@ describe("preferences", () => {
       async () => (await get("terminalFontId")) === "jetbrains-mono",
       { timeout: 5_000, timeoutMsg: "terminal font never applied" },
     );
-    await browser.saveScreenshot(artifact("prefs.png"));
+    await snap("prefs.png");
   });
 });

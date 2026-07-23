@@ -5,7 +5,7 @@ import {
   archiveTask,
   clickByText,
   waitForText,
-  artifact,
+  snap,
 } from "../helpers";
 
 // Completes the task lifecycle: archive -> it appears in History -> restore ->
@@ -47,6 +47,6 @@ describe("task restore", () => {
       { timeout: 10_000, timeoutMsg: "task was never restored to active" },
     );
 
-    await browser.saveScreenshot(artifact("task-restore.png"));
+    await snap("task-restore.png");
   });
 });

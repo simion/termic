@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: find-in-files (⇧⌘F) streams git-grep results. Cases: opens with an
@@ -54,6 +54,6 @@ describe("find in files", () => {
         ),
       { timeout: 10_000, timeoutMsg: "no result row for the query" },
     );
-    await browser.saveScreenshot(artifact("find-in-files.png"));
+    await snap("find-in-files.png");
   });
 });

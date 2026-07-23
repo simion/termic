@@ -1,0 +1,30 @@
+[
+  {
+    "id": "22e4d340-51ea-4ca3-8dbb-c622eaea06c7",
+    "name": "fixture-repo",
+    "root_path": "__REPO__/.e2e/fixture-repo",
+    "tasks_path": "__HOME__/termic_dev/tasks/fixture-repo",
+    "base_branch": "origin/main",
+    "remote": "origin",
+    "preview_url": "",
+    "files_to_copy": [
+      ".env*",
+      ".venv",
+      "node_modules"
+    ],
+    "setup_script": "",
+    "run_script": "",
+    "archive_script": "",
+    "default_cli": "claude",
+    "created": "2026-06-11T17:36:55.539232+00:00",
+    "default_sandbox": false,
+    "default_sandbox_mode": null,
+    "sandbox_rw_paths": [],
+    "sandbox_allowed_hosts": [],
+    "type": "single",
+    "members": [],
+    "spotlight_enabled": false,
+    "non_git": false,
+    "run_scripts": []
+  }
+]

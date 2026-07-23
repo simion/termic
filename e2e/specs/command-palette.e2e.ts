@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P1: the command palette (⌘K). Cases: opens and lists commands; filtering
@@ -106,6 +106,6 @@ describe("command palette", () => {
       timeout: 5_000,
       timeoutMsg: "Escape did not close the palette",
     });
-    await browser.saveScreenshot(artifact("command-palette.png"));
+    await snap("command-palette.png");
   });
 });

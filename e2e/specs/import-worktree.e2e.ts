@@ -1,4 +1,4 @@
-import { waitForAppShell, requireTermicApi, artifact } from "../helpers";
+import { waitForAppShell, requireTermicApi, snap } from "../helpers";
 
 // P2: importing an existing worktree (issue #5). Guards the discovery half:
 // listing worktrees that exist on disk but aren't open as tasks. The fixture
@@ -18,6 +18,6 @@ describe("import worktree", () => {
     expect(
       (list as any[]).some((w) => JSON.stringify(w).includes("sbcheck")),
     ).toBe(true);
-    await browser.saveScreenshot(artifact("import-worktree.png"));
+    await snap("import-worktree.png");
   });
 });

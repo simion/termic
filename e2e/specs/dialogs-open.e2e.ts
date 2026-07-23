@@ -3,7 +3,7 @@ import {
   requireTermicApi,
   openTask,
   archiveTask,
-  artifact,
+  snap,
 } from "../helpers";
 
 // P2: assorted dialogs/palettes open + close. Guards the wiring of the
@@ -71,6 +71,6 @@ describe("dialogs & palettes open", () => {
       timeout: 8_000,
       timeoutMsg: "broadcast dialog never opened",
     });
-    await browser.saveScreenshot(artifact("dialogs-open.png"));
+    await snap("dialogs-open.png");
   });
 });
