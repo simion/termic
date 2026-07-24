@@ -53,7 +53,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Agent race | Fire one prompt at 2 agents: cohort recorded, both spawn a PTY + receive the prompt (lastInputAt) + drive a fakeagent OSC title; runs on a no-remote repo; RaceDialog gates Start then steppers+prompt launch it; a name collision surfaces an error and records no new race | `task.e2e.ts` |
 | ✅ Preferences | Sandbox default, editor font, terminal font setters | `settings.e2e.ts` |
 | ✅ Agent extras | YOLO toggle; aux (bottom) terminal | `agent.e2e.ts` |
-| ✅ Worktree task | Create a task on its own worktree branch (not repo-root) | `task.e2e.ts` |
+| ✅ Worktree task | Create a task on its own worktree branch (not repo-root); on a no-remote repo the default-base create falls back to local main | `task.e2e.ts` |
 | ✅ Project rename | Rename a project (add covered too) | `projects.e2e.ts` |
 | ✅ Editor split | Split view shows source + rendered preview together | `editor.e2e.ts` |
 | ✅ Repo config | Save a `.termic.yaml` field and read it back | `projects.e2e.ts` |

@@ -473,6 +473,100 @@ describe("worktree task", () => {
     expect((t as any).is_main_checkout).not.toBe(true);
     await snap("worktree-task.png");
   });
+
+  // The case above passes an explicit base ("main"). The PRIMARY path uses the
+  // project default base, which is a remote-tracking ref ("origin/main"). On a
+  // repo with no remote that ref doesn't exist, so before resolve_base_ref
+  // (lib.rs) a plain New Task here died with "not a valid object name:
+  // origin/main". Prove the default-base create now falls back to local main.
+  describe("on a local-only repo (default base)", () => {
+    const LBRANCH = "e2e-wt-local";
+    let localId: string | undefined;
+
+    before(() => {
+      try {
+        execSync(`git -C "${fixture}" remote remove origin`, { stdio: "ignore" });
+      } catch {
+        /* already remote-less */
+      }
+    });
+    after(async () => {
+      if (localId) {
+        await browser.execute(async (id) => {
+          await window.__termic!.ipc.taskArchive(id, true); // deleteBranch
+          await window.__termic!.useApp.getState().loadAll();
+        }, localId);
+      }
+      try {
+        execSync(`git -C "${fixture}" worktree prune`);
+        execSync(`git -C "${fixture}" branch -D ${LBRANCH}`, { stdio: "ignore" });
+      } catch {
+        /* already gone */
+      }
+      // Restore the seeded origin so later specs see origin/main again.
+      const seedOrigin = `${fixture}-origin.git`;
+      try {
+        execSync(`git -C "${fixture}" remote remove origin`, { stdio: "ignore" });
+      } catch {
+        /* none */
+      }
+      if (existsSync(seedOrigin)) {
+        try {
+          execSync(`git -C "${fixture}" remote add origin "${seedOrigin}"`, {
+            stdio: "ignore",
+          });
+        } catch {
+          /* already present */
+        }
+        execSync(`git -C "${fixture}" fetch -q origin`, { stdio: "ignore" });
+      }
+    });
+
+    it("creates a task on the default base when there is no origin/main", async () => {
+      await waitForAppShell();
+      await requireTermicApi();
+
+      // Precondition: origin/main genuinely does not resolve here.
+      let originResolves = true;
+      try {
+        execSync(`git -C "${fixture}" rev-parse --verify -q origin/main`, {
+          stdio: "ignore",
+        });
+      } catch {
+        originResolves = false;
+      }
+      expect(originResolves).toBe(false);
+
+      // Create WITHOUT an explicit base_branch → the Rust side uses the project
+      // default (origin/main), which resolve_base_ref falls back to local main.
+      const t = await browser.execute(async (branch) => {
+        const proj = window.__termic!.useApp
+          .getState()
+          .projects.find((p: any) => p.name === "fixture-repo");
+        const task = await window.__termic!.ipc.taskCreate({
+          project_id: proj.id,
+          name: "e2e-wt-local",
+          cli: "fakeagent",
+          base_branch: null, // the default-base path that used to fail
+          branch,
+        });
+        await window.__termic!.useApp.getState().loadAll();
+        return task;
+      }, LBRANCH);
+      localId = (t as any).id;
+
+      // It succeeded, on its own worktree branch, cut from local main.
+      expect((t as any).branch).toBe(LBRANCH);
+      expect((t as any).is_main_checkout).not.toBe(true);
+      const mainSha = execSync(`git -C "${fixture}" rev-parse main`)
+        .toString()
+        .trim();
+      const branchSha = execSync(`git -C "${fixture}" rev-parse ${LBRANCH}`)
+        .toString()
+        .trim();
+      expect(branchSha).toBe(mainSha);
+    });
+  });
 });
 
 // P1: resuming a closed agent tab. Seeds a closedTabs entry (the same shape the
