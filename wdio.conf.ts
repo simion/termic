@@ -38,7 +38,12 @@ export const config: WebdriverIO.Config = {
 
   framework: "mocha",
   reporters: ["spec"],
-  logLevel: "warn",
+  // "silent" silences the wdio LOGGER only (the spec reporter's ✓/✗ + summary
+  // is unaffected). Kills two streams of noise this stack emits and we can't
+  // otherwise disable: the false "tauri-driver not found" diagnostic (we use
+  // the embedded provider) and the afterSession "Failed to clear mock store"
+  // stack trace (we don't use the mock plugin; restoreAllMocks runs anyway).
+  logLevel: "silent",
   mochaOpts: { ui: "bdd", timeout: 60_000 },
 
   // Poll conditions every 100ms (default 500) so browser.waitUntil-based waits

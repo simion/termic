@@ -1,8 +1,8 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { waitForAppShell, requireTermicApi, snap } from "../helpers";
+import { requireTermicApi, snap, waitForAppShell } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -125,5 +125,92 @@ describe("project add/remove", () => {
     );
     projectId = null;
     await snap("project.png");
+  });
+});
+
+// P2: repo discovery (Add Project → Discover). Scans a folder and returns the
+// git repos in it.
+describe("discover repos", () => {
+  let dir = "";
+  before(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), "e2e-discover-"));
+    const sub = path.join(dir, "sub-repo");
+    mkdirSync(sub, { recursive: true });
+    execSync(`git -C "${sub}" init -q`);
+    execSync(
+      `git -C "${sub}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
+    );
+  });
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("finds a git repo inside a folder", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const repos = await browser.execute(
+      async (d) => await window.__termic!.ipc.discoverRepos(d),
+      dir,
+    );
+    expect(
+      (repos as any[]).some((r) => JSON.stringify(r).includes("sub-repo")),
+    ).toBe(true);
+    await snap("discover.png");
+  });
+});
+
+// P2: importing an existing worktree (issue #5). Guards the discovery half:
+// listing worktrees that exist on disk but aren't open as tasks. The fixture
+// repo has a pre-seeded `sbcheck` worktree. (We only assert discovery — doing
+// the import + archive would rm the shared worktree.)
+describe("import worktree", () => {
+  it("lists importable worktrees for the project", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const list = await browser.execute(async () => {
+      const proj = window.__termic!.useApp
+        .getState()
+        .projects.find((p: any) => p.name === "fixture-repo");
+      return await window.__termic!.ipc.taskImportableWorktrees(proj.id);
+    });
+    expect(Array.isArray(list)).toBe(true);
+    expect(
+      (list as any[]).some((w) => JSON.stringify(w).includes("sbcheck")),
+    ).toBe(true);
+    await snap("import-worktree.png");
+  });
+});
+
+// P2: per-repo config (.termic.yaml). Save a config field and read it back.
+// Git-cleans the written .termic.yaml on teardown.
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
+
+describe("repo config", () => {
+  after(() => {
+    try {
+      execSync(`git -C "${fixture}" clean -fd`);
+      execSync(`git -C "${fixture}" checkout -- .termic.yaml`, { stdio: "ignore" });
+    } catch {
+      /* nothing to restore */
+    }
+  });
+
+  it("saves a repo config and reads it back", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const loaded = await browser.execute(async () => {
+      const proj = window.__termic!.useApp
+        .getState()
+        .projects.find((p: any) => p.name === "fixture-repo");
+      // Load returns null when there's no .termic.yaml yet; scaffold a default.
+      let cfg = await window.__termic!.ipc.repoConfigLoad(proj.id);
+      if (!cfg) {
+        await window.__termic!.ipc.repoConfigScaffold(proj.id);
+        cfg = await window.__termic!.ipc.repoConfigLoad(proj.id);
+      }
+      cfg.scripts.setup = "echo e2e-setup";
+      await window.__termic!.ipc.repoConfigSave(proj.id, cfg);
+      return await window.__termic!.ipc.repoConfigLoad(proj.id);
+    });
+    expect((loaded as any).scripts.setup).toBe("echo e2e-setup");
+    await snap("repo-config.png");
   });
 });

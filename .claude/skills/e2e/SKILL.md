@@ -14,7 +14,7 @@ Full architecture + prod-safety rationale: [docs/e2e-tests.md](../../../docs/e2e
 
 ## The workflow (do this every time)
 
-**New feature** → add `e2e/specs/<feature>.e2e.ts` covering its main
+**New feature** → add an `it` (or a `describe`) to the relevant grouped file under `e2e/specs/` (specs are grouped by area — app, task, agent, editor, files, git, tabs-layout, settings, run, projects — one app launch per file). Cover its main
 user-observable outcome(s). **Changed feature** → open that feature's spec,
 adjust the assertion/selectors to the new behavior (keep asserting the
 *outcome*, not incidental markup), and re-run. **Before declaring done** on any
@@ -34,8 +34,8 @@ npm run test:e2e    # just runs wdio against the last-built binary
 
 Rebuild (`npm run e2e:build`, or `make e2e`) **after any Rust or frontend
 change** — the frontend is embedded in the e2e binary. Screenshots land in
-`.e2e/artifacts/` (gitignored). Local Mac only; there is no CI job by design
-(the tests launch a GUI window).
+`.e2e/artifacts/` (gitignored, local only — no-op in CI via `snap()`). Runs
+locally and in a non-required `macos-14` CI job (see docs/e2e-tests.md).
 
 Never build the e2e binary with a bare `cargo build` — that produces a binary
 that points at the (unrunning) dev server and the window comes up blank. Always
@@ -47,7 +47,7 @@ is the cause.
 
 Use the shared helpers in [e2e/helpers.ts](../../../e2e/helpers.ts) so specs
 stay short and a UI change is a one-place fix. Reference example:
-[e2e/specs/smoke.e2e.ts](../../../e2e/specs/smoke.e2e.ts).
+[e2e/specs/app.e2e.ts](../../../e2e/specs/app.e2e.ts).
 
 ```ts
 import { waitForAppShell, clickByText, waitForText } from "../helpers.js";
@@ -106,7 +106,7 @@ old/non-e2e binary).
    glyphs (`✳` idle / Braille spinner working). NOTE: `tab.workState ===
    "working"` won't flip from a raw `ipc.ptyWrite` — termic gates the working
    indicator on a real submit through its input path, so assert `liveTitle` for
-   OSC-title checks, not `workState`. See `e2e/specs/task-spawn.e2e.ts`.
+   OSC-title checks, not `workState`. See the task-spawn case in `e2e/specs/task.e2e.ts`.
 4. **Semantic selectors.** Match by role / visible text (`clickByText`). Add a
    `data-testid` only where text is ambiguous or localized. Never depend on
    generated class names.
