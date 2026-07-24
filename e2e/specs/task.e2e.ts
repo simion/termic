@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { archiveTask, clickByText, openTask, requireTermicApi, snap, waitForAppShell, waitForText } from "../helpers";
 
@@ -529,5 +530,155 @@ describe("resume closed tab", () => {
       { timeout: 10_000, timeoutMsg: "closed tab was not resumed" },
     );
     await snap("resume-tab.png");
+  });
+});
+
+// P1: Agent Race — fire ONE prompt at N agents, each in its own fresh worktree,
+// and seed the prompt into every agent once it boots (src/lib/agentRace.ts). The
+// dialog-opens smoke lives in app.e2e.ts; THIS asserts the engine end to end:
+// the cohort is recorded, every racer's default agent tab spawns a live PTY, and
+// every racer receives the prompt after the settle (lastInputAt stamped + the
+// fakeagent's OSC title flips to its working spinner). Regression guard for the
+// "race just sits there" failure mode — an agent that spawns but never gets fed.
+describe("agent race", () => {
+  // Unique per run so a re-run never collides on the race branch/worktree even
+  // if a prior run's cleanup was interrupted (git worktree add is unforgiving).
+  const raceName = `e2erace-${Date.now()}`;
+  let taskIds: string[] = [];
+
+  before(() => {
+    // Racers branch off the project default `origin/main`, so that ref must
+    // resolve. The git commit-push spec swaps the fixture's origin to a
+    // throwaway and restores it, but keep this test independent of run order:
+    // if origin/main is missing, restore it from the seeded sibling bare repo.
+    try {
+      execSync(`git -C "${fixture}" rev-parse --verify -q origin/main`, {
+        stdio: "ignore",
+      });
+    } catch {
+      const seedOrigin = `${fixture}-origin.git`;
+      if (existsSync(seedOrigin)) {
+        try {
+          execSync(`git -C "${fixture}" remote add origin "${seedOrigin}"`, {
+            stdio: "ignore",
+          });
+        } catch {
+          /* remote already present, just needs a fetch */
+        }
+        execSync(`git -C "${fixture}" fetch -q origin`, { stdio: "ignore" });
+      }
+    }
+  });
+
+  after(async () => {
+    // Hard-delete each racer: removes its worktree AND wipes the task file, so
+    // the next run starts from the same clean fixture. Best-effort.
+    for (const id of taskIds) {
+      await browser
+        .execute(async (i) => {
+          await window.__termic!.ipc.taskDelete(i);
+          await window.__termic!.useApp.getState().loadAll();
+        }, id)
+        .catch(() => {});
+    }
+    // taskDelete keeps the branch (deleteBranch=false), so prune the worktrees
+    // AND the race branches this run created, or the fixture accrues them.
+    try {
+      execSync(`git -C "${fixture}" worktree prune`);
+      for (const n of [1, 2]) {
+        execSync(`git -C "${fixture}" branch -D race/${raceName}/fakeagent-${n}`, {
+          stdio: "ignore",
+        });
+      }
+    } catch {
+      /* nothing to prune */
+    }
+  });
+
+  it("fires one prompt at 2 agents, each spawns and receives it", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+
+    taskIds = (await browser.execute(
+      async (name) => {
+        const t = window.__termic!;
+        const proj = t.useApp
+          .getState()
+          .projects.find((p: any) => p.name === "fixture-repo");
+        return await t.agentRace.startRace({
+          projectId: proj.id,
+          racers: [
+            { cli: "fakeagent", n: 1 },
+            { cli: "fakeagent", n: 2 },
+          ],
+          prompt: "hello from the race test",
+          name,
+        });
+      },
+      raceName,
+    )) as string[];
+
+    expect(taskIds).toHaveLength(2);
+
+    // 1) The cohort is recorded before anything mounts, so the board can
+    //    enumerate exactly which worktrees raced.
+    const cohort = await browser.execute((ids: string[]) => {
+      const races = Object.values(
+        window.__termic!.useRace.getState().races ?? {},
+      ) as any[];
+      const c = races.find((r) => ids.every((id) => r.taskIds.includes(id)));
+      return c ? { taskIds: c.taskIds } : null;
+    }, taskIds);
+    expect(cohort?.taskIds).toEqual(expect.arrayContaining(taskIds));
+
+    // Reads the default agent tab (the seeded, is_default terminal) of every
+    // racer at once — the exact tab agentRace targets for prompt injection.
+    const racerTabs = () =>
+      browser.execute((ids: string[]) => {
+        const app = window.__termic!.useApp.getState();
+        return ids.map((id) => {
+          const def = (app.tabs[id] ?? []).find(
+            (x: any) => x.type === "terminal" && x.is_default,
+          );
+          return {
+            ptyId: def?.ptyId ?? null,
+            lastInputAt: def?.lastInputAt ?? null,
+            liveTitle: def?.liveTitle ?? null,
+          };
+        });
+      }, taskIds);
+
+    // 2) Both racers' agents actually spawn: their default tab acquires a live
+    //    PTY. This is the "did the hidden/inactive racer boot at all" guard.
+    await browser.waitUntil(
+      async () => (await racerTabs()).every((t) => !!t.ptyId),
+      { timeout: 20_000, timeoutMsg: "a racer never spawned its agent PTY" },
+    );
+
+    // 3) Both racers receive the prompt after the settle: agentRace stamps
+    //    lastInputAt when it injects. This is the core "sits there" guard — an
+    //    agent that spawned but was never fed would fail HERE.
+    await browser.waitUntil(
+      async () => (await racerTabs()).every((t) => !!t.lastInputAt),
+      {
+        timeout: 20_000,
+        timeoutMsg: "a racer spawned but never received the race prompt",
+      },
+    );
+
+    // 4) The seeded terminals are real fakeagent PTYs driving claude-style OSC
+    //    titles (✳ idle / Braille spinner working), not empty shells. Poll: the
+    //    inactive racer's title can lag a beat behind its prompt injection.
+    await browser.waitUntil(
+      async () =>
+        (await racerTabs()).every((t) =>
+          (t.liveTitle ?? "").includes("fakeagent"),
+        ),
+      {
+        timeout: 15_000,
+        timeoutMsg: "a racer never published its fakeagent OSC title",
+      },
+    );
+    await snap("agent-race.png");
   });
 });

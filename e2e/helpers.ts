@@ -46,6 +46,17 @@ export interface TermicApi {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any>;
   runTabs: any;
   scriptRuns: { getState: () => any };
+  agentRace: {
+    startRace: (opts: {
+      projectId: string;
+      racers: { cli: string; n: number }[];
+      prompt: string;
+      name?: string;
+      branch?: string;
+      sandbox?: boolean;
+      yolo?: boolean;
+    }) => Promise<string[]>;
+  };
 }
 
 declare global {

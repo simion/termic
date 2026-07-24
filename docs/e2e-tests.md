@@ -80,6 +80,14 @@ add it to branch protection once it's proven stable over ~20-30 runs.
 your real `termic_dev` data. Agent flows use `fakeagent` (`scripts/fake-agent.sh`)
 so no real tokens are spent.
 
+The seeded `fixture-repo` carries an `origin` remote (a sibling bare repo,
+`.e2e/fixture-repo-origin.git`) so `origin/main` resolves like a real cloned
+checkout. This matters because the project default base is `origin/main`: any
+worktree spawn that honors it (a plain New Task, and every Agent Race racer)
+would otherwise die with `git branch ... origin/main → not a valid object name`.
+A spec that repoints origin (e.g. `git.e2e.ts`'s commit-push) MUST restore the
+seeded origin in teardown, or the later `agent race` test loses its base.
+
 ## Writing a test for a new feature
 
 The full authoring workflow lives in the **`e2e` skill**

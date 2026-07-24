@@ -37,7 +37,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, ipc, core, runTabs, scriptRuns] =
+    const [app, ui, prefs, race, ipc, core, runTabs, scriptRuns, agentRace] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -47,6 +47,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@tauri-apps/api/core"),
         import("@/lib/runTabs"),
         import("@/store/scriptRuns"),
+        import("@/lib/agentRace"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -57,6 +58,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       invoke: core.invoke,
       runTabs,
       scriptRuns: scriptRuns.useScriptRuns,
+      agentRace,
     };
   })();
 }

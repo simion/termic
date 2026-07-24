@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { archiveTask, clickByText, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone } from "../helpers";
@@ -222,10 +222,27 @@ describe("git commit & push", () => {
       /* no upstream */
     }
     execSync(`git -C "${fixture}" reset --hard ${headSha}`);
+    // Restore the fixture's SEEDED origin (the sibling bare repo the seed set
+    // up), not just drop the throwaway one: later specs (the agent-race test)
+    // create worktrees off the project default base `origin/main`, so that ref
+    // must resolve again. Without this restore the race spawn dies with
+    // "not a valid object name: origin/main". Idempotent + best-effort.
+    const seedOrigin = `${fixture}-origin.git`;
     try {
-      execSync(`git -C "${fixture}" remote remove origin`);
+      execSync(`git -C "${fixture}" remote remove origin`, { stdio: "ignore" });
     } catch {
       /* none */
+    }
+    if (existsSync(seedOrigin)) {
+      execSync(`git -C "${fixture}" remote add origin "${seedOrigin}"`);
+      execSync(`git -C "${fixture}" fetch -q origin`, { stdio: "ignore" });
+      try {
+        execSync(`git -C "${fixture}" branch --set-upstream-to=origin/main main`, {
+          stdio: "ignore",
+        });
+      } catch {
+        /* upstream already set */
+      }
     }
     execSync(`git -C "${fixture}" clean -fd`);
     rmSync(bare, { recursive: true, force: true });

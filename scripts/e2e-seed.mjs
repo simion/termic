@@ -47,6 +47,31 @@ export function seed(o = {}) {
     );
   }
 
+  // 1b. An `origin` remote with `origin/main`. Real repos are cloned and carry
+  // a remote-tracking base, so the default project base_branch is "origin/main"
+  // (see projects.json + detect_base_branch in lib.rs). Without this the fixture
+  // is local-only and every worktree spawn that honors the project default
+  // (New Task, and Agent Race) fails: `git branch --no-track <b> origin/main`
+  // → "not a valid object name". Give the fixture a bare origin so it exercises
+  // the SAME code path production does. A sibling bare repo, not a network.
+  const originGit = path.join(
+    path.dirname(fixture),
+    path.basename(fixture) + "-origin.git",
+  );
+  let remotes = "";
+  try {
+    remotes = shOut("git remote", fixture);
+  } catch {
+    /* ignore */
+  }
+  if (!remotes.split(/\s+/).includes("origin")) {
+    if (!existsSync(originGit)) sh(`git init --bare -q "${originGit}"`, fixture);
+    sh(`git remote add origin "${originGit}"`, fixture);
+    sh("git push -q origin main", fixture);
+    // Set upstream so origin/main resolves without a network fetch.
+    sh("git branch --set-upstream-to=origin/main main", fixture);
+  }
+
   // 2. An unopened `sbcheck` worktree (the import-worktree spec expects it).
   let worktrees = "";
   try {
