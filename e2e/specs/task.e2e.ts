@@ -583,15 +583,17 @@ describe("agent race", () => {
         .catch(() => {});
     }
     // taskDelete keeps the branch (deleteBranch=false), so prune the worktrees
-    // AND the race branches this run created, or the fixture accrues them.
+    // AND every race branch this describe created, or the fixture accrues them.
     try {
       execSync(`git -C "${fixture}" worktree prune`);
-      for (const name of [remoteName, localName]) {
-        for (const n of [1, 2]) {
-          execSync(`git -C "${fixture}" branch -D race/${name}/fakeagent-${n}`, {
-            stdio: "ignore",
-          });
-        }
+      const raceBranches = execSync(
+        `git -C "${fixture}" for-each-ref --format="%(refname:short)" refs/heads/race`,
+      )
+        .toString()
+        .split("\n")
+        .filter(Boolean);
+      for (const b of raceBranches) {
+        execSync(`git -C "${fixture}" branch -D "${b}"`, { stdio: "ignore" });
       }
     } catch {
       /* nothing to prune */
@@ -691,6 +693,223 @@ describe("agent race", () => {
   it("fires one prompt at 2 agents, each spawns and receives it", async () => {
     await raceAndVerify(remoteName);
     await snap("agent-race.png");
+  });
+
+  // ---- RaceDialog UI wiring ----------------------------------------------
+  // The tests above call startRace() directly (the engine). These drive the
+  // actual dialog: the Start-button gating (canStart), the +/- steppers, the
+  // prompt field, and Start -> startRace. Small DOM helpers scoped to the
+  // open [role=dialog]; React-controlled inputs need a dispatched input event.
+
+  // The whole grouped suite shares ONE app window, so an earlier spec may leave
+  // some other [role=dialog] mounted. Scope EVERY query to the race dialog
+  // specifically, identified by its title, never a bare [role=dialog].
+  const RACE_TITLE = "Start an agent race";
+
+  // Set a React-controlled input/textarea's value so onChange fires (assigning
+  // .value alone doesn't notify React).
+  const setControlled = (selector: string, value: string) =>
+    browser.execute(
+      (sel, val, title) => {
+        const dlg = [...document.querySelectorAll('[role="dialog"]')].find((d) =>
+          (d.textContent || "").includes(title),
+        );
+        const el = dlg!.querySelector(sel) as
+          | HTMLInputElement
+          | HTMLTextAreaElement;
+        const desc = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(el),
+          "value",
+        )!;
+        desc.set!.call(el, val);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      },
+      selector,
+      value,
+      RACE_TITLE,
+    );
+
+  // Click the +/- stepper of the FakeAgent row (its two buttons are [minus, plus]).
+  const bumpFakeAgent = (dir: 1 | -1) =>
+    browser.execute(
+      (d, title) => {
+        const dlg = [...document.querySelectorAll('[role="dialog"]')].find((x) =>
+          (x.textContent || "").includes(title),
+        );
+        if (!dlg) return false;
+        const row = [...dlg.querySelectorAll("div")].find(
+          (r) =>
+            r.querySelectorAll("button").length === 2 &&
+            /FakeAgent/.test(r.textContent || ""),
+        );
+        if (!row) return false;
+        (row.querySelectorAll("button")[d > 0 ? 1 : 0] as HTMLElement).click();
+        return true;
+      },
+      dir,
+      RACE_TITLE,
+    );
+
+  // Read the Start button's disabled state + the status line ("Pick at least 2
+  // agents" vs "N agents racing").
+  const startBtnState = () =>
+    browser.execute((title) => {
+      const dlg = [...document.querySelectorAll('[role="dialog"]')].find((d) =>
+        (d.textContent || "").includes(title),
+      );
+      if (!dlg) return { disabled: null, pick2: false, racing: false };
+      const btn = [...dlg.querySelectorAll("button")].find((b) =>
+        /Start race/.test(b.textContent || ""),
+      ) as HTMLButtonElement | undefined;
+      const text = dlg.textContent || "";
+      return {
+        disabled: btn?.disabled ?? null,
+        pick2: text.includes("Pick at least 2 agents"),
+        racing: /agents racing/.test(text),
+      };
+    }, RACE_TITLE);
+
+  const clickStart = () =>
+    browser.execute((title) => {
+      const dlg = [...document.querySelectorAll('[role="dialog"]')].find((d) =>
+        (d.textContent || "").includes(title),
+      );
+      (
+        [...dlg!.querySelectorAll("button")].find((b) =>
+          /Start race/.test(b.textContent || ""),
+        ) as HTMLElement
+      ).click();
+    }, RACE_TITLE);
+
+  const openRaceDialog = async () => {
+    await browser.execute(() => {
+      const proj = window.__termic!.useApp
+        .getState()
+        .projects.find((p: any) => p.name === "fixture-repo");
+      window.__termic!.useUI.getState().openRace(proj.id);
+    });
+    // Wait for the RACE dialog specifically, not just any dialog.
+    await browser.waitUntil(
+      async () =>
+        browser.execute(
+          (title) =>
+            [...document.querySelectorAll('[role="dialog"]')].some((d) =>
+              (d.textContent || "").includes(title),
+            ),
+          RACE_TITLE,
+        ),
+      { timeout: 8_000, timeoutMsg: "race dialog never appeared" },
+    );
+  };
+  const dialogOpen = () =>
+    browser.execute(() => !!window.__termic!.useUI.getState().raceProjectId);
+
+  it("dialog gates Start, then steppers + a prompt launch a race", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const uiName = `e2euirace-${Date.now()}`;
+    await openRaceDialog();
+
+    // Nothing picked yet: Start disabled, "Pick at least 2 agents".
+    expect(await startBtnState()).toEqual({
+      disabled: true,
+      pick2: true,
+      racing: false,
+    });
+
+    // Bump FakeAgent to 2.
+    expect(await bumpFakeAgent(1)).toBe(true);
+    await bumpFakeAgent(1);
+    // 2 agents but still no prompt → Start stays disabled.
+    expect((await startBtnState()).disabled).toBe(true);
+
+    // Add the prompt + a unique name → Start enables, status flips to "racing".
+    await setControlled("textarea", "do the thing");
+    await setControlled("#race-name", uiName);
+    await browser.waitUntil(async () => (await startBtnState()).disabled === false, {
+      timeout: 5_000,
+      timeoutMsg: "Start never enabled after 2 agents + a prompt",
+    });
+    expect((await startBtnState()).racing).toBe(true);
+
+    // Start → the dialog closes and a 2-racer cohort under `uiName` is recorded.
+    await clickStart();
+    await browser.waitUntil(async () => (await dialogOpen()) === false, {
+      timeout: 10_000,
+      timeoutMsg: "race dialog did not close after Start",
+    });
+    const ids = (await browser.execute((nm) => {
+      const races = Object.values(
+        window.__termic!.useRace.getState().races ?? {},
+      ) as any[];
+      return races.find((r) => r.name === nm)?.taskIds ?? [];
+    }, uiName)) as string[];
+    expect(ids).toHaveLength(2);
+    createdTaskIds.push(...ids);
+  });
+
+  it("dialog surfaces a name collision and records no new race", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    const dupName = `e2edup-${Date.now()}`;
+
+    // Seed a first race under `dupName` directly (fast), so its branches exist.
+    const first = (await browser.execute(async (nm) => {
+      const t = window.__termic!;
+      const proj = t.useApp
+        .getState()
+        .projects.find((p: any) => p.name === "fixture-repo");
+      return await t.agentRace.startRace({
+        projectId: proj.id,
+        racers: [
+          { cli: "fakeagent", n: 1 },
+          { cli: "fakeagent", n: 2 },
+        ],
+        prompt: "first race",
+        name: nm,
+      });
+    }, dupName)) as string[];
+    createdTaskIds.push(...first);
+    const racesBefore = await browser.execute(
+      () => Object.keys(window.__termic!.useRace.getState().races ?? {}).length,
+    );
+
+    // Drive the dialog to start a SECOND race with the SAME name → the first
+    // racer's branch already exists, so startRace throws.
+    await openRaceDialog();
+    await bumpFakeAgent(1);
+    await bumpFakeAgent(1);
+    await setControlled("textarea", "second race");
+    await setControlled("#race-name", dupName);
+    await browser.waitUntil(async () => (await startBtnState()).disabled === false, {
+      timeout: 5_000,
+      timeoutMsg: "Start never enabled for the collision case",
+    });
+    await clickStart();
+
+    // The dialog shows an error and stays OPEN (a failed race must not close
+    // silently). The message is the task-create collision text.
+    await browser.waitUntil(
+      async () =>
+        browser.execute((title) => {
+          const dlg = [...document.querySelectorAll('[role="dialog"]')].find(
+            (d) => (d.textContent || "").includes(title),
+          );
+          if (!dlg) return false;
+          return [...dlg.querySelectorAll("p")].some((p) =>
+            /already|checked out|exist|valid|used by/i.test(p.textContent || ""),
+          );
+        }, RACE_TITLE),
+      { timeout: 12_000, timeoutMsg: "collision error was never shown in the dialog" },
+    );
+    expect(await dialogOpen()).toBe(true);
+    // No NEW cohort was recorded (the record only happens after all creates).
+    const racesAfter = await browser.execute(
+      () => Object.keys(window.__termic!.useRace.getState().races ?? {}).length,
+    );
+    expect(racesAfter).toBe(racesBefore);
+
+    await browser.execute(() => window.__termic!.useUI.getState().closeRace());
   });
 
   // A purely local git repo (no remote) has no origin/main, yet the project

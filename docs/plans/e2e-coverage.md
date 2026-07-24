@@ -50,7 +50,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `files.e2e.ts` |
 | ✅ Dialogs/palettes | Shortcuts help, prompt palette, broadcast open (and close) | `app.e2e.ts` |
 | ✅ More dialogs | Changelog, welcome, race dialog open | `app.e2e.ts` |
-| ✅ Agent race | Fire one prompt at 2 agents: cohort recorded, both spawn a PTY + receive the prompt (lastInputAt) + drive a fakeagent OSC title | `task.e2e.ts` |
+| ✅ Agent race | Fire one prompt at 2 agents: cohort recorded, both spawn a PTY + receive the prompt (lastInputAt) + drive a fakeagent OSC title; runs on a no-remote repo; RaceDialog gates Start then steppers+prompt launch it; a name collision surfaces an error and records no new race | `task.e2e.ts` |
 | ✅ Preferences | Sandbox default, editor font, terminal font setters | `settings.e2e.ts` |
 | ✅ Agent extras | YOLO toggle; aux (bottom) terminal | `agent.e2e.ts` |
 | ✅ Worktree task | Create a task on its own worktree branch (not repo-root) | `task.e2e.ts` |
