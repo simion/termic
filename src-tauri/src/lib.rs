@@ -1219,6 +1219,33 @@ fn detect_default_remote(repo: &Path) -> String {
         .unwrap_or_else(|| "origin".into())
 }
 
+/// Resolve a base ref to one that actually EXISTS in `repo`, so a new worktree
+/// branch can be cut from it. The project default base is a remote-tracking ref
+/// (e.g. "origin/main"), which is absent in a local-only repo (no remote, so a
+/// `git branch <b> origin/main` fails with "not a valid object name"). Fall
+/// back to the local branch of the same name ("origin/main" -> "main"), then to
+/// HEAD, so New Task and every Agent Race racer still work without a remote.
+///
+/// A no-op when `base` already resolves (the normal, has-remote case): it can
+/// only turn a guaranteed failure into a success, never change a working cut.
+/// Callers that refresh the remote (git_fetch_base) must do so BEFORE calling
+/// this, so a fetchable "origin/main" is seen and preferred over stale-local.
+fn resolve_base_ref(repo: &Path, base: &str) -> String {
+    let exists = |r: &str| git(&["rev-parse", "--verify", "--quiet", r], repo).is_ok();
+    if exists(base) {
+        return base.to_string();
+    }
+    // Strip a leading "<remote>/" segment: "origin/main" -> "main",
+    // "origin/feature/x" -> "feature/x" (split on the FIRST slash only).
+    if let Some((_, local)) = base.split_once('/') {
+        if exists(local) {
+            return local.to_string();
+        }
+    }
+    // Last resort: whatever HEAD points at, so the create still succeeds.
+    "HEAD".to_string()
+}
+
 // ───────────────────────────── PTY manager ─────────────────────────────
 
 struct PtySlot {
@@ -2684,7 +2711,9 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
         if fetch_before_create_enabled() {
             git_fetch_base(&repo, &base_full);
         }
-        match git(&["branch", "--no-track", &branch, &base_full], &repo) {
+        // Resolve to a ref that exists (local-only repos have no origin/main).
+        let base_ref = resolve_base_ref(&repo, &base_full);
+        match git(&["branch", "--no-track", &branch, &base_ref], &repo) {
             Ok(_) => git(&add_args, &repo),
             Err(e) => Err(e),
         }
@@ -2999,7 +3028,8 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
             if do_fetch {
                 git_fetch_base(&host_repo, &base_branch);
             }
-            match git(&["branch", "--no-track", &branch, &base_branch], &host_repo) {
+            let base_ref = resolve_base_ref(&host_repo, &base_branch);
+            match git(&["branch", "--no-track", &branch, &base_ref], &host_repo) {
                 Ok(_) => git(&["worktree", "add", wrapper.to_str().unwrap(), &branch], &host_repo),
                 Err(e) => Err(e),
             }
@@ -3089,7 +3119,8 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
                     if do_fetch {
                         git_fetch_base(&mrepo, &mbase);
                     }
-                    match git(&["branch", "--no-track", &mbranch, &mbase], &mrepo) {
+                    let mbase_ref = resolve_base_ref(&mrepo, &mbase);
+                    match git(&["branch", "--no-track", &mbranch, &mbase_ref], &mrepo) {
                         Ok(_) => git(&["worktree", "add", target.to_str().unwrap(), &mbranch], &mrepo),
                         Err(e) => Err(e),
                     }
@@ -4513,9 +4544,12 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
             if branch_exists {
                 git(&add_args, &repo).map_err(|e| e.to_string())?;
             } else {
-                // Branch was deleted at archive time — recreate from base.
-                git(&["branch", "--no-track", &branch, &base_branch], &repo)
-                    .map_err(|e| format!("recreate branch '{branch}' from '{base_branch}': {e}"))?;
+                // Branch was deleted at archive time — recreate from base
+                // (resolved to a ref that exists; local-only repos have no
+                // origin/main).
+                let base_ref = resolve_base_ref(&repo, &base_branch);
+                git(&["branch", "--no-track", &branch, &base_ref], &repo)
+                    .map_err(|e| format!("recreate branch '{branch}' from '{base_ref}': {e}"))?;
                 git(&add_args, &repo).map_err(|e| e.to_string())?;
             }
 
@@ -4575,7 +4609,8 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
                 git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
                     .map_err(|e| format!("host worktree add: {e}"))?;
             } else {
-                git(&["branch", "--no-track", &host_branch, &host_base], &repo)
+                let host_base_ref = resolve_base_ref(&repo, &host_base);
+                git(&["branch", "--no-track", &host_branch, &host_base_ref], &repo)
                     .map_err(|e| format!("recreate host branch: {e}"))?;
                 git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
                     .map_err(|e| format!("host worktree add: {e}"))?;
@@ -4608,7 +4643,8 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
                         let _ = git(&["worktree", "prune"], &mr_path);
                         let branch_exists = git(&["rev-parse", "--verify", &m.branch], &mr_path).is_ok();
                         if !branch_exists {
-                            let _ = git(&["branch", "--no-track", &m.branch, &base_branch], &mr_path);
+                            let mbase_ref = resolve_base_ref(&mr_path, &base_branch);
+                            let _ = git(&["branch", "--no-track", &m.branch, &mbase_ref], &mr_path);
                         }
                         let _ = git(&["worktree", "add", &m.path, &m.branch], &mr_path);
                     }
@@ -10223,6 +10259,52 @@ mod tests {
                 .current_dir(repo)
                 .output().unwrap().stdout,
         ).trim().to_string()
+    }
+
+    // resolve_base_ref: a worktree branch must be cut from a ref that EXISTS.
+    // The project default base is remote-tracking ("origin/main"), which a
+    // local-only repo (no remote) doesn't have — the reason a race/New Task
+    // errored with "not a valid object name: origin/main". Verify the fallback.
+    #[test]
+    fn resolve_base_ref_falls_back_when_no_remote() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git_init_with_commit(repo); // local-only: branch "main", no origin.
+
+        // The default base doesn't resolve here → fall back to the local branch.
+        assert_eq!(resolve_base_ref(repo, "origin/main"), "main");
+        // A multi-segment remote ref strips only the remote: origin/feature/x.
+        // No such local branch → HEAD (create still succeeds off current tip).
+        assert_eq!(resolve_base_ref(repo, "origin/feature/x"), "HEAD");
+        // A base that already exists is returned unchanged (the has-remote path
+        // and any explicit local base): no surprise rewrites.
+        assert_eq!(resolve_base_ref(repo, "main"), "main");
+        // A totally unknown local ref still resolves to something creatable.
+        assert_eq!(resolve_base_ref(repo, "nope"), "HEAD");
+    }
+
+    // With a real origin/main present, resolve_base_ref must PREFER it (the
+    // remote-tracking cut), not silently drop to local — else GH #79 (cut from
+    // latest fetched remote) regresses for every normal cloned repo.
+    #[test]
+    fn resolve_base_ref_prefers_existing_remote_ref() {
+        let dir = tempdir().unwrap();
+        let origin = dir.path().join("origin.git");
+        let clone = dir.path().join("clone");
+        let run = |args: &[&str], cwd: &Path| {
+            let out = std::process::Command::new("git")
+                .args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        let work = git_init_with_commit(dir.path()); // seed a commit in dir root
+        let _ = work;
+        run(&["init", "--bare", &origin.to_string_lossy()], dir.path());
+        run(&["remote", "add", "origin", &origin.to_string_lossy()], dir.path());
+        run(&["push", "origin", "main"], dir.path());
+        run(&["clone", &origin.to_string_lossy(), &clone.to_string_lossy()], dir.path());
+
+        // In the clone, origin/main is a real ref → returned as-is.
+        assert_eq!(resolve_base_ref(&clone, "origin/main"), "origin/main");
     }
 
     /// Current branch name, or empty when in detached HEAD.

@@ -543,8 +543,9 @@ describe("resume closed tab", () => {
 describe("agent race", () => {
   // Unique per run so a re-run never collides on the race branch/worktree even
   // if a prior run's cleanup was interrupted (git worktree add is unforgiving).
-  const raceName = `e2erace-${Date.now()}`;
-  let taskIds: string[] = [];
+  const remoteName = `e2erace-${Date.now()}`;
+  const localName = `e2elocalrace-${Date.now()}`;
+  const createdTaskIds: string[] = [];
 
   before(() => {
     // Racers branch off the project default `origin/main`, so that ref must
@@ -573,7 +574,7 @@ describe("agent race", () => {
   after(async () => {
     // Hard-delete each racer: removes its worktree AND wipes the task file, so
     // the next run starts from the same clean fixture. Best-effort.
-    for (const id of taskIds) {
+    for (const id of createdTaskIds) {
       await browser
         .execute(async (i) => {
           await window.__termic!.ipc.taskDelete(i);
@@ -585,22 +586,27 @@ describe("agent race", () => {
     // AND the race branches this run created, or the fixture accrues them.
     try {
       execSync(`git -C "${fixture}" worktree prune`);
-      for (const n of [1, 2]) {
-        execSync(`git -C "${fixture}" branch -D race/${raceName}/fakeagent-${n}`, {
-          stdio: "ignore",
-        });
+      for (const name of [remoteName, localName]) {
+        for (const n of [1, 2]) {
+          execSync(`git -C "${fixture}" branch -D race/${name}/fakeagent-${n}`, {
+            stdio: "ignore",
+          });
+        }
       }
     } catch {
       /* nothing to prune */
     }
   });
 
-  it("fires one prompt at 2 agents, each spawns and receives it", async () => {
+  // Start a 2-fakeagent race named `name` and assert the whole engine: cohort
+  // recorded, both racers spawn a live PTY, both receive the prompt (lastInputAt
+  // stamped), both drive a fakeagent OSC title. Returns the racer task ids.
+  async function raceAndVerify(name: string): Promise<string[]> {
     await waitForAppShell();
     await requireTermicApi();
 
-    taskIds = (await browser.execute(
-      async (name) => {
+    const ids = (await browser.execute(
+      async (n) => {
         const t = window.__termic!;
         const proj = t.useApp
           .getState()
@@ -612,31 +618,31 @@ describe("agent race", () => {
             { cli: "fakeagent", n: 2 },
           ],
           prompt: "hello from the race test",
-          name,
+          name: n,
         });
       },
-      raceName,
+      name,
     )) as string[];
-
-    expect(taskIds).toHaveLength(2);
+    createdTaskIds.push(...ids);
+    expect(ids).toHaveLength(2);
 
     // 1) The cohort is recorded before anything mounts, so the board can
     //    enumerate exactly which worktrees raced.
-    const cohort = await browser.execute((ids: string[]) => {
+    const cohort = await browser.execute((cohortIds: string[]) => {
       const races = Object.values(
         window.__termic!.useRace.getState().races ?? {},
       ) as any[];
-      const c = races.find((r) => ids.every((id) => r.taskIds.includes(id)));
+      const c = races.find((r) => cohortIds.every((id) => r.taskIds.includes(id)));
       return c ? { taskIds: c.taskIds } : null;
-    }, taskIds);
-    expect(cohort?.taskIds).toEqual(expect.arrayContaining(taskIds));
+    }, ids);
+    expect(cohort?.taskIds).toEqual(expect.arrayContaining(ids));
 
     // Reads the default agent tab (the seeded, is_default terminal) of every
     // racer at once — the exact tab agentRace targets for prompt injection.
     const racerTabs = () =>
-      browser.execute((ids: string[]) => {
+      browser.execute((tabIds: string[]) => {
         const app = window.__termic!.useApp.getState();
-        return ids.map((id) => {
+        return tabIds.map((id) => {
           const def = (app.tabs[id] ?? []).find(
             (x: any) => x.type === "terminal" && x.is_default,
           );
@@ -646,7 +652,7 @@ describe("agent race", () => {
             liveTitle: def?.liveTitle ?? null,
           };
         });
-      }, taskIds);
+      }, ids);
 
     // 2) Both racers' agents actually spawn: their default tab acquires a live
     //    PTY. This is the "did the hidden/inactive racer boot at all" guard.
@@ -679,6 +685,67 @@ describe("agent race", () => {
         timeoutMsg: "a racer never published its fakeagent OSC title",
       },
     );
+    return ids;
+  }
+
+  it("fires one prompt at 2 agents, each spawns and receives it", async () => {
+    await raceAndVerify(remoteName);
     await snap("agent-race.png");
+  });
+
+  // A purely local git repo (no remote) has no origin/main, yet the project
+  // default base IS origin/main — so without the base-ref fallback
+  // (resolve_base_ref in lib.rs) every racer's `git branch ... origin/main`
+  // dies with "not a valid object name" and the race can't start. This proves
+  // a race still works with the remote removed, cutting worktrees from local main.
+  describe("on a local-only repo (no remote)", () => {
+    before(() => {
+      try {
+        execSync(`git -C "${fixture}" remote remove origin`, { stdio: "ignore" });
+      } catch {
+        /* already remote-less */
+      }
+    });
+    after(() => {
+      // Restore the seeded origin so later specs/runs see origin/main again.
+      const seedOrigin = `${fixture}-origin.git`;
+      try {
+        execSync(`git -C "${fixture}" remote remove origin`, { stdio: "ignore" });
+      } catch {
+        /* none */
+      }
+      if (existsSync(seedOrigin)) {
+        try {
+          execSync(`git -C "${fixture}" remote add origin "${seedOrigin}"`, {
+            stdio: "ignore",
+          });
+        } catch {
+          /* already present */
+        }
+        execSync(`git -C "${fixture}" fetch -q origin`, { stdio: "ignore" });
+      }
+    });
+
+    it("races with no remote, cutting worktrees from local main", async () => {
+      // Precondition: origin/main genuinely does not resolve here.
+      let originResolves = true;
+      try {
+        execSync(`git -C "${fixture}" rev-parse --verify -q origin/main`, {
+          stdio: "ignore",
+        });
+      } catch {
+        originResolves = false;
+      }
+      expect(originResolves).toBe(false);
+
+      await raceAndVerify(localName);
+
+      // The racer branches were actually cut (from local main, the fallback).
+      const branches = execSync(
+        `git -C "${fixture}" branch --list "race/${localName}/*"`,
+      ).toString();
+      expect(branches).toContain(`race/${localName}/fakeagent-1`);
+      expect(branches).toContain(`race/${localName}/fakeagent-2`);
+    });
   });
 });
