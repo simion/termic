@@ -170,10 +170,14 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
   }, [taskId, children, loading]);
 
   // Force a re-read of one dir from disk + update the cache. Used after a
-  // context-menu rename/delete mutates that directory's contents. "" = root.
+  // context-menu rename/delete mutates that directory's contents, and on
+  // re-expand so a reopened folder reflects on-disk changes. "" = root.
+  // Diff against the cache first: an unchanged dir keeps its array refs so its
+  // rows don't re-render (sidebar re-render churn is a real regression).
   const refetchDir = useCallback(async (rel: string) => {
     try {
       const list = await taskDirList(taskId, rel);
+      if (sameChildren(childrenRef.current, { [rel]: list })) return;
       setChildren(c => ({ ...c, [rel]: list }));
       if (rel === "") setRootEntries(list);
     } catch (e) { console.error("refetch dir failed", rel, e); }
@@ -182,11 +186,17 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
   const toggle = useCallback((rel: string) => {
     setExpanded(s => {
       const n = new Set(s);
-      if (n.has(rel)) n.delete(rel); else { n.add(rel); ensureLoaded(rel); }
+      if (n.has(rel)) n.delete(rel);
+      else {
+        n.add(rel);
+        // First open loads (with a spinner); re-opening an already-cached dir
+        // silently re-reads it from disk so it reflects on-disk changes.
+        (childrenRef.current[rel] ? refetchDir : ensureLoaded)(rel);
+      }
       expandedByTask.set(taskId, n);
       return n;
     });
-  }, [ensureLoaded, taskId]);
+  }, [ensureLoaded, refetchDir, taskId]);
 
   // Reveal-in-tree: expand the path's ancestors, scroll to it, highlight it.
   // Driven by the store (set by the editor breadcrumb / locate button) so it

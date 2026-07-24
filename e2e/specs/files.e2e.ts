@@ -161,4 +161,52 @@ describe("file tree", () => {
     );
     await snap("file-tree.png");
   });
+
+  // Re-expanding an already-opened folder must re-read it from disk, so a file
+  // created while it was collapsed shows up on reopen WITHOUT any global tree
+  // reload (bumpFsRevision). Guards the on-demand per-dir refresh: before it,
+  // a re-expand served the stale cache and the new file stayed hidden.
+  it("re-expanding a folder re-reads only that dir from disk", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-tree"));
+
+    // A fresh folder with a single child, surfaced via a one-time root reload.
+    mkdirSync(path.join(fixture, "e2e-refresh"), { recursive: true });
+    writeFileSync(path.join(fixture, "e2e-refresh", "one.txt"), "1\n");
+    await browser.execute(
+      (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
+      taskId,
+    );
+    await browser.waitUntil(() => rowExists("e2e-refresh"), {
+      timeout: 10_000,
+      timeoutMsg: "the new folder never appeared in the tree",
+    });
+
+    // First expand caches + shows the initial child.
+    await clickRow("e2e-refresh");
+    await browser.waitUntil(() => rowExists("e2e-refresh/one.txt"), {
+      timeout: 8_000,
+      timeoutMsg: "expanding the folder did not reveal its first child",
+    });
+    // Collapse (the children cache is kept).
+    await clickRow("e2e-refresh");
+    await browser.waitUntil(
+      async () => (await rowExists("e2e-refresh/one.txt")) === false,
+      { timeout: 8_000, timeoutMsg: "collapsing the folder did not hide its child" },
+    );
+
+    // Add a SECOND file on disk — deliberately with NO bumpFsRevision, so the
+    // ONLY thing that can surface it is the re-expand re-reading this dir.
+    writeFileSync(path.join(fixture, "e2e-refresh", "two.txt"), "2\n");
+
+    // Re-expand → the on-demand refresh picks up the new file.
+    await clickRow("e2e-refresh");
+    await browser.waitUntil(() => rowExists("e2e-refresh/two.txt"), {
+      timeout: 8_000,
+      timeoutMsg: "re-expanding the folder did not re-read it from disk",
+    });
+    // The original child is still there too (a refresh, not a replace).
+    expect(await rowExists("e2e-refresh/one.txt")).toBe(true);
+  });
 });
