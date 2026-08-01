@@ -5,7 +5,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DiffTab, Task, GitFile } from "@/lib/types";
-import { taskFileDiffSides, taskGitStatus } from "@/lib/ipc";
+import { taskFileDiffSides, taskGitStatus, type DiffSides } from "@/lib/ipc";
+import { BinaryDiffBody } from "./BinaryDiffBody";
 import { orderedFiles, readView } from "./GitPanel";
 import { Button } from "@/components/ui/Button";
 import { FolderOpen, Columns2, AlignJustify, Eye } from "lucide-react";
@@ -60,6 +61,9 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   // just show a blank pane (issue #26). We render unified instead and
   // disable the toggle, without touching the persisted preference.
   const [oneSided, setOneSided] = useState(false);
+  // Set for an image/binary file, where there are no lines to diff: the
+  // CodeMirror views are never built and BinaryDiffBody renders instead.
+  const [binary, setBinary] = useState<DiffSides | null>(null);
   // True once a comment-bearing editor is mounted (either mode). Gates the
   // header "Comment" button so it never fires into a not-yet-built view.
   const [commentable, setCommentable] = useState(false);
@@ -151,14 +155,27 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
     let alive = true;
     setErr(null);
     setCommentable(false);
+    setBinary(null);
     taskFileDiffSides(task.id, tab.path, tab.scope).then(sides => {
       if (!alive || !hostRef.current) return;
+      setFp(sides.fp);
+      if (sides.kind !== "text") {
+        // Tear down whatever the previous file left mounted — this pane has
+        // no editor at all, and a stale MergeView would keep rendering.
+        mergeRef.current?.destroy();
+        mergeRef.current = null;
+        editorRef.current?.destroy();
+        editorRef.current = null;
+        hostRef.current.innerHTML = "";
+        setOneSided(false);
+        setBinary(sides);
+        return;
+      }
       // Existence flags, not content emptiness — "" is what BOTH a missing
-      // side and an empty (or non-UTF8) file serialize to, and a file
-      // truncated to 0 bytes still has two real sides to compare.
+      // side and an empty file serialize to, and a file truncated to 0 bytes
+      // still has two real sides to compare.
       const degenerate = !sides.original_exists || !sides.modified_exists;
       setOneSided(degenerate);
-      setFp(sides.fp);
       // Tear any prior view down before mounting the new one.
       mergeRef.current?.destroy();
       mergeRef.current = null;
@@ -341,8 +358,12 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
         </ContextMenuRoot>
         <div className="flex items-center gap-1">
           {/* Side-by-side ⇄ Unified toggle. Persisted in localStorage
-              so the user's preference sticks across launches. */}
-          <div className="mr-1 inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[2px]">
+              so the user's preference sticks across launches. Hidden for an
+              image/binary diff: both modes are line-based. */}
+          <div className={cn(
+            "mr-1 inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[2px]",
+            binary && "hidden",
+          )}>
             <button
               type="button"
               title="Unified (inline)"
@@ -396,11 +417,15 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
         </div>
       </div>
       {err && <div className="p-4 font-mono text-[12.5px] text-[var(--color-err)]">Error: {err}</div>}
+      {!err && binary && <BinaryDiffBody sides={binary} />}
+      {/* Hidden rather than unmounted while `binary` renders: the effect bails
+          on a null hostRef, so unmounting the CodeMirror parent here would
+          leave the next TEXT file in this tab with nowhere to mount. */}
       {!err && (
         <div
           ref={hostRef}
           data-selectable
-          className="min-h-0 flex-1 overflow-auto"
+          className={cn("min-h-0 flex-1 overflow-auto", binary && "hidden")}
         />
       )}
     </div>

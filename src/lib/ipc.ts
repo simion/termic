@@ -328,10 +328,25 @@ export const taskSpotlightStatus  = ()           => invoke<Record<string, string
 export const terminalStageFile = (taskId: string, src: string) =>
   invoke<string>("terminal_stage_file", { taskId, src });
 export const taskFileDiff = (id: string, path: string) => invoke<string>("task_file_diff", { id, path });
+/** Both sides of a file diff. `kind` picks the body the diff pane renders:
+ *  "text" carries `original`/`modified` for CodeMirror, "image" carries the
+ *  base64 of each side (+ `mime`) for an <img>, "binary" carries neither and
+ *  only the byte counts are shown. */
+export type DiffSides = {
+  original: string;
+  modified: string;
+  original_exists: boolean;
+  modified_exists: boolean;
+  fp: string;
+  kind: "text" | "image" | "binary";
+  mime?: string;
+  original_data?: string;
+  modified_data?: string;
+  original_bytes: number;
+  modified_bytes: number;
+};
 export const taskFileDiffSides = (id: string, path: string, scope?: "unstaged" | "staged") =>
-  invoke<{ original: string; modified: string; original_exists: boolean; modified_exists: boolean; fp: string }>(
-    "task_file_diff_sides", { id, path, scope: scope ?? null },
-  );
+  invoke<DiffSides>("task_file_diff_sides", { id, path, scope: scope ?? null });
 export const taskFileRead = (id: string, path: string) => invoke<string>("task_file_read", { id, path });
 /** Read a task image or PDF as base64, for the markdown preview's inline
  *  images or the file-tree preview pane (image/PDF extensions, 20 MB cap).

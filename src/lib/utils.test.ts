@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { slugify, branchify, shortPath } from "@/lib/utils";
+import { slugify, branchify, shortPath, formatBytes } from "@/lib/utils";
 
 // ── slugify ───────────────────────────────────────────────────────────
 
@@ -91,5 +91,35 @@ describe("shortPath", () => {
 
   it("handles root-like single segment without truncation", () => {
     expect(shortPath("/foo")).toBe("/foo");
+  });
+});
+
+// ── formatBytes ───────────────────────────────────────────────────────
+
+describe("formatBytes", () => {
+  it("shows raw bytes below 1 KB", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(812)).toBe("812 B");
+    expect(formatBytes(999)).toBe("999 B");
+  });
+
+  it("switches to KB at 1000 bytes", () => {
+    expect(formatBytes(1000)).toBe("1.0 KB");
+    expect(formatBytes(2450)).toBe("2.5 KB");
+  });
+
+  it("drops the decimal at 10 units and above", () => {
+    expect(formatBytes(9950)).toBe("10 KB");
+    expect(formatBytes(245_000)).toBe("245 KB");
+  });
+
+  it("steps up through MB and GB", () => {
+    expect(formatBytes(1_400_000)).toBe("1.4 MB");
+    expect(formatBytes(20_000_000)).toBe("20 MB");
+    expect(formatBytes(3_200_000_000)).toBe("3.2 GB");
+  });
+
+  it("stays in GB beyond the largest unit", () => {
+    expect(formatBytes(5_000_000_000_000)).toBe("5000 GB");
   });
 });

@@ -13,6 +13,10 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const seedDir = path.join(scriptDir, "e2e-seed");
 
+/** 1x1 transparent PNG — the committed side of the image-diff spec's fixture. */
+const TINY_PNG_B64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
 const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "ignore" });
 const shOut = (cmd, cwd) =>
   execSync(cmd, { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString();
@@ -43,6 +47,19 @@ export function seed(o = {}) {
     sh("git add .", fixture);
     sh(
       'git -c user.email=e2e@termic.dev -c user.name=e2e commit -q -m "init fixture"',
+      fixture,
+    );
+  }
+
+  // 1a. A committed 1x1 PNG, so the image-diff spec has a HEAD side to compare
+  // against. Separate from the block above (which only runs for a brand-new
+  // fixture) so an already-seeded checkout picks it up too.
+  const shot = path.join(fixture, "shot.png");
+  if (!existsSync(shot)) {
+    writeFileSync(shot, Buffer.from(TINY_PNG_B64, "base64"));
+    sh("git add shot.png", fixture);
+    sh(
+      'git -c user.email=e2e@termic.dev -c user.name=e2e commit -q -m "fixture image"',
       fixture,
     );
   }

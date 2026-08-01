@@ -383,5 +383,50 @@ describe("file tree", () => {
     // The original child is still there too (a refresh, not a replace).
     expect(await rowExists("e2e-refresh/one.txt")).toBe(true);
   });
+
+  // Clicking an image in the tree must render the picture, not an empty pane:
+  // the tab routes to PreviewPane (previewKindForPath) and the bytes arrive as
+  // base64 over taskFileReadBase64. The fixture's committed shot.png is the
+  // subject (scripts/e2e-seed.mjs).
+  it("previews an image clicked in the tree", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-tree"));
+    await ensureActiveTask(taskId);
+
+    await browser.waitUntil(() => rowExists("shot.png"), {
+      timeout: 10_000,
+      timeoutMsg: "shot.png never appeared in the tree",
+    });
+    await clickRow("shot.png");
+
+    // The tab opened as an edit tab...
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) =>
+            (window.__termic!.useApp.getState().tabs[id] ?? []).some(
+              (t: any) => t.type === "edit" && t.path === "shot.png",
+            ),
+          taskId,
+        ),
+      { timeout: 8_000, timeoutMsg: "clicking the image never opened a tab" },
+    );
+
+    // ...and it renders a real, decoded image rather than an empty pane.
+    await browser.waitUntil(
+      async () => {
+        const r = await browser.execute((id) => {
+          const pane = document.querySelector(`[data-task-id="${id}"]`);
+          const img = pane?.querySelector('img[src^="data:image/"]') as HTMLImageElement | null;
+          if (!img) return { found: false, w: 0, h: 0 };
+          return { found: true, w: img.naturalWidth, h: img.naturalHeight };
+        }, taskId);
+        return r.found && r.w > 0 && r.h > 0;
+      },
+      { timeout: 10_000, timeoutMsg: "the image preview never rendered decoded pixels" },
+    );
+    await snap("image-preview.png");
+  });
 });
 

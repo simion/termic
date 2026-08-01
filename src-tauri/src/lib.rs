@@ -1076,7 +1076,9 @@ fn migrate_workspaces_to_tasks() {
 
 // ───────────────────────────── git ─────────────────────────────
 
-fn git(args: &[&str], cwd: &Path) -> Result<String> {
+/// Raw stdout, for callers that read blobs (`git show HEAD:some.png`) where
+/// a lossy UTF-8 decode would destroy the bytes.
+fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(cwd);
     // Run with the user's login-shell environment, same as the PTY (see
@@ -1093,7 +1095,11 @@ fn git(args: &[&str], cwd: &Path) -> Result<String> {
     if !out.status.success() {
         return Err(anyhow!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr)));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(out.stdout)
+}
+
+fn git(args: &[&str], cwd: &Path) -> Result<String> {
+    Ok(String::from_utf8_lossy(&git_bytes(args, cwd)?).into_owned())
 }
 
 /// Time-bounded fetch of a single ref. `remote_ref` is like "origin/develop":
@@ -6242,6 +6248,9 @@ fn task_path_stat(id: String, path: String) -> Result<PathStat, String> {
     check_task_path_existence(&cwd, &rel)
 }
 
+/// Ceiling on bytes shipped to the webview for a preview or an image diff.
+const PREVIEW_CAP: u64 = 20_000_000;
+
 /// Read `abs` capped at `cap` bytes, TOCTOU-safe: the size/type check runs
 /// against an `fstat` on the already-OPEN handle (not a separate path-based
 /// `metadata()` call), so a swap between the check and the read (symlink
@@ -6343,7 +6352,7 @@ fn task_file_read_base64_for_task(w: &Task, path: &str, known_fp: Option<&str>) 
             return Ok(Base64Read { unchanged: true, mime: None, data: None, fp: current_fp });
         }
     }
-    let bytes = read_capped_file(&abs, 20_000_000)?;
+    let bytes = read_capped_file(&abs, PREVIEW_CAP)?;
     // Re-stat AFTER the read so `fp` is correlated with the bytes just
     // returned (not the pre-read snapshot, which a concurrent write
     // could have already invalidated).
@@ -6381,7 +6390,7 @@ fn read_preview_file_for_task(w: &Task, path: &str) -> Result<(Vec<u8>, &'static
     let (cwd, rel) = resolve_task_git_path(w, path)?;
     let abs = safe_task_path(&cwd, &rel)?;
     let mime = preview_mime_for_ext(&abs).ok_or_else(|| format!("not previewable: {path}"))?;
-    let bytes = read_capped_file(&abs, 20_000_000)?;
+    let bytes = read_capped_file(&abs, PREVIEW_CAP)?;
     Ok((bytes, mime))
 }
 
@@ -6524,12 +6533,14 @@ fn reveal_command(os: &str, target: &str) -> (&'static str, Vec<String>) {
 /// deleted in the worktree).
 #[derive(Serialize)]
 struct FileDiffSides {
+    /// Decoded contents, `kind == "text"` only — "" for image/binary, whose
+    /// bytes travel in `original_data`/`modified_data` (or not at all).
     original: String,
     modified: String,
-    /// Whether each side actually exists (and is readable as UTF-8): the
-    /// content strings are "" both for a MISSING side and for an EMPTY
-    /// file, so the frontend's one-sided detection needs these to avoid
-    /// misclassifying a truncated-to-empty file as "new or deleted".
+    /// Whether each side actually exists: the content strings are "" both for
+    /// a MISSING side and for an EMPTY file, so the frontend's one-sided
+    /// detection needs these to avoid misclassifying a truncated-to-empty
+    /// file as "new or deleted".
     original_exists: bool,
     modified_exists: bool,
     /// Working-tree fingerprint (`mtime_nanos:len`) of the modified file,
@@ -6537,6 +6548,19 @@ struct FileDiffSides {
     /// the same fingerprint the Git panel rows use (store/fileViewed.ts).
     #[serde(default)]
     fp: String,
+    /// "text" | "image" | "binary" — which body the diff pane renders. A PNG
+    /// used to decode into a screenful of U+FFFD on the deleted-line wash;
+    /// see `diff_sides_kind`.
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime: Option<String>,
+    /// Base64 of each side, `kind == "image"` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified_data: Option<String>,
+    original_bytes: u64,
+    modified_bytes: u64,
 }
 
 /// Resolve a task-relative path to (member cwd, path relative to that
@@ -6568,7 +6592,28 @@ fn resolve_task_git_path(w: &Task, path: &str) -> Result<(PathBuf, String), Stri
     resolve_task_git_path_ex(w, path, false)
 }
 
+/// Which body the diff pane renders for these two sides. Text wins whenever
+/// every present side decodes as UTF-8, so an `.svg` (or any other textual
+/// format with an image-ish extension) keeps its line-by-line diff. Images
+/// are shipped as base64 only under the same 20 MB ceiling the preview
+/// channel uses — a bigger one would jank the webview, so it degrades to the
+/// "binary" summary rather than being sent.
+fn diff_sides_kind(abs: Option<&Path>, sides: [Option<&Vec<u8>>; 2]) -> &'static str {
+    let present = || sides.into_iter().flatten();
+    if present().all(|b| std::str::from_utf8(b).is_ok()) {
+        return "text";
+    }
+    let is_image = abs
+        .and_then(preview_mime_for_ext)
+        .is_some_and(|m| m.starts_with("image/"));
+    if is_image && present().all(|b| b.len() as u64 <= PREVIEW_CAP) {
+        return "image";
+    }
+    "binary"
+}
+
 fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> Result<FileDiffSides, String> {
+    use base64::Engine as _;
     let (cwd, rel_path) = resolve_task_git_path(w, path)?;
     // Which two sides to compare depends on where the click came from
     // (GH #122):
@@ -6581,26 +6626,46 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
     //
     // `git show :0:path` reads the index (stage 0); it fails for an
     // untracked path just like `show HEAD:path` fails for a new file.
-    // read_to_string fails for non-UTF8. Either way the side is
-    // unrenderable → exists=false, content "".
+    // Either way the side doesn't exist → exists=false, content "".
+    //
+    // Both sides are read as BYTES: `git()` lossily decodes, which turned a
+    // PNG blob into a screenful of replacement characters.
     let modified_path = safe_task_path(&cwd, &rel_path).ok();
+    // Uncapped, like the `git show` sides: a cap here would report an
+    // oversized file as MISSING, i.e. as a deletion. Size only decides what
+    // gets shipped to the webview (`diff_sides_kind`), not what exists.
     let read_worktree = || match &modified_path {
-        Some(p) if p.exists() => fs::read_to_string(p).ok(),
+        Some(p) if p.exists() => fs::read(p).ok(),
         _ => None,
     };
-    let show_head = || git(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
-    let show_index = || git(&["--no-pager", "show", &format!(":0:{rel_path}")], &cwd).ok();
+    let show_head = || git_bytes(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
+    let show_index = || git_bytes(&["--no-pager", "show", &format!(":0:{rel_path}")], &cwd).ok();
     let (original, modified) = match scope {
         Some("staged") => (show_head(), show_index()),
         Some("unstaged") => (show_index(), read_worktree()),
         _ => (show_head(), read_worktree()),
     };
     let fp = modified_path.as_deref().map(file_fp).unwrap_or_default();
+    let kind = diff_sides_kind(modified_path.as_deref(), [original.as_ref(), modified.as_ref()]);
+    let b64 = |side: &Option<Vec<u8>>| {
+        side.as_ref().map(|b| base64::engine::general_purpose::STANDARD.encode(b))
+    };
+    let text = |side: &Option<Vec<u8>>| {
+        side.as_ref().map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default()
+    };
     Ok(FileDiffSides {
         original_exists: original.is_some(),
         modified_exists: modified.is_some(),
-        original: original.unwrap_or_default(),
-        modified: modified.unwrap_or_default(),
+        original_bytes: original.as_ref().map(|b| b.len() as u64).unwrap_or_default(),
+        modified_bytes: modified.as_ref().map(|b| b.len() as u64).unwrap_or_default(),
+        original: if kind == "text" { text(&original) } else { String::new() },
+        modified: if kind == "text" { text(&modified) } else { String::new() },
+        mime: (kind == "image")
+            .then(|| modified_path.as_deref().and_then(preview_mime_for_ext).map(str::to_string))
+            .flatten(),
+        original_data: if kind == "image" { b64(&original) } else { None },
+        modified_data: if kind == "image" { b64(&modified) } else { None },
+        kind,
         fp,
     })
 }
@@ -11551,6 +11616,105 @@ mod tests {
         let unstaged = task_file_diff_sides_for_task(&task, "base.txt", Some("unstaged")).unwrap();
         assert_eq!(unstaged.original, "staged content\n");
         assert_eq!(unstaged.modified, "worktree content\n");
+
+        assert_eq!(full.kind, "text");
+        assert_eq!(full.original_bytes, "base content\n".len() as u64);
+    }
+
+    /// A 1×1 transparent PNG — real enough that an <img> renders it.
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+        0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+        0x42, 0x60, 0x82,
+    ];
+
+    /// `git_commit_file` takes a &str, so binary fixtures commit their bytes
+    /// here instead.
+    fn git_commit_bytes(repo: &Path, name: &str, bytes: &[u8]) {
+        fs::write(repo.join(name), bytes).unwrap();
+        git_run(repo, &["add", "."]);
+        git_run(repo, &["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "-m", name]);
+    }
+
+    fn task_at(dir: &Path) -> Task {
+        Task { path: dir.to_string_lossy().into_owned(), ..Default::default() }
+    }
+
+    #[test]
+    fn diff_sides_ships_both_png_sides_as_base64() {
+        use base64::Engine as _;
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        git_commit_bytes(dir.path(), "shot.png", TINY_PNG);
+        // Any different bytes; the modified side just has to not equal HEAD.
+        let edited: Vec<u8> = TINY_PNG.iter().copied().chain([0u8, 1, 2]).collect();
+        fs::write(dir.path().join("shot.png"), &edited).unwrap();
+
+        let sides = task_file_diff_sides_for_task(&task_at(dir.path()), "shot.png", None).unwrap();
+        assert_eq!(sides.kind, "image");
+        assert_eq!(sides.mime.as_deref(), Some("image/png"));
+        assert!(sides.original_exists && sides.modified_exists);
+        // The whole point: bytes survive the round trip instead of being
+        // lossily decoded into U+FFFD.
+        let dec = |s: &Option<String>| {
+            base64::engine::general_purpose::STANDARD.decode(s.as_ref().unwrap()).unwrap()
+        };
+        assert_eq!(dec(&sides.original_data), TINY_PNG);
+        assert_eq!(dec(&sides.modified_data), edited);
+        assert_eq!(sides.original_bytes, TINY_PNG.len() as u64);
+        assert_eq!(sides.modified_bytes, edited.len() as u64);
+        // Text fields stay empty for a non-text diff.
+        assert!(sides.original.is_empty() && sides.modified.is_empty());
+        assert!(!sides.fp.is_empty());
+    }
+
+    #[test]
+    fn diff_sides_reports_an_untracked_png_as_a_one_sided_image() {
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        fs::write(dir.path().join("new.png"), TINY_PNG).unwrap();
+
+        let sides = task_file_diff_sides_for_task(&task_at(dir.path()), "new.png", None).unwrap();
+        assert_eq!(sides.kind, "image");
+        assert!(!sides.original_exists);
+        assert!(sides.modified_exists);
+        assert!(sides.original_data.is_none());
+        assert!(sides.modified_data.is_some());
+        assert_eq!(sides.original_bytes, 0);
+        assert_eq!(sides.modified_bytes, TINY_PNG.len() as u64);
+    }
+
+    #[test]
+    fn diff_sides_summarizes_a_non_image_binary_without_shipping_bytes() {
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        git_commit_bytes(dir.path(), "blob.bin", &[0u8, 159, 146, 150]);
+        fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 3, 4, 5]).unwrap();
+
+        let sides = task_file_diff_sides_for_task(&task_at(dir.path()), "blob.bin", None).unwrap();
+        assert_eq!(sides.kind, "binary");
+        assert!(sides.mime.is_none());
+        assert!(sides.original_data.is_none() && sides.modified_data.is_none());
+        assert_eq!(sides.original_bytes, 4);
+        assert_eq!(sides.modified_bytes, 6);
+    }
+
+    #[test]
+    fn diff_sides_keeps_svg_as_a_text_diff() {
+        // SVG is in the image extension whitelist but is valid UTF-8, and a
+        // line diff of the changed attribute beats two pictures.
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        git_commit_bytes(dir.path(), "icon.svg", b"<svg width=\"1\"/>\n");
+        fs::write(dir.path().join("icon.svg"), "<svg width=\"2\"/>\n").unwrap();
+
+        let sides = task_file_diff_sides_for_task(&task_at(dir.path()), "icon.svg", None).unwrap();
+        assert_eq!(sides.kind, "text");
+        assert_eq!(sides.original, "<svg width=\"1\"/>\n");
+        assert_eq!(sides.modified, "<svg width=\"2\"/>\n");
+        assert!(sides.original_data.is_none() && sides.modified_data.is_none());
     }
 
     // ──────────────── spotlight git mechanics ────────────────

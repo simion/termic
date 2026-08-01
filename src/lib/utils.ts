@@ -27,6 +27,19 @@ export function cleanLines(input: string | string[]): string[] {
   return arr.map(l => l.trim()).filter(Boolean);
 }
 
+/** Byte count as "812 B" / "245 KB" / "1.4 MB" (decimal units, one decimal
+ *  place below 10 of a unit). */
+export function formatBytes(n: number) {
+  if (n < 1000) return `${n} B`;
+  const units = ["KB", "MB", "GB"];
+  let v = n / 1000;
+  let i = 0;
+  while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+  // 9.95, not 10: toFixed(1) would round it up to a "10.0" that contradicts
+  // the one-decimal-below-10 rule.
+  return v < 9.95 ? `${v.toFixed(1)} ${units[i]}` : `${Math.round(v)} ${units[i]}`;
+}
+
 /** Truncate path to "…/last/two/segments" when it gets long. */
 export function shortPath(p: string, segments = 2) {
   const parts = p.split("/").filter(Boolean);

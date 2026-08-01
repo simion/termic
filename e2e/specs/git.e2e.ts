@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { archiveTask, clickByText, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone } from "../helpers";
@@ -107,11 +107,127 @@ describe("git dirty tree", () => {
   });
 });
 
+// Tasks here open the repo ROOT, so every case below edits this one working
+// tree and has to put it back.
+const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
+
+// P1: a diff on a PNG renders pictures, not the screenful of U+FFFD that a
+// lossy decode of `git show HEAD:shot.png` used to produce. The fixture repo
+// carries a committed 1x1 PNG (scripts/e2e-seed.mjs), so both sides exist.
+describe("image diff", () => {
+  let taskId: string | undefined;
+  // Different bytes, still a valid PNG (2x1 instead of 1x1) so the After side
+  // decodes and reports its own dimensions.
+  const EDITED_PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGO4WR7+H4QBF40FTdFBOmcAAAAASUVORK5CYII=";
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    // Tasks open the repo ROOT (taskOpenRepo), so these cases dirty the shared
+    // fixture in place — restore both files or the commit spec below sees a
+    // tree that never goes clean.
+    execSync(`git -C "${fixture}" checkout -- shot.png README.md`);
+  });
+
+  const diffPaneText = () =>
+    browser.execute((id) => {
+      const pane = document.querySelector(`[data-task-id="${id}"]`) ?? document.body;
+      return (pane as HTMLElement).innerText;
+    }, taskId);
+
+  it("renders both sides of a changed PNG as images", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-image-diff");
+
+    // Write the new bytes straight into the task worktree: taskFileWrite is
+    // String-only, and this file is binary by design.
+    const taskPath = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.path,
+      taskId,
+    );
+    writeFileSync(path.join(taskPath as string, "shot.png"), Buffer.from(EDITED_PNG_B64, "base64"));
+
+    await browser.execute((id) => {
+      window.__termic!.useApp.getState().bumpGitRevision(id);
+      window.__termic!.useApp.getState().openPreviewTab(id, {
+        type: "diff",
+        path: "shot.png",
+        title: "Δ shot.png",
+        scope: "unstaged",
+      });
+    }, taskId);
+
+    // Two <img>, one per side, both fed by the base64 diff channel.
+    await browser.waitUntil(
+      async () => {
+        const n = await browser.execute(() =>
+          document.querySelectorAll('img[src^="data:image/png;base64,"]').length);
+        return n === 2;
+      },
+      { timeout: 10_000, timeoutMsg: "the image diff never rendered two <img> sides" },
+    );
+
+    // Dimensions are read off the decoded images, so this also proves the
+    // bytes survived the round trip rather than arriving corrupted.
+    await browser.waitUntil(
+      async () => {
+        const txt = await diffPaneText();
+        return txt.includes("1×1") && txt.includes("2×1");
+      },
+      { timeout: 10_000, timeoutMsg: "per-side dimensions never appeared" },
+    );
+
+    // Case-insensitive: the labels are CSS-uppercased, and innerText only
+    // reflects that while the window is actually rendering — occluded, it
+    // falls back to the raw "Before"/"After".
+    const txt = (await diffPaneText()).toUpperCase();
+    expect(txt).toContain("BEFORE");
+    expect(txt).toContain("AFTER");
+    // The bug this replaces: a wall of replacement characters.
+    expect(txt).not.toContain("�");
+
+    await snap("image-diff.png");
+  });
+
+  it("does not mount a CodeMirror editor for the image diff", async () => {
+    const editors = await browser.execute((id) => {
+      const pane = document.querySelector(`[data-task-id="${id}"]`);
+      return pane ? pane.querySelectorAll(".cm-editor").length : -1;
+    }, taskId);
+    expect(editors).toBe(0);
+  });
+
+  it("still renders a text diff as CodeMirror in the same task", async () => {
+    // Negative control: the kind branch must not swallow ordinary files.
+    await browser.execute(async (id) => {
+      const orig = await window.__termic!.ipc.taskFileRead(id, "README.md");
+      await window.__termic!.ipc.taskFileWrite(id, "README.md", orig + "\nimage-diff control\n");
+      window.__termic!.useApp.getState().bumpGitRevision(id);
+      window.__termic!.useApp.getState().openPreviewTab(id, {
+        type: "diff",
+        path: "README.md",
+        title: "Δ README.md",
+        scope: "unstaged",
+      });
+    }, taskId);
+
+    await browser.waitUntil(
+      async () => {
+        const n = await browser.execute((id) => {
+          const pane = document.querySelector(`[data-task-id="${id}"]`);
+          return pane ? pane.querySelectorAll(".cm-editor").length : 0;
+        }, taskId);
+        return n > 0;
+      },
+      { timeout: 10_000, timeoutMsg: "the text diff never mounted CodeMirror" },
+    );
+  });
+});
+
 // P1: the staging + commit backend (Fork-style). Cases: a changed file can be
 // staged (moves to the staged list), and committing it leaves the tree clean.
 // Teardown hard-resets the fixture repo so its HEAD/tree are exactly restored.
-const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
-
 describe("git stage & commit", () => {
   let taskId: string | undefined;
   let headSha = "";
