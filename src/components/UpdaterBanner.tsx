@@ -40,20 +40,35 @@ export function UpdaterBanner() {
   const hideDevPill =
     import.meta.env.VITE_HIDE_DEV_PILL === "1" ||
     import.meta.env.VITE_HIDE_DEV_PILL === "true";
+  // Injected by vite.config.ts from `git rev-parse --abbrev-ref HEAD` at
+  // dev-server startup. One `tauri dev` window per worktree is otherwise
+  // indistinguishable at a glance. Absent in release builds, where the
+  // Beta pill already names what it was built from.
+  const branch: string | undefined = import.meta.env.VITE_GIT_BRANCH;
   if (import.meta.env.DEV && !update && !hideDevPill) {
     return isE2E ? (
       <span
-        title="Driven by the e2e automation bridge (TERMIC_AUTOMATION=1)."
-        className="flex select-none items-center rounded-full border border-[var(--color-err)]/50 bg-[var(--color-err)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-err)]"
+        title={`Driven by the e2e automation bridge (TERMIC_AUTOMATION=1).${branch ? ` Branch: ${branch}.` : ""}`}
+        className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-err)]/50 bg-[var(--color-err)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-err)]"
       >
         E2E
+        {branch && (
+          <span className="max-w-[220px] truncate font-mono text-[10px] font-normal normal-case tracking-normal opacity-80">
+            {branch}
+          </span>
+        )}
       </span>
     ) : (
       <span
-        title="Development build, not a released version."
-        className="flex select-none items-center rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-warn)]"
+        title={`Development build, not a released version.${branch ? ` Branch: ${branch}.` : ""}`}
+        className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-warn)]"
       >
         DEV
+        {branch && (
+          <span className="max-w-[220px] truncate font-mono text-[10px] font-normal normal-case tracking-normal opacity-80">
+            {branch}
+          </span>
+        )}
       </span>
     );
   }

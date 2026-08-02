@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
+import { execSync } from "node:child_process";
 
 // Tauri dev runs us via `tauri dev`. The default port is 1420; set the
 // PORT env var to run on another port (`PORT=1430 npm run tauri:dev`) —
@@ -9,6 +10,23 @@ import path from "node:path";
 // port+1. strictPort stays true — a silent fallback port would just
 // leave Tauri loading a blank window.
 const devPort = Number(process.env.PORT) || 1420;
+
+// Surface which branch a dev window is running so multiple `tauri:dev`
+// instances (one per worktree) are distinguishable in the DEV/E2E pill
+// (UpdaterBanner.tsx). Setting process.env here (rather than a `define`)
+// lets Vite's normal VITE_-prefix pickup expose it as
+// import.meta.env.VITE_GIT_BRANCH, the same mechanism as VITE_MOCK_UPDATE.
+if (!process.env.VITE_GIT_BRANCH) {
+  try {
+    process.env.VITE_GIT_BRANCH = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: __dirname,
+    })
+      .toString()
+      .trim();
+  } catch {
+    // Not a git checkout (e.g. a release build's source archive), leave unset.
+  }
+}
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
