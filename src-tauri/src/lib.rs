@@ -3779,6 +3779,14 @@ fn ensure_multirepo_gitignore(wrapper: &Path, member_dirs: &[String]) -> std::io
 /// are left alone — `order` only ever competes inside one project's list.
 /// Only changed tasks are rewritten, so dropping a row back where it started
 /// touches no files.
+///
+/// CONTRACT, NOT ENFORCED: every id must belong to the SAME project. This
+/// function does not check, and the only caller that guarantees it is
+/// `endTaskDrag` in Sidebar.tsx, which filters to the dragged task's project
+/// before calling. Handing it ids from two projects is not corrupting (each
+/// project's rows still sort deterministically, since `order` is only ever
+/// compared inside one project's filtered list) but the resulting positions
+/// are meaningless.
 #[tauri::command]
 fn task_reorder(ids: Vec<String>) -> Result<(), String> {
     let mut list = load_tasks();
