@@ -86,6 +86,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Project add/remove | Add a git repo as a project; remove drops it | `projects.e2e.ts` |
 | ✅ Agent settings | Disable/re-enable an agent CLI via agentsSave | `agent.e2e.ts` |
 | ✅ Run config modal | The #124 run-commands manager opens for a project | `run.e2e.ts` |
+| ✅ PDF preview | A hidden PDF tab keeps its `display` (main tab and split pane) while a hidden terminal still goes to display:none; the embed URL is fingerprint-keyed, so only a real rewrite reloads it | `editor.e2e.ts` |
 
 ## CLI control plane (Phase 1/2)
 
@@ -112,7 +113,7 @@ Lower-value or high-setup items left for later; the patterns to do them are all 
 - **Second live agent in one task / quick-create / multi-member project** — heavy fixture setup (agent-tab construction, multi-repo members) for low marginal coverage. Resume (`resume-tab`) covers the reopen path.
 - **Run-at-repo-root (spotlight)** — needs spotlight state; the run-tab mechanism is covered (`run`, `run-scripts` via proxy).
 - **Configured `.termic.yaml` run scripts via the Run button** — covered by proxy: `setup-script` (configured-script launch) + `run` (run-tab mechanism) + `repo-config` (config persistence). The live Run-button path has a config-cache nuance not worth the flake.
-- **Image/PDF preview, file create/rename/delete via context menu, file-tree reveal** — need binary fixtures or Radix context-menu driving (flaky, no clean IPC).
+- **File create/rename/delete via context menu, file-tree reveal** — need Radix context-menu driving (flaky, no clean IPC). Binary previews are no longer on this list: image preview is covered by `files.e2e.ts`, PDF preview by `editor.e2e.ts` (which builds a tiny valid PDF inline rather than committing a fixture).
 - **Prompts management, keybindings editor** — config-file editing, low value.
 
 ## Environment-limited (not robustly testable here)
@@ -123,6 +124,7 @@ These are intentionally NOT covered by written specs — asserting them would be
 - **Keyboard shortcuts into CodeMirror** (e.g. ⌘F search) don't route reliably across window-focus states — manual check. Button-driven editor actions (Preview) ARE covered.
 - **Real keystrokes into xterm / CodeMirror** (contenteditable + WebGL canvas) — WebDriver key events don't route there reliably. Covered by proxy: PTY round-trips via `ipc.ptyWrite` (`task-spawn`, `message-queue`) and editor edits via the CodeMirror view API (`editor-save`).
 - **Commit-and-push / setup script / resume-closed-tab** — need mock-remote / `.termic.yaml` / multi-agent-tab infra with careful fixture cleanup; deferred, tracked above.
+- **The page a PDF is scrolled to** — it lives in WKWebView's native PDF view, which exposes nothing to the DOM. The spec asserts the two mechanisms that keep that view (and its page) alive; the page itself is a manual check.
 
 ## Known harness gotchas (read before writing a spec)
 

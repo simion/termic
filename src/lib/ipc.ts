@@ -359,6 +359,12 @@ export const taskFileReadBase64 = (id: string, path: string, knownFp?: string) =
   invoke<{ unchanged: boolean; mime?: string; data?: string; fp: string }>(
     "task_file_read_base64", { id, path, knownFp },
   );
+/** The `mtime:len` fingerprint of a previewable file, stat only, no read.
+ *  The PDF pane uses it to tell a real rewrite from a routine agent-settle
+ *  tick: reloading the `<embed>` costs the reader their page, so the URL only
+ *  changes when this string does. `""` means missing or unreadable. */
+export const taskFileFp = (id: string, path: string) =>
+  invoke<string>("task_file_fp", { id, path });
 /** Does a task-relative path exist, and is it a directory? Tolerates a
  *  missing target (returns `{ exists: false, is_dir: false }` rather than
  *  erroring) so the markdown preview's link handler can show a real "not

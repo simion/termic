@@ -7,6 +7,14 @@
 // display:none (NOT visibility:hidden) is load-bearing: xterm's renderer
 // only pauses on zero geometry, so a visibility-hidden terminal still runs
 // WebGL draws for every TUI repaint. See MainArea for the full story.
+//
+// One exception, and only one: a hidden PDF tab keeps its `display` and goes
+// to opacity 0 instead (keepsDisplayWhenHidden). WKWebView tears down the
+// native PDF view inside a display:none subtree and rebuilds it at page 1,
+// and no DOM state survives to restore the reader's place. The perf argument
+// above doesn't reach it — a PDF is a static image that never repaints, so a
+// painted-but-invisible one costs a composite, not a WebGL draw loop. Do NOT
+// widen this to terminals.
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Task, Tab, TerminalTab } from "@/lib/types";
@@ -28,7 +36,7 @@ import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
 import { dirnamePosix, MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
-import { previewKindForPath } from "@/lib/previewPaths";
+import { keepsDisplayWhenHidden, previewKindForPath } from "@/lib/previewPaths";
 const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.EditorPane })));
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
@@ -328,15 +336,29 @@ export function TaskView({ task }: { task: Task }) {
               const attrs = leaf
                 ? { "data-split-leaf": "", "data-pane-id": leaf.id, "data-tab-id": t.id }
                 : { "data-main-content": "", "data-main-tab-id": t.id };
+              // A hidden PDF tab is the one exception to display:none (see
+              // file header): opacity 0 keeps its native <embed> in the
+              // render tree, and with it the page the user was reading.
+              const keepDisplay = !visible && keepsDisplayWhenHidden(t);
               return (
                 <div
                   key={t.id}
                   {...attrs}
                   tabIndex={-1}
+                  // inert only ever applies to a hidden pane: an invisible
+                  // PDF is still a real element, and must take neither focus
+                  // nor a stray click.
+                  inert={keepDisplay}
                   className="pointer-events-auto absolute overflow-hidden outline-none"
                   // display:none, not visibility:hidden — pauses the hidden
                   // tab's xterm/CodeMirror rendering (see file header).
-                  style={{ ...style, display: visible ? undefined : "none", zIndex: visible ? 1 : 0 }}
+                  style={{
+                    ...style,
+                    ...(keepDisplay
+                      ? { opacity: 0, pointerEvents: "none" as const }
+                      : { display: visible ? undefined : "none" }),
+                    zIndex: visible ? 1 : 0,
+                  }}
                   onMouseDown={() => {
                     const target = leaf ? leaf.id : mainLeafId;
                     if (target && splitActivePaneId !== target) setActivePaneId(task.id, target);

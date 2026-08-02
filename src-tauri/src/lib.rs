@@ -6380,6 +6380,34 @@ async fn task_file_read_base64(id: String, path: String, known_fp: Option<String
     .map_err(|e| e.to_string())?
 }
 
+/// The `mtime:len` fingerprint of a previewable file, with NO read at all —
+/// same member-aware resolution, containment and extension allowlist as the
+/// base64 read, minus the bytes. The PDF pane asks for this on every
+/// agent-settle tick to decide whether its `<embed>` needs a new URL: a
+/// reload throws the reader back to page 1 (WKWebView keeps no scroll state
+/// across one), so an unchanged PDF must keep the URL it already has. The
+/// base64 channel can't answer that question as cheaply — on a real change it
+/// reads and encodes the whole `PREVIEW_CAP` of file just to be thrown away,
+/// since the bytes reach the webview through the `taskpdf:` scheme instead.
+/// A missing file is an `Err` (`safe_task_path` can't canonicalize it), the
+/// same answer the base64 read gives; the empty-string case `file_fp` returns
+/// is left to a path that resolves but won't stat.
+fn task_file_fp_for_task(w: &Task, path: &str) -> Result<String, String> {
+    let (cwd, rel) = resolve_task_git_path(w, path)?;
+    let abs = safe_task_path(&cwd, &rel)?;
+    preview_mime_for_ext(&abs).ok_or_else(|| format!("not previewable: {path}"))?;
+    Ok(file_fp(&abs))
+}
+
+/// Stat a previewable file and return its `mtime:len` fingerprint. Sync: one
+/// `metadata()` call, nowhere near the multi-MB reads the async IPC
+/// discipline targets.
+#[tauri::command]
+fn task_file_fp(id: String, path: String) -> Result<String, String> {
+    let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+    task_file_fp_for_task(&w, &path)
+}
+
 /// Read an allowlisted preview file (image/PDF) as raw bytes + mime, reusing
 /// the SAME member-aware resolution, worktree containment, extension
 /// allowlist, and 20 MB cap as `task_file_read_base64_for_task` — just
@@ -10544,7 +10572,7 @@ pub fn run() {
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_files, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
-            task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_write, task_dir_list, task_path_stat,
+            task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
@@ -11304,6 +11332,54 @@ mod tests {
         let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
 
         assert!(task_file_read_base64_for_task(&task, "notes.txt", None).is_err());
+    }
+
+    #[test]
+    fn task_file_fp_for_task_changes_only_when_the_bytes_change() {
+        // The PDF pane reuses its <embed> URL while this string holds, so a
+        // rewrite MUST move it and a re-stat of untouched bytes must not.
+        let dir = tempdir().unwrap();
+        let pdf = dir.path().join("report.pdf");
+        fs::write(&pdf, b"%PDF-1.4\none page").unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        let first = task_file_fp_for_task(&task, "report.pdf").unwrap();
+        assert!(!first.is_empty());
+        assert_eq!(task_file_fp_for_task(&task, "report.pdf").unwrap(), first);
+
+        fs::write(&pdf, b"%PDF-1.4\none page, rewritten longer").unwrap();
+        assert_ne!(task_file_fp_for_task(&task, "report.pdf").unwrap(), first);
+    }
+
+    #[test]
+    fn task_file_fp_for_task_resolves_member_path() {
+        let host = tempdir().unwrap();
+        let member = tempdir().unwrap();
+        fs::write(member.path().join("report.pdf"), b"%PDF-1.4\n").unwrap();
+        let task = task_with_member("docs", host.path(), member.path());
+
+        assert!(!task_file_fp_for_task(&task, "docs/report.pdf").unwrap().is_empty());
+    }
+
+    #[test]
+    fn task_file_fp_for_task_rejects_non_previewable_extension() {
+        // A stat is not a read, but this must not become a generic "does the
+        // agent's private key exist, and how big is it" oracle either.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("id_rsa"), "secret").unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        assert!(task_file_fp_for_task(&task, "id_rsa").is_err());
+    }
+
+    #[test]
+    fn task_file_fp_for_task_errors_on_a_missing_file() {
+        // Same answer the base64 read gives; the PDF pane keeps whatever it
+        // has on screen rather than reloading on it.
+        let dir = tempdir().unwrap();
+        let task = Task { path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        assert!(task_file_fp_for_task(&task, "gone.pdf").is_err());
     }
 
     #[test]
