@@ -11373,6 +11373,25 @@ mod tests {
     }
 
     #[test]
+    fn task_file_fp_for_task_rejects_a_symlink_escaping_the_worktree() {
+        // A `.pdf` NAME is not a `.pdf` LOCATION: containment is decided by
+        // `safe_task_path`, which canonicalizes through the symlink before
+        // the extension is ever looked at, so an in-worktree link pointing
+        // out cannot turn this into a stat oracle for the whole disk.
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("elsewhere.pdf"), b"%PDF-1.4\n").unwrap();
+        let ws = tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("elsewhere.pdf"),
+            ws.path().join("looks-local.pdf"),
+        )
+        .unwrap();
+        let task = Task { path: ws.path().to_string_lossy().into_owned(), ..Default::default() };
+
+        assert!(task_file_fp_for_task(&task, "looks-local.pdf").is_err());
+    }
+
+    #[test]
     fn task_file_fp_for_task_errors_on_a_missing_file() {
         // Same answer the base64 read gives; the PDF pane keeps whatever it
         // has on screen rather than reloading on it.
