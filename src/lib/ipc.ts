@@ -41,6 +41,11 @@ export const projectSetGroup = (ids: string[], group: string | null) =>
 // ───────────────────────────── tasks ─────────────────────────────
 
 export const tasksList    = () => invoke<Task[]>("tasks_list");
+/** Persist the sidebar order of ONE project's tasks: `ids` is that project's
+ *  visible task list top-to-bottom. Each task stores its index, so unlike
+ *  `projectReorder` (whose array order IS the order) tasks in other projects
+ *  and archived rows are left untouched. */
+export const taskReorder  = (ids: string[]) => invoke<void>("task_reorder", { ids });
 export const taskCreate   = (args: CreateTaskArgs) => invoke<Task>("task_create", { args });
 export const taskCreateMulti = (args: CreateMultiArgs) => invoke<Task>("task_create_multi", { args });
 /** Open a task in the repo's main checkout. Sandbox args mirror task_create /

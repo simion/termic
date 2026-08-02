@@ -1,7 +1,8 @@
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone } from "../helpers";
+import { archiveTask, clickByText, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible } from "../helpers";
 
 // P0: create a task through the real NewTaskDialog wizard (the primary user
 // path; the other specs take the IPC shortcut). Uses the shell ("Terminal")
@@ -1145,5 +1146,168 @@ describe("agent race", () => {
       expect(branches).toContain(`race/${localName}/fakeagent-1`);
       expect(branches).toContain(`race/${localName}/fakeagent-2`);
     });
+  });
+});
+
+// P1: drag-to-reorder tasks inside a project (issue #144). The sidebar drag is
+// pointer-based (see helpers.pointerDrag) and lands in `task_reorder`, which
+// writes an `order` index into each task file. Cases: the live reorder; the
+// order surviving a reload from disk (what a restart reads); and the hard
+// boundary that a task never leaves its own project. Project drag-to-reorder,
+// which shares the sidebar but a different handler, stays covered by
+// projects.e2e.ts.
+describe("sidebar task drag", () => {
+  const ids: string[] = [];
+  let otherDir: string | undefined;
+  let otherProjectId: string | undefined;
+  let otherTaskId: string | undefined;
+  let fixtureProjectId: string;
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    for (const n of ["drag-a", "drag-b", "drag-c"]) ids.push(await openTask(n, false));
+    fixtureProjectId = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks
+        .find((t: any) => t.id === id)!.project_id as string,
+      ids[0],
+    );
+    // A second project + task: the cross-project case needs a real foreign
+    // row to aim the drag at.
+    otherDir = mkdtempSync(path.join(os.tmpdir(), "e2e-taskdrag-"));
+    execSync(
+      `git -C "${otherDir}" init -q && git -C "${otherDir}" -c user.email=e2e@termic.dev -c user.name=e2e commit -q --allow-empty -m init`,
+    );
+    const seeded = await browser.execute(async (dir) => {
+      const t = window.__termic!;
+      const proj: any = await t.ipc.projectAdd(dir);
+      const task: any = await t.ipc.taskOpenRepo(proj.id, "fakeagent", "other-task");
+      await t.useApp.getState().loadAll();
+      return { projectId: proj.id as string, taskId: task.id as string };
+    }, otherDir);
+    otherProjectId = (seeded as any).projectId;
+    otherTaskId = (seeded as any).taskId;
+    // Task rows only exist in the DOM while their project is expanded.
+    await browser.execute((a, b) => {
+      const s = window.__termic!.useApp.getState();
+      s.setProjectCollapsed(a, false);
+      s.setProjectCollapsed(b, false);
+    }, fixtureProjectId, otherProjectId);
+    await dismissOverlays();
+  });
+
+  after(async () => {
+    for (const id of [...ids, otherTaskId].filter(Boolean) as string[]) {
+      await archiveTask(id);
+    }
+    if (otherProjectId) {
+      await browser.execute(async (id) => {
+        await window.__termic!.ipc.projectRemove(id);
+        await window.__termic!.useApp.getState().loadAll();
+      }, otherProjectId);
+    }
+    if (otherDir) rmSync(otherDir, { recursive: true, force: true });
+  });
+
+  // Sidebar rows, NOT `[data-task-id]` — that one is MainArea's mounted
+  // TaskView container, and every visited task stays mounted.
+  const row = (id: string) => `[data-sidebar-task-id="${id}"]`;
+  // Sidebar order = store order, filtered to one project's visible rows.
+  const order = (projectId: string) =>
+    browser.execute(
+      (p) => window.__termic!.useApp.getState().tasks
+        .filter((t: any) => t.project_id === p && !t.archived)
+        .map((t: any) => t.id as string),
+      projectId,
+    ) as Promise<string[]>;
+  // Same list, but re-read from the task files on disk — `tasks_list` calls
+  // the very loader a cold start uses, so this is the restart check without
+  // relaunching the window.
+  const diskOrder = (projectId: string) =>
+    browser.execute(async (p) => {
+      const all: any[] = await window.__termic!.ipc.tasksList();
+      return all.filter((t) => t.project_id === p && !t.archived).map((t) => t.id as string);
+      // `as unknown as`: browser.execute types an async callback as
+      // Promise<Promise<T>>, which WDIO flattens at runtime.
+    }, projectId) as unknown as Promise<string[]>;
+  // What the user actually SEES, read off the rendered rows. Store-only
+  // assertions can't catch a surface that re-sorts the list on render — the
+  // sidebar and the Dashboard each did exactly that before this feature, and
+  // a revert of either would leave every store assertion green.
+  const domOrder = (attr: "sidebar" | "dashboard", projectId: string) =>
+    browser.execute(
+      (a, p) => [...document.querySelectorAll<HTMLElement>(`[data-${a}-task-id]`)]
+        .filter(el => el.dataset[`${a}TaskProjectId`] === p)
+        .map(el => el.dataset[`${a}TaskId`]!),
+      attr,
+      projectId,
+    ) as Promise<string[]>;
+
+  it("moves a task above its sibling and keeps the rest in place", async () => {
+    const [a, b, c] = ids;
+    // Creation order, oldest first — the behavior before this feature.
+    expect((await order(fixtureProjectId)).slice(-3)).toEqual([a, b, c]);
+
+    await waitVisible(row(c));
+    // Dropping above a row's midpoint inserts before it.
+    await pointerDrag(row(c), row(a), { land: "top" });
+    await browser.waitUntil(
+      async () => {
+        const o = await order(fixtureProjectId);
+        return o.indexOf(c) < o.indexOf(a);
+      },
+      { timeout: 8_000, timeoutMsg: "dragging a task did not reorder the sidebar" },
+    );
+    // The two rows it passed keep their relative order: a reorder, not a shuffle.
+    const after = await order(fixtureProjectId);
+    expect(after.indexOf(a)).toBeLessThan(after.indexOf(b));
+    // The SIDEBAR agrees with the store. Without this the spec passes even if
+    // the render re-sorts by `created` and the user sees no change at all.
+    expect(await domOrder("sidebar", fixtureProjectId)).toEqual(after);
+    await snap("task-drag-reordered");
+  });
+
+  it("shows the same order on the Dashboard", async () => {
+    // The Dashboard lists each project's tasks too, and used to re-sort them
+    // by creation time — same project, two different orders.
+    await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
+    await waitVisible(`[data-dashboard-task-id="${ids[0]}"]`);
+    expect(await domOrder("dashboard", fixtureProjectId))
+      .toEqual(await order(fixtureProjectId));
+  });
+
+  it("persists the order to disk, so a restart reads it back", async () => {
+    await browser.waitUntil(
+      async () => {
+        const [live, disk] = [await order(fixtureProjectId), await diskOrder(fixtureProjectId)];
+        return live.join() === disk.join();
+      },
+      { timeout: 8_000, timeoutMsg: "task_reorder never reached the task files" },
+    );
+    const disk = await diskOrder(fixtureProjectId);
+    expect(disk.indexOf(ids[2])).toBeLessThan(disk.indexOf(ids[0]));
+  });
+
+  it("refuses to move a task into another project", async () => {
+    const [a] = ids;
+    const foreignBefore = await order(otherProjectId!);
+
+    await waitVisible(row(otherTaskId!));
+    // Aim at a row that belongs to a DIFFERENT project. The handler only
+    // hit-tests siblings, so the row clamps to the bottom of its own list
+    // instead of defecting.
+    await pointerDrag(row(a), row(otherTaskId!), { land: "bottom" });
+
+    const projectOf = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks
+        .find((t: any) => t.id === id)!.project_id as string,
+      a,
+    );
+    expect(projectOf).toBe(fixtureProjectId);
+    // The foreign project's list is untouched — nothing was inserted into it.
+    expect(await order(otherProjectId!)).toEqual(foreignBefore);
+    // And the drag still did something legal: last in its own project.
+    const own = await order(fixtureProjectId);
+    expect(own[own.length - 1]).toBe(a);
   });
 });

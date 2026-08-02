@@ -167,6 +167,11 @@ export interface Task {
   created: string;
   archived: boolean;
   archived_at?: string;
+  /** Manual sidebar position within the project, written by drag-to-reorder
+   *  (`taskReorder`). Undefined on tasks the user has never dragged, which
+   *  sort AFTER any ordered sibling — so untouched projects stay in creation
+   *  order and a newly created task appends at the bottom. */
+  order?: number;
   /** True when this task points at the project's main repo checkout
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */

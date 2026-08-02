@@ -104,12 +104,18 @@ export function Dashboard() {
                       </div>
                     ) : (
                       <div className="flex flex-col">
-                        {/* Same as the sidebar: pure creation order, oldest first. */}
-                        {[...taskList].sort((a, b) =>
-                          (a.created || "").localeCompare(b.created || ""),
-                        ).map(w => (
+                        {/* Same as the sidebar: store order, which Rust sorts
+                            on the manual drag `order` then `created`. Sorting
+                            by `created` here would ignore a sidebar reorder
+                            and show the two views a different list. */}
+                        {taskList.map(w => (
                           <button
                             key={w.id}
+                            // Lets the e2e suite read this list's order and
+                            // assert it against the sidebar's — the two
+                            // silently diverged once already.
+                            data-dashboard-task-id={w.id}
+                            data-dashboard-task-project-id={w.project_id}
                             onClick={() => setActive(w.id)}
                             // Dim the task name to match the sidebar's task rows
                             // (fg-dim by default, fg on hover); the "on" / branch

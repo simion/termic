@@ -362,6 +362,14 @@ pub struct Task {
     /// Persisted so relaunch can restore the split configuration.
     #[serde(default)]
     pub split_layout: Option<String>,
+    /// Manual sidebar position within the task's project, assigned by
+    /// `task_reorder` on drag-and-drop. `None` on every task the user has
+    /// never reordered, and that is the point: `load_tasks` sorts `None`
+    /// AFTER any `Some`, so untouched projects keep pure creation order
+    /// (the pre-drag behavior) and a task created after a reorder still
+    /// appends at the bottom instead of jumping to the top.
+    #[serde(default)]
+    pub order: Option<u32>,
 }
 
 /// One durable agent tab. `session_id` is termic's own per-tab session
@@ -735,8 +743,21 @@ fn load_tasks() -> Vec<Task> {
             }
         }
     }
-    out.sort_by(|a, b| a.created.cmp(&b.created));
+    sort_tasks(&mut out);
     out
+}
+
+/// Sidebar order: manual position first, creation time as the tiebreak.
+/// Tasks the user has never dragged carry `order: None`, which sorts last,
+/// so a project nobody has reordered comes back in pure creation order and
+/// newly created tasks land at the bottom of a reordered one.
+fn sort_tasks(list: &mut [Task]) {
+    list.sort_by(|a, b| {
+        a.order
+            .unwrap_or(u32::MAX)
+            .cmp(&b.order.unwrap_or(u32::MAX))
+            .then_with(|| a.created.cmp(&b.created))
+    });
 }
 fn save_task(w: &Task) -> Result<()> {
     let f = tasks_dir()?.join(format!("{}.json", w.id));
@@ -2746,6 +2767,9 @@ fn task_open_repo(
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
                 split_layout: None,
+        // New tasks are unordered: they append below any manually
+        // ordered sibling (see sort_tasks).
+        order: None,
         archived_at: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
@@ -2931,6 +2955,9 @@ fn task_import_worktree(
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
                 split_layout: None,
+        // New tasks are unordered: they append below any manually
+        // ordered sibling (see sort_tasks).
+        order: None,
         archived_at: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
@@ -3204,6 +3231,9 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
                 split_layout: None,
+        // New tasks are unordered: they append below any manually
+        // ordered sibling (see sort_tasks).
+        order: None,
         archived_at: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
@@ -3580,6 +3610,9 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         persisted_tabs: Vec::new(),
         right_split_tabs: Vec::new(),
                 split_layout: None,
+        // New tasks are unordered: they append below any manually
+        // ordered sibling (see sort_tasks).
+        order: None,
         archived_at: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
@@ -3734,6 +3767,31 @@ fn ensure_multirepo_gitignore(wrapper: &Path, member_dirs: &[String]) -> std::io
     }
     next.push_str(END); next.push('\n');
     fs::write(&path, next)
+}
+
+/// Persist the sidebar order of ONE project's tasks. `ids` is that
+/// project's visible task list in its new top-to-bottom order; each named
+/// task gets its index as `order`.
+///
+/// Unlike `project_reorder` (one projects.json array, so array order IS the
+/// order) tasks live in a file each, hence the explicit key. Ids not found
+/// are skipped, and tasks absent from `ids` (other projects, archived rows)
+/// are left alone — `order` only ever competes inside one project's list.
+/// Only changed tasks are rewritten, so dropping a row back where it started
+/// touches no files.
+#[tauri::command]
+fn task_reorder(ids: Vec<String>) -> Result<(), String> {
+    let mut list = load_tasks();
+    for (i, id) in ids.iter().enumerate() {
+        let next = Some(i as u32);
+        if let Some(t) = list.iter_mut().find(|t| &t.id == id) {
+            if t.order != next {
+                t.order = next;
+                save_task(t).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -10471,6 +10529,7 @@ pub fn run() {
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
 
+            task_reorder,
             task_restore, task_delete, task_run_script, task_run_script_stream, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id,
             task_set_tabs, task_set_tab_session_id, task_set_tab_previous_session_id,
             task_set_split_layout,
@@ -12129,5 +12188,84 @@ mod tests {
         // The branch ref STILL hasn't moved through all of this.
         assert_eq!(git_rev(main, "main"), main_ref_before, "main ref never moved");
         assert_eq!(git_head(main), git_head(&wt), "repo root HEAD == worktree HEAD");
+    }
+
+    // ── Sidebar task order (drag-to-reorder) ────────────────────────────
+
+    fn ordered(id: &str, created: &str, order: Option<u32>) -> Task {
+        Task { id: id.into(), created: created.into(), order, ..Default::default() }
+    }
+
+    fn ids(list: &[Task]) -> Vec<&str> {
+        list.iter().map(|t| t.id.as_str()).collect()
+    }
+
+    // Nobody has dragged anything yet: every task carries `order: None`, and
+    // the list must come back in exactly the creation order it had before
+    // drag-to-reorder existed.
+    #[test]
+    fn sort_tasks_falls_back_to_creation_order() {
+        let mut list = vec![
+            ordered("c", "2026-03-01T00:00:00Z", None),
+            ordered("a", "2026-01-01T00:00:00Z", None),
+            ordered("b", "2026-02-01T00:00:00Z", None),
+        ];
+        sort_tasks(&mut list);
+        assert_eq!(ids(&list), ["a", "b", "c"]);
+    }
+
+    // After a drag, the manual index wins outright — including when it
+    // inverts creation order, which is the whole point of the feature
+    // ("main at the top" on a task that was created last).
+    #[test]
+    fn sort_tasks_honors_manual_order_over_creation() {
+        let mut list = vec![
+            ordered("old", "2026-01-01T00:00:00Z", Some(1)),
+            ordered("new", "2026-03-01T00:00:00Z", Some(0)),
+        ];
+        sort_tasks(&mut list);
+        assert_eq!(ids(&list), ["new", "old"]);
+    }
+
+    // A task created AFTER a reorder has no order key. It must append at the
+    // bottom, not jump to the top: `None` sorts after every `Some`.
+    #[test]
+    fn sort_tasks_appends_unordered_tasks_last() {
+        let mut list = vec![
+            ordered("fresh", "2026-09-01T00:00:00Z", None),
+            ordered("second", "2026-02-01T00:00:00Z", Some(1)),
+            ordered("first", "2026-03-01T00:00:00Z", Some(0)),
+        ];
+        sort_tasks(&mut list);
+        assert_eq!(ids(&list), ["first", "second", "fresh"]);
+    }
+
+    // Two projects each number their tasks from 0, and load_tasks sorts the
+    // whole directory at once. Equal keys must not scramble either project's
+    // internal order, since the sidebar filters this one list per project.
+    #[test]
+    fn sort_tasks_keeps_each_projects_sequence_when_indices_collide() {
+        let mut list = vec![
+            Task { id: "p2-b".into(), project_id: "p2".into(), created: "2026-02-02T00:00:00Z".into(), order: Some(1), ..Default::default() },
+            Task { id: "p1-b".into(), project_id: "p1".into(), created: "2026-01-02T00:00:00Z".into(), order: Some(1), ..Default::default() },
+            Task { id: "p2-a".into(), project_id: "p2".into(), created: "2026-02-01T00:00:00Z".into(), order: Some(0), ..Default::default() },
+            Task { id: "p1-a".into(), project_id: "p1".into(), created: "2026-01-01T00:00:00Z".into(), order: Some(0), ..Default::default() },
+        ];
+        sort_tasks(&mut list);
+        let p1: Vec<&str> = list.iter().filter(|t| t.project_id == "p1").map(|t| t.id.as_str()).collect();
+        let p2: Vec<&str> = list.iter().filter(|t| t.project_id == "p2").map(|t| t.id.as_str()).collect();
+        assert_eq!(p1, ["p1-a", "p1-b"]);
+        assert_eq!(p2, ["p2-a", "p2-b"]);
+    }
+
+    // Old task files on disk predate the `order` field entirely. They must
+    // deserialize (serde default) rather than fail the whole load.
+    #[test]
+    fn task_without_order_field_deserializes_as_unordered() {
+        let json = r#"{"id":"t1","project_id":"p","name":"main","branch":"main",
+                       "base_branch":"main","path":"/tmp/x","cli":"claude","port":0,
+                       "created":"2026-01-01T00:00:00Z","archived":false}"#;
+        let t: Task = serde_json::from_str(json).expect("legacy task file still parses");
+        assert_eq!(t.order, None);
     }
 }

@@ -17,7 +17,7 @@ import { useUI } from "@/store/ui";
 import { cn } from "@/lib/utils";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { requestCloseTab } from "@/lib/closeTab";
-import { taskRename, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate, projectSetGroup } from "@/lib/ipc";
+import { taskRename, taskReorder, projectRename, openPath, projectReorder, taskSetYolo, projectRemove, projectUpdate, projectSetGroup } from "@/lib/ipc";
 import { copyToClipboard } from "@/lib/clipboard";
 import { groupOf, projectSections } from "@/lib/projectGroups";
 import { createQuickTask, derivedBranch, type NewTaskMode } from "@/lib/quickTask";
@@ -264,6 +264,138 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // is still mounted. Also set after a completed group drag so the click
   // that follows pointerup doesn't collapse the folder that was just moved.
   const suppressGroupToggle = useRef(false);
+
+  // ── Task drag-to-reorder ──────────────────────────────────────────────
+  // Same document-level pointer pattern as project rows (see the long note
+  // above for why the listeners can't live on the row), with one difference
+  // that shapes the whole hit-test: a task NEVER leaves its project. Only
+  // sibling rows are candidates, so a cursor dragged over another project
+  // finds no midpoint below it and the row simply clamps to the top or
+  // bottom of its own list instead of defecting.
+  //
+  // Persistence differs from projects too: projects.json is one array whose
+  // order IS the order, while tasks are a file each, so the drop writes an
+  // explicit index per task via `task_reorder`.
+  const [dragTaskId, setDragTaskId] = useState<string | null>(null);
+  const [dragTaskTy, setDragTaskTy] = useState(0);
+  const taskDragArmed = useRef<
+    { id: string; projectId: string; x: number; y: number; started: boolean; grabOffsetY: number; appliedTy: number; pointerY: number } | null
+  >(null);
+  const taskDragListenersRef = useRef<{ move: (e: PointerEvent) => void; up: (e: PointerEvent) => void } | null>(null);
+  // A completed drop still fires a click on the row (pointerup lands on the
+  // same element), which would activate the task the user only meant to
+  // move. Set on drop; consumed by the row's click handler, and cleared on a
+  // timer regardless (see endTaskDrag) for the drops whose click never lands.
+  const taskClickSuppressed = useRef(false);
+
+  const computeTaskTy = (clientY: number): number => {
+    const armed = taskDragArmed.current;
+    const el = armed && dragRoot().querySelector<HTMLElement>(`[data-sidebar-task-id="${CSS.escape(armed.id)}"]`);
+    if (!armed || !el) return 0;
+    const layoutTop = el.getBoundingClientRect().top - armed.appliedTy;
+    const ty = (clientY - armed.grabOffsetY) - layoutTop;
+    armed.appliedTy = ty;
+    return ty;
+  };
+
+  const endTaskDrag = (commit: boolean) => {
+    const ls = taskDragListenersRef.current;
+    if (ls) {
+      document.removeEventListener("pointermove", ls.move);
+      document.removeEventListener("pointerup", ls.up);
+      document.removeEventListener("pointercancel", ls.up);
+      taskDragListenersRef.current = null;
+    }
+    const armed = taskDragArmed.current;
+    const wasStarted = armed?.started ?? false;
+    taskDragArmed.current = null;
+    setDragTaskId(null);
+    setDragTaskTy(0);
+    if (commit && wasStarted && armed) {
+      taskClickSuppressed.current = true;
+      // Clear on the next tick whether or not the click lands: `click` fires
+      // on the common ancestor of down and up, so releasing over another
+      // project (or off the window) never reaches the row's handler, and a
+      // flag left standing would swallow the user's NEXT click on any task —
+      // one ref is shared by every row. Same pattern as suppressGroupToggle.
+      setTimeout(() => { taskClickSuppressed.current = false; }, 0);
+      // Only this project's visible rows: task_reorder numbers exactly the
+      // ids it is handed, so passing the whole task list would stamp an
+      // order on every other project too.
+      const finalIds = useApp.getState().tasks
+        .filter(t => t.project_id === armed.projectId && !t.archived)
+        .map(t => t.id);
+      taskReorder(finalIds).catch(() => { void useApp.getState().loadAll(); });
+    }
+  };
+
+  const onTaskDragPointerMove = (e: PointerEvent) => {
+    const armed = taskDragArmed.current;
+    if (!armed) return;
+    if (!armed.started) {
+      const dx = e.clientX - armed.x;
+      const dy = e.clientY - armed.y;
+      if (dx * dx + dy * dy < 16) return;
+      armed.started = true;
+      setDragTaskId(armed.id);
+    }
+    // Stashed for the post-reorder re-anchor effect, which has no event to
+    // read the cursor from. Set BEFORE the hit-test, which has early returns.
+    armed.pointerY = e.clientY;
+    setDragTaskTy(computeTaskTy(e.clientY));
+    const dragId = armed.id;
+    const all = useApp.getState().tasks;
+    if (!all.some(t => t.id === dragId)) return;
+
+    // Candidates are this project's OTHER visible rows, in document order.
+    // First midpoint below the cursor wins; none = past the last sibling,
+    // so the row lands at the bottom of its own project.
+    const rows = Array.from(dragRoot().querySelectorAll<HTMLElement>("[data-sidebar-task-id]"))
+      .filter(el => el.dataset.sidebarTaskProjectId === armed.projectId && el.dataset.sidebarTaskId !== dragId);
+    let beforeId: string | null = null;
+    for (const el of rows) {
+      const r = el.getBoundingClientRect();
+      if (e.clientY < (r.top + r.bottom) / 2) { beforeId = el.dataset.sidebarTaskId!; break; }
+    }
+
+    const rest = all.filter(t => t.id !== dragId);
+    let insertAt: number;
+    if (beforeId) {
+      insertAt = rest.findIndex(t => t.id === beforeId);
+      if (insertAt === -1) return;
+    } else {
+      // Index just past this project's last visible row in the GLOBAL array
+      // — the sidebar filters one shared list, so the dragged task has to
+      // stay inside its own project's span of it.
+      let last = -1;
+      rest.forEach((t, i) => { if (t.project_id === armed.projectId && !t.archived) last = i; });
+      insertAt = last + 1;
+    }
+    const next = [...rest];
+    next.splice(insertAt, 0, all.find(t => t.id === dragId)!);
+    if (next.every((t, i) => t.id === all[i].id)) return; // no visible change
+    useApp.setState({ tasks: next });
+  };
+
+  const onTaskDragPointerDown = (e: React.PointerEvent, w: Task) => {
+    if (compact) return;
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    // Same bail-out set as the project header: real controls, plus anything
+    // inside a portaled Radix menu/dialog (those bubble synthetic pointer
+    // events back up the React tree to this row).
+    if (target.closest('button, input, a, [data-no-drag], [role="menu"], [role="dialog"]')) return;
+    taskDragArmed.current = {
+      id: w.id, projectId: w.project_id, x: e.clientX, y: e.clientY, started: false,
+      grabOffsetY: e.clientY - (e.currentTarget as HTMLElement).getBoundingClientRect().top,
+      appliedTy: 0, pointerY: e.clientY,
+    };
+    const onUp = () => endTaskDrag(true);
+    taskDragListenersRef.current = { move: onTaskDragPointerMove, up: onUp };
+    document.addEventListener("pointermove", onTaskDragPointerMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  };
 
   // ── Group header drag-to-reorder ──────────────────────────────────────
   // Same pointer pattern as project rows, but the unit is the whole folder:
@@ -605,12 +737,16 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
 
   // After a live reorder re-renders the list, the dragged header sits in a new
   // slot — re-derive its transform from the new layout BEFORE paint so it
-  // doesn't jump for a frame.
+  // doesn't jump for a frame. `tasks` is a dep for the same reason `projects`
+  // is: a task drag splices that array, and without the re-anchor the row
+  // paints a row-height out of place until the NEXT pointermove corrects it
+  // (visible whenever the user pauses or releases right at a swap point).
   useLayoutEffect(() => {
     if (dragArmed.current?.started) setDragTy(computeProjectTy(dragArmed.current.pointerY));
     if (groupDragArmed.current?.started) setDragGroupTy(computeGroupTy(groupDragArmed.current.pointerY));
+    if (taskDragArmed.current?.started) setDragTaskTy(computeTaskTy(taskDragArmed.current.pointerY));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects]);
+  }, [projects, tasks]);
 
   async function commitRename() {
     if (!renaming) return;
@@ -1246,13 +1382,21 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   </div>
                 )}
 
-                {!collapsed && [...taskList].sort((a, b) =>
-                  // Pure creation order, oldest first: new tasks append at the
-                  // bottom. No grouping by main-checkout vs worktree. RFC3339
-                  // `created` compares lexicographically = chronologically.
-                  (a.created || "").localeCompare(b.created || ""),
-                ).map(w => (
-                  <TaskRow key={w.id} w={w} compact={compact} />
+                {/* Store order IS display order. Rust sorts the task list by
+                    manual `order` then `created` (so a project nobody has
+                    dragged still reads oldest-first, and new tasks append at
+                    the bottom), and a live drag splices the same array — an
+                    extra sort here would fight the drag. */}
+                {!collapsed && taskList.map(w => (
+                  <TaskRow
+                    key={w.id}
+                    w={w}
+                    compact={compact}
+                    dragging={dragTaskId === w.id}
+                    dragTy={dragTaskTy}
+                    onDragPointerDown={onTaskDragPointerDown}
+                    clickSuppressed={taskClickSuppressed}
+                  />
                 ))}
                 {/* Inline name prompt renders at the BOTTOM — that's
                     where a newly-created repo-root task lands in
@@ -1778,7 +1922,17 @@ function TabBadge({ reason }: { reason: "attention" | "done" | "working" }) {
 // (isolated re-renders). Handles expand/collapse, task rename, tab rename, and
 // shows all terminal tabs as indented children.
 
-function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
+function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, clickSuppressed }: {
+  w: Task;
+  compact: boolean;
+  /** This row is the one being dragged: it follows the cursor and folds. */
+  dragging?: boolean;
+  dragTy?: number;
+  onDragPointerDown?: (e: React.PointerEvent, w: Task) => void;
+  /** Set by the drop so the click that follows pointerup doesn't also
+   *  activate the task the user was only moving. Read + cleared here. */
+  clickSuppressed?: React.RefObject<boolean>;
+}) {
   const tabs = useTaskTabs(w.id);
   const activeTabId = useActiveTabId(w.id);
   const activeTaskId = useApp(s => s.activeTaskId);
@@ -1799,7 +1953,12 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
     expandMode === "always"  ? false :
     expandMode === "chevron" ? true  :
     /* click */                terminalTabCount <= 1;
-  const collapsed = useApp(s => s.collapsedTasks[w.id] ?? defaultCollapsed);
+  const storeCollapsed = useApp(s => s.collapsedTasks[w.id] ?? defaultCollapsed);
+  // Render-only fold while THIS row is dragged: the translateY rides on the
+  // header alone, so expanded tab rows would sit frozen in place while their
+  // header floats away. Persisted collapse state is untouched, so the tabs
+  // come back on drop exactly as they were. Same trick as the project drag.
+  const collapsed = dragging || storeCollapsed;
   const setTaskCollapsed = useApp(s => s.setTaskCollapsed);
   const setTaskYolo = useApp(s => s.setTaskYolo);
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
@@ -1961,9 +2120,20 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
 
   return (
     <div className="mb-px">
-      {/* Task header row */}
+      {/* Task header row. Also the drag handle and the hit-test target:
+          data-sidebar-task-id lives HERE, not on the wrapper, because the wrapper
+          spans every expanded tab row — its midpoint can sit far below the
+          visible header, so swaps would trigger nowhere near the cursor.
+          NOT `data-task-id`: MainArea already puts that on the mounted
+          TaskView container, and every visited task stays mounted. */}
       <div
+        data-sidebar-task-id={w.id}
+        data-sidebar-task-project-id={w.project_id}
+        style={dragging ? { transform: `translateY(${dragTy}px)`, position: "relative", zIndex: 20 } : undefined}
+        onPointerDown={onDragPointerDown ? (e) => onDragPointerDown(e, w) : undefined}
         onClick={() => {
+          // The click that trails a drop is not a selection.
+          if (clickSuppressed?.current) { clickSuppressed.current = false; return; }
           setActive(w.id);
           if (terminalTabs.length === 0) {
             // No terminals yet — wake the task through the store's
@@ -1997,6 +2167,8 @@ function TaskRow({ w, compact }: { w: Task; compact: boolean }) {
             ? "text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
             : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
           !isLoaded && "opacity-60",
+          // Lifted look while dragging, mirroring the project header.
+          dragging && "bg-[var(--color-accent)]/15 text-[var(--color-accent)] shadow-lg",
         )}
       >
         {terminalTabs.length === 0

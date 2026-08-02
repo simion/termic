@@ -58,6 +58,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Tab drags | Reorder within the main strip; drop on a pane edge to split there; drag out of a pane back to main | `tabs-layout.e2e.ts` |
 | ✅ Resize drags | Sidebar edge widens + clamps at its minimum (persisted); split divider moves the ratio inside its clamp | `tabs-layout.e2e.ts` |
 | ✅ Sidebar project drags | Reorder two projects; drop one into a group folder; move a whole folder as one block | `projects.e2e.ts` |
+| ✅ Sidebar task drags | Reorder tasks inside a project (siblings keep their relative order); the new order persists to the task files, so a cold load reads it back; a task dragged at another project's row clamps to its own list instead of moving | `task.e2e.ts` |
 | ✅ Settings reorder drags | Prompt rows reorder by their grip (and a click without movement does not); agent pills reorder within their kind | `settings.e2e.ts` |
 | ✅ Resume submenu | The project `+` menu keeps archived sessions behind one Resume row; the submenu lists them and restores the picked one | `projects.e2e.ts` |
 | ✅ Empty archive | History's Empty archive: cancelling keeps every task, confirming deletes them all for good | `task.e2e.ts` |
