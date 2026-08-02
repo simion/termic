@@ -20,6 +20,11 @@ if (!process.env.VITE_GIT_BRANCH) {
   try {
     process.env.VITE_GIT_BRANCH = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: __dirname,
+      // Silence git's own stderr. Building from a source archive with no
+      // .git would otherwise print "fatal: not a git repository" on every
+      // start, which reads like a build failure when it is the expected
+      // fallback below.
+      stdio: ["ignore", "pipe", "ignore"],
     })
       .toString()
       .trim();

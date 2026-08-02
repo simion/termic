@@ -45,30 +45,31 @@ export function UpdaterBanner() {
   // indistinguishable at a glance. Absent in release builds, where the
   // Beta pill already names what it was built from.
   const branch: string | undefined = import.meta.env.VITE_GIT_BRANCH;
+  // A detached HEAD reports the literal "HEAD", which is worth showing: it
+  // means the window is not on any branch, so it is probably not running
+  // what you think it is.
+  const branchLabel = branch ? (
+    <span className="max-w-[220px] truncate font-mono text-[10px] font-normal normal-case tracking-normal opacity-80">
+      {branch}
+    </span>
+  ) : null;
+  const branchTitle = branch ? ` Branch: ${branch}.` : "";
   if (import.meta.env.DEV && !update && !hideDevPill) {
     return isE2E ? (
       <span
-        title={`Driven by the e2e automation bridge (TERMIC_AUTOMATION=1).${branch ? ` Branch: ${branch}.` : ""}`}
+        title={`Driven by the e2e automation bridge (TERMIC_AUTOMATION=1).${branchTitle}`}
         className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-err)]/50 bg-[var(--color-err)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-err)]"
       >
         E2E
-        {branch && (
-          <span className="max-w-[220px] truncate font-mono text-[10px] font-normal normal-case tracking-normal opacity-80">
-            {branch}
-          </span>
-        )}
+        {branchLabel}
       </span>
     ) : (
       <span
-        title={`Development build, not a released version.${branch ? ` Branch: ${branch}.` : ""}`}
+        title={`Development build, not a released version.${branchTitle}`}
         className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-warn)]"
       >
         DEV
-        {branch && (
-          <span className="max-w-[220px] truncate font-mono text-[10px] font-normal normal-case tracking-normal opacity-80">
-            {branch}
-          </span>
-        )}
+        {branchLabel}
       </span>
     );
   }
