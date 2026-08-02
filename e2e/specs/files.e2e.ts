@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { archiveTask, dismissOverlays, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell } from "../helpers";
 
@@ -385,3 +385,156 @@ describe("file tree", () => {
   });
 });
 
+// P2: double-clicking a file row hands it to the OS default app (GH #147).
+// Cases: a binary the editor can't render (.blend) and a text file the editor
+// CAN render (.scad) both fire the external open — that is the whole point of
+// the branch choice, since restricting it to unreadable files would have
+// missed .scad, where the user wants OpenSCAD rather than the source again.
+// Plus the negative: an ordinary single click must NOT launch anything.
+//
+// SCOPE, and why the clicks below are synthetic. WebDriver cannot express a
+// double-click in this WKWebView: a driven `doubleClick()` emits two `click`
+// events with `detail: 0` and NO `dblclick` at all (measured). So no spec can
+// prove the OS-level gesture arrives; these dispatch the click the handler
+// actually reads (`detail: 2`) and cover everything downstream of it — the
+// branch, the path handed to the backend, and the single-click regression.
+// The gesture itself is a manual check.
+//
+// The e2e binary records the open instead of running it (see
+// `open_file_external` in lib.rs): the suite must not launch Blender, and the
+// reveal fallback would pop a Finder window over the window under test.
+describe("open a file in its default app", () => {
+  let taskId: string | undefined;
+  const openedLog = path.join(process.cwd(), ".e2e", "profile", "e2e-opened.log");
+
+  after(async () => {
+    rmSync(openedLog, { force: true });
+    rmSync(path.join(fixture, "e2e-model.blend"), { force: true });
+    rmSync(path.join(fixture, "e2e-part.scad"), { force: true });
+    rmSync(path.join(fixture, "e2e-shot.png"), { force: true });
+    if (taskId) await archiveTask(taskId);
+  });
+
+  const opened = () => {
+    try {
+      return readFileSync(openedLog, "utf8").split("\n").filter(Boolean);
+    } catch {
+      return [];   // not written yet — the caller is inside a waitUntil
+    }
+  };
+
+  // `detail` is the UA's click count; 2 is the second click of a pair, which
+  // is what FileTree reads instead of a dblclick handler (see the comment on
+  // its onClick for why).
+  const clickRowWithDetail = (rel: string, detail: number) =>
+    browser.execute(
+      (sel, d) => {
+        const el = document.querySelector(sel) as HTMLElement;
+        if (!el) throw new Error(`no row ${sel}`);
+        el.dispatchEvent(new MouseEvent("click", { detail: d, bubbles: true, cancelable: true }));
+      },
+      `[data-path="${rel}"]`,
+      detail,
+    );
+
+  const doubleClickRow = async (rel: string) => {
+    rmSync(openedLog, { force: true });
+    await clickRowWithDetail(rel, 2);
+    await browser.waitUntil(() => opened().length > 0, {
+      timeout: 8_000,
+      timeoutMsg: `double-clicking ${rel} never reached open_file_external`,
+    });
+    return opened();
+  };
+
+  it("opens a binary the editor cannot render", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+
+    // Written BEFORE the task opens, at the repo root, so the tree picks them
+    // up on its initial load rather than through a mid-run refresh.
+    writeFileSync(path.join(fixture, "e2e-model.blend"), Buffer.from([0x00, 0xff, 0x00]));
+    writeFileSync(path.join(fixture, "e2e-part.scad"), "cube([1,1,1]);\n");
+    // A 1x1 PNG: the third routing class, the one with its OWN in-app viewer
+    // (previewPaths → PreviewPane) rather than the editor.
+    writeFileSync(
+      path.join(fixture, "e2e-shot.png"),
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "base64",
+      ),
+    );
+
+    taskId = await openTask("e2e-open");
+    await dismissOverlays();
+    await ensureActiveTask(taskId);
+    await browser.waitUntil(
+      () => browser.execute(() => !!document.querySelector('[data-path="e2e-model.blend"]')),
+      { timeout: 15_000, timeoutMsg: "the .blend row never appeared in the tree" },
+    );
+
+    // .blend is not valid UTF-8, so a single click only ever gets the "it
+    // looks binary" editor message. The case with no in-app answer at all.
+    const paths = await doubleClickRow("e2e-model.blend");
+    expect(paths.some((p) => p.endsWith("/e2e-model.blend"))).toBe(true);
+    // Absolute, not task-relative: the backend shells out with no task context.
+    expect(paths[paths.length - 1].startsWith("/")).toBe(true);
+    await snap("file-open-default-app.png");
+  });
+
+  it("opens a text file the editor renders perfectly well", async () => {
+    // .scad is plain text — the editor shows it fine, and that is exactly why
+    // "only for files the editor can't render" was the wrong rule.
+    const paths = await doubleClickRow("e2e-part.scad");
+    expect(paths.some((p) => p.endsWith("/e2e-part.scad"))).toBe(true);
+  });
+
+  it("opens an image that has its own in-app viewer", async () => {
+    // A PNG already previews inside the app, so this is the case where the
+    // external open is a genuine ADDITION rather than the only way to see the
+    // file. It must still fire: "the app can show it" is not a reason to keep
+    // the user from opening it in a real image editor.
+    const paths = await doubleClickRow("e2e-shot.png");
+    expect(paths.some((p) => p.endsWith("/e2e-shot.png"))).toBe(true);
+  });
+
+  it("still routes a single click to the in-app preview pane", async () => {
+    // The other half of the PNG case: single click must NOT launch anything,
+    // it must open the tab the preview pane renders (previewPaths routes on
+    // extension, so the tab is an "edit" tab that PreviewPane picks up).
+    rmSync(openedLog, { force: true });
+    await clickRowWithDetail("e2e-shot.png", 1);
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) =>
+            (window.__termic!.useApp.getState().tabs[id] ?? []).some(
+              (t: any) => t.type === "edit" && t.path === "e2e-shot.png",
+            ),
+          taskId,
+        ),
+      { timeout: 8_000, timeoutMsg: "a single click no longer opens the image tab" },
+    );
+    expect(opened()).toEqual([]);
+  });
+
+  it("opens the editor tab on a single click, launching nothing", async () => {
+    // The other half of the branch: single click keeps its old job, and must
+    // NOT hand the file to the OS. A regression here would launch an app on
+    // every click in the tree.
+    rmSync(openedLog, { force: true });
+    await clickRowWithDetail("e2e-part.scad", 1);
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) =>
+            (window.__termic!.useApp.getState().tabs[id] ?? []).some(
+              (t: any) => t.type === "edit" && t.path === "e2e-part.scad",
+            ),
+          taskId,
+        ),
+      { timeout: 8_000, timeoutMsg: "a single click no longer opens the editor tab" },
+    );
+    expect(opened()).toEqual([]);
+  });
+});

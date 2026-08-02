@@ -667,6 +667,12 @@ export const openPath  = (path: string) => invoke<void>("open_path", { path });
 /** Reveal an absolute path in the OS file manager (select it on macOS/Windows,
  *  open its parent on Linux). For task-relative paths use taskRevealPath. */
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+/** Hand an absolute FILE path to the OS default app, falling back to revealing
+ *  it when nothing is registered for the extension. Resolves to which of the
+ *  two happened; rejects only when neither worked. Unlike openPath it inspects
+ *  the launcher's exit status, so it is for files, not URLs. */
+export const openFileExternal = (path: string) =>
+  invoke<"opened" | "revealed">("open_file_external", { path });
 export const homeDir   = () => invoke<string>("home_dir");
 export const pathExists= (path: string) => invoke<boolean>("path_exists", { path });
 export const pathIsGitRepo = (path: string) => invoke<boolean>("path_is_git_repo", { path });

@@ -8334,6 +8334,90 @@ fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// What to do once the OS launcher has been run for a file (GH #147).
+/// Only the real (non-e2e) build shells out, so the e2e binary never reaches
+/// the decision — the unit tests below still cover it in either build.
+#[cfg_attr(feature = "e2e", allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum AfterOpen {
+    /// The default app took it (or we cannot tell, so assume it did).
+    Done,
+    /// Nothing is registered for this file, so show it in the file manager.
+    Reveal,
+}
+
+/// Decide whether `open_file_external` falls back to revealing the file.
+///
+/// `open_path` treats only a SPAWN failure as an error and ignores the exit
+/// status. That is right for URLs but wrong for files: `open` (macOS) and
+/// `xdg-open` (Linux, exit 3) both exit non-zero when no handler is
+/// registered for the extension, which is the case the fallback exists for.
+///
+/// Windows is deliberately excluded. `explorer.exe` exits non-zero even on
+/// success (see `open_command`), so its status carries no signal and keying
+/// on it would reveal the file on every single open. Windows instead gets
+/// explorer's own "how do you want to open this file?" picker, which covers
+/// the same need natively.
+#[cfg_attr(feature = "e2e", allow(dead_code))]
+fn after_open(os: &str, spawned: bool, exit_ok: bool) -> AfterOpen {
+    if !spawned {
+        // The launcher binary itself is missing or unrunnable. Nothing was
+        // handed to the OS, so the file manager is the only thing left.
+        return AfterOpen::Reveal;
+    }
+    if os == "windows" || exit_ok {
+        return AfterOpen::Done;
+    }
+    AfterOpen::Reveal
+}
+
+/// E2E-ONLY (`--features e2e`): record an external-open instead of running
+/// it. A spec that double-clicks a `.blend` row must not launch Blender on
+/// the machine running the suite, and the reveal fallback would pop a Finder
+/// window over the window under test. One path per line in the isolated
+/// profile dir, so the spec reads it with plain `fs` and needs no extra IPC
+/// command (which would otherwise linger in release builds).
+#[cfg(feature = "e2e")]
+fn e2e_record_open(path: &str) {
+    if let Ok(dir) = data_dir() {
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("e2e-opened.log"))
+            .and_then(|mut f| writeln!(f, "{path}"));
+    }
+}
+
+/// Hand an ABSOLUTE file path to the OS default app, falling back to
+/// revealing it in the file manager when nothing is registered for it
+/// (GH #147, the file tree's double-click).
+///
+/// Returns "opened" or "revealed" so the frontend can tell the user which
+/// happened. `Err` only when the fallback ALSO failed, i.e. the file reached
+/// neither an app nor the file manager.
+#[tauri::command]
+fn open_file_external(path: String) -> Result<String, String> {
+    #[cfg(feature = "e2e")]
+    {
+        e2e_record_open(&path);
+        return Ok("opened".to_string());
+    }
+    #[cfg(not(feature = "e2e"))]
+    {
+        let os = std::env::consts::OS;
+        let (program, args) = open_command(os, &path);
+        let status = Command::new(program).args(&args).status();
+        let spawned = status.is_ok();
+        let exit_ok = status.as_ref().map(|s| s.success()).unwrap_or(false);
+        if after_open(os, spawned, exit_ok) == AfterOpen::Done {
+            return Ok("opened".to_string());
+        }
+        let (program, args) = reveal_command(os, &path);
+        Command::new(program).args(&args).status().map_err(|e| e.to_string())?;
+        Ok("revealed".to_string())
+    }
+}
+
 /// The argv for opening `target` (a URL or filesystem path) in the OS
 /// default handler. Split out from the side-effecting spawn so the
 /// per-platform dispatch is unit-testable. `os` is
@@ -10483,7 +10567,7 @@ pub fn run() {
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
-            notify, open_path, reveal_path, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
+            notify, open_path, reveal_path, open_file_external, home_dir, default_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             automation::automation_result,
             automation::automation_armed,
@@ -11293,6 +11377,41 @@ mod tests {
     fn open_command_unknown_os_falls_back_to_xdg_open() {
         let (prog, _) = open_command("freebsd", "https://x.com");
         assert_eq!(prog, "xdg-open");
+    }
+
+    #[test]
+    fn after_open_reveals_when_no_handler_is_registered() {
+        // The whole point of the fallback (#147): `open` on macOS and
+        // `xdg-open` on Linux (exit 3) both fail when nothing claims the
+        // extension, e.g. a .blend with no Blender installed.
+        assert_eq!(after_open("macos", true, false), AfterOpen::Reveal);
+        assert_eq!(after_open("linux", true, false), AfterOpen::Reveal);
+    }
+
+    #[test]
+    fn after_open_keeps_quiet_when_the_app_took_it() {
+        // A clean exit means an app launched, so no Finder window on top.
+        assert_eq!(after_open("macos", true, true), AfterOpen::Done);
+        assert_eq!(after_open("linux", true, true), AfterOpen::Done);
+    }
+
+    #[test]
+    fn after_open_never_reveals_on_windows() {
+        // explorer.exe exits non-zero even on SUCCESS (see open_command), so
+        // keying the fallback on its status would pop a file-manager window
+        // on every single open. Windows gets explorer's own picker instead.
+        assert_eq!(after_open("windows", true, false), AfterOpen::Done);
+        assert_eq!(after_open("windows", true, true), AfterOpen::Done);
+    }
+
+    #[test]
+    fn after_open_reveals_when_the_launcher_cannot_spawn() {
+        // No `open`/`xdg-open` binary at all: nothing reached the OS, so the
+        // file manager is the only thing left to try. Windows included here
+        // — a missing explorer.exe is a real spawn failure, not exit noise.
+        assert_eq!(after_open("macos", false, false), AfterOpen::Reveal);
+        assert_eq!(after_open("linux", false, false), AfterOpen::Reveal);
+        assert_eq!(after_open("windows", false, false), AfterOpen::Reveal);
     }
 
     #[test]
