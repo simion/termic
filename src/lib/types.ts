@@ -638,7 +638,7 @@ export type { SplitDir, SplitNode, PaneLeaf, SplitTree } from "@/lib/splitTree";
 
 // ───────────────────────────── tab model (frontend only) ─────────────────────────────
 
-export type TabType = "terminal" | "diff" | "edit";
+export type TabType = "terminal" | "diff" | "edit" | "dir";
 
 export interface BaseTab {
   id: string;
@@ -856,7 +856,30 @@ export interface EditTab extends BaseTab {
   remoteImagesUnblocked?: boolean;
 }
 
-export type Tab = TerminalTab | DiffTab | EditTab;
+/** GitHub-style folder view (issue #151): the file/folder listing a
+ *  directory link in a markdown preview opens, plus that folder's README
+ *  rendered underneath. Has no buffer and is never dirty, so it needs
+ *  none of EditTab's save/reveal machinery. */
+export interface DirTab extends BaseTab {
+  type: "dir";
+  /** Task-root-relative directory path. "" is the task root itself. */
+  path: string;
+  /** Folders visited in THIS tab, oldest first, driving ⌘[ / ⌘]. Browser
+   *  semantics: navigating after going back truncates everything ahead.
+   *  Reset when the preview slot recycles to a different target, so a
+   *  previous occupant's trail is never walkable from the new one. */
+  dirHistory?: string[];
+  /** Cursor into `dirHistory`. At either end the shortcut declines the key
+   *  and lets it fall through to previous/next task, so ⌘[ only diverts
+   *  from task switching when it actually has somewhere to go. */
+  dirHistoryIndex?: number;
+  /** Per-document remote-image unblock for the rendered README, exactly
+   *  as on EditTab (issue #69). Session-only; cleared when the preview
+   *  tab slot recycles to another target. */
+  remoteImagesUnblocked?: boolean;
+}
+
+export type Tab = TerminalTab | DiffTab | EditTab | DirTab;
 
 /** Mirror of `repo_config::RepoConfig` (src-tauri/src/repo_config.rs).
  *  Parsed from the repo-root `.termic.yaml` — committed, team-shared

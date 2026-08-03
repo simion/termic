@@ -5,7 +5,8 @@
 // dispatches the matching command. The default combos (for reference):
 //   ⌘1..⌘9   → switch to the Nth tab in the active task
 //   ⌘L       → focus the active task's terminal
-//   ⌘[, ⌘]   → previous / next task (cycles AWAKE ones in sidebar order)
+//   ⌘[, ⌘]   → previous / next task (cycles AWAKE ones in sidebar order);
+//              in a folder listing with history, back / forward instead
 //   ⌥↑, ⌥↓   → previous / next VISIBLE sidebar row (task + expanded tabs)
 //   ⌥⌘↑, ⌥⌘↓ → pane up/down (when horizontal split exists) or previous/next task
 //   ⇧⌘A      → jump to the next agent waiting on you (done or blocked)
@@ -27,6 +28,7 @@ import { usePrefs, APPEARANCE_DEFAULTS } from "@/store/prefs";
 import { requestCloseTab, requestClosePaneTab } from "@/lib/closeTab";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { jumpToNextWaiting } from "@/lib/waitingAgents";
+import { dirHistoryTarget, goDirHistory } from "@/lib/dirTabs";
 import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import { visualProjectOrder } from "@/lib/projectGroups";
 import type { TerminalTab } from "@/lib/types";
@@ -412,6 +414,36 @@ export function useShortcuts() {
         // ⌘[ / ⌘] → task nav across AWAKE tasks.
         case "task-prev":
         case "task-next": {
+          // ...unless the active tab is a folder listing with somewhere to go
+          // (issue #151): then these are its back/forward, the binding every
+          // browser uses. Deliberately overloaded, like ⇧⌘D (split-pane-below
+          // / discard-file) — but the claim is CONDITIONAL: at either end of
+          // the trail goDirHistory declines and the key falls straight through
+          // to task switching below. So ⌘[ only ever diverts when it has real
+          // work, and browsing a folder never silently kills the app's
+          // most-used navigation key.
+          // Which listing (if any) may claim the key is decided by
+          // `dirHistoryTarget`, a pure function over DOM-focus facts — see
+          // its comment for why focus outranks activePaneId. Keeping the
+          // decision there rather than inline is what lets every branch be
+          // unit-tested instead of only the ones e2e happens to reach.
+          if (taskId) {
+            const active = document.activeElement as HTMLElement | null;
+            const splitEl = inSplitPane()
+              ? (active?.closest?.("[data-split-leaf]") as HTMLElement | null)
+              : null;
+            const candidateId = dirHistoryTarget(state, taskId, {
+              inBottom: inBottom(),
+              splitPaneId: splitEl?.getAttribute("data-pane-id") ?? null,
+              inMainPane: inMainPane(),
+              noFocus: !active || active === document.body,
+            });
+            if (candidateId
+                && goDirHistory(taskId, candidateId, cmd === "task-next" ? 1 : -1)) {
+              e.preventDefault();
+              return;
+            }
+          }
           const task = awakeTasks();
           if (task.length <= 1) return;
           e.preventDefault();

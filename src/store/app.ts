@@ -295,7 +295,7 @@ export interface AppState {
   resumeClosedTab: (taskId: string, entryId: string) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
   persistTab: (taskId: string, tabId: string) => void;
-  openPreviewTab: (taskId: string, data: { type: "edit" | "diff"; path: string; title: string; scope?: "unstaged" | "staged"; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
+  openPreviewTab: (taskId: string, data: { type: "edit" | "diff" | "dir"; path: string; title: string; scope?: "unstaged" | "staged"; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
   /** Clear an edit tab's `revealAt` after EditorPane has consumed it,
    *  so a re-render doesn't re-jump the cursor. */
   consumeReveal: (taskId: string, tabId: string) => void;
@@ -1991,6 +1991,12 @@ export const useApp = create<AppState>((set, get) => ({
       // a preview slot to another file (or the same file from the other
       // Git pane) must adopt the new scope, never keep the old one.
       scope: data.type === "diff" ? data.scope : undefined,
+      // Folder history (issue #151) is per-tab-occupant, exactly like the
+      // reveal targets above: a recycled slot starts a fresh trail at the
+      // folder it just landed on, so ⌘[ can never walk back into whatever
+      // the tab was showing before.
+      dirHistory: data.type === "dir" ? [data.path] : undefined,
+      dirHistoryIndex: data.type === "dir" ? 0 : undefined,
     };
     // Used instead by the "already open, same file" branches: only a field
     // the caller explicitly supplied is ever applied. Unlike the recycle

@@ -57,6 +57,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Inline review comments | Select a diff line → tooltip → compose → save, three times; line numbers stay level with the code throughout (GH #157) | `git.e2e.ts` |
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `files.e2e.ts` |
 | ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
+| ✅ Directory links | A folder link recycles the preview tab into a listing and expands the tree; the folder README renders under it; folder rows, `..` and links inside the README navigate in place; a file row or README file link pins the listing and opens alongside it; a hidden listing's README does not claim ⌘F; ⌘[ / ⌘] walk the folder trail, are declined when focus is in the bottom drawer or right panel, and fall through to task switching once the trail runs out | `editor.e2e.ts` |
 | ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `files.e2e.ts` |
 | ✅ Drag a file to a terminal | Row dragged onto a terminal sends the relative path to the PTY (no editor tab); released elsewhere types nothing; a plain click still opens the file | `files.e2e.ts` |
 | ✅ Tab drags | Reorder within the main strip; drop on a pane edge to split there; drag out of a pane back to main | `tabs-layout.e2e.ts` |

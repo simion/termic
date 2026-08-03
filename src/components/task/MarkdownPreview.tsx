@@ -46,6 +46,7 @@ import DOMPurify from "dompurify";
 import { Check, ImageOff, ChevronUp, ChevronDown, X } from "lucide-react";
 import { openPath, taskFileReadBase64, taskPathStat, taskRevealPath } from "@/lib/ipc";
 import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveTaskHref } from "@/lib/markdownPaths";
+import { navigateDirTab, openDirTab } from "@/lib/dirTabs";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { TerminalExitedBanner } from "./TerminalExitedBanner";
@@ -131,7 +132,14 @@ async function getMermaid() {
  *  `memberDirs` are a multi-repo task's member `dir_name`s — threaded
  *  through to `resolveTaskHref` so root-relative links/images and `..`
  *  walks stay scoped to the containing member's own root. */
-export type MarkdownCtx = { taskId: string; filePath: string; epoch?: number; memberDirs?: string[] };
+export type MarkdownCtx = {
+  taskId: string; filePath: string; epoch?: number; memberDirs?: string[];
+  /** Set when this preview is the README rendered INSIDE a folder listing
+   *  (DirListingPane): the id of that listing's tab. Links then navigate the
+   *  listing the same way its own rows do, instead of recycling it away or
+   *  stranding it. Absent for an ordinary markdown tab. */
+  hostDirTabId?: string;
+};
 
 // Relative-link targets that a text editor tab cannot render. Clicking one
 // reveals it in the OS file manager instead of opening a dead error tab.
@@ -986,9 +994,9 @@ export function MarkdownPreview(
   // (and blow away the app), so preventDefault runs before any early return.
   // External links go to the OS opener, #fragments scroll the preview, and
   // task-relative links are stat'd first — a missing target shows a
-  // toast instead of opening a dead tab, a directory focuses/expands in the
-  // sidebar file tree (GitHub-style folder view, not a jump to Finder) —
-  // before opening the target file in a tab (markdown targets land in
+  // toast instead of opening a dead tab, a directory opens a GitHub-style
+  // folder listing in the preview tab (and expands in the sidebar tree), not
+  // a jump to Finder — before opening the target file in a tab (markdown targets land in
   // MarkdownPane via TaskView routing); a `file.md#heading` fragment rides
   // along as the new tab's revealHeading, but only for a markdown target — a
   // non-markdown tab has no MarkdownPane to ever consume it. Targets an editor
@@ -1024,12 +1032,19 @@ export function MarkdownPreview(
       return;
     }
     if (stat.is_dir) {
-      // GitHub renders a folder listing for a directory link; mirror that by
-      // focusing/expanding the target in the sidebar file tree instead of
-      // punting out to Finder. `resolved` is already task-root-relative (and
-      // resolveTaskHref guarantees it's contained), so it's exactly the path
-      // space the tree keys on — the same one the breadcrumb reveal uses.
-      useApp.getState().revealInTree(ctx.taskId, resolved, true);
+      // GitHub renders a folder listing for a directory link; mirror that in
+      // the preview tab (DirListingPane) instead of punting out to Finder,
+      // and expand the same folder in the sidebar tree so both views agree.
+      // `resolved` is already task-root-relative (and resolveTaskHref
+      // guarantees it's contained), so it's exactly the path space the tree
+      // and the listing both key on — the breadcrumb reveal's space too.
+      // Inside a listing, a folder link is navigation WITHIN that listing:
+      // openDirTab would recycle the preview slot, which resets the back
+      // trail on an unpinned listing and strands a pinned one on the old
+      // folder while the new one lands in another tab. Same reasoning as
+      // the rows, `..`, and the breadcrumb.
+      if (ctx.hostDirTabId) navigateDirTab(ctx.taskId, ctx.hostDirTabId, resolved);
+      else openDirTab(ctx.taskId, resolved);
       return;
     }
     if (BINARY_LINK_RE.test(resolved)) {
@@ -1038,6 +1053,10 @@ export function MarkdownPreview(
         .catch(err => useUI.getState().pushToast(`Couldn't reveal ${resolved}: ${err}`, "error"));
       return;
     }
+    // A file link from a listing's README pins the listing first, exactly
+    // as clicking a file ROW does — otherwise the file recycles the preview
+    // slot the listing is sitting in and the folder you were reading is gone.
+    if (ctx.hostDirTabId) useApp.getState().persistTab(ctx.taskId, ctx.hostDirTabId);
     useApp.getState().openPreviewTab(ctx.taskId, {
       type: "edit",
       path: resolved,

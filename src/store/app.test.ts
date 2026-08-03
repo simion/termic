@@ -489,6 +489,79 @@ describe("openPreviewTab", () => {
     expect(tab.remoteImagesUnblocked).toBeUndefined();
   });
 
+  // ── directory tabs (issue #151) ─────────────────────────────────────
+  // A folder link recycles the SAME preview slot a file link uses, so it
+  // must never leave a second tab behind or inherit the previous
+  // occupant's per-document state.
+
+  it("recycles the preview tab into a directory listing", () => {
+    const wsId = "ws1";
+    const previewTab: Tab = { id: "prev-1", type: "edit", title: "guide.md", path: "docs/guide.md", preview: true } as any;
+    useApp.setState({ tabs: { [wsId]: [previewTab] }, activeTab: { [wsId]: "prev-1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "dir", path: "docs/plans", title: "plans" });
+
+    const tabs = useApp.getState().tabs[wsId];
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].type).toBe("dir");
+    expect((tabs[0] as any).path).toBe("docs/plans");
+    expect(tabs[0].preview).toBe(true);
+    expect(useApp.getState().activeTab[wsId]).toBe("prev-1");
+  });
+
+  it("clears a per-document remoteImagesUnblocked override when recycling into a directory", () => {
+    const wsId = "ws1";
+    const previewTab: Tab = {
+      id: "prev-1", type: "edit", title: "old.md", path: "docs/old.md",
+      preview: true, remoteImagesUnblocked: true,
+    } as any;
+    useApp.setState({ tabs: { [wsId]: [previewTab] }, activeTab: { [wsId]: "prev-1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "dir", path: "docs", title: "docs" });
+
+    expect((useApp.getState().tabs[wsId][0] as any).remoteImagesUnblocked).toBeUndefined();
+  });
+
+  it("does not confuse a directory tab with a file tab on the same path", () => {
+    // "docs" the folder and a (hypothetical) "docs" file are different
+    // targets; the existing-tab lookup keys on type as well as path, so
+    // opening the folder must not just re-activate the file tab.
+    const wsId = "ws1";
+    const fileTab: Tab = { id: "e1", type: "edit", title: "docs", path: "docs", preview: false } as any;
+    useApp.setState({ tabs: { [wsId]: [fileTab] }, activeTab: { [wsId]: "e1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "dir", path: "docs", title: "docs" });
+
+    const tabs = useApp.getState().tabs[wsId];
+    expect(tabs).toHaveLength(2);
+    expect(tabs[1].type).toBe("dir");
+    expect(useApp.getState().activeTab[wsId]).toBe(tabs[1].id);
+  });
+
+  it("re-activates an open directory tab instead of duplicating it", () => {
+    const wsId = "ws1";
+    const dirTab: Tab = { id: "d1", type: "dir", title: "docs", path: "docs", preview: false } as any;
+    const other: Tab = { id: "e1", type: "edit", title: "guide.md", path: "docs/guide.md", preview: true } as any;
+    useApp.setState({ tabs: { [wsId]: [dirTab, other] }, activeTab: { [wsId]: "e1" } });
+
+    useApp.getState().openPreviewTab(wsId, { type: "dir", path: "docs", title: "docs" });
+
+    expect(useApp.getState().tabs[wsId]).toHaveLength(2);
+    expect(useApp.getState().activeTab[wsId]).toBe("d1");
+  });
+
+  it("does not set reveal fields on directory tabs", () => {
+    const wsId = "ws1";
+    useApp.setState({ tabs: { [wsId]: [] } });
+
+    useApp.getState().openPreviewTab(wsId, {
+      type: "dir", path: "docs", title: "docs", revealHeading: "usage",
+    });
+
+    const tab = useApp.getState().tabs[wsId][0] as any;
+    expect(tab.revealHeading).toBeUndefined();
+  });
+
   it("does not wipe a not-yet-consumed reveal when re-activating an existing tab without a new one", () => {
     // Regression: re-activating the SAME already-open file (no new reveal
     // target in this call) must never cancel a reveal that's already

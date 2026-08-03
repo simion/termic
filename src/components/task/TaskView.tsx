@@ -41,6 +41,7 @@ const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.Edi
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
 const PreviewPane  = lazy(() => import("./PreviewPane").then(m => ({ default: m.PreviewPane })));
+const DirListingPane = lazy(() => import("./DirListingPane").then(m => ({ default: m.DirListingPane })));
 // Lightweight extension check so we don't import the (lazy) MarkdownPane
 // module just to ask whether a path is markdown. Shared with the markdown
 // preview's link handler (markdownPaths.ts) so both agree on what counts.
@@ -377,6 +378,7 @@ export function TaskView({ task }: { task: Task }) {
                     </Suspense>
                   )}
                   {t.type === "diff"     && <Suspense fallback={null}><DiffPane task={task} tab={t} /></Suspense>}
+                  {t.type === "dir"      && <Suspense fallback={null}><DirListingPane task={task} tab={t} visible={visible} /></Suspense>}
                 </div>
               );
             })}

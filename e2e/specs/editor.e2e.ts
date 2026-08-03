@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { archiveTask, openTask, requireTermicApi, snap, waitForAppShell } from "../helpers";
 
@@ -631,5 +631,547 @@ describe("pdf preview", () => {
       `mount:${visibleSrc}`,
       rewrittenSrc,
     ]);
+  });
+});
+
+// P1 (issue #151): a directory link in a rendered markdown file opens a
+// GitHub-style folder listing in the PREVIEW TAB, instead of only nudging the
+// sidebar tree. Cases: the link recycles the preview tab (no second tab) and
+// expands the same folder in the tree; the folder's README renders under the
+// listing; a folder row navigates in place; the up button climbs back; a file
+// row opens as an ordinary edit tab; a folder with no README shows the list
+// alone with no error.
+describe("directory links", () => {
+  let taskId: string | undefined;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    try {
+      execSync(`git -C "${fixture}" clean -fd`);
+    } catch {
+      /* nothing */
+    }
+  });
+
+  const activeTab = () =>
+    browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      return (s.tabs[id] ?? []).find((t: any) => t.id === s.activeTab[id]);
+    }, taskId);
+  const tabCount = () =>
+    browser.execute(
+      (id) => (window.__termic!.useApp.getState().tabs[id] ?? []).length,
+      taskId,
+    );
+  // Listing rows carry data-dir-entry; the sidebar tree uses data-path, so the
+  // two never collide. Every query is scoped to THIS task: each visited task
+  // stays mounted, so an unscoped selector can win a hidden copy.
+  const scope = () => `[data-task-id="${taskId}"]`;
+  const rows = () =>
+    browser.execute(
+      (s) =>
+        [...document.querySelectorAll(`${s} [data-testid="dir-listing"] [data-dir-entry]`)].map(
+          (e) => e.getAttribute("data-dir-entry"),
+        ),
+      scope(),
+    );
+  const clickEntry = (name: string) =>
+    browser.execute(
+      (sel) => (document.querySelector(sel) as HTMLElement).click(),
+      `${scope()} [data-dir-entry="${name}"]`,
+    );
+  // The tab flips to type "dir" the moment the link is clicked, but the pane
+  // reads the folder over IPC — so wait for the rows too, not just the state.
+  const atDir = async (rel: string, expected: string[]) => {
+    await browser.waitUntil(
+      async () => {
+        const t = (await activeTab()) as any;
+        return t?.type === "dir" && t?.path === rel;
+      },
+      { timeout: 10_000, timeoutMsg: `the listing never landed on ${rel}` },
+    );
+    await browser.waitUntil(
+      async () => (await rows()).length === expected.length,
+      { timeout: 10_000, timeoutMsg: `${rel} never listed ${expected.length} rows` },
+    );
+    expect(await rows()).toEqual(expected);
+  };
+
+  it("opens a folder listing in the preview tab and expands the tree", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-dirlinks");
+
+    // A folder with a README and a sub-folder without one, plus a markdown
+    // file that links to it. Written straight to disk (taskFileWrite does not
+    // mkdir -p), then an fs tick makes the tree and the pane re-read.
+    mkdirSync(path.join(fixture, "e2e-docs", "plans"), { recursive: true });
+    // The README carries its own links: clicking one must obey the LISTING's
+    // rules (pin before opening a file, navigate in place for a folder), not
+    // the generic markdown-tab rules.
+    writeFileSync(
+      path.join(fixture, "e2e-docs", "README.md"),
+      "# docs index\n\n- [into plans](plans)\n- [the guide](guide.md)\n",
+    );
+    writeFileSync(path.join(fixture, "e2e-docs", "guide.md"), "# guide\n");
+    writeFileSync(path.join(fixture, "e2e-docs", "plans", "roadmap.md"), "# roadmap\n");
+    writeFileSync(path.join(fixture, "e2e-dirlinks.md"), "# links\n\n[the docs](e2e-docs)\n");
+    // A NON-markdown file, so one case can put a tab on screen that owns no
+    // MarkdownPreview of its own. Outside e2e-docs so it can't disturb the
+    // row assertions.
+    writeFileSync(path.join(fixture, "e2e-dirlinks-note.txt"), "plain text\n");
+    await browser.execute(
+      (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
+      taskId,
+    );
+
+    const mdSel = '[data-path="e2e-dirlinks.md"]';
+    await browser.waitUntil(
+      () => browser.execute((s) => !!document.querySelector(s), mdSel),
+      { timeout: 10_000, timeoutMsg: "the linking markdown file never appeared in the tree" },
+    );
+    await browser.execute((s) => {
+      (document.querySelector(s) as HTMLElement).click();
+    }, mdSel);
+
+    // Show the rendered view (the default view is a persisted pref, so don't
+    // assume this tab already opened in Preview).
+    await browser.execute((id) => {
+      const btn = [...document.querySelectorAll(`[data-task-id="${id}"] button`)].find(
+        (b) => b.textContent?.trim() === "Preview",
+      );
+      if (!btn) throw new Error("Preview toggle not found");
+      (btn as HTMLElement).click();
+    }, taskId);
+    await browser.waitUntil(
+      () =>
+        browser.execute(() =>
+          [...document.querySelectorAll("a")].some((a) => a.textContent?.trim() === "the docs"),
+        ),
+      { timeout: 10_000, timeoutMsg: "the directory link never rendered" },
+    );
+
+    const before = await tabCount();
+    await browser.execute(() => {
+      const a = [...document.querySelectorAll("a")].find(
+        (x) => x.textContent?.trim() === "the docs",
+      );
+      (a as HTMLElement).click();
+    });
+
+    // Folders first, then files, each by name.
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+    // Recycled the preview slot rather than opening a second tab.
+    expect(await tabCount()).toBe(before);
+
+    // The sidebar tree expanded the same folder, so its children are visible.
+    await browser.waitUntil(
+      () =>
+        browser.execute(() => !!document.querySelector('[data-path="e2e-docs/guide.md"]')),
+      { timeout: 10_000, timeoutMsg: "the file tree never expanded the linked folder" },
+    );
+    await snap("dir-listing.png");
+  });
+
+  it("renders the folder's README under the listing", async () => {
+    await browser.waitUntil(
+      () =>
+        browser.execute(() =>
+          (document.querySelector('[data-testid="dir-readme"]')?.textContent ?? "").includes(
+            "docs index",
+          ),
+        ),
+      { timeout: 10_000, timeoutMsg: "the folder README never rendered" },
+    );
+  });
+
+  it("navigates into a sub-folder in the same tab, README-less and error-free", async () => {
+    const before = (await activeTab()) as any;
+    await clickEntry("plans");
+    await atDir("e2e-docs/plans", ["roadmap.md"]);
+
+    // Same tab object, not a new one.
+    expect(((await activeTab()) as any).id).toBe(before.id);
+    // No README here — the listing stands alone, with nothing reported wrong.
+    expect(
+      await browser.execute(() => !!document.querySelector('[data-testid="dir-readme"]')),
+    ).toBe(false);
+    expect(
+      await browser.execute(() =>
+        (document.querySelector('[data-testid="dir-listing"]')!.parentElement!.textContent ?? "")
+          .includes("Couldn't read this folder"),
+      ),
+    ).toBe(false);
+  });
+
+  it("climbs back out with the up button", async () => {
+    await browser.execute((s) => {
+      (document.querySelector(s) as HTMLElement).click();
+    }, `${scope()} [data-testid="dir-up"]`);
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+  });
+
+  it("keeps the listing when a file row is clicked, opening the file alongside it", async () => {
+    // The dead end this fixes: the listing WAS the preview tab, so a file
+    // recycled it away and the folder you were browsing was simply gone.
+    const listing = (await activeTab()) as any;
+    expect(listing.preview).toBe(true);
+    const before = await tabCount();
+
+    await clickEntry("guide.md");
+    await browser.waitUntil(
+      async () => {
+        const t = (await activeTab()) as any;
+        return t?.type === "edit" && t?.path === "e2e-docs/guide.md";
+      },
+      { timeout: 10_000, timeoutMsg: "a file row did not open an edit tab" },
+    );
+
+    // One tab more, and the listing is still there — now pinned, so it is no
+    // longer the slot the next file will recycle.
+    expect(await tabCount()).toBe(before + 1);
+    const survivor = await browser.execute(
+      (id, lid) => (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.id === lid),
+      taskId,
+      listing.id,
+    );
+    expect(survivor).toMatchObject({ type: "dir", path: "e2e-docs", preview: false });
+  });
+
+  it("navigates in place when a link INSIDE the README points at a folder", async () => {
+    // Regression: the README renders through MarkdownPreview, whose default
+    // folder handling recycles the preview slot. Inside a listing that resets
+    // the back trail (unpinned) or strands the listing in another tab
+    // (pinned, which it now is) - the exact failure navigateDirTab exists to
+    // prevent. The previous case left an editor active, so re-select the
+    // listing first.
+    const listingId = await browser.execute(
+      (id) =>
+        (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.type === "dir")!.id,
+      taskId,
+    );
+    await browser.execute((tid) => {
+      (document.querySelector(`[data-tab-id="${tid}"]`) as HTMLElement).click();
+    }, listingId);
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+
+    const before = (await activeTab()) as any;
+    const beforeCount = await tabCount();
+    await browser.execute((s) => {
+      const a = [...document.querySelectorAll(`${s} a`)].find(
+        (x) => x.textContent?.trim() === "into plans",
+      );
+      if (!a) throw new Error("the README folder link never rendered");
+      (a as HTMLElement).click();
+    }, scope());
+
+    await atDir("e2e-docs/plans", ["roadmap.md"]);
+    const after = (await activeTab()) as any;
+    expect(after.id).toBe(before.id);            // same tab, not a recycled slot
+    expect(await tabCount()).toBe(beforeCount);
+    // The trail GREW rather than being reset, so Cmd+[ still goes back.
+    expect(after.dirHistoryIndex).toBe(before.dirHistoryIndex + 1);
+
+    await browser.execute((s) => {
+      (document.querySelector(s) as HTMLElement).click();
+    }, `${scope()} [data-testid="dir-up"]`);
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+  });
+
+  it("keeps the listing when a link INSIDE the README points at a file", async () => {
+    const listing = (await activeTab()) as any;
+
+    await browser.execute((s) => {
+      const a = [...document.querySelectorAll(`${s} a`)].find(
+        (x) => x.textContent?.trim() === "the guide",
+      );
+      if (!a) throw new Error("the README file link never rendered");
+      (a as HTMLElement).click();
+    }, scope());
+
+    await browser.waitUntil(
+      async () => {
+        const t = (await activeTab()) as any;
+        return t?.type === "edit" && t?.path === "e2e-docs/guide.md";
+      },
+      { timeout: 10_000, timeoutMsg: "the README file link never opened an editor" },
+    );
+    // The listing survived, exactly as a file ROW click leaves it.
+    const survivor = await browser.execute(
+      (id, lid) => (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.id === lid),
+      taskId,
+      listing.id,
+    );
+    expect(survivor).toMatchObject({ type: "dir", path: "e2e-docs", preview: false });
+
+    // Back to the listing for the cases that follow.
+    await browser.execute((tid) => {
+      (document.querySelector(`[data-tab-id="${tid}"]`) as HTMLElement).click();
+    }, listing.id);
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+  });
+
+  it("navigates the pinned listing in place, without spawning another tab", async () => {
+    // A pinned tab is no longer the preview slot, so a folder row that went
+    // through the preview-tab path would strand it on the old folder and put
+    // the new listing somewhere else.
+    const listingId = ((await activeTab()) as any).id;
+    const before = await tabCount();
+    await clickEntry("plans");
+    await atDir("e2e-docs/plans", ["roadmap.md"]);
+    expect(await tabCount()).toBe(before);
+    const after = (await activeTab()) as any;
+    expect(after.id).toBe(listingId);
+    expect(after.preview).toBe(false);
+  });
+
+  it("does not let a hidden listing's README swallow Cmd+F", async () => {
+    // MarkdownPreview arms a CAPTURE-phase window listener for Cmd+F while it
+    // believes it is visible. A listing has no source/preview toggle, so if
+    // tab visibility isn't threaded in it is visible forever, and a listing
+    // parked on a background tab eats Cmd+F for the whole app.
+    const listingId = ((await activeTab()) as any).id;
+    // The listing must be on a folder that HAS a README, or there is no
+    // MarkdownPreview mounted to claim anything and the case proves nothing.
+    await browser.execute((sel) => {
+      (document.querySelector(sel) as HTMLElement).click();
+    }, `${scope()} [data-testid="dir-up"]`);
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (s2) => !!document.querySelector(`${s2} [data-testid="dir-readme"]`),
+          scope(),
+        ),
+      { timeout: 10_000, timeoutMsg: "the README never rendered before the Cmd+F probe" },
+    );
+
+    // Close every markdown edit tab first. MarkdownPane gates its preview on
+    // the VIEW MODE, not tab visibility, so a background .md tab left in
+    // Preview/Split claims the key too - a separate, pre-existing quirk that
+    // would mask what this case is actually testing.
+    await browser.execute((id) => {
+      const app = window.__termic!.useApp.getState();
+      for (const t of app.tabs[id] ?? []) {
+        if (t.type === "edit" && /\.(md|markdown|mdx)$/i.test((t as any).path)) {
+          app.closeTab(id, t.id);
+        }
+      }
+    }, taskId);
+
+    // Put a plain-text file on screen: an editor tab that owns no preview.
+    const noteSel = '[data-path="e2e-dirlinks-note.txt"]';
+    await browser.waitUntil(
+      () => browser.execute((sel) => !!document.querySelector(sel), noteSel),
+      { timeout: 10_000, timeoutMsg: "the .txt never appeared in the tree" },
+    );
+    await browser.execute((sel) => {
+      (document.querySelector(sel) as HTMLElement).click();
+    }, noteSel);
+    await browser.waitUntil(
+      async () => ((await activeTab()) as any)?.path === "e2e-dirlinks-note.txt",
+      { timeout: 10_000, timeoutMsg: "the .txt never became the active tab" },
+    );
+
+    // A preview that claims the key calls preventDefault on it. Nothing else
+    // binds plain Cmd+F at the window (find-in-files is Shift+Cmd+F, and
+    // CodeMirror's search keymap lives on the editor's own DOM), so
+    // defaultPrevented is exactly "some MarkdownPreview took it".
+    const claimed = await browser.execute(() => {
+      const ev = new KeyboardEvent("keydown", {
+        key: "f", metaKey: true, bubbles: true, cancelable: true,
+      });
+      window.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    });
+    expect(claimed).toBe(false);
+
+    // Back to the listing, and back down into plans, so the trail the next
+    // case walks ends ... -> e2e-docs -> e2e-docs/plans as it expects.
+    await browser.execute((tid) => {
+      (document.querySelector(`[data-tab-id="${tid}"]`) as HTMLElement).click();
+    }, listingId);
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+    await clickEntry("plans");
+    await atDir("e2e-docs/plans", ["roadmap.md"]);
+  });
+
+  it("walks the folder trail with Cmd+[ and Cmd+]", async () => {
+    // The listing sits at e2e-docs/plans with e2e-docs behind it.
+    const cmdBracket = (key: string) =>
+      browser.execute((k) => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true }),
+        );
+      }, key);
+
+    await cmdBracket("[");
+    await atDir("e2e-docs", ["plans", "guide.md", "README.md"]);
+
+    await cmdBracket("]");
+    await atDir("e2e-docs/plans", ["roadmap.md"]);
+  });
+
+  it("does not claim Cmd+[ when focus is in the bottom terminal", async () => {
+    // Regression: the listing used to be read off the MAIN pane regardless of
+    // where focus was, so a listing nobody was looking at swallowed the key
+    // and task switching silently stopped working while the drawer had focus.
+    const before = ((await activeTab()) as any).dirHistoryIndex as number;
+    expect(before).toBeGreaterThan(0); // there IS a trail it could have walked
+
+    await browser.execute((id) => {
+      window.__termic!.useApp.getState().toggleTerminalSplit(id);
+    }, taskId);
+    await browser.waitUntil(
+      () => browser.execute(() => !!document.querySelector("[data-bottom-split]")),
+      { timeout: 10_000, timeoutMsg: "the bottom split never opened" },
+    );
+    // Park focus inside the drawer. tabIndex makes the container itself a
+    // focus target without depending on a terminal having spawned yet.
+    await browser.execute(() => {
+      const el = document.querySelector("[data-bottom-split]") as HTMLElement;
+      el.setAttribute("tabindex", "-1");
+      el.focus();
+    });
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          () => !!document.activeElement?.closest("[data-bottom-split]"),
+        ),
+      { timeout: 5_000, timeoutMsg: "focus never landed in the bottom split" },
+    );
+
+    await browser.execute(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", metaKey: true, bubbles: true }));
+    });
+
+    // The listing must not have moved.
+    expect(((await activeTab()) as any).dirHistoryIndex).toBe(before);
+
+    await browser.execute((id) => {
+      window.__termic!.useApp.getState().toggleTerminalSplit(id);
+    }, taskId);
+  });
+
+  it("hands Cmd+[ to task switching when focus is in the right panel", async () => {
+    // The other half of the conditional claim: a listing the user is not
+    // driving must not eat the key. Focus in the file tree (or any dialog /
+    // sidebar) means the keyboard belongs to that, so Cmd+[ has to reach the
+    // task switcher even though the main pane still shows a listing.
+    const before = ((await activeTab()) as any).dirHistoryIndex as number;
+    expect(before).toBeGreaterThan(0); // there IS a trail it could have walked
+
+    const second = await openTask("e2e-dirlinks-focus");
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) => (window.__termic!.useApp.getState().tabs[id] ?? []).length > 0,
+          second,
+        ),
+      { timeout: 15_000, timeoutMsg: "the second task never materialised its tabs" },
+    );
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
+    await browser.waitUntil(
+      async () => ((await activeTab()) as any)?.type === "dir",
+      { timeout: 10_000, timeoutMsg: "never returned to the listing tab" },
+    );
+
+    // Park focus on a file-tree row in the right panel.
+    await browser.execute(() => {
+      const row = document.querySelector('[data-path="e2e-docs"]') as HTMLElement;
+      if (!row) throw new Error("no file-tree row to focus");
+      row.setAttribute("tabindex", "-1");
+      row.focus();
+    });
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          () =>
+            !!document.activeElement &&
+            document.activeElement !== document.body &&
+            !document.activeElement.closest("[data-main-content]"),
+        ),
+      { timeout: 5_000, timeoutMsg: "focus never left the main pane" },
+    );
+
+    await browser.execute(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", metaKey: true, bubbles: true }));
+    });
+
+    // Task switched, and the listing did NOT walk.
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) => window.__termic!.useApp.getState().activeTaskId !== id,
+          taskId,
+        ),
+      { timeout: 10_000, timeoutMsg: "Cmd+[ was swallowed by a listing nobody was driving" },
+    );
+    const listing = await browser.execute(
+      (id) => (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.type === "dir"),
+      taskId,
+    );
+    expect((listing as any).dirHistoryIndex).toBe(before);
+
+    await archiveTask(second);
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
+  });
+
+  it("falls through to task switching once the trail runs out", async () => {
+    // The whole point of the conditional claim: at the END of the trail the
+    // key must reach the task switcher rather than being swallowed.
+
+    // A second task to switch TO. It only counts as switchable once it has
+    // mounted and materialised its tabs, so wait for that before switching back.
+    const second = await openTask("e2e-dirlinks-2");
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) => (window.__termic!.useApp.getState().tabs[id] ?? []).length > 0,
+          second,
+        ),
+      { timeout: 15_000, timeoutMsg: "the second task never materialised its tabs" },
+    );
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
+    await browser.waitUntil(
+      async () => ((await activeTab()) as any)?.type === "dir",
+      { timeout: 10_000, timeoutMsg: "never returned to the listing tab" },
+    );
+
+    const back = () =>
+      browser.execute(() => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "[", metaKey: true, bubbles: true }),
+        );
+      });
+
+    // Drain the trail: every press so far has somewhere to go, so the task
+    // must NOT change while the listing still has history behind it.
+    let steps = ((await activeTab()) as any).dirHistoryIndex as number;
+    expect(steps).toBeGreaterThan(0);
+    while (steps > 0) {
+      await back();
+      await browser.waitUntil(
+        async () => ((await activeTab()) as any)?.dirHistoryIndex === steps - 1,
+        { timeout: 10_000, timeoutMsg: `back never stepped to ${steps - 1}` },
+      );
+      expect(
+        await browser.execute(() => window.__termic!.useApp.getState().activeTaskId),
+      ).toBe(taskId);
+      steps--;
+    }
+
+    // Trail exhausted — this one falls through and switches task.
+    await back();
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          (id) => window.__termic!.useApp.getState().activeTaskId !== id,
+          taskId,
+        ),
+      { timeout: 10_000, timeoutMsg: "Cmd+[ was swallowed instead of switching task" },
+    );
+
+    await archiveTask(second);
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
   });
 });

@@ -19,7 +19,7 @@ import { focusMainTab } from "@/lib/tabFocus";
 import { visibleCliIds, agentDisplayName, isTerminalEntry } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
-import { fileIconUrl } from "@/lib/explorer/iconResolver";
+import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
@@ -396,6 +396,12 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
     const name = path.split("/").pop() || tab.title;
     fileIcon = fileIconUrl(name);
   }
+  // Folder tabs (issue #151) get the tree's folder icon, matching how the
+  // same directory reads in the sidebar. The task root has an empty path,
+  // so fall back to the tab title for its name-based icon lookup.
+  if (tab.type === "dir") {
+    fileIcon = folderIconUrl((tab as any).path.split("/").pop() || tab.title, true);
+  }
 
   return (
     <div
@@ -455,7 +461,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
       {(tab.type === "terminal" || fileIcon || tab.type === "diff") && (
         <span className={cn("shrink-0 flex items-center justify-center", color)}>
           {tab.type === "terminal" && <CliIcon cli={iconId} className="h-4 w-4" />}
-          {tab.type === "edit" && fileIcon && <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" />}
+          {(tab.type === "edit" || tab.type === "dir") && fileIcon && <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" />}
           {tab.type === "diff" && (fileIcon ? <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" /> : <GitCompare className="h-4 w-4" />)}
         </span>
       )}
