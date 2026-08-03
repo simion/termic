@@ -25,6 +25,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Task spawn | Task created; agent PTY comes alive; PTY write round-trips; agent OSC title reaches the app | `task.e2e.ts` |
 | ✅ Agent working | After a real submit, the agent enters the working state | `agent.e2e.ts` |
 | ✅ Agent attention | An agent you are not viewing flags completion (unread/done) when it finishes | `agent.e2e.ts` |
+| ✅ CLI tabs (unit) | `termic tab` on an UNMOUNTED task keeps every persisted agent and its session id, does not steal the default-target role, and a shell tab does not strand the task agentless | `store/cliTab.integration.test.ts` |
 | ✅ Windowless completion | An agent finishing while Termic is windowless still flags unread/done, even for the task that was active | `app.e2e.ts` |
 | ✅ Pending work defers done | An agent that backgrounds work and returns to its idle title holds the done badge back past byte-quiet (4s) and the settle timer (5s); done fires once its status line clears | `agent.e2e.ts` |
 | ✅ A hold that never clears ends | A status line that never clears cannot pin a tab to "working": the absolute ceiling force-clears it (shortened for the test via `localStorage.workDoneCeilingMs`) | `agent.e2e.ts` |

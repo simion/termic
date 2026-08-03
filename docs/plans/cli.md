@@ -11,12 +11,12 @@ advertisement (protocol v2). Phase 2 implemented on top - `send`
 (+`--shell`, backlog replay, detach keys, opt-in `--resize`), `apply`
 (exit 10 goes live), `diff`, `path`, and the result readers `logs`
 (per-PTY ring buffer) and `result` (claude transcript reader), protocol
-v4. Phase 3 in progress - windowless mode landed, `termic quit` landed;
-tab management (GH #138) specced and adopted, not yet built. Homebrew is
-settled, not pending: the cask ships, a CLI-only formula is a non-goal
-(see Distribution). `termic events --json` is deferred pending the Claude
-Code hooks path: a versioned public event stream built on heuristic settle
-detection is not something to support forever.
+v5. Phase 3 in progress - windowless mode landed, `termic quit` landed;
+tab management (GH #138) part 1 landed (`termic tab` + stable tab ids),
+part 2 (`--tab` targeting, `status` listing, `tab -p`) pending. Homebrew
+is settled, not pending: the cask ships, a CLI-only formula is a non-goal
+(see Distribution). `termic events --json` is SEQUENCED BEHIND hooks, not
+merely deferred: see Phasing.
 `termic mcp` stays parked under discussion and NOT approved (see
 Phasing). Sections below note where the implementation refined the
 original design.
@@ -293,7 +293,11 @@ termic quit [--yes]                           # the only shell-side teardown for
                                               # sessions (force-checkout of MAIN), so the
                                               # confirmation names what dies. Never
                                               # launches; exits 0 if not running
-termic tab <task> [--agent <id>|--terminal <id>|--shell] [-p]  # GH #138. A tab INSIDE a
+termic agents                                 # what --agent / --terminal accept:
+                                              # id, kind, enabled, installed, usable.
+                                              # The registry is per-user and editable,
+                                              # so static help cannot carry it
+termic tab <task> [--agent <id>|--terminal <id>|--shell]      # GH #138. A tab INSIDE a
                                               # running task: the "+" menu as a verb, and
                                               # like that menu it distinguishes agent /
                                               # custom-terminal / aux-shell kinds, because
@@ -366,7 +370,21 @@ agent tab" (`PtyRole.is_default`, already the target `attach`/`logs` resolve
 to). So a second claude tab is unreachable, and `status` reports a `sessions`
 COUNT with no way to ask what those sessions are.
 
-Adopted into Phase 3.
+Adopted into Phase 3, landing in two parts. **Part 1 (landed):** `termic tab`
+plus `PtyRole.tab_id`, i.e. creating tabs and having a stable name for them.
+**Part 2 (pending):** `--tab <n|id|title>` on send/wait/attach/logs, tabs
+listed in `status`, and `tab -p`. Split because part 2 depends on the selector
+decision and part 1 does not.
+
+**Part 2 must start by covering `tab_id` end to end.** Part 1 threads the
+webview's tab uuid into `PtyRole.tab_id`, but NOTHING consumes it yet, so
+nothing tests it: the value is set in TerminalPane's spawn call, which has no
+test infrastructure, and every suite stays green if that field is dropped,
+misspelled, or wired to the wrong id. The failure would surface only as
+"`--tab` resolves nothing" once part 2 exists, at which point the bug looks
+like a part 2 bug. First task of part 2, before any selector work: an
+assertion that a tab opened by `termic tab` is addressable by the id that
+command returned (e2e is the natural level, since it needs a real spawn).
 
 **Picking what to open is the hard part, and it is not a binary.** The GUI's
 "+" menu already offers three distinct things and gates them: `kind: "agent"`
@@ -385,7 +403,25 @@ would model none of that. So:
   `--agent` for the same reason `--shell` is: the kinds differ in resume, YOLO
   and sandbox behaviour, so one `--kind <string>` flag would let a typo land
   you in the wrong semantics silently.
-- **`--shell`** stays the task's aux terminal, matching `attach --shell`.
+- **`--shell`** opens a plain login shell tab in the strip. NOTE this is not
+  the aux terminal `attach --shell` resolves; that is a separate pane.
+
+**Terminal tabs are write-only from the CLI, and that is accepted.** `--shell`
+and `--terminal` tabs open and are fully usable in the window, but `attach`
+and `logs` cannot reach them and no output ring is kept, because only agent
+tabs carry a `PtyRole` and that is what both resolve against. Everything else
+that separates the kinds follows from the same place: no work-done detection
+(so `--wait` means nothing for them), no resume, no YOLO args, and shells are
+not persisted across a restart. SANDBOXING IS A SEPARATE SWITCH, keyed on
+`pty_spawn`'s `task_id` argument rather than on the role: terminal tabs are
+deliberately never caged, which is what makes them usable for git and ssh
+(#32). Giving them a role in part 2 would make them addressable without
+caging them, but that is the wrong way round: it would put an UNCAGED PTY on
+the control socket where it can be driven remotely. Not an escalation (a caged
+agent cannot reach the socket, and `attach --shell` already drives the uncaged
+aux terminal), but it widens the socket's reach for no use case we have. The
+retained-output ring per shell is the smaller cost. Decide it only if part 2
+turns up a real need to drive a shell from a script.
 - **Omitted** = the task's own `cli`, i.e. "another one of what this task
   already runs", which is the common case and matches what the `+` button
   does before you pick anything.
@@ -404,16 +440,13 @@ Then the targeting half:
 
 Open questions, deliberately not settled here:
 
-- **Selector stability.** Index is what the user sees in the tab strip but
-  shifts when a tab closes; title is agent-authored and changes mid-turn (it
-  is the same OSC stream the work-done classifier reads, lib/terminalTitle.ts).
-  Neither is a stable id. A stable per-tab id exists app-side and is the
-  honest thing for scripts, with index/title as human conveniences that
-  resolve to it. Note this is NOT free: `PtyRole` is `{task_id, kind,
-  is_default}` with no id and no title, and titles live in the webview store,
-  so exposing one means extending the role or adding a webview RPC. That is an
-  IPC change on top of the protocol change, and it partly answers the question:
-  whatever id is exposed has to be plumbed into the role anyway.
+- **Selector stability: SETTLED, tab ids are the identity.** Index shifts
+  when a tab closes and titles are agent-authored and change mid-turn (the
+  same OSC stream the work-done classifier reads, lib/terminalTitle.ts), so
+  neither can be the identity. The webview already minted a uuid per tab; it
+  is now carried on `PtyRole.tab_id`, so Rust can resolve a selector without a
+  webview round-trip. `termic tab` prints it. Index and title remain human
+  conveniences that resolve to it, which is the part still to build.
 - **Ambiguity is an error, not a guess.** Two tabs titled `claude` must fail
   with both selectors printed, the same shape as the existing ambiguous-task
   error, rather than picking the lower index.
@@ -424,11 +457,12 @@ Open questions, deliberately not settled here:
   CLI has no equivalent at any level. Out of scope here, but it is the obvious
   next ask once tabs are addressable, and `--tab` selectors are what it would
   hang off.
-- **Whether `tab` waits.** `new` has `--wait` and a delivery-confirmation
-  contract; `tab -p` would need the same or it inherits the silently-dropped
-  prompt problem Phase 1 exists to avoid. Cheapest answer is to reuse
-  `send`'s path outright: open the tab, then deliver through the confirmed
-  route rather than a second injection recipe.
+- **`tab -p` lands with targeting, not before.** `send_prompt` is the
+  confirmed delivery route, and it picks from a task's SENDABLE AGENT TABS
+  rather than a named one, so delivering into a specific new tab needs `--tab`
+  to exist first. Writing a second injection recipe instead would reintroduce
+  exactly the silently-dropped prompt Phase 1 exists to prevent, so `-p` waits
+  for part 2.
 
 Protocol impact is additive (a new verb plus optional fields), so this is a
 version bump when it lands, not a breaking change.
@@ -802,13 +836,22 @@ client whose server is missing.
     unbuilt; docs/cli-agent-instructions.md remains paste-your-own.
 - **Phase 3**: windowless daemon mode (activation policy + run without a
   window), `termic quit`, tab management inside a running task (GH #138, see
-  "Tabs inside a running task"), `termic events --json` (standing
-  subscription:
-  one JSON line per task event - done, waiting, created - fed by the same
-  settle signal as `--wait`). The event stream is also what would make
-  app-side hooks ("on task done, run this command" in settings) trivial
-  later; hooks themselves are a separate future feature, not part of this
-  plan.
+  "Tabs inside a running task").
+
+  `termic events --json` (a standing subscription: one JSON line per task
+  event, done / waiting / created) is SEQUENCED BEHIND agent hooks rather
+  than deferred indefinitely. The order is the whole point. Termic's settle
+  detection is heuristic by product design (PTY-native, so done-ness is
+  inferred from title signals and output scans), and `--wait` carries that
+  caveat in --help because its blast radius is one command with a human
+  watching. An event stream is a VERSIONED PUBLIC API consumed by scripts
+  with nobody watching, so publishing `{"event":"done"}` on a guess means
+  owning those semantics forever. Installing Claude Code Stop/Notification
+  hooks into spawned agents replaces the guess with exact push-based
+  signals; build the stream on that. So the work item is HOOKS FIRST, then
+  the stream, Claude-only at first, with the heuristic staying as the
+  fallback for agents that have no hook surface. Neither is scheduled yet;
+  what is settled is that the stream does not ship before the hooks.
 
   `termic quit` (protocol v4): the only shell-side teardown for a
   windowless instance, since the menu-bar Quit is otherwise the sole
