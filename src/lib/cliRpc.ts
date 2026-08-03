@@ -456,7 +456,7 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
       if (exists) {
         throw sendErr(
           "not_sendable",
-          "that tab is not an agent tab; shell and terminal tabs are write-only from the CLI",
+          "that tab is not an agent tab; only agent tabs are reachable, the rest are write-only from the CLI",
         );
       }
       throw sendErr("unknown_tab", "that tab no longer exists; see `termic status` for the open tabs");
@@ -468,19 +468,24 @@ export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; c
         `agent "${targeted.cli}" has work-done detection disabled, so --wait has no settle signal. Resend without --wait.`,
       );
     }
-    if (!targeted.ptyId) {
-      if (!p.spawnPending) {
-        throw sendErr(
-          "tab_not_live",
-          "that tab's agent is not running; open a new tab with `termic tab`, or resend without --tab using --resume",
-        );
-      }
-      // `tab -p`: the tab was created moments ago and TerminalPane is
-      // still spawning its PTY. Same recipe as a respawn: wait for the
-      // PTY, then tracked injection confirms via cli_prompt_report.
+    if (p.spawnPending) {
+      // `tab -p`: the tab was created moments ago. ALWAYS the tracked
+      // spawn route, even when the PTY won the race and is already up:
+      // the agent behind it is still booting, and typing now would land
+      // in the splash screen instead of the input box (the settle beat
+      // injectPromptTracked exists for), i.e. the silently-dropped
+      // prompt Phase 1 prevents. waitForAgentPty returns immediately on
+      // a live PTY, and the mode is a deterministic "spawned" rather
+      // than whichever side of the race this dispatch landed on.
       const spawned = await waitForAgentPty(p.taskId, targeted.id);
       void injectPromptTracked(p.taskId, p.prompt, p.promptId, spawned, targeted.id);
       return { mode: "spawned", capable };
+    }
+    if (!targeted.ptyId) {
+      throw sendErr(
+        "tab_not_live",
+        "that tab's agent is not running; open a new tab with `termic tab`, or resend without --tab using --resume",
+      );
     }
     return deliverOrQueue(p, targeted, capable);
   }

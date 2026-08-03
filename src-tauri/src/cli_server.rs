@@ -1334,133 +1334,133 @@ fn watch_agent(
                             }
                         }
                         Some(view) => {
-                    tab_missing_since = None;
-                    if opts.strict_target && last_state.is_none() {
-                        // First sight of the target under `wait`.
-                        if view.state == "inactive" {
-                            return Err(proto::ErrorBody {
-                                code: ErrorCode::Unsupported,
-                                message: if opts.tab_id.is_some() {
-                                    "no agent is running in that tab (open one with `termic tab`, then rerun)".into()
-                                } else {
-                                    "no agent is open in this task (open it in Termic, then rerun)"
-                                        .to_string()
-                                },
-                                data: None,
-                            });
-                        }
-                        if !view.capable {
-                            return Err(proto::ErrorBody {
-                                code: ErrorCode::Unsupported,
-                                message: if opts.tab_id.is_some() {
-                                    "that tab's agent has work-done detection disabled, there is no settle signal to wait on".into()
-                                } else {
-                                    "this task's agent has work-done detection disabled, there is no settle signal to wait on".to_string()
-                                },
-                                data: None,
-                            });
-                        }
-                    }
-                    if last_state.as_deref() != Some(view.state.as_str()) {
-                        last_state = Some(view.state.clone());
-                        let _ = sink.emit(&StreamEvent::state(opts.req_id, view.state.clone()));
-                    }
-                    if view.state == "working" {
-                        seen_working = true;
-                    }
-                    if view.state != "inactive" {
-                        seen_active = true;
-                    }
-                    if awaiting_delivery && opts.queued {
-                        // The queued prompt's liveness signal: while it
-                        // (or anything ahead of it) is queued, or the
-                        // agent is mid-turn, the loop is healthy. An
-                        // empty queue on a non-working agent with no
-                        // delivery report can only mean the queue was
-                        // dropped (reload) or the drain's report was
-                        // lost; either way delivery cannot be claimed.
-                        let queue_alive = view.queued > 0 || view.state == "working";
-                        if queue_alive {
-                            queue_gone_since = None;
-                        } else if queue_gone_since.get_or_insert_with(Instant::now).elapsed()
-                            > IDLE_SETTLE_GRACE
-                        {
-                            cleanup(true);
-                            return Ok(proto::WaitResult {
-                                outcome: WaitOutcome::NotDelivered,
-                                state: Some(view.state.clone()),
-                                detail: Some(
-                                    "the queued prompt disappeared before delivery (a Termic reload drops the queue)"
-                                        .into(),
-                                ),
-                            });
-                        }
-                        // The in-flight turn ended asking for INPUT: the
-                        // drain advances on work-done only, so nothing
-                        // will deliver our prompt until a human answers.
-                        // Persisting past the grace, exit 3 is the honest
-                        // report; the prompt STAYS queued and delivers if
-                        // they unblock the agent later.
-                        if view.state == "waiting" && view.queued > 0 {
-                            if queue_waiting_since.get_or_insert_with(Instant::now).elapsed()
-                                > IDLE_SETTLE_GRACE
-                            {
-                                cleanup(true);
-                                return Ok(proto::WaitResult {
-                                    outcome: WaitOutcome::NeedsInput,
-                                    state: Some(view.state.clone()),
-                                    detail: Some(
-                                        "the agent stopped for input before the queued prompt could deliver; it stays queued"
-                                            .into(),
-                                    ),
-                                });
+                            tab_missing_since = None;
+                            if opts.strict_target && last_state.is_none() {
+                                // First sight of the target under `wait`.
+                                if view.state == "inactive" {
+                                    return Err(proto::ErrorBody {
+                                        code: ErrorCode::Unsupported,
+                                        message: if opts.tab_id.is_some() {
+                                            "no agent is running in that tab (open one with `termic tab`, then rerun)".into()
+                                        } else {
+                                            "no agent is open in this task (open it in Termic, then rerun)"
+                                                .to_string()
+                                        },
+                                        data: None,
+                                    });
+                                }
+                                if !view.capable {
+                                    return Err(proto::ErrorBody {
+                                        code: ErrorCode::Unsupported,
+                                        message: if opts.tab_id.is_some() {
+                                            "that tab's agent has work-done detection disabled, there is no settle signal to wait on".into()
+                                        } else {
+                                            "this task's agent has work-done detection disabled, there is no settle signal to wait on".to_string()
+                                        },
+                                        data: None,
+                                    });
+                                }
                             }
-                        } else {
-                            queue_waiting_since = None;
-                        }
-                    }
-                    if !awaiting_delivery {
-                        let quiescent = view.state != "working" && view.queued == 0;
-                        // A task the webview reports as inactive never
-                        // ran here: only count it as "stopped" once we
-                        // saw it alive (or gave the spawn a fair grace).
-                        let inactive_ok = view.state != "inactive"
-                            || seen_active
-                            || started.elapsed() > IDLE_SETTLE_GRACE;
-                        // An agent that VANISHED (tab closed, task
-                        // stopped) is not "settled done": exit 0 here
-                        // would send a script off to read a RESULT.md
-                        // that was never written. Error instead. This
-                        // deliberately covers finished-then-closed too:
-                        // a done snapshot the watch actually SAW already
-                        // returned Done above, so reaching inactive
-                        // means done and close coalesced into one push
-                        // (the 80ms debounce) and "it finished" cannot
-                        // be distinguished from "it was killed mid-turn".
-                        // Honesty rule: never claim settled without
-                        // evidence.
-                        if quiescent && inactive_ok && view.state == "inactive" {
-                            cleanup(awaiting_delivery);
-                            return Err(proto::ErrorBody {
-                                code: ErrorCode::Unsupported,
-                                message: "the agent went away while waiting (tab closed or task stopped)"
-                                    .into(),
-                                data: None,
-                            });
-                        }
-                        let own_prompt_settled = opts.prompt_id.is_none()
-                            || seen_working
-                            || (opts.trust_done
-                                && (view.state == "done" || view.state == "waiting"))
-                            || delivered_at.is_some_and(|t| t.elapsed() > IDLE_SETTLE_GRACE);
-                        if quiescent && inactive_ok && own_prompt_settled {
-                            return Ok(proto::WaitResult {
-                                outcome: outcome_for(&view.state),
-                                state: Some(view.state.clone()),
-                                detail: None,
-                            });
-                        }
-                    }
+                            if last_state.as_deref() != Some(view.state.as_str()) {
+                                last_state = Some(view.state.clone());
+                                let _ = sink.emit(&StreamEvent::state(opts.req_id, view.state.clone()));
+                            }
+                            if view.state == "working" {
+                                seen_working = true;
+                            }
+                            if view.state != "inactive" {
+                                seen_active = true;
+                            }
+                            if awaiting_delivery && opts.queued {
+                                // The queued prompt's liveness signal: while it
+                                // (or anything ahead of it) is queued, or the
+                                // agent is mid-turn, the loop is healthy. An
+                                // empty queue on a non-working agent with no
+                                // delivery report can only mean the queue was
+                                // dropped (reload) or the drain's report was
+                                // lost; either way delivery cannot be claimed.
+                                let queue_alive = view.queued > 0 || view.state == "working";
+                                if queue_alive {
+                                    queue_gone_since = None;
+                                } else if queue_gone_since.get_or_insert_with(Instant::now).elapsed()
+                                    > IDLE_SETTLE_GRACE
+                                {
+                                    cleanup(true);
+                                    return Ok(proto::WaitResult {
+                                        outcome: WaitOutcome::NotDelivered,
+                                        state: Some(view.state.clone()),
+                                        detail: Some(
+                                            "the queued prompt disappeared before delivery (a Termic reload drops the queue)"
+                                                .into(),
+                                        ),
+                                    });
+                                }
+                                // The in-flight turn ended asking for INPUT: the
+                                // drain advances on work-done only, so nothing
+                                // will deliver our prompt until a human answers.
+                                // Persisting past the grace, exit 3 is the honest
+                                // report; the prompt STAYS queued and delivers if
+                                // they unblock the agent later.
+                                if view.state == "waiting" && view.queued > 0 {
+                                    if queue_waiting_since.get_or_insert_with(Instant::now).elapsed()
+                                        > IDLE_SETTLE_GRACE
+                                    {
+                                        cleanup(true);
+                                        return Ok(proto::WaitResult {
+                                            outcome: WaitOutcome::NeedsInput,
+                                            state: Some(view.state.clone()),
+                                            detail: Some(
+                                                "the agent stopped for input before the queued prompt could deliver; it stays queued"
+                                                    .into(),
+                                            ),
+                                        });
+                                    }
+                                } else {
+                                    queue_waiting_since = None;
+                                }
+                            }
+                            if !awaiting_delivery {
+                                let quiescent = view.state != "working" && view.queued == 0;
+                                // A task the webview reports as inactive never
+                                // ran here: only count it as "stopped" once we
+                                // saw it alive (or gave the spawn a fair grace).
+                                let inactive_ok = view.state != "inactive"
+                                    || seen_active
+                                    || started.elapsed() > IDLE_SETTLE_GRACE;
+                                // An agent that VANISHED (tab closed, task
+                                // stopped) is not "settled done": exit 0 here
+                                // would send a script off to read a RESULT.md
+                                // that was never written. Error instead. This
+                                // deliberately covers finished-then-closed too:
+                                // a done snapshot the watch actually SAW already
+                                // returned Done above, so reaching inactive
+                                // means done and close coalesced into one push
+                                // (the 80ms debounce) and "it finished" cannot
+                                // be distinguished from "it was killed mid-turn".
+                                // Honesty rule: never claim settled without
+                                // evidence.
+                                if quiescent && inactive_ok && view.state == "inactive" {
+                                    cleanup(awaiting_delivery);
+                                    return Err(proto::ErrorBody {
+                                        code: ErrorCode::Unsupported,
+                                        message: "the agent went away while waiting (tab closed or task stopped)"
+                                            .into(),
+                                        data: None,
+                                    });
+                                }
+                                let own_prompt_settled = opts.prompt_id.is_none()
+                                    || seen_working
+                                    || (opts.trust_done
+                                        && (view.state == "done" || view.state == "waiting"))
+                                    || delivered_at.is_some_and(|t| t.elapsed() > IDLE_SETTLE_GRACE);
+                                if quiescent && inactive_ok && own_prompt_settled {
+                                    return Ok(proto::WaitResult {
+                                        outcome: outcome_for(&view.state),
+                                        state: Some(view.state.clone()),
+                                        detail: None,
+                                    });
+                                }
+                            }
                         }
                     }
                 } else if entry_missing_since.get_or_insert_with(Instant::now).elapsed()
@@ -3095,7 +3095,7 @@ fn resolve_tab_selector(
             return Err(err(
                 ErrorCode::Unsupported,
                 format!(
-                    "tab [{index}] {} is a {} tab; shell and terminal tabs are write-only from the CLI (see `termic tab --help`)",
+                    "tab [{index}] {} is a {} tab; only agent tabs are reachable, the rest are write-only from the CLI (see `termic tab --help`)",
                     t.title, t.kind
                 ),
             ));
@@ -3131,7 +3131,7 @@ fn resolve_tab_selector(
             if terminal_kind {
                 return Err(err(
                     ErrorCode::Unsupported,
-                    "that tab is not an agent tab; shell and terminal tabs are write-only from the CLI".into(),
+                    "that tab is not an agent tab; only agent tabs are reachable, the rest are write-only from the CLI".into(),
                 ));
             }
             return Ok(ResolvedTab { id: pt.id.clone() });

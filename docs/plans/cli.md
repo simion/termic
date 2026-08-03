@@ -397,7 +397,11 @@ title, per-tab work state, queue, liveness, defaultness) in strip order; one
 Rust resolver (`resolve_tab_selector`) serves send, wait, attach and logs
 from it: exact id first, then 1-based index (the numbering `status` prints;
 editor tabs are not listed and do not shift it), then case-insensitive
-title/cli match. Ambiguity errors listing the candidates. Only agent tabs
+title/cli match. The STRIP is the whole surface, by decision: pane-split
+leaves and right-panel split agents are not listed and no selector reaches
+them (a right-split agent still counts in `sessions`). They become
+addressable only if they are ever folded into the strip model; listing them
+would break the "row n of status = `--tab n`" contract. Ambiguity errors listing the candidates. Only agent tabs
 resolve (the write-only rule below). With no snapshot yet, an EXACT persisted
 id still resolves so scripts keep working; index/title honestly error.
 `attach`/`logs` then map the id to the tab's own PTY via `PtyRole.tab_id`

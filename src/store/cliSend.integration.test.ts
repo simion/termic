@@ -119,6 +119,20 @@ describe("send --tab: explicit target (GH #138 part 2)", () => {
     await expect(send({ tabId: "t-dead" })).rejects.toThrow(/^cli_send:tab_not_live:/);
   });
 
+  it("spawn-pending takes the tracked route even when the PTY won the race", async () => {
+    // tab -p's dispatch can lose the race to TerminalPane's spawn. A
+    // live PTY does NOT mean a ready agent: typing immediately would
+    // land in the boot splash and skip the settle beat, so the mode
+    // must be a deterministic "spawned" (tracked injection), never a
+    // race-dependent "delivered".
+    seed([term(), term({ id: "t-won", cli: "codex", is_default: false, ptyId: "pty-8" })]);
+    const r = await send({ tabId: "t-won", spawnPending: true });
+    expect(r.mode).toBe("spawned");
+    // Delivery is the tracked injector's job (settle beat first); the
+    // immediate-typing path must not have run.
+    expect(deliverMessage).not.toHaveBeenCalled();
+  });
+
   it("spawn-pending waits for the racing PTY instead of refusing (tab -p)", async () => {
     // The tab was created moments ago; TerminalPane has not spawned its
     // PTY yet. The handler must return "spawned" and hand delivery to
