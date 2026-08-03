@@ -1566,6 +1566,30 @@ pub(crate) fn find_role_pty(
     }
 }
 
+/// Resolve a SPECIFIC tab's live agent PTY by the tab's stable id
+/// (`PtyRole.tab_id`, the identity `--tab` selectors resolve to,
+/// GH #138 part 2). Only agent tabs carry a role, so a shell or custom
+/// terminal tab (or a dead agent tab) lands in the Err: those are
+/// write-only from the CLI by design (docs/plans/cli.md).
+pub(crate) fn find_tab_pty(
+    manager: &PtyManager,
+    task_id: &str,
+    tab_id: &str,
+) -> Result<String, String> {
+    let map = manager.inner.lock();
+    // Newest wins, the find_role_pty rule: a respawn briefly leaves the
+    // killed slot in the map next to its replacement.
+    map.iter()
+        .filter(|(_, slot)| {
+            slot.role.as_ref().is_some_and(|r| {
+                r.task_id == task_id && r.tab_id.as_deref() == Some(tab_id)
+            })
+        })
+        .max_by_key(|(_, s)| s.seq)
+        .map(|(id, _)| id.clone())
+        .ok_or_else(|| "no agent is running in that tab".into())
+}
+
 /// Subscribe an attach session to a PTY's output. Fails when the PTY
 /// died between resolution and here, or carries no feed.
 pub(crate) fn pty_subscribe(manager: &PtyManager, pty_id: &str) -> Result<PtyAttachment, String> {

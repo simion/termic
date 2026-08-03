@@ -6,7 +6,7 @@ use serde::Serialize;
 use termic_proto::{
     send_mode, AgentsData, ApplyData, ArchiveData, DiffData, DiffStat, NewData, OpenData,
     ProjectInfo, ProjectRemoveData, QuitData, ResultData, SendData, StreamEvent, TabData,
-    TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
+    TabStatus, TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
 };
 
 /// One JSON object, compact, exactly as documented in each verb's help.
@@ -114,6 +114,29 @@ pub fn list_text(tasks: &[TaskSummary]) -> String {
     out.join("\n")
 }
 
+/// One `status` tab row: `[n] title (facts)`, where the facts are the
+/// kind or agent, the per-tab state when one exists, the queue depth,
+/// and default-ness.
+fn tab_row(t: &TabStatus) -> String {
+    let mut bits: Vec<String> = Vec::new();
+    bits.push(if t.kind == "agent" { t.agent.clone() } else { t.kind.clone() });
+    // Liveness outranks state: a dead tab's state is by definition
+    // stale (a stopped task keeps workState on its tabs), and "done"
+    // on a tab with no PTY would invite a send that errors.
+    if t.kind == "agent" && !t.live {
+        bits.push("not running".into());
+    } else if let Some(st) = &t.state {
+        bits.push(st.clone());
+    }
+    if t.queued > 0 {
+        bits.push(format!("{} queued", t.queued));
+    }
+    if t.is_default {
+        bits.push("default".into());
+    }
+    format!("[{}] {} ({})", t.index, t.title, bits.join(", "))
+}
+
 pub fn status_text(t: &TaskStatus) -> String {
     let s = &t.summary;
     let mut lines: Vec<String> = Vec::new();
@@ -139,6 +162,19 @@ pub fn status_text(t: &TaskStatus) -> String {
     push("path:", s.path.clone());
     push("sandbox:", t.sandbox.clone());
     push("sessions:", t.sessions.to_string());
+    // The strip, one row per tab, numbered exactly as `--tab <n>` counts
+    // them. Absent (not empty) when the webview has not answered: an
+    // unknown strip must not render as "no tabs". Ids stay in the --json
+    // shape; the index and title here are the human handles.
+    if let Some(tabs) = &t.tabs {
+        if tabs.is_empty() {
+            push("tabs:", "none open".into());
+        } else {
+            for (i, tab) in tabs.iter().enumerate() {
+                push(if i == 0 { "tabs:" } else { "" }, tab_row(tab));
+            }
+        }
+    }
     let dirty = match (&t.dirty_files, &s.diff) {
         (Some(n), Some(d)) => format!(
             "{n} ({} changed, +{} -{}, {} untracked)",
@@ -260,14 +296,11 @@ pub fn project_list_text(projects: &[ProjectInfo]) -> String {
     out.join("\n")
 }
 
-/// `send`'s final text: the wait outcome when watched, the delivery
-/// mode otherwise. An incapable target gets the honesty note inline
-/// (its completion cannot be observed).
-pub fn send_text(s: &SendData) -> String {
-    if let Some(r) = &s.wait {
-        return outcome_text(r);
-    }
-    let mut line = match s.mode.as_str() {
+/// The delivery-mode line shared by `send` and `tab -p`. An incapable
+/// target gets the honesty note inline (its completion cannot be
+/// observed).
+fn mode_text(mode: &str, capable: bool) -> String {
+    let mut line = match mode {
         send_mode::QUEUED => {
             "prompt queued; it sends when the agent's current turn finishes".to_string()
         }
@@ -277,12 +310,21 @@ pub fn send_text(s: &SendData) -> String {
         }
         _ => "prompt delivered".to_string(),
     };
-    if !s.capable {
+    if !capable {
         line.push_str(
             " (this agent has work-done detection disabled, so completion cannot be observed)",
         );
     }
     line
+}
+
+/// `send`'s final text: the wait outcome when watched, the delivery
+/// mode otherwise.
+pub fn send_text(s: &SendData) -> String {
+    if let Some(r) = &s.wait {
+        return outcome_text(r);
+    }
+    mode_text(&s.mode, s.capable)
 }
 
 pub fn apply_text(a: &ApplyData) -> String {
@@ -422,13 +464,23 @@ pub fn tab_text(t: &TabData) -> String {
     } else {
         format!("{} ({})", t.title, t.cli)
     };
-    format!("Opened {label} tab {} in {}.", t.tab_id, t.task_id)
+    let mut out = format!("Opened {label} tab {} in {}.", t.tab_id, t.task_id);
+    // `tab -p`: the delivery outcome rides the same reply (send's own
+    // vocabulary, so the two verbs never describe one delivery two ways).
+    if let Some(p) = &t.prompt {
+        out.push('\n');
+        out.push_str(&p.wait.as_ref().map_or_else(
+            || mode_text(&p.mode, p.capable),
+            outcome_text,
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use termic_proto::AgentEntry;
+    use termic_proto::{AgentEntry, PromptOutcome};
 
     fn d(tasks: u32, agents: u32, working: Option<u32>) -> QuitData {
         QuitData { running: true, tasks_with_agents: tasks, live_agents: agents, working_tasks: working, quitting: false }
@@ -520,6 +572,7 @@ mod tests {
         let t = TabData {
             task_id: "ws1".into(), tab_id: "abc-123".into(),
             cli: "claude".into(), title: "claude".into(),
+            prompt: None,
         };
         let out = tab_text(&t);
         assert!(out.contains("abc-123"), "{out}");
@@ -533,6 +586,7 @@ mod tests {
         });
         let t = tab_text(&TabData {
             task_id: "ws1".into(), tab_id: "x".into(), cli: "shell".into(), title: "Terminal".into(),
+            prompt: None,
         });
         for s in [a, t] {
             assert!(!s.contains('\u{2014}'), "em dash in CLI output: {s}");
@@ -569,6 +623,30 @@ mod tests {
     fn no_em_dashes() {
         for s in [quit_question(&d(2, 3, Some(1))), quit_text(&d(1, 2, Some(0)))] {
             assert!(!s.contains('\u{2014}'), "em dash in CLI output: {s}");
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tab_status(
+        index: u32,
+        kind: &str,
+        agent: &str,
+        title: &str,
+        state: Option<&str>,
+        is_default: bool,
+        live: bool,
+        queued: u32,
+    ) -> TabStatus {
+        TabStatus {
+            id: format!("tab-{index}"),
+            index,
+            kind: kind.into(),
+            agent: agent.into(),
+            title: title.into(),
+            state: state.map(str::to_string),
+            is_default,
+            live,
+            queued,
         }
     }
 
@@ -635,6 +713,7 @@ api      longer-task-name  codex   -        -             b2";
             sandbox: "enforce".into(),
             sessions: 2,
             dirty_files: Some(4),
+            tabs: None,
         };
         let expected = "\
 name:        fix-auth
@@ -650,12 +729,95 @@ created:     2026-01-01T00:00:00Z";
         assert_eq!(status_text(&t), expected);
     }
 
+    // The strip block: numbered exactly as `--tab <n>` resolves, one
+    // row per tab, kind or agent first, then state, queue, defaultness.
+    #[test]
+    fn status_text_tabs_golden() {
+        let t = TaskStatus {
+            summary: summary(),
+            sandbox: "enforce".into(),
+            sessions: 2,
+            dirty_files: Some(4),
+            tabs: Some(vec![
+                tab_status(1, "agent", "claude", "claude", Some("working"), true, true, 0),
+                tab_status(2, "agent", "codex", "fixing tests", Some("done"), false, true, 1),
+                tab_status(3, "shell", "shell", "Terminal", None, false, true, 0),
+                // Dead tab still carrying a stale workState (a stopped
+                // task keeps it): liveness must outrank it, or the row
+                // reads "done" and invites a send that errors.
+                tab_status(4, "agent", "claude", "claude", Some("done"), false, false, 0),
+            ]),
+        };
+        let out = status_text(&t);
+        let expected = "\
+tabs:        [1] claude (claude, working, default)
+             [2] fixing tests (codex, done, 1 queued)
+             [3] Terminal (shell)
+             [4] claude (claude, not running)";
+        assert!(out.contains(expected), "{out}");
+    }
+
+    #[test]
+    fn status_text_unknown_strip_prints_nothing_but_empty_says_none() {
+        // None = the webview is silent: the block must be ABSENT
+        // (unknown is not an empty strip). Some([]) = a real answer.
+        let mut t = TaskStatus {
+            summary: summary(),
+            sandbox: "off".into(),
+            sessions: 0,
+            dirty_files: None,
+            tabs: None,
+        };
+        assert!(!status_text(&t).contains("tabs:"), "{}", status_text(&t));
+        t.tabs = Some(vec![]);
+        assert!(status_text(&t).contains("tabs:        none open"), "{}", status_text(&t));
+    }
+
+    // tab -p: the outcome line rides the tab reply, in send's own
+    // vocabulary, so the two verbs never describe one delivery two ways.
+    #[test]
+    fn tab_text_prompt_outcomes() {
+        let base = TabData {
+            task_id: "ws1".into(),
+            tab_id: "abc".into(),
+            cli: "claude".into(),
+            title: "claude".into(),
+            prompt: None,
+        };
+        let spawned = TabData {
+            prompt: Some(PromptOutcome {
+                mode: send_mode::SPAWNED.into(),
+                capable: true,
+                wait: None,
+            }),
+            ..base.clone()
+        };
+        let out = tab_text(&spawned);
+        assert!(out.contains("abc"), "{out}");
+        assert!(out.contains("agent starting"), "{out}");
+        let waited = TabData {
+            prompt: Some(PromptOutcome {
+                mode: send_mode::SPAWNED.into(),
+                capable: true,
+                wait: Some(WaitResult {
+                    outcome: WaitOutcome::Done,
+                    state: Some("done".into()),
+                    detail: None,
+                }),
+            }),
+            ..base
+        };
+        let out = tab_text(&waited);
+        assert!(out.contains("agent finished"), "{out}");
+        assert!(!out.contains("agent starting"), "wait outcome must replace the mode line: {out}");
+    }
+
     #[test]
     fn status_text_inactive_reads_as_no_agent_not_unknown() {
         let mut s = summary();
         s.work_state = Some("inactive".into());
         s.open_tabs = Some(0);
-        let t = TaskStatus { summary: s, sandbox: "off".into(), sessions: 1, dirty_files: Some(4) };
+        let t = TaskStatus { summary: s, sandbox: "off".into(), sessions: 1, dirty_files: Some(4), tabs: None };
         let out = status_text(&t);
         assert!(out.contains("state:       inactive (no agent open)"), "{out}");
         assert!(!out.contains("did not answer"));
@@ -668,7 +830,7 @@ created:     2026-01-01T00:00:00Z";
         s.work_state = None;
         s.open_tabs = None;
         s.diff = None;
-        let t = TaskStatus { summary: s, sandbox: "off".into(), sessions: 0, dirty_files: None };
+        let t = TaskStatus { summary: s, sandbox: "off".into(), sessions: 0, dirty_files: None, tabs: None };
         let out = status_text(&t);
         assert!(out.contains("state:       unknown (Termic UI did not answer)"));
         assert!(out.contains("dirty files: unknown (not a git checkout?)"));
@@ -838,6 +1000,12 @@ commits:
             sandbox: "enforce".into(),
             sessions: 2,
             dirty_files: Some(4),
+            // Sweeps the tab rows too (every branch of tab_row).
+            tabs: Some(vec![
+                tab_status(1, "agent", "claude", "claude", Some("working"), true, true, 2),
+                tab_status(2, "shell", "shell", "Terminal", None, false, true, 0),
+                tab_status(3, "agent", "codex", "codex", None, false, false, 0),
+            ]),
         };
         let wait = WaitResult { outcome: WaitOutcome::Timeout, state: None, detail: None };
         for s in [

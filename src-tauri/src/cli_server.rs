@@ -328,19 +328,40 @@ fn validate_attach(
     req: &Request,
     host: &dyn CliHost,
 ) -> Result<(String, crate::PtyAttachment), Box<Reply>> {
-    let Command::Attach { task, project, shell, cwd } = &req.cmd else {
+    let Command::Attach { task, project, shell, tab, cwd } = &req.cmd else {
         unreachable!("validate_attach called with a non-attach command")
     };
     if let Some(refused) = auth_gate(req, host) {
         return Err(Box::new(refused));
     }
+    if *shell && tab.is_some() {
+        return Err(Box::new(Reply::err(
+            &req.id,
+            ErrorCode::BadRequest,
+            "--shell targets the aux terminal, which is not a strip tab; drop one of the flags",
+        )));
+    }
     let (projects, tasks) = host.projects_tasks();
     let t = resolve_task_arg(&projects, &tasks, task.as_deref(), project.as_deref(), cwd.as_deref())
         .map_err(|e| Box::new(Reply { id: req.id.clone(), ok: false, data: None, error: Some(e) }))?;
-    let kind = if *shell { "aux" } else { "agent" };
+    let pty = match tab.as_deref() {
+        // `--tab`: the selector resolves to a tab id, and the id to that
+        // tab's own live agent PTY, never a fallback to a sibling.
+        Some(sel) => {
+            let rt = resolve_tab_selector(host, t, sel).map_err(|e| {
+                Box::new(Reply { id: req.id.clone(), ok: false, data: None, error: Some(e) })
+            })?;
+            host.find_tab_pty(&t.id, &rt.id)
+                .map_err(|e| Box::new(Reply::err(&req.id, ErrorCode::Unsupported, e)))?
+        }
+        None => {
+            let kind = if *shell { "aux" } else { "agent" };
+            host.find_role_pty(&t.id, kind)
+                .map_err(|e| Box::new(Reply::err(&req.id, ErrorCode::Unsupported, e)))?
+        }
+    };
     let attachment = host
-        .find_role_pty(&t.id, kind)
-        .and_then(|pty| host.pty_subscribe(&pty))
+        .pty_subscribe(&pty)
         .map_err(|e| Box::new(Reply::err(&req.id, ErrorCode::Unsupported, e)))?;
     Ok((t.id.clone(), attachment))
 }
@@ -527,6 +548,10 @@ pub(crate) trait CliHost: Send + Sync {
     fn diff_summary(&self, task_id: &str) -> Result<crate::TaskDiffSummary, String>;
     /// Resolve the PTY `attach`/`logs` target: kind is "agent" or "aux".
     fn find_role_pty(&self, task_id: &str, kind: &str) -> Result<String, String>;
+    /// Resolve ONE tab's live agent PTY by its stable tab id (`--tab`,
+    /// GH #138 part 2). Err covers dead agent tabs and shell/terminal
+    /// tabs, which never carry a role (write-only from the CLI).
+    fn find_tab_pty(&self, task_id: &str, tab_id: &str) -> Result<String, String>;
     /// The retained output tail of a role-tagged PTY.
     fn pty_logs(&self, pty_id: &str, max: usize) -> Result<(Vec<u8>, bool), String>;
     /// Register a live attach tap + backlog snapshot on a PTY.
@@ -606,8 +631,17 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
             handle_open(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref())
         }
         Command::New { .. } => handle_new(req, host, sink),
-        Command::Wait { task, project, timeout_ms, cwd } => {
-            handle_wait(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), *timeout_ms, sink)
+        Command::Wait { task, project, timeout_ms, tab, cwd } => {
+            handle_wait(
+                &req.id,
+                host,
+                task.as_deref(),
+                project.as_deref(),
+                cwd.as_deref(),
+                *timeout_ms,
+                tab.as_deref(),
+                sink,
+            )
         }
         Command::Quit { commit } => {
             let (tasks_with_agents, live_agents) = host.live_agent_counts();
@@ -650,7 +684,7 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
             )
         }
         Command::Agents => handle_agents(req, host),
-        Command::Tab { .. } => handle_tab(req, host),
+        Command::Tab { .. } => handle_tab(req, host, sink),
         Command::Archive { task, project } => {
             handle_archive(&req.id, host, task, project.as_deref())
         }
@@ -666,12 +700,13 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
         Command::Diff { task, project, full, cwd } => {
             handle_diff(&req.id, host, task.as_deref(), project.as_deref(), *full, cwd.as_deref())
         }
-        Command::Logs { task, project, shell, last_bytes, cwd } => handle_logs(
+        Command::Logs { task, project, shell, tab, last_bytes, cwd } => handle_logs(
             &req.id,
             host,
             task.as_deref(),
             project.as_deref(),
             *shell,
+            tab.as_deref(),
             *last_bytes,
             cwd.as_deref(),
         ),
@@ -729,10 +764,11 @@ fn handle_status(
     let sandbox = sandbox_mode_str(t);
     let sessions = (t.persisted_tabs.len() + t.right_split_tabs.len()) as u32;
     let dirty_files = diff.map(|d| d.files_changed + d.untracked);
+    let tabs = cached_tab_states(&host.agent_cache().snapshot(), &t.id);
     Reply::ok(
         id,
         ReplyData::Status(proto::StatusData {
-            task: proto::TaskStatus { summary, sandbox, sessions, dirty_files },
+            task: proto::TaskStatus { summary, sandbox, sessions, dirty_files, tabs },
         }),
     )
 }
@@ -1071,6 +1107,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         WatchOpts {
             req_id: id,
             task_id: &task_id,
+            tab_id: None,
             prompt_id: prompt_id.as_deref(),
             deadline,
             strict_target: false,
@@ -1102,6 +1139,11 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
 struct WatchOpts<'a> {
     req_id: &'a str,
     task_id: &'a str,
+    /// Some = watch ONE strip tab instead of the task aggregate
+    /// (`--tab`, GH #138 part 2): state, queue and capability all read
+    /// from that tab's pushed entry, so a sibling tab can neither
+    /// satisfy nor stall the wait.
+    tab_id: Option<&'a str>,
     /// Some = track our OWN injected prompt: outcome requires confirmed
     /// delivery plus that turn settling, not just any quiet.
     prompt_id: Option<&'a str>,
@@ -1132,6 +1174,15 @@ fn outcome_for(state: &str) -> WaitOutcome {
     }
 }
 
+/// The signal watch_agent actually reads each snapshot: the task
+/// aggregate, or one tab's entry under `--tab`. Normalizing here keeps
+/// the state machine below identical for both.
+struct SignalView {
+    state: String,
+    queued: u32,
+    capable: bool,
+}
+
 /// Block until the task's agent is quiescent (settled AND empty queue),
 /// riding the webview-pushed cache. Emits state transitions and
 /// heartbeats to `sink`; aborts early when the client hangs up.
@@ -1160,6 +1211,9 @@ fn watch_agent(
     // error therefore requires the entry to be CONTINUOUSLY absent for
     // the grace window, never a single bad snapshot mid-wait.
     let mut entry_missing_since: Option<Instant> = None;
+    // Same rule for the WATCHED TAB under `--tab`: continuously gone
+    // from the pushed strip means it closed.
+    let mut tab_missing_since: Option<Instant> = None;
     // Queued sends only: how long the agent's queue has been empty with
     // the agent not working while our delivery report is still missing.
     // Continuously past the grace window = the queue (and our prompt)
@@ -1236,33 +1290,85 @@ fn watch_agent(
             Some(age) => {
                 if let Some(entry) = snap.states.get(opts.task_id) {
                     entry_missing_since = None;
+                    // Under --tab the watched signal narrows to ONE strip
+                    // tab (GH #138 part 2). A durable tab whose PTY is
+                    // not live maps to "inactive": the same meaning as a
+                    // task with no agent open, and the same honesty rules
+                    // below apply to it unchanged.
+                    let view = match opts.tab_id {
+                        None => Some(SignalView {
+                            state: entry.state.clone(),
+                            queued: entry.queued,
+                            capable: entry.capable,
+                        }),
+                        Some(tid) => {
+                            entry.tab_states.iter().find(|t| t.id == tid).map(|t| SignalView {
+                                state: if !t.live {
+                                    "inactive".into()
+                                } else {
+                                    t.state.clone().unwrap_or_else(|| "idle".into())
+                                },
+                                queued: t.queued,
+                                capable: t.capable,
+                            })
+                        }
+                    };
+                    match view {
+                        None => {
+                            // The watched tab is gone from the pushed
+                            // strip. Same transient-empty-push tolerance
+                            // as a missing task entry; continuously
+                            // absent means it closed and no signal can
+                            // come.
+                            if tab_missing_since.get_or_insert_with(Instant::now).elapsed()
+                                > POPULATE_GRACE
+                            {
+                                cleanup(awaiting_delivery);
+                                return Err(proto::ErrorBody {
+                                    code: ErrorCode::Unsupported,
+                                    message:
+                                        "the tab went away while waiting (closed, or the task stopped)"
+                                            .into(),
+                                    data: None,
+                                });
+                            }
+                        }
+                        Some(view) => {
+                    tab_missing_since = None;
                     if opts.strict_target && last_state.is_none() {
                         // First sight of the target under `wait`.
-                        if entry.state == "inactive" {
+                        if view.state == "inactive" {
                             return Err(proto::ErrorBody {
                                 code: ErrorCode::Unsupported,
-                                message:
+                                message: if opts.tab_id.is_some() {
+                                    "no agent is running in that tab (open one with `termic tab`, then rerun)".into()
+                                } else {
                                     "no agent is open in this task (open it in Termic, then rerun)"
-                                        .into(),
+                                        .to_string()
+                                },
                                 data: None,
                             });
                         }
-                        if !entry.capable {
+                        if !view.capable {
                             return Err(proto::ErrorBody {
                                 code: ErrorCode::Unsupported,
-                                message: "this task's agent has work-done detection disabled, there is no settle signal to wait on".into(),
+                                message: if opts.tab_id.is_some() {
+                                    "that tab's agent has work-done detection disabled, there is no settle signal to wait on".into()
+                                } else {
+                                    "this task's agent has work-done detection disabled, there is no settle signal to wait on".to_string()
+                                },
                                 data: None,
                             });
                         }
                     }
-                    if last_state.as_deref() != Some(entry.state.as_str()) {
-                        last_state = Some(entry.state.clone());
-                        let _ = sink.emit(&StreamEvent::state(opts.req_id, entry.state.clone()));
+                    if last_state.as_deref() != Some(view.state.as_str()) {
+                        last_state = Some(view.state.clone());
+                        let _ = sink.emit(&StreamEvent::state(opts.req_id, view.state.clone()));
                     }
-                    if entry.state == "working" {
+                    if view.state == "working" {
                         seen_working = true;
                     }
-                    if entry.state != "inactive" {
+                    if view.state != "inactive" {
                         seen_active = true;
                     }
                     if awaiting_delivery && opts.queued {
@@ -1273,7 +1379,7 @@ fn watch_agent(
                         // delivery report can only mean the queue was
                         // dropped (reload) or the drain's report was
                         // lost; either way delivery cannot be claimed.
-                        let queue_alive = entry.queued > 0 || entry.state == "working";
+                        let queue_alive = view.queued > 0 || view.state == "working";
                         if queue_alive {
                             queue_gone_since = None;
                         } else if queue_gone_since.get_or_insert_with(Instant::now).elapsed()
@@ -1282,7 +1388,7 @@ fn watch_agent(
                             cleanup(true);
                             return Ok(proto::WaitResult {
                                 outcome: WaitOutcome::NotDelivered,
-                                state: Some(entry.state.clone()),
+                                state: Some(view.state.clone()),
                                 detail: Some(
                                     "the queued prompt disappeared before delivery (a Termic reload drops the queue)"
                                         .into(),
@@ -1295,14 +1401,14 @@ fn watch_agent(
                         // Persisting past the grace, exit 3 is the honest
                         // report; the prompt STAYS queued and delivers if
                         // they unblock the agent later.
-                        if entry.state == "waiting" && entry.queued > 0 {
+                        if view.state == "waiting" && view.queued > 0 {
                             if queue_waiting_since.get_or_insert_with(Instant::now).elapsed()
                                 > IDLE_SETTLE_GRACE
                             {
                                 cleanup(true);
                                 return Ok(proto::WaitResult {
                                     outcome: WaitOutcome::NeedsInput,
-                                    state: Some(entry.state.clone()),
+                                    state: Some(view.state.clone()),
                                     detail: Some(
                                         "the agent stopped for input before the queued prompt could deliver; it stays queued"
                                             .into(),
@@ -1314,11 +1420,11 @@ fn watch_agent(
                         }
                     }
                     if !awaiting_delivery {
-                        let quiescent = entry.state != "working" && entry.queued == 0;
+                        let quiescent = view.state != "working" && view.queued == 0;
                         // A task the webview reports as inactive never
                         // ran here: only count it as "stopped" once we
                         // saw it alive (or gave the spawn a fair grace).
-                        let inactive_ok = entry.state != "inactive"
+                        let inactive_ok = view.state != "inactive"
                             || seen_active
                             || started.elapsed() > IDLE_SETTLE_GRACE;
                         // An agent that VANISHED (tab closed, task
@@ -1333,7 +1439,7 @@ fn watch_agent(
                         // be distinguished from "it was killed mid-turn".
                         // Honesty rule: never claim settled without
                         // evidence.
-                        if quiescent && inactive_ok && entry.state == "inactive" {
+                        if quiescent && inactive_ok && view.state == "inactive" {
                             cleanup(awaiting_delivery);
                             return Err(proto::ErrorBody {
                                 code: ErrorCode::Unsupported,
@@ -1345,14 +1451,16 @@ fn watch_agent(
                         let own_prompt_settled = opts.prompt_id.is_none()
                             || seen_working
                             || (opts.trust_done
-                                && (entry.state == "done" || entry.state == "waiting"))
+                                && (view.state == "done" || view.state == "waiting"))
                             || delivered_at.is_some_and(|t| t.elapsed() > IDLE_SETTLE_GRACE);
                         if quiescent && inactive_ok && own_prompt_settled {
                             return Ok(proto::WaitResult {
-                                outcome: outcome_for(&entry.state),
-                                state: Some(entry.state.clone()),
+                                outcome: outcome_for(&view.state),
+                                state: Some(view.state.clone()),
                                 detail: None,
                             });
+                        }
+                    }
                         }
                     }
                 } else if entry_missing_since.get_or_insert_with(Instant::now).elapsed()
@@ -1419,6 +1527,7 @@ fn watch_agent(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_wait(
     id: &str,
     host: &dyn CliHost,
@@ -1426,11 +1535,16 @@ fn handle_wait(
     project: Option<&str>,
     cwd: Option<&str>,
     timeout_ms: Option<u64>,
+    tab: Option<&str>,
     sink: &mut dyn EventSink,
 ) -> Reply {
     let (projects, tasks) = host.projects_tasks();
     let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
         Ok(t) => t,
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let target = match tab.map(|sel| resolve_tab_selector(host, t, sel)).transpose() {
+        Ok(rt) => rt,
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
     let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
@@ -1439,6 +1553,7 @@ fn handle_wait(
         WatchOpts {
             req_id: id,
             task_id: &t.id,
+            tab_id: target.as_ref().map(|rt| rt.id.as_str()),
             prompt_id: None,
             deadline,
             strict_target: true,
@@ -1468,16 +1583,19 @@ fn parse_send_error(e: &str) -> (ErrorCode, String) {
     };
     let (code, msg) = rest.split_once(':').unwrap_or(("", rest));
     let code = match code {
-        "no_agent" | "no_session" | "not_capable" | "flags_useless" | "ambiguous" => {
-            ErrorCode::Unsupported
-        }
+        "no_agent" | "no_session" | "not_capable" | "flags_useless" | "ambiguous"
+        | "not_sendable" | "tab_not_live" => ErrorCode::Unsupported,
+        // The resolver's cache trailed the store: the tab closed between
+        // resolution and delivery.
+        "unknown_tab" => ErrorCode::NotFound,
         _ => ErrorCode::Internal,
     };
     (code, msg.trim().to_string())
 }
 
 fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
-    let Command::Send { task, project, prompt, resume, fresh, wait, timeout_ms, cwd } = &req.cmd
+    let Command::Send { task, project, prompt, resume, fresh, wait, timeout_ms, tab, cwd } =
+        &req.cmd
     else {
         unreachable!("handle_send called with a non-send command")
     };
@@ -1490,6 +1608,13 @@ fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> R
     if *resume && *fresh {
         return Reply::err(id, ErrorCode::BadRequest, "resume and fresh are mutually exclusive");
     }
+    if tab.is_some() && (*resume || *fresh) {
+        return Reply::err(
+            id,
+            ErrorCode::BadRequest,
+            "--tab targets a tab that is already open; drop --resume/--fresh",
+        );
+    }
     let (projects, tasks) = host.projects_tasks();
     let t = match resolve_task_arg(
         &projects,
@@ -1499,6 +1624,10 @@ fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> R
         cwd.as_deref(),
     ) {
         Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
+    };
+    let target = match tab.as_deref().map(|sel| resolve_tab_selector(host, &t, sel)).transpose() {
+        Ok(rt) => rt,
         Err(e) => return Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
     };
 
@@ -1514,6 +1643,7 @@ fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> R
         "resume": resume,
         "fresh": fresh,
         "wait": wait,
+        "tabId": target.as_ref().map(|rt| rt.id.as_str()),
     });
     // Idle ticks keep the CLI's 30s read timeout honest while a
     // respawned agent boots; there is no payload progress to forward.
@@ -1564,12 +1694,19 @@ fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> R
         WatchOpts {
             req_id: id,
             task_id: &t.id,
+            tab_id: target.as_ref().map(|rt| rt.id.as_str()),
             prompt_id: Some(&prompt_id),
             deadline,
             strict_target: false,
             queued,
-            // The aggregate is task-level: a SIBLING tab's stale done
-            // badge must not read as our turn settling.
+            // Never trust a pre-existing done as OUR turn settling, with
+            // or without --tab. Per-tab state removes sibling pollution
+            // but not the race on the target itself: the cache trails
+            // the store by the push debounce, and the tab you target is
+            // OFTEN one showing a stale done badge from its last turn,
+            // which would read as an instant false exit 0 the moment
+            // delivery confirms. (`tab -p` differs: its tab is brand
+            // new, so any done it shows is genuinely ours.)
             trust_done: false,
         },
         sink,
@@ -1698,24 +1835,45 @@ fn handle_diff(
 
 // ───────────────────────────── logs ──────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn handle_logs(
     id: &str,
     host: &dyn CliHost,
     task: Option<&str>,
     project: Option<&str>,
     shell: bool,
+    tab: Option<&str>,
     last_bytes: Option<u64>,
     cwd: Option<&str>,
 ) -> Reply {
+    if shell && tab.is_some() {
+        return Reply::err(
+            id,
+            ErrorCode::BadRequest,
+            "--shell targets the aux terminal, which is not a strip tab; drop one of the flags",
+        );
+    }
     let (projects, tasks) = host.projects_tasks();
     let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
         Ok(t) => t.clone(),
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
     let kind = if shell { "aux" } else { "agent" };
-    let pty = match host.find_role_pty(&t.id, kind) {
-        Ok(p) => p,
-        Err(e) => return Reply::err(id, ErrorCode::Unsupported, e),
+    let pty = match tab {
+        Some(sel) => {
+            let rt = match resolve_tab_selector(host, &t, sel) {
+                Ok(rt) => rt,
+                Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+            };
+            match host.find_tab_pty(&t.id, &rt.id) {
+                Ok(p) => p,
+                Err(e) => return Reply::err(id, ErrorCode::Unsupported, e),
+            }
+        }
+        None => match host.find_role_pty(&t.id, kind) {
+            Ok(p) => p,
+            Err(e) => return Reply::err(id, ErrorCode::Unsupported, e),
+        },
     };
     let max = last_bytes.map(|b| b as usize).unwrap_or(usize::MAX);
     match host.pty_logs(&pty, max) {
@@ -1905,11 +2063,36 @@ fn handle_agents(req: &Request, host: &dyn CliHost) -> Reply {
 /// the tab list and TerminalPane spawns the PTY from it), so this resolves the
 /// task here and hands the rest to `new_tab`, which owns registry validation:
 /// the GUI hides an unusable agent, but a CLI caller needs to be told why.
-fn handle_tab(req: &Request, host: &dyn CliHost) -> Reply {
-    let Command::Tab { task, project, kind, cwd } = &req.cmd else {
+///
+/// `-p` (part 2) rides the SAME delivery route `send --tab` uses: a second
+/// `send_prompt` RPC targeted at the id `new_tab` just returned. Not a
+/// second injection recipe; the targeted path is injectPromptTracked with
+/// the spawn-pending rule, i.e. exactly what `send` to a respawned agent
+/// does, so delivery stays confirmed (docs/plans/cli.md, Phase 1).
+fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
+    let Command::Tab { task, project, kind, prompt, wait, timeout_ms, cwd } = &req.cmd else {
         unreachable!("handle_tab called with a non-tab command")
     };
     let id = &req.id;
+    if let Some(p) = prompt {
+        if p.trim().is_empty() {
+            return Reply::err(id, ErrorCode::BadRequest, "the prompt is empty");
+        }
+        // A prompt needs an agent on the other end. Shell and terminal
+        // kinds provably are not; Default is checked below once the task
+        // is known (its cli decides), and the webview still has the
+        // final word for anything we cannot prove here.
+        if matches!(kind, proto::TabKind::Shell | proto::TabKind::Terminal { .. }) {
+            return Reply::err(
+                id,
+                ErrorCode::BadRequest,
+                "a prompt cannot ride a shell or terminal tab; they are write-only from the CLI",
+            );
+        }
+    }
+    if *wait && prompt.is_none() {
+        return Reply::err(id, ErrorCode::BadRequest, "--wait needs a prompt to wait on");
+    }
     let (projects, tasks) = host.projects_tasks();
     let t = match resolve_task_arg(
         &projects,
@@ -1921,6 +2104,18 @@ fn handle_tab(req: &Request, host: &dyn CliHost) -> Reply {
         Ok(t) => t.clone(),
         Err(e) => return Reply::err(id, e.code, &e.message),
     };
+    if prompt.is_some() && matches!(kind, proto::TabKind::Default) {
+        let non_agent = t.cli == "shell"
+            || t.cli == "custom"
+            || host.agents().iter().any(|a| a.id == t.cli && a.kind == "terminal");
+        if non_agent {
+            return Reply::err(
+                id,
+                ErrorCode::BadRequest,
+                "this task's default tab is not an agent; a prompt cannot ride it (pass --agent)",
+            );
+        }
+    }
 
     let (kind_str, agent_id) = match kind {
         proto::TabKind::Agent { id } => ("agent", Some(id.clone())),
@@ -1956,10 +2151,114 @@ fn handle_tab(req: &Request, host: &dyn CliHost) -> Reply {
         return Reply::err(id, ErrorCode::Internal, "new_tab returned no tab id");
     }
 
-    Reply::ok(
-        id,
-        ReplyData::Tab(proto::TabData { task_id: t.id, tab_id, cli, title }),
-    )
+    let Some(prompt) = prompt else {
+        return Reply::ok(
+            id,
+            ReplyData::Tab(proto::TabData { task_id: t.id, tab_id, cli, title, prompt: None }),
+        );
+    };
+
+    // Register delivery interest BEFORE the webview learns the id (the
+    // handle_new rule): a fast report can never race past us.
+    let prompt_id = uuid::Uuid::new_v4().simple().to_string();
+    host.prompt_reports().expect(&prompt_id);
+    let params = serde_json::json!({
+        "taskId": t.id,
+        "prompt": prompt,
+        "promptId": prompt_id,
+        "wait": wait,
+        "tabId": tab_id,
+        // The tab was created a moment ago and TerminalPane may still be
+        // spawning its PTY: a missing PTY means wait for the spawn, not
+        // a dead-target refusal.
+        "spawnPending": true,
+    });
+    let mut sink_dead = false;
+    let value = {
+        let mut on_progress = |p: RpcProgress| {
+            if sink_dead {
+                return;
+            }
+            if matches!(p, RpcProgress::Idle) {
+                sink_dead = sink.emit(&StreamEvent::heartbeat(id)).is_err();
+            }
+        };
+        host.rpc_stream("send_prompt", params, SEND_TIMEOUT, &mut on_progress)
+    };
+    let value = match value {
+        Ok(v) => v,
+        Err(e) => {
+            host.prompt_reports().forget(&prompt_id);
+            let (code, msg) = parse_send_error(&e);
+            // The tab EXISTS at this point; a reply that only said
+            // "send failed" would leave the caller re-running `tab` and
+            // stacking empty tabs.
+            return Reply::err(
+                id,
+                code,
+                format!("the tab was opened ({tab_id}) but the prompt failed: {msg}"),
+            );
+        }
+    };
+    let mode = value
+        .get("mode")
+        .and_then(|m| m.as_str())
+        .unwrap_or(proto::send_mode::SPAWNED)
+        .to_string();
+    let capable = value.get("capable").and_then(|c| c.as_bool()).unwrap_or(true);
+    if mode == proto::send_mode::QUEUED {
+        let _ = sink.emit(&StreamEvent::queued(id));
+    }
+
+    if !*wait {
+        // Delivered mode confirmed inside the RPC; spawned stays
+        // unconfirmed by design, exactly like `send` without --wait.
+        host.prompt_reports().forget(&prompt_id);
+        return Reply::ok(
+            id,
+            ReplyData::Tab(proto::TabData {
+                task_id: t.id,
+                tab_id,
+                cli,
+                title,
+                prompt: Some(proto::PromptOutcome { mode, capable, wait: None }),
+            }),
+        );
+    }
+    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    let queued = mode == proto::send_mode::QUEUED;
+    let watch = watch_agent(
+        host,
+        WatchOpts {
+            req_id: id,
+            task_id: &t.id,
+            // Per-tab watch: the NEW tab's own state, so its done and
+            // waiting are trustworthy (no sibling pollution).
+            tab_id: Some(&tab_id),
+            prompt_id: Some(&prompt_id),
+            deadline,
+            strict_target: false,
+            queued,
+            trust_done: true,
+        },
+        sink,
+    );
+    match watch {
+        Ok(result) => Reply::ok(
+            id,
+            ReplyData::Tab(proto::TabData {
+                task_id: t.id,
+                tab_id,
+                cli,
+                title,
+                prompt: Some(proto::PromptOutcome { mode, capable, wait: Some(result) }),
+            }),
+        ),
+        Err(e) => {
+            host.prompt_reports().forget(&prompt_id);
+            Reply { id: id.clone(), ok: false, data: None, error: Some(e) }
+        }
+    }
 }
 
 // ───────────────────────────── archive ───────────────────────────────
@@ -2521,6 +2820,9 @@ impl CliHost for TauriHost {
     fn find_role_pty(&self, task_id: &str, kind: &str) -> Result<String, String> {
         crate::find_role_pty(&self.app.state::<crate::PtyManager>(), task_id, kind)
     }
+    fn find_tab_pty(&self, task_id: &str, tab_id: &str) -> Result<String, String> {
+        crate::find_tab_pty(&self.app.state::<crate::PtyManager>(), task_id, tab_id)
+    }
     fn pty_logs(&self, pty_id: &str, max: usize) -> Result<(Vec<u8>, bool), String> {
         crate::pty_logs_tail(&self.app.state::<crate::PtyManager>(), pty_id, max)
     }
@@ -2589,6 +2891,48 @@ pub struct TaskAgentState {
     /// out). Without it there is no settle signal to wait on.
     #[serde(default)]
     pub capable: bool,
+    /// The strip's terminal tabs in display order (GH #138 part 2): what
+    /// `--tab` selectors resolve against and `status` lists. Default so
+    /// a not-yet-updated frontend degrades to "no per-tab data" rather
+    /// than a parse failure.
+    #[serde(default)]
+    pub tab_states: Vec<TabAgentState>,
+}
+
+/// One strip tab, as pushed by the webview (cliAgentState.ts
+/// computeTabState). 1-based position in the Vec IS the `--tab <n>`
+/// index.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TabAgentState {
+    /// Stable store id: the identity selectors resolve to, and the id
+    /// carried on the matching `PtyRole.tab_id`.
+    pub id: String,
+    /// "agent" | "shell" | "terminal" | "run". Only agent tabs are
+    /// addressable by send/wait/attach/logs.
+    #[serde(default)]
+    pub kind: String,
+    /// cli id ("claude", "shell", a custom terminal's id).
+    #[serde(default)]
+    pub cli: String,
+    /// Display title as the GUI renders it (agent-authored, mutable).
+    #[serde(default)]
+    pub title: String,
+    /// Per-tab work state; None where no settle signal exists (shell,
+    /// custom terminal, work-done-incapable agents).
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Prompts queued behind this tab's current turn.
+    #[serde(default)]
+    pub queued: u32,
+    /// Work-done detection exists for this tab's cli.
+    #[serde(default)]
+    pub capable: bool,
+    /// A PTY is live in this tab right now.
+    #[serde(default)]
+    pub live: bool,
+    /// The tab verbs resolve to when `--tab` is absent.
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 struct AgentCacheInner {
@@ -2691,6 +3035,163 @@ pub(crate) fn cached_work_states(
         }
     }
     Some(out)
+}
+
+/// `status`'s tab rows from a cache snapshot (GH #138 part 2). `None`
+/// degrades exactly like `cached_work_states`: a stale or absent
+/// snapshot is UNKNOWN, never an empty strip.
+pub(crate) fn cached_tab_states(
+    snap: &AgentSnapshot,
+    task_id: &str,
+) -> Option<Vec<proto::TabStatus>> {
+    snap.age.filter(|a| *a <= CACHE_STALE_AFTER)?;
+    let entry = snap.states.get(task_id)?;
+    Some(
+        entry
+            .tab_states
+            .iter()
+            .enumerate()
+            .map(|(i, t)| proto::TabStatus {
+                id: t.id.clone(),
+                index: i as u32 + 1,
+                kind: t.kind.clone(),
+                agent: t.cli.clone(),
+                title: t.title.clone(),
+                state: t.state.clone(),
+                is_default: t.is_default,
+                live: t.live,
+                queued: t.queued,
+            })
+            .collect(),
+    )
+}
+
+// ───────────────────── tab selectors (GH #138 part 2) ────────────────
+
+/// A `--tab` selector, resolved to a strip tab's stable id (what
+/// `PtyRole.tab_id` carries).
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedTab {
+    pub id: String,
+}
+
+/// Resolve `--tab <n|id|title>` against the task's strip, from the
+/// webview's per-tab snapshot. Precedence is settled by the plan
+/// (docs/plans/cli.md, GH #138): the tab id IS the identity, so an
+/// exact id match wins; a 1-based index and a case-insensitive
+/// title/cli match are human conveniences resolving to it. Ambiguity
+/// is an error listing the candidates, never a guess. Only AGENT tabs
+/// resolve: everything a selector feeds (send/wait/attach/logs) can
+/// only reach a tab with a PtyRole and a settle signal; shell and
+/// terminal tabs are write-only from the CLI by design.
+fn resolve_tab_selector(
+    host: &dyn CliHost,
+    task: &Task,
+    selector: &str,
+) -> Result<ResolvedTab, proto::ErrorBody> {
+    let err = |code: ErrorCode, message: String| proto::ErrorBody { code, message, data: None };
+    let gate = |index: u32, t: &TabAgentState| -> Result<ResolvedTab, proto::ErrorBody> {
+        if t.kind != "agent" {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "tab [{index}] {} is a {} tab; shell and terminal tabs are write-only from the CLI (see `termic tab --help`)",
+                    t.title, t.kind
+                ),
+            ));
+        }
+        Ok(ResolvedTab { id: t.id.clone() })
+    };
+
+    let snap = host.agent_cache().snapshot();
+    let fresh = snap.age.is_some_and(|a| a <= CACHE_STALE_AFTER);
+    let tabs = snap
+        .states
+        .get(&task.id)
+        .filter(|_| fresh)
+        .map(|e| e.tab_states.clone())
+        .filter(|t| !t.is_empty());
+
+    let Some(tabs) = tabs else {
+        // Degraded: no per-tab snapshot yet (app just started, or the
+        // task never reported). An EXACT id can still resolve against
+        // the persisted strip set, so a script that recorded the id
+        // `termic tab` printed keeps working; index and title need the
+        // live list and honestly cannot.
+        if let Some(pt) = task
+            .persisted_tabs
+            .iter()
+            .filter(|p| p.pane_leaf_id.is_none())
+            .find(|p| p.id == selector)
+        {
+            let terminal_kind = pt.cli == "custom"
+                || pt.cli == "shell"
+                || pt.run_member.is_some()
+                || host.agents().iter().any(|a| a.id == pt.cli && a.kind == "terminal");
+            if terminal_kind {
+                return Err(err(
+                    ErrorCode::Unsupported,
+                    "that tab is not an agent tab; shell and terminal tabs are write-only from the CLI".into(),
+                ));
+            }
+            return Ok(ResolvedTab { id: pt.id.clone() });
+        }
+        return Err(err(
+            ErrorCode::Internal,
+            "the Termic UI has not reported this task's tabs yet; rerun in a moment, or pass the tab id".into(),
+        ));
+    };
+
+    // 1. The identity itself.
+    if let Some((i, t)) = tabs.iter().enumerate().find(|(_, t)| t.id == selector) {
+        return gate(i as u32 + 1, t);
+    }
+    // 2. A 1-based strip index (`status` prints the same numbering).
+    if let Ok(n) = selector.parse::<usize>() {
+        if n == 0 || n > tabs.len() {
+            return Err(err(
+                ErrorCode::NotFound,
+                format!(
+                    "tab {n} does not exist; the task has {} tab{} (see `termic status`)",
+                    tabs.len(),
+                    if tabs.len() == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+        return gate(n as u32, &tabs[n - 1]);
+    }
+    // 3. Title or cli id, case-insensitive. Titles are agent-authored
+    // and drift mid-turn, so they are a convenience, not the identity.
+    let sel = selector.to_lowercase();
+    let matches: Vec<(usize, &TabAgentState)> = tabs
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.title.to_lowercase() == sel || t.cli.to_lowercase() == sel)
+        .collect();
+    match matches.as_slice() {
+        [] => Err(err(
+            ErrorCode::NotFound,
+            format!(
+                "no tab matches \"{selector}\"; the task's tabs: {} (see `termic status`)",
+                tabs.iter()
+                    .enumerate()
+                    .map(|(i, t)| format!("[{}] {}", i + 1, t.title))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+        [(i, t)] => gate(*i as u32 + 1, t),
+        many => Err(err(
+            ErrorCode::Ambiguous,
+            format!(
+                "\"{selector}\" matches more than one tab: {}; use the index or the tab id",
+                many.iter()
+                    .map(|(i, t)| format!("[{}] {} (id {})", i + 1, t.title, t.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
 }
 
 // ───────────────────────── prompt delivery reports ───────────────────
@@ -3222,6 +3723,9 @@ mod tests {
         diff_result: Mutex<Option<Result<crate::TaskDiffSummary, String>>>,
         /// (task_id, kind) -> pty id, for `logs`/`attach` resolution.
         role_ptys: Mutex<HashMap<(String, String), String>>,
+        /// (task_id, tab_id) -> pty id, for `--tab` resolution
+        /// (GH #138 part 2, the PtyRole.tab_id path).
+        tab_ptys: Mutex<HashMap<(String, String), String>>,
         /// pty id -> (retained bytes, truncated flag).
         pty_rings: Mutex<HashMap<String, (Vec<u8>, bool)>>,
         /// Bytes the attach path typed into PTYs.
@@ -3270,6 +3774,7 @@ mod tests {
                 apply_result: Mutex::new(None),
                 diff_result: Mutex::new(None),
                 role_ptys: Mutex::new(HashMap::new()),
+                tab_ptys: Mutex::new(HashMap::new()),
                 pty_rings: Mutex::new(HashMap::new()),
                 pty_inputs: Mutex::new(Vec::new()),
                 taps: Mutex::new(HashMap::new()),
@@ -3417,6 +3922,14 @@ mod tests {
                     _ => "no agent is running in this task".into(),
                 })
         }
+        fn find_tab_pty(&self, task_id: &str, tab_id: &str) -> Result<String, String> {
+            self.tab_ptys
+                .lock()
+                .unwrap()
+                .get(&(task_id.to_string(), tab_id.to_string()))
+                .cloned()
+                .ok_or_else(|| "no agent is running in that tab".into())
+        }
         fn pty_logs(&self, pty_id: &str, max: usize) -> Result<(Vec<u8>, bool), String> {
             let rings = self.pty_rings.lock().unwrap();
             let (bytes, dropped) =
@@ -3514,9 +4027,9 @@ mod tests {
     fn quit_clamps_working_tasks_to_tasks_with_live_agents() {
         let host = StubHost { live_agents: (1, 1), ..Default::default() };
         host.push_states(&[
-            ("w1", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true }),
+            ("w1", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] }),
             // Still cached as working, but its agent PTY is already gone.
-            ("w3", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true }),
+            ("w3", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] }),
         ]);
         let reply = handle(&req(Command::Quit { commit: false }, Some("tok")), &host);
         let Some(ReplyData::Quit(q)) = reply.data else { panic!("expected quit") };
@@ -3531,8 +4044,8 @@ mod tests {
     fn quit_preview_reports_without_tearing_down() {
         let host = StubHost { live_agents: (2, 3), ..Default::default() };
         host.push_states(&[
-            ("w1", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true }),
-            ("w3", TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true }),
+            ("w1", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] }),
+            ("w3", TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] }),
         ]);
         let reply = handle(&req(Command::Quit { commit: false }, Some("tok")), &host);
         assert!(reply.ok, "{reply:?}");
@@ -3579,7 +4092,7 @@ mod tests {
         let host = StubHost { live_agents: (1, 1), ..Default::default() };
         host.push_states(&[(
             "w1",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         // CACHE_STALE_AFTER is 800ms under cfg(test); let it actually go stale
         // rather than reaching into the cache's internals.
@@ -3679,7 +4192,7 @@ mod tests {
         let mut states = HashMap::new();
         states.insert(
             "w1".to_string(),
-            TaskAgentState { state: "working".into(), tabs: 2, queued: 1, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 2, queued: 1, capable: true, tab_states: vec![] },
         );
         cache.update(states);
         let snap = cache.snapshot();
@@ -4015,6 +4528,9 @@ mod tests {
             task: Some(task.into()),
             project: None,
             kind,
+            prompt: None,
+            wait: false,
+            timeout_ms: None,
             cwd: None,
         }
     }
@@ -4164,12 +4680,12 @@ mod tests {
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "nw1",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "nw1",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             let (reply, sink) = handle_thread.join().unwrap();
             let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
@@ -4223,7 +4739,7 @@ mod tests {
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
         host.push_states(&[(
             "nw1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { prompt, wait, .. } = &mut cmd {
@@ -4247,7 +4763,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(60));
                 host.push_states(&[(
                     "nw1",
-                    TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+                    TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
                 )]);
             }
             let reply = t.join().unwrap();
@@ -4267,7 +4783,7 @@ mod tests {
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
         host.push_states(&[(
             "nw1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { prompt, wait, timeout_ms, .. } = &mut cmd {
@@ -4306,7 +4822,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         std::thread::scope(|scope| {
             let t = scope.spawn(|| handle(&req(wait_cmd("solo", None), Some("tok")), &host));
@@ -4315,7 +4831,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(60));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -4350,7 +4866,7 @@ mod tests {
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
         host.push_states(&[(
             "nw1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { prompt, wait, .. } = &mut cmd {
@@ -4367,7 +4883,7 @@ mod tests {
     // ── wait ─────────────────────────────────────────────────────────
 
     fn wait_cmd(task: &str, timeout_ms: Option<u64>) -> Command {
-        Command::Wait { task: Some(task.into()), project: None, timeout_ms, cwd: None }
+        Command::Wait { task: Some(task.into()), project: None, timeout_ms, tab: None, cwd: None }
     }
 
     #[test]
@@ -4375,7 +4891,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
         let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -4384,7 +4900,7 @@ mod tests {
         // An agent parked on a question maps to needs-input (exit 3).
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
         let Some(ReplyData::Wait(w)) = reply.data else { panic!() };
@@ -4396,14 +4912,14 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "inactive".into(), tabs: 0, queued: 0, capable: false },
+            TaskAgentState { state: "inactive".into(), tabs: 0, queued: 0, capable: false, tab_states: vec![] },
         )]);
         let err = handle(&req(wait_cmd("solo", None), Some("tok")), &host).error.unwrap();
         assert_eq!(err.code, ErrorCode::Unsupported);
         assert!(err.message.contains("no agent is open"), "{}", err.message);
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: false },
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: false, tab_states: vec![] },
         )]);
         let err = handle(&req(wait_cmd("solo", None), Some("tok")), &host).error.unwrap();
         assert_eq!(err.code, ErrorCode::Unsupported);
@@ -4417,7 +4933,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 1, capable: true },
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![] },
         )]);
         let reply = handle(&req(wait_cmd("solo", Some(120)), Some("tok")), &host);
         let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -4429,7 +4945,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let started = Instant::now();
         let reply = handle(&req(wait_cmd("solo", Some(100)), Some("tok")), &host);
@@ -4443,14 +4959,14 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         std::thread::scope(|scope| {
             let t = scope.spawn(|| handle(&req(wait_cmd("solo", None), Some("tok")), &host));
             std::thread::sleep(Duration::from_millis(60));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -4467,7 +4983,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let started = Instant::now();
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
@@ -4486,7 +5002,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         std::thread::sleep(Duration::from_millis(900)); // age past the 800ms test cutoff
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
@@ -4502,7 +5018,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
         let err = reply.error.expect("error");
@@ -4575,7 +5091,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let mut sink = VecSink { fail: true, ..Default::default() };
         let started = Instant::now();
@@ -4678,7 +5194,7 @@ mod tests {
         let fresh = AgentSnapshot {
             states: HashMap::from([(
                 "w1".to_string(),
-                TaskAgentState { state: "working".into(), tabs: 2, queued: 0, capable: true },
+                TaskAgentState { state: "working".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![] },
             )]),
             age: Some(Duration::from_millis(1)),
         };
@@ -4763,7 +5279,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let (sock, _guard) = spawn_server(host);
         let mut stream = UnixStream::connect(&sock).unwrap();
@@ -4813,7 +5329,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let status = handle(
             &req(
@@ -4826,7 +5342,7 @@ mod tests {
         assert_eq!(s.task.summary.name, "solo");
         let wait = handle(
             &req(
-                Command::Wait { task: None, project: None, timeout_ms: None, cwd: Some("/tasks/web/solo".into()) },
+                Command::Wait { task: None, project: None, timeout_ms: None, tab: None, cwd: Some("/tasks/web/solo".into()) },
                 Some("tok"),
             ),
             &host,
@@ -5019,6 +5535,574 @@ mod tests {
         assert!(reply.ok);
     }
 
+    // ── tab selectors / part 2 (GH #138) ─────────────────────────────
+
+    fn tab_state(
+        id: &str,
+        kind: &str,
+        cli: &str,
+        title: &str,
+        state: Option<&str>,
+        live: bool,
+        is_default: bool,
+    ) -> TabAgentState {
+        TabAgentState {
+            id: id.into(),
+            kind: kind.into(),
+            cli: cli.into(),
+            title: title.into(),
+            state: state.map(str::to_string),
+            queued: 0,
+            capable: state.is_some(),
+            live,
+            is_default,
+        }
+    }
+
+    /// Push a per-tab snapshot for one task (aggregate derived).
+    fn push_tabs(host: &StubHost, task: &str, aggregate: &str, tabs: Vec<TabAgentState>) {
+        let entry = TaskAgentState {
+            state: aggregate.into(),
+            tabs: tabs.len() as u32,
+            queued: tabs.iter().map(|t| t.queued).sum(),
+            capable: tabs.iter().any(|t| t.capable),
+            tab_states: tabs,
+        };
+        host.cache.update(HashMap::from([(task.to_string(), entry)]));
+    }
+
+    /// The canonical three-tab strip most selector tests run against:
+    /// [1] claude (default), [2] codex titled "fixing tests", [3] shell.
+    fn seed_strip(host: &StubHost) {
+        push_tabs(
+            host,
+            "w3",
+            "idle",
+            vec![
+                tab_state("tab-a", "agent", "claude", "claude", Some("idle"), true, true),
+                tab_state("tab-b", "agent", "codex", "fixing tests", Some("idle"), true, false),
+                tab_state("tab-c", "shell", "shell", "Terminal", None, true, false),
+            ],
+        );
+    }
+
+    fn w3(host: &StubHost) -> Task {
+        host.tasks.iter().find(|t| t.id == "w3").unwrap().clone()
+    }
+
+    #[test]
+    fn selector_resolves_id_index_title_and_cli() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        let t = w3(&host);
+        for (sel, want) in [
+            ("tab-b", "tab-b"),        // the identity itself
+            ("2", "tab-b"),            // 1-based strip index
+            ("fixing tests", "tab-b"), // title
+            ("CODEX", "tab-b"),        // cli id, case-insensitive
+            ("1", "tab-a"),
+        ] {
+            let got = resolve_tab_selector(&host, &t, sel).unwrap_or_else(|e| {
+                panic!("selector {sel:?} should resolve: {}", e.message)
+            });
+            assert_eq!(got.id, want, "selector {sel:?}");
+        }
+    }
+
+    #[test]
+    fn selector_ambiguity_is_an_error_listing_candidates_never_a_guess() {
+        let host = StubHost::default();
+        push_tabs(
+            &host,
+            "w3",
+            "idle",
+            vec![
+                tab_state("tab-a", "agent", "claude", "claude", Some("idle"), true, true),
+                tab_state("tab-b", "agent", "claude", "claude", Some("idle"), true, false),
+            ],
+        );
+        let e = resolve_tab_selector(&host, &w3(&host), "claude").unwrap_err();
+        assert_eq!(e.code, ErrorCode::Ambiguous);
+        for needle in ["tab-a", "tab-b", "[1]", "[2]"] {
+            assert!(e.message.contains(needle), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn selector_not_found_names_the_strip() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        let t = w3(&host);
+        let e = resolve_tab_selector(&host, &t, "9").unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        assert!(e.message.contains("has 3 tabs"), "{}", e.message);
+        let e = resolve_tab_selector(&host, &t, "0").unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        let e = resolve_tab_selector(&host, &t, "nope").unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        // The listing is how a caller learns the strip without a second
+        // command.
+        assert!(e.message.contains("[1] claude"), "{}", e.message);
+        assert!(e.message.contains("[2] fixing tests"), "{}", e.message);
+    }
+
+    #[test]
+    fn selector_refuses_non_agent_tabs() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        let t = w3(&host);
+        for sel in ["3", "Terminal", "tab-c"] {
+            let e = resolve_tab_selector(&host, &t, sel).unwrap_err();
+            assert_eq!(e.code, ErrorCode::Unsupported, "{sel}");
+            assert!(e.message.contains("write-only"), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn selector_degrades_to_exact_persisted_ids_without_a_snapshot() {
+        // No push at all: a recorded id still resolves (scripts that
+        // saved what `termic tab` printed), index and title honestly
+        // cannot, and a persisted custom tab is refused.
+        let host = StubHost::default();
+        let mut t = w3(&host);
+        t.persisted_tabs = vec![
+            crate::PersistedTab {
+                id: "tab-a".into(),
+                cli: "claude".into(),
+                title: None,
+                custom_title: false,
+                is_default: true,
+                command: None,
+                session_id: None,
+                previous_session_id: None,
+                pane_leaf_id: None,
+                run_member: None,
+            },
+            crate::PersistedTab {
+                id: "tab-x".into(),
+                cli: "custom".into(),
+                title: None,
+                custom_title: false,
+                is_default: false,
+                command: Some("npm run dev".into()),
+                session_id: None,
+                previous_session_id: None,
+                pane_leaf_id: None,
+                run_member: None,
+            },
+            crate::PersistedTab {
+                id: "tab-sh".into(),
+                cli: "shell".into(),
+                title: None,
+                custom_title: false,
+                is_default: false,
+                command: None,
+                session_id: None,
+                previous_session_id: None,
+                pane_leaf_id: None,
+                run_member: None,
+            },
+        ];
+        assert_eq!(resolve_tab_selector(&host, &t, "tab-a").unwrap().id, "tab-a");
+        let e = resolve_tab_selector(&host, &t, "1").unwrap_err();
+        assert_eq!(e.code, ErrorCode::Internal);
+        assert!(e.message.contains("not reported"), "{}", e.message);
+        // Non-agent persisted tabs get the typed write-only refusal, not
+        // a resolution that fails later with a misleading message.
+        for sel in ["tab-x", "tab-sh"] {
+            let e = resolve_tab_selector(&host, &t, sel).unwrap_err();
+            assert_eq!(e.code, ErrorCode::Unsupported, "{sel}");
+            assert!(e.message.contains("write-only"), "{sel}: {}", e.message);
+        }
+    }
+
+    #[test]
+    fn send_tab_resolves_then_passes_the_tab_id_to_the_webview() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.script_rpc(
+            "send_prompt",
+            Ok(serde_json::json!({ "mode": "delivered", "capable": true })),
+        );
+        let mut cmd = send_cmd("solo", false);
+        if let Command::Send { tab, .. } = &mut cmd {
+            *tab = Some("2".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        let (_, params) = calls.iter().find(|(m, _)| m == "send_prompt").unwrap();
+        // The webview receives the RESOLVED ID, never the raw selector:
+        // one resolver decides what "2" means for every verb.
+        assert_eq!(params["tabId"], "tab-b");
+        assert!(params.get("spawnPending").map_or(true, |v| v.is_null() || v == false));
+    }
+
+    #[test]
+    fn send_tab_flag_conflicts_and_bad_selectors_never_reach_the_webview() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        let mut cmd = send_cmd("solo", false);
+        if let Command::Send { tab, resume, .. } = &mut cmd {
+            *tab = Some("2".into());
+            *resume = true;
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        let mut cmd = send_cmd("solo", false);
+        if let Command::Send { tab, .. } = &mut cmd {
+            *tab = Some("9".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn send_tab_wait_ignores_the_targets_stale_done() {
+        // Per-tab state removes SIBLING pollution, but the target's own
+        // stale done is still poison: the cache trails the store by the
+        // push debounce, and the tab you target is often exactly the one
+        // wearing a done badge from its LAST turn. Trusting it settles
+        // the wait the instant delivery confirms: a false exit 0 before
+        // the new turn even starts. This is the send_wait_ignores_a_
+        // stale_sibling_done contract, targeted edition; it pins
+        // trust_done=false for send --tab (flipping it greens nothing
+        // else and fails only here).
+        let host = StubHost::default();
+        host.script_rpc(
+            "send_prompt",
+            Ok(serde_json::json!({ "mode": "delivered", "capable": true })),
+        );
+        let stale = |state: &str| {
+            vec![tab_state("tab-b", "agent", "codex", "codex", Some(state), true, false)]
+        };
+        push_tabs(&host, "w3", "done", stale("done"));
+        let mut cmd = send_cmd("solo", true);
+        if let Command::Send { tab, .. } = &mut cmd {
+            *tab = Some("tab-b".into());
+        }
+        let request = req(cmd, Some("tok"));
+        std::thread::scope(|scope| {
+            let t = scope.spawn(|| handle(&request, &host));
+            let prompt_id = loop {
+                if let Some((_, params)) =
+                    host.rpc_calls.lock().unwrap().iter().find(|(m, _)| m == "send_prompt")
+                {
+                    break params["promptId"].as_str().unwrap().to_string();
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            host.reports.resolve(&prompt_id, Ok(()));
+            // Well inside the idle grace (200ms under cfg(test)): the
+            // target's stale done must NOT have settled the wait.
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!t.is_finished(), "the target's stale done settled the wait");
+            // The real turn: working, then done, on the target tab.
+            push_tabs(&host, "w3", "working", stale("working"));
+            std::thread::sleep(Duration::from_millis(30));
+            push_tabs(&host, "w3", "done", stale("done"));
+            let reply = t.join().unwrap();
+            let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
+            assert_eq!(s.wait.expect("wait result").outcome, WaitOutcome::Done);
+        });
+    }
+
+    #[test]
+    fn wait_tab_reads_only_that_tabs_state() {
+        // The whole point of --tab: a busy SIBLING must not stall the
+        // wait. Aggregate says working; the watched tab is done.
+        let host = StubHost::default();
+        push_tabs(
+            &host,
+            "w3",
+            "working",
+            vec![
+                tab_state("tab-a", "agent", "claude", "claude", Some("working"), true, true),
+                tab_state("tab-b", "agent", "codex", "codex", Some("done"), true, false),
+            ],
+        );
+        let mut cmd = wait_cmd("solo", Some(2_000));
+        if let Command::Wait { tab, .. } = &mut cmd {
+            *tab = Some("tab-b".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
+        assert_eq!(w.result.outcome, WaitOutcome::Done);
+        assert_eq!(w.result.state.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn wait_tab_refuses_dead_and_incapable_tabs_on_first_sight() {
+        let host = StubHost::default();
+        push_tabs(
+            &host,
+            "w3",
+            "idle",
+            vec![
+                tab_state("tab-dead", "agent", "claude", "claude", Some("idle"), false, false),
+                {
+                    let mut t =
+                        tab_state("tab-nod", "agent", "nodone", "nodone", None, true, false);
+                    t.capable = false;
+                    t
+                },
+            ],
+        );
+        for (sel, needle) in [
+            ("tab-dead", "no agent is running in that tab"),
+            ("tab-nod", "work-done detection disabled"),
+        ] {
+            let mut cmd = wait_cmd("solo", Some(2_000));
+            if let Command::Wait { tab, .. } = &mut cmd {
+                *tab = Some(sel.into());
+            }
+            let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+            assert_eq!(err.code, ErrorCode::Unsupported, "{sel}");
+            assert!(err.message.contains(needle), "{sel}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn wait_tab_errors_when_the_tab_closes_mid_wait() {
+        let host = StubHost::default();
+        push_tabs(
+            &host,
+            "w3",
+            "working",
+            vec![tab_state("tab-a", "agent", "claude", "claude", Some("working"), true, true)],
+        );
+        let mut cmd = wait_cmd("solo", Some(5_000));
+        if let Command::Wait { tab, .. } = &mut cmd {
+            *tab = Some("tab-a".into());
+        }
+        let request = req(cmd, Some("tok"));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(60));
+                // The tab vanishes from the strip (closed); the task
+                // entry itself stays.
+                push_tabs(&host, "w3", "idle", vec![]);
+            });
+            let err = handle(&request, &host).error.expect("tab-gone error");
+            assert_eq!(err.code, ErrorCode::Unsupported);
+            assert!(err.message.contains("went away"), "{}", err.message);
+        });
+    }
+
+    #[test]
+    fn logs_tab_reads_that_tabs_ring_and_conflicts_with_shell() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.tab_ptys
+            .lock()
+            .unwrap()
+            .insert(("w3".into(), "tab-b".into()), "pty-b".into());
+        host.pty_rings
+            .lock()
+            .unwrap()
+            .insert("pty-b".into(), (b"codex says hi".to_vec(), false));
+        let logs = |shell: bool, tab: Option<&str>| {
+            handle(
+                &req(
+                    Command::Logs {
+                        task: Some("solo".into()),
+                        project: None,
+                        shell,
+                        tab: tab.map(str::to_string),
+                        last_bytes: None,
+                        cwd: None,
+                    },
+                    Some("tok"),
+                ),
+                &host,
+            )
+        };
+        let Some(ReplyData::Logs(l)) = logs(false, Some("2")).data else {
+            panic!("expected logs")
+        };
+        assert_eq!(l.data, "codex says hi");
+        assert_eq!(l.source, "agent");
+        // --shell + --tab cannot both target something.
+        let err = logs(true, Some("2")).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        // A dead agent tab resolves but has no PTY behind it.
+        let err = logs(false, Some("1")).error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("that tab"), "{}", err.message);
+    }
+
+    #[test]
+    fn attach_tab_resolves_that_tabs_pty() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.tab_ptys
+            .lock()
+            .unwrap()
+            .insert(("w3".into(), "tab-b".into()), "pty-b".into());
+        host.pty_rings.lock().unwrap().insert("pty-b".into(), (b"backlog".to_vec(), false));
+        let attach = |shell: bool, tab: Option<&str>| {
+            validate_attach(
+                &req(
+                    Command::Attach {
+                        task: Some("solo".into()),
+                        project: None,
+                        shell,
+                        tab: tab.map(str::to_string),
+                        cwd: None,
+                    },
+                    Some("tok"),
+                ),
+                &host,
+            )
+        };
+        let Ok((task_id, attachment)) = attach(false, Some("fixing tests")) else {
+            panic!("attach with a --tab selector should resolve")
+        };
+        assert_eq!(task_id, "w3");
+        assert_eq!(attachment.pty_id, "pty-b");
+        let Err(reply) = attach(true, Some("2")) else {
+            panic!("--shell with --tab must be refused")
+        };
+        assert_eq!(reply.error.unwrap().code, ErrorCode::BadRequest);
+    }
+
+    #[test]
+    fn status_lists_the_strip_and_degrades_to_unknown() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        let reply = handle(
+            &req(
+                Command::Status { task: Some("solo".into()), project: None, cwd: None },
+                Some("tok"),
+            ),
+            &host,
+        );
+        let Some(ReplyData::Status(s)) = reply.data else { panic!("expected status") };
+        let tabs = s.task.tabs.expect("tabs listed");
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(
+            tabs.iter().map(|t| t.index).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "indices are the --tab <n> contract"
+        );
+        assert_eq!(tabs[1].id, "tab-b");
+        assert_eq!(tabs[1].title, "fixing tests");
+        assert_eq!(tabs[2].kind, "shell");
+        assert!(tabs[0].is_default);
+
+        // No push: UNKNOWN, not an empty strip.
+        let silent = StubHost::default();
+        let reply = handle(
+            &req(
+                Command::Status { task: Some("solo".into()), project: None, cwd: None },
+                Some("tok"),
+            ),
+            &silent,
+        );
+        let Some(ReplyData::Status(s)) = reply.data else { panic!("expected status") };
+        assert!(s.task.tabs.is_none(), "a silent webview must not read as zero tabs");
+    }
+
+    #[test]
+    fn tab_prompt_rides_the_send_route_targeted_at_the_new_tab() {
+        let host = StubHost::default();
+        host.script_rpc(
+            "new_tab",
+            Ok(serde_json::json!({ "tabId": "tab-new", "cli": "claude", "title": "claude" })),
+        );
+        host.script_rpc(
+            "send_prompt",
+            Ok(serde_json::json!({ "mode": "spawned", "capable": true })),
+        );
+        let cmd = Command::Tab {
+            task: Some("solo".into()),
+            project: None,
+            kind: proto::TabKind::Agent { id: "claude".into() },
+            prompt: Some("run the tests".into()),
+            wait: false,
+            timeout_ms: None,
+            cwd: None,
+        };
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let Some(ReplyData::Tab(t)) = reply.data else { panic!("expected tab") };
+        assert_eq!(t.tab_id, "tab-new");
+        let p = t.prompt.expect("prompt outcome");
+        assert_eq!(p.mode, proto::send_mode::SPAWNED);
+        assert!(p.wait.is_none());
+        // One recipe: new_tab, then send_prompt AT the id it returned,
+        // spawn-pending so the racing PTY is waited for, not refused.
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(
+            calls.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(),
+            vec!["new_tab", "send_prompt"]
+        );
+        let (_, params) = &calls[1];
+        assert_eq!(params["tabId"], "tab-new");
+        assert_eq!(params["spawnPending"], true);
+        assert!(params["promptId"].as_str().is_some_and(|p| !p.is_empty()));
+    }
+
+    #[test]
+    fn tab_prompt_guards_fire_before_any_rpc() {
+        let host = StubHost::default();
+        let tab = |kind, prompt: Option<&str>, wait| Command::Tab {
+            task: Some("solo".into()),
+            project: None,
+            kind,
+            prompt: prompt.map(str::to_string),
+            wait,
+            timeout_ms: None,
+            cwd: None,
+        };
+        for cmd in [
+            tab(proto::TabKind::Shell, Some("hi"), false),
+            tab(proto::TabKind::Terminal { id: "term-1".into() }, Some("hi"), false),
+            tab(proto::TabKind::Agent { id: "claude".into() }, Some("   "), false),
+            tab(proto::TabKind::Agent { id: "claude".into() }, None, true),
+        ] {
+            let err = handle(&req(cmd, Some("tok")), &host).error.expect("refused");
+            assert_eq!(err.code, ErrorCode::BadRequest);
+        }
+        // A shell task's DEFAULT tab is provably not an agent.
+        let mut shell_host = StubHost::default();
+        shell_host.tasks.iter_mut().find(|t| t.id == "w3").unwrap().cli = "shell".into();
+        let err = handle(
+            &req(tab(proto::TabKind::Default, Some("hi"), false), Some("tok")),
+            &shell_host,
+        )
+        .error
+        .expect("refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("--agent"), "{}", err.message);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+        assert!(shell_host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tab_prompt_failure_still_names_the_opened_tab() {
+        let host = StubHost::default();
+        host.script_rpc(
+            "new_tab",
+            Ok(serde_json::json!({ "tabId": "tab-new", "cli": "claude", "title": "claude" })),
+        );
+        host.script_rpc("send_prompt", Err("cli_send:not_capable: no settle signal".into()));
+        let cmd = Command::Tab {
+            task: Some("solo".into()),
+            project: None,
+            kind: proto::TabKind::Agent { id: "claude".into() },
+            prompt: Some("run".into()),
+            wait: false,
+            timeout_ms: None,
+            cwd: None,
+        };
+        let err = handle(&req(cmd, Some("tok")), &host).error.expect("error");
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("tab-new"), "{}", err.message);
+        assert!(err.message.contains("was opened"), "{}", err.message);
+    }
+
     // ── send ─────────────────────────────────────────────────────────
 
     fn send_cmd(task: &str, wait: bool) -> Command {
@@ -5030,6 +6114,7 @@ mod tests {
             fresh: false,
             wait,
             timeout_ms: None,
+            tab: None,
             cwd: None,
         }
     }
@@ -5141,12 +6226,12 @@ mod tests {
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -5166,7 +6251,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 1, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![] },
         )]);
         let request = req(send_cmd("solo", true), Some("tok"));
         std::thread::scope(|scope| {
@@ -5185,12 +6270,12 @@ mod tests {
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -5213,7 +6298,7 @@ mod tests {
         // Stale state from an earlier turn, pushed before the send.
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 2, queued: 0, capable: true },
+            TaskAgentState { state: "done".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let request = req(send_cmd("solo", true), Some("tok"));
         std::thread::scope(|scope| {
@@ -5234,12 +6319,12 @@ mod tests {
             // The real turn: working, then done.
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 2, queued: 0, capable: true },
+                TaskAgentState { state: "working".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![] },
             )]);
             std::thread::sleep(Duration::from_millis(30));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 2, queued: 0, capable: true },
+                TaskAgentState { state: "done".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![] },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -5260,7 +6345,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 1, capable: true },
+            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![] },
         )]);
         let reply = handle(&req(send_cmd("solo", true), Some("tok")), &host);
         let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -5277,7 +6362,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let request = req(wait_cmd("solo", None), Some("tok"));
         std::thread::scope(|scope| {
@@ -5285,7 +6370,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "inactive".into(), tabs: 0, queued: 0, capable: false },
+                TaskAgentState { state: "inactive".into(), tabs: 0, queued: 0, capable: false, tab_states: vec![] },
             )]);
             let reply = t.join().unwrap();
             let err = reply.error.expect("error, not a false done");
@@ -5307,7 +6392,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 1, capable: true },
+            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![] },
         )]);
         let request = req(send_cmd("solo", true), Some("tok"));
         std::thread::scope(|scope| {
@@ -5324,19 +6409,19 @@ mod tests {
             // empties on a non-working agent (the gone-detector arms)...
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             // ...and the report lands a beat later, inside the grace.
             std::thread::sleep(Duration::from_millis(60));
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             std::thread::sleep(Duration::from_millis(30));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true },
+                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -5350,9 +6435,10 @@ mod tests {
         // The cli_send: sentinel is produced in TypeScript (cliRpc.ts
         // sendErr) and consumed here (parse_send_error); the code set is
         // hand-maintained on both sides. Extract every code the webview
-        // can emit from its SOURCE and assert each maps to Unsupported;
-        // a typo on either side would otherwise degrade silently to
-        // Internal and break scripted callers months later.
+        // can emit from its SOURCE and assert each maps to a DOMAIN
+        // class (anything but Internal); a typo on either side would
+        // otherwise degrade silently to Internal and break scripted
+        // callers months later.
         let ts = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib/cliRpc.ts"),
         )
@@ -5377,9 +6463,9 @@ mod tests {
         );
         for code in &codes {
             let (mapped, msg) = parse_send_error(&format!("cli_send:{code}: human text"));
-            assert_eq!(
+            assert_ne!(
                 mapped,
-                ErrorCode::Unsupported,
+                ErrorCode::Internal,
                 "webview code {code:?} does not map to a domain class"
             );
             assert_eq!(msg, "human text");
@@ -5398,7 +6484,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true },
+            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![] },
         )]);
         let reply = handle(&req(send_cmd("solo", true), Some("tok")), &host);
         let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -5512,6 +6598,7 @@ mod tests {
                         task: Some("solo".into()),
                         project: None,
                         shell: false,
+                        tab: None,
                         last_bytes,
                         cwd: None,
                     },
@@ -5534,6 +6621,7 @@ mod tests {
                     task: Some("solo".into()),
                     project: None,
                     shell: true,
+                    tab: None,
                     last_bytes: None,
                     cwd: None,
                 },
@@ -5641,7 +6729,7 @@ mod tests {
         let host = StubHost::default();
         let reply = handle(
             &req(
-                Command::Attach { task: Some("solo".into()), project: None, shell: false, cwd: None },
+                Command::Attach { task: Some("solo".into()), project: None, shell: false, tab: None, cwd: None },
                 Some("tok"),
             ),
             &host,
@@ -5664,7 +6752,7 @@ mod tests {
 
     fn attach_req(task: &str) -> Request {
         req(
-            Command::Attach { task: Some(task.into()), project: None, shell: false, cwd: None },
+            Command::Attach { task: Some(task.into()), project: None, shell: false, tab: None, cwd: None },
             Some("tok"),
         )
     }

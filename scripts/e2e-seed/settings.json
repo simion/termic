@@ -380,7 +380,7 @@
   "schema_version": 1,
   "fetch_before_create": null,
   "discovery_dismissed": [],
-  "cli_enabled": false,
+  "cli_enabled": true,
   "worktree_symlink_paths": [
     ".claude",
     ".gemini",

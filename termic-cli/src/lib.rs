@@ -270,14 +270,20 @@ with no open agent, and agents whose work-done detection is disabled (there \
 is no settle signal to wait on). Settle detection is heuristic: exit 0 means \
 the agent STOPPED, not that the work is right.
 
+--tab narrows the wait to ONE tab of the task: pass a tab id (as printed \
+by `termic tab` and `termic status`), a 1-based index into status's tab \
+list, or a tab title. Only that tab's state and queue then count; a \
+sibling tab can neither satisfy nor stall the wait. A title matching more \
+than one tab is an error listing them; use the index or the id.
+
 Prints the final state on stdout. With --output-format json, one object: \
 {\"task_id\", \"outcome\": \"done\"|\"needs_input\"|\"timeout\", \"state\"}. With \
 stream-json, NDJSON state/heartbeat events ending in one result line. \
 Errors print to stderr only; no result line is emitted on error.
 
-Exit codes: 0 agent settled done, 1 error (unknown task, no agent open, \
-detection disabled), 3 agent stopped needing input, 4 app not running, \
-5 CLI disabled, 6 refused, 7 --timeout expired, 8 connection lost."
+Exit codes: 0 agent settled done, 1 error (unknown task or tab, no agent \
+open, detection disabled), 3 agent stopped needing input, 4 app not \
+running, 5 CLI disabled, 6 refused, 7 --timeout expired, 8 connection lost."
     )]
     Wait {
         /// Task name, task id, or qualified project/name. Omitted:
@@ -289,11 +295,16 @@ detection disabled), 3 agent stopped needing input, 4 app not running, \
         /// Give up after this long (exit 7). E.g. 90, 30s, 5m, 1h.
         #[arg(long, value_name = "DURATION")]
         timeout: Option<String>,
+        /// Wait on one tab: a tab id, 1-based index, or title.
+        #[arg(long, value_name = "SEL")]
+        tab: Option<String>,
     },
 
     /// Prompt the task's running agent; queues if it is mid-turn.
     #[command(
-        after_help = "Targets the RUNNING agent (the default agent tab). If it is mid-turn and \
+        after_help = "Targets the RUNNING agent (the default agent tab; --tab picks another: a \
+tab id, a 1-based index into status's tab list, or a title, agent tabs \
+only). If it is mid-turn and \
 supports work-done detection, the prompt QUEUES and delivers when the turn \
 finishes; an agent with detection disabled gets it typed immediately (with a \
 warning: completion cannot be observed, and --wait refuses such agents). \
@@ -349,6 +360,10 @@ stopped needing input, 4 app not running, 5 CLI disabled, 6 refused, \
         /// Give up waiting after this long (exit 7). E.g. 90, 30s, 5m, 1h.
         #[arg(long, requires = "wait", value_name = "DURATION")]
         timeout: Option<String>,
+        /// Deliver to one tab: a tab id, 1-based index, or title (agent
+        /// tabs only; --resume/--fresh spawn, a --tab target is open).
+        #[arg(long, value_name = "SEL", conflicts_with_all = ["resume", "fresh"])]
+        tab: Option<String>,
         /// Project name, to disambiguate. Requires a task name.
         #[arg(long, requires = "task")]
         project: Option<String>,
@@ -363,15 +378,19 @@ ctrl-<x> chords, comma-separated); detaching never stops the agent. \
 NON-resizing by default: the Termic pane owns the PTY size, and resizing \
 under it is tmux's smallest-client problem; --resize opts in (SIGWINCH \
 follows this terminal). --shell attaches to the task's aux terminal \
-instead of the agent. Without <TASK>, resolves from the current directory.
+instead of the agent; --tab attaches to one strip tab (a tab id, a \
+1-based index into status's tab list, or a title; agent tabs only, since \
+shell and terminal tabs are write-only from the CLI). The aux terminal is \
+not a strip tab, so --shell and --tab exclude each other. Without <TASK>, \
+resolves from the current directory.
 
 Not scriptable: needs a real TTY on stdin and stdout (use logs to read \
 output non-interactively). --output-format is ignored.
 
-Exit codes: 0 detached (the task keeps running), 1 error (unknown task, no \
-agent or aux terminal open, no TTY), 4 app not running, 5 CLI disabled, \
-6 refused, 8 connection lost (Termic quit mid-session), 11 the target \
-closed underneath the session (agent exited or task archived)."
+Exit codes: 0 detached (the task keeps running), 1 error (unknown task or \
+tab, no agent or aux terminal open, no TTY), 4 app not running, 5 CLI \
+disabled, 6 refused, 8 connection lost (Termic quit mid-session), 11 the \
+target closed underneath the session (agent exited or task archived)."
     )]
     Attach {
         /// Task name, task id, or qualified project/name. Omitted:
@@ -383,6 +402,9 @@ closed underneath the session (agent exited or task archived)."
         /// Attach to the task's aux terminal instead of the agent.
         #[arg(long)]
         shell: bool,
+        /// Attach to one tab: a tab id, 1-based index, or title.
+        #[arg(long, value_name = "SEL", conflicts_with = "shell")]
+        tab: Option<String>,
         /// Follow this terminal's size (SIGWINCH -> PTY resize). Off by
         /// default: the Termic pane owns the PTY size.
         #[arg(long)]
@@ -396,7 +418,9 @@ closed underneath the session (agent exited or task archived)."
     #[command(
         after_help = "Dumps the retained tail of the agent PTY's output (a 256 KB ring, ANSI \
 escapes intact; long tails are trimmed to fit the 1 MB reply line once \
-JSON-escaped) to stdout; --shell reads the aux terminal instead. \
+JSON-escaped) to stdout; --shell reads the aux terminal instead, --tab \
+reads one strip tab (a tab id, a 1-based index into status's tab list, or \
+a title; agent tabs only, since shell and terminal tabs retain no output). \
 This is the rendered terminal stream, useful for a quick look; for the \
 agent's structured answer prefer `termic result` or the RESULT.md file \
 convention. A note goes to stderr when older output was already dropped. \
@@ -405,8 +429,9 @@ Without <TASK>, resolves from the current directory.
 With --output-format json, one object: {\"task_id\", \"source\": \
 \"agent\"|\"aux\", \"data\", \"truncated\"}.
 
-Exit codes: 0 success, 1 error (unknown task, no agent or aux terminal \
-open), 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+Exit codes: 0 success, 1 error (unknown task or tab, no agent or aux \
+terminal open), 4 app not running, 5 CLI disabled, 6 refused, \
+8 connection lost."
     )]
     Logs {
         /// Task name, task id, or qualified project/name. Omitted:
@@ -418,6 +443,9 @@ open), 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
         /// Read the task's aux terminal instead of the agent.
         #[arg(long)]
         shell: bool,
+        /// Read one tab: a tab id, 1-based index, or title.
+        #[arg(long, value_name = "SEL", conflicts_with = "shell")]
+        tab: Option<String>,
         /// Print only the last N bytes of the retained tail.
         #[arg(long, value_name = "BYTES")]
         bytes: Option<u64>,
@@ -564,8 +592,15 @@ hides those; a CLI caller has no menu to look at. With no kind flag you get \
 another tab of whatever the task already runs.
 
 The new tab is NOT focused: a shell command should not yank the window you \
-are working in. Sending a prompt into a specific tab lands with --tab \
-targeting (GH #138).
+are working in.
+
+-p injects a prompt into the NEW tab once its agent is ready (agent kinds \
+only), through the same confirmed delivery route `send --tab` uses; the \
+new tab's id is the target, so a second tab opening meanwhile cannot \
+steal it. Without --wait the command returns once the injection is \
+underway (mode \"spawned\" stays unconfirmed, like send); with --wait it \
+blocks until the prompt is confirmed delivered AND that turn settles, the \
+send --wait contract. -p - reads the prompt from stdin.
 
 LIMITATION, --shell and --terminal only: those tabs are write-only from the \
 CLI. They open, and you can use them in the window, but `attach` and `logs` \
@@ -576,10 +611,15 @@ uncaged PTY on the control socket where it can be driven remotely is not \
 something to do without a use case.
 
 Prints the tab on stdout. With --output-format json, one object: \
-{\"task_id\", \"tab_id\", \"cli\", \"title\"}.
+{\"task_id\", \"tab_id\", \"cli\", \"title\", \"prompt\": {\"mode\", \
+\"capable\", \"wait\"} (only with -p; wait only under --wait)}. With \
+stream-json under -p, NDJSON events (queued, prompt_delivered, state, \
+heartbeat) ending in one result line.
 
-Exit codes: 0 opened, 1 error (unknown or ambiguous task, unusable agent \
-id), 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+Exit codes: 0 opened (with --wait: settled done), 1 error (unknown or \
+ambiguous task, unusable agent id, prompt on a non-agent tab), 3 agent \
+stopped needing input, 4 app not running, 5 CLI disabled, 6 refused, \
+7 --timeout expired, 8 connection lost, 9 prompt never delivered."
     )]
     Tab {
         /// Task name, task id, or qualified project/name.
@@ -596,6 +636,17 @@ id), 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
         /// A plain login shell, uncaged like the GUI's.
         #[arg(long, group = "tabkind")]
         shell: bool,
+        /// Prompt to inject into the new tab once its agent is ready
+        /// (agent kinds only). `-` reads stdin.
+        #[arg(short, long, conflicts_with_all = ["shell", "terminal"])]
+        prompt: Option<String>,
+        /// Block until the prompt is confirmed delivered and its turn
+        /// settles (or the agent asks for input).
+        #[arg(long, requires = "prompt")]
+        wait: bool,
+        /// Give up waiting after this long (exit 7). E.g. 90, 30s, 5m, 1h.
+        #[arg(long, requires = "wait", value_name = "DURATION")]
+        timeout: Option<String>,
     },
     /// Quit Termic: every running agent dies with it. For the human at the keyboard, not for agents driving Termic.
     ///
@@ -780,9 +831,9 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
     // slower than the server's 30s idle timeout must not turn a
     // healthy pipe into "connection lost".
     let prompt = match &cli.cmd {
-        Cmd::New { prompt: Some(p), .. } | Cmd::Send { prompt: p, .. } => {
-            Some(resolve_prompt(p)?)
-        }
+        Cmd::New { prompt: Some(p), .. }
+        | Cmd::Send { prompt: p, .. }
+        | Cmd::Tab { prompt: Some(p), .. } => Some(resolve_prompt(p)?),
         _ => None,
     };
 
@@ -813,13 +864,14 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
         Cmd::Help { .. } => unreachable!("handled above"),
         Cmd::New { .. } => execute_new(cli, &mut conn, &token, format, &paths, prompt),
         Cmd::Send { .. } => execute_send(cli, &mut conn, &token, format, prompt),
-        Cmd::Attach { task, project, shell, resize, detach_keys } => {
+        Cmd::Attach { task, project, shell, tab, resize, detach_keys } => {
             let seq = attach::parse_detach_keys(detach_keys)?;
             let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
             let wire = proto::Command::Attach {
                 task: task.clone(),
                 project: project.clone(),
                 shell: *shell,
+                tab: tab.clone(),
                 cwd,
             };
             attach::run_attach(conn, &token, wire, seq, detach_keys, *resize)
@@ -847,12 +899,13 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
             };
             Ok(Output::ok(final_stdout(format, &text, &d)))
         }
-        Cmd::Logs { task, project, shell, bytes } => {
+        Cmd::Logs { task, project, shell, tab, bytes } => {
             let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
             let cmd = proto::Command::Logs {
                 task: task.clone(),
                 project: project.clone(),
                 shell: *shell,
+                tab: tab.clone(),
                 last_bytes: *bytes,
                 cwd,
             };
@@ -896,13 +949,14 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
             });
             Ok(Output::ok(final_stdout(format, &s.task.summary.path, &obj)))
         }
-        Cmd::Wait { task, project, timeout } => {
+        Cmd::Wait { task, project, timeout, tab } => {
             let timeout_ms = timeout.as_deref().map(parse_duration_ms).transpose()?;
             let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
             let cmd = proto::Command::Wait {
                 task: task.clone(),
                 project: project.clone(),
                 timeout_ms,
+                tab: tab.clone(),
                 cwd,
             };
             let data = run_streamed(&mut conn, cmd, &token, format)?;
@@ -919,7 +973,7 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
             };
             Ok(Output::ok(final_stdout(format, &output::agents_text(&a), &a)))
         }
-        Cmd::Tab { task, project, agent, terminal, shell } => {
+        Cmd::Tab { task, project, agent, terminal, shell, prompt: _, wait, timeout } => {
             let kind = if let Some(id) = agent {
                 proto::TabKind::Agent { id: id.clone() }
             } else if let Some(id) = terminal {
@@ -929,20 +983,44 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
             } else {
                 proto::TabKind::Default
             };
-            let data = client::request(
-                &mut conn,
-                proto::Command::Tab {
-                    task: task.clone(),
-                    project: project.clone(),
-                    kind,
-                    cwd: std::env::current_dir().ok().map(|p| p.display().to_string()),
-                },
-                &token,
-            )?;
+            if let Some(p) = &prompt {
+                if p.trim().is_empty() {
+                    return Err(CliError::new(exit_code::ERROR, "the prompt is empty"));
+                }
+            }
+            let timeout_ms = timeout.as_deref().map(parse_duration_ms).transpose()?;
+            let wire = proto::Command::Tab {
+                task: task.clone(),
+                project: project.clone(),
+                kind,
+                prompt: prompt.clone(),
+                wait: *wait,
+                timeout_ms,
+                cwd: std::env::current_dir().ok().map(|p| p.display().to_string()),
+            };
+            // A prompt streams (queued/prompt_delivered/state events, the
+            // send shape); a bare open stays one request/reply.
+            let streamed = prompt.is_some();
+            if *wait && format == OutputFormat::Text {
+                eprintln!(
+                    "termic: watching the agent (Ctrl-C stops watching; the task keeps running)"
+                );
+            }
+            let data = if streamed {
+                run_streamed(&mut conn, wire, &token, format)?
+            } else {
+                client::request(&mut conn, wire, &token)?
+            };
             let proto::ReplyData::Tab(t) = data else {
                 return Err(CliError::new(exit_code::ERROR, "unexpected reply to tab"));
             };
-            Ok(Output::ok(final_stdout(format, &output::tab_text(&t), &t)))
+            let code = t
+                .prompt
+                .as_ref()
+                .and_then(|p| p.wait.as_ref())
+                .map(|w| w.outcome.exit_code())
+                .unwrap_or(exit_code::OK);
+            Ok(Output { stdout: final_stdout(format, &output::tab_text(&t), &t), code })
         }
         Cmd::Quit { yes } => execute_quit(&mut conn, &token, format, *yes, &paths),
         Cmd::Archive { task, project, yes } => {
@@ -1137,7 +1215,7 @@ fn execute_send(
     format: OutputFormat,
     prompt: Option<String>,
 ) -> Result<Output, CliError> {
-    let Cmd::Send { task, here, prompt: _, resume, fresh, wait, timeout, project } = &cli.cmd
+    let Cmd::Send { task, here, prompt: _, resume, fresh, wait, timeout, tab, project } = &cli.cmd
     else {
         unreachable!()
     };
@@ -1168,6 +1246,7 @@ fn execute_send(
         fresh: *fresh,
         wait: *wait,
         timeout_ms,
+        tab: tab.clone(),
         cwd,
     };
     if *wait && format == OutputFormat::Text {

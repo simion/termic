@@ -20,6 +20,7 @@ vi.mock("@/lib/tabFocus", () => ({
 vi.mock("@/lib/agents", () => ({
   agentDisplayName: vi.fn((cli: string) => cli),
   workDoneCapable: vi.fn((cli: string) => cli !== "shell"),
+  isTerminalCli: vi.fn(() => false),
 }));
 
 import { computeTrayAttention, initTrayAttention } from "@/lib/trayAttention";

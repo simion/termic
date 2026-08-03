@@ -24,6 +24,8 @@ vi.mock("@/lib/agents", () => ({
   // The real rule's shape: shells never qualify, `work_done: false`
   // registry entries opt out, unknown clis default on.
   workDoneCapable: vi.fn((cli: string) => cli !== "shell" && cli !== "nodone"),
+  // Custom terminal entries (#27), keyed by a fixed test id.
+  isTerminalCli: vi.fn((cli: string) => cli === "myterm"),
 }));
 
 import { computeAgentStates } from "@/lib/cliAgentState";
@@ -71,7 +73,9 @@ describe("computeAgentStates aggregation", () => {
 
   it("reports 'inactive' with 0 tabs when a task has no live terminal tabs", () => {
     const s = statesFor({ dormant: [] });
-    expect(s.dormant).toEqual({ state: "inactive", tabs: 0, queued: 0, capable: false });
+    expect(s.dormant).toEqual({
+      state: "inactive", tabs: 0, queued: 0, capable: false, tab_states: [],
+    });
   });
 
   it("counts only terminal tabs and reports the count", () => {
@@ -120,5 +124,75 @@ describe("computeAgentStates aggregation", () => {
     });
     const s = computeAgentStates();
     expect(Object.keys(s)).toEqual(["live"]);
+  });
+});
+
+describe("per-tab snapshot (tab_states, GH #138 part 2)", () => {
+  beforeEach(() => useApp.setState({ tasks: [], tabs: {} }));
+
+  it("lists strip tabs in display order and excludes pane-split leaves", () => {
+    // Pane leaves live in the same array but are not on the strip
+    // (TabBar filters them); listing them would shift `--tab <n>` off
+    // what the user sees in `status`.
+    const s = statesFor({
+      t: [
+        term({ id: "a", cli: "claude" }),
+        term({ id: "pane", paneId: "leaf1" }),
+        term({ id: "b", cli: "shell" }),
+      ],
+    });
+    expect(s.t.tab_states.map(t => t.id)).toEqual(["a", "b"]);
+    // The aggregate count still includes every terminal tab (compat).
+    expect(s.t.tabs).toBe(3);
+  });
+
+  it("maps kinds: agent, shell, custom terminal, run", () => {
+    const s = statesFor({
+      t: [
+        term({ cli: "claude" }),
+        term({ cli: "shell" }),
+        term({ cli: "myterm" }),
+        term({ cli: "shell", runTab: { kind: "run", member: "dev" } as never }),
+      ],
+    });
+    expect(s.t.tab_states.map(t => t.kind)).toEqual(["agent", "shell", "terminal", "run"]);
+  });
+
+  it("reports per-tab state only where a settle signal exists", () => {
+    const s = statesFor({
+      t: [
+        term({ cli: "claude", workState: "working" }),
+        term({ cli: "claude", unread: { reason: "attention" } }),
+        term({ cli: "claude", workState: "done" }),
+        term({ cli: "claude" }),
+        term({ cli: "shell", workState: "working" }),
+        term({ cli: "nodone", workState: "working" }),
+      ],
+    });
+    const states = s.t.tab_states.map(t => t.state);
+    // A shell or opted-out agent has NO settle signal: its state must be
+    // null (unknown), never a value `wait --tab` would block on.
+    expect(states).toEqual(["working", "waiting", "done", "idle", null, null]);
+    expect(s.t.tab_states.map(t => t.capable)).toEqual(
+      [true, true, true, true, false, false],
+    );
+  });
+
+  it("carries id, per-tab queue, liveness and defaultness for resolution", () => {
+    const q = [{ id: "q1", text: "x", repeat: 1, remaining: 1 }];
+    const s = statesFor({
+      t: [
+        term({ id: "main", is_default: true, ptyId: "pty-1", queue: q, title: "fixing auth" }),
+        term({ id: "second", title: "" , cli: "codex" }),
+      ],
+    });
+    expect(s.t.tab_states[0]).toMatchObject({
+      id: "main", is_default: true, live: true, queued: 1, title: "fixing auth",
+    });
+    // No PTY, no queue, and an empty title falls back to the cli id
+    // rather than pushing an unselectable empty string.
+    expect(s.t.tab_states[1]).toMatchObject({
+      id: "second", is_default: false, live: false, queued: 0, title: "codex",
+    });
   });
 });

@@ -356,6 +356,16 @@ interface SendPromptParams {
   resume?: boolean;
   fresh?: boolean;
   wait?: boolean;
+  /** Explicit target (GH #138 part 2): a tab ID, already resolved from
+   *  the user's `--tab` selector by the server's resolver. The store is
+   *  re-checked here because it is ground truth and the server's cache
+   *  can trail a just-closed tab. */
+  tabId?: string;
+  /** With tabId: the tab was created moments ago (`tab -p`) and its
+   *  PTY may still be spawning, so a missing PTY means WAIT for it, not
+   *  refuse. Never set for plain `send --tab`, where a dead target must
+   *  be an error rather than a 20s stall into a lost prompt. */
+  spawnPending?: boolean;
 }
 
 /** Typed domain failures cross the string-only RPC error channel with a
@@ -379,12 +389,48 @@ function sendableAgentTabs(taskId: string): TerminalTab[] {
   );
 }
 
+/** Prompt a LIVE agent tab. Mid-turn (or behind a queued backlog):
+ *  QUEUE, delivered by TerminalPane's drain when the turn ends
+ *  (runPrompt.ts's rule); only capable agents queue, since without
+ *  detection there is no "turn ended" edge to drain on and the prompt
+ *  would sit forever. Idle: deliver now, tracked (injectPromptTracked's
+ *  rules, minus the boot settle a fresh spawn needs). Shared by the
+ *  default-target and `--tab` targeted paths. */
+async function deliverOrQueue(
+  p: SendPromptParams,
+  tab: TerminalTab,
+  capable: boolean,
+): Promise<{ mode: string; capable: boolean }> {
+  const ptyId = tab.ptyId;
+  if (!ptyId) throw new Error("the agent tab lost its PTY before the prompt could be typed");
+  const busy = capable && (tab.workState === "working" || (tab.queue?.length ?? 0) > 0);
+  if (busy) {
+    useApp.getState().enqueueAgentMessage(p.taskId, tab.id, p.prompt, 1, p.promptId);
+    return { mode: "queued", capable };
+  }
+  useApp.getState().patchTab(p.taskId, tab.id, { workState: "idle", unread: null });
+  await deliverMessage(ptyId, p.prompt);
+  const still = agentTabFor(p.taskId, tab.id);
+  const samePty = still?.id === tab.id && still.ptyId === ptyId;
+  const alive = samePty && (await ptyAlive(ptyId).catch(() => false));
+  if (!alive) {
+    throw new Error("the agent PTY exited while the prompt was being typed");
+  }
+  useApp.getState().patchTab(p.taskId, tab.id, { lastInputAt: Date.now() });
+  await reportCliPromptDelivery(p.promptId, true);
+  return { mode: "delivered", capable };
+}
+
 /** The CLI's `termic send`: prompt the RUNNING agent (queue when it is
  *  mid-turn), or respawn one under --resume/--fresh. Delivery to a
  *  running agent is awaited HERE (mode "delivered" means it landed);
  *  queued and spawned deliveries confirm later via cli_prompt_report,
- *  which the server's --wait blocks on. */
-async function sendPromptHandler(raw: unknown): Promise<{ mode: string; capable: boolean }> {
+ *  which the server's --wait blocks on.
+ *
+ *  Exported for the targeted-send integration test (the newTabHandler
+ *  rule): the `--tab` rules interact with the real store's tab set, so
+ *  the test must drive the REAL handler, not a re-implementation. */
+export async function sendPromptHandler(raw: unknown): Promise<{ mode: string; capable: boolean }> {
   const p = raw as SendPromptParams;
   if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("send_prompt requires a taskId");
   if (typeof p?.prompt !== "string" || !p.prompt) throw new Error("send_prompt requires a prompt");
@@ -395,6 +441,50 @@ async function sendPromptHandler(raw: unknown): Promise<{ mode: string; capable:
   if (!task) throw new Error("no such task");
 
   const agentTabs = sendableAgentTabs(p.taskId);
+
+  // Explicit target: the id was resolved from a `--tab` selector by the
+  // server, but the STORE decides what it is now. Three refusals, each
+  // named: the tab is gone, it is not an agent tab (shell/terminal/run
+  // tabs are write-only from the CLI by design), or its agent exited.
+  if (typeof p.tabId === "string" && p.tabId) {
+    if (p.resume || p.fresh) {
+      throw sendErr("flags_useless", "--tab targets a tab that is already open; drop --resume/--fresh");
+    }
+    const targeted = agentTabs.find(t => t.id === p.tabId);
+    if (!targeted) {
+      const exists = (useApp.getState().tabs[p.taskId] ?? []).some(t => t.id === p.tabId);
+      if (exists) {
+        throw sendErr(
+          "not_sendable",
+          "that tab is not an agent tab; shell and terminal tabs are write-only from the CLI",
+        );
+      }
+      throw sendErr("unknown_tab", "that tab no longer exists; see `termic status` for the open tabs");
+    }
+    const capable = workDoneCapable(targeted.cli);
+    if (!capable && p.wait) {
+      throw sendErr(
+        "not_capable",
+        `agent "${targeted.cli}" has work-done detection disabled, so --wait has no settle signal. Resend without --wait.`,
+      );
+    }
+    if (!targeted.ptyId) {
+      if (!p.spawnPending) {
+        throw sendErr(
+          "tab_not_live",
+          "that tab's agent is not running; open a new tab with `termic tab`, or resend without --tab using --resume",
+        );
+      }
+      // `tab -p`: the tab was created moments ago and TerminalPane is
+      // still spawning its PTY. Same recipe as a respawn: wait for the
+      // PTY, then tracked injection confirms via cli_prompt_report.
+      const spawned = await waitForAgentPty(p.taskId, targeted.id);
+      void injectPromptTracked(p.taskId, p.prompt, p.promptId, spawned, targeted.id);
+      return { mode: "spawned", capable };
+    }
+    return deliverOrQueue(p, targeted, capable);
+  }
+
   const live = agentTabs.filter(t => !!t.ptyId);
   const target = live.find(t => t.is_default) ?? (live.length === 1 ? live[0] : undefined);
   if (live.length > 1 && !target) {
@@ -415,28 +505,7 @@ async function sendPromptHandler(raw: unknown): Promise<{ mode: string; capable:
         `agent "${target.cli}" has work-done detection disabled, so --wait has no settle signal. Resend without --wait.`,
       );
     }
-    // Mid-turn, or behind an already-queued backlog: QUEUE, delivered
-    // by TerminalPane's drain when the turn ends (runPrompt.ts's rule).
-    // Only capable agents queue: without detection there is no "turn
-    // ended" edge to drain on, so the prompt would sit forever.
-    const busy = capable && (target.workState === "working" || (target.queue?.length ?? 0) > 0);
-    if (busy) {
-      useApp.getState().enqueueAgentMessage(p.taskId, target.id, p.prompt, 1, p.promptId);
-      return { mode: "queued", capable };
-    }
-    // Idle running agent: deliver now, tracked (injectPromptTracked's
-    // rules, minus the boot settle a fresh spawn needs).
-    useApp.getState().patchTab(p.taskId, target.id, { workState: "idle", unread: null });
-    await deliverMessage(target.ptyId, p.prompt);
-    const still = agentTabFor(p.taskId, target.id);
-    const samePty = still?.id === target.id && still.ptyId === target.ptyId;
-    const alive = samePty && (await ptyAlive(target.ptyId).catch(() => false));
-    if (!alive) {
-      throw new Error("the agent PTY exited while the prompt was being typed");
-    }
-    useApp.getState().patchTab(p.taskId, target.id, { lastInputAt: Date.now() });
-    await reportCliPromptDelivery(p.promptId, true);
-    return { mode: "delivered", capable };
+    return deliverOrQueue(p, target, capable);
   }
 
   // No running agent: --resume / --fresh are the outs.

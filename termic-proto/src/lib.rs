@@ -31,7 +31,13 @@ use std::io::{self, BufRead, Read, Write};
 /// the bidirectional `attach` session (AttachFrame lines after the
 /// accepted request). Exit codes 10 (apply conflict) and 11 (attach
 /// target closed) become live.
-pub const PROTOCOL_VERSION: u32 = 5;
+///
+/// v4 (Phase 3): the `quit` verb. v5: `tab` / `agents` (GH #138 part 1).
+///
+/// v6 (GH #138 part 2): `tab` selectors (`tab` field on send / wait /
+/// attach / logs), `TaskStatus.tabs`, and `tab -p` (prompt fields on the
+/// `tab` command, `TabData.prompt`).
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// serde default for `QuitData::running`.
 pub(crate) fn default_true() -> bool { true }
@@ -223,6 +229,11 @@ pub enum Command {
         project: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        /// Wait on ONE tab instead of the whole task: a tab id (as
+        /// printed by `termic tab`), a 1-based strip index, or a title.
+        /// Absent = task-level quiescence, the pre-v6 meaning.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -241,6 +252,18 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
         kind: TabKind,
+        /// Deliver this prompt into the tab just opened (agent kinds
+        /// only), through the same confirmed `send_prompt` route `send`
+        /// uses; the tab's id is the target, so nothing races a second
+        /// tab opening meanwhile. Streamed reply when present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        /// With `prompt`: hold the reply until that prompt's turn
+        /// settles, the same contract as `send --wait`.
+        #[serde(default)]
+        wait: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -307,6 +330,12 @@ pub enum Command {
         wait: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        /// Deliver to ONE tab instead of the default agent tab: a tab id
+        /// (as printed by `termic tab`), a 1-based strip index, or a
+        /// title. `resume`/`fresh` are refused alongside it (they spawn,
+        /// a selector targets something already open).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -345,6 +374,11 @@ pub enum Command {
         /// Target the task's aux terminal instead of the agent.
         #[serde(default)]
         shell: bool,
+        /// Target ONE agent tab: a tab id (as printed by `termic tab`),
+        /// a 1-based strip index, or a title. Mutually exclusive with
+        /// `shell` (the aux terminal is not in the strip).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
         /// Cap the returned tail to this many bytes (absent = the whole
         /// retained buffer).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -380,6 +414,11 @@ pub enum Command {
         /// Target the task's aux terminal instead of the agent.
         #[serde(default)]
         shell: bool,
+        /// Target ONE agent tab: a tab id (as printed by `termic tab`),
+        /// a 1-based strip index, or a title. Mutually exclusive with
+        /// `shell` (the aux terminal is not in the strip).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -574,12 +613,26 @@ pub struct TabData {
     pub cli: String,
     /// Display title the GUI gave it.
     pub title: String,
-    // NOTE no `prompt_delivered`: `tab -p` lands with `--tab` targeting
-    // (GH #138 part 2). Delivering into a SPECIFIC tab needs the targeting
-    // this verb does not have yet, and `send_prompt`'s confirmed route picks
-    // from a task's sendable agent tabs. Reusing that route is the point;
-    // a second injection recipe would reintroduce the silently-dropped
-    // prompt Phase 1 exists to prevent.
+    /// Present when a prompt rode along (`tab -p`): how it reached the
+    /// new tab. Delivery goes through `send_prompt` targeted at this
+    /// tab's id, the same confirmed route `send --tab` uses; a second
+    /// injection recipe would reintroduce the silently-dropped prompt
+    /// Phase 1 exists to prevent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptOutcome>,
+}
+
+/// How a rode-along prompt (`tab -p`) reached its target.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PromptOutcome {
+    /// See `send_mode`.
+    pub mode: String,
+    /// False when the target agent has work-done detection disabled
+    /// (prompt typed immediately, no settle signal; `--wait` refuses).
+    pub capable: bool,
+    /// Present under `wait`: how the watched turn ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<WaitResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -702,6 +755,46 @@ pub struct TaskStatus {
     /// files_changed + untracked, when the diff stat resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dirty_files: Option<u64>,
+    /// The task's terminal tabs in strip order (GH #138 part 2), when
+    /// the webview's per-tab snapshot answered. `None` means UNKNOWN
+    /// (webview booting or stale), not "no tabs": consumers must not
+    /// render it as an empty strip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<Vec<TabStatus>>,
+}
+
+/// One tab row for `status` (GH #138 part 2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TabStatus {
+    /// Stable tab id: the identity every `--tab` selector resolves to.
+    pub id: String,
+    /// 1-based row number in THIS list, which is the task's terminal
+    /// tabs in strip order (editor/diff tabs are not listed and do not
+    /// shift it). `--tab <n>` means exactly this number.
+    pub index: u32,
+    /// "agent" | "shell" | "terminal" (custom, #27) | "run" (script
+    /// tabs). Additive: skip unknown kinds. Only agent tabs are
+    /// addressable by send/wait/attach/logs; the rest are write-only
+    /// from the CLI by design (docs/plans/cli.md, GH #138).
+    pub kind: String,
+    /// cli id ("claude", "shell", a custom terminal's id).
+    pub agent: String,
+    /// Display title, as the GUI renders it (agent-authored titles
+    /// change mid-turn; the id does not).
+    pub title: String,
+    /// Per-tab work state ("working", "waiting", "done", "idle").
+    /// `None` for tabs with no settle signal (shell, custom terminal,
+    /// work-done-incapable agents). Additive: pass unknown strings
+    /// through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// The tab send/wait/attach/logs resolve to when `--tab` is absent.
+    pub is_default: bool,
+    /// A PTY is live in this tab right now (vs a durable tab awaiting
+    /// restore).
+    pub live: bool,
+    /// Prompts queued behind the current turn (send's queue-on-busy).
+    pub queued: u32,
 }
 
 /// How `send` got the prompt to the agent. Additive: new modes may
@@ -1238,20 +1331,28 @@ mod tests {
                 task: Some("fix-auth".into()),
                 project: None,
                 timeout_ms: Some(1000),
+                tab: Some("2".into()),
                 cwd: None,
             },
-            Command::Wait { task: None, project: None, timeout_ms: None, cwd: Some("/t".into()) },
+            Command::Wait {
+                task: None, project: None, timeout_ms: None, tab: None, cwd: Some("/t".into()),
+            },
             Command::Tab {
                 task: Some("fix-auth".into()),
                 project: None,
                 kind: TabKind::Agent { id: "claude".into() },
+                prompt: Some("run the tests".into()),
+                wait: true,
+                timeout_ms: Some(60_000),
                 cwd: None,
             },
             Command::Tab {
-                task: None, project: None, kind: TabKind::Shell, cwd: None,
+                task: None, project: None, kind: TabKind::Shell,
+                prompt: None, wait: false, timeout_ms: None, cwd: None,
             },
             Command::Tab {
-                task: None, project: None, kind: TabKind::Default, cwd: None,
+                task: None, project: None, kind: TabKind::Default,
+                prompt: None, wait: false, timeout_ms: None, cwd: None,
             },
             Command::Agents,
             Command::Quit { commit: false },
@@ -1269,6 +1370,7 @@ mod tests {
                 fresh: false,
                 wait: true,
                 timeout_ms: Some(60_000),
+                tab: Some("claude".into()),
                 cwd: None,
             },
             Command::Send {
@@ -1279,6 +1381,7 @@ mod tests {
                 fresh: false,
                 wait: false,
                 timeout_ms: None,
+                tab: None,
                 cwd: Some("/repo/web".into()),
             },
             Command::Apply { task: "fix-auth".into(), project: Some("web".into()) },
@@ -1288,11 +1391,23 @@ mod tests {
                 task: Some("fix-auth".into()),
                 project: None,
                 shell: true,
+                tab: None,
                 last_bytes: Some(4096),
                 cwd: None,
             },
+            Command::Logs {
+                task: Some("fix-auth".into()),
+                project: None,
+                shell: false,
+                tab: Some("a1b2c3".into()),
+                last_bytes: None,
+                cwd: None,
+            },
             Command::LastResult { task: Some("fix-auth".into()), project: None, cwd: None },
-            Command::Attach { task: None, project: None, shell: false, cwd: Some("/t".into()) },
+            Command::Attach {
+                task: None, project: None, shell: false, tab: Some("1".into()),
+                cwd: Some("/t".into()),
+            },
         ] {
             roundtrip(&Request { id: "r1".into(), token: Some("t".into()), cmd });
         }
@@ -1351,6 +1466,39 @@ mod tests {
                     sandbox: "enforce".into(),
                     sessions: 2,
                     dirty_files: Some(4),
+                    tabs: Some(vec![
+                        TabStatus {
+                            id: "t1".into(),
+                            index: 1,
+                            kind: "agent".into(),
+                            agent: "claude".into(),
+                            title: "claude".into(),
+                            state: Some("working".into()),
+                            is_default: true,
+                            live: true,
+                            queued: 1,
+                        },
+                        TabStatus {
+                            id: "t2".into(),
+                            index: 2,
+                            kind: "shell".into(),
+                            agent: "shell".into(),
+                            title: "Terminal".into(),
+                            state: None,
+                            is_default: false,
+                            live: true,
+                            queued: 0,
+                        },
+                    ]),
+                },
+            }),
+            ReplyData::Status(StatusData {
+                task: TaskStatus {
+                    summary: summary.clone(),
+                    sandbox: "off".into(),
+                    sessions: 0,
+                    dirty_files: None,
+                    tabs: None,
                 },
             }),
             ReplyData::Open(OpenData { task: Some(summary.clone()), raised: true }),
@@ -1386,6 +1534,22 @@ mod tests {
                 tab_id: "3f1c-…".into(),
                 cli: "claude".into(),
                 title: "claude".into(),
+                prompt: None,
+            }),
+            ReplyData::Tab(TabData {
+                task_id: "w1".into(),
+                tab_id: "3f1c-…".into(),
+                cli: "claude".into(),
+                title: "claude".into(),
+                prompt: Some(PromptOutcome {
+                    mode: send_mode::SPAWNED.into(),
+                    capable: true,
+                    wait: Some(WaitResult {
+                        outcome: WaitOutcome::Done,
+                        state: Some("done".into()),
+                        detail: None,
+                    }),
+                }),
             }),
             ReplyData::Quit(QuitData {
                 running: true,
