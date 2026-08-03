@@ -12,8 +12,10 @@ advertisement (protocol v2). Phase 2 implemented on top - `send`
 (exit 10 goes live), `diff`, `path`, and the result readers `logs`
 (per-PTY ring buffer) and `result` (claude transcript reader), protocol
 v5. Phase 3 in progress - windowless mode landed, `termic quit` landed;
-tab management (GH #138) part 1 landed (`termic tab` + stable tab ids),
-part 2 (`--tab` targeting, `status` listing, `tab -p`) pending. Homebrew
+tab management (GH #138) landed in full: part 1 (`termic tab` + stable
+tab ids) and part 2 (`--tab <n|id|title>` targeting on
+send/wait/attach/logs, tabs listed in `status`, `tab -p`), protocol v6.
+Homebrew
 is settled, not pending: the cask ships, a CLI-only formula is a non-goal
 (see Distribution). `termic events --json` is SEQUENCED BEHIND hooks, not
 merely deferred: see Phasing.
@@ -225,7 +227,9 @@ termic list [--project <name>] [-q]           # tasks + workState + diff stat (a
 termic open [<task>]                          # raise window, select task (cwd-aware)
 termic status <task>                          # one task in depth: agent state, branch,
                                               # dirty file count, session count
-termic send <task>|--here -p <text> [--wait]  # prompt the RUNNING agent; if it is mid-turn
+termic send <task>|--here -p <text> [--wait]  # prompt the RUNNING agent; --tab <n|id|title>
+           [--tab <sel>]                      # targets one strip tab (agent tabs only);
+                                              # if the target is mid-turn
                                               # this QUEUES (runPrompt.ts:42 already queues
                                               # on workState "working"), not an error -
                                               # but ONLY for work-done-capable agents:
@@ -243,6 +247,7 @@ termic send <task>|--here -p <text> [--wait]  # prompt the RUNNING agent; if it 
                                               # own explicit error pointing at --fresh,
                                               # never a silent fall-through
 termic wait <task> [--timeout <dur>]          # block until the agent is QUIESCENT:
+           [--tab <sel>]                      # (--tab narrows to ONE tab's state+queue)
                                               # settled AND its message queue is empty.
                                               # Settle alone races send's queueing (turn 1
                                               # settles -> wait returns -> only then does
@@ -254,7 +259,8 @@ termic wait <task> [--timeout <dur>]          # block until the agent is QUIESCE
                                               # their OWN prompt (delivered + the turn it
                                               # started settled), not just any quiet.
 termic attach <task> [--detach-keys <seq>]    # raw TTY <-> agent PTY; --shell targets the
-           [--resize] [--shell]               # aux terminal instead; interactive but
+           [--resize] [--shell|--tab <sel>]   # aux terminal, --tab one strip tab
+                                              # (agent tabs only); interactive but
                                               # NON-resizing by default (the GUI pane owns
                                               # the PTY size; resizing under it is tmux's
                                               # smallest-client problem). --resize opts in.
@@ -298,10 +304,12 @@ termic agents                                 # what --agent / --terminal accept
                                               # The registry is per-user and editable,
                                               # so static help cannot carry it
 termic tab <task> [--agent <id>|--terminal <id>|--shell]      # GH #138. A tab INSIDE a
-                                              # running task: the "+" menu as a verb, and
+           [-p <text> [--wait]]               # running task: the "+" menu as a verb, and
                                               # like that menu it distinguishes agent /
                                               # custom-terminal / aux-shell kinds, because
-                                              # they differ in sandbox, resume and YOLO
+                                              # they differ in sandbox, resume and YOLO.
+                                              # -p injects into the NEW tab (agent kinds
+                                              # only) via send_prompt targeted at its id
 ```
 
 Two structural rules the surface depends on. First, task creation
@@ -370,21 +378,41 @@ agent tab" (`PtyRole.is_default`, already the target `attach`/`logs` resolve
 to). So a second claude tab is unreachable, and `status` reports a `sessions`
 COUNT with no way to ask what those sessions are.
 
-Adopted into Phase 3, landing in two parts. **Part 1 (landed):** `termic tab`
+Adopted into Phase 3, landed in two parts. **Part 1:** `termic tab`
 plus `PtyRole.tab_id`, i.e. creating tabs and having a stable name for them.
-**Part 2 (pending):** `--tab <n|id|title>` on send/wait/attach/logs, tabs
-listed in `status`, and `tab -p`. Split because part 2 depends on the selector
-decision and part 1 does not.
+**Part 2:** `--tab <n|id|title>` on send/wait/attach/logs, tabs
+listed in `status`, and `tab -p` (protocol v6). Split because part 2 depended
+on the selector decision and part 1 did not.
 
-**Part 2 must start by covering `tab_id` end to end.** Part 1 threads the
-webview's tab uuid into `PtyRole.tab_id`, but NOTHING consumes it yet, so
-nothing tests it: the value is set in TerminalPane's spawn call, which has no
-test infrastructure, and every suite stays green if that field is dropped,
-misspelled, or wired to the wrong id. The failure would surface only as
-"`--tab` resolves nothing" once part 2 exists, at which point the bug looks
-like a part 2 bug. First task of part 2, before any selector work: an
-assertion that a tab opened by `termic tab` is addressable by the id that
-command returned (e2e is the natural level, since it needs a real spawn).
+**`tab_id` is covered end to end** (the risk part 2 was told to close first):
+`e2e/specs/cli.e2e.ts` drives the real socket and asserts a tab opened by
+`termic tab` is addressable by the id that command returned (`logs --tab`,
+`send --tab`, `tab -p` delivery, `status` listing), so dropping or miswiring
+`PtyRole.tab_id` in TerminalPane's spawn call goes red there instead of
+surfacing as a mystery in a user's script.
+
+**How part 2 resolves selectors.** The webview's pushed snapshot
+(cliAgentState.ts) carries per-tab entries (`tab_states`: id, kind, cli,
+title, per-tab work state, queue, liveness, defaultness) in strip order; one
+Rust resolver (`resolve_tab_selector`) serves send, wait, attach and logs
+from it: exact id first, then 1-based index (the numbering `status` prints;
+editor tabs are not listed and do not shift it), then case-insensitive
+title/cli match. Ambiguity errors listing the candidates. Only agent tabs
+resolve (the write-only rule below). With no snapshot yet, an EXACT persisted
+id still resolves so scripts keep working; index/title honestly error.
+`attach`/`logs` then map the id to the tab's own PTY via `PtyRole.tab_id`
+(`find_tab_pty`, no default-tab fallback); `send` passes the resolved id to
+`send_prompt`, where the store re-validates it (the cache can trail a
+just-closed tab); `wait --tab` narrows `watch_agent` to that tab's entry, so
+a sibling tab can neither satisfy nor stall it. `send --tab --wait` still
+does NOT trust a pre-existing done as its own turn settling: per-tab state
+removes sibling pollution but not the cache-trails-the-store race on the
+target itself, and the tab you target is often exactly the one wearing a
+stale done badge (pinned by send_tab_wait_ignores_the_targets_stale_done).
+`tab -p` is
+`new_tab` followed by `send_prompt` targeted at the returned id with a
+spawn-pending flag (wait for the racing PTY, don't refuse it): one delivery
+recipe, exactly the reuse the TabData note demanded.
 
 **Picking what to open is the hard part, and it is not a binary.** The GUI's
 "+" menu already offers three distinct things and gates them: `kind: "agent"`
@@ -415,13 +443,14 @@ that separates the kinds follows from the same place: no work-done detection
 not persisted across a restart. SANDBOXING IS A SEPARATE SWITCH, keyed on
 `pty_spawn`'s `task_id` argument rather than on the role: terminal tabs are
 deliberately never caged, which is what makes them usable for git and ssh
-(#32). Giving them a role in part 2 would make them addressable without
+(#32). Giving them a role would make them addressable without
 caging them, but that is the wrong way round: it would put an UNCAGED PTY on
 the control socket where it can be driven remotely. Not an escalation (a caged
 agent cannot reach the socket, and `attach --shell` already drives the uncaged
 aux terminal), but it widens the socket's reach for no use case we have. The
-retained-output ring per shell is the smaller cost. Decide it only if part 2
-turns up a real need to drive a shell from a script.
+retained-output ring per shell is the smaller cost. Part 2 kept the rule (its
+selectors refuse non-agent tabs); revisit only if a real need to drive a
+shell from a script turns up.
 - **Omitted** = the task's own `cli`, i.e. "another one of what this task
   already runs", which is the common case and matches what the `+` button
   does before you pick anything.
@@ -431,41 +460,42 @@ Sandbox follows kind, not flag: an agent tab inherits the task's sandbox pin,
 CLI PTY is the threat model, docs/sandbox.md). That asymmetry is the whole
 reason the kinds are separate flags.
 
-Then the targeting half:
+Then the targeting half (landed):
 
-- **`--tab <n|title>` on `send` / `wait` / `attach` / `logs`.** Absent = the
-  default agent tab, so every existing invocation keeps its meaning.
-- **`status` lists tabs**: index, kind, agent, title, work state. Additive
-  fields on `TaskStatus`, which already flattens `TaskSummary`.
+- **`--tab <n|id|title>` on `send` / `wait` / `attach` / `logs`.** Absent =
+  the default agent tab, so every existing invocation keeps its meaning.
+- **`status` lists tabs**: index, kind, agent, title, per-tab work state,
+  queue depth, liveness, defaultness. Additive fields on `TaskStatus`
+  (`tabs: Option<Vec<TabStatus>>`; `None` = the webview has not answered,
+  which must not render as an empty strip).
 
-Open questions, deliberately not settled here:
+Decisions, settled and shipped:
 
-- **Selector stability: SETTLED, tab ids are the identity.** Index shifts
+- **Selector stability: tab ids are the identity.** Index shifts
   when a tab closes and titles are agent-authored and change mid-turn (the
   same OSC stream the work-done classifier reads, lib/terminalTitle.ts), so
   neither can be the identity. The webview already minted a uuid per tab; it
-  is now carried on `PtyRole.tab_id`, so Rust can resolve a selector without a
-  webview round-trip. `termic tab` prints it. Index and title remain human
-  conveniences that resolve to it, which is the part still to build.
-- **Ambiguity is an error, not a guess.** Two tabs titled `claude` must fail
+  is carried on `PtyRole.tab_id`, so Rust resolves a selector without a
+  webview round-trip. `termic tab` prints it. Index and title are human
+  conveniences that resolve to it.
+- **Ambiguity is an error, not a guess.** Two tabs titled `claude` fail
   with both selectors printed, the same shape as the existing ambiguous-task
   error, rather than picking the lower index.
-- **`attach --shell` becomes redundant** once `--tab` exists. Keep it as an
-  alias for "the aux terminal" (it is shipped surface and reads better than
-  `--tab shell`), and say so rather than quietly supporting two spellings.
+- **`attach --shell` stays** as the alias for "the aux terminal" (it is
+  shipped surface and the aux pane is not a strip tab, so `--tab` cannot
+  reach it); the two flags conflict rather than quietly overlapping.
 - **Resuming a closed tab.** The `+` menu offers it (`closedTabs`), and the
   CLI has no equivalent at any level. Out of scope here, but it is the obvious
   next ask once tabs are addressable, and `--tab` selectors are what it would
   hang off.
-- **`tab -p` lands with targeting, not before.** `send_prompt` is the
-  confirmed delivery route, and it picks from a task's SENDABLE AGENT TABS
-  rather than a named one, so delivering into a specific new tab needs `--tab`
-  to exist first. Writing a second injection recipe instead would reintroduce
-  exactly the silently-dropped prompt Phase 1 exists to prevent, so `-p` waits
-  for part 2.
+- **`tab -p` landed WITH targeting, not before.** `send_prompt` is the
+  confirmed delivery route, and it used to pick only from a task's sendable
+  agent tabs; `-p` is `new_tab` followed by `send_prompt` targeted at the id
+  it returned. Writing a second injection recipe instead would have
+  reintroduced exactly the silently-dropped prompt Phase 1 exists to prevent.
 
-Protocol impact is additive (a new verb plus optional fields), so this is a
-version bump when it lands, not a breaking change.
+Protocol impact was additive (optional fields end to end), landing as the
+v5 -> v6 bump, not a breaking change.
 
 ## Agents as users (discoverability)
 

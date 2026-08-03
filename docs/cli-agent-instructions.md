@@ -67,6 +67,11 @@ Rules that matter:
   agent (queues if it is mid-turn). With no agent running, add
   `--resume` (restore the last session) or `--fresh` (new agent, no
   context). `-p -` reads stdin. Same exit-code contract as `new --wait`.
+- A task can hold SEVERAL agent tabs. `"$TERMIC_CLI" tab <task>
+  --agent <id> -p "<text>"` opens one and prompts it; record the
+  printed tab id and pass `--tab <id>` to `send`/`wait`/`logs` to keep
+  addressing that tab (ids are stable; indexes and titles shift).
+  `status --json` lists every tab with its id, state and queue.
 - `"$TERMIC_CLI" result <task>` - the agent's last message from its
   session transcript (claude only; other agents error and you fall back
   to the file convention).
