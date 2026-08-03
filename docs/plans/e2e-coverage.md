@@ -52,6 +52,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Git stage/unstage/commit | Stage → unstage → re-stage + commit → clean | `git.e2e.ts` |
 | ✅ Task rename/delete | Rename updates store+sidebar; delete removes the task entirely | `task.e2e.ts` |
 | ✅ Git diff | Open a diff tab for a changed file | `git.e2e.ts` |
+| ✅ Inline review comments | Select a diff line → tooltip → compose → save, three times; line numbers stay level with the code throughout (GH #157) | `git.e2e.ts` |
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `files.e2e.ts` |
 | ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
 | ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `files.e2e.ts` |

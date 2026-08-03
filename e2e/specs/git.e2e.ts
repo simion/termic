@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone } from "../helpers";
+import { archiveTask, clickByText, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
 
 // Git integration is central to termic (every task is a worktree/checkout).
 // This guards the Git panel: switching to it shows the working-tree status.
@@ -389,5 +389,131 @@ describe("git commit & push", () => {
     ).toString();
     expect(log).toContain("e2e push commit");
     await snap("commit-push.png");
+  });
+});
+
+// GH #157: inline review comments are CodeMirror block widgets, and CodeMirror
+// sizes the line-number gutter from a height map it fills by measuring each
+// widget's border box. Vertical margin on the measured element is space it
+// never counts, so the gutter sheared away from the code, ~12px per comment.
+// Only a real layout engine can see that, so it lives here rather than in
+// reviewCommentsExt.test.ts (happy-dom has no layout).
+describe("review comment alignment", () => {
+  let taskId: string | undefined;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  /**
+   * Vertical offset between each gutter element and the content block beside
+   * it. A constant offset is fine (the columns can share a padding); what #157
+   * produced was a SPREAD, the offset growing line by line down the file.
+   */
+  const gutterDrift = () =>
+    browser.execute(() => {
+      const ed = [...document.querySelectorAll(".cm-editor")]
+        .find((e) => e.getBoundingClientRect().height > 0);
+      if (!ed) return null;
+      const lines = [...(ed.querySelector(".cm-content")?.children ?? [])]
+        .filter((el) => el.classList.contains("cm-line"));
+      // One gutter element per rendered line, in the same order (CodeMirror's
+      // lineNumbers has no widget marker, so block widgets get none) — EXCEPT
+      // the zero-height hidden spacer that sizes the column to the widest
+      // number. Pair by index once that is dropped; the counts matching is the
+      // proof the pairing is real, so report them.
+      const nums = [...ed.querySelectorAll(".cm-lineNumbers .cm-gutterElement")]
+        .filter((el) => getComputedStyle(el).visibility !== "hidden");
+      const drifts = lines.map((line, i) =>
+        (nums[i]?.getBoundingClientRect().top ?? NaN) - line.getBoundingClientRect().top);
+      return {
+        lines: lines.length,
+        nums: nums.length,
+        spread: drifts.length ? Math.max(...drifts) - Math.min(...drifts) : NaN,
+      };
+    });
+
+  /**
+   * Leave a comment the way a user does: select the line, click the tooltip
+   * button that raises, type, save. Selecting is the only step that needs care
+   * — CodeMirror reads the DOM selection inside its content into state (a
+   * read-only editor doesn't even need focus for that), and a non-empty
+   * selection is what makes the "Comment on line N" tooltip appear.
+   */
+  async function addCommentOnLine(lineText: string, body: string) {
+    await browser.execute((text) => {
+      const ed = [...document.querySelectorAll(".cm-editor")]
+        .find((e) => e.getBoundingClientRect().height > 0);
+      const line = [...(ed?.querySelector(".cm-content")?.children ?? [])]
+        .find((el) => el.classList.contains("cm-line") && el.textContent?.trim() === text);
+      if (!line) throw new Error(`no rendered diff line reading: ${text}`);
+      const range = document.createRange();
+      range.selectNodeContents(line);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }, lineText);
+
+    await waitVisible(".tc-add-comment-btn");
+    await browser.execute(() => {
+      // The tooltip button commits on mousedown, so that the editor can't clear
+      // the selection out from under it first. `.click()` alone does nothing.
+      document.querySelector(".tc-add-comment-btn")!
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+
+    await waitVisible(".tc-comment-textarea");
+    await browser.execute((text) => {
+      const ta = document.querySelector(".tc-comment-textarea") as HTMLTextAreaElement;
+      ta.value = text;
+      ta.dispatchEvent(new Event("input", { bubbles: true })); // also runs autoGrow
+      (document.querySelector(".tc-comment-composer .tc-btn-primary") as HTMLElement).click();
+    }, body);
+    await waitGone(".tc-comment-textarea");
+  }
+
+  it("keeps the line numbers level with the code across several comments", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-comment-align");
+
+    // A diff long enough that drift below the comments is unmistakable. Append
+    // rather than rewrite: an added-only diff keeps @codemirror/merge's own
+    // deleted-chunk widgets out of the measurement.
+    await browser.execute(async (id) => {
+      const t = window.__termic!;
+      const orig = await t.ipc.taskFileRead(id, "README.md");
+      const added = Array.from({ length: 30 }, (_, i) => `align line ${i + 1}`).join("\n");
+      await t.ipc.taskFileWrite(id, "README.md", `${orig}\n${added}\n`);
+      t.useApp.getState().openPreviewTab(id, {
+        type: "diff",
+        path: "README.md",
+        title: "README.md",
+        scope: "unstaged",
+      });
+    }, taskId);
+
+    await browser.waitUntil(async () => ((await gutterDrift())?.lines ?? 0) >= 10, {
+      timeout: 15_000,
+      timeoutMsg: "the diff never rendered enough lines to measure",
+    });
+
+    // Baseline: no comment widgets in the content column yet.
+    const before = (await gutterDrift())!;
+    expect(before.nums).toEqual(before.lines);
+    expect(before.spread).toBeLessThan(2);
+
+    for (const n of [2, 5, 8]) await addCommentOnLine(`align line ${n}`, `comment on ${n}`);
+
+    await browser.waitUntil(
+      () => browser.execute(() => document.querySelectorAll(".tc-comment-card").length === 3),
+      { timeout: 10_000, timeoutMsg: "the three comment cards never mounted" },
+    );
+
+    // The cards push the code down; the numbers have to move with it. Before
+    // the fix this was ~36px by the bottom of the file.
+    const after = (await gutterDrift())!;
+    expect(after.nums).toEqual(after.lines);
+    expect(after.spread).toBeLessThan(2);
+    await snap("comment-alignment.png");
   });
 });

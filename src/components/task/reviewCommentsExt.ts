@@ -87,6 +87,21 @@ function locLabel(start: number | null, end: number | null, file: string): strin
   return `${base} · line ${start}`;
 }
 
+// CodeMirror fills its height map (and so lays out the gutter) from each block
+// widget's BORDER BOX, so vertical margin on the element `toDOM` returns is
+// space it never counts and the gutter drifts further out of step with the code
+// on every widget (GH #157). A widget that resizes after being measured goes
+// stale the same way, hence the `requestMeasure` in the composer's `autoGrow`.
+/** Wrap a block widget so its measured box always equals the space it occupies. */
+function blockShell(inner: HTMLElement): HTMLElement {
+  const shell = document.createElement("div");
+  // flow-root, not block: a block formatting context is what keeps the card's
+  // own margins inside the box CodeMirror measures instead of collapsing out.
+  shell.style.display = "flow-root";
+  shell.appendChild(inner);
+  return shell;
+}
+
 // ── Widgets ───────────────────────────────────────────────────────────────
 
 class ComposerWidget extends WidgetType {
@@ -114,16 +129,22 @@ class ComposerWidget extends WidgetType {
     ta.className = "tc-comment-textarea";
     ta.placeholder = "Leave a comment for the agent…";
     ta.value = this.c.initialBody;
-    ta.rows = 1;
+    // Rough starting height (no layout yet, so `scrollHeight` is 0 here) to
+    // keep an edit composer from mounting at one line and popping open a frame
+    // later; `autoGrow` corrects for wrapping once it is in the document.
+    ta.rows = Math.min(this.c.initialBody.split("\n").length, 8);
     ta.spellcheck = false;
     ta.autocapitalize = "off";
     ta.setAttribute("autocorrect", "off");
     wrap.appendChild(ta);
 
-    // Start at one line, grow with content (Shift+Enter newlines) up to a cap.
+    // Grow with content (Shift+Enter newlines) up to a cap. The grow happens
+    // after CodeMirror measured the widget, so re-sync the height map or the
+    // gutter drifts (see `blockShell`); CodeMirror coalesces these per frame.
     const autoGrow = () => {
       ta.style.height = "auto";
       ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
+      view.requestMeasure();
     };
     ta.addEventListener("input", autoGrow);
 
@@ -193,7 +214,7 @@ class ComposerWidget extends WidgetType {
       ta.setSelectionRange(ta.value.length, ta.value.length);
       autoGrow();
     }, 0);
-    return wrap;
+    return blockShell(wrap);
   }
 
   ignoreEvent() { return true; }
@@ -259,7 +280,7 @@ class CommentCardWidget extends WidgetType {
       useReviewComments.getState().remove(this.ctx.taskId, this.comment.id);
     });
 
-    return wrap;
+    return blockShell(wrap);
   }
 
   ignoreEvent() { return true; }
@@ -559,7 +580,8 @@ const baseTheme = EditorView.baseTheme({
   ".tc-add-comment-btn:hover": { background: "var(--color-accent-deep)", color: "#fff" },
   // Inline thread cards: an accent left rail ties them to the commented-line
   // stripe, a flat fill (no popover shadow) so they read as part of the diff,
-  // not floating over it.
+  // not floating over it. Vertical spacing belongs HERE, inside `blockShell`,
+  // never on the shell itself (GH #157).
   ".tc-comment-card, .tc-comment-composer": {
     margin: "3px 14px 9px 14px",
     padding: "8px 11px 9px",
