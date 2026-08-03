@@ -37,7 +37,9 @@ use std::io::{self, BufRead, Read, Write};
 /// v6 (GH #138 part 2): `tab` selectors (`tab` field on send / wait /
 /// attach / logs), `TaskStatus.tabs`, and `tab -p` (prompt fields on the
 /// `tab` command, `TabData.prompt`).
-pub const PROTOCOL_VERSION: u32 = 6;
+///
+/// v7: the `rename` verb (GH #153).
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// serde default for `QuitData::running`.
 pub(crate) fn default_true() -> bool { true }
@@ -292,6 +294,22 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
     },
+    /// Rename a task: the sidebar label ONLY. The branch and worktree
+    /// directory keep their creation-time names (they are pushed /
+    /// referenced by live PTY cwds; moving them is not this verb's job).
+    /// cwd-aware when `task` absent, like `open`.
+    Rename {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// The new display name. Must be non-empty after trimming; a
+        /// same-project live duplicate is a Conflict.
+        name: String,
+        /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// Register a directory as a project (absolute path; the CLI
     /// canonicalizes before sending). `non_git` opts a plain folder in
     /// (the GUI's "add as plain folder" confirmation, as a flag).
@@ -501,6 +519,7 @@ pub enum ReplyData {
     Tab(TabData),
     Quit(QuitData),
     Archive(ArchiveData),
+    Rename(RenameData),
     ProjectList(ProjectListData),
     ProjectAdd(ProjectAddData),
     ProjectRemove(ProjectRemoveData),
@@ -673,6 +692,14 @@ pub struct ArchiveData {
     pub project: String,
     /// Live agent PTYs SIGKILLed before the archive ran.
     pub killed_agents: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RenameData {
+    /// The task AFTER the rename, re-read from disk (name is the new one).
+    pub task: TaskSummary,
+    /// What the task was called before, for "renamed X to Y" output.
+    pub old_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1358,6 +1385,18 @@ mod tests {
             Command::Quit { commit: false },
             Command::Quit { commit: true },
             Command::Archive { task: "fix-auth".into(), project: Some("web".into()) },
+            Command::Rename {
+                task: Some("fix-auth".into()),
+                project: Some("web".into()),
+                name: "PR 123 - fix login".into(),
+                cwd: None,
+            },
+            Command::Rename {
+                task: None,
+                project: None,
+                name: "retitled".into(),
+                cwd: Some("/tasks/web/x".into()),
+            },
             Command::ProjectAdd { path: "/repo/web".into(), non_git: false },
             Command::ProjectAdd { path: "/notes/plain".into(), non_git: true },
             Command::ProjectList,
@@ -1563,6 +1602,10 @@ mod tests {
                 name: "fix-auth".into(),
                 project: "web".into(),
                 killed_agents: 2,
+            }),
+            ReplyData::Rename(RenameData {
+                task: summary.clone(),
+                old_name: "fix-auth".into(),
             }),
             ReplyData::ProjectList(ProjectListData {
                 projects: vec![ProjectInfo {

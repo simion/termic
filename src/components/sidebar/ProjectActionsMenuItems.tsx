@@ -288,7 +288,8 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
       <DropdownItem onSelect={() => {
         if (mode === "worktree") { pick("shell"); return; }
         createQuickTask({ projectId, mode: "repo_root", cli: "shell", name: "" })
-          .catch(err => console.error("quick terminal failed:", err));
+          // A silent failure reads as a dead menu item; surface it.
+          .catch(err => useUI.getState().pushToast(String(err), "error"));
       }}>
         <TerminalSquare className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
         <span className="truncate">Terminal</span>
@@ -418,7 +419,10 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
                       await loadAll();
                       setActiveTask(restored.id);
                     } catch (err) {
-                      console.error("task_restore failed:", err);
+                      // task_restore refuses a live same-name duplicate;
+                      // silently doing nothing here reads as a dead button.
+                      useUI.getState().pushToast(
+                        typeof err === "string" ? err : "Restore failed", "error");
                     }
                   }} className="items-center">
                     <span className={cn("shrink-0", CLI_BRAND_COLOR[iconId] || "text-[var(--color-fg-dim)]")}>

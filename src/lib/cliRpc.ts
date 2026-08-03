@@ -31,6 +31,7 @@ import {
   settingsLoad,
   taskCreate,
   taskOpenRepo,
+  taskRename,
   taskSetYolo,
   tasksList,
 } from "@/lib/ipc";
@@ -644,6 +645,27 @@ async function projectRemoveHandler(params: unknown): Promise<null> {
   return null;
 }
 
+// ─────────────────────────── rename ──────────────────────────────────
+
+/** Rename a task's label and refresh the store so the sidebar shows it
+ *  immediately. Duplicate/empty validation lives in the Rust task_rename
+ *  command (shared with the GUI flow); its error message propagates back
+ *  over the RPC as-is. Serialized behind the create lock: task_rename's
+ *  duplicate check is load-then-save, and a create landing inside that
+ *  window could mint the same-name twin the check exists to refuse. */
+async function renameTaskHandler(params: unknown): Promise<null> {
+  const p = params as { taskId?: unknown; name?: unknown };
+  const taskId = p?.taskId;
+  const name = p?.name;
+  if (typeof taskId !== "string" || !taskId) throw new Error("rename_task requires a taskId");
+  if (typeof name !== "string" || !name.trim()) throw new Error("rename_task requires a name");
+  await withCreateLock(async () => {
+    await taskRename(taskId, name);
+    await useApp.getState().loadAll();
+  });
+  return null;
+}
+
 // ─────────────────── registry view shared by tab + agents ────────────
 //
 // ONE definition of "can I open a tab with this?", so `termic agents` cannot
@@ -883,6 +905,7 @@ const handlers: Record<string, Handler> = {
   list_agents: listAgentsHandler,
   send_prompt: sendPromptHandler,
   archive_task: archiveTaskHandler,
+  rename_task: renameTaskHandler,
   project_add: projectAddHandler,
   project_remove: projectRemoveHandler,
 };

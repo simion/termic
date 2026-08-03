@@ -21,6 +21,7 @@ import { taskRename, taskReorder, projectRename, openPath, projectReorder, taskS
 import { copyToClipboard } from "@/lib/clipboard";
 import { groupOf, projectSections } from "@/lib/projectGroups";
 import { createQuickTask, derivedBranch, type NewTaskMode } from "@/lib/quickTask";
+import { withCreateLock } from "@/lib/createLock";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
@@ -2071,8 +2072,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
     // Empty → reset to the branch name (clears any custom label).
     const next = trimmed || w.branch;
     if (next === w.name) return;
-    try { await taskRename(w.id, next); await loadAll(); }
-    catch (e) { console.error("rename failed", e); }
+    // Behind the create lock: task_rename's duplicate check is
+    // load-then-save, and a create landing inside that window could
+    // mint the twin the check refuses.
+    try { await withCreateLock(async () => { await taskRename(w.id, next); await loadAll(); }); }
+    // task_rename refuses duplicates within the project; without a toast
+    // the input just snaps back to the old name with no explanation.
+    catch (e) { useUI.getState().pushToast(String(e), "error"); }
   }
 
   function commitTabRename() {

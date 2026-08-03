@@ -681,6 +681,40 @@ disabled, 6 refused, 8 the app exited mid-command."
         #[arg(short, long)]
         yes: bool,
     },
+    /// Rename a task: the sidebar label only; branch and directory stay.
+    #[command(
+        allow_missing_positional = true,
+        after_help = "Renames the task's LABEL: what the sidebar, `list` and `status` show. \
+The git branch and the worktree directory keep their creation-time names \
+(the branch may be pushed, the directory is a live cwd), so open PRs and \
+running shells are unaffected.
+
+Without <TASK>, targets your own task ($TERMIC_TASK_ID, injected into every \
+agent shell), then falls back to the current directory like `open`. Renaming \
+another task stays possible but must name it explicitly.
+
+A name already used by a live task in the same project is refused (archived \
+names may be reused). The old name stops resolving the moment the rename \
+lands; the task id never changes, so scripts should hold the id.
+
+Prints the rename on stdout. With --output-format json, one object: \
+{\"task\": {...}, \"old_name\"}, where task carries the new name.
+
+Exit codes: 0 renamed, 1 error (unknown or ambiguous task, empty or \
+duplicate name), 4 app not running, 5 CLI disabled, 6 refused, 8 connection \
+lost."
+    )]
+    Rename {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// The new name.
+        name: String,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
+
     /// Archive a task: SIGKILL its live agents, remove its worktree.
     #[command(
         after_help = "Kills the task's live agent PTYs FIRST, then archives: the worktree \
@@ -1025,6 +1059,27 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
         Cmd::Quit { yes } => execute_quit(&mut conn, &token, format, *yes, &paths),
         Cmd::Archive { task, project, yes } => {
             execute_archive(&mut conn, &token, format, task, project.as_deref(), *yes, &paths)
+        }
+        Cmd::Rename { task, name, project } => {
+            // Explicit task wins; otherwise the caller's own task
+            // ($TERMIC_TASK_ID, injected into every agent shell). The id
+            // is preferred over cwd because it survives `cd` and stays
+            // unambiguous; cwd rides along as the last-resort fallback
+            // the server only consults when `task` is absent.
+            let target = task.clone().or_else(|| {
+                std::env::var("TERMIC_TASK_ID").ok().filter(|s| !s.is_empty())
+            });
+            let data = client::request(
+                &mut conn,
+                proto::Command::Rename {
+                    task: target,
+                    project: project.clone(),
+                    name: name.clone(),
+                    cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+                },
+                &token,
+            )?;
+            render(&cli.cmd, format, data).map(Output::ok)
         }
         Cmd::Project(p) => execute_project(&mut conn, &token, format, p, &paths),
         // The Phase 0 read verbs: one request, one reply.
@@ -1866,9 +1921,14 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
             OutputFormat::Json | OutputFormat::StreamJson => output::json(&open),
             OutputFormat::Text => output::open_text(&open),
         }),
+        (Cmd::Rename { .. }, proto::ReplyData::Rename(r)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&r),
+            OutputFormat::Text => output::rename_text(&r),
+        }),
         (Cmd::List { .. }, _) => Err(unexpected("list")),
         (Cmd::Status { .. }, _) => Err(unexpected("status")),
         (Cmd::Open { .. }, _) => Err(unexpected("open")),
+        (Cmd::Rename { .. }, _) => Err(unexpected("rename")),
         _ => Err(unexpected("command")),
     }
 }
@@ -1983,6 +2043,74 @@ mod tests {
                 "{verb} --project without a task must not parse"
             );
         }
+    }
+
+    #[test]
+    fn rename_positional_rules() {
+        // One positional is the NAME (task falls back to $TERMIC_TASK_ID
+        // then cwd); two are TASK + NAME. allow_missing_positional does
+        // the back-filling; these tests pin that it stays configured.
+        let one = Cli::try_parse_from(["termic", "rename", "PR 123 - fix login"]).unwrap();
+        let Cmd::Rename { task, name, project } = &one.cmd else { panic!("not rename") };
+        assert_eq!(task.as_deref(), None);
+        assert_eq!(name, "PR 123 - fix login");
+        assert_eq!(project.as_deref(), None);
+
+        let two = Cli::try_parse_from(["termic", "rename", "old-task", "new name"]).unwrap();
+        let Cmd::Rename { task, name, .. } = &two.cmd else { panic!("not rename") };
+        assert_eq!(task.as_deref(), Some("old-task"));
+        assert_eq!(name, "new name");
+
+        let scoped =
+            Cli::try_parse_from(["termic", "rename", "old", "new", "--project", "web"]).unwrap();
+        let Cmd::Rename { task, name, project } = &scoped.cmd else { panic!("not rename") };
+        assert_eq!(task.as_deref(), Some("old"));
+        assert_eq!(name, "new");
+        assert_eq!(project.as_deref(), Some("web"));
+
+        // No positionals at all: nothing to rename to.
+        assert!(Cli::try_parse_from(["termic", "rename"]).is_err());
+        // --project only disambiguates an explicit task name.
+        assert!(Cli::try_parse_from(["termic", "rename", "new", "--project", "web"]).is_err());
+    }
+
+    #[test]
+    fn rename_render_contract() {
+        let cmd = Cmd::Rename { task: None, name: "new".into(), project: None };
+        let data = proto::ReplyData::Rename(proto::RenameData {
+            task: proto::TaskSummary {
+                id: "w1".into(),
+                name: "PR 123 - fix login".into(),
+                project: "web".into(),
+                branch: "fix-thing".into(),
+                ..Default::default()
+            },
+            old_name: "fix-thing".into(),
+        });
+        let text = render(&cmd, OutputFormat::Text, data.clone()).unwrap();
+        assert_eq!(
+            text,
+            "renamed web/fix-thing to \"PR 123 - fix login\" (branch fix-thing and its directory are unchanged)"
+        );
+        let json = render(&cmd, OutputFormat::Json, data).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["task"]["name"], "PR 123 - fix login");
+        assert_eq!(v["old_name"], "fix-thing");
+
+        // A main-checkout task has no task-owned branch to reassure about.
+        let main = proto::ReplyData::Rename(proto::RenameData {
+            task: proto::TaskSummary {
+                name: "docs".into(),
+                project: "web".into(),
+                is_main_checkout: true,
+                ..Default::default()
+            },
+            old_name: "main".into(),
+        });
+        assert_eq!(
+            render(&cmd, OutputFormat::Text, main).unwrap(),
+            "renamed web/main to \"docs\""
+        );
     }
 
     #[test]

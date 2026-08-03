@@ -39,7 +39,7 @@ export async function snap(name: string): Promise<void> {
  */
 export interface TermicApi {
   useApp: { getState: () => any; setState: (p: any) => void };
-  useUI: { getState: () => any };
+  useUI: { getState: () => any; setState: (p: any) => void };
   usePrefs: { getState: () => any };
   useRace: { getState: () => any };
   ipc: any;

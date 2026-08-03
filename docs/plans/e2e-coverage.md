@@ -52,7 +52,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Command palette | Opens/lists; filters; command activation closes it; Escape closes | `app.e2e.ts` |
 | ✅ File finder | ⌘P lists the repo's files; selecting one opens an editor tab | `files.e2e.ts` |
 | ✅ Git stage/unstage/commit | Stage → unstage → re-stage + commit → clean | `git.e2e.ts` |
-| ✅ Task rename/delete | Rename updates store+sidebar; delete removes the task entirely | `task.e2e.ts` |
+| ✅ Task rename/delete | Rename updates store+sidebar; duplicate name refused (IPC) + toast (inline flow, GH #153); delete removes the task entirely | `task.e2e.ts` |
 | ✅ Git diff | Open a diff tab for a changed file | `git.e2e.ts` |
 | ✅ Inline review comments | Select a diff line → tooltip → compose → save, three times; line numbers stay level with the code throughout (GH #157) | `git.e2e.ts` |
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `files.e2e.ts` |

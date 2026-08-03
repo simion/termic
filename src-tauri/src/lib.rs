@@ -1997,7 +1997,7 @@ fn pty_spawn(
             // file. Keep it to the two rules agents get wrong.
             cmd.env(
                 "TERMIC_CLI_HELP",
-                "TERMIC_CLI is the Termic control CLI. Run `\"$TERMIC_CLI\" help --json` for the full command surface. To create a task that returns a result: `\"$TERMIC_CLI\" new <name> --sandbox enforce --wait -p \"<task>; write your findings to RESULT.md\"`, then read RESULT.md from the task path (`result` and `logs` can peek at a running agent, the file drop is the reliable floor). Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\" --wait`. Branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused).",
+                "TERMIC_CLI is the Termic control CLI. Run `\"$TERMIC_CLI\" help --json` for the full command surface. To create a task that returns a result: `\"$TERMIC_CLI\" new <name> --sandbox enforce --wait -p \"<task>; write your findings to RESULT.md\"`, then read RESULT.md from the task path (`result` and `logs` can peek at a running agent, the file drop is the reliable floor). Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\" --wait`. Branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused). Once you know the real subject of your work (issue filed, PR opened), retitle your task so the sidebar reads well: `\"$TERMIC_CLI\" rename \"<new name>\"` renames your own task's label (branch and directory keep their names).",
             );
         }
     }
@@ -2657,8 +2657,14 @@ async fn project_remove(id: String) -> Result<(), String> {
 fn tasks_list() -> Vec<Task> { load_tasks() }
 
 /// Open the project's main repo checkout as a task (no git worktree).
-/// Idempotent: if one already exists for this project (and isn't archived),
-/// returns it; otherwise seeds a new one pointing at `project.root_path`.
+/// NOT idempotent: several repo-root sessions may share one checkout, so
+/// every call seeds a new task pointing at `project.root_path`. A
+/// caller-typed name colliding with a live same-project task is refused
+/// (task_rename's rule, GH #153): worktree creates are de-facto
+/// name-guarded by their directory, repo-root tasks have no such dir and
+/// could mint twins. A DERIVED name (no name passed, falls back to the
+/// branch) is auto-bumped past live twins instead ("main-2"), so the
+/// second unnamed quick Terminal stays possible.
 /// Branch is read from `git symbolic-ref` so the UI shows whichever branch
 /// the user has checked out in the actual repo.
 #[tauri::command]
@@ -2750,12 +2756,29 @@ fn task_open_repo(
         let _ = ensure_multirepo_gitignore(host_dir, &dir_names);
     }
 
-    let ws_name = name
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
+    let explicit_name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let derived = explicit_name.is_none();
+    let ws_name = explicit_name
         // Branch is the natural fallback for a git repo; non-git folders
         // have no branch, so fall back to the project name there.
         .unwrap_or_else(|| if branch.is_empty() { proj.name.clone() } else { branch.clone() });
+    // Same-project live duplicate (GH #153): twins make CLI name
+    // resolution ambiguous with no name-based way out. A name the caller
+    // TYPED is refused, the task_rename rule; a derived fallback (quick
+    // "Terminal" passes no name, so every unnamed session lands on the
+    // branch name) is auto-bumped past the twins instead, or the second
+    // unnamed session would be impossible.
+    let tasks_now = load_tasks();
+    let ws_name = if derived {
+        unique_task_name(&ws_name, &tasks_now, &proj.id)
+    } else {
+        if tasks_now.iter().any(|t| {
+            !t.archived && t.project_id == proj.id && t.name.eq_ignore_ascii_case(&ws_name)
+        }) {
+            return Err(format!("a task named \"{ws_name}\" already exists in this project"));
+        }
+        ws_name
+    };
     // Only "custom" tasks carry a launch command; agent/shell
     // tasks resolve their command from the registry at spawn.
     let custom_command = if cli == "custom" {
@@ -2938,12 +2961,26 @@ fn task_import_worktree(
         .unwrap_or_default();
     let cli = cli.unwrap_or_else(|| proj.default_cli.clone());
     let port = 18100 + (load_tasks().len() as u16);
-    let ws_name = name
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
+    let explicit_name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let derived = explicit_name.is_none();
+    let ws_name = explicit_name
         .unwrap_or_else(|| if branch.is_empty() {
             wt.file_name().and_then(|s| s.to_str()).unwrap_or("worktree").to_string()
         } else { branch.clone() });
+    // Same-project live duplicate (GH #153): a caller-TYPED name is
+    // refused, the task_rename rule; a derived fallback (branch / dir
+    // name) is auto-bumped past live twins, the task_open_repo rule.
+    let tasks_now = load_tasks();
+    let ws_name = if derived {
+        unique_task_name(&ws_name, &tasks_now, &proj.id)
+    } else {
+        if tasks_now.iter().any(|t| {
+            !t.archived && t.project_id == proj.id && t.name.eq_ignore_ascii_case(&ws_name)
+        }) {
+            return Err(format!("a task named \"{ws_name}\" already exists in this project"));
+        }
+        ws_name
+    };
 
     // Sandbox: honor the dialog's explicit choice when provided, else
     // fall back to the project default + the merged default lists (same
@@ -3851,7 +3888,20 @@ fn task_rename(id: String, name: String) -> Result<Task, String> {
         return Err("name cannot be empty".into());
     }
     let mut list = load_tasks();
-    let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
+    let idx = list.iter().position(|w| w.id == id).ok_or("no such task")?;
+    // Same-project live duplicate: refuse, mirroring the CLI `new` check.
+    // Two same-name tasks in one project make name resolution ambiguous
+    // with no name-based way out (both qualify as project/name). Self is
+    // excluded so a case-only rename ("foo" -> "Foo") still works.
+    if list.iter().any(|t| {
+        t.id != id
+            && !t.archived
+            && t.project_id == list[idx].project_id
+            && t.name.eq_ignore_ascii_case(new_name)
+    }) {
+        return Err(format!("a task named \"{new_name}\" already exists in this project"));
+    }
+    let w = &mut list[idx];
     w.name = new_name.to_string();
     save_task(w).map_err(|e| e.to_string())?;
     Ok(w.clone())
@@ -4991,6 +5041,21 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     let idx = list.iter().position(|w| w.id == id).ok_or("task not found")?;
     if !list[idx].archived {
         return Err("task is not archived".into());
+    }
+    // Same-project live duplicate: refuse, task_rename's rule (GH #153).
+    // Restoring would resurrect two same-name live tasks in one project,
+    // a state CLI name resolution cannot untangle (both qualify as
+    // project/name); the error names the way out.
+    if list.iter().any(|t| {
+        t.id != id
+            && !t.archived
+            && t.project_id == list[idx].project_id
+            && t.name.eq_ignore_ascii_case(&list[idx].name)
+    }) {
+        return Err(format!(
+            "a live task named \"{}\" already exists in this project; rename it first, then restore",
+            list[idx].name
+        ));
     }
 
     let proj = load_projects().into_iter()
@@ -7157,6 +7222,38 @@ async fn task_match_ignored_files(id: String, clicked: String) -> Result<Vec<Str
 }
 
 // ───────────────────────────── helpers ─────────────────────────────
+
+/// Bump a DERIVED task name past live same-project twins: "main" ->
+/// "main-2" -> "main-3". Mirrors quickTask.ts's uniqueBranch rule: only
+/// auto-filled defaults are adjusted, never a name the caller typed
+/// (callers refuse those as duplicates instead, the task_rename rule).
+/// Without this, the second unnamed "Terminal" on a project derives the
+/// same branch name as the first and the duplicate guard makes it
+/// impossible rather than "main-2" (GH #153 review).
+fn unique_task_name(base: &str, tasks: &[Task], project_id: &str) -> String {
+    let taken = |n: &str| {
+        tasks.iter().any(|t| {
+            !t.archived && t.project_id == project_id && t.name.eq_ignore_ascii_case(n)
+        })
+    };
+    if !taken(base) {
+        return base.to_string();
+    }
+    let parsed = base
+        .rfind('-')
+        .and_then(|i| base[i + 1..].parse::<u32>().ok().map(|v| (i, v)));
+    let (stem, mut n) = match parsed {
+        Some((i, v)) => (&base[..i], v.saturating_add(1)),
+        None => (base, 2),
+    };
+    loop {
+        let cand = format!("{stem}-{n}");
+        if !taken(&cand) {
+            return cand;
+        }
+        n = n.saturating_add(1);
+    }
+}
 
 fn slugify(s: &str) -> String {
     s.trim()
@@ -11094,6 +11191,34 @@ mod tests {
 
     fn role(kind: &str, task: &str) -> PtyRole {
         PtyRole { task_id: task.into(), tab_id: None, kind: kind.into(), is_default: false }
+    }
+
+    // The derived-name bump (GH #153): unnamed repo-root sessions all
+    // derive the branch name, and the duplicate guard must adjust those
+    // past live twins rather than make the second session impossible.
+    #[test]
+    fn unique_task_name_bumps_derived_names_past_live_twins() {
+        let t = |name: &str, project: &str, archived: bool| Task {
+            name: name.into(),
+            project_id: project.into(),
+            archived,
+            ..Task::default()
+        };
+        let tasks = vec![
+            t("main", "p1", false),
+            t("main-2", "p1", false),
+            t("main", "p2", false),  // other project: never collides
+            t("main-3", "p1", true), // archived: reusable
+        ];
+        // A free name passes through untouched.
+        assert_eq!(unique_task_name("solo", &tasks, "p1"), "solo");
+        // Taken (case-insensitive) bumps past every LIVE twin; the
+        // archived main-3 does not block its own reuse.
+        assert_eq!(unique_task_name("Main", &tasks, "p1"), "Main-3");
+        // A base already ending in -<n> bumps the number, no nesting.
+        assert_eq!(unique_task_name("main-2", &tasks, "p1"), "main-3");
+        // Same name, other project: only its own twins count.
+        assert_eq!(unique_task_name("main", &tasks, "p2"), "main-2");
     }
 
     // `termic quit`'s confirmation says "kills N agents across M tasks", and

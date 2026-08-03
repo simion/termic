@@ -5,8 +5,8 @@
 use serde::Serialize;
 use termic_proto::{
     send_mode, AgentsData, ApplyData, ArchiveData, DiffData, DiffStat, NewData, OpenData,
-    ProjectInfo, ProjectRemoveData, QuitData, ResultData, SendData, StreamEvent, TabData,
-    TabStatus, TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
+    ProjectInfo, ProjectRemoveData, QuitData, RenameData, ResultData, SendData, StreamEvent,
+    TabData, TabStatus, TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
 };
 
 /// One JSON object, compact, exactly as documented in each verb's help.
@@ -248,6 +248,21 @@ pub fn new_final_text(n: &NewData) -> String {
 
 pub fn wait_text(w: &WaitData) -> String {
     outcome_text(&w.result)
+}
+
+pub fn rename_text(r: &RenameData) -> String {
+    // Worktree tasks: say out loud that the label moved and the git side
+    // did not, so an agent never concludes the branch was renamed too.
+    // Main-checkout tasks have no task-owned branch or directory to
+    // reassure about.
+    if r.task.is_main_checkout {
+        format!("renamed {}/{} to \"{}\"", r.task.project, r.old_name, r.task.name)
+    } else {
+        format!(
+            "renamed {}/{} to \"{}\" (branch {} and its directory are unchanged)",
+            r.task.project, r.old_name, r.task.name, r.task.branch
+        )
+    }
 }
 
 pub fn archive_text(a: &ArchiveData) -> String {

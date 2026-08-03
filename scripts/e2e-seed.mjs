@@ -4,7 +4,7 @@
 // Exposed as seed(opts) so wdio.conf can seed an ISOLATED profile per parallel
 // worker (own data dir + fixture repo + tasks/worktree base). Idempotent.
 import { execSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -90,6 +90,37 @@ export function seed(o = {}) {
   }
 
   // 2. An unopened `sbcheck` worktree (the import-worktree spec expects it).
+  //
+  // The dir lives under $HOME and is SHARED by every termic checkout's
+  // fixture, so it can exist but belong to another checkout (its `.git`
+  // file points at that checkout's fixture). Such a dir blocks
+  // `worktree add` with "already exists" AND keeps this fixture's stale
+  // registration alive (git only prunes when the dir is gone or
+  // unreadable, verified: a foreign-owned dir is NOT prunable), which
+  // used to skip the re-add entirely and leave the import-worktree spec
+  // red forever, on whichever checkout lost the dir. Reclaim it: it is
+  // throwaway derived state on both sides, and the losing checkout's
+  // seed does the same reclaim right back on its next run.
+  const sbcheckOwnedHere = () => {
+    try {
+      return readFileSync(path.join(sbcheck, ".git"), "utf8").includes(
+        path.join(fixture, ".git"),
+      );
+    } catch {
+      return false;
+    }
+  };
+  if (existsSync(sbcheck) && !sbcheckOwnedHere()) {
+    rmSync(sbcheck, { recursive: true, force: true });
+  }
+  // With a foreign dir gone (or the dir deleted out from under git), the
+  // leftover registration is now genuinely dangling; prune BEFORE listing
+  // so the includes() check below reflects reality.
+  try {
+    sh("git worktree prune", fixture);
+  } catch {
+    /* ignore */
+  }
   let worktrees = "";
   try {
     worktrees = shOut("git worktree list", fixture);
@@ -101,7 +132,9 @@ export function seed(o = {}) {
     try {
       sh(`git worktree add -q "${sbcheck}" -b sbcheck`, fixture);
     } catch {
-      /* already exists */
+      // -b fails when the branch survived a removed worktree; attach the
+      // existing branch instead of seeding nothing.
+      sh(`git worktree add -q "${sbcheck}" sbcheck`, fixture);
     }
   }
 

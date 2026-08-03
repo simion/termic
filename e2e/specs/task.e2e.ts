@@ -428,6 +428,139 @@ describe("task lifecycle", () => {
     await waitForText("renamed-task");
   });
 
+  // GH #153: task_rename refuses a live same-project duplicate (two
+  // same-name tasks make CLI name resolution ambiguous with no name-based
+  // way out), and the sidebar's inline-rename commit surfaces that refusal
+  // as a toast instead of silently snapping back.
+  it("refuses a duplicate name at the IPC layer and toasts in the inline flow", async () => {
+    const dupId = await openTask("e2e-life-dup", false);
+    cleanup.push(dupId);
+
+    // IPC layer: renaming onto "renamed-task" (live, same project) rejects.
+    const err = await browser.execute(async (i) => {
+      try {
+        await window.__termic!.ipc.taskRename(i, "renamed-task");
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    }, dupId);
+    expect(err).toContain("already exists");
+    const name = await browser.execute(
+      (i) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.name,
+      dupId,
+    );
+    expect(name).toBe("e2e-life-dup");
+
+    // task_open_repo enforces the same rule: repo-root tasks have no
+    // per-name directory to collide on, so without this a second "Open
+    // repo" could mint the same-name twin rename just refused.
+    const openErr = await browser.execute(async () => {
+      const t = window.__termic!;
+      const proj = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
+      try {
+        await t.ipc.taskOpenRepo(proj.id, "fakeagent", "renamed-task");
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    });
+    expect(openErr).toContain("already exists");
+
+    // DERIVED names take the other fork: two unnamed opens both fall back
+    // to the branch name, and the second is auto-bumped ("main-2") rather
+    // than refused, so the quick Terminal twice stays possible.
+    const [a, b] = await browser.execute(async () => {
+      const t = window.__termic!;
+      const proj = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
+      const first = await t.ipc.taskOpenRepo(proj.id, "fakeagent", null);
+      const second = await t.ipc.taskOpenRepo(proj.id, "fakeagent", null);
+      await t.useApp.getState().loadAll();
+      return [
+        { id: first.id, name: first.name },
+        { id: second.id, name: second.name },
+      ];
+    });
+    cleanup.push(a.id, b.id);
+    expect(b.name).not.toBe(a.name);
+    expect(b.name).toMatch(/-\d+$/);
+
+    // UI layer: drive the real inline-rename commit (the palette's
+    // renameRequest mounts the input in the task's sidebar row), type the
+    // duplicate, commit, and the refusal lands as a toast.
+    await browser.execute((i) => {
+      window.__termic!.useUI.setState({ renameRequest: { taskId: i, nonce: Date.now() } });
+    }, dupId);
+    const inputSel = `[data-sidebar-task-id="${dupId}"] input`;
+    await waitVisible(inputSel);
+    await browser.execute((sel) => {
+      const input = document.querySelector<HTMLInputElement>(sel)!;
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(input, "renamed-task");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      // Blur commits, same as Enter; a synthetic keydown would not carry
+      // through React's onKeyDown -> commit path reliably.
+      input.blur();
+    }, inputSel);
+    await waitForText("already exists");
+    // The row keeps its old name once the input unmounts.
+    const after = await browser.execute(
+      (i) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.name,
+      dupId,
+    );
+    expect(after).toBe("e2e-life-dup");
+    await snap("task-rename-dup-toast.png");
+  });
+
+  // task_restore mirrors the duplicate rule (GH #153): restoring an
+  // archived task whose name a live task has since taken would resurrect
+  // two same-name tasks in one project, which CLI name resolution cannot
+  // untangle. Renaming the live squatter away unblocks the restore.
+  it("refuses to restore an archived task when a live one took its name", async () => {
+    const archived = await openTask("e2e-life-restore-dup", false);
+    await archiveTask(archived);
+    const squatter = await openTask("e2e-life-squatter", false);
+    cleanup.push(squatter);
+    await browser.execute(async (i) => {
+      await window.__termic!.ipc.taskRename(i, "e2e-life-restore-dup");
+      await window.__termic!.useApp.getState().loadAll();
+    }, squatter);
+
+    const err = await browser.execute(async (i) => {
+      try {
+        await window.__termic!.ipc.taskRestore(i);
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    }, archived);
+    expect(err).toContain("already exists");
+    const stillArchived = await browser.execute(
+      (i) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.archived,
+      archived,
+    );
+    expect(stillArchived).toBe(true);
+
+    // Rename the squatter back; the restore now goes through.
+    await browser.execute(async (i) => {
+      await window.__termic!.ipc.taskRename(i, "e2e-life-squatter");
+      await window.__termic!.useApp.getState().loadAll();
+    }, squatter);
+    await browser.execute(async (i) => {
+      await window.__termic!.ipc.taskRestore(i);
+      await window.__termic!.useApp.getState().loadAll();
+    }, archived);
+    cleanup.push(archived);
+    const restored = await browser.execute(
+      (i) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.archived,
+      archived,
+    );
+    expect(restored).toBe(false);
+  });
+
   it("deletes a task permanently", async () => {
     const id = await openTask("e2e-life-delete", false);
     await browser.execute(async (i) => {
