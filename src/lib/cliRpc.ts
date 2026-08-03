@@ -706,6 +706,11 @@ export async function newTabHandler(raw: unknown): Promise<{
       // Validated like an explicit --agent: otherwise `termic tab <task>`
       // happily opens a disabled or uninstalled agent whose PTY dies on exec,
       // while `--agent <same id>` refuses it. One verb, two answers.
+      //
+      // The shell short-circuit is live, not defensive: shell TASKS exist
+      // (NewTaskDialog's no-agent "Terminal" fallback persists cli="shell"),
+      // and the registry has no shell entry, so validating it like an agent
+      // would refuse every shell task's default tab as "not usable".
       if (cli !== "shell" && !registryView().some(e => e.id === cli && e.usable)) {
         throw new Error(
           `the task's agent is not usable: ${cli}. Enable or install it, or pass `

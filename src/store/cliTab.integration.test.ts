@@ -153,6 +153,42 @@ describe("termic tab: a task whose durable set is empty", () => {
   });
 });
 
+describe("termic tab: the default kind (`termic tab <task>` with no flags)", () => {
+  it("reuses the task's agent", async () => {
+    seed();
+    await expect(newTabHandler({ taskId: "ws1", kind: "default" })).resolves.toMatchObject({
+      cli: "claude",
+    });
+  });
+
+  it("opens a shell task's tab instead of validating \"shell\" as an agent", async () => {
+    // task.cli = "shell" is a real persisted shape (NewTaskDialog's no-agent
+    // "Terminal" fallback), and the registry has no shell entry. Guards the
+    // `cli !== "shell"` short-circuit in the default arm: without it every
+    // shell task's `termic tab` would be refused as an unusable agent.
+    seed({ cli: "shell", persisted_tabs: [] });
+    await expect(newTabHandler({ taskId: "ws1", kind: "default" })).resolves.toMatchObject({
+      cli: "shell",
+      title: "Terminal",
+    });
+  });
+
+  it("refuses a task whose agent is not installed, like --agent would", async () => {
+    seed({ cli: "codex" });
+    useApp.setState({
+      detectedClis: { claude: cliInfo("claude", true), codex: cliInfo("codex", false) },
+    } as never);
+    await expect(newTabHandler({ taskId: "ws1", kind: "default" })).rejects.toThrow(/not usable/);
+  });
+
+  it("refuses a custom task with no launch command to reuse", async () => {
+    seed({ cli: "custom", persisted_tabs: [] });
+    await expect(newTabHandler({ taskId: "ws1", kind: "default" })).rejects.toThrow(
+      /no launch command/,
+    );
+  });
+});
+
 describe("termic tab: cold launch, before PATH detection has run", () => {
   // `termic tab` auto-launches the app, so it can beat App.tsx's refreshClis.
   // visibleCliIds treats an empty detection map as "assume everything is
