@@ -4,9 +4,9 @@
 
 use serde::Serialize;
 use termic_proto::{
-    send_mode, ApplyData, ArchiveData, DiffData, DiffStat, NewData, OpenData, ProjectInfo,
-    ProjectRemoveData, QuitData, ResultData, SendData, StreamEvent, TaskStatus, TaskSummary, WaitData,
-    WaitOutcome, WaitResult,
+    send_mode, AgentsData, ApplyData, ArchiveData, DiffData, DiffStat, NewData, OpenData,
+    ProjectInfo, ProjectRemoveData, QuitData, ResultData, SendData, StreamEvent, TabData,
+    TaskStatus, TaskSummary, WaitData, WaitOutcome, WaitResult,
 };
 
 /// One JSON object, compact, exactly as documented in each verb's help.
@@ -371,9 +371,64 @@ fn plural(n: u32, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// The registry as a table. `usable` is what a caller acts on, so it gets a
+/// column of its own rather than being left implied by the other two: an entry
+/// can be enabled but missing from PATH, and that combination is exactly the
+/// one that produces a confusing `tab` failure.
+pub fn agents_text(a: &AgentsData) -> String {
+    if a.agents.is_empty() {
+        return "No agents configured.".into();
+    }
+    // Registry ids are user-editable (`my-custom-terminal` is 18 chars), and
+    // this table is documented output, so size the column to the data rather
+    // than to a constant that a long id silently breaks. Never narrower than
+    // the header.
+    let idw = a
+        .agents
+        .iter()
+        .map(|e| e.id.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("ID".len());
+    let mut out = format!("{:<idw$} KIND      ENABLED  INSTALLED  USABLE\n", "ID");
+    for e in &a.agents {
+        let installed = match e.installed {
+            Some(true) => "yes",
+            Some(false) => "no",
+            // Blank, not "no": detection may simply not have run.
+            None => "-",
+        };
+        out.push_str(&format!(
+            "{:<idw$} {:<9} {:<8} {:<10} {}\n",
+            e.id,
+            e.kind,
+            if e.enabled { "yes" } else { "no" },
+            installed,
+            if e.usable { "yes" } else { "no" },
+        ));
+    }
+    out.trim_end().to_string()
+}
+
+/// One line naming the tab and, crucially, its id: that id is the stable
+/// selector, so printing it is what lets a script address the tab it just
+/// made instead of racing an index or an agent-authored title.
+pub fn tab_text(t: &TabData) -> String {
+    // `title` is what the tab shows in the GUI, and it is the only useful
+    // label when it differs from the cli id: a custom-command task's tab is
+    // titled with the TASK NAME, so printing `cli` alone would say "custom".
+    let label = if t.title.is_empty() || t.title.eq_ignore_ascii_case(&t.cli) {
+        t.cli.clone()
+    } else {
+        format!("{} ({})", t.title, t.cli)
+    };
+    format!("Opened {label} tab {} in {}.", t.tab_id, t.task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use termic_proto::AgentEntry;
 
     fn d(tasks: u32, agents: u32, working: Option<u32>) -> QuitData {
         QuitData { running: true, tasks_with_agents: tasks, live_agents: agents, working_tasks: working, quitting: false }
@@ -404,6 +459,84 @@ mod tests {
         let q = quit_question(&d(2, 5, Some(2)));
         assert!(q.contains("5 agents"), "{q}");
         assert!(q.contains("2 tasks still working"), "{q}");
+    }
+
+    // `installed` must render "-" for unknown, never "no": the two mean
+    // different things and a user reading "no" would go install something
+    // that is already there.
+    #[test]
+    fn agents_table_distinguishes_unknown_from_missing() {
+        let d = AgentsData {
+            agents: vec![
+                AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true },
+                AgentEntry { id: "codex".into(), kind: "agent".into(), enabled: true, installed: Some(false), usable: false },
+                AgentEntry { id: "gemini".into(), kind: "agent".into(), enabled: true, installed: None, usable: true },
+            ],
+        };
+        let out = agents_text(&d);
+        assert!(out.contains("claude"), "{out}");
+        // unknown renders as a dash, not "no"
+        let gemini = out.lines().find(|l| l.starts_with("gemini")).unwrap();
+        assert!(gemini.contains(" -  "), "unknown must be a dash: {gemini}");
+        let codex = out.lines().find(|l| l.starts_with("codex")).unwrap();
+        assert!(codex.contains("no"), "{codex}");
+    }
+
+    #[test]
+    fn agents_table_is_not_empty_looking_when_there_are_none() {
+        assert_eq!(agents_text(&AgentsData { agents: vec![] }), "No agents configured.");
+    }
+
+    // Registry ids are user-editable, so the id column cannot be a constant.
+    // Every row's KIND must still start at the same column as the header's.
+    #[test]
+    fn agents_table_stays_aligned_when_an_id_is_longer_than_the_header() {
+        let d = AgentsData {
+            agents: vec![
+                AgentEntry { id: "my-very-long-custom-terminal".into(), kind: "terminal".into(), enabled: true, installed: None, usable: true },
+                AgentEntry { id: "cc".into(), kind: "agent".into(), enabled: true, installed: Some(true), usable: true },
+            ],
+        };
+        let out = agents_text(&d);
+        /// Column where the second field starts: first non-space after the id.
+        fn kind_col(line: &str) -> usize {
+            let id_end = line.find(' ').expect("row has an id");
+            line.len() - line[id_end..].trim_start().len()
+        }
+        let mut lines = out.lines();
+        let header = lines.next().unwrap();
+        let want = header.find("KIND").expect("header has KIND");
+        assert_eq!(kind_col(header), want);
+        for l in lines {
+            assert_eq!(kind_col(l), want, "misaligned row: {l:?}");
+        }
+        // And the long id is not truncated.
+        assert!(out.contains("my-very-long-custom-terminal"), "{out}");
+    }
+
+    // The id is the whole point of the line: it is what a script records.
+    #[test]
+    fn tab_text_prints_the_id() {
+        let t = TabData {
+            task_id: "ws1".into(), tab_id: "abc-123".into(),
+            cli: "claude".into(), title: "claude".into(),
+        };
+        let out = tab_text(&t);
+        assert!(out.contains("abc-123"), "{out}");
+        assert!(out.contains("claude"), "{out}");
+    }
+
+    #[test]
+    fn new_verbs_carry_no_em_dashes() {
+        let a = agents_text(&AgentsData {
+            agents: vec![AgentEntry { id: "claude".into(), kind: "agent".into(), enabled: true, installed: None, usable: true }],
+        });
+        let t = tab_text(&TabData {
+            task_id: "ws1".into(), tab_id: "x".into(), cli: "shell".into(), title: "Terminal".into(),
+        });
+        for s in [a, t] {
+            assert!(!s.contains('\u{2014}'), "em dash in CLI output: {s}");
+        }
     }
 
     // A stale work-state cache is UNKNOWN, not idle. Rendering it as silence

@@ -39,7 +39,9 @@ import { withCreateLock } from "@/lib/createLock";
 import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { deliverMessage } from "@/lib/agentSend";
-import { agentDisplayName, isTerminalCli, workDoneCapable } from "@/lib/agents";
+import {
+  agentDisplayName, isTerminalCli, isTerminalEntry, visibleCliIds, workDoneCapable,
+} from "@/lib/agents";
 import { launchSetupTab } from "@/lib/runTabs";
 import {
   derivedBranch,
@@ -568,11 +570,238 @@ async function projectRemoveHandler(params: unknown): Promise<null> {
   return null;
 }
 
+// ─────────────────── registry view shared by tab + agents ────────────
+//
+// ONE definition of "can I open a tab with this?", so `termic agents` cannot
+// advertise something `termic tab` then refuses. Both read the same cached
+// registry + detection the "+" menu does; detection is a login-shell probe per
+// agent, so re-running it per call would put hundreds of ms on a hot path.
+
+interface RegistryEntry {
+  id: string;
+  kind: string;
+  enabled: boolean;
+  installed: boolean | null;
+  usable: boolean;
+}
+
+function registryView(): RegistryEntry[] {
+  const app = useApp.getState();
+  const detected = app.detectedClis;
+  const detectionRan = Object.keys(detected).length > 0;
+  const usableAgents = visibleCliIds(app.agents.map(a => a.id), app.agents, detected);
+  return app.agents.map(a => {
+    const terminal = isTerminalEntry(a);
+    const enabled = !a.disabled;
+    // `null` means detection has not run, which is NOT "not installed" and
+    // must not be rendered as a cross.
+    const installed = !detectionRan || terminal ? null : (detected[a.id]?.found ?? null);
+    return {
+      id: a.id,
+      kind: terminal ? "terminal" : "agent",
+      enabled,
+      installed,
+      // Terminal entries have nothing to detect; agents defer to the same
+      // visibleCliIds the "+" menu filters on.
+      usable: terminal ? enabled : usableAgents.has(a.id),
+    };
+  });
+}
+
+/** Hydrate what `registryView` reads, for callers that can arrive before the
+ *  app has finished booting.
+ *
+ *  BOTH maps matter, and they fail differently. An empty `agents` makes
+ *  `termic agents` answer "No agents configured." with exit 0, a lie a script
+ *  cannot tell from a genuinely empty registry. An empty `detectedClis` is
+ *  worse for `tab`: `visibleCliIds` treats "detection has not run" as "assume
+ *  everything is present" (agents.ts), so every enabled agent reports
+ *  `usable: true, installed: null` and `--agent <uninstalled>` is ACCEPTED,
+ *  failing later when the PTY dies on exec. `refreshClis` normally fires from
+ *  App.tsx, but `termic tab` auto-launches the app and can win that race. */
+async function ensureRegistryHydrated(): Promise<void> {
+  const s = useApp.getState();
+  await Promise.all([
+    s.agents.length === 0 ? s.loadAll() : Promise.resolve(),
+    // Best-effort: a detection failure must not take down the verb. Falling
+    // back to the permissive view is the pre-existing behavior.
+    Object.keys(s.detectedClis).length === 0
+      ? s.refreshClis().catch(() => {})
+      : Promise.resolve(),
+  ]);
+}
+
+async function listAgentsHandler(): Promise<{ agents: RegistryEntry[] }> {
+  await ensureRegistryHydrated();
+  return { agents: registryView() };
+}
+
+// ─────────────────────────── new_tab (GH #138) ───────────────────────
+
+interface NewTabParams {
+  taskId: string;
+  /** "agent" | "terminal" | "shell" | "default" */
+  kind: string;
+  /** Registry id, for the agent and terminal kinds. */
+  id?: string;
+}
+
+/**
+ * Open a tab inside a running task: the "+" menu as an RPC.
+ *
+ * Validation is the part with no GUI equivalent. The menu simply HIDES a
+ * disabled or uninstalled agent (visibleCliIds), but a CLI caller has no menu
+ * to look at, so an unusable id has to come back as an error naming the ids
+ * that would work, rather than a tab whose PTY dies on exec.
+ *
+ * Deliberately does NOT focus the new tab. A shell command should not yank the
+ * user's view mid-work, the same reasoning that keeps `--headless` from
+ * stealing a window; the GUI's "+" focuses because a human just clicked it.
+ */
+// Exported for the store-sequence test: the ordering rules below are
+// invisible in this function's own code (they are properties of addTab /
+// syncDurableTabs), so the test has to drive the REAL handler. A test that
+// re-implements the sequence passes against a copy of the bug.
+export async function newTabHandler(raw: unknown): Promise<{
+  taskId: string; tabId: string; cli: string; title: string;
+}> {
+  const p = raw as NewTabParams;
+  if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("new_tab requires a taskId");
+  const app0 = useApp.getState();
+  if (!app0.tasks.some(t => t.id === p.taskId)) await app0.loadAll();
+  // Same cold-launch race as `agents`, and it decides an ACCEPT/REJECT here
+  // rather than a display value: without detection every enabled agent looks
+  // usable, so an uninstalled --agent slips through and dies at exec.
+  //
+  // Skipped for `shell`, which validates nothing against the registry.
+  // Hydration runs a login-shell PATH probe per agent, so doing it there
+  // would race App.tsx's own refreshClis to no purpose.
+  if (p.kind !== "shell") await ensureRegistryHydrated();
+  const app = useApp.getState();
+  const task = app.tasks.find(t => t.id === p.taskId);
+  if (!task) throw new Error(`unknown task ${p.taskId}`);
+  if (task.archived) throw new Error(`task ${task.name} is archived`);
+
+  const registry = app.agents;
+  let cli: string;
+  // Extra tab fields a kind may need (a custom task's launch command).
+  let extra: Record<string, unknown> = {};
+  switch (p.kind) {
+    case "shell":
+      cli = "shell";
+      break;
+    case "default": {
+      cli = task.cli;
+      // A custom-command task's tab carries its launch command; without it
+      // TerminalPane spawns a bare login shell that STILL gets task_id, i.e.
+      // a caged terminal the user types into. That is the exact shape #32
+      // removed, and the "+" menu cannot produce it because it never offers
+      // `custom`.
+      if (cli === "custom") {
+        const cmd = (task as { custom_command?: string | null }).custom_command;
+        if (!cmd) throw new Error("this task has no launch command to reuse; pass --agent or --shell");
+        extra = { command: cmd };
+        break;
+      }
+      // Validated like an explicit --agent: otherwise `termic tab <task>`
+      // happily opens a disabled or uninstalled agent whose PTY dies on exec,
+      // while `--agent <same id>` refuses it. One verb, two answers.
+      if (cli !== "shell" && !registryView().some(e => e.id === cli && e.usable)) {
+        throw new Error(
+          `the task's agent is not usable: ${cli}. Enable or install it, or pass `
+          + "--agent/--shell (see `termic agents`)",
+        );
+      }
+      break;
+    }
+    case "agent": {
+      if (!p.id) throw new Error("new_tab agent kind requires an id");
+      const view = registryView();
+      if (!view.some(e => e.id === p.id && e.kind === "agent" && e.usable)) {
+        const known = registry.find(a => a.id === p.id);
+        const why = !known ? "unknown agent"
+          : known.disabled ? "agent is disabled in Settings"
+          : isTerminalEntry(known) ? "that is a custom terminal, use --terminal"
+          : "agent is not installed (not found on PATH)";
+        const usable = view.filter(e => e.kind === "agent" && e.usable).map(e => e.id).sort();
+        throw new Error(
+          `${why}: ${p.id}. Available: ${usable.join(", ") || "none"} (see \`termic agents\`)`,
+        );
+      }
+      cli = p.id;
+      break;
+    }
+    case "terminal": {
+      if (!p.id) throw new Error("new_tab terminal kind requires an id");
+      const view = registryView();
+      if (!view.some(e => e.id === p.id && e.kind === "terminal" && e.usable)) {
+        const usable = view.filter(e => e.kind === "terminal" && e.usable).map(e => e.id).sort();
+        throw new Error(
+          `unknown or disabled custom terminal: ${p.id}. Available: ${usable.join(", ") || "none"} (see \`termic agents\`)`,
+        );
+      }
+      cli = p.id;
+      break;
+    }
+    default:
+      throw new Error(`unknown tab kind: ${p.kind}`);
+  }
+
+  // A custom-command task's tab is titled with the TASK NAME, matching the
+  // store's own restore and seed paths (app.ts); agentDisplayName("custom")
+  // would render the generic "Command" instead and drift from the GUI.
+  const title = cli === "shell" ? "Terminal"
+    : cli === "custom" ? (task.name || "Command")
+    : agentDisplayName(cli, registry);
+  const tabId = crypto.randomUUID();
+  const s = useApp.getState();
+  // Mounting a STOPPED task (GH #119 evicts it from mountedTasks but keeps
+  // its tabs) respawns every agent in it. Asking for one tab should not undo
+  // an explicit "stop this task", so say what would happen instead of doing
+  // it. `send --resume` takes the other choice deliberately; there the user
+  // asked to talk to the agent, here they asked for a new tab.
+  //
+  // This MUST be read before the restore below. ensureDefaultTab REPOPULATES
+  // tabs[taskId] from persisted_tabs, so a post-restore read cannot tell a
+  // stopped task from one that was simply never opened this session, and
+  // refuses both. Nothing is mounted until setActiveTask/mountTasks runs, so
+  // that mistake refuses every task on a cold start, which is exactly the
+  // path `termic tab` auto-launches into.
+  const stopped = !s.mountedTasks.has(p.taskId) && (s.tabs[p.taskId]?.length ?? 0) > 0;
+  if (stopped) {
+    throw new Error(
+      `task ${task.name} is stopped; open it in Termic (or \`termic open\`) before adding a tab, `
+      + "so its other agents are not respawned as a side effect",
+    );
+  }
+  // RESTORE THE PERSISTED SET FIRST, exactly as sendPromptHandler does.
+  // addTab runs syncDurableTabs, which treats whatever is in the store as the
+  // live set: on a task that has not been mounted this session (the CLI's
+  // whole use case) that set is EMPTY, so pre-adding would rewrite
+  // persisted_tabs to just the new tab and forget every secondary agent's
+  // session id, permanently. It would also make the new tab the task's first
+  // tab of its cli, i.e. is_default, hijacking what attach/logs/send resolve
+  // to and handing it the main session's cwd-resume.
+  //
+  // Unconditional, like sendPromptHandler. ensureDefaultTab already no-ops
+  // when live main tabs exist, so guarding on persisted_tabs.length buys
+  // nothing and skips the SEED path, which is precisely what a task with an
+  // empty durable set needs (main tab X-ed, or a legacy pre-persistence
+  // record). Skipping it leaves the task holding only this new tab, and
+  // TaskView's mount effect then early-returns because a main tab exists.
+  s.ensureDefaultTab(p.taskId, task.cli);
+  s.mountTasks([p.taskId]);
+  s.addTab(p.taskId, { id: tabId, type: "terminal", title, cli, ...extra }, { focus: false });
+  return { taskId: p.taskId, tabId, cli, title };
+}
+
 // ─────────────────────────── dispatch ────────────────────────────────
 
 const handlers: Record<string, Handler> = {
   open_task: openTaskHandler,
   new_task: newTaskHandler,
+  new_tab: newTabHandler,
+  list_agents: listAgentsHandler,
   send_prompt: sendPromptHandler,
   archive_task: archiveTaskHandler,
   project_add: projectAddHandler,

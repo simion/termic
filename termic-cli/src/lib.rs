@@ -527,6 +527,76 @@ Exit codes: 0 success, 1 unknown or ambiguous task, 4 app not running, \
         project: Option<String>,
     },
 
+    /// List the agents and custom terminals `tab` will accept.
+    #[command(
+        after_help = "Answers \"what can I pass to --agent or --terminal?\". The registry is \
+per-user and editable in Settings, so it cannot live in static help.
+
+`usable` is the field to branch on: enabled in Settings, and found on PATH \
+where detection has an answer. `installed` is blank rather than false when \
+detection has not run, which is not the same as missing. One inherited \
+quirk: if detection resolves and finds NOTHING installed (a stripped GUI \
+PATH), every enabled agent is reported usable rather than stranding you \
+with an empty list, matching what the app's own menus do.
+
+Prints a table on stdout. With --output-format json, one object: \
+{\"agents\": [{\"id\", \"kind\", \"enabled\", \"installed\", \"usable\"}]}.
+
+Exit codes: 0 listed, 1 error, 4 app not running, 5 CLI disabled, \
+6 refused, 8 connection lost."
+    )]
+    Agents,
+    /// Open a tab inside a running task: the "+" tab menu as a command.
+    #[command(
+        after_help = "Opens an agent, custom-terminal or shell tab in a task that is already \
+running, and prints the new tab's id. That id is the stable selector: a \
+tab's index shifts when another closes, and its title is agent-authored and \
+changes mid-turn, so neither is safe for a script to key on.
+
+Kinds are separate flags, not one --kind value, because they differ in \
+SANDBOX behaviour: an agent tab inherits the task's sandbox pin, while \
+terminal and shell tabs are uncaged exactly as the GUI's are. A mistyped \
+kind must not silently downgrade a caged agent into an uncaged shell.
+
+--agent takes a registry id and fails if it is unknown, disabled in \
+Settings, or not installed, listing the ids that would work. The GUI just \
+hides those; a CLI caller has no menu to look at. With no kind flag you get \
+another tab of whatever the task already runs.
+
+The new tab is NOT focused: a shell command should not yank the window you \
+are working in. Sending a prompt into a specific tab lands with --tab \
+targeting (GH #138).
+
+LIMITATION, --shell and --terminal only: those tabs are write-only from the \
+CLI. They open, and you can use them in the window, but `attach` and `logs` \
+cannot reach them and no output history is kept, because only agent tabs \
+carry the PTY role those commands resolve against. That is deliberate: \
+terminal tabs are never sandboxed (so git and ssh work), and putting an \
+uncaged PTY on the control socket where it can be driven remotely is not \
+something to do without a use case.
+
+Prints the tab on stdout. With --output-format json, one object: \
+{\"task_id\", \"tab_id\", \"cli\", \"title\"}.
+
+Exit codes: 0 opened, 1 error (unknown or ambiguous task, unusable agent \
+id), 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Tab {
+        /// Task name, task id, or qualified project/name.
+        task: Option<String>,
+        /// Project name, to disambiguate.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+        /// Agent registry id (claude, codex, ...). Must be enabled and installed.
+        #[arg(long, group = "tabkind")]
+        agent: Option<String>,
+        /// Custom terminal registry id (kind: "terminal" entries).
+        #[arg(long, group = "tabkind")]
+        terminal: Option<String>,
+        /// A plain login shell, uncaged like the GUI's.
+        #[arg(long, group = "tabkind")]
+        shell: bool,
+    },
     /// Quit Termic: every running agent dies with it. For the human at the keyboard, not for agents driving Termic.
     ///
     /// The only shell-side teardown for a windowless instance. Asks for
@@ -841,6 +911,38 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
             };
             let code = w.result.outcome.exit_code();
             Ok(Output { stdout: final_stdout(format, &output::wait_text(&w), &w), code })
+        }
+        Cmd::Agents => {
+            let data = client::request(&mut conn, proto::Command::Agents, &token)?;
+            let proto::ReplyData::Agents(a) = data else {
+                return Err(CliError::new(exit_code::ERROR, "unexpected reply to agents"));
+            };
+            Ok(Output::ok(final_stdout(format, &output::agents_text(&a), &a)))
+        }
+        Cmd::Tab { task, project, agent, terminal, shell } => {
+            let kind = if let Some(id) = agent {
+                proto::TabKind::Agent { id: id.clone() }
+            } else if let Some(id) = terminal {
+                proto::TabKind::Terminal { id: id.clone() }
+            } else if *shell {
+                proto::TabKind::Shell
+            } else {
+                proto::TabKind::Default
+            };
+            let data = client::request(
+                &mut conn,
+                proto::Command::Tab {
+                    task: task.clone(),
+                    project: project.clone(),
+                    kind,
+                    cwd: std::env::current_dir().ok().map(|p| p.display().to_string()),
+                },
+                &token,
+            )?;
+            let proto::ReplyData::Tab(t) = data else {
+                return Err(CliError::new(exit_code::ERROR, "unexpected reply to tab"));
+            };
+            Ok(Output::ok(final_stdout(format, &output::tab_text(&t), &t)))
         }
         Cmd::Quit { yes } => execute_quit(&mut conn, &token, format, *yes, &paths),
         Cmd::Archive { task, project, yes } => {
@@ -1845,7 +1947,8 @@ mod tests {
             v["commands"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
         for expected in [
             "list", "status", "open", "new", "send", "attach", "logs", "result", "diff",
-            "apply", "path", "wait", "archive", "quit", "project add", "project list",
+            "apply", "path", "wait", "archive", "tab", "agents", "quit", "project add",
+            "project list",
             "project remove", "help",
         ] {
             assert!(names.contains(&expected), "missing {expected} in {names:?}");

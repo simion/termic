@@ -31,7 +31,7 @@ use std::io::{self, BufRead, Read, Write};
 /// the bidirectional `attach` session (AttachFrame lines after the
 /// accepted request). Exit codes 10 (apply conflict) and 11 (attach
 /// target closed) become live.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// serde default for `QuitData::running`.
 pub(crate) fn default_true() -> bool { true }
@@ -227,6 +227,24 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
+    /// List the agent registry: what `--agent` / `--terminal` accept.
+    /// Answers "what can I pass?", which was otherwise only discoverable
+    /// by guessing wrong and reading the error (GH #138).
+    Agents,
+    /// Open a tab INSIDE a running task: the GUI's "+" menu as a verb.
+    /// The KIND is explicit rather than a string, because the kinds differ
+    /// in sandbox, resume and YOLO behaviour and a typo must not land the
+    /// caller in the wrong semantics (docs/plans/cli.md, GH #138).
+    Tab {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        kind: TabKind,
+        /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// Shut the app down: every PTY, script process group, in-flight grep
     /// and spotlight session goes with it (the same teardown Cmd-Q does).
     /// Authenticated, because it is the most destructive thing the socket
@@ -409,6 +427,28 @@ impl Reply {
     }
 }
 
+/// What `termic tab` opens. Separate variants rather than one string:
+/// an agent tab inherits the task's sandbox pin, while terminal and shell
+/// tabs are uncaged exactly as the GUI's are, so a mistyped kind must not
+/// silently downgrade a caged agent into an uncaged shell.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "tab", rename_all = "snake_case")]
+pub enum TabKind {
+    /// A `kind: "agent"` registry entry. Rejected if unknown, disabled or
+    /// not detected on PATH: the GUI hides those, but a CLI caller has no
+    /// menu to look at and must be told why.
+    Agent { id: String },
+    /// A `kind: "terminal"` custom entry (#27). Never resumes, no YOLO args.
+    Terminal { id: String },
+    /// A plain login shell tab in the task's strip, uncaged like the GUI's.
+    /// NOT the aux terminal: `attach --shell` / `logs --shell` resolve the
+    /// separate aux pane (role kind "aux"), which this does not create.
+    Shell,
+    /// Another tab of whatever the task already runs. What the `+` button
+    /// does before you pick anything.
+    Default,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReplyData {
@@ -418,6 +458,8 @@ pub enum ReplyData {
     Open(OpenData),
     New(NewData),
     Wait(WaitData),
+    Agents(AgentsData),
+    Tab(TabData),
     Quit(QuitData),
     Archive(ArchiveData),
     ProjectList(ProjectListData),
@@ -485,6 +527,59 @@ pub struct WaitData {
     pub task_id: String,
     #[serde(flatten)]
     pub result: WaitResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentsData {
+    pub agents: Vec<AgentEntry>,
+}
+
+/// One registry entry, as the CLI sees it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentEntry {
+    /// What you pass to `--agent` or `--terminal`.
+    pub id: String,
+    /// "agent" or "terminal". Decides WHICH flag takes it, and with it the
+    /// sandbox behaviour, so it is not cosmetic.
+    pub kind: String,
+    /// Enabled in Settings. A disabled entry is rejected by `tab`.
+    pub enabled: bool,
+    /// Found on PATH. `None` when detection has not run yet, which is not
+    /// the same as "not installed" and must not be rendered as such.
+    #[serde(default)]
+    pub installed: Option<bool>,
+    /// Usable RIGHT NOW: enabled, and installed where that is known. The
+    /// single field a caller should branch on, so the enabled/installed
+    /// rule cannot drift between the CLI and the tab validator.
+    pub usable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TabData {
+    /// The task the tab was opened in.
+    pub task_id: String,
+    /// The tab's stable store id. Printed for every kind so a script can
+    /// record what it made, and it never changes the way an index or an
+    /// agent-authored title does.
+    ///
+    /// Resolution caveat for part 2: only AGENT tabs carry a `PtyRole`
+    /// today, so only those are addressable by the RUST-NATIVE path
+    /// (`find_role_pty`, which `attach` and `logs` use). Anything routed
+    /// through the webview sees every tab, since the store holds them all.
+    /// Giving shell and custom-terminal tabs a role would close that gap
+    /// and is NOT a sandbox change: the cage keys on `pty_spawn`'s separate
+    /// `task_id` argument, not on `role`.
+    pub tab_id: String,
+    /// Resolved cli id ("claude", "shell", a custom terminal's id).
+    pub cli: String,
+    /// Display title the GUI gave it.
+    pub title: String,
+    // NOTE no `prompt_delivered`: `tab -p` lands with `--tab` targeting
+    // (GH #138 part 2). Delivering into a SPECIFIC tab needs the targeting
+    // this verb does not have yet, and `send_prompt`'s confirmed route picks
+    // from a task's sendable agent tabs. Reusing that route is the point;
+    // a second injection recipe would reintroduce the silently-dropped
+    // prompt Phase 1 exists to prevent.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1146,6 +1241,19 @@ mod tests {
                 cwd: None,
             },
             Command::Wait { task: None, project: None, timeout_ms: None, cwd: Some("/t".into()) },
+            Command::Tab {
+                task: Some("fix-auth".into()),
+                project: None,
+                kind: TabKind::Agent { id: "claude".into() },
+                cwd: None,
+            },
+            Command::Tab {
+                task: None, project: None, kind: TabKind::Shell, cwd: None,
+            },
+            Command::Tab {
+                task: None, project: None, kind: TabKind::Default, cwd: None,
+            },
+            Command::Agents,
             Command::Quit { commit: false },
             Command::Quit { commit: true },
             Command::Archive { task: "fix-auth".into(), project: Some("web".into()) },
@@ -1263,6 +1371,21 @@ mod tests {
             ReplyData::Wait(WaitData {
                 task_id: "w1".into(),
                 result: WaitResult { outcome: WaitOutcome::Timeout, state: None, detail: Some("x".into()) },
+            }),
+            ReplyData::Agents(AgentsData {
+                agents: vec![AgentEntry {
+                    id: "claude".into(),
+                    kind: "agent".into(),
+                    enabled: true,
+                    installed: Some(true),
+                    usable: true,
+                }],
+            }),
+            ReplyData::Tab(TabData {
+                task_id: "w1".into(),
+                tab_id: "3f1c-…".into(),
+                cli: "claude".into(),
+                title: "claude".into(),
             }),
             ReplyData::Quit(QuitData {
                 running: true,

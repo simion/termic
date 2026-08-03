@@ -649,6 +649,8 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
                 }),
             )
         }
+        Command::Agents => handle_agents(req, host),
+        Command::Tab { .. } => handle_tab(req, host),
         Command::Archive { task, project } => {
             handle_archive(&req.id, host, task, project.as_deref())
         }
@@ -1872,6 +1874,91 @@ fn handle_result(
             transcript: file.display().to_string(),
             text,
         }),
+    )
+}
+
+// ──────────────────────── tabs + registry (GH #138) ──────────────────
+
+/// `termic agents` (GH #138). Goes through the webview rather than
+/// `host.agents()` on purpose: installed-ness comes from a login-shell probe
+/// per agent that the webview already caches, and the same cached view is what
+/// `new_tab` validates against. Reading the registry from Rust here would give
+/// a second answer to "is this agent usable?" that could disagree with the one
+/// that actually gates tab creation.
+fn handle_agents(req: &Request, host: &dyn CliHost) -> Reply {
+    let id = &req.id;
+    let value = match host.rpc("list_agents", serde_json::json!({}), OPEN_TIMEOUT) {
+        Ok(v) => v,
+        Err(e) => return Reply::err(id, ErrorCode::Internal, &e),
+    };
+    let agents: Vec<proto::AgentEntry> =
+        match serde_json::from_value(value.get("agents").cloned().unwrap_or_default()) {
+            Ok(a) => a,
+            Err(e) => {
+                return Reply::err(id, ErrorCode::Internal, format!("bad list_agents reply: {e}"))
+            }
+        };
+    Reply::ok(id, ReplyData::Agents(proto::AgentsData { agents }))
+}
+
+/// `termic tab` (GH #138). Tab creation lives in the webview (the store owns
+/// the tab list and TerminalPane spawns the PTY from it), so this resolves the
+/// task here and hands the rest to `new_tab`, which owns registry validation:
+/// the GUI hides an unusable agent, but a CLI caller needs to be told why.
+fn handle_tab(req: &Request, host: &dyn CliHost) -> Reply {
+    let Command::Tab { task, project, kind, cwd } = &req.cmd else {
+        unreachable!("handle_tab called with a non-tab command")
+    };
+    let id = &req.id;
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(
+        &projects,
+        &tasks,
+        task.as_deref(),
+        project.as_deref(),
+        cwd.as_deref(),
+    ) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply::err(id, e.code, &e.message),
+    };
+
+    let (kind_str, agent_id) = match kind {
+        proto::TabKind::Agent { id } => ("agent", Some(id.clone())),
+        proto::TabKind::Terminal { id } => ("terminal", Some(id.clone())),
+        proto::TabKind::Shell => ("shell", None),
+        proto::TabKind::Default => ("default", None),
+    };
+
+    let value = match host.rpc(
+        "new_tab",
+        serde_json::json!({ "taskId": t.id, "kind": kind_str, "id": agent_id }),
+        OPEN_TIMEOUT,
+    ) {
+        Ok(v) => v,
+        // The webview owns the "which agents are usable" answer, so its
+        // message is the useful one; pass it through rather than flattening
+        // it into a generic failure.
+        //
+        // BadRequest is chosen for the DOMINANT case (a caller naming an
+        // agent that is unknown, disabled, or not installed), which is a
+        // genuine bad request. A transport failure here (timeout, dead
+        // webview) is technically Internal and gets this code too. That is
+        // deliberate, not an oversight: both map to exit_code::ERROR and the
+        // message passes through either way, so the distinction is invisible
+        // to callers, and Internal would mis-tag the common case.
+        Err(e) => return Reply::err(id, ErrorCode::BadRequest, &e),
+    };
+
+    let tab_id = value.get("tabId").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let cli = value.get("cli").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let title = value.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    if tab_id.is_empty() {
+        return Reply::err(id, ErrorCode::Internal, "new_tab returned no tab id");
+    }
+
+    Reply::ok(
+        id,
+        ReplyData::Tab(proto::TabData { task_id: t.id, tab_id, cli, title }),
     )
 }
 
@@ -3919,6 +4006,133 @@ mod tests {
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
         let reply = handle(&req(new_cmd("shiny", Some("web")), Some("tok")), &host);
         assert!(reply.ok, "{reply:?}");
+    }
+
+    // ── tab / agents (GH #138) ───────────────────────────────────────
+
+    fn tab_cmd(task: &str, kind: proto::TabKind) -> Command {
+        Command::Tab {
+            task: Some(task.into()),
+            project: None,
+            kind,
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn tab_sends_the_kind_strings_the_webview_switches_on() {
+        // These four literals are a CONTRACT with newTabHandler's switch in
+        // src/lib/cliRpc.ts. A typo here does not fail to compile on either
+        // side; it fails at runtime with "unknown tab kind" after the app has
+        // already launched. Pin every arm.
+        let cases: Vec<(proto::TabKind, &str, Option<&str>)> = vec![
+            (proto::TabKind::Default, "default", None),
+            (proto::TabKind::Shell, "shell", None),
+            (proto::TabKind::Agent { id: "codex".into() }, "agent", Some("codex")),
+            (proto::TabKind::Terminal { id: "btop".into() }, "terminal", Some("btop")),
+        ];
+        for (kind, want_kind, want_id) in cases {
+            let host = StubHost::default();
+            host.script_rpc(
+                "new_tab",
+                Ok(serde_json::json!({ "tabId": "t1", "cli": "codex", "title": "Codex" })),
+            );
+            let reply = handle(&req(tab_cmd("solo", kind), Some("tok")), &host);
+            assert!(reply.ok, "{want_kind}: {reply:?}");
+            let calls = host.rpc_calls.lock().unwrap();
+            assert_eq!(calls[0].0, "new_tab");
+            assert_eq!(calls[0].1["kind"], want_kind);
+            assert_eq!(calls[0].1["taskId"], "w3");
+            match want_id {
+                Some(id) => assert_eq!(calls[0].1["id"], id, "{want_kind}"),
+                None => assert!(calls[0].1["id"].is_null(), "{want_kind}"),
+            }
+        }
+    }
+
+    #[test]
+    fn tab_resolves_the_task_before_touching_the_webview() {
+        // An ambiguous or unknown name must fail here, not open something.
+        let host = StubHost::default();
+        // "fix-auth" exists in BOTH fixture projects.
+        let err = handle(&req(tab_cmd("fix-auth", proto::TabKind::Shell), Some("tok")), &host)
+            .error
+            .expect("ambiguous name should error");
+        assert_eq!(err.code, ErrorCode::Ambiguous);
+        assert!(host.rpc_calls.lock().unwrap().is_empty(), "must not spawn a tab");
+
+        let host = StubHost::default();
+        let err = handle(&req(tab_cmd("nope", proto::TabKind::Shell), Some("tok")), &host)
+            .error
+            .expect("unknown name should error");
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tab_rejects_a_reply_with_no_tab_id() {
+        // The tab id is what part 2's --tab resolves against, so a webview
+        // that answers without one is a bug, not a success.
+        let host = StubHost::default();
+        host.script_rpc("new_tab", Ok(serde_json::json!({ "cli": "claude", "title": "Claude" })));
+        let err = handle(&req(tab_cmd("solo", proto::TabKind::Shell), Some("tok")), &host)
+            .error
+            .expect("empty tabId should error");
+        assert_eq!(err.code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn tab_passes_the_webview_refusal_through() {
+        // The webview owns "is this agent usable", and its message names the
+        // alternatives. Flattening it would strip the only useful part.
+        let host = StubHost::default();
+        host.script_rpc(
+            "new_tab",
+            Err("unknown agent: gemni. Available: claude, codex (see `termic agents`)".into()),
+        );
+        let err = handle(
+            &req(tab_cmd("solo", proto::TabKind::Agent { id: "gemni".into() }), Some("tok")),
+            &host,
+        )
+        .error
+        .expect("refusal should error");
+        assert!(err.message.contains("Available: claude, codex"), "{}", err.message);
+    }
+
+    #[test]
+    fn agents_parses_the_registry_reply_and_needs_a_token() {
+        let host = StubHost::default();
+        host.script_rpc(
+            "list_agents",
+            Ok(serde_json::json!({ "agents": [
+                { "id": "claude", "kind": "agent",
+                  "enabled": true, "installed": true, "usable": true },
+                // installed: null is the "not detected yet" case, distinct
+                // from false; it must survive the round trip.
+                { "id": "btop", "kind": "terminal",
+                  "enabled": false, "installed": null, "usable": false },
+            ]})),
+        );
+        let reply = handle(&req(Command::Agents, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let Some(ReplyData::Agents(d)) = reply.data else { panic!("{reply:?}") };
+        assert_eq!(d.agents.len(), 2);
+        assert_eq!(d.agents[0].id, "claude");
+        assert_eq!(d.agents[0].installed, Some(true));
+        assert_eq!(d.agents[1].installed, None);
+        assert!(!d.agents[1].enabled);
+        assert!(!d.agents[1].usable);
+
+        // Both verbs sit behind auth_gate; neither joins hello/raise.
+        let host = StubHost::default();
+        assert_eq!(
+            handle(&req(Command::Agents, None), &host).error.unwrap().code,
+            ErrorCode::Auth,
+        );
+        assert_eq!(
+            handle(&req(tab_cmd("solo", proto::TabKind::Shell), None), &host).error.unwrap().code,
+            ErrorCode::Auth,
+        );
     }
 
     #[test]

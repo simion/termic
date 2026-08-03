@@ -1375,6 +1375,18 @@ fn next_pty_seq() -> u64 {
 #[derive(Clone, Debug, Deserialize)]
 pub struct PtyRole {
     pub task_id: String,
+    /// The webview's tab id (a uuid minted when the tab is created). The
+    /// STABLE selector `--tab` resolves to: index shifts when a tab closes
+    /// and titles are agent-authored and change mid-turn, so neither can be
+    /// the identity. Optional for back-compat with PTYs spawned before this
+    /// field existed; those simply cannot be addressed by id.
+    ///
+    /// `default` only: PtyRole is Deserialize-only (it arrives from the
+    /// webview and is never sent back), so a `skip_serializing_if` here
+    /// would be inert and would imply a serialization path that does not
+    /// exist.
+    #[serde(default)]
+    pub tab_id: Option<String>,
     /// "agent" (an agent CLI tab) or "aux" (the task's aux terminal).
     pub kind: String,
     /// The task's default agent tab: `attach`/`logs`' default target.
@@ -10973,7 +10985,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn role(kind: &str, task: &str) -> PtyRole {
-        PtyRole { task_id: task.into(), kind: kind.into(), is_default: false }
+        PtyRole { task_id: task.into(), tab_id: None, kind: kind.into(), is_default: false }
     }
 
     // `termic quit`'s confirmation says "kills N agents across M tasks", and

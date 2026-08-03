@@ -462,7 +462,9 @@ export interface SpawnArgs {
    *  aux shell stays uncaged yet attachable. Omit for setup/run tabs and
    *  ad-hoc shells the CLI cannot address; role-tagged PTYs also retain
    *  an output ring Rust-side for `termic logs`. */
-  role?: { task_id: string; kind: "agent" | "aux"; is_default?: boolean };
+  /** Mirrors Rust's `PtyRole`. `tab_id` is the stable selector `--tab`
+   *  resolves to (index and title both move; the tab uuid does not). */
+  role?: { task_id: string; tab_id?: string; kind: "agent" | "aux"; is_default?: boolean };
 }
 
 /** Sandbox status returned alongside the PTY id - tells the caller

@@ -1546,7 +1546,14 @@ const captureArmedRef = useRef(false);
           // `termic attach` with several agents open stays
           // deterministic.
           role: isAgent
-            ? { task_id: task.id, kind: "agent" as const, is_default: isPrimaryTab && tab.cli === task.cli }
+            ? {
+                task_id: task.id,
+                // The stable selector `--tab` resolves to. Index and title
+                // both move; this does not.
+                tab_id: tab.id,
+                kind: "agent" as const,
+                is_default: isPrimaryTab && tab.cli === task.cli,
+              }
             : undefined,
           rows, cols,
         });
