@@ -1561,6 +1561,14 @@ fn handle_wait(
             deadline,
             strict_target: true,
             queued: false,
+            // `wait` asks "is this TASK (or, with --tab, this tab)
+            // quiescent NOW", not "did my turn settle": with no
+            // prompt_id the watch's own-turn check short-circuits
+            // before trust_done is ever read, so the flag is inert
+            // here. Kept true because that states the verb's semantics
+            // (any cached done IS the answer); the site where the value
+            // is load-bearing is `send` (false: a stale done badge must
+            // not settle OUR prompt).
             trust_done: true,
         },
         sink,
@@ -2242,6 +2250,11 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             deadline,
             strict_target: false,
             queued,
+            // Safe ONLY because the tab is brand new: any done it shows
+            // is genuinely ours. Contrast send --tab (false: a targeted
+            // PRE-EXISTING tab often wears a stale done badge from its
+            // last turn). Flipping this without re-deriving that
+            // difference reintroduces the stale-done bug.
             trust_done: true,
         },
         sink,
@@ -2513,8 +2526,10 @@ fn qualified(projects: &[Project], task: &Task) -> String {
 
 /// Resolve a task from an optional name, falling back to the caller's
 /// cwd (worktree first, then main-checkout prefix), the same rule
-/// `open` uses. Verbs that read or wait go through this; destructive
-/// verbs (archive) deliberately require the explicit name.
+/// `open` uses. Verbs that read or wait go through this, and so does
+/// `rename` (by design: an agent retitling its OWN task is the GH #153
+/// use case, and a rename is cheap to undo); destructive verbs
+/// (archive, apply) deliberately require the explicit name.
 pub(crate) fn resolve_task_arg<'a>(
     projects: &[Project],
     tasks: &'a [Task],
