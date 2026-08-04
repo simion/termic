@@ -15,7 +15,6 @@ import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
 import { startPathDrag } from "@/lib/terminalDrop";
-import { openInDefaultApp } from "@/lib/openExternal";
 import { joinPath } from "@/lib/clipboard";
 import { launchCustomRun } from "@/lib/runTabs";
 import { resolveCustomCommands, removeCommandByCommand, defaultCommandFor } from "@/lib/runCommands";
@@ -279,6 +278,7 @@ interface NodeProps {
 
 function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch, projectId, savedCmds, reloadCmds }: NodeProps) {
   const openPreviewTab = useApp(s => s.openPreviewTab);
+  const persistTab = useApp(s => s.persistTab);
   const closeTab = useApp(s => s.closeTab);
   const tabs = useApp(s => s.tabs[taskId] || []);
   const activeTabId = useApp(s => s.activeTab[taskId]);
@@ -375,41 +375,24 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
   const activeTab = tabs.find(t => t.id === activeTabId);
   const isActive = activeTab?.type === "edit" && activeTab.path === rel;
 
-  // Double-click hands the file to the OS default app, falling back to the
-  // file manager when nothing claims the extension (GH #147).
-  //
-  // Read off the CLICK's UA click-count, not a `dblclick` handler. The row
-  // calls preventDefault() on pointerdown (startPathDrag, to kill text
-  // selection), which per the pointer-events spec suppresses the compat mouse
-  // events; `click` is explicitly exempt and demonstrably still fires (it is
-  // what opens files today), while `dblclick` under a cancelled pointerdown
-  // is not something this codebase can verify — WebDriver cannot synthesize a
-  // real double-click in WKWebView (its clicks carry detail 0 and emit no
-  // dblclick at all), so no test could ever have caught it regressing.
-  // Keying on the event that provably survives avoids the question.
-  //
-  // `detail === 2` exactly, not `>= 2`, so a triple-click opens once.
-  //
-  // This REPLACES pinning the preview tab (the VS Code gesture). Limiting the
-  // external open to files the editor can't render would have missed the
-  // motivating case: .scad is plain text, so it renders fine, but a
-  // double-click on it still means "open this in OpenSCAD". Pinning is
-  // unchanged on the tab pill itself (TabBar), where the muscle memory is.
-  //
-  // The first click of the pair still opens the preview tab underneath. Left
-  // that way deliberately: it's a preview tab that the next single click
-  // replaces, and suppressing it would mean holding EVERY single click in the
-  // tree behind the double-click threshold.
-  function onClick(e: React.MouseEvent) {
+  function onClick() {
     if (entry.is_dir) {
       toggle(rel);
-      return;
+    } else {
+      openPreviewTab(taskId, { type: "edit", path: rel, title: entry.name });
     }
-    if (e.detail === 2) {
-      void openInDefaultApp(joinPath(root, rel), entry.name);
-      return;
+  }
+
+  // Double-click pins the preview tab, the Sublime/VS Code/JetBrains gesture
+  // (single click = temporary preview, double = keep). Opening the file in its
+  // OS default app lives in the right-click menu instead (CopyPathItems), where
+  // every one of those editors also puts it. See the discussion on GH #147.
+  function onDoubleClick() {
+    if (entry.is_dir) return;
+    const existing = tabs.find(t => t.type === "edit" && t.path === rel);
+    if (existing) {
+      persistTab(taskId, existing.id);
     }
-    openPreviewTab(taskId, { type: "edit", path: rel, title: entry.name });
   }
 
   const iconUrl = entry.is_dir ? folderIconUrl(entry.name, isOpen) : fileIconUrl(entry.name);
@@ -441,6 +424,7 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
       <ContextMenuTrigger asChild>
       <button
         onClick={onClick}
+        onDoubleClick={onDoubleClick}
         // Drag a row onto a terminal to type its path at the prompt (GH #136),
         // the same affordance as dragging a file in from Finder. Pointer-based,
         // not HTML5 DnD — see the note in lib/terminalDrop.
