@@ -15,6 +15,8 @@ v5. Phase 3 in progress - windowless mode landed, `termic quit` landed;
 tab management (GH #138) landed in full: part 1 (`termic tab` + stable
 tab ids) and part 2 (`--tab <n|id|title>` targeting on
 send/wait/attach/logs, tabs listed in `status`, `tab -p`), protocol v6.
+`rename` (GH #153, label only; branch + dir keep their names) lands on
+top, protocol v7.
 Homebrew
 is settled, not pending: the cask ships, a CLI-only formula is a non-goal
 (see Distribution). `termic events --json` is SEQUENCED BEHIND hooks, not

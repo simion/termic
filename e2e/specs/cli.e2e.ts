@@ -211,3 +211,50 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
     expect(ambiguous.error.message).toContain(secondTabId);
   });
 });
+
+// `termic rename` (GH #153) over the REAL socket: the whole server path
+// (auth, resolve_task_arg, the conflict pre-check, the rename_task
+// webview RPC, the post-write disk re-read) in one thread. The unit
+// suites stub the webview; this is the one place a broken RPC handler
+// registration or a stale-reply regression surfaces.
+describe("termic rename: label only, over the real socket (GH #153)", () => {
+  let taskId: string;
+  let otherId: string;
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    if (otherId) await archiveTask(otherId);
+  });
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("cli-rename", false);
+    otherId = await openTask("cli-rename-other", false);
+  });
+
+  it("renames by explicit name; the reply and the store carry the new label", async () => {
+    const r = await rpc({ cmd: "rename", task: "cli-rename", name: "PR 42 - retitled" });
+    expect(r.ok).toBe(true);
+    expect(r.data.kind).toBe("rename");
+    expect(r.data.old_name).toBe("cli-rename");
+    // The reply is the post-write re-read, so this pins "reply reflects
+    // what was persisted" against the real disk, not a stub mirror.
+    expect(r.data.task.name).toBe("PR 42 - retitled");
+    const inStore = await browser.execute(
+      (i) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === i)?.name,
+      taskId,
+    );
+    expect(inStore).toBe("PR 42 - retitled");
+  });
+
+  it("refuses a same-project duplicate with a typed conflict", async () => {
+    // Resolve by id, not by the name case 1 just set: ids also exercise
+    // the resolver's id arm, and a case-1 failure then reports as ITS
+    // assertion instead of a misleading not_found here.
+    const r = await rpc({ cmd: "rename", task: taskId, name: "cli-rename-other" });
+    expect(r.ok).toBe(false);
+    expect(r.error.code).toBe("conflict");
+    expect(r.error.message).toContain("cli-rename-other");
+  });
+});
