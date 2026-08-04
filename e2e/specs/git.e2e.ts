@@ -400,7 +400,19 @@ describe("git commit & push", () => {
 // reviewCommentsExt.test.ts (happy-dom has no layout).
 describe("review comment alignment", () => {
   let taskId: string | undefined;
+  let original: string | undefined;
   after(async () => {
+    // Restore README: without this the 30 appended align lines survive
+    // the run, and the NEXT run's clean-tree spec boots against a dirty
+    // fixture whose "Git" tab wears a count badge, so its exact-text
+    // click misses (the suite then fails one file per run, one run late).
+    if (taskId && original !== undefined) {
+      await browser.execute(
+        (id, c) => window.__termic!.ipc.taskFileWrite(id, "README.md", c),
+        taskId,
+        original,
+      );
+    }
     if (taskId) await archiveTask(taskId);
   });
 
@@ -479,9 +491,12 @@ describe("review comment alignment", () => {
     // A diff long enough that drift below the comments is unmistakable. Append
     // rather than rewrite: an added-only diff keeps @codemirror/merge's own
     // deleted-chunk widgets out of the measurement.
-    await browser.execute(async (id) => {
+    original = await browser.execute(
+      (id) => window.__termic!.ipc.taskFileRead(id, "README.md"),
+      taskId,
+    );
+    await browser.execute(async (id, orig) => {
       const t = window.__termic!;
-      const orig = await t.ipc.taskFileRead(id, "README.md");
       const added = Array.from({ length: 30 }, (_, i) => `align line ${i + 1}`).join("\n");
       await t.ipc.taskFileWrite(id, "README.md", `${orig}\n${added}\n`);
       t.useApp.getState().openPreviewTab(id, {
@@ -490,7 +505,7 @@ describe("review comment alignment", () => {
         title: "README.md",
         scope: "unstaged",
       });
-    }, taskId);
+    }, taskId, original);
 
     await browser.waitUntil(async () => ((await gutterDrift())?.lines ?? 0) >= 10, {
       timeout: 15_000,

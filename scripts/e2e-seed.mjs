@@ -89,6 +89,25 @@ export function seed(o = {}) {
     sh("git branch --set-upstream-to=origin/main main", fixture);
   }
 
+  // 1b. Self-heal tracked fixture content. Specs that edit tracked files
+  // (git dirty-tree, editor save) restore them in after(), but a crashed
+  // or aborted run skips teardown and leaves the tree dirty; the git
+  // spec asserts clean-at-boot and its "Git" tab match breaks on the
+  // dirty-count badge. Tracked files only: untracked state (a spec's
+  // .termic.yaml, task droppings) is owned and cleaned by the specs.
+  // Unstage first: `checkout HEAD -- .` restores tracked paths but leaves
+  // a file staged as NEW sitting in the index; reset demotes it to
+  // untracked (spec-owned, like .termic.yaml). Then HEAD (not the bare
+  // `-- .` index form): a run that crashed after staging leaves the dirt
+  // in index AND worktree, where the index form is a no-op and the
+  // clean-tree spec still boots red.
+  try {
+    sh("git reset -q HEAD -- .", fixture);
+    sh("git checkout -q HEAD -- .", fixture);
+  } catch {
+    /* ignore */
+  }
+
   // 2. An unopened `sbcheck` worktree (the import-worktree spec expects it).
   //
   // The dir lives under $HOME and is SHARED by every termic checkout's
@@ -101,11 +120,17 @@ export function seed(o = {}) {
   // red forever, on whichever checkout lost the dir. Reclaim it: it is
   // throwaway derived state on both sides, and the losing checkout's
   // seed does the same reclaim right back on its next run.
+  // Owned means the back-pointer names THIS fixture AND the admin dir it
+  // points at still exists: a recreated .e2e (rm -rf, or this checkout
+  // being a re-made task worktree) leaves the dir's .git naming our path
+  // while the fixture no longer knows it, and treating that dangling
+  // state as "ours" would skip the reclaim and leave `worktree add`
+  // permanently blocked by the non-empty dir.
   const sbcheckOwnedHere = () => {
     try {
-      return readFileSync(path.join(sbcheck, ".git"), "utf8").includes(
-        path.join(fixture, ".git"),
-      );
+      const gitfile = readFileSync(path.join(sbcheck, ".git"), "utf8");
+      const target = gitfile.replace(/^gitdir:\s*/, "").trim();
+      return gitfile.includes(path.join(fixture, ".git")) && existsSync(target);
     } catch {
       return false;
     }
@@ -133,8 +158,14 @@ export function seed(o = {}) {
       sh(`git worktree add -q "${sbcheck}" -b sbcheck`, fixture);
     } catch {
       // -b fails when the branch survived a removed worktree; attach the
-      // existing branch instead of seeding nothing.
-      sh(`git worktree add -q "${sbcheck}" sbcheck`, fixture);
+      // existing branch instead of seeding nothing. Guarded: seed() must
+      // never hard-fail the whole suite over this fixture nicety, and a
+      // missing sbcheck only reddens the one import spec.
+      try {
+        sh(`git worktree add -q "${sbcheck}" sbcheck`, fixture);
+      } catch {
+        /* leave it to the import spec to report */
+      }
     }
   }
 
