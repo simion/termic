@@ -327,6 +327,69 @@ describe("code editor", () => {
 
     await snap("code-editor-elixir.png");
   });
+
+  // Issue #161. The gutter is `position: sticky` (z-index 200) inside the
+  // scroller, so a long line slides UNDER the line numbers as you scroll right,
+  // and a see-through gutter shows it. Nothing in the DOM says "overlap", so the
+  // assertion is the property that caused it: the gutter must paint the same
+  // surface its host does. Comparing the two (rather than just "not
+  // transparent") also catches the opposite failure, a gutter opaque in some
+  // color that doesn't match the pane, and holds under every palette.
+  it("keeps the gutter opaque when a long line scrolls horizontally", async () => {
+    await openHighlighted(
+      "wide.py",
+      `wide = "${"scroll ".repeat(400)}"\n`,
+      "wide",
+    );
+
+    const scrolled = await browser.execute((id) => {
+      // Every visited tab stays mounted (display:none) — the visible editor is
+      // the one with a width.
+      const el = [
+        ...document.querySelectorAll(`[data-task-id="${id}"] .cm-scroller`),
+      ].find((e) => (e as HTMLElement).clientWidth > 0) as HTMLElement | undefined;
+      if (!el) throw new Error("no visible .cm-scroller");
+      el.scrollLeft = el.scrollWidth;
+      return el.scrollLeft;
+    }, taskId!);
+    // Without real overflow nothing ever slides under the gutter and the case
+    // below would pass for the wrong reason.
+    expect(scrolled).toBeGreaterThan(0);
+
+    const [gutterBg, hostBg] = await browser.execute((id) => {
+      const visible = (sel: string) =>
+        [...document.querySelectorAll(`[data-task-id="${id}"] ${sel}`)].find(
+          (e) => (e as HTMLElement).clientWidth > 0,
+        ) as HTMLElement | undefined;
+      const gutter = visible(".cm-gutters");
+      const editor = visible(".cm-editor");
+      if (!gutter || !editor) throw new Error("no visible editor/gutter");
+      // Read alpha off the 4th rgba() component rather than pattern-matching a
+      // trailing `, 0)`: opaque black computes to `rgb(0, 0, 0)` and would look
+      // see-through to that shortcut.
+      const opaque = (bg: string) => {
+        const parts = bg.match(/^rgba?\(([^)]+)\)$/)?.[1].split(",").map(Number);
+        return !!parts && (parts.length < 4 || parts[3] > 0);
+      };
+      // The editor's own surfaces are deliberately transparent, so the painted
+      // background is the nearest ancestor that sets one.
+      let host: HTMLElement | null = editor;
+      let painted = "";
+      while (host) {
+        const bg = getComputedStyle(host).backgroundColor;
+        if (opaque(bg)) {
+          painted = bg;
+          break;
+        }
+        host = host.parentElement;
+      }
+      if (!painted) throw new Error("no painted ancestor background");
+      return [getComputedStyle(gutter).backgroundColor, painted];
+    }, taskId!);
+    expect(gutterBg).toBe(hostBg);
+
+    await snap("code-editor-hscroll.png");
+  });
 });
 
 /** A real (if empty) 2-page PDF. Byte offsets are computed as the string is

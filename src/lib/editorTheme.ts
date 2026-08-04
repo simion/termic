@@ -113,8 +113,10 @@ export function editorSurfaceTheme(
       caretColor: "var(--color-accent)",
       backgroundColor: "transparent !important",
     },
+    // opaque, not transparent: the gutter is sticky, so horizontal scroll slides
+    // the code underneath it and a see-through gutter shows it (GH #161).
     ".cm-gutters": {
-      backgroundColor: "transparent !important",
+      backgroundColor: "var(--color-bg) !important",
       color: "var(--color-fg-dim)",
       border: "none",
     },

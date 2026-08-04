@@ -77,6 +77,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Setup script | Configure + launch a Setup tab that spawns | `run.e2e.ts` |
 | ✅ Sidebar layout | Sidebar width setter persists | `tabs-layout.e2e.ts` |
 | ✅ Code editor | Open a .py file → CodeMirror renders with highlight tokens | `editor.e2e.ts` |
+| ✅ Editor h-scroll gutter | A long line scrolled fully right keeps the sticky gutter painting the host's surface, so code never shows through it (GH #161) | `editor.e2e.ts` |
 | ✅ Commit & push | Commit with push to a bare remote; remote receives it | `git.e2e.ts` |
 | ✅ Discover repos | Scan a folder → returns its git repos | `projects.e2e.ts` |
 | ✅ Import worktree | Lists importable (unopened) worktrees for a project | `projects.e2e.ts` |
