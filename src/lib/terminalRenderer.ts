@@ -36,9 +36,11 @@ function dumpRenderer(addon: WebglAddon | null): void {
  *  fire on a half-disposed terminal. If WebGL is unsupported (throw) OR the
  *  user disabled the GPU renderer (the `terminalGpuEnabled` pref — escape
  *  hatch for Linux/WebKitGTK boxes where WebGL runs on a software rasterizer
- *  and typing crawls), the load is skipped and xterm's built-in DOM renderer
- *  remains. Read once at mount; toggling the pref takes effect on the next
- *  terminal spawn (relaunch to switch every open terminal). */
+ *  and typing crawls, and for macOS battery users: on macOS 26 each live GL
+ *  surface costs ~10pp of standing WindowServer CPU even at zero draw calls,
+ *  GH #140), the load is skipped and xterm's built-in DOM renderer remains.
+ *  Read once at mount; toggling the pref takes effect on the next terminal
+ *  spawn (relaunch to switch every open terminal). */
 /** GH #70: the bundled JetBrains Mono is a lazy @font-face; xterm's WebGL atlas
  *  keys glyphs per (char, fg, bg, ext) with no font in the key, so a glyph
  *  rasterized against the fallback stays wrong-height until the cell happens to

@@ -1,5 +1,20 @@
 import { archiveTask, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitVisible } from "../helpers";
 
+/** Click the [role="switch"] in the settings row whose label matches exactly.
+ *  Toggle rows are label + switch inside one .justify-between wrapper
+ *  (Controls.tsx / AppearanceSection.tsx, same markup). */
+const clickToggleByLabel = (label: string) =>
+  browser.execute((lbl) => {
+    const labelEl = [...document.querySelectorAll("div")].find(
+      (d) => d.textContent?.trim() === lbl,
+    );
+    const sw = labelEl
+      ?.closest(".justify-between")
+      ?.querySelector('[role="switch"]') as HTMLElement | null;
+    if (!sw) throw new Error("toggle switch not found for: " + lbl);
+    sw.click();
+  }, label);
+
 // Settings/preferences subsystem. Guards that a real toggle in the Settings
 // overlay flips the pref in the prefs store and the control reflects it.
 describe("settings", () => {
@@ -31,16 +46,7 @@ describe("settings", () => {
     );
 
     // Click the actual toggle switch in that setting's row.
-    await browser.execute((lbl) => {
-      const labelEl = [...document.querySelectorAll("div")].find(
-        (d) => d.textContent?.trim() === lbl,
-      );
-      const sw = labelEl
-        ?.closest(".justify-between")
-        ?.querySelector('[role="switch"]') as HTMLElement | null;
-      if (!sw) throw new Error("toggle switch not found for: " + lbl);
-      sw.click();
-    }, LABEL);
+    await clickToggleByLabel(LABEL);
 
     // The prefs store must reflect the flip (poll, don't sleep).
     await browser.waitUntil(
@@ -78,7 +84,20 @@ describe("settings", () => {
 // to a control that lives ONLY there, so a section landing on the wrong rail
 // item fails here instead of in a bug report.
 describe("settings rail", () => {
+  /** Snapshot for the GPU-toggle case below. The case restores in its own
+   *  finally (so the NEXT case in this file never sees a flipped pref: the
+   *  preview case asserts a canvas mounts, and the DOM renderer creates
+   *  none); this after() is the backstop for the shared profile when the
+   *  whole run dies mid-case. Same discipline as the signal-inspector
+   *  snapshot. */
+  let gpuOriginal: boolean | undefined;
+
   after(async () => {
+    if (gpuOriginal !== undefined) {
+      await browser.execute((v) => {
+        window.__termic!.usePrefs.getState().setTerminalGpuEnabled(v);
+      }, gpuOriginal);
+    }
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
   });
 
@@ -252,6 +271,51 @@ describe("settings rail", () => {
     const interfacePane = await paneText();
     expect(interfacePane).toContain("Dim inactive split panes");
     expect(interfacePane).not.toContain("Terminal font");
+  });
+
+  // GH #140: the GPU renderer toggle used to be hidden behind !IS_MAC, forcing
+  // Mac users to hand-edit localStorage to reach the DOM renderer (whose whole
+  // point on macOS is cutting the standing WindowServer cost of an idle WebGL
+  // surface). The suite runs on macOS, so asserting the control exists IS the
+  // regression guard for the exposure.
+  it("exposes the GPU renderer toggle on the Terminal tab and it lands in prefs", async () => {
+    // Explicitly select the Terminal sub-tab: a click on the rail item is a
+    // no-op when Appearance is already open, and the previous case leaves it
+    // on Interface.
+    await clickRail("Appearance");
+    await clickAppearanceTab("terminal");
+    await waitForText("GPU (WebGL) terminal renderer");
+
+    const LABEL = "GPU (WebGL) terminal renderer";
+    const original = await browser.execute(
+      () => window.__termic!.usePrefs.getState().terminalGpuEnabled,
+    );
+    gpuOriginal = original;
+    const pref = () =>
+      browser.execute(() => window.__termic!.usePrefs.getState().terminalGpuEnabled);
+
+    // The finally puts the pref back through the setter even when an
+    // assertion between the two clicks throws, so the next case (which needs
+    // the WebGL canvas) never runs with GPU off. Idempotent on success.
+    try {
+      await clickToggleByLabel(LABEL);
+      await browser.waitUntil(async () => (await pref()) === !original, {
+        timeout: 8_000,
+        timeoutMsg: "terminalGpuEnabled never flipped",
+      });
+
+      // Back through the same control, so the off -> on transition is
+      // exercised through the real switch too.
+      await clickToggleByLabel(LABEL);
+      await browser.waitUntil(async () => (await pref()) === original, {
+        timeout: 8_000,
+        timeoutMsg: "terminalGpuEnabled never flipped back",
+      });
+    } finally {
+      await browser.execute((v) => {
+        window.__termic!.usePrefs.getState().setTerminalGpuEnabled(v);
+      }, original);
+    }
   });
 
   it("does not spawn the preview pty until the preview is armed", async () => {

@@ -54,8 +54,9 @@ deliberate rather than lucky.
   `"Cascadia Mono", Consolas, monospace`, `:138` carries `"Segoe UI"`. Both
   primary faces (JetBrains Mono, Inter Variable) are bundled via `@fontsource`.
 - **`IS_MAC` already exists** (`shortcuts.ts:257`) and ~12 sites branch on it.
-  Terminal copy/paste, the GPU-renderer toggle, the Option-as-Meta setting and
-  completion sounds are already gated off-mac.
+  Terminal copy/paste, the Option-as-Meta setting and completion sounds are
+  already gated off-mac. (The GPU-renderer toggle is shown on every platform
+  since GH #140; only its hint text branches on `IS_MAC`.)
 - **The e2e architecture ports better than standard Tauri.** We use the embedded
   `tauri-plugin-wdio-webdriver` (`wdio.conf.ts:36`, `driverProvider: "embedded"`),
   not `tauri-driver`, so the WebDriver server travels inside the app. Specs drive

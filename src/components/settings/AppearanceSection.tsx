@@ -115,7 +115,7 @@ export function AppearanceSection() {
           size="sm"
           disabled={atDefaults}
           onClick={resetAppearance}
-          title="Restore fonts, sizes, zoom, letter spacing, ligatures and font list filtering to their defaults."
+          title="Restore all Appearance settings (fonts, sizes, zoom, spacing, and terminal options) to their defaults."
         >
           Reset to defaults
         </Button>
@@ -191,17 +191,19 @@ export function AppearanceSection() {
         />
       )}
 
-      {/* Linux/Windows only: macOS WKWebView always has a working GPU path,
-          so exposing this there would only let a Mac user accidentally
-          downgrade themselves to the slower DOM renderer. */}
-      {!IS_MAC && (
-        <Toggle
-          label="GPU (WebGL) terminal renderer"
-          hint="On is the fast path. Turn off if typing feels laggy: some Linux/WebKitGTK setups run WebGL on a software rasterizer where the plain renderer is faster. Applies to terminals opened after the change (relaunch to switch every terminal)."
-          value={terminalGpuEnabled}
-          onChange={setTerminalGpuEnabled}
-        />
-      )}
+      {/* All platforms (GH #140). Mac WebGL always works, but each live GL
+          surface carries a standing WindowServer/compositor cost on macOS 26
+          even at zero draw calls — measured ~10pp WindowServer CPU per idle
+          visible terminal. Off trades throughput under heavy output for
+          battery; the default stays on. */}
+      <Toggle
+        label="GPU (WebGL) terminal renderer"
+        hint={IS_MAC
+          ? "Renders terminal text on the GPU, keeping heavy output fast and smooth. Turning it off uses less power while terminals sit idle, which can help battery life. Applies to terminals opened after the change; relaunch to switch the ones already open."
+          : "Renders terminal text on the GPU, keeping heavy output fast and smooth. Turn off if typing feels laggy: some Linux/WebKitGTK setups run WebGL on a software rasterizer, where the plain renderer is faster. Applies to terminals opened after the change; relaunch to switch the ones already open."}
+        value={terminalGpuEnabled}
+        onChange={setTerminalGpuEnabled}
+      />
 
       {/* Live terminal preview — spawns a real shell in $HOME so
           font + size + weight changes are reflected immediately
