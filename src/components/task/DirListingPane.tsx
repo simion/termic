@@ -29,14 +29,17 @@ function joinRel(dir: string, name: string): string {
 }
 
 export function DirListingPane(
-  { task, tab, visible = true }: {
+  { task, tab, visible = true, active = false }: {
     task: Task; tab: DirTab;
     /** Whether this tab is the one actually on screen. Threaded down to the
-     *  README's MarkdownPreview, which arms a capture-phase window listener
-     *  for ⌘F and revalidates images on every fsRevision tick — both of
-     *  which a `display: none` listing must not do. Without it a hidden
-     *  listing swallows ⌘F for the whole app. */
+     *  README's MarkdownPreview, which revalidates images on every fsRevision
+     *  tick, which a `display: none` listing must not do. */
     visible?: boolean;
+    /** Whether ⌘F belongs to this tab's README preview. Strictly narrower than
+     *  `visible`, which is a per-task answer: every visited task keeps its tabs
+     *  mounted and visible within itself, so several listings would claim the
+     *  key at once. TaskView computes the app-wide answer. */
+    active?: boolean;
   },
 ) {
   const dir = tab.path;
@@ -220,6 +223,9 @@ export function DirListingPane(
                   <MarkdownPreview
                     text={readme.text}
                     visible={visible}
+                    // ANDed with `visible` so a listing hidden behind another
+                    // tab in the same task can't claim the key.
+                    active={active && visible}
                     themeDark={themeDark}
                     ctx={{ taskId: task.id, filePath: readmePath, epoch: fsRev, memberDirs, hostDirTabId: tab.id }}
                     remoteImagesAllowed={remoteImagesAllowed}

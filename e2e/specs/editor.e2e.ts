@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { archiveTask, openTask, requireTermicApi, snap, waitForAppShell } from "../helpers";
+import { archiveTask, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell } from "../helpers";
 
 declare global {
   interface Window {
@@ -1417,5 +1417,199 @@ describe("find in markdown preview", () => {
     if (original) {
       await browser.execute((m) => window.__termic!.usePrefs.getState().setThemeMode(m), original);
     }
+  });
+});
+
+// ── who owns ⌘F ──────────────────────────────────────────────────────────────
+// Every visited task and every open markdown tab keeps its MarkdownPreview
+// mounted, each with its own capture-phase window keydown listener that stops
+// propagation. These are the cases where more than one of them believed the
+// keystroke was theirs. Marks are per-preview now, so this is purely about the
+// keystroke — no shared registry left to fight over.
+
+describe("⌘F ownership across previews", () => {
+  let taskA: string | undefined;
+  let taskB: string | undefined;
+  let tabA = "";
+  const DOC = "own-a.md";
+  const DOC_B = "own-b.md";
+
+  const openMdPreview = async (taskId: string, name: string, marker: string) => {
+    const tabId = await browser.execute((id, p) => {
+      const app = window.__termic!.useApp.getState();
+      app.openPreviewTab(id, { type: "edit", path: p, title: p });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tab = app.tabs[id].find((t: any) => t.type === "edit" && t.path === p);
+      app.persistTab(id, tab.id);
+      app.patchTab(id, tab.id, { mdView: "preview" });
+      return tab.id as string;
+    }, taskId, name);
+    // Scoped to THIS task's subtree and to what is laid out: the same document
+    // can be open in more than one task, and a hidden copy's textContent
+    // matches just as happily as the one we're waiting for.
+    await browser.waitUntil(
+      () => browser.execute((id, m) => Array.from(
+        document.querySelectorAll(`[data-task-id="${id}"] .markdown-body`))
+        .some((h) => h.getBoundingClientRect().width > 0
+          && (h as HTMLElement).textContent?.includes(m)), taskId, marker),
+      { timeout: 15_000, timeoutMsg: `${name} preview never rendered in ${taskId}` },
+    );
+    return tabId;
+  };
+
+  /** Find bars in the whole document, and which task each belongs to. */
+  const bars = () =>
+    browser.execute((inputSel) => {
+      const shown = (el: Element) => el.getBoundingClientRect().width > 0;
+      const inputs = Array.from(document.querySelectorAll(inputSel));
+      return {
+        total: inputs.length,
+        visible: inputs.filter(shown).length,
+        taskIds: inputs.map((i) => i.closest("[data-task-id]")?.getAttribute("data-task-id") ?? ""),
+      };
+    }, FIND_INPUT);
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    writeFileSync(path.join(fixture, DOC), "# own a\n\nneedle alpha\n\nneedle beta\n\nneedle gamma\n");
+    writeFileSync(path.join(fixture, DOC_B), "# own b\n\nneedle zulu\n\nneedle yankee\n");
+    taskA = await openTask("e2e-own-a");
+    await ensureActiveTask(taskA);
+    tabA = await openMdPreview(taskA, DOC, "needle gamma");
+  });
+
+  after(async () => {
+    if (taskA) await archiveTask(taskA);
+    if (taskB) await archiveTask(taskB);
+    try {
+      execSync(`git -C "${fixture}" clean -fd`);
+    } catch {
+      /* nothing */
+    }
+  });
+
+  it("does not open find in a task that is merely mounted behind the active one", async () => {
+    taskB = await openTask("e2e-own-b");
+    await ensureActiveTask(taskB);
+    await openMdPreview(taskB, DOC_B, "needle zulu");
+    // Back to A. B stays mounted (display:none), preview and all.
+    await ensureActiveTask(taskA!);
+
+    await pressCmdF();
+    await browser.waitUntil(async () => (await bars()).visible === 1,
+      { timeout: 8_000, timeoutMsg: "find bar never opened" });
+
+    const b = await bars();
+    expect(b.total).toBe(1);          // not "1 visible out of 2"
+    expect(b.taskIds).toEqual([taskA]);
+
+    await typeFind("needle");
+    const p = await readFind();
+    expect(p.texts).toHaveLength(3);  // doc A's three, not doc B's two
+    expect(p.currentContext[0]).toContain("alpha");
+  });
+
+  it("leaves ⌘F to the focused split pane instead of the visible preview", async () => {
+    await pressInFind("Escape");
+    await browser.waitUntil(async () => (await bars()).visible === 0,
+      { timeout: 5_000, timeoutMsg: "find bar never closed" });
+
+    // Terminal into its own pane, and focus that pane. The preview is still on
+    // screen in main, but the keyboard now belongs to the terminal.
+    const termId = await browser.execute((id) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const t = window.__termic!.useApp.getState().tabs[id].find((x: any) => x.type === "terminal");
+      return t.id as string;
+    }, taskA);
+    await browser.execute((id, t) => window.__termic!.useApp.getState().moveTabToSplit(id, t, null, "right"),
+      taskA, termId);
+    // Read the new leaf's id from the STORE: the split tree is committed before
+    // React has re-rendered the pane's data-pane-id into the DOM.
+    const paneId: string = await browser.waitUntil(
+      () => browser.execute((id, t) => {
+        const tree = window.__termic!.useApp.getState().splitTree[id];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const leaves: any[] = [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const walk = (n: any) => { if (n.type === "pane") leaves.push(n); else { walk(n.a); walk(n.b); } };
+        if (tree) walk(tree);
+        return leaves.find((l) => (l.tabIds ?? []).includes(t))?.id ?? "";
+      }, taskA, termId),
+      { timeout: 5_000, timeoutMsg: "the terminal never landed in its own split pane" },
+    );
+    await browser.execute((id, p) => window.__termic!.useApp.getState().setActivePaneId(id, p),
+      taskA, paneId);
+
+    await pressCmdF();
+    // The assertion is an absence, so wait on the state that would have
+    // produced a bar instead: the preview is on screen and the pane is focused.
+    await browser.waitUntil(
+      () => browser.execute((id, p) => {
+        const shown = (el: Element) => el.getBoundingClientRect().width > 0;
+        return window.__termic!.useApp.getState().activePaneId[id] === p
+          && !!Array.from(document.querySelectorAll(".markdown-body")).find(shown);
+      }, taskA, paneId),
+      { timeout: 5_000, timeoutMsg: "the split pane never took focus with the preview on screen" },
+    );
+    expect((await bars()).total).toBe(0);
+
+    // Back to a plain single-pane layout for the case below.
+    await browser.execute((id) => {
+      const app = window.__termic!.useApp.getState();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const term = app.tabs[id].find((t: any) => t.type === "terminal");
+      app.moveTabToMain(id, term.id);
+    }, taskA);
+    await browser.waitUntil(
+      () => browser.execute((id) => !window.__termic!.useApp.getState().splitTree[id], taskA),
+      { timeout: 5_000, timeoutMsg: "the split never collapsed back to a single pane" },
+    );
+  });
+
+  it("stands down while a modal is open, and takes ⌘F back on close", async () => {
+    // The case above collapsed the split by moving the terminal back to main,
+    // which made IT the active main tab. Put the reader in the markdown tab.
+    await browser.execute((id, t) => window.__termic!.useApp.getState().setActiveTabId(id, t),
+      taskA, tabA);
+    // A modal owns the keyboard and the tab underneath stays `active`. The
+    // preview's listener checks the focus trap rather than any per-dialog store
+    // flag, so this covers Settings and every other dialog too. Asserted without
+    // the changelog body rendering: it's fetched over the network and may never
+    // arrive here.
+    await browser.execute(() => window.__termic!.useUI.getState().openChangelog());
+    // Wait for the TRAP to hold focus, not merely for the node to exist: the
+    // preview checks activeElement, so the dialog being in the DOM is not yet
+    // the state under test. (Radix moves focus a frame or two after mount.)
+    await browser.waitUntil(
+      () => browser.execute(() =>
+        !!(document.activeElement as HTMLElement | null)?.closest?.('[role="dialog"]')),
+      { timeout: 5_000, timeoutMsg: "the changelog dialog never took focus" },
+    );
+
+    await pressCmdF();
+    // Assert on OWNERSHIP, not on "no bar anywhere": when the changelog body
+    // has loaded, the dialog's own preview legitimately opens one, and its bar
+    // lives in a portal with no [data-task-id] ancestor. What must not happen
+    // is the tab underneath claiming the key.
+    expect((await bars()).taskIds.filter((id) => id === taskA)).toEqual([]);
+
+    await browser.execute(() => window.__termic!.useUI.getState().closeChangelog());
+    // Wait for the trap to RELEASE focus, not for the node to leave the DOM.
+    // The dialog's exit animation is rAF-driven and rAF is throttled on an
+    // occluded window, so the element can outlive its own close here — which
+    // is exactly why the preview tests activeElement rather than the DOM.
+    await browser.waitUntil(
+      () => browser.execute(() =>
+        !(document.activeElement as HTMLElement | null)?.closest?.('[role="dialog"]')),
+      { timeout: 5_000, timeoutMsg: "the changelog dialog never released focus" },
+    );
+
+    await pressCmdF();
+    await browser.waitUntil(
+      async () => (await bars()).taskIds.includes(taskA!),
+      { timeout: 5_000, timeoutMsg: "the tab never got ⌘F back" });
+    await typeFind("needle");
+    expect((await readFind()).texts).toHaveLength(3);
   });
 });

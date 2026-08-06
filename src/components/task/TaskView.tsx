@@ -28,7 +28,7 @@ import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getAllLeaves, computeLeafBounds } from "@/lib/splitTree";
+import { getAllLeaves, computeLeafBounds, focusedTabId } from "@/lib/splitTree";
 import type { PaneLeaf, Rect } from "@/lib/splitTree";
 import { openPath } from "@/lib/ipc";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
@@ -201,6 +201,14 @@ export function TaskView({ task }: { task: Task }) {
   const mainDimOpacity = (splitPaneDim && splitRoot && !isMainActive) ? splitPaneDimAmount / 100 : 0;
   const mainTabs = tabs.filter(t => !(t as TerminalTab).paneId);
 
+  // The one tab in the whole app whose ⌘F should work. Stricter than the
+  // `tabActive` below, which is per-task: MainArea keeps every visited task
+  // mounted, so a background task's preview would answer yes too. Modals are
+  // NOT handled here — the preview's own listener checks the focus trap, which
+  // covers every dialog plus the hand-rolled Settings overlay in one place.
+  const keyboardTabId = focusedTabId(splitRoot, splitActivePaneId, activeId);
+  const taskUpFront = useApp(s => s.activeTaskId === task.id);
+
   // Chrome heights the content must sit below. When there's no split, the
   // TabBar + breadcrumb render ABOVE hRow, so main content fills hRow whole.
   // With a split they render inside the main wrapper: TabBar h-9 (36px) plus
@@ -334,6 +342,12 @@ export function TaskView({ task }: { task: Task }) {
               const tabActive = leaf
                 ? splitActivePaneId === leaf.id && t.id === leaf.activeTabId
                 : t.id === activeId;
+              // Terminals and editors want the per-task answer above: they use
+              // it to focus themselves, and a background task refocusing its
+              // own editor is harmless. The preview needs the app-wide one,
+              // because it claims a window-level ⌘F and one shared highlight
+              // registry.
+              const ownsFind = taskUpFront && t.id === keyboardTabId;
               const attrs = leaf
                 ? { "data-split-leaf": "", "data-pane-id": leaf.id, "data-tab-id": t.id }
                 : { "data-main-content": "", "data-main-tab-id": t.id };
@@ -373,12 +387,12 @@ export function TaskView({ task }: { task: Task }) {
                       {previewKindForPath(t.path)
                         ? <PreviewPane task={task} tab={t} />
                         : isMarkdownPath(t.path)
-                          ? <MarkdownPane task={task} tab={t} />
+                          ? <MarkdownPane task={task} tab={t} visible={visible} active={ownsFind} />
                           : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}
                   {t.type === "diff"     && <Suspense fallback={null}><DiffPane task={task} tab={t} /></Suspense>}
-                  {t.type === "dir"      && <Suspense fallback={null}><DirListingPane task={task} tab={t} visible={visible} /></Suspense>}
+                  {t.type === "dir"      && <Suspense fallback={null}><DirListingPane task={task} tab={t} visible={visible} active={ownsFind} /></Suspense>}
                 </div>
               );
             })}

@@ -57,6 +57,26 @@ export function treeHasDir(tree: SplitTree, dir: SplitDir): boolean {
   return tree.dir === dir || treeHasDir(tree.a, dir) || treeHasDir(tree.b, dir);
 }
 
+/** The tab in this task that has the keyboard: the active tab of the focused
+ *  pane, or the main pane's when that's what's focused (or there's no split).
+ *  Different question from "is this tab visible" — a focused split leaf leaves
+ *  the main tab on screen but not listening.
+ *
+ *  `mainActiveTabId` is activeTab[taskId]; the main pane mirrors it instead of
+ *  carrying tabIds, so it can't be read off the tree. Answers per task, so
+ *  callers must AND in "this task is up front" — every visited task stays
+ *  mounted (see MainArea). */
+export function focusedTabId(
+  tree: SplitTree | null | undefined,
+  activePaneId: string | null | undefined,
+  mainActiveTabId: string | null | undefined,
+): string | null {
+  if (!tree || tree.type === 'pane') return mainActiveTabId ?? null;
+  const leaf = activePaneId ? findLeaf(tree, activePaneId) : null;
+  if (!leaf || leaf.isMain) return mainActiveTabId ?? null;
+  return leaf.activeTabId;
+}
+
 // ── mutations (return new tree, do not mutate input) ─────────────────────────
 
 export function replaceNode(

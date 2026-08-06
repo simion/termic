@@ -626,7 +626,7 @@ function scrollMarkIntoView(scroller: HTMLElement, el: HTMLElement): void {
 
 export function MarkdownPreview(
   { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
-    editorVisible = false,
+    active, editorVisible = false,
     remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages }: {
     text: string; themeDark: boolean; linkify?: boolean; ctx?: MarkdownCtx;
     /** Pending `#fragment` to scroll to once content renders (from a
@@ -644,6 +644,12 @@ export function MarkdownPreview(
      *  reveal effect waits for this before it will scroll. Defaults to true
      *  for callers (the Changelog dialog) that never hide their preview. */
     visible?: boolean;
+    /** Whether ⌘F belongs to this preview. Only one may say true app-wide.
+     *  `visible` is far too weak: a preview stays visible in an unfocused split
+     *  pane, and every background TASK's preview is mounted and visible within
+     *  its own task, so several would claim the key at once. Required with no
+     *  default, since defaulting to yes is exactly the bug. */
+    active: boolean;
     /** Whether an editor pane is ALSO on screen (split view). Cmd+F is then
      *  ambiguous, so the preview only claims it when it (not the editor) is
      *  the focused pane; otherwise CodeMirror's own search keymap wins. When
@@ -753,22 +759,29 @@ export function MarkdownPreview(
     containerRef.current?.focus();
   };
 
-  // Cmd/Ctrl+F opens the bar, but only when this preview is the intended
-  // target. It must be laid out; then either it's already searching, OR no
-  // editor competes (preview-only / the editor-less Changelog dialog), OR — in
-  // split view — the preview is the focused pane. We can't lean on click-focus
-  // for that last check: WKWebView (Safari engine) doesn't move focus to a
-  // non-editable element on click, so `contains(activeElement)` would never go
-  // true. The scroller's onMouseDown below programmatically focuses the
-  // container to make it reliable, which also blurs CodeMirror so its keymap
-  // stops claiming Cmd+F once the reader clicks into the preview.
+  // Cmd/Ctrl+F opens the bar, but only in the preview that should get it. EVERY
+  // mounted preview runs this listener — one per open markdown tab, per visited
+  // task, plus the Changelog dialog's — and it's capture-phase + stopPropagation,
+  // so a wrong claim doesn't just open a stray bar: it eats the key from the
+  // terminal's search overlay and CodeMirror's keymap. `active` does most of the
+  // gating; then either we're already searching, or no editor competes, or in
+  // split view we're the focused pane. That last check leans on the scroller's
+  // onMouseDown at the bottom of this file, which is what makes
+  // `contains(activeElement)` mean anything here; the reason is documented there.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       if (e.key !== "f" && e.key !== "F") return;
-      if (!visible) return;
+      if (!active) return;
       const c = containerRef.current;
       if (!c) return;
+      // A modal owns the keyboard while it's open (Settings, any dialog) and
+      // the tab underneath is still `active`. Read off activeElement rather
+      // than "is a dialog in the DOM": a closing dialog's exit animation is
+      // rAF-driven and rAF freezes on an occluded window, so the node can
+      // outlive its focus trap.
+      const trap = (document.activeElement as HTMLElement | null)?.closest?.('[role="dialog"]');
+      if (trap && !trap.contains(c)) return;
       const mine = findOpen || !editorVisible || c.contains(document.activeElement);
       if (!mine) return;
       e.preventDefault();
@@ -778,7 +791,7 @@ export function MarkdownPreview(
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, editorVisible, findOpen, findQuery]);
+  }, [active, editorVisible, findOpen, findQuery]);
 
   // A recycled tab now points at a different file: close find so its matches
   // don't linger over unrelated content.

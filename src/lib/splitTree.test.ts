@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dropEmptyLeaves, getAllLeaves, pruneLeafTabs } from "./splitTree";
+import { dropEmptyLeaves, focusedTabId, getAllLeaves, pruneLeafTabs } from "./splitTree";
 import type { PaneLeaf, SplitTree } from "./splitTree";
 
 const pane = (id: string, tabIds: string[], isMain = false): PaneLeaf => ({
@@ -92,5 +92,51 @@ describe("dropEmptyLeaves", () => {
     const leaf = getAllLeaves(repaired!).find(l => l.id === "p1")!;
     expect(leaf.tabIds).toEqual(["t1"]);
     expect(leaf.activeTabId).toBe("t1");
+  });
+});
+
+describe("focusedTabId", () => {
+  // No split: the main pane's active tab always owns the keyboard.
+  it("returns the main pane's active tab when there is no split", () => {
+    expect(focusedTabId(null, "", "main-tab")).toBe("main-tab");
+    expect(focusedTabId(pane("main", [], true), "", "main-tab")).toBe("main-tab");
+  });
+
+  it("returns the focused leaf's active tab", () => {
+    const t = split("s1", pane("main", [], true), pane("p1", ["leaf-tab"]));
+    expect(focusedTabId(t, "p1", "main-tab")).toBe("leaf-tab");
+  });
+
+  // The case TaskView's inline predicate got wrong: it answered "the active
+  // main tab" for main tabs unconditionally, ignoring which pane was focused.
+  // A split leaf holding the focus leaves the main tab visible but silent.
+  it("does NOT hand the keyboard to the main tab while a split leaf is focused", () => {
+    const t = split("s1", pane("main", [], true), pane("p1", ["leaf-tab"]));
+    expect(focusedTabId(t, "p1", "main-tab")).not.toBe("main-tab");
+  });
+
+  it("hands it back to main when the main leaf itself is focused", () => {
+    const t = split("s1", pane("main", [], true), pane("p1", ["leaf-tab"]));
+    expect(focusedTabId(t, "main", "main-tab")).toBe("main-tab");
+  });
+
+  // Focus not yet placed in any pane (fresh split, activePaneId still empty):
+  // main keeps the keyboard rather than nobody having it.
+  it("falls back to main when no pane is focused, or the id is stale", () => {
+    const t = split("s1", pane("main", [], true), pane("p1", ["leaf-tab"]));
+    expect(focusedTabId(t, "", "main-tab")).toBe("main-tab");
+    expect(focusedTabId(t, "gone", "main-tab")).toBe("main-tab");
+  });
+
+  it("returns null for a focused leaf with no tabs (an empty SplitLauncher)", () => {
+    const t = split("s1", pane("main", [], true), pane("p1", []));
+    expect(focusedTabId(t, "p1", "main-tab")).toBeNull();
+  });
+
+  // Only ONE tab app-wide may answer true, so a second leaf's tab must not.
+  it("names exactly one tab across a three-pane tree", () => {
+    const t = split("s1", pane("main", [], true), split("s2", pane("p1", ["a"]), pane("p2", ["b"])));
+    expect(focusedTabId(t, "p2", "main-tab")).toBe("b");
+    for (const id of ["main-tab", "a"]) expect(focusedTabId(t, "p2", "main-tab")).not.toBe(id);
   });
 });

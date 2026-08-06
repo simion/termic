@@ -36,7 +36,15 @@ function ToolbarButton({ active, onClick, children }: {
   );
 }
 
-export function MarkdownPane({ task, tab }: { task: Task; tab: EditTab }) {
+export function MarkdownPane(
+  { task, tab, visible, active }: {
+    task: Task; tab: EditTab;
+    /** Laid out (not a `display:none` background tab in this task). */
+    visible: boolean;
+    /** Find belongs to this tab. True for one tab app-wide, see TaskView. */
+    active: boolean;
+  },
+) {
   // Fall back to the last-used view (a persisted pref) so a freshly opened
   // doc shows however you last looked at one. Toggling writes BOTH the
   // per-tab override and the global pref, so the choice survives relaunch.
@@ -182,7 +190,11 @@ export function MarkdownPane({ task, tab }: { task: Task; tab: EditTab }) {
                 ctx={{ taskId: task.id, filePath: tab.path, epoch: fsRev, memberDirs }}
                 revealHeading={tab.revealHeading}
                 onRevealConsumed={() => useApp.getState().patchTab(task.id, tab.id, { revealHeading: undefined })}
-                visible={showPreview}
+                // TaskView's flags are about the tab; `showPreview` is the md
+                // view mode. A source-view tab keeps this preview mounted but
+                // off screen, so both need ANDing.
+                visible={visible && showPreview}
+                active={active && showPreview}
                 editorVisible={showEditor}
                 remoteImagesAllowed={remoteImagesAllowed}
                 onUnblockRemoteImages={

@@ -190,6 +190,12 @@ export function App() {
       </div>
       {showSettings && (
         <div
+          // Hand-rolled overlay rather than a Radix dialog, so say so
+          // explicitly: it's what screen readers and our own "is a modal
+          // eating this keystroke" checks look for.
+          role="dialog"
+          aria-modal="true"
+          aria-label="Settings"
           className={`fixed inset-0 z-40 flex bg-black/50 ${isFullscreen ? "p-4" : "px-4 pb-4 pt-10"}`}
           onMouseDown={e => { if (e.target === e.currentTarget) useApp.getState().closeSettings(); }}
         >

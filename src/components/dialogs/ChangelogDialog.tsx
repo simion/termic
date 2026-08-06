@@ -84,7 +84,10 @@ export function ChangelogDialog() {
               Loading changelog…
             </div>
           }>
-            <MarkdownPreview text={stripHeader(markdown)} themeDark={themeDark} linkify={false} />
+            {/* Mounted only while the dialog is open, and it's modal, so find is
+                ours: TaskView drops the markdown tab's claim on `changelogOpen`
+                and the tab picks its search back up when we close. */}
+            <MarkdownPreview text={stripHeader(markdown)} themeDark={themeDark} linkify={false} active />
           </Suspense>
         </div>
       )}

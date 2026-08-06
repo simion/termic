@@ -24,6 +24,7 @@
 - Async setup in `useEffect` with cleanup — never in component bodies.
 - Effect deps: stable IDs (`ws.id`, `tab.id`), never ws/tab objects (identity changes every patch).
 - StrictMode is off. Audit before re-enabling.
+- **`visible` is not `active`, and a pane claiming anything global needs `active` (GH #71).** MainArea keeps every visited task mounted, and TaskView keeps every tab's content mounted, so "is this laid out" is a per-task answer that several components say yes to at once. A window keydown listener is the usual casualty: the markdown preview's ⌘F handler is capture-phase and stops propagation, so a background task's mounted preview claiming it doesn't just open a stray bar, it swallows the key from the terminal's search overlay and CodeMirror. `TaskView` computes both flavors: `tabActive` (per task, fine for a pane that only focuses itself) and an app-wide one that additionally ANDs in "this task is up front", `focusedTabId()` for the focused split pane, and "no modal hosting the same widget is open". Modals need covering twice over, because the tab underneath one stays `active`: gate on the store where you can, and check `document.activeElement.closest('[role="dialog"]')` for the rest — which is why the hand-rolled Settings overlay carries `role="dialog"` even though it isn't a Radix dialog.
 
 ## Split restore invariants
 
