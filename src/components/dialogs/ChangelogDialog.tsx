@@ -84,10 +84,11 @@ export function ChangelogDialog() {
               Loading changelog…
             </div>
           }>
-            {/* Mounted only while the dialog is open, and it's modal, so find is
-                ours: TaskView drops the markdown tab's claim on `changelogOpen`
-                and the tab picks its search back up when we close. */}
-            <MarkdownPreview text={stripHeader(markdown)} themeDark={themeDark} linkify={false} active />
+            {/* Mounted only while the dialog is open, so find is ours whenever
+                it exists. A markdown tab underneath still says `ownsFind`, but
+                its listener stands down while a focus trap it isn't inside
+                holds the keyboard, and picks its search back up when we close. */}
+            <MarkdownPreview text={stripHeader(markdown)} themeDark={themeDark} linkify={false} ownsFind />
           </Suspense>
         </div>
       )}

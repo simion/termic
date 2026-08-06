@@ -530,6 +530,16 @@ describe("markFindMatches", () => {
     expect(h.querySelectorAll("mark").length).toBe(0);
   });
 
+  // Clearing the search box has to unpaint. Pins that the unmark runs BEFORE
+  // the empty-query bail, which is invisible from a virgin host.
+  it("clears the previous run's marks for an empty query", () => {
+    const h = host("<p>a needle b</p>");
+    expect(markFindMatches(h, "needle")).toHaveLength(1);
+    expect(markFindMatches(h, "")).toEqual([]);
+    expect(h.querySelectorAll("mark").length).toBe(0);
+    expect(h.innerHTML).toBe("<p>a needle b</p>");
+  });
+
   it("skips mermaid blocks, whose rendered SVG must not be split", () => {
     const h = host(`<p>needle</p><div class="mermaid-block"><svg><text>needle</text></svg></div>`);
     expect(markFindMatches(h, "needle")).toHaveLength(1);

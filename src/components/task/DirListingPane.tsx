@@ -29,7 +29,7 @@ function joinRel(dir: string, name: string): string {
 }
 
 export function DirListingPane(
-  { task, tab, visible = true, active = false }: {
+  { task, tab, visible = true, ownsFind = false }: {
     task: Task; tab: DirTab;
     /** Whether this tab is the one actually on screen. Threaded down to the
      *  README's MarkdownPreview, which revalidates images on every fsRevision
@@ -39,7 +39,7 @@ export function DirListingPane(
      *  `visible`, which is a per-task answer: every visited task keeps its tabs
      *  mounted and visible within itself, so several listings would claim the
      *  key at once. TaskView computes the app-wide answer. */
-    active?: boolean;
+    ownsFind?: boolean;
   },
 ) {
   const dir = tab.path;
@@ -225,7 +225,7 @@ export function DirListingPane(
                     visible={visible}
                     // ANDed with `visible` so a listing hidden behind another
                     // tab in the same task can't claim the key.
-                    active={active && visible}
+                    ownsFind={ownsFind && visible}
                     themeDark={themeDark}
                     ctx={{ taskId: task.id, filePath: readmePath, epoch: fsRev, memberDirs, hostDirTabId: tab.id }}
                     remoteImagesAllowed={remoteImagesAllowed}

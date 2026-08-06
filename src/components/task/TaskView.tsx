@@ -345,8 +345,10 @@ export function TaskView({ task }: { task: Task }) {
               // Terminals and editors want the per-task answer above: they use
               // it to focus themselves, and a background task refocusing its
               // own editor is harmless. The preview needs the app-wide one,
-              // because it claims a window-level ⌘F and one shared highlight
-              // registry.
+              // because it claims a window-level ⌘F with stopPropagation.
+              // Necessary but not sufficient: this says nothing about the
+              // bottom split or the right panel, which aren't in the tree, so
+              // the preview also checks where focus actually is.
               const ownsFind = taskUpFront && t.id === keyboardTabId;
               const attrs = leaf
                 ? { "data-split-leaf": "", "data-pane-id": leaf.id, "data-tab-id": t.id }
@@ -387,12 +389,12 @@ export function TaskView({ task }: { task: Task }) {
                       {previewKindForPath(t.path)
                         ? <PreviewPane task={task} tab={t} />
                         : isMarkdownPath(t.path)
-                          ? <MarkdownPane task={task} tab={t} visible={visible} active={ownsFind} />
+                          ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} />
                           : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}
                   {t.type === "diff"     && <Suspense fallback={null}><DiffPane task={task} tab={t} /></Suspense>}
-                  {t.type === "dir"      && <Suspense fallback={null}><DirListingPane task={task} tab={t} visible={visible} active={ownsFind} /></Suspense>}
+                  {t.type === "dir"      && <Suspense fallback={null}><DirListingPane task={task} tab={t} visible={visible} ownsFind={ownsFind} /></Suspense>}
                 </div>
               );
             })}

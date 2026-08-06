@@ -544,8 +544,8 @@ export function attemptReveal(state: RevealState, host: HTMLElement | null, visi
 // (the main render effect does). Mermaid subtrees are excluded from the walk;
 // image hydration only touches attributes, so it is unaffected.
 
-export const FIND_MARK_CLASS = "md-find";
-export const FIND_CURRENT_CLASS = "md-find-current";
+const FIND_MARK_CLASS = "md-find";
+const FIND_CURRENT_CLASS = "md-find-current";
 
 /** Strip every `<mark>` this module added and stitch the text back together.
  *  `normalize()` is load-bearing, not tidiness: wrapping splits a text node in
@@ -578,6 +578,8 @@ export function unmarkFind(host: HTMLElement): void {
  *  searchable, and splitting nodes inside one would corrupt the diagram.
  *  Exported for tests. */
 export function markFindMatches(host: HTMLElement, query: string): HTMLElement[] {
+  // Unconditionally, and BEFORE the empty-query bail: clearing the search box
+  // has to remove the previous run's marks.
   unmarkFind(host);
   const needle = query.toLowerCase();
   if (!needle) return [];
@@ -626,7 +628,7 @@ function scrollMarkIntoView(scroller: HTMLElement, el: HTMLElement): void {
 
 export function MarkdownPreview(
   { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
-    active, editorVisible = false,
+    ownsFind, editorVisible = false,
     remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages }: {
     text: string; themeDark: boolean; linkify?: boolean; ctx?: MarkdownCtx;
     /** Pending `#fragment` to scroll to once content renders (from a
@@ -648,8 +650,12 @@ export function MarkdownPreview(
      *  `visible` is far too weak: a preview stays visible in an unfocused split
      *  pane, and every background TASK's preview is mounted and visible within
      *  its own task, so several would claim the key at once. Required with no
-     *  default, since defaulting to yes is exactly the bug. */
-    active: boolean;
+     *  default, since defaulting to yes is exactly the bug.
+     *
+     *  Deliberately NOT named `active`: the sibling panes take an `active` that
+     *  means the weaker per-task "focus yourself", and quietly widening this to
+     *  match it is GH #71 all over again. */
+    ownsFind: boolean;
     /** Whether an editor pane is ALSO on screen (split view). Cmd+F is then
      *  ambiguous, so the preview only claims it when it (not the editor) is
      *  the focused pane; otherwise CodeMirror's own search keymap wins. When
@@ -702,12 +708,15 @@ export function MarkdownPreview(
   const [findCount, setFindCount] = useState(0);
   const [findIndex, setFindIndex] = useState(0); // 0-based active match
   // The live <mark>s + active index kept in refs so the keydown listener and
-  // nav buttons don't fight stale closures between renders. `findOpenRef` is
-  // here for a related reason: the main render effect runs in the same commit
-  // as a closeFind() and would otherwise still see the bar as open.
+  // nav buttons don't fight stale closures between renders. `findOpenRef` and
+  // `findQueryRef` are here for a related reason: the main render effect runs
+  // in the same commit as a closeFind() and would otherwise still see the bar
+  // as open, and the keydown listener must not re-subscribe per keystroke just
+  // to read a fresh query.
   const findMarksRef = useRef<HTMLElement[]>([]);
   const findIndexRef = useRef(0);
   const findOpenRef = useRef(false);
+  const findQueryRef = useRef("");
 
   // Make the i-th match (wrapping) the current one and scroll it into view.
   // No-op when there are no matches.
@@ -741,15 +750,21 @@ export function MarkdownPreview(
     if (hostRef.current) unmarkFind(hostRef.current);
     findMarksRef.current = [];
     setFindCount(0);
+    findIndexRef.current = 0;
+    setFindIndex(0);
   };
 
   const openFind = () => {
     setFindOpen(true);
     findOpenRef.current = true;
     // Select any existing query so the next keystroke replaces it, matching
-    // the editor's Cmd+F. rAF: the input has to be in the DOM first.
-    requestAnimationFrame(() => findInputRef.current?.select());
-    if (findQuery) runFind(findQuery, true);
+    // the editor's Cmd+F. focus() explicitly: select() implying focus is a
+    // convention, not a guarantee. rAF: the input has to be in the DOM first.
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+    if (findQueryRef.current) runFind(findQueryRef.current, true);
   };
   const closeFind = () => {
     setFindOpen(false);
@@ -763,27 +778,41 @@ export function MarkdownPreview(
   // mounted preview runs this listener — one per open markdown tab, per visited
   // task, plus the Changelog dialog's — and it's capture-phase + stopPropagation,
   // so a wrong claim doesn't just open a stray bar: it eats the key from the
-  // terminal's search overlay and CodeMirror's keymap. `active` does most of the
-  // gating; then either we're already searching, or no editor competes, or in
-  // split view we're the focused pane. That last check leans on the scroller's
-  // onMouseDown at the bottom of this file, which is what makes
-  // `contains(activeElement)` mean anything here; the reason is documented there.
+  // terminal's search overlay and CodeMirror's keymap. `ownsFind` answers "am I
+  // the app's one live tab"; the rest of the gate answers "does something else
+  // hold the keyboard right this second", which the store can't see.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       if (e.key !== "f" && e.key !== "F") return;
-      if (!active) return;
+      if (!ownsFind) return;
       const c = containerRef.current;
       if (!c) return;
-      // A modal owns the keyboard while it's open (Settings, any dialog) and
-      // the tab underneath is still `active`. Read off activeElement rather
-      // than "is a dialog in the DOM": a closing dialog's exit animation is
-      // rAF-driven and rAF freezes on an occluded window, so the node can
-      // outlive its focus trap.
-      const trap = (document.activeElement as HTMLElement | null)?.closest?.('[role="dialog"]');
+      const ae = document.activeElement as HTMLElement | null;
+      const focusHere = !!ae && c.contains(ae);
+
+      // A modal owns the keyboard while it's open and the tab underneath is
+      // still `ownsFind`. Read off activeElement rather than "is a dialog in
+      // the DOM": a closing dialog's exit animation is rAF-driven and rAF
+      // freezes on an occluded window, so the node can outlive its focus trap.
+      // `!contains(c)` because the Changelog dialog hosts a preview of its own.
+      const trap = ae?.closest?.('[role="dialog"]');
       if (trap && !trap.contains(c)) return;
-      const mine = findOpen || !editorVisible || c.contains(document.activeElement);
-      if (!mine) return;
+      // Settings is a hand-rolled overlay (App.tsx) that traps nothing and
+      // autofocuses nothing, so activeElement stays out in the tab underneath
+      // and the check above can't see it. Ask the store instead. Scoped to
+      // previews out in a task: one inside a dialog is on TOP of Settings.
+      if (useApp.getState().view.settingsOpen && !c.closest('[role="dialog"]')) return;
+
+      // Something else on screen has the keyboard AND its own find: the bottom
+      // split's terminal, a right-panel input, CodeMirror anywhere. None of
+      // those are in the task split tree, so `ownsFind` says nothing about them.
+      if (!focusHere && ae?.closest(".xterm, .cm-editor, input, textarea, [contenteditable]")) return;
+      // Split view with focus somewhere neutral: the editor is the default
+      // owner until the reader clicks into the preview. That click is what the
+      // scroller's onMouseDown at the bottom of this file exists to register.
+      if (editorVisible && !focusHere) return;
+
       e.preventDefault();
       e.stopPropagation();
       openFind();
@@ -791,7 +820,7 @@ export function MarkdownPreview(
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, editorVisible, findOpen, findQuery]);
+  }, [ownsFind, editorVisible]);
 
   // A recycled tab now points at a different file: close find so its matches
   // don't linger over unrelated content.
@@ -828,10 +857,10 @@ export function MarkdownPreview(
     // fresh DOM. This lives HERE rather than in an effect keyed on `text`:
     // effects run in declaration order, so a separate one could fire before
     // this rebuild and mark the stale DOM, and it would miss the other deps
-    // (theme, remoteImagesAllowed) that also replace innerHTML. Reads the ref,
+    // (theme, remoteImagesAllowed) that also replace innerHTML. Reads the refs,
     // not the state, because a tab recycled onto another file closes find in
     // this same commit while the state here still says open.
-    if (findOpenRef.current && findQuery) runFind(findQuery, true);
+    if (findOpenRef.current && findQueryRef.current) runFind(findQueryRef.current, true);
     const blocks = Array.from(host.querySelectorAll<HTMLElement>(".mermaid-block"));
     if (blocks.length === 0) return () => { alive = false; };
 
@@ -1093,7 +1122,7 @@ export function MarkdownPreview(
           query={findQuery}
           count={findCount}
           index={findIndex}
-          onQueryChange={(q) => { setFindQuery(q); runFind(q); }}
+          onQueryChange={(q) => { setFindQuery(q); findQueryRef.current = q; runFind(q); }}
           onNext={() => gotoMatch(findIndexRef.current + 1)}
           onPrev={() => gotoMatch(findIndexRef.current - 1)}
           onClose={closeFind}
@@ -1168,6 +1197,7 @@ function FindBar({
         autoComplete="off"
         className="w-44 bg-transparent text-[13px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)]"
       />
+      {/* Fixed width so stepping 9/10 → 10/10 doesn't shift the buttons. */}
       <span className="min-w-[3.25rem] shrink-0 text-right text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
         {query ? `${count ? index + 1 : 0}/${count}` : ""}
       </span>
@@ -1183,3 +1213,4 @@ function FindBar({
     </div>
   );
 }
+

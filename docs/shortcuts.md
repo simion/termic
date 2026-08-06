@@ -11,6 +11,7 @@
 - **Resolved bindings** in prefs store (`usePrefs(s => s.shortcuts)`): `DEFAULT_BINDINGS` merged with localStorage overrides. Mutate via `setShortcut`/`resetShortcut`/`resetAllShortcuts`.
 - **Global handler** (`src/hooks/useShortcuts.ts`): one `keydown` listener, matches via `bindingMatches(e, binding)`.
 - **Contextual shortcuts** (need component state) handled inside the component with a capture-phase listener that `stopPropagation`s only when it claims the key. Shared chord meaning different things by context is expected, not a bug.
+  - A component that stays MOUNTED while off screen (every visited task, every open tab) must gate that listener on an app-wide claim, not "am I laid out". Several instances answer the latter yes at once, and capture + `stopPropagation` means the loser doesn't just misfire, it eats the chord from whoever should have had it. Store state can't finish the job either: it doesn't model the bottom split, the right panel, or a modal on top. See the ⌘F bullet in [gotchas.md](gotchas.md#reactzustand-traps).
 - **Help modal** (`ShortcutsHelpDialog`, triggered by `open-shortcuts`): read-only, grouped by `GROUP_ORDER`. Edit button jumps to Settings → Shortcuts.
 
 ## Glyphs

@@ -133,10 +133,12 @@ describe("focusedTabId", () => {
     expect(focusedTabId(t, "p1", "main-tab")).toBeNull();
   });
 
-  // Only ONE tab app-wide may answer true, so a second leaf's tab must not.
+  // Only ONE tab app-wide may answer true. Walk every pane in turn: each must
+  // name its OWN tab and no other, so no two callers can both claim the key.
   it("names exactly one tab across a three-pane tree", () => {
     const t = split("s1", pane("main", [], true), split("s2", pane("p1", ["a"]), pane("p2", ["b"])));
-    expect(focusedTabId(t, "p2", "main-tab")).toBe("b");
-    for (const id of ["main-tab", "a"]) expect(focusedTabId(t, "p2", "main-tab")).not.toBe(id);
+    const named = ["main", "p1", "p2"].map(p => focusedTabId(t, p, "main-tab"));
+    expect(named).toEqual(["main-tab", "a", "b"]);
+    expect(new Set(named).size).toBe(3);
   });
 });

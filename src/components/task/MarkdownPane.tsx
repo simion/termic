@@ -37,12 +37,12 @@ function ToolbarButton({ active, onClick, children }: {
 }
 
 export function MarkdownPane(
-  { task, tab, visible, active }: {
+  { task, tab, visible, ownsFind }: {
     task: Task; tab: EditTab;
     /** Laid out (not a `display:none` background tab in this task). */
     visible: boolean;
     /** Find belongs to this tab. True for one tab app-wide, see TaskView. */
-    active: boolean;
+    ownsFind: boolean;
   },
 ) {
   // Fall back to the last-used view (a persisted pref) so a freshly opened
@@ -194,7 +194,7 @@ export function MarkdownPane(
                 // view mode. A source-view tab keeps this preview mounted but
                 // off screen, so both need ANDing.
                 visible={visible && showPreview}
-                active={active && showPreview}
+                ownsFind={ownsFind && showPreview}
                 editorVisible={showEditor}
                 remoteImagesAllowed={remoteImagesAllowed}
                 onUnblockRemoteImages={
