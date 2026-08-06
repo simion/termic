@@ -1201,6 +1201,10 @@ const findDoc = [
   "**bold text** and [a link](https://example.com)", "",
   "```", "fenced block contents", "```", "",
   "needle gamma here", "",
+  // Hard-wrapped on purpose: one rendered line, a literal newline in the DOM.
+  "a paragraph whose wrapped phrase", "spans two source lines", "",
+  // Literal dot vs any-char, for the regex-escaping case.
+  "a.b and axb", "",
 ].join("\n");
 
 const FIND_INPUT = 'input[placeholder="Find in preview"]';
@@ -1392,6 +1396,26 @@ describe("find in markdown preview", () => {
     const p = await waitFind((x) => x.texts.join("|") === "inlineCode",
       "code-span match never landed", taskId);
     expect(p.parents).toEqual(["CODE"]);
+  });
+
+  // markdown-it runs with breaks:false, so a hard-wrapped paragraph carries the
+  // source newline into the text node while rendering as one line. Searching
+  // the phrase the reader plainly sees must not come back empty.
+  it("matches a phrase that the markdown source hard-wrapped", async () => {
+    await typeFind("wrapped phrase spans");
+    const p = await waitFind((x) => x.texts.join("|").startsWith("wrapped phrase"),
+      "hard-wrapped phrase never matched", taskId);
+    expect(p.texts).toEqual(["wrapped phrase\nspans"]);
+    expect(p.parents).toEqual(["P"]);
+    expect(p.counter).toBe("1/1");
+  });
+
+  it("treats a regex metacharacter in the query as literal text", async () => {
+    await typeFind("a.b");
+    // "axb" is present in the doc and must NOT match a literal ".".
+    const p = await waitFind((x) => x.texts.join("|") === "a.b",
+      "metacharacter search never settled on the literal match", taskId);
+    expect(p.counter).toBe("1/1");
   });
 
   it("drops every mark when the query stops matching", async () => {

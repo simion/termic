@@ -568,6 +568,18 @@ export function unmarkFind(host: HTMLElement): void {
   host.normalize();
 }
 
+/** Case-insensitive literal matcher for `query`, with one deliberate liberty:
+ *  every whitespace run matches any whitespace run. `breaks: false` leaves the
+ *  markdown source's hard-wrap newlines inside the rendered text nodes, so a
+ *  phrase the reader sees on one line is "per task at\nmost" in the DOM. A
+ *  plain substring search finds nothing there, and since most docs in this repo
+ *  (and most READMEs) are hard-wrapped, that reads as "find is broken" for any
+ *  query longer than a word. */
+function findRegex(query: string): RegExp {
+  const literal = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(literal.replace(/\s+/g, "\\s+"), "gi");
+}
+
 /** Wrap every case-insensitive occurrence of `query` under `host` in a
  *  `<mark>`, returning them in document order. Clears any previous run first.
  *
@@ -585,8 +597,8 @@ export function markFindMatches(host: HTMLElement, query: string): HTMLElement[]
   // Unconditionally, and BEFORE the empty-query bail: clearing the search box
   // has to remove the previous run's marks.
   unmarkFind(host);
-  const needle = query.toLowerCase();
-  if (!needle) return [];
+  if (!query) return [];
+  const re = findRegex(query);
 
   const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -602,16 +614,19 @@ export function markFindMatches(host: HTMLElement, query: string): HTMLElement[]
   for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
 
   for (const node of nodes) {
-    const hay = (node.nodeValue ?? "").toLowerCase();
-    const hits: number[] = [];
-    for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length)) {
-      hits.push(i);
+    const hay = node.nodeValue ?? "";
+    // Match length varies now that whitespace runs are elastic, so carry it.
+    const hits: { at: number; len: number }[] = [];
+    re.lastIndex = 0;
+    for (let m = re.exec(hay); m; m = re.exec(hay)) {
+      if (!m[0]) break; // a zero-width match would spin forever
+      hits.push({ at: m.index, len: m[0].length });
     }
     // Back to front: each splitText only disturbs offsets AFTER the split, so
     // working right-to-left keeps the earlier hits in this node valid.
     for (let k = hits.length - 1; k >= 0; k--) {
-      const match = node.splitText(hits[k]);
-      match.splitText(needle.length);
+      const match = node.splitText(hits[k].at);
+      match.splitText(hits[k].len);
       const mark = document.createElement("mark");
       mark.className = FIND_MARK_CLASS;
       match.parentNode!.replaceChild(mark, match);

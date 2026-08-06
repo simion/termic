@@ -540,6 +540,28 @@ describe("markFindMatches", () => {
     expect(h.innerHTML).toBe("<p>a needle b</p>");
   });
 
+  it("treats regex metacharacters in the query as literal text", () => {
+    const h = host("<p>a.b and axb</p>");
+    expect(markFindMatches(h, "a.b")).toHaveLength(1);
+    expect(markedTexts(h)).toEqual(["a.b"]);
+    const h2 = host("<p>cost is $5 (approx)</p>");
+    expect(markFindMatches(h2, "$5 (approx)")).toHaveLength(1);
+  });
+
+  // markdown-it runs with breaks:false, so a hard-wrapped source paragraph
+  // renders as ONE line containing a literal newline. Searching the phrase the
+  // reader can plainly see must not come back empty (most docs are wrapped).
+  it("matches a phrase across a hard-wrapped source line", () => {
+    const h = host("<p>each agent runs per task at\nmost once</p>");
+    expect(markFindMatches(h, "per task at most")).toHaveLength(1);
+    expect(markedTexts(h)).toEqual(["per task at\nmost"]);
+  });
+
+  it("does not let elastic whitespace match across a missing word", () => {
+    const h = host("<p>per task\nat most</p>");
+    expect(markFindMatches(h, "per most")).toHaveLength(0);
+  });
+
   it("skips mermaid blocks, whose rendered SVG must not be split", () => {
     const h = host(`<p>needle</p><div class="mermaid-block"><svg><text>needle</text></svg></div>`);
     expect(markFindMatches(h, "needle")).toHaveLength(1);
