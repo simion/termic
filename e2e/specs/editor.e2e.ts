@@ -76,10 +76,11 @@ describe("editor open", () => {
     });
   });
 
-  // NOTE: editor search (⌘F) is keyboard-shortcut-only in CodeMirror and does
+  // NOTE: CodeMirror's OWN ⌘F search panel is keyboard-shortcut-only and does
   // not route reliably across window-focus states in this harness (see the
-  // environment-limited list in docs/plans/e2e-coverage.md), so it is a manual
-  // check, not a spec.
+  // environment-limited list in docs/plans/e2e-coverage.md), so it stays a
+  // manual check. The markdown preview's ⌘F is a plain window listener and IS
+  // covered — see "find in markdown preview" at the bottom of this file.
 
   it("renders the markdown Preview", async () => {
     // README is a .md file → MarkdownPane. Switch to the Preview view and
@@ -1173,5 +1174,248 @@ describe("directory links", () => {
 
     await archiveTask(second);
     await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), taskId);
+  });
+});
+
+// ── find in markdown preview (⌘F) ────────────────────────────────────────────
+// The money assertion is never "something is highlighted" but "the highlighted
+// text IS the query", read out of the real DOM. Matches are wrapped in <mark>,
+// so what these assert is what the engine paints.
+//
+// This is deliberate: the previous implementation used the CSS Custom Highlight
+// API, and in WKWebView that registry stayed perfectly correct while the paint
+// landed on unrelated <code> elements. A spec that read the registry passed
+// while the feature was visibly broken, so nothing here reads it.
+//
+// ⌘F is dispatched as a synthetic window keydown: unlike CodeMirror's keymap
+// (see the NOTE in "editor open" above) the preview's handler is a plain window
+// listener, so it routes reliably here.
+
+/** Prose hits, plus code/bold/link that do NOT contain the query — the shape
+ *  that exposed the old bug, where code spans lit up instead of the matches. */
+const findDoc = [
+  "# find doc", "",
+  "needle alpha here", "",
+  "prose with `inlineCode` inside", "",
+  "needle beta here", "",
+  "**bold text** and [a link](https://example.com)", "",
+  "```", "fenced block contents", "```", "",
+  "needle gamma here", "",
+].join("\n");
+
+const FIND_INPUT = 'input[placeholder="Find in preview"]';
+
+type FindPaint = {
+  /** textContent of every <mark>, in document order. */
+  texts: string[];
+  /** Tag of each mark's parent, so "wrapped the whole code span" is visible. */
+  parents: string[];
+  /** Text of the current (solid) match's containing element, so an off-by-N
+   *  active match shows up rather than just "something is orange". */
+  currentContext: string[];
+  counter: string;
+};
+
+const readFind = () =>
+  browser.execute((inputSel): FindPaint => {
+    const shown = (el: Element) => el.getBoundingClientRect().width > 0;
+    const hostEl = Array.from(document.querySelectorAll(".markdown-body")).find(shown);
+    const marks = hostEl ? Array.from(hostEl.querySelectorAll("mark.md-find")) : [];
+    const bar = Array.from(document.querySelectorAll(inputSel)).find(shown)?.parentElement;
+    return {
+      texts: marks.map((m) => m.textContent ?? ""),
+      parents: marks.map((m) => m.parentElement?.tagName ?? "?"),
+      currentContext: marks.filter((m) => m.classList.contains("md-find-current"))
+        .map((m) => m.parentElement?.textContent ?? ""),
+      counter: Array.from(bar?.querySelectorAll("span") ?? [])
+        .map((s) => s.textContent?.trim() ?? "")
+        .find((t) => /^\d+\/\d+$/.test(t)) ?? "",
+    };
+  }, FIND_INPUT);
+
+const pressCmdF = () =>
+  browser.execute(() => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true }),
+    );
+  });
+
+/** Type one character at a time, the way a person does: React sees N input
+ *  events, and each re-runs the search. A single value assignment would skip
+ *  every intermediate state. */
+const typeFind = async (q: string) => {
+  for (let i = 1; i <= q.length; i++) {
+    await browser.execute((v, inputSel) => {
+      const shown = (el: Element) => el.getBoundingClientRect().width > 0;
+      const el = Array.from(document.querySelectorAll(inputSel)).find(shown) as HTMLInputElement;
+      if (!el) throw new Error("no visible find bar to type into");
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }, q.slice(0, i), FIND_INPUT);
+  }
+};
+
+const pressInFind = (key: string, shift = false) =>
+  browser.execute((k, sh, inputSel) => {
+    const shown = (el: Element) => el.getBoundingClientRect().width > 0;
+    const el = Array.from(document.querySelectorAll(inputSel)).find(shown) as HTMLInputElement;
+    if (!el) throw new Error("no visible find bar to key into");
+    el.dispatchEvent(
+      new KeyboardEvent("keydown", { key: k, shiftKey: sh, bubbles: true, cancelable: true }),
+    );
+  }, key, shift, FIND_INPUT);
+
+const findBarCount = () =>
+  browser.execute((inputSel) => {
+    const shown = (el: Element) => el.getBoundingClientRect().width > 0;
+    return Array.from(document.querySelectorAll(inputSel)).filter(shown).length;
+  }, FIND_INPUT);
+
+describe("find in markdown preview", () => {
+  let taskId: string | undefined;
+  const DOC = "find-doc.md";
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    writeFileSync(path.join(fixture, DOC), findDoc);
+    taskId = await openTask("e2e-find");
+    await browser.execute((id, p) => {
+      const app = window.__termic!.useApp.getState();
+      app.openPreviewTab(id, { type: "edit", path: p, title: p });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tab = app.tabs[id].find((t: any) => t.type === "edit" && t.path === p);
+      app.persistTab(id, tab.id);
+      app.patchTab(id, tab.id, { mdView: "preview" });
+    }, taskId, DOC);
+    await browser.waitUntil(
+      () => browser.execute((id) => Array.from(
+        document.querySelectorAll(`[data-task-id="${id}"] .markdown-body`))
+        .some((h) => h.getBoundingClientRect().width > 0
+          && (h as HTMLElement).textContent?.includes("needle gamma")), taskId),
+      { timeout: 15_000, timeoutMsg: `${DOC} preview never rendered` },
+    );
+  });
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    try {
+      execSync(`git -C "${fixture}" clean -fd`);
+    } catch {
+      /* nothing */
+    }
+  });
+
+  it("marks exactly the searched text, never the code spans around it", async () => {
+    await pressCmdF();
+    await browser.waitUntil(async () => (await findBarCount()) === 1,
+      { timeout: 8_000, timeoutMsg: "find bar never opened" });
+    await typeFind("needle");
+
+    const p = await readFind();
+    // Three prose hits. The old bug marked the code/fenced spans instead, so
+    // asserting the TEXT (not a count) is what makes this case load-bearing.
+    expect(p.texts).toEqual(["needle", "needle", "needle"]);
+    expect(p.parents).toEqual(["P", "P", "P"]);
+    expect(p.currentContext[0]).toContain("alpha"); // first occurrence
+    expect(p.counter).toBe("1/3");
+    await snap("preview-find.png");
+  });
+
+  it("steps forward and back in step with the counter, wrapping at both ends", async () => {
+    await pressInFind("Enter");
+    let p = await readFind();
+    expect(p.counter).toBe("2/3");
+    expect(p.currentContext[0]).toContain("beta");
+
+    await pressInFind("Enter");
+    await pressInFind("Enter"); // 3/3 -> wraps to 1/3
+    p = await readFind();
+    expect(p.counter).toBe("1/3");
+    expect(p.currentContext[0]).toContain("alpha");
+
+    await pressInFind("Enter", true); // back past the start -> wraps to 3/3
+    p = await readFind();
+    expect(p.counter).toBe("3/3");
+    expect(p.currentContext[0]).toContain("gamma");
+    // Exactly one match is ever the current one.
+    expect(p.currentContext).toHaveLength(1);
+  });
+
+  it("replaces the previous run on a second search instead of stacking on it", async () => {
+    await typeFind("fenced");
+    const p = await readFind();
+    expect(p.texts).toEqual(["fenced"]);   // the needles are gone, not still lit
+    expect(p.counter).toBe("1/1");
+  });
+
+  it("matches inside a code span when the query is actually there", async () => {
+    await typeFind("inlineCode");
+    const p = await readFind();
+    expect(p.texts).toEqual(["inlineCode"]);
+    expect(p.parents).toEqual(["CODE"]);
+  });
+
+  it("drops every mark when the query stops matching", async () => {
+    await typeFind("zzz-no-such-text");
+    const p = await readFind();
+    expect(p.texts).toEqual([]);
+    expect(p.counter).toBe("0/0");
+  });
+
+  it("restores the document when find closes", async () => {
+    await typeFind("needle");
+    expect((await readFind()).texts).toHaveLength(3);
+
+    await pressInFind("Escape");
+    await browser.waitUntil(async () => (await findBarCount()) === 0,
+      { timeout: 5_000, timeoutMsg: "find bar never closed" });
+
+    const after = await browser.execute(() => {
+      const shown = (el: Element) => el.getBoundingClientRect().width > 0;
+      const h = Array.from(document.querySelectorAll(".markdown-body")).find(shown) as HTMLElement;
+      return {
+        marks: h.querySelectorAll("mark").length,
+        // The prose is one text node again, not the three splitText left.
+        text: h.textContent?.includes("needle alpha here") ?? false,
+        // Formatting the marks were wrapped around survived.
+        code: !!h.querySelector("code"),
+      };
+    });
+    expect(after).toEqual({ marks: 0, text: true, code: true });
+  });
+
+  it("re-marks against the rebuilt DOM when a theme flip replaces it", async () => {
+    const original = await browser.execute(() => window.__termic!.usePrefs.getState().themeMode);
+    await pressCmdF();
+    await browser.waitUntil(async () => (await findBarCount()) === 1,
+      { timeout: 8_000, timeoutMsg: "find bar never reopened" });
+    await typeFind("needle");
+    expect((await readFind()).texts).toHaveLength(3);
+
+    // A theme flip re-runs the render effect, which replaces host.innerHTML and
+    // takes every <mark> with it. Force a real change: flipping to the theme
+    // already in effect rebuilds nothing and this case would test nothing.
+    const setTheme = async (mode: string, cls: string) => {
+      await browser.execute((m) => window.__termic!.usePrefs.getState().setThemeMode(m), mode);
+      await browser.waitUntil(
+        () => browser.execute((c) => document.documentElement.classList.contains(c), cls),
+        { timeout: 8_000, timeoutMsg: `theme never became ${mode}` },
+      );
+    };
+    await setTheme("dark", "dark");
+    await setTheme("light", "light");
+
+    await browser.waitUntil(async () => (await readFind()).texts.length === 3,
+      { timeout: 5_000, timeoutMsg: "matches never came back after the rebuild" });
+    const p = await readFind();
+    expect(p.texts).toEqual(["needle", "needle", "needle"]);
+    expect(p.parents).toEqual(["P", "P", "P"]);
+    expect(p.counter).toBe("1/3");
+
+    if (original) {
+      await browser.execute((m) => window.__termic!.usePrefs.getState().setThemeMode(m), original);
+    }
   });
 });

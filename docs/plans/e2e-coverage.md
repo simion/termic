@@ -58,6 +58,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Find in files | ⇧⌘F opens; a repo-present query returns a result row | `files.e2e.ts` |
 | ✅ Markdown preview | Preview view renders the README markdown (h1) | `editor.e2e.ts` |
 | ✅ Directory links | A folder link recycles the preview tab into a listing and expands the tree; the folder README renders under it; folder rows, `..` and links inside the README navigate in place; a file row or README file link pins the listing and opens alongside it; a hidden listing's README does not claim ⌘F; ⌘[ / ⌘] walk the folder trail, are declined when focus is in the bottom drawer or right panel, and fall through to task switching once the trail runs out | `editor.e2e.ts` |
+| ✅ Find in preview | ⌘F marks exactly the query text and nothing else (asserted on the `<mark>`s, never a highlight registry), including the code spans a doc contains but the query doesn't touch; Enter/⇧Enter step with the counter and wrap both ways; a second query replaces the first instead of stacking; a query inside a code span still matches; no match clears; Escape restores the document; a theme flip that rebuilds the DOM re-marks against the fresh one | `editor.e2e.ts` |
 | ✅ File tree | Create a folder → expand reveals its child → collapse hides it | `files.e2e.ts` |
 | ✅ Drag a file to a terminal | Row dragged onto a terminal sends the relative path to the PTY (no editor tab); released elsewhere types nothing; a plain click still opens the file | `files.e2e.ts` |
 | ✅ Tab drags | Reorder within the main strip; drop on a pane edge to split there; drag out of a pane back to main | `tabs-layout.e2e.ts` |
@@ -127,7 +128,7 @@ Lower-value or high-setup items left for later; the patterns to do them are all 
 These are intentionally NOT covered by written specs — asserting them would be flaky or impossible in the occluded-window / embedded-WebDriver setup. Left as manual checks.
 
 - **OS desktop notification delivery + completion sound** on agent done — no in-webview signal to assert; the store-side attention/unread IS covered (`agent.e2e.ts`).
-- **Keyboard shortcuts into CodeMirror** (e.g. ⌘F search) don't route reliably across window-focus states — manual check. Button-driven editor actions (Preview) ARE covered.
+- **Keyboard shortcuts into CodeMirror** (e.g. its own ⌘F search panel) don't route reliably across window-focus states — manual check. Button-driven editor actions (Preview) ARE covered. This is specific to CodeMirror's keymap: the markdown preview's ⌘F is a plain window listener, so it dispatches fine as a synthetic keydown and IS covered (find-in-preview, `editor.e2e.ts`).
 - **Real keystrokes into xterm / CodeMirror** (contenteditable + WebGL canvas) — WebDriver key events don't route there reliably. Covered by proxy: PTY round-trips via `ipc.ptyWrite` (`task-spawn`, `message-queue`) and editor edits via the CodeMirror view API (`editor-save`).
 - **Commit-and-push / setup script / resume-closed-tab** — need mock-remote / `.termic.yaml` / multi-agent-tab infra with careful fixture cleanup; deferred, tracked above.
 - **The page a PDF is scrolled to** — it lives in WKWebView's native PDF view, which exposes nothing to the DOM. The spec asserts the two mechanisms that keep that view (and its page) alive; the page itself is a manual check.

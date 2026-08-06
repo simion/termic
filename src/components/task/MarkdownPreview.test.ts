@@ -13,7 +13,8 @@ vi.mock("@/store/ui", () => ({ useUI: { getState: vi.fn() } }));
 import { taskFileReadBase64 } from "@/lib/ipc";
 import {
   attemptReveal, captureReveal, consumeNavRevalidate, expireRevealGrace, gateRemoteImages, hydrateTaskImages,
-  IMG_CACHE_MAX_ENTRIES, imgCacheInsert, newNavRevalidateState, newRevealState, remoteImageBannerKind,
+  IMG_CACHE_MAX_ENTRIES, imgCacheInsert, markFindMatches, newNavRevalidateState, newRevealState,
+  remoteImageBannerKind, unmarkFind,
   type ImgCache, type MarkdownCtx,
 } from "./MarkdownPreview";
 
@@ -472,5 +473,116 @@ describe("consumeNavRevalidate", () => {
     consumeNavRevalidate(state, "fileB.md", ""); // recycle to B, content not loaded yet
     consumeNavRevalidate(state, "fileC.md", ""); // recycles again to C before B ever loaded
     expect(consumeNavRevalidate(state, "fileC.md", "content C")).toBe(true);
+  });
+});
+
+// ── find in preview ──────────────────────────────────────────────────────────
+// Matches are wrapped in <mark> rather than registered with the CSS Custom
+// Highlight API. These assert on the DOM the browser actually paints, which is
+// the whole point: the previous implementation kept a perfectly correct
+// registry while painting the wrong text (docs/gotchas.md).
+
+function host(html: string): HTMLElement {
+  const el = document.createElement("div");
+  el.innerHTML = html;
+  document.body.appendChild(el);
+  return el;
+}
+
+const markedTexts = (h: HTMLElement) =>
+  Array.from(h.querySelectorAll("mark.md-find")).map(m => m.textContent);
+
+describe("markFindMatches", () => {
+  beforeEach(() => { document.body.innerHTML = ""; });
+
+  it("wraps exactly the query, preserving the document's own casing", () => {
+    const h = host("<p>Needle and needle and NEEDLE</p>");
+    const marks = markFindMatches(h, "needle");
+    expect(marks).toHaveLength(3);
+    expect(markedTexts(h)).toEqual(["Needle", "needle", "NEEDLE"]);
+    // The surrounding words are untouched.
+    expect(h.textContent).toBe("Needle and needle and NEEDLE");
+  });
+
+  it("returns marks in document order across nested elements", () => {
+    const h = host("<p>one hit</p><ul><li><em>two hit</em></li></ul>");
+    const marks = markFindMatches(h, "hit");
+    expect(marks).toHaveLength(2);
+    expect(marks[0].closest("p")).not.toBeNull();
+    expect(marks[1].closest("em")).not.toBeNull();
+  });
+
+  it("marks every occurrence inside one text node, including adjacent ones", () => {
+    const h = host("<p>aaaa</p>");
+    expect(markFindMatches(h, "aa")).toHaveLength(2);
+    expect(h.textContent).toBe("aaaa");
+  });
+
+  it("marks a hit inside inline markup without disturbing it", () => {
+    const h = host("<p>a <strong>needle</strong> b</p>");
+    markFindMatches(h, "needle");
+    expect(h.querySelector("strong mark.md-find")?.textContent).toBe("needle");
+  });
+
+  it("returns nothing for an empty query rather than matching everywhere", () => {
+    const h = host("<p>text</p>");
+    expect(markFindMatches(h, "")).toEqual([]);
+    expect(h.querySelectorAll("mark").length).toBe(0);
+  });
+
+  it("skips mermaid blocks, whose rendered SVG must not be split", () => {
+    const h = host(`<p>needle</p><div class="mermaid-block"><svg><text>needle</text></svg></div>`);
+    expect(markFindMatches(h, "needle")).toHaveLength(1);
+    expect(h.querySelector(".mermaid-block mark")).toBeNull();
+  });
+
+  // Documented limitation, not an accident: the walk is per text node, so the
+  // rendered document is what's searched. Pinned so a future change is a choice.
+  it("matches inside inline markup but NOT across its boundary", () => {
+    const h = host("<p>he<strong>ll</strong>o</p>");
+    expect(markFindMatches(h, "ll")).toHaveLength(1);
+    expect(markFindMatches(h, "hello")).toHaveLength(0);
+  });
+
+  it("replaces the previous run instead of stacking on it", () => {
+    const h = host("<p>needle and haystack</p>");
+    markFindMatches(h, "needle");
+    markFindMatches(h, "haystack");
+    expect(markedTexts(h)).toEqual(["haystack"]);
+  });
+
+  // The reason unmarkFind calls normalize(). Wrapping splits a text node in
+  // three; without rejoining them the next search can't see across the seam.
+  it("can match across the seam a previous highlight left behind", () => {
+    const h = host("<p>a needlepoint b</p>");
+    expect(markFindMatches(h, "needle")).toHaveLength(1);
+    expect(markFindMatches(h, "needlepoint")).toHaveLength(1);
+    expect(markedTexts(h)).toEqual(["needlepoint"]);
+  });
+});
+
+describe("unmarkFind", () => {
+  beforeEach(() => { document.body.innerHTML = ""; });
+
+  it("restores the document exactly", () => {
+    const html = "<p>a <strong>needle</strong> and needle b</p>";
+    const h = host(html);
+    markFindMatches(h, "needle");
+    unmarkFind(h);
+    expect(h.innerHTML).toBe(html);
+    expect(h.querySelectorAll("mark").length).toBe(0);
+  });
+
+  it("rejoins the split text nodes so the paragraph is one node again", () => {
+    const h = host("<p>a needle b</p>");
+    markFindMatches(h, "needle");
+    unmarkFind(h);
+    expect(h.querySelector("p")!.childNodes).toHaveLength(1);
+  });
+
+  it("leaves a document with no marks alone", () => {
+    const h = host("<p>untouched</p>");
+    unmarkFind(h);
+    expect(h.innerHTML).toBe("<p>untouched</p>");
   });
 });

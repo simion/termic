@@ -649,6 +649,22 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   margin: 1.5em 0;
   background: var(--color-border-soft);
 }
+/* Find-in-preview matches. The preview wraps hits in <mark> rather than using
+   the CSS Custom Highlight API, which paints the wrong text in WKWebView (see
+   docs/gotchas.md), so these are plain element rules. `color` and `background`
+   must BOTH be set: the UA default for <mark> is black-on-yellow, which is
+   unreadable on a dark surface. Inherit the font so wrapping a match inside a
+   heading or code span doesn't reflow it. */
+.markdown-body mark.md-find {
+  background-color: var(--color-accent-soft);
+  color: inherit;
+  font: inherit;
+  border-radius: 2px;
+}
+.markdown-body mark.md-find-current {
+  background-color: var(--color-accent);
+  color: var(--color-accent-fg);
+}
 /* Inline code + fenced blocks. */
 .markdown-body code {
   font-family: var(--font-mono);
