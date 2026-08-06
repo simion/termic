@@ -1247,8 +1247,8 @@ const readFind = (taskId?: string) =>
   }, FIND_INPUT, taskId ?? "");
 
 /** Poll until `ok` holds, then hand back that reading. Required, not hygiene:
- *  the counter renders from React state, so it only exists after a commit, and
- *  reading straight after a dispatched keystroke is a race. */
+ *  the re-mark is debounced (FIND_DEBOUNCE_MS) so the DOM trails the keystroke,
+ *  and the counter renders from React state on top of that. */
 const waitFind = async (ok: (p: FindPaint) => boolean, msg: string, taskId?: string) => {
   let last: FindPaint = {
     texts: [], parents: [], currentContext: [], counter: "", markBg: "", currentBg: "",
@@ -1356,7 +1356,9 @@ describe("find in markdown preview", () => {
 
   it("steps forward and back in step with the counter, wrapping at both ends", async () => {
     // Re-establish the precondition rather than inheriting it: one failure
-    // above should not cascade into a misleading failure here.
+    // above should not cascade into a misleading failure here. Retyping the
+    // query already on screen must not cost the reader their next Enter, which
+    // is exactly what flushFind's "did the result set change" check protects.
     await typeFind("needle");
     await waitFind((x) => x.counter === "1/3", "search never settled before stepping", taskId);
 
@@ -1379,7 +1381,7 @@ describe("find in markdown preview", () => {
   it("replaces the previous run on a second search instead of stacking on it", async () => {
     await typeFind("fenced");
     // Wait on THIS query's marks, never on a count the previous query also had:
-    // a loose predicate is satisfied by the reading the last query left behind.
+    // the re-mark is debounced, so a stale reading can satisfy a loose predicate.
     const p = await waitFind((x) => x.texts.join("|") === "fenced",
       "second search never replaced the first", taskId);
     expect(p.counter).toBe("1/1");         // the needles are gone, not still lit

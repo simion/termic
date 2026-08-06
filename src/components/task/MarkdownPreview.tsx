@@ -546,6 +546,10 @@ export function attemptReveal(state: RevealState, host: HTMLElement | null, visi
 
 const FIND_MARK_CLASS = "md-find";
 const FIND_CURRENT_CLASS = "md-find-current";
+/** Re-mark delay. The walk+wrap is O(document) and the FIRST characters of a
+ *  query are the expensive ones, so this is what keeps typing cheap. See
+ *  `scheduleFind`. */
+const FIND_DEBOUNCE_MS = 90;
 
 /** Strip every `<mark>` this module added and stitch the text back together.
  *  `normalize()` is load-bearing, not tidiness: wrapping splits a text node in
@@ -717,6 +721,10 @@ export function MarkdownPreview(
   const findIndexRef = useRef(0);
   const findOpenRef = useRef(false);
   const findQueryRef = useRef("");
+  const findTimerRef = useRef<number | null>(null);
+  /** The query the marks on screen were built from, so a flush can tell a
+   *  real re-search from a no-op. Null until the first run. */
+  const lastRunQueryRef = useRef<string | null>(null);
 
   // Make the i-th match (wrapping) the current one and scroll it into view.
   // No-op when there are no matches.
@@ -736,6 +744,7 @@ export function MarkdownPreview(
   const runFind = (q: string, keepIndex = false) => {
     const host = hostRef.current;
     const marks = host ? markFindMatches(host, q) : [];
+    lastRunQueryRef.current = q;
     findMarksRef.current = marks;
     setFindCount(marks.length);
     if (!marks.length) {
@@ -746,7 +755,41 @@ export function MarkdownPreview(
     gotoMatch(keepIndex ? findIndexRef.current : 0);
   };
 
+  // Debounce the re-mark, NOT the keystroke: the input updates immediately, only
+  // the DOM pass waits. markFindMatches walks every text node and inserts an
+  // element per hit, so the leading characters of a query are by far the most
+  // expensive (one letter over this repo's docs/gotchas.md is ~1,900 <mark>s,
+  // ~45ms) and they're exactly the ones the reader is about to type past. Nav
+  // and Enter flush rather than wait, so nothing observable is ever stale.
+  const cancelPendingFind = () => {
+    if (findTimerRef.current === null) return false;
+    clearTimeout(findTimerRef.current);
+    findTimerRef.current = null;
+    return true;
+  };
+  const scheduleFind = (q: string) => {
+    cancelPendingFind();
+    findTimerRef.current = window.setTimeout(() => {
+      findTimerRef.current = null;
+      runFind(q);
+    }, FIND_DEBOUNCE_MS);
+  };
+  /** Run any pending search now, so Enter never acts on a stale match list.
+   *  Returns true only when that search actually CHANGED the result set, which
+   *  tells the caller its "go to next match" is already satisfied: the reader
+   *  hasn't seen match 1 yet, so stepping past it would skip it. A pending run
+   *  for the query already on screen is a no-op, keeps the reader's position,
+   *  and must not eat their keystroke. */
+  const flushFind = () => {
+    if (!cancelPendingFind()) return false;
+    const q = findQueryRef.current;
+    const changed = q !== lastRunQueryRef.current;
+    runFind(q, !changed);
+    return changed;
+  };
+
   const clearFind = () => {
+    cancelPendingFind();
     if (hostRef.current) unmarkFind(hostRef.current);
     findMarksRef.current = [];
     setFindCount(0);
@@ -828,8 +871,10 @@ export function MarkdownPreview(
     if (findOpen) closeFind();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx?.filePath]);
-  // No unmount cleanup: the marks live in this preview's own subtree, which
-  // goes away with it. Nothing is registered globally.
+  // The marks need no unmount cleanup: they live in this preview's own subtree,
+  // which goes away with it, and nothing is registered globally. The debounce
+  // timer does, so it can't fire into a torn-down tree.
+  useEffect(() => () => { if (findTimerRef.current !== null) clearTimeout(findTimerRef.current); }, []);
 
   // Main imperative effect: parse → inject → hydrate images + mermaid.
   // Re-runs when the buffer text or the theme changes — deliberately NOT on
@@ -1122,9 +1167,11 @@ export function MarkdownPreview(
           query={findQuery}
           count={findCount}
           index={findIndex}
-          onQueryChange={(q) => { setFindQuery(q); findQueryRef.current = q; runFind(q); }}
-          onNext={() => gotoMatch(findIndexRef.current + 1)}
-          onPrev={() => gotoMatch(findIndexRef.current - 1)}
+          onQueryChange={(q) => { setFindQuery(q); findQueryRef.current = q; scheduleFind(q); }}
+          // flushFind lands on match 1, so a pending search makes "next" a no-op
+          // rather than a skip: type + Enter goes to the first hit, not the second.
+          onNext={() => { if (!flushFind()) gotoMatch(findIndexRef.current + 1); }}
+          onPrev={() => { flushFind(); gotoMatch(findIndexRef.current - 1); }}
           onClose={closeFind}
         />
       )}
