@@ -317,6 +317,9 @@ export interface CreateTaskArgs {
    *  "Custom command" in worktree mode). The default tab runs this through a
    *  login shell instead of an agent binary. Null/undefined for agent/shell. */
   custom_command?: string | null;
+  /** Externally-started session id the agent resumes on its first spawn
+   *  (GH #169): seeds `agent_session_ids[cli]`, same as an import. */
+  resume_session_id?: string;
 }
 
 export interface Agent {

@@ -491,6 +491,9 @@ pub(crate) struct AgentMeta {
     pub kind: String,
     pub work_done: bool,
     pub disabled: bool,
+    /// Registry `resume_id_args` non-empty: the agent can resume a
+    /// SPECIFIC session by id, the `--resume <SESSION_ID>` gate (GH #169).
+    pub id_resume: bool,
 }
 
 /// Everything the request handler needs from the app, behind a trait so
@@ -541,6 +544,15 @@ pub(crate) trait CliHost: Send + Sync {
     /// `git rev-parse --show-toplevel` for `new` run outside any
     /// registered project: is the cwd a repo we could register?
     fn git_toplevel(&self, cwd: &str) -> Option<String>;
+    /// Every working-tree path of the repo containing `path` (the
+    /// `git worktree list` set, main checkout first), for `new --from`
+    /// project resolution. Empty = not a git worktree. `git_toplevel`
+    /// cannot serve here (it answers the WORKTREE root), and deriving the
+    /// main root from git-common-dir breaks on bare-repo hubs, submodules
+    /// and --separate-git-dir clones; the worktree list is layout-proof.
+    fn repo_worktrees(&self, _path: &str) -> Vec<String> {
+        Vec::new()
+    }
     /// The send-to-main flow (`apply`), typed so the verb can pin
     /// distinct exit codes on the failure classes.
     fn apply_diff(&self, task_id: &str) -> Result<crate::SendDiffResult, crate::SendDiffError>;
@@ -868,6 +880,42 @@ pub(crate) fn resolve_project_for_new<'a>(
     }
 }
 
+/// `--from` project resolution: the worktree's own repo decides. A
+/// registered project whose root is ANY working tree of that repo claims
+/// the worktree (main checkout in the common case; bare-repo hubs and
+/// submodule checkouts register a sibling worktree instead, which the
+/// git-common-dir parent trick mis-resolved). `resolve_project_for_new`
+/// cannot serve here because it would resolve the WORKTREE root and
+/// mis-report a worktree of a registered repo as an unregistered project.
+pub(crate) fn resolve_project_for_worktree<'a>(
+    projects: &'a [Project],
+    host: &dyn CliHost,
+    path: &str,
+) -> Result<&'a Project, proto::ErrorBody> {
+    let worktrees = host.repo_worktrees(path);
+    if worktrees.is_empty() {
+        return Err(proto::ErrorBody {
+            code: ErrorCode::BadRequest,
+            message: format!("{path} is not a git worktree"),
+            data: None,
+        });
+    }
+    let canon_trees: Vec<String> = worktrees.iter().map(|w| canon(w)).collect();
+    if let Some(p) = projects.iter().find(|p| canon_trees.contains(&canon(&p.root_path))) {
+        return Ok(p);
+    }
+    // The first listed tree is the main checkout (or the bare hub): the
+    // most sensible root to suggest registering.
+    let root = worktrees[0].clone();
+    Err(proto::ErrorBody {
+        code: ErrorCode::UnregisteredProject,
+        message: format!(
+            "{root} is a git repository but not a registered Termic project. Register it with `termic project add {root}`, or pass --project."
+        ),
+        data: Some(serde_json::json!({ "root": root })),
+    })
+}
+
 fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
     let Command::New {
         name,
@@ -875,6 +923,8 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         agent,
         mode,
         base,
+        from,
+        resume,
         sandbox,
         yolo,
         project,
@@ -903,8 +953,18 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             );
         }
     }
+    // Import shape (GH #169): the clap layer already forbids this
+    // combination, but the wire is a public surface of its own.
+    if from.is_some() && (mode.is_some() || base.is_some()) {
+        return fail(
+            ErrorCode::BadRequest,
+            "from adopts an existing worktree; it cannot combine with a mode or base".into(),
+        );
+    }
     let mut trimmed = name.trim();
-    if trimmed.is_empty() {
+    // With `from` the name is optional: the webview derives it from the
+    // worktree's branch, the GUI import default.
+    if trimmed.is_empty() && from.is_none() {
         return fail(ErrorCode::BadRequest, "the task name is empty".into());
     }
     // An empty prompt would mint a prompt id nothing ever reports on
@@ -936,11 +996,26 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             Some(p) => p,
             None => return fail(ErrorCode::NotFound, format!("no project named \"{pname}\"")),
         },
-        (None, None) => match resolve_project_for_new(&projects, &tasks, host, cwd.as_deref()) {
-            Ok(p) => p,
-            Err(e) => return Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
+        // --from without --project: the worktree's repo names the project,
+        // not the caller's cwd (a script adopting a worktree can run from
+        // anywhere).
+        (None, None) => match from.as_deref() {
+            Some(wt) => match resolve_project_for_worktree(&projects, host, wt) {
+                Ok(p) => p,
+                Err(e) => return Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
+            },
+            None => match resolve_project_for_new(&projects, &tasks, host, cwd.as_deref()) {
+                Ok(p) => p,
+                Err(e) => return Reply { id: id.clone(), ok: false, data: None, error: Some(e) },
+            },
         },
     };
+    if proj.non_git && from.is_some() {
+        return fail(
+            ErrorCode::BadRequest,
+            format!("project \"{}\" is a plain folder (non-git); from needs a git worktree", proj.name),
+        );
+    }
 
     // Non-git projects cannot host worktrees (the GUI forces the main
     // checkout for them); an explicit --worktree is an impossible ask,
@@ -962,10 +1037,7 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
     // never cleanup (docs/plans/cli.md: task_create_sync's orphan
     // cleanup makes interleaved same-name creates destructive; the
     // webview create lock serializes, this check keeps the error clear).
-    if let Some(existing) = tasks
-        .iter()
-        .find(|t| !t.archived && t.project_id == proj.id && t.name.eq_ignore_ascii_case(trimmed))
-    {
+    if let Some(existing) = crate::task_name_conflict(&tasks, &proj.id, trimmed, None) {
         return fail(
             ErrorCode::Conflict,
             format!("task {}/{} already exists", proj.name, existing.name),
@@ -1004,6 +1076,25 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
                 ),
             );
         }
+        // --resume seeds a session id, which only means something to an
+        // agent whose registry entry has `resume_id_args` (claude). The
+        // capable list is the actionable part; without it the caller is
+        // left diffing Settings against the docs.
+        Some(meta) if resume.is_some() && !meta.id_resume => {
+            let mut ids: Vec<&str> = agents
+                .iter()
+                .filter(|a| a.kind == "agent" && !a.disabled && a.id_resume)
+                .map(|a| a.id.as_str())
+                .collect();
+            ids.sort();
+            return fail(
+                ErrorCode::Unsupported,
+                format!(
+                    "agent \"{effective_agent}\" cannot resume a session by id (agents that can: {})",
+                    ids.join(", ")
+                ),
+            );
+        }
         Some(_) => {}
     }
 
@@ -1019,6 +1110,8 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
         "agent": agent,
         "mode": mode,
         "base": base,
+        "from": from,
+        "resume": resume,
         "sandbox": sandbox,
         "yolo": yolo,
         "projectId": proj.id,
@@ -1053,7 +1146,8 @@ fn handle_new(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
             if let Some(pid) = &prompt_id {
                 host.prompt_reports().forget(pid);
             }
-            return fail(ErrorCode::Internal, format!("could not create the task ({e})"));
+            let (code, msg) = parse_new_error(&e);
+            return fail(code, msg);
         }
     };
     let task_id = value
@@ -1588,6 +1682,24 @@ fn handle_wait(
 /// machine-readable across the string-only RPC error channel with a
 /// sentinel prefix: "cli_send:<code>: <human message>". Anything else
 /// is a real internal failure.
+/// Webview `new_task` failures cross the string-only RPC channel with the
+/// `cli_new:<code>:` sentinel (the parse_send_error pattern): the webview
+/// classifies Rust's import/create refusals so `--from` misuse comes back
+/// as a typed conflict/bad_request instead of a generic Internal.
+fn parse_new_error(e: &str) -> (ErrorCode, String) {
+    let Some(rest) = e.strip_prefix("cli_new:") else {
+        return (ErrorCode::Internal, format!("could not create the task ({e})"));
+    };
+    let (code, msg) = rest.split_once(':').unwrap_or(("", rest));
+    let code = match code {
+        "conflict" => ErrorCode::Conflict,
+        "bad_request" => ErrorCode::BadRequest,
+        "unsupported" => ErrorCode::Unsupported,
+        _ => ErrorCode::Internal,
+    };
+    (code, msg.trim().to_string())
+}
+
 fn parse_send_error(e: &str) -> (ErrorCode, String) {
     let Some(rest) = e.strip_prefix("cli_send:") else {
         return (ErrorCode::Internal, format!("could not send the prompt ({e})"));
@@ -2081,10 +2193,41 @@ fn handle_agents(req: &Request, host: &dyn CliHost) -> Reply {
 /// the spawn-pending rule, i.e. exactly what `send` to a respawned agent
 /// does, so delivery stays confirmed (docs/plans/cli.md, Phase 1).
 fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
-    let Command::Tab { task, project, kind, prompt, wait, timeout_ms, cwd } = &req.cmd else {
+    let Command::Tab { task, project, kind, prompt, wait, timeout_ms, resume, cwd } = &req.cmd
+    else {
         unreachable!("handle_tab called with a non-tab command")
     };
     let id = &req.id;
+    if resume.is_some() {
+        // A session id only means something to a NAMED agent tab: shell /
+        // terminal kinds never resume, and Default would silently bind the
+        // id to whatever the task happens to run.
+        let proto::TabKind::Agent { id: aid } = kind else {
+            return Reply::err(id, ErrorCode::BadRequest, "resume needs an explicit --agent tab");
+        };
+        // Same gate as `new --resume`. An unknown/disabled agent falls
+        // through: the webview owns that refusal and its message names
+        // the usable ids.
+        let agents = host.agents();
+        if let Some(meta) = agents.iter().find(|a| a.id == *aid && a.kind == "agent") {
+            if !meta.id_resume {
+                let mut ids: Vec<&str> = agents
+                    .iter()
+                    .filter(|a| a.kind == "agent" && !a.disabled && a.id_resume)
+                    .map(|a| a.id.as_str())
+                    .collect();
+                ids.sort();
+                return Reply::err(
+                    id,
+                    ErrorCode::Unsupported,
+                    format!(
+                        "agent \"{aid}\" cannot resume a session by id (agents that can: {})",
+                        ids.join(", ")
+                    ),
+                );
+            }
+        }
+    }
     if let Some(p) = prompt {
         if p.trim().is_empty() {
             return Reply::err(id, ErrorCode::BadRequest, "the prompt is empty");
@@ -2137,7 +2280,7 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
 
     let value = match host.rpc(
         "new_tab",
-        serde_json::json!({ "taskId": t.id, "kind": kind_str, "id": agent_id }),
+        serde_json::json!({ "taskId": t.id, "kind": kind_str, "id": agent_id, "resume": resume }),
         OPEN_TIMEOUT,
     ) {
         Ok(v) => v,
@@ -2339,12 +2482,7 @@ fn handle_rename(
         Ok(t) => t.clone(),
         Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
     };
-    if let Some(dup) = tasks.iter().find(|d| {
-        d.id != t.id
-            && !d.archived
-            && d.project_id == t.project_id
-            && d.name.eq_ignore_ascii_case(new_name)
-    }) {
+    if let Some(dup) = crate::task_name_conflict(&tasks, &t.project_id, new_name, Some(&t.id)) {
         return Reply::err(
             id,
             ErrorCode::Conflict,
@@ -2852,6 +2990,7 @@ impl CliHost for TauriHost {
                 kind: a.kind.clone(),
                 work_done: a.work_done,
                 disabled: a.disabled,
+                id_resume: !a.capabilities.resume_id_args.is_empty(),
             })
             .collect()
     }
@@ -2902,6 +3041,15 @@ impl CliHost for TauriHost {
         let out = crate::git(&["rev-parse", "--show-toplevel"], Path::new(cwd)).ok()?;
         let root = out.trim();
         (!root.is_empty()).then(|| root.to_string())
+    }
+    fn repo_worktrees(&self, path: &str) -> Vec<String> {
+        let Ok(out) = crate::git(&["worktree", "list", "--porcelain"], Path::new(path)) else {
+            return Vec::new();
+        };
+        out.lines()
+            .filter_map(|l| l.strip_prefix("worktree "))
+            .map(str::to_string)
+            .collect()
     }
     fn apply_diff(&self, task_id: &str) -> Result<crate::SendDiffResult, crate::SendDiffError> {
         crate::task_send_diff_to_main_inner(task_id)
@@ -3775,7 +3923,7 @@ mod tests {
     }
 
     fn agent_meta(id: &str, work_done: bool) -> AgentMeta {
-        AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false }
+        AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false, id_resume: id == "claude" }
     }
 
     struct StubHost {
@@ -3813,6 +3961,9 @@ mod tests {
         cache: AgentCache,
         reports: PromptReports,
         git_root: Option<String>,
+        /// Scripted answer for `repo_worktrees` (`new --from` project
+        /// resolution): the repo's working-tree paths, main first.
+        repo_trees: Vec<String>,
         /// Scripted `apply` outcome, taken once per call.
         apply_result: Mutex<Option<Result<crate::SendDiffResult, crate::SendDiffError>>>,
         /// Scripted `diff` outcome, taken once per call.
@@ -3868,6 +4019,7 @@ mod tests {
                 cache: AgentCache::new(),
                 reports: PromptReports::new(),
                 git_root: None,
+                repo_trees: Vec::new(),
                 apply_result: Mutex::new(None),
                 diff_result: Mutex::new(None),
                 role_ptys: Mutex::new(HashMap::new()),
@@ -4013,6 +4165,9 @@ mod tests {
         }
         fn git_toplevel(&self, _cwd: &str) -> Option<String> {
             self.git_root.clone()
+        }
+        fn repo_worktrees(&self, _path: &str) -> Vec<String> {
+            self.repo_trees.clone()
         }
         fn apply_diff(&self, _task_id: &str) -> Result<crate::SendDiffResult, crate::SendDiffError> {
             self.apply_result
@@ -4466,6 +4621,8 @@ mod tests {
             agent: None,
             mode: None,
             base: None,
+            from: None,
+            resume: None,
             sandbox: None,
             yolo: false,
             project: project.map(str::to_string),
@@ -4638,6 +4795,138 @@ mod tests {
         assert!(reply.ok, "{reply:?}");
     }
 
+    // ── new --from / --resume: attach existing work (GH #169) ────────
+
+    /// `new --from` with no name and no --project: the shape the issue's
+    /// automation script sends.
+    fn import_cmd(from: &str, resume: Option<&str>) -> Command {
+        let mut cmd = new_cmd("", None);
+        if let Command::New { from: f, resume: r, agent, .. } = &mut cmd {
+            *f = Some(from.into());
+            *r = resume.map(str::to_string);
+            *agent = Some("claude".into());
+        }
+        cmd
+    }
+
+    #[test]
+    fn new_from_resolves_the_project_from_the_worktrees_repo() {
+        // The worktree lives OUTSIDE every registered root, so cwd-style
+        // resolution can't name it; the repo it belongs to must.
+        let mut host = StubHost::default();
+        host.repo_trees = vec!["/repo/web".into(), "/elsewhere/poll-linear".into()];
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        let reply = handle(&req(import_cmd("/elsewhere/poll-linear", Some("SESSION-X")), Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        let (method, params) = &calls[0];
+        assert_eq!(method, "new_task");
+        assert_eq!(params["projectId"], "p1");
+        assert_eq!(params["from"], "/elsewhere/poll-linear");
+        assert_eq!(params["resume"], "SESSION-X");
+        // Empty name goes through: the webview derives it from the branch.
+        assert_eq!(params["name"], "");
+    }
+
+    #[test]
+    fn new_from_in_an_unregistered_repo_offers_registration() {
+        // Same contract as plain `new` in an unknown repo: the CLI's TTY
+        // register-and-retry path keys on this exact error shape.
+        let mut host = StubHost::default();
+        host.repo_trees = vec!["/repo/unknown".into(), "/elsewhere/wt".into()];
+        let err = handle(&req(import_cmd("/elsewhere/wt", None), Some("tok")), &host)
+            .error
+            .unwrap();
+        assert_eq!(err.code, ErrorCode::UnregisteredProject);
+        assert_eq!(err.data.unwrap()["root"], "/repo/unknown");
+    }
+
+    #[test]
+    fn new_from_a_non_worktree_path_is_refused() {
+        let host = StubHost::default(); // repo_trees empty = not a worktree
+        let err = handle(&req(import_cmd("/elsewhere/plain-dir", None), Some("tok")), &host)
+            .error
+            .unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("not a git worktree"), "{}", err.message);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_import_shape_guards_fire_before_any_rpc() {
+        let host = StubHost::default();
+        // from + an explicit mode.
+        let mut cmd = import_cmd("/elsewhere/wt", None);
+        if let Command::New { mode, .. } = &mut cmd {
+            *mode = Some("worktree".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_resume_without_from_creates_and_forwards_the_seed() {
+        // GH #169 follow-up: --resume is legal on a plain create too (the
+        // main-checkout and fresh-worktree paths seed exactly like import).
+        let mut host = StubHost::default();
+        host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
+        let mut cmd = new_cmd("shiny", Some("web"));
+        if let Command::New { resume, agent, .. } = &mut cmd {
+            *resume = Some("SESSION-X".into());
+            *agent = Some("claude".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        let (_, params) = &calls[0];
+        assert_eq!(params["resume"], "SESSION-X");
+        assert_eq!(params["from"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn new_resume_needs_an_id_resume_capable_agent() {
+        // codex is cwd-resume only (agent_meta gives id_resume to claude
+        // alone); a seeded id the spawn would ignore must refuse loudly,
+        // naming the agents that would work.
+        let mut host = StubHost::default();
+        host.repo_trees = vec!["/repo/web".into(), "/elsewhere/poll-linear".into()];
+        let mut cmd = import_cmd("/elsewhere/wt", Some("SESSION-X"));
+        if let Command::New { agent, .. } = &mut cmd {
+            *agent = Some("codex".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("claude"), "{}", err.message);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_from_refusals_keep_their_typed_codes_over_the_wire() {
+        // The webview classifies Rust's import refusals with the
+        // `cli_new:` sentinel; a re-adopt must come back Conflict, not a
+        // generic Internal (GH #169 review). Unprefixed errors keep the
+        // Internal wrap.
+        let mut host = StubHost::default();
+        host.repo_trees = vec!["/repo/web".into(), "/elsewhere/wt".into()];
+        host.script_rpc(
+            "new_task",
+            Err("cli_new:conflict: this worktree is already open as a task".into()),
+        );
+        let err = handle(&req(import_cmd("/elsewhere/wt", None), Some("tok")), &host)
+            .error
+            .unwrap();
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert_eq!(err.message, "this worktree is already open as a task");
+
+        host.script_rpc("new_task", Err("the webview exploded".into()));
+        let err = handle(&req(import_cmd("/elsewhere/wt", None), Some("tok")), &host)
+            .error
+            .unwrap();
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("could not create the task"), "{}", err.message);
+    }
+
     // ── tab / agents (GH #138) ───────────────────────────────────────
 
     fn tab_cmd(task: &str, kind: proto::TabKind) -> Command {
@@ -4648,6 +4937,7 @@ mod tests {
             prompt: None,
             wait: false,
             timeout_ms: None,
+            resume: None,
             cwd: None,
         }
     }
@@ -5291,6 +5581,7 @@ mod tests {
             kind: "agent".into(),
             work_done: true,
             disabled: true,
+            id_resume: false,
         });
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { agent, .. } = &mut cmd {
@@ -6264,6 +6555,7 @@ mod tests {
             prompt: Some("run the tests".into()),
             wait: false,
             timeout_ms: None,
+            resume: None,
             cwd: None,
         };
         let reply = handle(&req(cmd, Some("tok")), &host);
@@ -6296,6 +6588,7 @@ mod tests {
             prompt: prompt.map(str::to_string),
             wait,
             timeout_ms: None,
+            resume: None,
             cwd: None,
         };
         for cmd in [
@@ -6322,6 +6615,53 @@ mod tests {
         assert!(shell_host.rpc_calls.lock().unwrap().is_empty());
     }
 
+    // ── tab --resume: attach an external session to a NEW tab (GH #169) ──
+
+    #[test]
+    fn tab_resume_rides_the_new_tab_rpc() {
+        let host = StubHost::default();
+        host.script_rpc(
+            "new_tab",
+            Ok(serde_json::json!({ "tabId": "tab-new", "cli": "claude", "title": "claude" })),
+        );
+        let mut cmd = tab_cmd("solo", proto::TabKind::Agent { id: "claude".into() });
+        if let Command::Tab { resume, .. } = &mut cmd {
+            *resume = Some("SESSION-X".into());
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        let calls = host.rpc_calls.lock().unwrap();
+        let (method, params) = &calls[0];
+        assert_eq!(method, "new_tab");
+        // One RPC carries the seed: a set-after-create would race the
+        // tab's own PTY spawn and resume nothing.
+        assert_eq!(params["resume"], "SESSION-X");
+    }
+
+    #[test]
+    fn tab_resume_guards_fire_before_any_rpc() {
+        let host = StubHost::default();
+        // A session id on a kind that can never resume one.
+        for kind in [proto::TabKind::Shell, proto::TabKind::Default] {
+            let mut cmd = tab_cmd("solo", kind);
+            if let Command::Tab { resume, .. } = &mut cmd {
+                *resume = Some("SESSION-X".into());
+            }
+            let err = handle(&req(cmd, Some("tok")), &host).error.expect("refused");
+            assert_eq!(err.code, ErrorCode::BadRequest);
+            assert!(err.message.contains("--agent"), "{}", err.message);
+        }
+        // A cwd-resume-only agent: refuse, naming the capable ids.
+        let mut cmd = tab_cmd("solo", proto::TabKind::Agent { id: "codex".into() });
+        if let Command::Tab { resume, .. } = &mut cmd {
+            *resume = Some("SESSION-X".into());
+        }
+        let err = handle(&req(cmd, Some("tok")), &host).error.expect("refused");
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("claude"), "{}", err.message);
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn tab_prompt_failure_still_names_the_opened_tab() {
         let host = StubHost::default();
@@ -6337,6 +6677,7 @@ mod tests {
             prompt: Some("run".into()),
             wait: false,
             timeout_ms: None,
+            resume: None,
             cwd: None,
         };
         let err = handle(&req(cmd, Some("tok")), &host).error.expect("error");

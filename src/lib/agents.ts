@@ -94,6 +94,16 @@ export function cliSupportsCaptureResume(cli: string): boolean {
       && (caps.resume_id_args?.length ?? 0) > 0;
 }
 
+/** The agent can resume a SPECIFIC session by id (`resume_id_args`
+ *  non-empty, regardless of whether it can also mint one): the gate for
+ *  attaching an externally-started session to a task or tab (GH #169,
+ *  `--resume <SESSION_ID>`). Mirrors AgentMeta.id_resume on the Rust
+ *  side; keep the two predicates in step. */
+export function cliSupportsResumeById(cli: string): boolean {
+  const { caps } = findAgent(cli);
+  return (caps.resume_id_args?.length ?? 0) > 0;
+}
+
 /** Post-launch capture config for a CLI, or undefined if not configured. */
 export function postLaunchCaptureForCli(cli: string): Agent["post_launch_capture"] {
   const registry = useApp.getState().agents;
@@ -698,6 +708,12 @@ export async function tryToggleYoloLive(cli: string, ptyId: string, yolo: boolea
 // Old single-CLI accessors kept around so older call sites don't break.
 export const yoloArgsForCli   = (cli: string) => findAgent(cli).caps.yolo_args   ?? [];
 export const resumeArgsForCli = (cli: string) => findAgent(cli).caps.resume_args ?? [];
+/** The registry's resume-by-id args with `{UUID}` already expanded to the
+ *  given session id. The capture-resume spawn path composes these instead
+ *  of hardcoding one agent's flag, so any agent declaring `resume_id_args`
+ *  resumes with ITS OWN spelling (GH #169 review). */
+export const resumeIdArgsForCli = (cli: string, sessionId: string) =>
+  (findAgent(cli).caps.resume_id_args ?? []).map(a => a.replaceAll("{UUID}", sessionId));
 
 /** Per-agent env block (from Settings → Agents). Merged into the spawn
  *  env in TerminalPane; agent-side values take precedence over the

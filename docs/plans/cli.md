@@ -219,12 +219,23 @@ scope until the surface stabilizes. Completions (`termic completions zsh`,
 clap-generated) complete task names dynamically over the socket.
 
 ```
-termic new <name> [-p|--prompt <text>] [--agent claude|gemini|codex|<custom>]
+termic new [name] [-p|--prompt <text>] [--agent claude|gemini|codex|<custom>]
            [--worktree|--main] [--base <branch>] [--sandbox off|monitor|enforce|enforce-fs]
            [--yolo] [--project <name>] [--open] [--wait]   # a new --attach flag stayed unbuilt:
-                                                           # `termic new x && termic attach x`
+           [--from <path>] [--resume <session-id>]         # `termic new x && termic attach x`
                                                            # composes, so the flag is deferred
                                                            # until someone misses it
+                                                           # --from (GH #169, protocol v7) ADOPTS an
+                                                           # existing registered worktree instead of
+                                                           # creating one (name optional: defaults to
+                                                           # its branch; excludes mode/--base; no setup
+                                                           # script; project resolved from the
+                                                           # worktree's repo). --resume seeds the agent's
+                                                           # first spawn with a session id via the
+                                                           # registry's resume_id_args (id-resume-capable
+                                                           # agents only; valid on any create, best where
+                                                           # the task dir matches the session's); `tab`
+                                                           # takes the same --resume for a NEW tab
 termic list [--project <name>] [-q]           # tasks + workState + diff stat (alias: ls; -q = ids only)
 termic open [<task>]                          # raise window, select task (cwd-aware)
 termic status <task>                          # one task in depth: agent state, branch,

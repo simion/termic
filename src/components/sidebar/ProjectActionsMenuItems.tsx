@@ -370,8 +370,11 @@ export function ProjectActionsMenuItems({ projectId, onPick }: {
           <DropdownLabel>Existing worktrees</DropdownLabel>
           {importable.slice(0, IMPORT_LIMIT).map(wt => (
             <DropdownItem key={wt.path} onSelect={() => {
+              // Failures must be visible: this one-click path has no dialog
+              // to show them, and a silent no-op reads as a broken button
+              // (e.g. the derived-name collision error, GH #169 review).
               importQuickWorktree(projectId, wt.path)
-                .catch(err => console.error("task_import_worktree failed:", err));
+                .catch(err => useUI.getState().pushToast(String(err), "error"));
             }}>
               <FolderGit2 className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
               <div className="min-w-0 flex-1">

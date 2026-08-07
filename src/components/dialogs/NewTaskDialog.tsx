@@ -10,7 +10,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
-import { visibleCliIds } from "@/lib/agents";
+import { cliSupportsResumeById, visibleCliIds } from "@/lib/agents";
 import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches } from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
 import { withCreateLock } from "@/lib/createLock";
@@ -136,6 +136,24 @@ export function NewTaskDialog() {
   const [importList, setImportList] = useState<ImportableWorktree[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [importSelected, setImportSelected] = useState<string | null>(null);
+  // Attach an externally-started agent session (GH #169): the id seeds the
+  // first spawn's resume args. Offered in every single-repo mode (create,
+  // main checkout, import) for id-resume-capable agents; one shared field
+  // element serves both spots in the form.
+  const [resumeSession, setResumeSession] = useState("");
+  const resumeSessionField = (
+    <Field
+      label="Resume session ID (optional)"
+      hint="A session started outside Termic. The agent resumes it on its first spawn here; leave empty to start fresh."
+    >
+      <Input
+        value={resumeSession}
+        onChange={e => setResumeSession(e.target.value)}
+        placeholder="e.g. 018f2c1e-6f7a-7c2e-9c1a-2f3b4c5d6e7f"
+        spellCheck={false}
+      />
+    </Field>
+  );
   // Existing local branch names in the project's repo, loaded on open so the
   // auto-filled branch can dodge one still hanging around from an archived
   // task (issue #129). Empty until loaded / for non-git / multi projects.
@@ -266,6 +284,7 @@ export function NewTaskDialog() {
     const canImp = (p?.type ?? "single") !== "multi" && !p?.non_git;
     const wantImport = !!seed?.importMode && canImp;
     setImportSelected(null); setImportList([]); setImportLoading(false);
+    setResumeSession("");
     setImportMode(wantImport);
     // Load existing branches so `derived` can auto-number past a collision
     // (#129). Only meaningful for single-repo git projects (worktree mode).
@@ -366,6 +385,10 @@ export function NewTaskDialog() {
       const w = await withCreateLock(() => taskImportWorktree(
         projectId, importSelected, name.trim(), cli,
         { enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
+        // Gated on capability, not just field state: the input hides when
+        // the agent switches to one that cannot resume by id, but the
+        // typed value would otherwise still ride along.
+        cliSupportsResumeById(cli) ? resumeSession.trim() || undefined : undefined,
       ));
       await loadAll();
       setActive(w.id);
@@ -393,6 +416,8 @@ export function NewTaskDialog() {
       const w = await withCreateLock(() => taskOpenRepo(
         projectId, cli, name.trim(),
         { enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) },
+        undefined,
+        cliSupportsResumeById(cli) ? resumeSession.trim() || undefined : undefined,
       ));
       await loadAll();
       setActive(w.id);
@@ -496,6 +521,10 @@ export function NewTaskDialog() {
         cli,
         base_branch: base.trim() || null,
         branch: branch.trim(),
+        // Capability-gated like import: the field hides when the agent
+        // cannot resume by id, but typed state would otherwise ride along.
+        resume_session_id:
+          cliSupportsResumeById(cli) ? resumeSession.trim() || undefined : undefined,
         sandbox_enabled: sandbox,
         sandbox_mode: sandboxMode,
         // Only send lists when sandbox is on - keeps the JSON tidy
@@ -591,7 +620,7 @@ export function NewTaskDialog() {
         {canImport && importMode && (
           <button
             type="button"
-            onClick={() => { setImportMode(false); setImportSelected(null); setErr(null); }}
+            onClick={() => { setImportMode(false); setImportSelected(null); setResumeSession(""); setErr(null); }}
             className="-mb-1 inline-flex items-center gap-1.5 self-start text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)]"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -638,6 +667,11 @@ export function NewTaskDialog() {
             )}
           </Field>
         )}
+
+        {/* Attach an externally-started agent session (GH #169): the id
+            seeds the first spawn's resume args. Hidden for agents that
+            cannot resume a specific session by id. */}
+        {importMode && cliSupportsResumeById(cli) && resumeSessionField}
 
         {/* Worktree vs repo-root toggle (single-repo only — multi has its
             own per-member toggle below). Repo root hides the branch + sandbox
@@ -735,6 +769,12 @@ export function NewTaskDialog() {
           <Input value={base} onChange={e => setBase(e.target.value)} placeholder="origin/master" />
         </Field>
         </>)}
+
+        {/* Attach an externally-started agent session (GH #169): the id
+            seeds the first spawn's resume args. Hidden for agents that
+            cannot resume a specific session by id. Import mode renders its
+            own copy below the worktree picker. */}
+        {!isMulti && !importMode && cliSupportsResumeById(cli) && resumeSessionField}
 
         {/* Multi-repo: per-member mode + branch picker. Each member
             row renders a small toggle (Worktree | Repo root) and, when

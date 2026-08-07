@@ -39,7 +39,7 @@ import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
-import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS, STICKY_DONE_MS } from "@/lib/agents";
+import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, resumeIdArgsForCli, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS, STICKY_DONE_MS } from "@/lib/agents";
 import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
@@ -1379,10 +1379,17 @@ const captureArmedRef = useRef(false);
     // out of this effect's deps (respawning on every tab edit is far worse).
     const tabNow = taskTabsNow.find(t => t.id === tab.id) as TerminalTab | undefined;
     const storedUuid = tabNow?.sessionId;
-    // Capture-resume agents (opencode): inject the captured session ID as a
-    // resumeOverride so spawnArgsForCli uses it without touching decideResume.
-    const captureResumeOverride = captureCapable && storedUuid
-      ? `--session ${storedUuid}` : undefined;
+    // Capture-resume agents (opencode): inject the captured (or externally
+    // seeded, GH #169) session ID as a resumeOverride so spawnArgsForCli
+    // uses it without touching decideResume. Composed from the registry's
+    // resume_id_args, not a hardcoded flag, so any agent in this class
+    // resumes with its own spelling. Honors failedResume like the id-based
+    // path: a rapid-exit (dead or foreign session id) retries FRESH instead
+    // of respawning into the same failing resume forever.
+    const captureResumeOverride =
+      captureCapable && storedUuid && !failedResumeRef.current
+        ? resumeIdArgsForCli(tab.cli, storedUuid).join(" ") || undefined
+        : undefined;
     const decision = decideResume({
       isAgent,
       idCapable,

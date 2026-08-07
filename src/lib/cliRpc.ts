@@ -30,6 +30,7 @@ import {
   projectRemove,
   settingsLoad,
   taskCreate,
+  taskImportWorktree,
   taskOpenRepo,
   taskRename,
   taskSetYolo,
@@ -41,7 +42,8 @@ import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { deliverMessage } from "@/lib/agentSend";
 import {
-  agentDisplayName, isTerminalCli, isTerminalEntry, visibleCliIds, workDoneCapable,
+  agentDisplayName, cliSupportsResumeById, isTerminalCli, isTerminalEntry, visibleCliIds,
+  workDoneCapable,
 } from "@/lib/agents";
 import { launchSetupTab } from "@/lib/runTabs";
 import {
@@ -112,6 +114,14 @@ interface NewTaskParams {
   /** "worktree" | "main"; absent = the GUI's remembered mode. */
   mode?: string;
   base?: string;
+  /** Existing worktree to ADOPT instead of creating one (GH #169,
+   *  `new --from`). Path already canonicalized and project-matched by
+   *  the server; Rust still validates it is a worktree of this repo. */
+  from?: string;
+  /** Externally-started session id the agent resumes on first spawn
+   *  (GH #169, `new --resume`). Valid with or without `from`; the server
+   *  already gated it on the agent's `resume_id_args`. */
+  resume?: string;
   sandbox?: string;
   yolo?: boolean;
   open?: boolean;
@@ -159,9 +169,10 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
       t => !t.archived && t.project_id === p.projectId && t.name.toLowerCase() === name.toLowerCase(),
     );
     if (dup) throw new Error(`task "${dup.name}" already exists in this project`);
+    const resume = typeof p.resume === "string" && p.resume ? p.resume : undefined;
     if (mode === "repo_root") {
       const sandbox = pins ? await mainCheckoutSandbox(p.projectId, pins) : undefined;
-      return taskOpenRepo(p.projectId, cli, name, sandbox);
+      return taskOpenRepo(p.projectId, cli, name, sandbox, undefined, resume);
     }
     if (slugify(name) === "") {
       throw new Error("Task name must contain at least one letter or number.");
@@ -182,8 +193,53 @@ async function createTask(p: NewTaskParams, mode: NewTaskMode): Promise<Task> {
       cli,
       base_branch: typeof p.base === "string" && p.base.trim() ? p.base.trim() : null,
       branch,
+      resume_session_id: resume,
       ...(pins ?? {}),
     });
+  });
+}
+
+/** Rust's import refusals cross the string-only RPC error channel with the
+ *  `cli_new:<code>:` sentinel (the sendErr pattern), so `--from` misuse
+ *  comes back to the CLI as a typed conflict/bad_request instead of a
+ *  generic Internal. The classification lives HERE and not in the Rust
+ *  error strings themselves because the GUI shows those strings raw. */
+function classifyCreateError(e: unknown): Error {
+  const msg = String((e as Error)?.message ?? e);
+  const code =
+    /already (open as a task|exists)/.test(msg) ? "conflict"
+    : /not a worktree of this repo|main checkout|does not exist|not a git repo/.test(msg)
+      ? "bad_request"
+      : null;
+  return code ? new Error(`cli_new:${code}: ${msg}`) : e instanceof Error ? e : new Error(msg);
+}
+
+/** Adopt an existing worktree as the task (GH #169, `new --from`): no
+ *  branch derivation, no file copy, no setup script. Rust owns ALL the
+ *  duplicate checks (path, and name including the branch-derived default)
+ *  and the name derivation; `resume` seeds the per-cli session id so the
+ *  default tab's first spawn composes `resume_id_args` instead of minting
+ *  a fresh session. */
+async function importTask(p: NewTaskParams): Promise<Task> {
+  const name = (p.name ?? "").trim();
+  const cli = typeof p.agent === "string" && p.agent ? p.agent : undefined;
+  const pins = sandboxPins(p.sandbox);
+  return withCreateLock(async () => {
+    // Same global+project seed merge the New Task dialog applies.
+    const sandbox = pins ? await mainCheckoutSandbox(p.projectId, pins) : undefined;
+    try {
+      return await taskImportWorktree(
+        p.projectId,
+        p.from!,
+        name || undefined,
+        cli,
+        sandbox,
+        typeof p.resume === "string" && p.resume ? p.resume : undefined,
+        p.yolo === true ? true : undefined,
+      );
+    } catch (e) {
+      throw classifyCreateError(e);
+    }
   });
 }
 
@@ -307,12 +363,29 @@ async function injectPromptTracked(
 async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskId: string; spawned: boolean }> {
   const p = raw as NewTaskParams;
   if (typeof p?.projectId !== "string" || !p.projectId) throw new Error("new_task requires a projectId");
-  if (typeof p?.name !== "string" || !p.name.trim()) throw new Error("new_task requires a name");
+  const importing = typeof p.from === "string" && !!p.from;
+  // Importing derives a missing name from the worktree's branch.
+  if (!importing && (typeof p?.name !== "string" || !p.name.trim())) {
+    throw new Error("new_task requires a name");
+  }
   // Cold launch: the RPC ready-latch can beat loadAll, and an
   // unhydrated store would silently drop the project's sandbox seeds
   // from the merge below. Mirror openTaskHandler's guard.
   if (!useApp.getState().projects.some(pr => pr.id === p.projectId)) {
     await useApp.getState().loadAll();
+  }
+  // Same live-registry re-check the tab path does: the server gated
+  // --resume on its own settings snapshot, and hydration can drift; a
+  // seed the spawn would silently ignore must refuse instead.
+  if (typeof p.resume === "string" && p.resume) {
+    const effective = (typeof p.agent === "string" && p.agent)
+      ? p.agent
+      : useApp.getState().projects.find(pr => pr.id === p.projectId)?.default_cli ?? "";
+    if (!cliSupportsResumeById(effective)) {
+      throw new Error(
+        `cli_new:unsupported: agent ${effective || "(project default)"} cannot resume a session by id`,
+      );
+    }
   }
   // Non-git projects cannot host worktrees; the GUI forces the main
   // checkout for them and so do we (the server already rejected an
@@ -322,9 +395,10 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
     ? "repo_root"
     : p.mode === "worktree" ? "worktree" : p.mode === "main" ? "repo_root" : readNewTaskMode();
 
-  const task = await createTask(p, mode);
+  const task = importing ? await importTask(p) : await createTask(p, mode);
   // Before anything mounts, so the first spawn composes the flags in.
-  if (p.yolo) await taskSetYolo(task.id, true).catch(() => {});
+  // (The import path carried yolo in the create payload itself.)
+  if (!importing && p.yolo) await taskSetYolo(task.id, true).catch(() => {});
   if (typeof p.prompt === "string" && p.prompt) markUnattendedSpawn(task.id);
 
   await useApp.getState().loadAll();
@@ -332,7 +406,7 @@ async function newTaskHandler(raw: unknown, progress: Progress): Promise<{ taskI
   if (p.open) useApp.getState().setActiveTask(task.id);
 
   let stopSetupStream: (() => void) | null = null;
-  if (mode === "worktree") {
+  if (!importing && mode === "worktree") {
     const launched = await launchSetupTab(task.id, { focus: false }).catch(() => false);
     if (launched) stopSetupStream = streamSetupOutput(task.id, progress);
   }
@@ -740,6 +814,9 @@ interface NewTabParams {
   kind: string;
   /** Registry id, for the agent and terminal kinds. */
   id?: string;
+  /** Externally-started session id the new tab's agent resumes (GH #169,
+   *  `tab --resume`). Agent kind only. */
+  resume?: string;
 }
 
 /**
@@ -830,6 +907,13 @@ export async function newTabHandler(raw: unknown): Promise<{
         );
       }
       cli = p.id;
+      // The server already gated --resume on the registry's resume_id_args;
+      // re-check against the LIVE registry (settings can drift between the
+      // Rust snapshot and hydration) so a seed the spawn would silently
+      // ignore comes back as an error instead of a fresh session.
+      if (typeof p.resume === "string" && p.resume && !cliSupportsResumeById(cli)) {
+        throw new Error(`agent ${cli} cannot resume a session by id`);
+      }
       break;
     }
     case "terminal": {
@@ -892,7 +976,13 @@ export async function newTabHandler(raw: unknown): Promise<{
   // TaskView's mount effect then early-returns because a main tab exists.
   s.ensureDefaultTab(p.taskId, task.cli);
   s.mountTasks([p.taskId]);
-  s.addTab(p.taskId, { id: tabId, type: "terminal", title, cli, ...extra }, { focus: false });
+  // A --resume seed rides in as the tab's own sessionId: TerminalPane's
+  // spawn then composes the agent's `resume_id_args` around it exactly as
+  // it would for a uuid termic minted itself (agent kind only; the server
+  // rejects the other kinds before the RPC).
+  const seed = p.kind === "agent" && typeof p.resume === "string" && p.resume
+    ? { sessionId: p.resume } : {};
+  s.addTab(p.taskId, { id: tabId, type: "terminal", title, cli, ...seed, ...extra }, { focus: false });
   return { taskId: p.taskId, tabId, cli, title };
 }
 

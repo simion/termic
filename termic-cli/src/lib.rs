@@ -193,6 +193,15 @@ sandbox to the project seeds. Streams setup-script \
 output to stdout until the agent spawns, then prints the task (name, branch, \
 path, agent). -p - reads the prompt from stdin.
 
+With --from <PATH> the task ADOPTS an existing worktree instead of creating \
+one: the path must already be a git worktree of the project's repo, the \
+branch comes from its HEAD, the name defaults to that branch, and no setup \
+script runs. --resume <SESSION_ID> makes the agent resume that session on \
+its first spawn (an agent with id-resume support, e.g. claude), which \
+attaches work started outside Termic (GH #169). It also works without \
+--from, though agents look sessions up by directory, so it is most useful \
+where the task's directory matches the session's (--from or --main).
+
 Without --wait the command returns at spawn; a prompt keeps injecting \
 app-side but is NOT confirmed. With --wait it blocks until the prompt is \
 confirmed delivered AND that turn settles (or, with no prompt, until the \
@@ -223,7 +232,9 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         /// Task name (seeds the branch for worktree tasks). A
         /// <project>/<name> prefix targets that project, like the
         /// other verbs; with --project the name stays literal.
-        name: String,
+        /// Optional with --from: it defaults to the worktree's branch.
+        #[arg(required_unless_present = "from")]
+        name: Option<String>,
         /// Prompt to inject once the agent is ready. `-` reads stdin.
         #[arg(short, long)]
         prompt: Option<String>,
@@ -240,6 +251,20 @@ unknown project or agent, duplicate task), 3 agent stopped needing input, \
         /// Base branch for the worktree (default: the repo's default base).
         #[arg(long, conflicts_with = "main")]
         base: Option<String>,
+        /// Adopt an EXISTING worktree of the project's repo as the task,
+        /// instead of creating one. The path must already be a registered
+        /// git worktree (`git worktree add` done by you or a script); no
+        /// setup script runs. The project resolves from the worktree's
+        /// repo when --project is absent.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["worktree", "main", "base"])]
+        from: Option<String>,
+        /// Session id the agent resumes on its first spawn (e.g. a claude
+        /// session started outside Termic). Needs an agent with id-resume
+        /// support; the id is not validated, a wrong one surfaces as the
+        /// agent's own "session not found". Most useful with --from or
+        /// --main, where the task's directory matches the session's.
+        #[arg(long, value_name = "SESSION_ID")]
+        resume: Option<String>,
         /// Sandbox mode for the task. Default: the project's sandbox seeds.
         #[arg(long, value_parser = ["off", "monitor", "enforce", "enforce-fs"])]
         sandbox: Option<String>,
@@ -640,6 +665,12 @@ stopped needing input, 4 app not running, 5 CLI disabled, 6 refused, \
         /// (agent kinds only). `-` reads stdin.
         #[arg(short, long, conflicts_with_all = ["shell", "terminal"])]
         prompt: Option<String>,
+        /// Session id the new tab's agent resumes (e.g. a claude session
+        /// started outside Termic). Needs --agent, and one with id-resume
+        /// support; the id is not validated, a wrong one surfaces as the
+        /// agent's own "session not found".
+        #[arg(long, value_name = "SESSION_ID", requires = "agent")]
+        resume: Option<String>,
         /// Block until the prompt is confirmed delivered and its turn
         /// settles (or the agent asks for input).
         #[arg(long, requires = "prompt")]
@@ -1007,7 +1038,7 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
             };
             Ok(Output::ok(final_stdout(format, &output::agents_text(&a), &a)))
         }
-        Cmd::Tab { task, project, agent, terminal, shell, prompt: _, wait, timeout } => {
+        Cmd::Tab { task, project, agent, terminal, shell, prompt: _, resume, wait, timeout } => {
             let kind = if let Some(id) = agent {
                 proto::TabKind::Agent { id: id.clone() }
             } else if let Some(id) = terminal {
@@ -1030,6 +1061,7 @@ fn execute(cli: &Cli) -> Result<Output, CliError> {
                 prompt: prompt.clone(),
                 wait: *wait,
                 timeout_ms,
+                resume: resume.clone(),
                 cwd: std::env::current_dir().ok().map(|p| p.display().to_string()),
             };
             // A prompt streams (queued/prompt_delivered/state events, the
@@ -1140,6 +1172,8 @@ fn execute_new(
         worktree,
         main,
         base,
+        from,
+        resume,
         sandbox,
         yolo,
         project,
@@ -1162,12 +1196,24 @@ fn execute_new(
     } else {
         None
     };
+    // --from canonicalizes CLI-side like `project add`, so the server
+    // compares real paths; a vanished path fails here with a clear error.
+    let from = from
+        .as_ref()
+        .map(|p| {
+            std::fs::canonicalize(p)
+                .map(|c| c.to_string_lossy().into_owned())
+                .map_err(|_| CliError::new(exit_code::ERROR, format!("{p} does not exist")))
+        })
+        .transpose()?;
     let wire = proto::Command::New {
-        name: name.clone(),
+        name: name.clone().unwrap_or_default(),
         prompt,
         agent: agent.clone(),
         mode,
         base: base.clone(),
+        from,
+        resume: resume.clone(),
         sandbox: sandbox.clone(),
         yolo: *yolo,
         project: project.clone(),

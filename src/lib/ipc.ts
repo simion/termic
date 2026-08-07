@@ -58,6 +58,8 @@ export const taskOpenRepo = (
   name?: string,
   sandbox?: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[] },
   command?: string,
+  /** Externally-started session the agent resumes on first spawn (GH #169). */
+  resumeSessionId?: string,
 ) =>
   invoke<Task>("task_open_repo", {
     projectId, cli, name, command,
@@ -65,6 +67,7 @@ export const taskOpenRepo = (
     sandboxMode: sandbox?.mode,
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
+    resumeSessionId,
   });
 /** List a project's git worktrees not yet open as tasks (issue #5). */
 export const taskImportableWorktrees = (projectId: string) =>
@@ -78,6 +81,9 @@ export const taskImportWorktree = (
   name?: string,
   cli?: string,
   sandbox?: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[] },
+  /** Externally-started session the agent resumes on first spawn (GH #169). */
+  resumeSessionId?: string,
+  yolo?: boolean,
 ) =>
   invoke<Task>("task_import_worktree", {
     projectId, path, name, cli,
@@ -85,6 +91,7 @@ export const taskImportWorktree = (
     sandboxMode: sandbox?.mode,
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
+    resumeSessionId, yolo,
   });
 export const taskArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("task_archive", { id, deleteBranch });
 export const taskRestore  = (id: string) => invoke<Task>("task_restore", { id });

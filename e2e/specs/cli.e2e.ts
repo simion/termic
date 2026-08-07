@@ -17,6 +17,8 @@
 import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
+import os from "node:os";
 import { dataDir } from "../../wdio.conf.js";
 import { archiveTask, openTask, requireTermicApi, waitForAppShell } from "../helpers.js";
 
@@ -256,5 +258,185 @@ describe("termic rename: label only, over the real socket (GH #153)", () => {
     expect(r.ok).toBe(false);
     expect(r.error.code).toBe("conflict");
     expect(r.error.message).toContain("cli-rename-other");
+  });
+});
+
+// `termic new --from` / `--resume` (GH #169): adopt a worktree some outside
+// script created, over the real socket. The full server thread runs: project
+// resolution from the worktree's own repo (repo_worktrees), the import RPC
+// into the webview, Rust's worktree validation, and the mount. The --resume
+// SEEDING is pinned by unit suites on both sides (cli_server.rs, agents.test,
+// cliTab.integration.test); here we pin the wiring plus the typed refusals a
+// script would hit.
+describe("termic new --from: adopt an existing worktree (GH #169)", () => {
+  let repoRoot: string;
+  let wtPath: string;
+  let adoptedId: string | undefined;
+
+  const git = (args: string, cwd: string) => execSync(`git ${args}`, { cwd, stdio: "pipe" });
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    repoRoot = await browser.execute(
+      () =>
+        window.__termic!.useApp
+          .getState()
+          .projects.find((p: any) => p.name === "fixture-repo").root_path as string,
+    );
+    // The issue's shape: a worktree termic did NOT create, parked outside
+    // every registered project root.
+    wtPath = path.join(dataDir, "..", "adopt-me-wt");
+    git(`worktree add -b adopt-me ${JSON.stringify(wtPath)}`, repoRoot);
+  });
+
+  after(async () => {
+    // Archive removes the worktree dir; the prune + branch delete put the
+    // fixture repo back exactly as seeded for later spec files. The prune
+    // only drops OUR stale registration: the dir is already gone, unlike
+    // the seeded sbcheck worktree, which stays intact.
+    if (adoptedId) await archiveTask(adoptedId);
+    try { git(`worktree remove --force ${JSON.stringify(wtPath)}`, repoRoot); } catch { /* archived */ }
+    try { git("worktree prune", repoRoot); } catch { /* best-effort */ }
+    try { git("branch -D adopt-me", repoRoot); } catch { /* best-effort */ }
+  });
+
+  it("adopts the worktree with --resume, seeding the session end to end", async () => {
+    // fakeagent mirrors claude's registry entry, resume_id_args included,
+    // so the WHOLE thread runs for real at zero tokens: socket → import →
+    // agent_session_ids seed → mount → the default tab picks the id up.
+    const r = await rpc({
+      cmd: "new", name: "", from: wtPath, agent: "fakeagent", resume: "SESSION-EXT",
+    });
+    expect(r.ok).toBe(true);
+    adoptedId = r.data.task.id;
+    expect(r.data.task.name).toBe("adopt-me");
+    expect(r.data.task.branch).toBe("adopt-me");
+    expect(fs.realpathSync(r.data.task.path)).toBe(fs.realpathSync(wtPath));
+    // The seed landed on the task and on the mounted default tab: this is
+    // what the first spawn's `--resume {UUID}` expands from.
+    const seeded = await browser.execute(id => {
+      const s = window.__termic!.useApp.getState();
+      const task = s.tasks.find((t: any) => t.id === id);
+      const tab = (s.tabs[id!] ?? []).find((t: any) => t.is_default);
+      return {
+        sessionIds: task?.agent_session_ids,
+        resumable: task?.has_resumable_history,
+        tabSession: tab?.sessionId,
+      };
+    }, adoptedId);
+    expect(seeded.sessionIds?.fakeagent).toBe("SESSION-EXT");
+    // Deliberately false: the seed is per-cli, and the task-wide flag
+    // would make OTHER agents' first tabs cwd-resume unrelated sessions.
+    expect(seeded.resumable).toBe(false);
+    expect(seeded.tabSession).toBe("SESSION-EXT");
+  });
+
+  it("--resume also seeds a plain create (no --from)", async () => {
+    // GH #169 follow-up: the session field rides every create path, not
+    // just import. A fresh worktree create carries the seed the same way.
+    const r = await rpc({
+      cmd: "new", name: "resume-create", mode: "worktree",
+      agent: "fakeagent", resume: "SESSION-CREATE", project: "fixture-repo",
+    });
+    expect(r.ok).toBe(true);
+    try {
+      const seeded = await browser.execute(
+        id =>
+          window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)
+            ?.agent_session_ids,
+        r.data.task.id,
+      );
+      expect(seeded?.fakeagent).toBe("SESSION-CREATE");
+    } finally {
+      await archiveTask(r.data.task.id);
+    }
+  });
+
+  it("a DERIVED name colliding with a live task auto-bumps past it", async () => {
+    // A detached worktree derives its name from the dir basename, here
+    // "adopt-me", colliding with the live task adopted above. Derived
+    // names auto-bump past live twins (the GH #153 unique_task_name
+    // rule); only a caller-TYPED name refuses as a conflict.
+    const dupPath = path.join(dataDir, "..", "adopt-me");
+    git(`worktree add --detach ${JSON.stringify(dupPath)}`, repoRoot);
+    let bumpedId: string | undefined;
+    try {
+      const r = await rpc({ cmd: "new", name: "", from: dupPath, agent: "fakeagent" });
+      expect(r.ok).toBe(true);
+      bumpedId = r.data.task.id;
+      expect(r.data.task.name).toBe("adopt-me-2");
+
+      // The TYPED spelling of the same collision stays a typed conflict.
+      const typed = await rpc({ cmd: "new", name: "adopt-me", from: dupPath, agent: "fakeagent" });
+      expect(typed.ok).toBe(false);
+      expect(typed.error.code).toBe("conflict");
+      expect(typed.error.message).toContain("already");
+    } finally {
+      if (bumpedId) await archiveTask(bumpedId);
+      try { git(`worktree remove --force ${JSON.stringify(dupPath)}`, repoRoot); } catch { /* best-effort */ }
+      try { git("worktree prune", repoRoot); } catch { /* best-effort */ }
+    }
+  });
+
+  it("re-adopting the same worktree is a clean error, not a second task", async () => {
+    const r = await rpc({ cmd: "new", name: "", from: wtPath, agent: "fakeagent" });
+    expect(r.ok).toBe(false);
+    expect(r.error.code).toBe("conflict");
+    expect(r.error.message).toContain("already open as a task");
+  });
+
+  it("a plain directory (no git anywhere above it) is refused", async () => {
+    // NOT a dir inside the termic checkout: rev-parse would find THAT repo
+    // and shift the error to unregistered-project, an environment accident.
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), "termic-e2e-plain-"));
+    try {
+      const r = await rpc({ cmd: "new", name: "", from: plain, agent: "fakeagent" });
+      expect(r.ok).toBe(false);
+      expect(r.error.code).toBe("bad_request");
+      expect(r.error.message).toContain("not a git worktree");
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  it("tab --resume seeds the NEW tab's own session id", async () => {
+    const r = await rpc({
+      cmd: "tab",
+      task: "adopt-me",
+      kind: { tab: "agent", id: "fakeagent" },
+      resume: "SESSION-TAB",
+    });
+    expect(r.ok).toBe(true);
+    const tabSession = await browser.execute(
+      (id, tab) =>
+        (window.__termic!.useApp.getState().tabs[id!] ?? []).find((t: any) => t.id === tab)
+          ?.sessionId,
+      adoptedId,
+      r.data.tab_id,
+    );
+    expect(tabSession).toBe("SESSION-TAB");
+  });
+
+  it("--resume refuses an agent with no id-resume support, naming the gate", async () => {
+    // codex's seeded entry has no resume_id_args, so a seeded id would be
+    // silently ignored at spawn; the server must refuse instead. Same gate
+    // on both verbs.
+    const viaNew = await rpc({
+      cmd: "new", name: "", from: wtPath, agent: "codex", resume: "SESSION-X",
+    });
+    expect(viaNew.ok).toBe(false);
+    expect(viaNew.error.code).toBe("unsupported");
+    expect(viaNew.error.message).toContain("cannot resume a session by id");
+
+    const viaTab = await rpc({
+      cmd: "tab",
+      task: "adopt-me",
+      kind: { tab: "agent", id: "codex" },
+      resume: "SESSION-X",
+    });
+    expect(viaTab.ok).toBe(false);
+    expect(viaTab.error.code).toBe("unsupported");
+    expect(viaTab.error.message).toContain("cannot resume a session by id");
   });
 });

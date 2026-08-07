@@ -547,6 +547,11 @@ pub struct CreateTaskArgs {
     /// Mirrors the repo-root custom-command path in `task_open_repo`.
     #[serde(default)]
     pub custom_command: Option<String>,
+    /// Externally-started session id the agent resumes on its first spawn
+    /// (GH #169): seeds `agent_session_ids[cli]`, same as an import. The id
+    /// is unvalidated by design; the agent owns "session not found".
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
 }
 
 // ───────────────────────────── paths ─────────────────────────────
@@ -2656,6 +2661,22 @@ async fn project_remove(id: String) -> Result<(), String> {
 #[tauri::command]
 fn tasks_list() -> Vec<Task> { load_tasks() }
 
+/// GH #169: normalize an externally-started session id and seed it as the
+/// per-cli session, so the default tab's first spawn composes the agent's
+/// `resume_id_args` instead of minting a fresh session. The id is
+/// unvalidated by design; the agent owns "session not found" (the
+/// resume_override stance), and a rapid exit falls back to a fresh spawn.
+fn seeded_session_ids(
+    cli: &str,
+    resume_session_id: Option<&str>,
+) -> std::collections::HashMap<String, String> {
+    let mut ids = std::collections::HashMap::new();
+    if let Some(sid) = resume_session_id.map(str::trim).filter(|s| !s.is_empty()) {
+        ids.insert(cli.to_string(), sid.to_string());
+    }
+    ids
+}
+
 /// Open the project's main repo checkout as a task (no git worktree).
 /// NOT idempotent: several repo-root sessions may share one checkout, so
 /// every call seeds a new task pointing at `project.root_path`. A
@@ -2677,6 +2698,7 @@ fn task_open_repo(
     sandbox_mode: Option<SandboxMode>,
     sandbox_rw_paths: Option<Vec<String>>,
     sandbox_allowed_hosts: Option<Vec<String>>,
+    resume_session_id: Option<String>,
 ) -> Result<Task, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
@@ -2772,9 +2794,7 @@ fn task_open_repo(
     let ws_name = if derived {
         unique_task_name(&ws_name, &tasks_now, &proj.id)
     } else {
-        if tasks_now.iter().any(|t| {
-            !t.archived && t.project_id == proj.id && t.name.eq_ignore_ascii_case(&ws_name)
-        }) {
+        if task_name_conflict(&tasks_now, &proj.id, &ws_name, None).is_some() {
             return Err(format!("a task named \"{ws_name}\" already exists in this project"));
         }
         ws_name
@@ -2798,6 +2818,13 @@ fn task_open_repo(
     let sandbox_enabled = sandbox_mode != SandboxMode::Off;
     let sandbox_rw_paths = sandbox_rw_paths.unwrap_or_default();
     let sandbox_allowed_hosts = sandbox_allowed_hosts.unwrap_or_default();
+    // Externally-started session to attach (GH #169): the natural fit
+    // here, since the main checkout shares its cwd with sessions the user
+    // started in the repo directly. NOTE has_resumable_history stays
+    // false: the seed is PER-CLI, while that flag is task-wide and would
+    // make the first tab of every OTHER agent cwd-resume an unrelated
+    // session; the seeded resume rides agent_session_ids alone.
+    let agent_session_ids = seeded_session_ids(&cli, resume_session_id.as_deref());
     let task = Task {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
@@ -2816,7 +2843,7 @@ fn task_open_repo(
         is_main_checkout: true,
         spawn_count: 0,
         has_resumable_history: false,
-        agent_session_ids: std::collections::HashMap::new(),
+        agent_session_ids,
         // Off by default (see the resolution above); the advanced dialog can
         // opt a main-checkout task into a cage at create, and the shield
         // button still changes it later. Seatbelt + proxy work identically
@@ -2929,6 +2956,8 @@ fn task_import_worktree(
     sandbox_mode: Option<SandboxMode>,
     sandbox_rw_paths: Option<Vec<String>>,
     sandbox_allowed_hosts: Option<Vec<String>>,
+    resume_session_id: Option<String>,
+    yolo: Option<bool>,
 ) -> Result<Task, String> {
     let proj = load_projects().into_iter().find(|p| p.id == project_id)
         .ok_or("project not found")?;
@@ -2952,7 +2981,11 @@ fn task_import_worktree(
     if wt_canon == canon_str(&proj.root_path) {
         return Err("that's the repo's main checkout — use \"Run in repo\" instead".into());
     }
-    if load_tasks().iter().any(|w| canon_str(&w.path) == wt_canon) {
+    // LIVE tasks only: an archived task keeps its old path on the record
+    // (the dir is gone), and counting it would refuse re-adopting that
+    // path forever with a wrong message.
+    let existing_tasks = load_tasks();
+    if existing_tasks.iter().any(|w| !w.archived && canon_str(&w.path) == wt_canon) {
         return Err("this worktree is already open as a task".into());
     }
 
@@ -2960,7 +2993,7 @@ fn task_import_worktree(
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     let cli = cli.unwrap_or_else(|| proj.default_cli.clone());
-    let port = 18100 + (load_tasks().len() as u16);
+    let port = 18100 + (existing_tasks.len() as u16);
     let explicit_name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
     let derived = explicit_name.is_none();
     let ws_name = explicit_name
@@ -2970,13 +3003,10 @@ fn task_import_worktree(
     // Same-project live duplicate (GH #153): a caller-TYPED name is
     // refused, the task_rename rule; a derived fallback (branch / dir
     // name) is auto-bumped past live twins, the task_open_repo rule.
-    let tasks_now = load_tasks();
     let ws_name = if derived {
-        unique_task_name(&ws_name, &tasks_now, &proj.id)
+        unique_task_name(&ws_name, &existing_tasks, &proj.id)
     } else {
-        if tasks_now.iter().any(|t| {
-            !t.archived && t.project_id == proj.id && t.name.eq_ignore_ascii_case(&ws_name)
-        }) {
+        if task_name_conflict(&existing_tasks, &proj.id, &ws_name, None).is_some() {
             return Err(format!("a task named \"{ws_name}\" already exists in this project"));
         }
         ws_name
@@ -3005,6 +3035,10 @@ fn task_import_worktree(
     let sandbox_allowed_hosts = sandbox_allowed_hosts
         .unwrap_or_else(|| merge(&globals.sandbox_default_allowed_hosts, &proj.sandbox_allowed_hosts));
 
+    // GH #169 seed; has_resumable_history stays false deliberately, see
+    // seeded_session_ids and the task_open_repo note (per-cli seed vs
+    // task-wide flag).
+    let agent_session_ids = seeded_session_ids(&cli, resume_session_id.as_deref());
     let task = Task {
         id: Uuid::new_v4().to_string(),
         project_id: proj.id.clone(),
@@ -3022,10 +3056,10 @@ fn task_import_worktree(
         is_main_checkout: false,
         spawn_count: 0,
         has_resumable_history: false,
-        agent_session_ids: std::collections::HashMap::new(),
+        agent_session_ids,
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
-        yolo: false,
+        yolo: yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
         composition: Vec::new(),
@@ -3278,6 +3312,10 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
         .unwrap_or_else(|| merge(&globals.sandbox_default_rw_paths, &proj.sandbox_rw_paths));
     let sandbox_allowed_hosts = args.sandbox_allowed_hosts
         .unwrap_or_else(|| merge(&globals.sandbox_default_allowed_hosts, &proj.sandbox_allowed_hosts));
+    // GH #169 seed; has_resumable_history stays false deliberately, see
+    // seeded_session_ids and the task_open_repo note (per-cli seed vs
+    // task-wide flag).
+    let agent_session_ids = seeded_session_ids(&cli, args.resume_session_id.as_deref());
     let task = Task {
         id: args.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         project_id: proj.id.clone(),
@@ -3292,7 +3330,7 @@ fn task_create_sync(args: CreateTaskArgs) -> Result<Task, String> {
         is_main_checkout: false,
         spawn_count: 0,
         has_resumable_history: false,
-        agent_session_ids: std::collections::HashMap::new(),
+        agent_session_ids,
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
         yolo: false,
@@ -3893,12 +3931,7 @@ fn task_rename(id: String, name: String) -> Result<Task, String> {
     // Two same-name tasks in one project make name resolution ambiguous
     // with no name-based way out (both qualify as project/name). Self is
     // excluded so a case-only rename ("foo" -> "Foo") still works.
-    if list.iter().any(|t| {
-        t.id != id
-            && !t.archived
-            && t.project_id == list[idx].project_id
-            && t.name.eq_ignore_ascii_case(new_name)
-    }) {
+    if task_name_conflict(&list, &list[idx].project_id, new_name, Some(&id)).is_some() {
         return Err(format!("a task named \"{new_name}\" already exists in this project"));
     }
     let w = &mut list[idx];
@@ -5046,12 +5079,7 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     // Restoring would resurrect two same-name live tasks in one project,
     // a state CLI name resolution cannot untangle (both qualify as
     // project/name); the error names the way out.
-    if list.iter().any(|t| {
-        t.id != id
-            && !t.archived
-            && t.project_id == list[idx].project_id
-            && t.name.eq_ignore_ascii_case(&list[idx].name)
-    }) {
+    if task_name_conflict(&list, &list[idx].project_id, &list[idx].name, Some(&id)).is_some() {
         return Err(format!(
             "a live task named \"{}\" already exists in this project; rename it first, then restore",
             list[idx].name
@@ -7223,6 +7251,25 @@ async fn task_match_ignored_files(id: String, clicked: String) -> Result<Vec<Str
 
 // ───────────────────────────── helpers ─────────────────────────────
 
+/// THE same-project name-collision rule (GH #153/#169): live tasks only,
+/// same project, ASCII-case-insensitive, optionally excluding one task id
+/// (renames/restores checking against themselves). Every duplicate guard
+/// and unique_task_name go through here so the rule cannot drift between
+/// call sites; returns the colliding task so errors can echo its name.
+pub(crate) fn task_name_conflict<'a>(
+    tasks: &'a [Task],
+    project_id: &str,
+    name: &str,
+    exclude_task: Option<&str>,
+) -> Option<&'a Task> {
+    tasks.iter().find(|t| {
+        exclude_task != Some(t.id.as_str())
+            && !t.archived
+            && t.project_id == project_id
+            && t.name.eq_ignore_ascii_case(name)
+    })
+}
+
 /// Bump a DERIVED task name past live same-project twins: "main" ->
 /// "main-2" -> "main-3". Mirrors quickTask.ts's uniqueBranch rule: only
 /// auto-filled defaults are adjusted, never a name the caller typed
@@ -7231,11 +7278,7 @@ async fn task_match_ignored_files(id: String, clicked: String) -> Result<Vec<Str
 /// same branch name as the first and the duplicate guard makes it
 /// impossible rather than "main-2" (GH #153 review).
 fn unique_task_name(base: &str, tasks: &[Task], project_id: &str) -> String {
-    let taken = |n: &str| {
-        tasks.iter().any(|t| {
-            !t.archived && t.project_id == project_id && t.name.eq_ignore_ascii_case(n)
-        })
-    };
+    let taken = |n: &str| task_name_conflict(tasks, project_id, n, None).is_some();
     if !taken(base) {
         return base.to_string();
     }

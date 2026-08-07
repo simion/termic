@@ -39,7 +39,11 @@ use std::io::{self, BufRead, Read, Write};
 /// `tab` command, `TabData.prompt`).
 ///
 /// v7: the `rename` verb (GH #153).
-pub const PROTOCOL_VERSION: u32 = 7;
+///
+/// v8 (GH #169): attach existing work. `new` gains `from` (adopt a
+/// registered worktree instead of creating one) and `resume` (seed the
+/// agent's session id); `tab` gains `resume`.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// serde default for `QuitData::running`.
 pub(crate) fn default_true() -> bool { true }
@@ -200,6 +204,16 @@ pub enum Command {
         /// Base branch for a worktree task. Absent = the repo default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base: Option<String>,
+        /// Adopt this EXISTING registered worktree instead of creating
+        /// one (GH #169). Absolute path (the CLI canonicalizes). Mutually
+        /// exclusive with mode/base; no setup script runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        /// Session id to resume in the agent's first spawn (GH #169).
+        /// The agent must declare `resume_id_args`. Valid with or
+        /// without `from`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<String>,
         /// "off" | "monitor" | "enforce" | "enforce-fs". Absent = the
         /// project's sandbox seeds (same fallback the GUI uses).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +280,10 @@ pub enum Command {
         wait: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        /// Session id the new tab's agent resumes (GH #169). Agent kinds
+        /// only; the agent must declare `resume_id_args`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<String>,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -1332,6 +1350,8 @@ mod tests {
                 agent: Some("claude".into()),
                 mode: Some("worktree".into()),
                 base: Some("develop".into()),
+                from: None,
+                resume: None,
                 sandbox: Some("enforce-fs".into()),
                 yolo: true,
                 project: Some("web".into()),
@@ -1346,6 +1366,25 @@ mod tests {
                 agent: None,
                 mode: None,
                 base: None,
+                from: None,
+                resume: None,
+                sandbox: None,
+                yolo: false,
+                project: None,
+                open: false,
+                wait: false,
+                timeout_ms: None,
+                cwd: None,
+            },
+            // v7 import shape (GH #169): adopt a worktree + resume a session.
+            Command::New {
+                name: String::new(),
+                prompt: None,
+                agent: Some("claude".into()),
+                mode: None,
+                base: None,
+                from: Some("/tasks/web/poll-linear".into()),
+                resume: Some("018f2c1e-aaaa-bbbb-cccc-1234567890ab".into()),
                 sandbox: None,
                 yolo: false,
                 project: None,
@@ -1371,15 +1410,16 @@ mod tests {
                 prompt: Some("run the tests".into()),
                 wait: true,
                 timeout_ms: Some(60_000),
+                resume: Some("018f2c1e-aaaa-bbbb-cccc-1234567890ab".into()),
                 cwd: None,
             },
             Command::Tab {
                 task: None, project: None, kind: TabKind::Shell,
-                prompt: None, wait: false, timeout_ms: None, cwd: None,
+                prompt: None, wait: false, timeout_ms: None, resume: None, cwd: None,
             },
             Command::Tab {
                 task: None, project: None, kind: TabKind::Default,
-                prompt: None, wait: false, timeout_ms: None, cwd: None,
+                prompt: None, wait: false, timeout_ms: None, resume: None, cwd: None,
             },
             Command::Agents,
             Command::Quit { commit: false },

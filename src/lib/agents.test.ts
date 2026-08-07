@@ -21,7 +21,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle, compileSignals, BUILTIN_TITLE_SIGNALS, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS } from "@/lib/agents";
+import { spawnArgsForCli, visibleCliIds, cliSupportsIdSession, cliSupportsResumeById, agentDisplayName, decideResume, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle, compileSignals, BUILTIN_TITLE_SIGNALS, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 
 // ── spawnArgsForCli ───────────────────────────────────────────────────
@@ -402,6 +402,64 @@ describe("cliSupportsIdSession", () => {
 
   it("unknown agent does NOT support id sessions", () => {
     expect(cliSupportsIdSession("some-random-cli")).toBe(false);
+  });
+});
+
+// ── cliSupportsResumeById (GH #169 `--resume <SESSION_ID>` gate) ──────
+
+describe("cliSupportsResumeById", () => {
+  beforeEach(() => { mockAgents.length = 0; });
+
+  it("claude can resume by id (resume_id_args in the fallback)", () => {
+    expect(cliSupportsResumeById("claude")).toBe(true);
+  });
+
+  it("opencode can resume by id WITHOUT being id-session capable", () => {
+    // The capture-resume class: resume_id_args but no session_id_args.
+    // The by-id gate must be wider than cliSupportsIdSession or attaching
+    // an external opencode session would be refused despite working.
+    expect(cliSupportsResumeById("opencode")).toBe(true);
+    expect(cliSupportsIdSession("opencode")).toBe(false);
+  });
+
+  it("codex is cwd-resume only", () => {
+    expect(cliSupportsResumeById("codex")).toBe(false);
+  });
+
+  it("a registry entry gains the capability by declaring resume_id_args", () => {
+    // Platform-agnostic by design: no agent names anywhere in the gate.
+    mockAgents.push({
+      id: "future", display_name: "Future", command: "future", args: [],
+      icon_id: "lucide:star", color: "#000", builtin: false,
+      capabilities: { resume_id_args: ["--attach", "{UUID}"] },
+    } as unknown as import("@/lib/types").Agent);
+    expect(cliSupportsResumeById("future")).toBe(true);
+  });
+});
+
+// ── external session attach (GH #169): seeded uuid composes a resume ──
+
+describe("attaching an externally-started session", () => {
+  beforeEach(() => { mockAgents.length = 0; });
+
+  it("a seeded tab sessionId resolves to resume-id, not mint", () => {
+    const d = decideResume({
+      isAgent: true, idCapable: true, isPrimary: true, isRepoRoot: false,
+      // Import seeds has_resumable_history=true alongside the id; the
+      // stored uuid must win over the legacy cwd-continue path.
+      hasResumableHistory: true,
+      storedUuid: "ext-session-uuid", failedResume: false,
+    });
+    expect(d).toEqual({ kind: "resume-id" });
+  });
+
+  it("composes --resume <id> and KEEPS --name (unlike resume_override)", () => {
+    const task = { id: "w1", name: "poll linear", branch: "b", port: 1 } as never;
+    const args = spawnArgsForCli("claude", {
+      yolo: false, resume: false, task, isPrimary: true,
+      sessionUuid: "ext-session-uuid", resumeKnown: true,
+    });
+    expect(args).toEqual(["--resume", "ext-session-uuid", "--name", "poll-linear"]);
   });
 });
 

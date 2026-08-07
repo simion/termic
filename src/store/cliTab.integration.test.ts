@@ -53,10 +53,19 @@ function task(over: Partial<Task> = {}): Task {
   } as unknown as Task;
 }
 
-/** An enabled+installed registry so kind validation passes. */
+/** An enabled+installed registry so kind validation passes. Claude carries
+ *  its real resume capabilities: the `--resume` seed path (GH #169) gates on
+ *  `resume_id_args`, and a capability-less entry would refuse it. Codex is
+ *  deliberately left bare, standing in for a cwd-resume-only agent. */
 const AGENTS = [
-  { id: "claude", name: "Claude Code", disabled: false },
-  { id: "codex", name: "Codex", disabled: false },
+  {
+    id: "claude", name: "Claude Code", disabled: false, command: "claude", args: [],
+    capabilities: {
+      session_id_args: ["--session-id", "{UUID}"],
+      resume_id_args: ["--resume", "{UUID}"],
+    },
+  },
+  { id: "codex", name: "Codex", disabled: false, command: "codex", args: [] },
 ];
 
 /** Real `CliInfo` shape. Seeding bare strings here would still let the happy
@@ -186,6 +195,38 @@ describe("termic tab: the default kind (`termic tab <task>` with no flags)", () 
     await expect(newTabHandler({ taskId: "ws1", kind: "default" })).rejects.toThrow(
       /no launch command/,
     );
+  });
+});
+
+describe("termic tab: --resume attaches an external session (GH #169)", () => {
+  beforeEach(() => seed());
+
+  it("seeds the new tab's sessionId so the spawn resumes it", async () => {
+    const { tabId } = await newTabHandler({
+      taskId: "ws1", kind: "agent", id: "claude", resume: "EXTERNAL-SESSION",
+    });
+    expect(tabsOf().find(t => t.id === tabId)?.sessionId).toBe("EXTERNAL-SESSION");
+  });
+
+  it("does not touch the persisted agents' own session ids", async () => {
+    await newTabHandler({
+      taskId: "ws1", kind: "agent", id: "claude", resume: "EXTERNAL-SESSION",
+    });
+    expect(tabsOf().find(t => t.id === "main")?.sessionId).toBe("SESSION-A");
+    expect(tabsOf().find(t => t.id === "second")?.sessionId).toBe("SESSION-B");
+  });
+
+  it("refuses an agent with no resume_id_args instead of silently ignoring the id", async () => {
+    await expect(
+      newTabHandler({ taskId: "ws1", kind: "agent", id: "codex", resume: "EXTERNAL-SESSION" }),
+    ).rejects.toThrow(/cannot resume a session by id/);
+  });
+
+  it("ignores a resume id on non-agent kinds (server rejects them first)", async () => {
+    const { tabId } = await newTabHandler({
+      taskId: "ws1", kind: "shell", resume: "EXTERNAL-SESSION",
+    });
+    expect(tabsOf().find(t => t.id === tabId)?.sessionId).toBeUndefined();
   });
 });
 
