@@ -61,6 +61,11 @@ base64 = "0.22"
 # it direct doesn't change resolution.
 percent-encoding = "2"
 tauri-plugin-clipboard-manager = "2.3.2"
+# `termic://` URL scheme (GH #192): lets external systems open Termic on a
+# pre-filled New Task dialog. Registers CFBundleURLTypes on macOS and the
+# registry key on Windows, and hands us the URL through one callback for
+# both the cold-start and already-running cases.
+tauri-plugin-deep-link = "2"
 # Wire types + framing for the CLI control socket (cli_server.rs). The
 # same crate termic-cli links, so server and client cannot drift.
 termic-proto = { path = "../termic-proto" }

@@ -38,7 +38,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, ipc, core, runTabs, scriptRuns, prompts, agentRace, signalLog, reviewComments] =
+    const [app, ui, prefs, race, ipc, core, runTabs, scriptRuns, prompts, agentRace, signalLog, reviewComments, deepLink] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -52,6 +52,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/lib/agentRace"),
         import("@/lib/agentSignalLog"),
         import("@/store/reviewComments"),
+        import("@/lib/deepLink"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -76,6 +77,11 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // the same functions TerminalPane calls — instead of racing a live
       // agent's spinner to produce a specific title at a specific moment.
       signalLog,
+      // `termic://` deep links (GH #192). Exposed because WebDriver cannot
+      // ask macOS to open a URL scheme — the OS half is LaunchServices, not
+      // the app — so specs drive the handler with the same raw URL string
+      // Rust would have queued, exercising everything from parse onward.
+      deepLink,
     };
   })();
 }

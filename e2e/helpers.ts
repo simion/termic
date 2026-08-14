@@ -63,6 +63,13 @@ export interface TermicApi {
     resetSignalLog: (agentId?: string) => void;
     observationsFor: (agentId: string) => Array<{ title: string; seen: number }>;
   };
+  /** `termic://` deep links (GH #192). `handleDeepLink` takes the raw URL
+   *  string Rust would have queued — WebDriver cannot ask macOS to open a
+   *  URL scheme, so specs enter at the parse step instead. */
+  deepLink: {
+    handleDeepLink: (url: string) => void;
+    MAX_PROMPT_CHARS: number;
+  };
   agentRace: {
     startRace: (opts: {
       projectId: string;

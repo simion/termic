@@ -10739,6 +10739,48 @@ pub(crate) fn leave_windowless(app: &AppHandle) {
     }
 }
 
+// ─── termic:// deep links (GH #192) ──────────────────────────────────────
+// External systems open Termic on a pre-filled New Task dialog with
+// `termic://new?project=…&name=…&prompt=…`. Rust deliberately does NOT
+// parse or validate the URL: the only checks worth making (is this a
+// REGISTERED project?) need the webview's store, so the raw URL crosses
+// once and `src/lib/deepLink.ts` owns the whole contract.
+//
+// The queue exists for cold start. macOS delivers the open-url Apple Event
+// while the webview is still booting, long before any JS listener is
+// attached, so an emit-only design drops exactly the link that launched the
+// app. Instead every arrival lands in this queue and the webview is merely
+// NUDGED; the webview always reads through `deep_link_take_pending`, which
+// drains atomically. That single-reader shape is also why a link arriving
+// while the app is live cannot be handled twice: the nudge carries no
+// payload, so there is nothing to double-handle.
+static PENDING_DEEP_LINKS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Queue a `termic://` URL and nudge the webview. Safe to call before the
+/// window exists (the emit is dropped, the queue survives).
+pub(crate) fn queue_deep_link(app: &AppHandle, url: &str) {
+    dlog(&format!("[deeplink] queued {url}"));
+    PENDING_DEEP_LINKS.lock().push(url.to_string());
+    let _ = app.emit("termic://deep-link", ());
+}
+
+/// Drain the queue. The webview calls this on boot AND on every
+/// `termic://deep-link` nudge, so a link that arrived before the listener
+/// existed is picked up by the boot read instead of being lost.
+#[tauri::command]
+fn deep_link_take_pending() -> Vec<String> {
+    std::mem::take(&mut *PENDING_DEEP_LINKS.lock())
+}
+
+/// The `termic://` URL this process was launched with, if any. Only
+/// meaningful on Windows/Linux, where a link spawns a fresh process with
+/// the URL in argv; macOS routes it to the running app as an Apple Event
+/// and leaves argv alone. Read BEFORE the window exists so the
+/// single-instance preflight can hand it over to the surviving instance.
+fn deep_link_from_argv() -> Option<String> {
+    std::env::args().skip(1).find(|a| a.starts_with("termic://"))
+}
+
 // ─── startup timing ──────────────────────────────────────────────────────
 // Stamped as early as `run()` can manage. The webview reads it back at first
 // paint (`src/lib/perfMarks.ts`) so the nightly perf job can report
@@ -10855,6 +10897,13 @@ pub fn run() {
         // because the process plugin also exposes exit/restart APIs we
         // may want for other purposes later (debug 'restart app' etc).
         .plugin(tauri_plugin_process::init())
+        // `termic://` URL scheme (GH #192). Schemes are declared in
+        // tauri.conf.json → plugins.deep-link.desktop, which is what the
+        // bundler turns into CFBundleURLTypes; the handler is registered
+        // in `setup` below. Exposes no IPC command we call from JS (the
+        // webview reads `deep_link_take_pending` instead), so it needs no
+        // capability entry.
+        .plugin(tauri_plugin_deep_link::init())
         // Native PDF preview channel. WKWebView renders a PDF served as a real
         // `application/pdf` resource but shows blank for a `data:` URL, so the
         // file-tree preview pane points an `<embed>` at
@@ -10877,7 +10926,13 @@ pub fn run() {
             // vs beta, a direct binary run) never opens a duplicate that
             // races the shared projects.json/tasks/. Debug is newest-wins.
             // See cli_server::another_instance_running.
-            if cli_server::another_instance_running() {
+            //
+            // A `termic://` link that spawned THIS process (Windows/Linux;
+            // macOS routes links to the running app instead) rides along
+            // with the raise, so the link opens in the instance that
+            // survives rather than dying with the one we exit. GH #192.
+            let argv_link = deep_link_from_argv();
+            if cli_server::another_instance_running(argv_link.as_deref()) {
                 // Say WHY on stderr before going. Exiting silently before the
                 // window exists is indistinguishable from a crash-on-launch,
                 // and the raise above is invisible when the owner is a stale
@@ -10895,6 +10950,34 @@ pub fn run() {
                         .unwrap_or_else(|_| "<unresolved data dir>".into()),
                 );
                 std::process::exit(0);
+            }
+            // `termic://` deep links (GH #192). Registered here, before the
+            // window is built, so a link that LAUNCHED the app is already
+            // queued by the time the webview asks for it. Two sources, both
+            // needed: `get_current` returns the launch URL the plugin
+            // captured before `setup` ran (the cold-start case), while
+            // `on_open_url` covers every link that arrives afterwards
+            // (macOS re-activating an app that is already up). The queue
+            // dedupes nothing on purpose - the two sources are disjoint.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    for u in urls {
+                        queue_deep_link(app.handle(), u.as_str());
+                    }
+                }
+                // Windows/Linux launch argv, for the case where we ARE the
+                // surviving instance (the handoff above only fires when
+                // somebody else owns the data dir).
+                if let Some(url) = argv_link {
+                    queue_deep_link(app.handle(), &url);
+                }
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for u in event.urls() {
+                        queue_deep_link(&handle, u.as_str());
+                    }
+                });
             }
             // Resolve the user's login-shell PATH off the main thread
             // so the first PTY spawn doesn't wait on shell startup.
@@ -11115,6 +11198,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             perf_boot_elapsed_ms,
+            deep_link_take_pending,
             projects_list, project_add, project_add_multi, project_set_members, project_update, project_remove, project_reorder, project_set_group,
             tasks_list, task_create, task_create_multi, task_open_repo, task_importable_worktrees, task_import_worktree, task_archive, task_set_cli, task_set_custom_command, task_set_resume_override, task_set_sandbox, task_set_yolo,
             sandbox_available, sandbox_deny_counts, sandbox_recent_denied_hosts, sandbox_recent_denied_paths, sandbox_access_counts, sandbox_recent_access_hosts, sandbox_recent_access_paths, sandbox_set_monitor_filters, task_sandbox_add_allowed_host, task_sandbox_add_allowed_path, task_sandbox_remove_allowed_path, agent_sandbox_add_allowed_path, agent_sandbox_add_allowed_host, task_recent_denials,

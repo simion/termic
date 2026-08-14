@@ -23,6 +23,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Navigation | Dashboard ↔ History via real clicks | `app.e2e.ts` |
 | ✅ Create (wizard) | NewTaskDialog: name + shell CLI + Main-checkout → Create → task exists | `task.e2e.ts` |
 | ✅ Task spawn | Task created; agent PTY comes alive; PTY write round-trips; agent OSC title reaches the app | `task.e2e.ts` |
+| ✅ Deep links (GH #192) | A `termic://new?…` URL pre-fills the New Task dialog (name, prompt, task type) and **creates nothing** until the user presses Create; the prompt stays editable; a prompt at the cap is accepted and one past it is refused with a reason; an unregistered project, a missing project, an unknown action and a foreign scheme are each refused with a toast and no dialog; a confirmed link creates the task it described. Enters at `handleDeepLink` with the raw URL Rust queues, because WebDriver cannot ask macOS to open a URL scheme | `deep-link.e2e.ts` |
 | ✅ Agent working | After a real submit, the agent enters the working state | `agent.e2e.ts` |
 | ✅ Agent attention | An agent you are not viewing flags completion (unread/done) when it finishes | `agent.e2e.ts` |
 | ✅ CLI tabs (unit) | `termic tab` on an UNMOUNTED task keeps every persisted agent and its session id, does not steal the default-target role, and a shell tab does not strand the task agentless | `store/cliTab.integration.test.ts` |

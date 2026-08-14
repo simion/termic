@@ -10,9 +10,11 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
-import { cliSupportsResumeById, visibleCliIds } from "@/lib/agents";
+import { cliSupportsResumeById, visibleCliIds, isTerminalCli, agentDisplayName } from "@/lib/agents";
 import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches } from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
+import { seedPromptWhenReady } from "@/lib/seedPrompt";
+import { MAX_PROMPT_CHARS } from "@/lib/deepLink";
 import { withCreateLock } from "@/lib/createLock";
 import { uniqueBranch } from "@/lib/quickTask";
 import { slugify, branchify, cn } from "@/lib/utils";
@@ -141,6 +143,28 @@ export function NewTaskDialog() {
   // main checkout, import) for id-resume-capable agents; one shared field
   // element serves both spots in the form.
   const [resumeSession, setResumeSession] = useState("");
+  // Optional first message, typed into the agent once it finishes booting
+  // (GH #192). Blank by default and blank for every existing entry point —
+  // this exists so a `termic://` link can arrive with a summarized ticket
+  // already in the box, and so the user SEES that text and can edit or
+  // clear it before anything is created. Never auto-submitted from the
+  // link: the Create button is the confirmation.
+  const [prompt, setPrompt] = useState("");
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  // Agents that can't take a typed first message (a plain shell has no
+  // prompt box to type into) hide the field rather than silently dropping
+  // the text at create time.
+  const canPrompt = cli !== "shell" && !isTerminalCli(cli);
+  const agentLabel = agentDisplayName(cli);
+  // Auto-grow to fit the content, capped by max-height (then it scrolls).
+  // Runs on seed as well as on typing, so a link-delivered prompt opens at
+  // its real height instead of a 3-row window the user has to scroll.
+  function growPrompt(el: HTMLTextAreaElement | null) {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }
+  useEffect(() => { growPrompt(promptRef.current); }, [prompt]);
   const resumeSessionField = (
     <Field
       label="Resume session ID (optional)"
@@ -205,8 +229,18 @@ export function NewTaskDialog() {
     const isInstalled = (id: string) => detected[id]?.found === true;
     const isUsable = (id: string) =>
       id === "shell" || !detectionRan || isInstalled(id);
+    //   0. an explicitly seeded agent (deep link) — but only if this
+    //      install actually offers it, so a link naming an agent the user
+    //      doesn't have falls through to the normal pick instead of
+    //      selecting a pill that isn't there.
+    const seededAgent =
+      seed?.agent && list.some(a => !a.disabled && a.id === seed.agent) ? seed.agent
+      : seed?.agent === "shell" ? "shell"
+      : null;
     const projectDefault = p?.default_cli || "";
-    if (projectDefault && isUsable(projectDefault)) {
+    if (seededAgent) {
+      setCli(seededAgent);
+    } else if (projectDefault && isUsable(projectDefault)) {
       setCli(projectDefault);
     } else {
       const firstInstalled = list.find(a => !a.disabled && isInstalled(a.id))?.id;
@@ -285,6 +319,7 @@ export function NewTaskDialog() {
     const wantImport = !!seed?.importMode && canImp;
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setResumeSession("");
+    setPrompt(seed?.prompt ?? "");
     setImportMode(wantImport);
     // Load existing branches so `derived` can auto-number past a collision
     // (#129). Only meaningful for single-repo git projects (worktree mode).
@@ -296,7 +331,11 @@ export function NewTaskDialog() {
     // restores the user's last-used type (main checkout by default). Shares
     // the `newTaskLastMode` key with the sidebar quick menu, so the toggle
     // choice carries across both surfaces.
-    setMode(p?.non_git ? "repo_root" : (readLastMode() ?? "repo_root"));
+    // A seeded mode (deep link) outranks the remembered choice — the link
+    // asked for a specific shape. The non-git clamp still wins over both;
+    // parseDeepLink rejects `worktree` on a non-git project up front, so
+    // this only ever catches a project that lost its git dir since.
+    setMode(p?.non_git ? "repo_root" : (seed?.mode ?? readLastMode() ?? "repo_root"));
     if (canImp) loadImportable(projectId);
     setPhase("form"); setSetupLog([]); setCreatedTaskId(null);
     // CRITICAL: also reset `busy`. On a successful prior creation we
@@ -373,6 +412,14 @@ export function NewTaskDialog() {
     setName(wt.branch || baseName);
   }
 
+  // The first message, if the user left one AND the chosen agent can take
+  // one. Typed into the task's default tab once its agent finishes booting
+  // (lib/seedPrompt); best-effort, so a create never fails over a prompt.
+  function seedFirstMessage(taskId: string) {
+    if (!canPrompt) return;
+    seedPromptWhenReady(taskId, prompt.trim());
+  }
+
   // Adopt an existing worktree. No worktree-add / file-copy / setup
   // script, so this skips the streaming phases entirely.
   async function submitImport() {
@@ -392,6 +439,7 @@ export function NewTaskDialog() {
       ));
       await loadAll();
       setActive(w.id);
+      seedFirstMessage(w.id);
       close();
     } catch (e) {
       setErr(String(e));
@@ -421,6 +469,7 @@ export function NewTaskDialog() {
       ));
       await loadAll();
       setActive(w.id);
+      seedFirstMessage(w.id);
       close();
     } catch (e) {
       setErr(String(e));
@@ -473,7 +522,7 @@ export function NewTaskDialog() {
       const uDone = await listen<{ code: number | null; success: boolean }>(`setup-done://${taskId}`, ev => {
         if (ev.payload.success) {
           setPhase("done");
-          window.setTimeout(() => { setActive(taskId); close(); }, 2000);
+          window.setTimeout(() => { setActive(taskId); seedFirstMessage(taskId); close(); }, 2000);
         } else {
           setPhase("error");
           setErr(`Setup script exited with code ${ev.payload.code ?? "?"}.`);
@@ -539,6 +588,7 @@ export function NewTaskDialog() {
       // (ensureDefaultTab excludes setup-kind tabs from its "already
       // mounted" check, so the two can't race each other out).
       setActive(taskId);
+      seedFirstMessage(taskId);
       close();
       launchSetupTab(taskId, { focus: false }).catch(() => {});
     } catch (e) {
@@ -775,6 +825,52 @@ export function NewTaskDialog() {
             cannot resume a specific session by id. Import mode renders its
             own copy below the worktree picker. */}
         {!isMulti && !importMode && cliSupportsResumeById(cli) && resumeSessionField}
+
+        {/* Optional first message (GH #192). Sent to the agent once it
+            finishes booting. Hidden for a plain terminal, which has no
+            prompt box to type into. */}
+        {canPrompt && (
+          <Field
+            label="First message (optional)"
+            hint={`Typed into ${agentLabel} once it's ready. Nothing is sent until you press ${importMode ? "Import" : "Create"}.`}
+          >
+            <div className="flex flex-col gap-1">
+              <textarea
+                ref={promptRef}
+                value={prompt}
+                onChange={e => setPrompt(e.target.value.slice(0, MAX_PROMPT_CHARS))}
+                rows={3}
+                // Enter inserts a newline and nothing else. A textarea
+                // never submits its form on Enter, but the dialog above it
+                // does bind keys, and a multi-line first message must not
+                // be able to trip anything mid-sentence.
+                onKeyDown={e => { if (e.key === "Enter") e.stopPropagation(); }}
+                // No native autocorrect / autocapitalize / spellcheck: this
+                // is agent input, not prose, and macOS text substitution
+                // mangling a path or a flag is never wanted. Same reasoning
+                // as the broadcast composer.
+                autoCorrect="off"
+                autoCapitalize="off"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={"Describe the task, paste a ticket, or leave empty to start the agent idle."}
+                className="max-h-[30vh] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] leading-relaxed text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
+              />
+              {/* Counter appears only as the cap gets close, so the common
+                  case (a couple of sentences) stays uncluttered. */}
+              {prompt.length > MAX_PROMPT_CHARS * 0.8 && (
+                <span className={cn(
+                  "self-end text-[11.5px] tabular-nums",
+                  prompt.length >= MAX_PROMPT_CHARS
+                    ? "text-[var(--color-warn)]"
+                    : "text-[var(--color-fg-faint)]",
+                )}>
+                  {prompt.length} / {MAX_PROMPT_CHARS}
+                </span>
+              )}
+            </div>
+          </Field>
+        )}
 
         {/* Multi-repo: per-member mode + branch picker. Each member
             row renders a small toggle (Worktree | Repo root) and, when

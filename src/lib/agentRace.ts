@@ -20,10 +20,9 @@ import { useRace } from "@/store/race";
 import { useUI } from "@/store/ui";
 import { withCreateLock } from "@/lib/createLock";
 import { launchSetupTab } from "@/lib/runTabs";
-import { sendMessageToPty } from "@/lib/agentSend";
+import { seedPromptWhenReady, RACE_SETTLE_MS } from "@/lib/seedPrompt";
 import { agentDisplayName } from "@/lib/agents";
 import { slugify } from "@/lib/utils";
-import type { TerminalTab } from "@/lib/types";
 
 /** One racer to spawn: an agent CLI id and its 1-based index within that CLI
  *  (so two claudes become "Claude #1" / "Claude #2" with distinct branches). */
@@ -49,41 +48,6 @@ export function suggestRaceName(prompt: string): string {
     if (out.split("-").length >= SUGGEST_MAX_WORDS) break;
   }
   return out;
-}
-
-// N agents boot at once here and contend for CPU, so give the TUIs a beat
-// longer than the single-spawn path (runPrompt's 5s) to reach the input box
-// before we type, so the prompt lands in the box, not on a splash screen.
-const RACE_SETTLE_MS = 6000;
-const SPAWN_DEADLINE_MS = 15000;
-const POLL_MS = 150;
-
-/** Poll until `taskId`'s default agent tab has a live PTY, let the agent
- *  settle, then inject `prompt` and stamp lastInputAt (arms work-done
- *  detection, exactly as runPrompt does). Best-effort: gives up silently
- *  after the deadline. */
-function seedPromptWhenReady(taskId: string, prompt: string) {
-  const deadline = Date.now() + SPAWN_DEADLINE_MS;
-  const defaultTab = () =>
-    (useApp.getState().tabs[taskId] ?? []).find(
-      (t): t is TerminalTab => t.type === "terminal" && !!t.is_default,
-    );
-  const tick = () => {
-    const t = defaultTab();
-    if (t?.ptyId) {
-      window.setTimeout(() => {
-        // Re-read: the tab may have restarted onto a fresh PTY during the
-        // settle window, so never write the prompt into a stale/dead pty.
-        const still = defaultTab();
-        if (!still?.ptyId) return;
-        sendMessageToPty(still.ptyId, prompt);
-        useApp.getState().patchTab(taskId, still.id, { lastInputAt: Date.now() });
-      }, RACE_SETTLE_MS);
-      return;
-    }
-    if (Date.now() < deadline) window.setTimeout(tick, POLL_MS);
-  };
-  window.setTimeout(tick, POLL_MS);
 }
 
 /** Launch a race: create one worktree task per racer, mount them all so their
@@ -169,7 +133,7 @@ export async function startRace(opts: {
   // Worktrees run their setup script unfocused, same as a normal create.
   for (const id of taskIds) launchSetupTab(id, { focus: false }).catch(() => {});
   // Seed the shared prompt into each agent once it's input-ready.
-  for (const id of taskIds) seedPromptWhenReady(id, prompt);
+  for (const id of taskIds) seedPromptWhenReady(id, prompt, RACE_SETTLE_MS);
 
   useUI.getState().pushToast(`Race started: ${racers.length} agents on one prompt.`, "success");
   return taskIds;

@@ -42,6 +42,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["termic"]
+      }
+    },
     "updater": {
       "endpoints": [
         "https://termic.dev/updates/latest.json"

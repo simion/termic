@@ -55,7 +55,12 @@ use std::io::{self, BufRead, Read, Write};
 /// server rejects the new `cmd` value as a malformed request, which is
 /// exactly the skew the version gate turns into "Termic updated, rerun
 /// your command". `AttachData.reason` gains "closed".
-pub const PROTOCOL_VERSION: u32 = 10;
+///
+/// v11 (GH #192): the `open_url` verb, used ONLY by a second instance
+/// handing its `termic://` deep link to the instance that already owns
+/// the data dir before exiting. termic-cli never sends it, so the bump
+/// is pure bookkeeping for the shared wire shape.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// serde default for `QuitData::running`.
 pub(crate) fn default_true() -> bool { true }
@@ -174,6 +179,15 @@ pub enum Command {
     /// instance per data dir) to defer to the one already running. Same
     /// trust tier as hello: it only raises a window, discloses nothing.
     Raise,
+    /// Unauthenticated: hand a `termic://` deep link to the instance that
+    /// already owns this data dir. Sent by the second instance right
+    /// before it exits (single instance per data dir), so a link that
+    /// launched a fresh process still lands in the running window instead
+    /// of dying with it. Unauthenticated for the same reason as `raise`:
+    /// the preflight connection has no token, and the URL can do no more
+    /// than the browser-clicked link it came from - it pre-fills the New
+    /// Task dialog, which a human still has to confirm.
+    OpenUrl { url: String },
     /// Tasks with work-state and diff stat.
     List {
         #[serde(default, skip_serializing_if = "Option::is_none")]
