@@ -11,11 +11,14 @@
 
 ## `termic://` deep links (GH #192)
 
-A public integration surface: an external system (ticket tracker, internal dashboard, shell alias) opens Termic on a **pre-filled New Task dialog**.
+A public integration surface: an external system (ticket tracker, internal dashboard, shell alias) drives Termic from a link. Two actions:
 
 ```
 termic://new?project=web&worktree=1&name=fix-login&p=Fix%20the%20login%20bug
+termic://open?project=web&task=fix-login
 ```
+
+`new` (pre-fills the New Task dialog):
 
 | param | meaning |
 | --- | --- |
@@ -26,13 +29,29 @@ termic://new?project=web&worktree=1&name=fix-login&p=Fix%20the%20login%20bug
 | `mode` | `worktree` or `main`. `worktree=1` is the shorthand. |
 | `base` | "Branch from" ref |
 
-**The link never creates anything.** It only fills the form; a human presses Create. That is the whole security model for accepting a `prompt` from an untrusted cross-application channel (any web page can navigate to a URL scheme), and it is why an unregistered `project` is a hard error rather than a fallback to "the first project" or a silent project add. Do not add an auto-create or skip-confirmation option.
+`open` (selects an existing task):
+
+| param | meaning |
+| --- | --- |
+| `task` | **required.** Live task, by id or by name (case-insensitive). Archived tasks don't match. |
+| `project` | optional scope. A bare name matching in two projects is *ambiguous*, not a coin flip. |
+
+The rule that separates them, and that any future action must pick a side of:
+
+> **Navigation is immediate, state change is a modal, destruction is not a link.**
+
+`open` only selects something that already exists, so it just happens. **`new` never creates anything** — it fills the form and a human presses Create. That is the whole security model for accepting a `prompt`: links are authored in the ticket tracker, so whoever can file or edit an issue (in many orgs that includes external reporters) controls the text. It is also why an unregistered `project` is a hard error rather than a fallback to "the first project" or a silent project add. Do not add an auto-create or skip-confirmation option.
+
+**Templating gotcha.** A tracker that expands `{{issue.summary}}` without a URL-encode filter truncates silently at the first `&` or `#` — both common in ticket titles — turning `Fix login & signup` into `Fix login `. Raw `+` becomes a space and raw newlines vanish. The confirm step is what catches this: the user sees the mangled text in the textarea instead of an agent acting on half a sentence. Template authors should apply the tracker's encode filter (Jira automation's `.urlEncode()`, and equivalents elsewhere).
+
+Explicit non-goals: no `project/add` (a link must never register a repo — that routes around the gate above), and nothing destructive (`archive`, `quit`), where no amount of confirmation justifies exposure to a channel any web page can trigger.
 
 Where the pieces live:
 
 - **Scheme registration**: `tauri.conf.json` → `plugins.deep-link.desktop.schemes`. The bundler turns this into `CFBundleURLTypes`; it merges with the hand-written `src-tauri/Info.plist` rather than replacing it. **Deep links only work from a bundled `.app`** — not under `npm run tauri:dev`, so test with `make beta` or `tauri build`.
 - **Rust** (`lib.rs`) is a pipe, not a parser: every arriving URL lands in `PENDING_DEEP_LINKS` and the webview gets a payload-free nudge (`termic://deep-link`). The queue exists because macOS delivers the launch URL while the webview is still booting; the webview always reads through `deep_link_take_pending`, which drains atomically, so a link is never handled twice.
-- **Parsing + validation** is entirely in `src/lib/deepLink.ts`, because the check that matters (is this a *registered* project?) needs the webview store. `initDeepLinks()` is chained off `loadAll()` in `App.tsx` for the same reason.
+- **Parsing + validation** is entirely in `src/lib/deepLink.ts`, because the checks that matter (a *registered* project, an *existing* task) need the webview store. `initDeepLinks()` is chained off `loadAll()` in `App.tsx` for the same reason.
+- **Raising**: `queue_deep_link` calls `leave_windowless` when a window already exists. macOS activates the app for a link it routes, but that does not un-hide a window windowless mode put away, and a dialog behind a hidden window is indistinguishable from a link that did nothing. Gated on the window existing so cold-start `setup` doesn't flip `SHOWN_ONCE` ahead of normal startup ordering.
 - **Second instance**: on Windows/Linux a link spawns a fresh process, which the single-instance preflight kills. It hands the URL over first via the control socket's unauthenticated `open_url` verb (proto v11), which raises and queues in one request. macOS never gets here (LaunchServices routes to the running app).
 
 ## Critical shapes (fail silently)

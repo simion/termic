@@ -10759,8 +10759,22 @@ static PENDING_DEEP_LINKS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex:
 /// Queue a `termic://` URL and nudge the webview. Safe to call before the
 /// window exists (the emit is dropped, the queue survives).
 pub(crate) fn queue_deep_link(app: &AppHandle, url: &str) {
+    use tauri::Manager;
     dlog(&format!("[deeplink] queued {url}"));
     PENDING_DEEP_LINKS.lock().push(url.to_string());
+    // Come to front. A link that opens a dialog (or selects a task) behind a
+    // hidden window is indistinguishable from one that did nothing, and
+    // windowless mode makes that the DEFAULT outcome for a menu-bar-only
+    // instance. macOS activates the app for a link it routes, but that does
+    // not un-hide a window `leave_windowless` put away.
+    //
+    // Gated on the window already existing: during cold-start `setup` this
+    // runs before the window is built, and leave_windowless would flip
+    // SHOWN_ONCE / the activation policy early, ahead of the normal startup
+    // ordering. The webview's own boot drain covers that case.
+    if app.get_webview_window("main").is_some() {
+        leave_windowless(app);
+    }
     let _ = app.emit("termic://deep-link", ());
 }
 

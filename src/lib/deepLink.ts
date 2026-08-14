@@ -1,26 +1,41 @@
 // `termic://` URL scheme (GH #192): let an external system (a ticket
-// tracker, an internal dashboard, a shell alias) open Termic on a New Task
-// dialog that is already filled in.
+// tracker, an internal dashboard, a shell alias) drive Termic from a link.
 //
 //   termic://new?project=web&name=fix-login&prompt=Fix%20the%20login%20bug
+//   termic://open?project=web&task=fix-login
 //
-// THE LINK NEVER CREATES ANYTHING. It only pre-fills the dialog; a human
-// still has to press Create. That is the entire security model, and it is
-// deliberate: a URL is an untrusted, cross-application channel — any web
-// page can navigate to one — so `prompt` would otherwise be a way to feed
-// an agent instructions the user never read. Confirming in the UI means the
-// prompt is on screen, editable, and cancellable before an agent ever sees
-// it. Nothing here may grow an "auto-create" or "skip confirmation" option.
+// The two actions sit on opposite sides of one rule:
+//
+//   NAVIGATION IS IMMEDIATE, STATE CHANGE IS A MODAL.
+//
+// `open` only selects a task that already exists, so it just happens.
+// `new` NEVER CREATES ANYTHING — it pre-fills the dialog and a human presses
+// Create. That is the entire security model for `new`, and it is deliberate:
+// links are authored in the ticket tracker, so whoever can file or edit an
+// issue (in many orgs that includes external reporters) controls `prompt`.
+// Confirming in the UI means the prompt is on screen, editable, and
+// cancellable before an agent ever sees it. Nothing here may grow an
+// "auto-create" or "skip confirmation" option, and any action added later
+// that CHANGES something has to go through a dialog too.
+//
+// The confirm step pays off a second way, for a mistake rather than an
+// attack. A tracker that expands `{{issue.summary}}` without a URL-encode
+// filter silently truncates at the first `&` or `#` (both common in ticket
+// titles), turning "Fix login & signup" into "Fix login ". The user sees
+// the mangled text in the textarea instead of an agent acting on half a
+// sentence. Template authors: apply the tracker's encode filter (Jira
+// automation's `.urlEncode()`, and equivalents elsewhere).
 //
 // Rust hands the raw URL across untouched (see `queue_deep_link`); all
-// parsing and validation is here, because the one check that matters —
-// does this name a project the user actually registered? — needs the store.
+// parsing and validation is here, because the checks that matter — does
+// this name a project the user actually registered, and a task that
+// actually exists? — need the store.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import type { Project } from "@/lib/types";
+import type { Project, Task } from "@/lib/types";
 
 /** Prompt cap. Long enough for the intended use (a summarized ticket, per
  *  the issue thread), short enough that a hostile link cannot wedge the
@@ -37,6 +52,7 @@ export const MAX_NAME_CHARS = 200;
 /** A parsed, validated `termic://new` link, in the shape the New Task
  *  dialog seeds from. `projectId` is a real registered project's id. */
 export interface DeepLinkNew {
+  action: "new";
   projectId: string;
   name?: string;
   prompt?: string;
@@ -45,8 +61,16 @@ export interface DeepLinkNew {
   base?: string;
 }
 
+/** A parsed `termic://open` link. `taskId` is a live (non-archived) task. */
+export interface DeepLinkOpen {
+  action: "open";
+  taskId: string;
+}
+
+export type DeepLinkAction = DeepLinkNew | DeepLinkOpen;
+
 export type DeepLinkResult =
-  | { ok: true; value: DeepLinkNew }
+  | { ok: true; value: DeepLinkAction }
   | { ok: false; error: string };
 
 /** Match `selector` against the registered projects by id first, then by
@@ -64,12 +88,70 @@ function findProject(projects: Project[], selector: string): Project | undefined
   );
 }
 
-/** Parse one `termic://…` URL against the registered projects.
+/** `termic://open?task=<id-or-name>[&project=<id-or-name>]`.
  *
- *  Accepted shape: `termic://new?project=<id-or-name>&…`. Unknown query
- *  params are ignored (forward compatibility), unknown ACTIONS are not —
- *  a typo'd action should say so rather than quietly open "new". */
-export function parseDeepLink(url: string, projects: Project[]): DeepLinkResult {
+ *  Navigation only, so there is no dialog: it selects a task that already
+ *  exists or it fails. `project` scopes the lookup; without it a bare name
+ *  that matches in two projects is AMBIGUOUS rather than a coin flip,
+ *  because silently opening the wrong repo's task is the same class of
+ *  mistake `new` refuses to make.
+ *
+ *  Archived tasks don't match: "open" means resume work, and a link that
+ *  silently surfaced something the user archived would be a surprise. */
+function parseOpen(u: URL, projects: Project[], tasks: Task[]): DeepLinkResult {
+  const q = u.searchParams;
+  const selector = q.get("task")?.trim();
+  if (!selector) {
+    return { ok: false, error: "termic://open needs a task: termic://open?task=<name>" };
+  }
+
+  // Optional project scope. Present but unknown is an error, not a silent
+  // widening of the search — same gate as `new`.
+  const projectSel = q.get("project")?.trim();
+  let project: Project | undefined;
+  if (projectSel) {
+    project = findProject(projects, projectSel);
+    if (!project) {
+      return {
+        ok: false,
+        error: `No project named "${projectSel}" is open in Termic. Add it first, then retry the link.`,
+      };
+    }
+  }
+
+  const live = tasks.filter(t => !t.archived && (!project || t.project_id === project.id));
+  // Id first (globally unique), then name within the scope.
+  const byId = live.find(t => t.id === selector);
+  if (byId) return { ok: true, value: { action: "open", taskId: byId.id } };
+
+  const byName = live.filter(t => t.name.toLowerCase() === selector.toLowerCase());
+  if (byName.length === 1) {
+    return { ok: true, value: { action: "open", taskId: byName[0].id } };
+  }
+  if (byName.length > 1) {
+    const where = byName
+      .map(t => projects.find(p => p.id === t.project_id)?.name ?? t.project_id)
+      .join(", ");
+    return {
+      ok: false,
+      error: `More than one task is named "${selector}" (${where}). Add project= to say which.`,
+    };
+  }
+  return {
+    ok: false,
+    error: project
+      ? `No open task named "${selector}" in ${project.name}.`
+      : `No open task named "${selector}".`,
+  };
+}
+
+/** Parse one `termic://…` URL against the current store contents.
+ *
+ *  Accepted shapes: `termic://new?project=<id-or-name>&…` and
+ *  `termic://open?task=<id-or-name>&…`. Unknown query params are ignored
+ *  (forward compatibility), unknown ACTIONS are not — a typo'd action
+ *  should say so rather than quietly falling through to "new". */
+export function parseDeepLink(url: string, projects: Project[], tasks: Task[] = []): DeepLinkResult {
   let u: URL;
   try {
     u = new URL(url);
@@ -83,12 +165,13 @@ export function parseDeepLink(url: string, projects: Project[]): DeepLinkResult 
   // `termic:new?x=1` (no slashes) lands in pathname instead. Accept both
   // so a hand-written link works either way.
   const action = (u.hostname || u.pathname.replace(/^\/+/, "")).toLowerCase();
+  if (action === "open") return parseOpen(u, projects, tasks);
   if (action !== "new") {
     return {
       ok: false,
       error: action
-        ? `Unknown termic:// action "${action}" (only "new" is supported)`
-        : `Missing action in ${url} (expected termic://new?…)`,
+        ? `Unknown termic:// action "${action}" (supported: new, open)`
+        : `Missing action in ${url} (expected termic://new?… or termic://open?…)`,
     };
   }
 
@@ -143,6 +226,7 @@ export function parseDeepLink(url: string, projects: Project[]): DeepLinkResult 
   return {
     ok: true,
     value: {
+      action: "new",
       projectId: project.id,
       name,
       prompt,
@@ -156,8 +240,16 @@ export function parseDeepLink(url: string, projects: Project[]): DeepLinkResult 
   };
 }
 
-/** Apply a parsed link: open the New Task dialog, pre-filled. */
-function openFromLink(v: DeepLinkNew) {
+/** Apply a parsed link. `new` pre-fills the dialog and stops; `open` just
+ *  selects the task, because navigation changes nothing to confirm. */
+function applyDeepLink(v: DeepLinkAction) {
+  if (v.action === "open") {
+    // Leaving whatever dialog is up would strand the user behind it on a
+    // task they can't see. The window itself is raised on the Rust side.
+    useUI.getState().closeNewTask();
+    useApp.getState().setActiveTask(v.taskId);
+    return;
+  }
   useUI.getState().openNewTask(v.projectId, {
     namePrefix: v.name,
     baseBranch: v.base,
@@ -167,11 +259,12 @@ function openFromLink(v: DeepLinkNew) {
   });
 }
 
-/** Handle one raw URL: parse, then either open the dialog or toast why not.
+/** Handle one raw URL: parse, then either act on it or toast why not.
  *  Exported for the e2e suite, which drives this directly (a WebDriver
  *  session cannot ask macOS to open a URL scheme). */
 export function handleDeepLink(url: string) {
-  const res = parseDeepLink(url, useApp.getState().projects);
+  const s = useApp.getState();
+  const res = parseDeepLink(url, s.projects, s.tasks);
   if (!res.ok) {
     // A longer TTL than the default: this is the only feedback the user
     // gets for a link that did nothing, and it usually names a fix
@@ -179,7 +272,7 @@ export function handleDeepLink(url: string) {
     useUI.getState().pushToast(res.error, "error", { ttlMs: 10000 });
     return;
   }
-  openFromLink(res.value);
+  applyDeepLink(res.value);
 }
 
 /** Drain whatever Rust has queued. Rust's nudge event carries no payload,

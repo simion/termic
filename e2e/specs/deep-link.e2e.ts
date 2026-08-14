@@ -204,8 +204,99 @@ describe("termic:// deep links — rejected links", () => {
     await expectRejected("termic://archive?project=fixture-repo", "Unknown termic:// action");
   });
 
+  it("refuses an open link for a task that does not exist", async () => {
+    await expectRejected("termic://open?task=no-such-task", "No open task named");
+  });
+
   it("refuses a foreign scheme", async () => {
     await expectRejected("https://evil.example/new?project=fixture-repo", "Unsupported scheme");
+  });
+});
+
+// `termic://open` is the other half of the PM loop: the same ticket button
+// that created the task links back to it later, using the name it supplied.
+// Navigation only, so unlike `new` it acts immediately with no dialog.
+describe("termic://open", () => {
+  let taskId: string;
+  const NAME = "e2e-open-target";
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    // Create the target through the app's own IPC (fast, no wizard).
+    taskId = await browser.execute(async (name) => {
+      const t = window.__termic!;
+      const proj = t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
+      const task = await t.invoke("task_open_repo", {
+        projectId: proj.id, cli: "shell", name, sandbox: null,
+      });
+      await t.useApp.getState().loadAll();
+      return task.id as string;
+    }, NAME);
+    // Park somewhere else so "it selected the task" means something.
+    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+  });
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  const activeTask = async (): Promise<string | null> =>
+    browser.execute(() => window.__termic!.useApp.getState().activeTaskId ?? null);
+
+  it("selects the task by name, with no dialog to confirm", async () => {
+    await browser.execute(
+      (n) => window.__termic!.deepLink.handleDeepLink(`termic://open?project=fixture-repo&task=${n}`),
+      NAME,
+    );
+    await browser.waitUntil(async () => (await activeTask()) === taskId, {
+      timeout: 10_000,
+      timeoutMsg: "termic://open never selected the task",
+    });
+    // Navigation changes nothing, so nothing should be asking for confirmation.
+    const dialogOpen = await browser.execute(
+      () => window.__termic!.useUI.getState().newTaskProjectId !== null,
+    );
+    expect(dialogOpen).toBe(false);
+    await snap("deep-link-open");
+  });
+
+  it("selects the task by id too", async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+    await browser.execute(
+      (id) => window.__termic!.deepLink.handleDeepLink(`termic://open?task=${id}`),
+      taskId,
+    );
+    await browser.waitUntil(async () => (await activeTask()) === taskId, {
+      timeout: 10_000,
+      timeoutMsg: "termic://open did not resolve a task id",
+    });
+  });
+
+  // A link that lands while the New Task dialog is up must not leave the user
+  // stranded behind a modal on a task they cannot see.
+  it("closes a stale New Task dialog on its way through", async () => {
+    await browser.execute(() => {
+      const proj = window.__termic!.useApp
+        .getState()
+        .projects.find((p: any) => p.name === "fixture-repo");
+      window.__termic!.useUI.getState().openNewTask(proj.id);
+      window.__termic!.useApp.getState().setActiveTask(null);
+    });
+    await waitVisible(NAME_INPUT);
+
+    await browser.execute(
+      (id) => window.__termic!.deepLink.handleDeepLink(`termic://open?task=${id}`),
+      taskId,
+    );
+    await browser.waitUntil(
+      async () =>
+        (await activeTask()) === taskId
+        && (await browser.execute(
+          () => window.__termic!.useUI.getState().newTaskProjectId === null,
+        )),
+      { timeout: 10_000, timeoutMsg: "open left the New Task dialog up" },
+    );
   });
 });
 
