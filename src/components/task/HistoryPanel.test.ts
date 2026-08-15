@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { commitAge, parseRefs } from "./HistoryPanel";
+import { clampLane, commitAge, parseRefs } from "./HistoryPanel";
 
 // A fixed "now" so these never depend on the clock.
 const NOW = Date.UTC(2026, 7, 15, 12, 0, 0); // 2026-08-15T12:00:00Z
@@ -29,9 +29,34 @@ describe("commitAge", () => {
   });
 
   it("does not blow up on a clock-skewed future commit", () => {
-    // A commit stamped in the future (skewed machine, rebased date) reads as
-    // "now" rather than a negative age.
-    expect(commitAge(ago(-3600), NOW)).toBe("now");
+    // A commit stamped in the future (skewed machine, rebased date, a repo
+    // written by a VM with a bad clock) reads as "now", never as a negative
+    // age: the ladder's first rung is `secs < 60`, which every negative
+    // number satisfies. Pinned at several magnitudes so nobody "fixes" the
+    // ladder into an early `-120m` return.
+    expect(commitAge(ago(-60), NOW)).toBe("now");
+    expect(commitAge(ago(-7200), NOW)).toBe("now");
+    expect(commitAge(ago(-365 * 24 * 3600), NOW)).toBe("now");
+  });
+});
+
+describe("clampLane", () => {
+  it("folds an overflowing column onto the last drawn one", () => {
+    // The gutter is clipped at MAX_LANES; a commit sitting in a wider lane
+    // must still get a dot, on the edge column, rather than rendering a row
+    // with no node at all.
+    expect(clampLane(0, 6)).toBe(0);
+    expect(clampLane(5, 6)).toBe(5);
+    expect(clampLane(6, 6)).toBe(5);
+    expect(clampLane(41, 6)).toBe(5);
+  });
+
+  it("survives a degenerate gutter", () => {
+    // graphWidth is 0 for an empty history; the clamp must not return -1 and
+    // paint the dot off the left edge.
+    expect(clampLane(0, 0)).toBe(0);
+    expect(clampLane(3, 0)).toBe(0);
+    expect(clampLane(-2, 6)).toBe(0);
   });
 });
 

@@ -39,6 +39,14 @@ const DOT_R = 3.5;
 /** Lanes past this are clipped: a 220px panel can't render a 30-wide graph, and
  *  an unbounded gutter would eat the subject column. */
 const MAX_LANES = 6;
+
+/** Fold an overflowing column onto the last drawn one, the way VS Code
+ *  collapses a graph too wide for its gutter. Dropping those columns instead
+ *  is what a clip must never do to a DOT: a commit row with no node reads as
+ *  an empty line, and the deeper the graph the more rows lose their marker. */
+export function clampLane(lane: number, lanes: number): number {
+  return Math.min(Math.max(lane, 0), Math.max(lanes - 1, 0));
+}
 /** Ref chips shown inline before the subject; the rest collapse into "+N". */
 const MAX_CHIPS = 2;
 
@@ -126,19 +134,23 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff }: {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  // How many commits are currently on screen. A refetch (agent committed,
-  // refresh clicked) re-reads exactly this many so paging isn't undone.
-  const [loaded, setLoaded] = useState(PAGE_SIZE);
+  const [paging, setPaging] = useState(false);
+  // How many rows are on screen, for the refresh below. A ref, not state: the
+  // refresh effect must READ it without re-firing every time a page lands.
+  const loadedRef = useRef(PAGE_SIZE);
+  loadedRef.current = Math.max(PAGE_SIZE, commits.length);
 
-  // Reset paging when the target changes — a different repo or scope is a
-  // different history, not more of this one.
-  useEffect(() => { setLoaded(PAGE_SIZE); setSelected(null); }, [repoDir, allBranches, task.id]);
+  // A different repo or scope is a different history, not more of this one.
+  useEffect(() => { setSelected(null); }, [repoDir, allBranches, task.id]);
 
+  // Refresh: re-read from the top, as many rows as are showing. It has to be a
+  // fresh window rather than a patch, because a commit landing at HEAD shifts
+  // every offset below it — the one thing this tab exists to show.
   useEffect(() => {
     if (nonGit) { setLoading(false); return; }
     let alive = true;
     setLoading(true);
-    taskGitLog(task.id, repoDir, 0, loaded, allBranches)
+    taskGitLog(task.id, repoDir, 0, loadedRef.current, allBranches)
       .then(page => {
         if (!alive) return;
         setCommits(page.commits);
@@ -150,7 +162,25 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff }: {
       .catch(e => { if (alive) setErr(String(e)); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [task.id, repoDir, allBranches, loaded, reloadToken, nonGit]);
+  }, [task.id, repoDir, allBranches, reloadToken, nonGit]);
+
+  /** Next page, appended. Uses the backend's `skip`, so paging back through a
+   *  long history costs one page per click instead of re-walking everything
+   *  above it. Deduped by sha: a commit landing between two page fetches
+   *  shifts the window, and the overlap would otherwise render twice. */
+  const loadMore = useCallback(() => {
+    setPaging(true);
+    taskGitLog(task.id, repoDir, commits.length, PAGE_SIZE, allBranches)
+      .then(page => {
+        setCommits(prev => {
+          const seen = new Set(prev.map(c => c.sha));
+          return [...prev, ...page.commits.filter(c => !seen.has(c.sha))];
+        });
+        setHasMore(page.has_more);
+      })
+      .catch(e => setErr(String(e)))
+      .finally(() => setPaging(false));
+  }, [task.id, repoDir, allBranches, commits.length]);
 
   const rows = useMemo(() => layoutGraph(commits), [commits]);
   const lanes = Math.min(graphWidth(rows), MAX_LANES);
@@ -229,11 +259,11 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff }: {
         {hasMore && (
           <button
             data-testid="history-load-more"
-            onClick={() => setLoaded(n => n + PAGE_SIZE)}
-            disabled={loading}
+            onClick={loadMore}
+            disabled={loading || paging}
             className="flex w-full items-center justify-center gap-1.5 py-2 text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-50"
           >
-            {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {(loading || paging) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Load more
           </button>
         )}
@@ -274,13 +304,11 @@ function RepoPill({ label, active, onClick }: { label: string; active: boolean; 
  *  dot. One inline SVG per row — cheap (a handful of paths), and it scrolls
  *  with the row instead of needing a second synchronised canvas. */
 function LaneGutter({ row, lanes, width }: { row: GraphRow; lanes: number; width: number }) {
-  const x = (lane: number) => lane * LANE_W + LANE_W / 2;
+  const x = (lane: number) => clampLane(lane, lanes) * LANE_W + LANE_W / 2;
   const mid = ROW_H / 2;
-  const visible = (lane: number) => lane < lanes;
   return (
     <svg width={width} height={ROW_H} className="shrink-0" aria-hidden="true">
       {row.links.map((l, i) => {
-        if (!visible(l.fromLane) || !visible(l.toLane)) return null;
         const x1 = x(l.fromLane);
         const x2 = x(l.toLane);
         // y-range per kind: a line arriving stops at the dot, one leaving
@@ -304,16 +332,16 @@ function LaneGutter({ row, lanes, width }: { row: GraphRow; lanes: number; width
           />
         );
       })}
-      {visible(row.lane) && (
-        <circle
-          cx={x(row.lane)}
-          cy={mid}
-          r={DOT_R}
-          fill="var(--color-bg)"
-          stroke={laneColor(row.color)}
-          strokeWidth={2}
-        />
-      )}
+      {/* Always drawn — a clipped column collapses onto the last one rather
+          than leaving the row without a node. */}
+      <circle
+        cx={x(row.lane)}
+        cy={mid}
+        r={DOT_R}
+        fill="var(--color-bg)"
+        stroke={laneColor(row.color)}
+        strokeWidth={2}
+      />
     </svg>
   );
 }

@@ -119,6 +119,23 @@ describe("layoutGraph", () => {
     }
   });
 
+  it("hands out colours per branch LINE, not per lane, so a narrow graph still uses the whole palette", () => {
+    // Ten short-lived branches that each merge straight back: the graph never
+    // gets wider than two lanes, but ten distinct lines are drawn. A colour
+    // scheme keyed on the lane index would paint them all with two colours —
+    // and would cap the usable palette at the gutter's clip width.
+    const commits: GraphCommit[] = [];
+    for (let i = 0; i < 10; i++) {
+      commits.push(c(`m${i}`, `b${i}`, `t${i}`));  // merge
+      commits.push(c(`t${i}`, `b${i}`));           // topic commit
+      commits.push(c(`b${i}`, `m${i + 1}`));       // base, continues down
+    }
+    const rows = layoutGraph(commits);
+    expect(graphWidth(rows)).toBeLessThanOrEqual(3);
+    const colors = new Set(rows.flatMap(r => [r.color, ...r.links.map(l => l.color)]));
+    expect(colors.size).toBeGreaterThan(6);
+  });
+
   it("returns nothing for an empty history", () => {
     expect(layoutGraph([])).toEqual([]);
     expect(graphWidth([])).toBe(0);

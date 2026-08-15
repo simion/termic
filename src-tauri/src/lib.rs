@@ -6779,9 +6779,17 @@ async fn task_git_log(
 /// Files a single commit touched, as `GitFile` rows so the History tab can
 /// reuse the Commit tab's status glyphs.
 ///
-/// `-m --first-parent` makes a merge report its delta against the branch it
-/// merged INTO (git otherwise prints nothing at all for a merge); `--root`
+/// `-m` makes a merge report files at all (plain `diff-tree` prints nothing for
+/// one), `--first-parent` aims that at the branch it merged INTO, and `--root`
 /// makes the initial commit report its files instead of nothing.
+///
+/// `-m` still emits ONE DIFF PER PARENT — `--first-parent` limits which commits
+/// are traversed, not how many diffs a merge prints — so a path touched on both
+/// sides arrives twice, in parent order. Hence the dedupe: first occurrence
+/// wins, which is precisely the first-parent diff. `--cc` would collapse them
+/// in git instead, but a combined diff omits every file that matches ANY
+/// parent, i.e. everything the merge brought in cleanly — the exact thing
+/// someone opens a merge commit to see.
 fn git_commit_files(cwd: &Path, sha: &str) -> Result<Vec<GitFile>, String> {
     if !is_commit_ish(sha) {
         return Err("bad commit id".into());
@@ -6795,12 +6803,18 @@ fn git_commit_files(cwd: &Path, sha: &str) -> Result<Vec<GitFile>, String> {
     )
     .unwrap_or_default();
     let mut files = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in out.lines() {
         let mut parts = line.split('\t');
         let (Some(status), Some(path)) = (parts.next(), parts.next()) else { continue };
         // Renames/copies print "R100\told\tnew" — keep the new path, the one
         // `git show <sha>:path` can resolve.
         let path = parts.next().unwrap_or(path);
+        // Second and later parents of a merge repeat paths (see above). A
+        // duplicate row would also collide on the frontend's per-path key.
+        if !seen.insert(path.to_string()) {
+            continue;
+        }
         files.push(GitFile {
             // R100 / C075 carry a similarity score; the glyph map is keyed by
             // the letter alone.
@@ -13335,6 +13349,43 @@ mod tests {
         git_run(&repo, &["merge", "--no-ff", "-m", "merge side", "side"]);
         let merged = git_commit_files(&repo, &git_head(&repo)).unwrap();
         assert!(merged.iter().any(|f| f.path == "side.txt"), "merge must list what it brought in");
+    }
+
+    #[test]
+    fn commit_files_lists_a_merged_path_once_not_once_per_parent() {
+        // `diff-tree -m` prints one diff PER PARENT, so a file touched on both
+        // sides of a merge comes back twice — duplicate rows in the panel and a
+        // colliding React key. The previous merge test only checked presence,
+        // which a doubled list satisfies; this one pins the count.
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        git_set_identity(&repo);
+        git_commit_file(&repo, "shared.txt", "base\n", "root");
+
+        git_run(&repo, &["checkout", "-q", "-b", "side"]);
+        git_commit_file(&repo, "shared.txt", "side\n", "side edit");
+        git_commit_file(&repo, "only-side.txt", "s\n", "side only");
+        git_run(&repo, &["checkout", "-q", "main"]);
+        git_commit_file(&repo, "shared.txt", "main\n", "main edit");
+        // Conflicting merge, resolved by hand: the only shape where BOTH
+        // parents report the same path.
+        let _ = std::process::Command::new("git")
+            .args(["merge", "side", "-m", "merge"]).current_dir(&repo).output().unwrap();
+        fs::write(repo.join("shared.txt"), "resolved\n").unwrap();
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "merge resolved"]);
+
+        let files = git_commit_files(&repo, &git_head(&repo)).unwrap();
+        let shared: Vec<_> = files.iter().filter(|f| f.path == "shared.txt").collect();
+        assert_eq!(shared.len(), 1, "a path touched on both sides must be listed once, got {files:?}");
+        // The dedupe must not cost the files the merge brought in cleanly —
+        // which is what switching to `--cc` would have done.
+        assert!(files.iter().any(|f| f.path == "only-side.txt"), "cleanly merged files must survive");
+        let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        let before = paths.len();
+        paths.dedup();
+        assert_eq!(paths.len(), before, "no path may repeat");
     }
 
     #[test]
