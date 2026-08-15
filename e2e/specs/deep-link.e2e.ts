@@ -117,6 +117,80 @@ describe("termic:// deep links", () => {
     expect((await dialogState()).mode).toBe("Main checkout");
   });
 
+  // A second link while the dialog is ALREADY up for the same project. The
+  // window raises either way, so if the form doesn't re-seed the user is
+  // looking at the FIRST ticket's name and prompt while believing they are
+  // looking at the second — the worst possible failure for a flow whose whole
+  // safety argument is "a human read what is on screen before pressing
+  // Create". Nothing else about the link changes, which is why the store
+  // stamps every open with a nonce.
+  it("re-seeds when a second link arrives for the same project", async () => {
+    await openLink(
+      `termic://new?project=${projectName}&name=first-ticket`
+        + `&prompt=${encodeURIComponent("first body")}`,
+    );
+    await waitVisible(NAME_INPUT);
+    expect((await dialogState()).name).toBe("first-ticket");
+
+    await openLink(
+      `termic://new?project=${projectName}&name=second-ticket`
+        + `&prompt=${encodeURIComponent("second body")}&worktree=1`,
+    );
+    await browser.waitUntil(
+      async () => (await dialogState()).name === "second-ticket",
+      { timeout: 5_000, timeoutMsg: "the second link left the first link's name on screen" },
+    );
+    const s = await dialogState();
+    expect(s.prompt).toBe("second body");
+    // Every seeded field follows, not just the name.
+    expect(s.mode).toBe("Worktree");
+  });
+
+  it("warns when the link's base branch has no ref in the repo", async () => {
+    // Not a refusal: create fetches the base first, so a branch that exists
+    // only on an unfetched remote is legitimate. What was wrong was the
+    // SILENCE — the failure landed seconds later as a git error with nothing
+    // tying it back to the URL.
+    await openLink(`termic://new?project=${projectName}&worktree=1&base=no-such-branch&name=bad-base`);
+    await waitVisible(NAME_INPUT);
+    await waitVisible('[data-testid="base-unknown"]');
+    const warning = await browser.execute(() =>
+      (document.querySelector('[data-testid="base-unknown"]') as HTMLElement).innerText);
+    expect(warning).toContain("no-such-branch");
+
+    // A base that DOES resolve stays quiet.
+    await closeDialog();
+    await openLink(`termic://new?project=${projectName}&worktree=1&base=main&name=good-base`);
+    await waitVisible(NAME_INPUT);
+    await browser.waitUntil(
+      async () =>
+        browser.execute(() => !document.querySelector('[data-testid="base-unknown"]')),
+      { timeout: 5_000, timeoutMsg: "a real branch was flagged as unknown" },
+    );
+  });
+
+  it("says so when the link's agent isn't installed here", async () => {
+    await closeDialog();
+    await openLink(`termic://new?project=${projectName}&agent=doesnotexist&name=missing-agent`);
+    await waitVisible(NAME_INPUT);
+    await waitVisible('[data-testid="agent-unknown"]');
+    const warning = await browser.execute(() =>
+      (document.querySelector('[data-testid="agent-unknown"]') as HTMLElement).innerText);
+    expect(warning).toContain("doesnotexist");
+    // Still a usable dialog: the fallback pick stands, nothing is blocked.
+    expect((await dialogState()).name).toBe("missing-agent");
+  });
+
+  it("refuses a worktree value it cannot read, instead of silently flipping the task type", async () => {
+    await closeDialog();
+    await openLink(`termic://new?project=${projectName}&worktree=sideways&name=typo-link`);
+    // No dialog at all — same treatment `mode=sideways` already got.
+    await browser.waitUntil(
+      async () => !(await dialogState()).open,
+      { timeout: 5_000, timeoutMsg: "an unreadable worktree value still opened the dialog" },
+    );
+  });
+
   it("leaves the prompt editable before the user confirms", async () => {
     await openLink(`termic://new?project=${projectName}&p=${encodeURIComponent("original text")}`);
     await waitVisible(NAME_INPUT);

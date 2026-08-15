@@ -62,6 +62,12 @@ export interface NewTaskSeed {
   agent?: string;
   /** Task type to pre-select, overriding the user's remembered choice. */
   mode?: "worktree" | "repo_root";
+  /** Bumped by `openNewTask` on every call. The dialog's reset effect keys
+   *  on it, so a SECOND open for the same project re-seeds the form instead
+   *  of no-op'ing — which is what a second deep link is (GH #192): the
+   *  window raises, and without this it raises onto the first link's name
+   *  and prompt. Assigned by the store; callers never set it. */
+  nonce?: number;
 }
 
 interface UIState {
@@ -331,7 +337,13 @@ export const useUI = create<UIState>(set => ({
 
   openNewProject:    () => set({ newProjectOpen: true }),
   closeNewProject:   () => set({ newProjectOpen: false }),
-  openNewTask:  (projectId, seed) => set({ newTaskProjectId: projectId, newTaskSeed: seed ?? null }),
+  // Every open carries a fresh nonce, including a seedless one: "open the New
+  // Task dialog" means a fresh form even when it is already up for the same
+  // project, and only the store can guarantee the value actually changes.
+  openNewTask:  (projectId, seed) => set(s => ({
+    newTaskProjectId: projectId,
+    newTaskSeed: { ...(seed ?? {}), nonce: (s.newTaskSeed?.nonce ?? 0) + 1 },
+  })),
   closeNewTask: () => set({ newTaskProjectId: null, newTaskSeed: null }),
   openCustomCommand:  (projectId, mode = "repo_root") => set({ customCommandProjectId: projectId, customCommandMode: mode }),
   closeCustomCommand: () => set({ customCommandProjectId: null }),

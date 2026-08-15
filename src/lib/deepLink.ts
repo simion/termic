@@ -214,7 +214,20 @@ export function parseDeepLink(url: string, projects: Project[], tasks: Task[] = 
     else if (modeParam === "main" || modeParam === "repo_root") mode = "repo_root";
     else return { ok: false, error: `Unknown mode "${modeParam}" (worktree or main).` };
   } else if (worktreeParam) {
-    mode = worktreeParam === "1" || worktreeParam === "true" ? "worktree" : "repo_root";
+    // Symmetric with `mode` above: a value we don't understand is an ERROR,
+    // never a silent default. `worktree=yes` reading as repo_root would hand
+    // back the opposite task shape from the one the link asked for, with
+    // nothing on screen saying so — and a typo here is invisible in a URL.
+    const TRUE = ["1", "true", "yes", "on"];
+    const FALSE = ["0", "false", "no", "off"];
+    if (TRUE.includes(worktreeParam)) mode = "worktree";
+    else if (FALSE.includes(worktreeParam)) mode = "repo_root";
+    else {
+      return {
+        ok: false,
+        error: `Unknown worktree value "${worktreeParam}" (1/0, true/false, yes/no).`,
+      };
+    }
   }
   if (mode === "worktree" && project.non_git) {
     return {

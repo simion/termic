@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { cliSupportsResumeById, visibleCliIds, isTerminalCli, agentDisplayName } from "@/lib/agents";
-import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches } from "@/lib/ipc";
+import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches, projectBranchContext } from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
 import { seedPromptWhenReady } from "@/lib/seedPrompt";
 import { MAX_PROMPT_CHARS } from "@/lib/deepLink";
@@ -46,6 +46,10 @@ function persistLast(key: string, val: string) { try { localStorage.setItem(key,
 
 export function NewTaskDialog() {
   const projectId = useUI(s => s.newTaskProjectId);
+  // Subscribed, not read imperatively: this is what makes a re-open (a second
+  // deep link) re-run the reset effect below. Scalar, so an unrelated store
+  // write can't re-render the dialog through it.
+  const seedNonce = useUI(s => s.newTaskSeed?.nonce ?? 0);
   const close = useUI(s => s.closeNewTask);
   const project = useApp(s => projectId ? s.projects.find(p => p.id === projectId) : null);
   const setActive = useApp(s => s.setActiveTask);
@@ -75,6 +79,10 @@ export function NewTaskDialog() {
   const [branch, setBranch] = useState("");
   const [branchEdited, setBranchEdited] = useState(false);
   const [base, setBase] = useState("");
+  /** A deep-link `base=` this repo has no ref for; shown under the field. */
+  const [baseUnknown, setBaseUnknown] = useState<string | null>(null);
+  /** A deep-link `agent=` this install doesn't offer; shown under the picker. */
+  const [agentUnknown, setAgentUnknown] = useState<string | null>(null);
   // Single-repo task shape: "worktree" (branch a fresh working dir) or
   // "repo_root" (no worktree — launch the agent in the repo's live checkout,
   // the same shape as the sidebar's "Run in repo with <agent>"). Main checkout
@@ -206,6 +214,13 @@ export function NewTaskDialog() {
   // every field the user just typed. Depending on `projectId` (a stable
   // string) avoids that. We seed CLI/base from the project but read them
   // imperatively at effect-time via getState so we don't need them in deps.
+  //
+  // `seedNonce` is the second key: a deep link arriving while the dialog is
+  // ALREADY open for the same project changes no other dependency, so without
+  // it the window would raise onto the previous link's name and prompt (GH
+  // #192). It is bumped by `openNewTask` itself, so it can only change on an
+  // explicit open — never on the `loadAll()` refetches this effect must
+  // ignore.
   useEffect(() => {
     if (!projectId) return;
     const p = useApp.getState().projects.find(x => x.id === projectId);
@@ -216,6 +231,26 @@ export function NewTaskDialog() {
     setName(seed?.namePrefix ?? "");
     setBranch(""); setBranchEdited(false); setErr(null);
     setBase(seed?.baseBranch ?? p?.base_branch ?? "");
+    // A LINK-supplied base is the one nobody can see before pressing Create:
+    // a typo'd `base=` used to surface as a git error at create time, several
+    // seconds later and with no hint that the URL caused it. So check it here
+    // and say so next to the field.
+    //
+    // A warning, not a refusal, and not a blocked Create: create fetches the
+    // base ref first (`git_fetch_base`), so a branch that exists only on the
+    // remote and has never been fetched locally is legitimate — refusing it
+    // would break links that work.
+    setBaseUnknown(null);
+    const seededBase = seed?.baseBranch;
+    if (seededBase) {
+      projectBranchContext(projectId)
+        .then(ctx => {
+          if (useUI.getState().newTaskProjectId !== projectId) return;
+          const known = [...ctx.local, ...ctx.remote];
+          if (!known.includes(seededBase)) setBaseUnknown(seededBase);
+        })
+        .catch(() => { /* no branch list ⇒ nothing to contradict */ });
+    }
     // Pick a CLI that's actually present and respects the project's
     // saved default whenever usable. Order:
     //   1. project default — IF it's "shell" (always usable), or
@@ -238,6 +273,7 @@ export function NewTaskDialog() {
       : seed?.agent === "shell" ? "shell"
       : null;
     const projectDefault = p?.default_cli || "";
+    setAgentUnknown(seed?.agent && !seededAgent ? seed.agent : null);
     if (seededAgent) {
       setCli(seededAgent);
     } else if (projectDefault && isUsable(projectDefault)) {
@@ -345,7 +381,7 @@ export function NewTaskDialog() {
     // disabled even with all fields filled.
     setBusy(false);
     submittingRef.current = false;
-  }, [projectId]);
+  }, [projectId, seedNonce]);
 
   // Tauri event unlisten handles. Owned by submit() (which registers them
   // imperatively BEFORE invoking taskCreate — guaranteed ordering vs
@@ -778,7 +814,8 @@ export function NewTaskDialog() {
           <div className="inline-flex flex-wrap items-stretch gap-y-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
             {cliChoices.map(a => (
               <button
-                key={a.id} type="button" onClick={() => setCli(a.id)}
+                // Picking one yourself answers the warning, so it goes.
+                key={a.id} type="button" onClick={() => { setCli(a.id); setAgentUnknown(null); }}
                 className={cn(
                   "flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors",
                   cli === a.id
@@ -796,6 +833,15 @@ export function NewTaskDialog() {
               </button>
             ))}
           </div>
+          {/* Same deal as the base warning below: a link naming an agent this
+              install doesn't offer falls back to the normal pick, which is
+              right, but doing it silently means the user creates a task with
+              a different agent than the link asked for and never learns why. */}
+          {agentUnknown && (
+            <p data-testid="agent-unknown" className="mt-1 text-[11.5px] text-[var(--color-warn)]">
+              This link asked for "{agentUnknown}", which isn't available here. Using {cliChoices.find(a => a.id === cli)?.display_name ?? cli} instead.
+            </p>
+          )}
         </Field>
 
         {!importMode && mode === "worktree" && (<>
@@ -816,7 +862,20 @@ export function NewTaskDialog() {
         </Field>
 
         <Field label={isMulti ? "Host branch from" : "Branch from"} hint={isMulti ? "Blank = host repo default. Members fall back to their own defaults below." : "Blank = repo default."}>
-          <Input value={base} onChange={e => setBase(e.target.value)} placeholder="origin/master" />
+          <div className="flex flex-col gap-1">
+            <Input
+              value={base}
+              // Typing here is the user taking ownership of the field, so the
+              // link's warning stops applying.
+              onChange={e => { setBase(e.target.value); setBaseUnknown(null); }}
+              placeholder="origin/master"
+            />
+            {baseUnknown && base === baseUnknown && (
+              <p data-testid="base-unknown" className="text-[11.5px] text-[var(--color-warn)]">
+                This link asked to branch from "{baseUnknown}", which this repo has no ref for. Creating will only work if it exists on the remote.
+              </p>
+            )}
+          </div>
         </Field>
         </>)}
 

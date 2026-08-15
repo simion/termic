@@ -215,6 +215,21 @@ describe("parseDeepLink — field aliases and normalization", () => {
     expect(okNew("termic://new?project=web&worktree=0").mode).toBe("repo_root");
     expect(okNew("termic://new?project=web&worktree=false").mode).toBe("repo_root");
     expect(okNew("termic://new?project=web&worktree=true").mode).toBe("worktree");
+    // The other spellings people actually type in a URL.
+    expect(okNew("termic://new?project=web&worktree=yes").mode).toBe("worktree");
+    expect(okNew("termic://new?project=web&worktree=ON").mode).toBe("worktree");
+    expect(okNew("termic://new?project=web&worktree=no").mode).toBe("repo_root");
+  });
+
+  it("refuses a worktree value it does not understand, like an unknown mode", () => {
+    // The asymmetry this replaces: `mode=sideways` errored while
+    // `worktree=sideways` quietly built a repo_root task — the OPPOSITE
+    // shape from the one the link asked for, with nothing on screen saying
+    // so. A typo in a URL is invisible; it must not silently change what
+    // gets created.
+    expect(err("termic://new?project=web&worktree=sideways")).toMatch(/Unknown worktree value/);
+    expect(err("termic://new?project=web&worktree=2")).toMatch(/Unknown worktree value/);
+    expect(err("termic://new?project=web&worktree=maybe")).toMatch(/1\/0, true\/false, yes\/no/);
   });
 
   it("leaves mode unset when neither param is given, so the dialog keeps its default", () => {
