@@ -6623,6 +6623,221 @@ async fn task_git_update_info(id: String, dir_name: String) -> Result<UpdateInfo
     .map_err(|e| e.to_string())?
 }
 
+// ───────────────────────── git graph (issue #199) ─────────────────────────
+//
+// Committed history for the right panel's Graph tab. Agents commit a lot and
+// those commits vanished from the UI the moment the working tree went clean —
+// this is where they come back.
+//
+// One `git log` per page. Fields are separated by US (0x1f) and records by RS
+// (0x1e) rather than newlines, because a commit subject can contain anything
+// except a newline but a REF NAME can't contain either, and %D expands to a
+// comma-list whose length we can't predict.
+
+/// One row of the graph: enough to lay out lanes (`parents`) and draw the row.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitCommit {
+    pub sha: String,
+    /// 7+ char abbreviation git itself chose (unambiguous in this repo).
+    pub short: String,
+    /// Parent shas, FIRST PARENT FIRST. Lane layout depends on that order.
+    pub parents: Vec<String>,
+    pub subject: String,
+    pub author: String,
+    pub email: String,
+    /// Author date, unix seconds. Formatted in the frontend so it follows the
+    /// user's locale and can re-render as "3 minutes ago" without a refetch.
+    pub timestamp: i64,
+    /// Decorations as git prints them, already split: "HEAD -> main",
+    /// "origin/main", "tag: v1.2.0", …
+    pub refs: Vec<String>,
+    /// This commit is not reachable from the branch's upstream, i.e. it is
+    /// still local-only. Drives the "unpushed" marker (VS Code calls these
+    /// outgoing changes). Always false when the branch has no upstream.
+    pub unpushed: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GitLogPage {
+    pub commits: Vec<GitCommit>,
+    /// Another page exists below this one (asked for limit+1, got it).
+    pub has_more: bool,
+    /// Branch the log was taken on, "" on a detached HEAD or unborn branch.
+    pub branch: String,
+    /// Upstream ref (`origin/feature-x`), "" when the branch has none. When
+    /// empty the frontend hides the unpushed markers entirely rather than
+    /// claiming every commit is outgoing.
+    pub upstream: String,
+}
+
+/// Parse `git log`'s US/RS-delimited output into commits. Split out from the
+/// command so it can be tested without a repo.
+fn parse_git_log(out: &str, unpushed: &std::collections::HashSet<String>) -> Vec<GitCommit> {
+    let mut commits = Vec::new();
+    for rec in out.split('\u{1e}') {
+        let rec = rec.trim_start_matches('\n');
+        if rec.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = rec.split('\u{1f}').collect();
+        if f.len() < 7 {
+            continue;
+        }
+        let sha = f[0].to_string();
+        commits.push(GitCommit {
+            unpushed: unpushed.contains(&sha),
+            short: f[1].to_string(),
+            parents: f[2].split_whitespace().map(str::to_string).collect(),
+            author: f[3].to_string(),
+            email: f[4].to_string(),
+            timestamp: f[5].trim().parse().unwrap_or(0),
+            // "HEAD -> main, origin/main, tag: v1" → ["HEAD -> main", …].
+            refs: f[6]
+                .split(", ")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect(),
+            subject: f.get(7).copied().unwrap_or_default().to_string(),
+            sha,
+        });
+    }
+    commits
+}
+
+/// A page of committed history for the History tab.
+///
+/// `all_branches` swaps the default (this branch only, the question "what did
+/// the agent just do?") for `--all`, which brings in every ref including the
+/// worktree's siblings. Ordered `--topo-order` so a branch reads as one
+/// contiguous run of rows instead of being interleaved by commit date.
+fn git_log_page(cwd: &Path, skip: usize, limit: usize, all_branches: bool) -> GitLogPage {
+    // Bounded: a page is a screenful-ish, and an unbounded limit from a buggy
+    // caller would walk a 200k-commit repo on the UI's behalf.
+    let limit = limit.clamp(1, 1_000);
+
+    let branch = git(&["branch", "--show-current"], cwd)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let upstream = git(
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        cwd,
+    )
+    .map(|s| s.trim().to_string())
+    .unwrap_or_default();
+    // Local-only commits, for the outgoing markers. Cheap (rev-list of the
+    // ahead range) and skipped entirely without an upstream.
+    let unpushed: std::collections::HashSet<String> = if upstream.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        git(&["rev-list", &format!("{upstream}..HEAD")], cwd)
+            .map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+            .unwrap_or_default()
+    };
+
+    // %H sha, %h short, %P parents, %an author, %ae email, %at date,
+    // %D refs, %s subject. RS-terminated so a record is unambiguous.
+    const FORMAT: &str = "--pretty=format:%H\u{1f}%h\u{1f}%P\u{1f}%an\u{1f}%ae\u{1f}%at\u{1f}%D\u{1f}%s\u{1e}";
+    // One extra row tells us whether a next page exists without a second
+    // walk; it is dropped before returning.
+    let max = (limit + 1).to_string();
+    let skip_s = skip.to_string();
+    let mut args: Vec<&str> = vec![
+        "--no-pager", "log", "--topo-order", FORMAT,
+        "--max-count", &max, "--skip", &skip_s,
+    ];
+    if all_branches {
+        args.push("--all");
+    }
+    // An unborn branch (no commits yet) makes `git log` fail; that is an empty
+    // graph, not an error the user should see.
+    let out = git(&args, cwd).unwrap_or_default();
+    let mut commits = parse_git_log(&out, &unpushed);
+    let has_more = commits.len() > limit;
+    commits.truncate(limit);
+
+    GitLogPage { commits, has_more, branch, upstream }
+}
+
+#[tauri::command]
+async fn task_git_log(
+    id: String,
+    dir_name: String,
+    skip: usize,
+    limit: usize,
+    all_branches: bool,
+) -> Result<GitLogPage, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<GitLogPage, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        Ok(git_log_page(&cwd, skip, limit, all_branches))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Files a single commit touched, as `GitFile` rows so the History tab can
+/// reuse the Commit tab's status glyphs.
+///
+/// `-m --first-parent` makes a merge report its delta against the branch it
+/// merged INTO (git otherwise prints nothing at all for a merge); `--root`
+/// makes the initial commit report its files instead of nothing.
+fn git_commit_files(cwd: &Path, sha: &str) -> Result<Vec<GitFile>, String> {
+    if !is_commit_ish(sha) {
+        return Err("bad commit id".into());
+    }
+    let out = git(
+        &[
+            "--no-pager", "diff-tree", "--no-commit-id", "--name-status",
+            "-r", "-m", "--first-parent", "--root", sha,
+        ],
+        cwd,
+    )
+    .unwrap_or_default();
+    let mut files = Vec::new();
+    for line in out.lines() {
+        let mut parts = line.split('\t');
+        let (Some(status), Some(path)) = (parts.next(), parts.next()) else { continue };
+        // Renames/copies print "R100\told\tnew" — keep the new path, the one
+        // `git show <sha>:path` can resolve.
+        let path = parts.next().unwrap_or(path);
+        files.push(GitFile {
+            // R100 / C075 carry a similarity score; the glyph map is keyed by
+            // the letter alone.
+            status: status.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+            path: path.to_string(),
+            // A working-tree fingerprint is meaningless for a historical
+            // revision (the "viewed" marks it feeds only track live files).
+            fp: String::new(),
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+#[tauri::command]
+async fn task_git_commit_files(
+    id: String,
+    dir_name: String,
+    sha: String,
+) -> Result<Vec<GitFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<GitFile>, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        git_commit_files(&cwd, &sha)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Is `s` something safe to hand to git as a revision? Hex sha (any length git
+/// would accept) only — the History tab never passes a user-typed ref, so this
+/// stays deliberately strict rather than trying to sanitize refnames. Blocks
+/// leading-dash argument injection for free.
+fn is_commit_ish(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Resolve the git cwd for a stage/commit op: the host task path
 /// when `dir_name` is empty, otherwise the matching composition member.
 fn repo_cwd(w: &Task, dir_name: &str) -> Result<PathBuf, String> {
@@ -7233,10 +7448,11 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
     let (cwd, rel_path) = resolve_task_git_path(w, path)?;
     // Which two sides to compare depends on where the click came from
     // (GH #122):
-    //   "staged"   → HEAD vs index          (what `git diff --cached` shows)
-    //   "unstaged" → index vs working tree  (what `git diff` shows)
-    //   None       → HEAD vs working tree   (full uncommitted delta; the
-    //                pre-#122 behavior, kept for callers with no pane)
+    //   "staged"    → HEAD vs index          (what `git diff --cached` shows)
+    //   "unstaged"  → index vs working tree  (what `git diff` shows)
+    //   "commit:SHA"→ SHA^ vs SHA            (History tab, issue #199)
+    //   None        → HEAD vs working tree   (full uncommitted delta; the
+    //                 pre-#122 behavior, kept for callers with no pane)
     // Without the split, a file staged and then edited again showed the
     // full uncommitted diff from BOTH rows.
     //
@@ -7256,9 +7472,15 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
     };
     let show_head = || git_bytes(&["--no-pager", "show", &format!("HEAD:{rel_path}")], &cwd).ok();
     let show_index = || git_bytes(&["--no-pager", "show", &format!(":0:{rel_path}")], &cwd).ok();
-    let (original, modified) = match scope {
-        Some("staged") => (show_head(), show_index()),
-        Some("unstaged") => (show_index(), read_worktree()),
+    // A historical revision has no working-tree side at all: BOTH sides come
+    // out of the object store, and a first commit legitimately has no parent
+    // (`sha^` doesn't resolve) — that is an add, so the left side is missing.
+    let show_at = |rev: &str| git_bytes(&["--no-pager", "show", &format!("{rev}:{rel_path}")], &cwd).ok();
+    let commit_sha = scope.and_then(|s| s.strip_prefix("commit:")).filter(|s| is_commit_ish(s));
+    let (original, modified) = match (commit_sha, scope) {
+        (Some(sha), _) => (show_at(&format!("{sha}^")), show_at(sha)),
+        (None, Some("staged")) => (show_head(), show_index()),
+        (None, Some("unstaged")) => (show_index(), read_worktree()),
         _ => (show_head(), read_worktree()),
     };
     let fp = modified_path.as_deref().map(file_fp).unwrap_or_default();
@@ -11438,6 +11660,7 @@ pub fn run() {
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_files, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
+            task_git_log, task_git_commit_files,
             task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,
@@ -12967,6 +13190,185 @@ mod tests {
         let wt = wt_dir.path().join("wt");
         git_worktree_add(&main, &wt, "task");
         (main_dir, wt_dir, main, wt)
+    }
+
+    // ── git history / graph (issue #199) ──
+
+    #[test]
+    fn parse_git_log_splits_records_and_refs() {
+        let rec = |sha: &str, parents: &str, refs: &str, subject: &str| {
+            format!("{sha}\u{1f}{}\u{1f}{parents}\u{1f}Ada\u{1f}ada@example.com\u{1f}1700000000\u{1f}{refs}\u{1f}{subject}\u{1e}", &sha[..7])
+        };
+        let out = format!(
+            "{}\n{}\n{}",
+            rec("aaaaaaaaaaaa", "bbbbbbbbbbbb cccccccccccc", "HEAD -> main, origin/main, tag: v1", "merge: land it"),
+            rec("bbbbbbbbbbbb", "dddddddddddd", "", "subject, with a comma"),
+            rec("dddddddddddd", "", "", "root"),
+        );
+        let unpushed = ["aaaaaaaaaaaa".to_string()].into_iter().collect();
+        let commits = parse_git_log(&out, &unpushed);
+
+        assert_eq!(commits.len(), 3);
+        // A merge keeps BOTH parents, in git's order — lane layout depends on
+        // first-parent coming first.
+        assert_eq!(commits[0].parents, vec!["bbbbbbbbbbbb", "cccccccccccc"]);
+        assert_eq!(commits[0].refs, vec!["HEAD -> main", "origin/main", "tag: v1"]);
+        assert!(commits[0].unpushed, "rev-list membership must mark the commit outgoing");
+        // A comma inside the SUBJECT must not be mistaken for a ref separator.
+        assert_eq!(commits[1].subject, "subject, with a comma");
+        assert!(commits[1].refs.is_empty());
+        assert!(!commits[1].unpushed);
+        // A root commit has no parents and that is not a parse failure.
+        assert!(commits[2].parents.is_empty());
+        assert_eq!(commits[2].timestamp, 1700000000);
+    }
+
+    #[test]
+    fn parse_git_log_tolerates_empty_and_short_records() {
+        assert!(parse_git_log("", &Default::default()).is_empty());
+        // Truncated record (fewer fields than the format promises) is skipped
+        // rather than panicking on an index.
+        assert!(parse_git_log("abc\u{1f}abc\u{1e}", &Default::default()).is_empty());
+    }
+
+    #[test]
+    fn commit_ish_rejects_anything_but_a_sha() {
+        assert!(is_commit_ish("0d86f3a"));
+        assert!(is_commit_ish("0d86f3a6ba24515f2492137483333ba979e3450d"));
+        assert!(!is_commit_ish(""));
+        assert!(!is_commit_ish("HEAD"));
+        assert!(!is_commit_ish("--upload-pack=touch /tmp/pwn"));
+        assert!(!is_commit_ish("main..HEAD"));
+        assert!(!is_commit_ish(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn git_log_page_reads_real_history_with_a_merge() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git_init_with_commit(&repo);
+        git_set_identity(&repo);
+        git_commit_file(&repo, "a.txt", "a\n", "on main");
+        let main = git_branch(&repo);
+        git_run(&repo, &["checkout", "-q", "-b", "topic"]);
+        git_commit_file(&repo, "t.txt", "t\n", "on topic");
+        git_run(&repo, &["checkout", "-q", &main]);
+        git_run(&repo, &["merge", "--no-ff", "-m", "merge topic", "topic"]);
+
+        let page = git_log_page(&repo, 0, 50, false);
+        assert_eq!(page.branch, main);
+        assert!(page.upstream.is_empty(), "a local-only repo has no upstream");
+        let subjects: Vec<&str> = page.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert!(subjects.contains(&"merge topic"));
+        assert!(subjects.contains(&"on topic"), "--topo-order must include the merged-in branch");
+        let merge = page.commits.iter().find(|c| c.subject == "merge topic").unwrap();
+        assert_eq!(merge.parents.len(), 2, "merge must expose both parents to the lane layout");
+        assert!(merge.refs.iter().any(|r| r.contains("HEAD")), "the tip carries the HEAD decoration");
+        // Without an upstream nothing is claimed to be outgoing.
+        assert!(page.commits.iter().all(|c| !c.unpushed));
+    }
+
+    #[test]
+    fn git_log_page_paginates_and_reports_more() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git_init_with_commit(&repo);
+        git_set_identity(&repo);
+        for i in 0..5 {
+            git_commit_file(&repo, &format!("f{i}.txt"), "x\n", &format!("commit {i}"));
+        }
+        let first = git_log_page(&repo, 0, 2, false);
+        assert_eq!(first.commits.len(), 2, "a page must not leak the lookahead row");
+        assert!(first.has_more);
+        let second = git_log_page(&repo, 2, 2, false);
+        assert_eq!(second.commits.len(), 2);
+        assert_ne!(first.commits[0].sha, second.commits[0].sha, "skip must advance the page");
+        // The tail page knows it is the tail.
+        let tail = git_log_page(&repo, 0, 500, false);
+        assert!(!tail.has_more);
+    }
+
+    #[test]
+    fn git_log_page_is_empty_on_an_unborn_branch() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        // No commits yet: `git log` FAILS here. That must read as an empty
+        // history, not an error dialog.
+        let page = git_log_page(&repo, 0, 50, false);
+        assert!(page.commits.is_empty());
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn commit_files_lists_adds_edits_deletes_merges_and_the_root() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        git_set_identity(&repo);
+        // The FIRST commit has no parent — diff-tree needs --root to say
+        // anything at all about it.
+        git_commit_file(&repo, "root.txt", "r\n", "root commit");
+        let root = git_commit_files(&repo, &git_head(&repo)).unwrap();
+        assert_eq!(root.len(), 1, "root commit must list its files");
+        assert_eq!(root[0].path, "root.txt");
+
+        git_commit_file(&repo, "keep.txt", "one\n", "add keep");
+        let add = git_head(&repo);
+        let files = git_commit_files(&repo, &add).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "keep.txt");
+        assert_eq!(files[0].status, "A");
+
+        fs::remove_file(repo.join("keep.txt")).unwrap();
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-m", "drop keep"]);
+        let del = git_commit_files(&repo, &git_head(&repo)).unwrap();
+        assert_eq!(del[0].status, "D");
+
+        // A merge reports its delta against the first parent instead of the
+        // empty output plain `diff-tree` gives for merges.
+        let main = git_branch(&repo);
+        git_run(&repo, &["checkout", "-q", "-b", "side"]);
+        git_commit_file(&repo, "side.txt", "s\n", "side work");
+        git_run(&repo, &["checkout", "-q", &main]);
+        git_run(&repo, &["merge", "--no-ff", "-m", "merge side", "side"]);
+        let merged = git_commit_files(&repo, &git_head(&repo)).unwrap();
+        assert!(merged.iter().any(|f| f.path == "side.txt"), "merge must list what it brought in");
+    }
+
+    #[test]
+    fn commit_files_refuses_a_non_sha_revision() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git_init_with_commit(&repo);
+        assert!(git_commit_files(&repo, "HEAD").is_err());
+        assert!(git_commit_files(&repo, "--output=/tmp/pwn").is_err());
+    }
+
+    #[test]
+    fn diff_sides_of_a_commit_read_both_revisions_not_the_worktree() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git_init_with_commit(&repo);
+        git_set_identity(&repo);
+        git_commit_file(&repo, "f.txt", "v1\n", "first");
+        git_commit_file(&repo, "f.txt", "v2\n", "second");
+        let second = git_head(&repo);
+        // Dirty the working tree: a commit diff must ignore it entirely.
+        fs::write(repo.join("f.txt"), "scratch\n").unwrap();
+
+        let w = Task { path: repo.to_string_lossy().into(), ..Task::default() };
+        let sides = task_file_diff_sides_for_task(&w, "f.txt", Some(&format!("commit:{second}"))).unwrap();
+        assert_eq!(sides.original, "v1\n", "left side must be the parent revision");
+        assert_eq!(sides.modified, "v2\n", "right side must be the commit, not the worktree");
+
+        // The very first commit of a file has no parent side: that is an add.
+        let first = git_rev(&repo, &format!("{second}^"));
+        let added = task_file_diff_sides_for_task(&w, "f.txt", Some(&format!("commit:{first}"))).unwrap();
+        assert!(!added.original_exists);
+        assert!(added.modified_exists);
+        assert_eq!(added.modified, "v1\n");
     }
 
     #[test]

@@ -610,6 +610,36 @@ export interface GitStatus {
   repos_changed: number;
 }
 
+/** One row of the History tab's graph (issue #199). */
+export interface GitCommit {
+  sha: string;
+  /** Abbreviation git chose, unambiguous within the repo. */
+  short: string;
+  /** Parent shas, FIRST PARENT FIRST — lane layout depends on that order. */
+  parents: string[];
+  subject: string;
+  author: string;
+  email: string;
+  /** Author date, unix SECONDS (not ms). */
+  timestamp: number;
+  /** Decorations as git prints them: "HEAD -> main", "origin/main", "tag: v1". */
+  refs: string[];
+  /** Committed locally but not reachable from the upstream — VS Code calls
+   *  these outgoing. Always false when the branch has no upstream. */
+  unpushed: boolean;
+}
+
+/** One page of `task_git_log`. */
+export interface GitLogPage {
+  commits: GitCommit[];
+  has_more: boolean;
+  /** "" on a detached HEAD or an unborn branch. */
+  branch: string;
+  /** "" when the branch has no upstream; the unpushed markers stay hidden
+   *  then rather than claiming every commit is outgoing. */
+  upstream: string;
+}
+
 /** Result of a Git-tab branch switch. `stashed` = local work was parked and
  *  re-applied; `conflicted` = the re-apply hit conflicts (markers left in the
  *  tree, stash retained). */
@@ -836,10 +866,12 @@ export interface QueueItem {
 export interface DiffTab extends BaseTab {
   type: "diff";
   path: string;
-  /** Which Git-panel pane the diff was opened from (GH #122):
+  /** Which pane the diff was opened from (GH #122):
    *  "staged" diffs HEAD→index, "unstaged" diffs index→worktree.
+   *  `commit:<sha>` diffs that commit against its parent — the History tab
+   *  (GH #199), where BOTH sides come out of the object store.
    *  Absent → HEAD→worktree (the full uncommitted delta). */
-  scope?: "unstaged" | "staged";
+  scope?: "unstaged" | "staged" | `commit:${string}`;
 }
 
 /** The complete delta a task produced vs its base (`task_diff`). `diff` folds

@@ -72,6 +72,12 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   // (GH #42). Empty for a deletion → the toggle is hidden.
   const [fp, setFp] = useState("");
   const viewed = useIsViewed(task.id, tab.path, fp);
+  // A History-tab diff (GH #199) compares two REVISIONS: neither side is the
+  // working copy. That turns off the two review affordances, which both
+  // address the live file — "viewed" is keyed on the worktree fingerprint,
+  // and a review comment left here would ride on a file version nobody is
+  // about to edit.
+  const commitSha = tab.scope?.startsWith("commit:") ? tab.scope.slice("commit:".length) : null;
   const hostRef = useRef<HTMLDivElement>(null);
   // The host div is the scroll container for both modes; its position
   // dies with the box when a hidden task/tab goes display:none in
@@ -289,7 +295,11 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
       // boundaries, so the panes drift slightly below a card until the next
       // hunk. Accepted tradeoff (unified is pixel-exact); the alternative is
       // an out-of-flow overlay, which is a lot more machinery for this.
-      const commentExt = reviewCommentsExtension(task.id, tab.path);
+      // Empty for a historical revision: review comments address the file the
+      // agent is about to edit, and this diff's right side is a commit that
+      // already happened (GH #199).
+      const isCommitScope = !!tab.scope?.startsWith("commit:");
+      const commentExt = isCommitScope ? [] : reviewCommentsExtension(task.id, tab.path);
 
       // GH #118: @codemirror/merge's default diffConfig caps the precise
       // diff at scanLimit 500 changed characters per scanned range; a big
@@ -309,7 +319,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
           collapseUnchanged: { margin: 3, minSize: 6 },
           diffConfig,
         });
-        setCommentable(true);
+        setCommentable(!isCommitScope);
       } else {
         editorRef.current = new EditorView({
           parent: hostRef.current,
@@ -328,7 +338,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
             }),
           ],
         });
-        setCommentable(true);
+        setCommentable(!isCommitScope);
       }
     }).catch(e => alive && setErr(String(e)));
     return () => {
@@ -359,7 +369,18 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
             <CopyPathItems rel={tab.path} root={task.path} />
           </ContextMenuContent>
         </ContextMenuRoot>
-        <div className="flex items-center gap-1">
+        {/* Which revision this is. Without it a historical diff is
+            indistinguishable from the working-tree one. */}
+        {commitSha && (
+          <span
+            data-testid="diff-commit-chip"
+            title={`Comparing ${commitSha} with its parent`}
+            className="ml-2 shrink-0 rounded bg-[var(--color-bg-3)] px-1.5 font-mono text-[11px] leading-[18px] text-[var(--color-fg-faint)]"
+          >
+            {commitSha.slice(0, 7)}
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-1">
           {/* Side-by-side ⇄ Unified toggle. Persisted in localStorage
               so the user's preference sticks across launches. Hidden for an
               image/binary diff: both modes are line-based. */}
@@ -405,7 +426,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
           }><FolderOpen className="h-4 w-4" /> Open</Button>
           {/* Mark-as-viewed (GH #42): mirrors the Git panel row checkbox.
               Hidden for deletions (no working-tree file to fingerprint). */}
-          {fp !== "" && (
+          {fp !== "" && !commitSha && (
             <Button
               size="sm"
               variant="ghost"

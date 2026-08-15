@@ -7,7 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
-  SandboxMode, TaskDiffSummary, CliInstallStatus, BranchContext,
+  SandboxMode, TaskDiffSummary, CliInstallStatus, BranchContext, GitFile, GitLogPage,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
 import {
@@ -363,7 +363,7 @@ export type DiffSides = {
   original_bytes: number;
   modified_bytes: number;
 };
-export const taskFileDiffSides = (id: string, path: string, scope?: "unstaged" | "staged") =>
+export const taskFileDiffSides = (id: string, path: string, scope?: "unstaged" | "staged" | `commit:${string}`) =>
   invoke<DiffSides>("task_file_diff_sides", { id, path, scope: scope ?? null });
 export const taskFileRead = (id: string, path: string) => invoke<string>("task_file_read", { id, path });
 /** Read a task image or PDF as base64, for the markdown preview's inline
@@ -408,6 +408,15 @@ export const taskRevealPath = (id: string, path: string) =>
 export const taskChanges  = (id: string) => invoke<Changes>("task_changes", { id });
 // Fork-style staging: staged/unstaged split per repo + stage/unstage/commit.
 export const taskGitStatus = (id: string) => invoke<GitStatus>("task_git_status", { id });
+/** One page of committed history for the History tab (GH #199). `skip` pages
+ *  through it (the panel appends), `allBranches` swaps this branch's history
+ *  for `--all`. Newest first, `--topo-order` so a branch stays contiguous. */
+export const taskGitLog = (
+  id: string, dirName: string, skip: number, limit: number, allBranches: boolean,
+) => invoke<GitLogPage>("task_git_log", { id, dirName, skip, limit, allBranches });
+/** The files one commit touched (merges report against their first parent). */
+export const taskGitCommitFiles = (id: string, dirName: string, sha: string) =>
+  invoke<GitFile[]>("task_git_commit_files", { id, dirName, sha });
 /** Local branch names for a task's repo (host, or a member via dirName). */
 export const taskGitBranches = (id: string, dirName: string) =>
   invoke<string[]>("task_git_branches", { id, dirName });

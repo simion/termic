@@ -19,8 +19,8 @@ describe("git panel", () => {
     await requireTermicApi();
     taskId = await openTask("e2e-git");
 
-    // Switch the right panel from "All files" to "Git" (a real click).
-    await clickByText("Git");
+    // Switch the right panel from "All files" to "Commit" (a real click).
+    await clickByText("Commit");
 
     // The Git status is fetched async; the clean-tree copy appears once it
     // resolves. waitForText auto-retries, so no sleep and no flake.
@@ -58,8 +58,8 @@ describe("git dirty tree", () => {
       taskId,
     );
 
-    // Open the Git panel (starts clean).
-    await clickByText("Git");
+    // Open the Commit panel (starts clean).
+    await clickByText("Commit");
 
     // Dirty the tree, then force the panel's git poll to re-fetch.
     await browser.execute(async (id, c) => {
@@ -110,6 +110,174 @@ describe("git dirty tree", () => {
 // Tasks here open the repo ROOT, so every case below edits this one working
 // tree and has to put it back.
 const fixture = process.env.E2E_FIXTURE ?? path.join(process.cwd(), ".e2e", "fixture-repo");
+
+// GH #199: committed work used to vanish from termic the moment the tree went
+// clean, sending people to VS Code or Fork to see what an agent had just done.
+// The History tab is that view: a graph of real commits, each expandable into
+// the files it touched, each file opening a diff of THAT revision.
+describe("git history tab", () => {
+  let taskId: string | undefined;
+  /** Subject of the commit this spec makes, unique per run so a leftover
+   *  fixture commit from an earlier run can't satisfy the assertions. */
+  const subject = `e2e history probe ${Date.now()}`;
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    // The commit + its file are ours: drop them so the next run's clean-tree
+    // and history specs start from the seeded fixture again.
+    try {
+      // Only ours: a reset that fired blind would throw away whatever the
+      // fixture legitimately holds if this spec never got as far as committing.
+      const head = execSync(`git -C "${fixture}" log -1 --pretty=%s`).toString().trim();
+      if (head === subject) execSync(`git -C "${fixture}" reset --hard HEAD~1`, { stdio: "ignore" });
+    } catch { /* the commit never landed */ }
+  });
+
+  const openRightTab = (label: "All files" | "Commit" | "History") =>
+    browser.execute((l) => {
+      const el = document.querySelector(
+        `[data-testid="right-tab"][data-tab="${l}"]`,
+      ) as HTMLElement | null;
+      if (!el) throw new Error(`no right-panel tab: ${l}`);
+      el.click();
+    }, label);
+
+  /** Subjects of the commit rows currently rendered, newest first. */
+  const commitSubjects = () =>
+    browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="history-subject"]')].map(
+        (e) => (e as HTMLElement).innerText,
+      ),
+    ) as Promise<string[]>;
+
+  it("lists real commits, newest first", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-history");
+
+    // A commit made OUTSIDE the app: the tab must read the repo, not some
+    // in-app cache of what termic itself committed.
+    writeFileSync(path.join(fixture, "history-probe.txt"), "probe\n");
+    execSync(`git -C "${fixture}" add history-probe.txt`);
+    execSync(`git -C "${fixture}" commit -q -m "${subject}"`);
+
+    await openRightTab("History");
+
+    await browser.waitUntil(
+      async () => (await commitSubjects())[0] === subject,
+      { timeout: 15_000, timeoutMsg: "the new commit never appeared at the top of History" },
+    );
+    // The seeded repo's own first commit is under it — this is a list, not a
+    // single row.
+    expect((await commitSubjects()).length).toBeGreaterThan(1);
+    // Every row draws its lane gutter.
+    const gutters = await browser.execute(() =>
+      document.querySelectorAll('[data-testid="history-commit"] svg').length);
+    expect(gutters).toBeGreaterThan(1);
+    // The tip carries its branch as a ref chip.
+    const refs = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="history-ref"]')].map(e => (e as HTMLElement).innerText));
+    expect(refs.join(" ")).toContain("main");
+
+    await snap("git-history.png");
+  });
+
+  it("expands a commit into the files it touched", async () => {
+    await browser.execute(() => {
+      const row = document.querySelector('[data-testid="history-commit-row"]') as HTMLElement;
+      row.click();
+    });
+    await waitVisible('[data-testid="history-commit-detail"]');
+    await browser.waitUntil(
+      () =>
+        browser.execute(() =>
+          [...document.querySelectorAll('[data-testid="history-file-row"]')].some(
+            (e) => e.getAttribute("data-path") === "history-probe.txt",
+          ),
+        ),
+      { timeout: 10_000, timeoutMsg: "the commit's file list never appeared" },
+    );
+    // The expanded row shows the short sha, so the user can tell which
+    // revision they are looking at.
+    const detail = await browser.execute(() =>
+      (document.querySelector('[data-testid="history-commit-detail"]') as HTMLElement).innerText);
+    expect(detail).toMatch(/[0-9a-f]{7}/);
+    await snap("git-history-expanded.png");
+  });
+
+  it("opens a file's diff AT that commit, not the working tree", async () => {
+    // Dirty the file in the working tree first: a commit diff that leaked the
+    // worktree side would show this text.
+    writeFileSync(path.join(fixture, "history-probe.txt"), "probe\nWORKTREE ONLY\n");
+
+    await browser.execute(() => {
+      const f = [...document.querySelectorAll('[data-testid="history-file-row"]')].find(
+        (e) => e.getAttribute("data-path") === "history-probe.txt",
+      ) as HTMLElement;
+      f.click();
+    });
+
+    // The tab carries the commit scope...
+    const scope = await browser.waitUntil(
+      async () =>
+        browser.execute((id) => {
+          const tab = (window.__termic!.useApp.getState().tabs[id] ?? []).find(
+            (t: any) => t.type === "diff" && t.path === "history-probe.txt",
+          );
+          return tab?.scope ?? null;
+        }, taskId),
+      { timeout: 10_000, timeoutMsg: "no diff tab opened for the commit's file" },
+    ) as unknown as string;
+    expect(scope).toMatch(/^commit:[0-9a-f]{7,}$/);
+
+    // ...and the backend resolves that scope to the two REVISIONS: the file is
+    // an add in this commit (no left side), and the right side is the
+    // committed content, never the dirtied working tree.
+    const sides = await browser.execute(
+      (id, sc) => window.__termic!.ipc.taskFileDiffSides(id, "history-probe.txt", sc),
+      taskId,
+      scope,
+    );
+    expect(sides.original_exists).toBe(false);
+    expect(sides.modified).toBe("probe\n");
+    expect(sides.modified).not.toContain("WORKTREE ONLY");
+
+    // Restore the working tree for the specs that follow.
+    writeFileSync(path.join(fixture, "history-probe.txt"), "probe\n");
+  });
+
+  it("keeps the review affordances off a historical diff", async () => {
+    // The commit chip identifies the revision; "Mark as viewed" and "Comment"
+    // (both of which address the LIVE file) must not be offered.
+    await waitVisible('[data-testid="diff-commit-chip"]');
+    const header = await browser.execute(() =>
+      (document.querySelector('[data-testid="diff-commit-chip"]')!.parentElement as HTMLElement).innerText);
+    expect(header).not.toContain("Mark as viewed");
+    expect(header).not.toContain("Comment");
+  });
+
+  it("switches between this branch and all branches", async () => {
+    await openRightTab("History");
+    const scopeState = () =>
+      browser.execute(() =>
+        document.querySelector('[data-testid="history-scope"]')?.getAttribute("data-all"));
+    expect(await scopeState()).toBe("false");
+    await browser.execute(() =>
+      (document.querySelector('[data-testid="history-scope"]') as HTMLElement).click());
+    await browser.waitUntil(async () => (await scopeState()) === "true", {
+      timeout: 5_000,
+      timeoutMsg: "the branch-scope toggle never flipped",
+    });
+    // Still a real list after the refetch (the fixture has one branch, so the
+    // contents are the same — what matters is that --all doesn't empty it).
+    await browser.waitUntil(async () => (await commitSubjects()).length > 1, {
+      timeout: 10_000,
+      timeoutMsg: "the all-branches view came back empty",
+    });
+    await browser.execute(() =>
+      (document.querySelector('[data-testid="history-scope"]') as HTMLElement).click());
+  });
+});
 
 // P1: a diff on a PNG renders pictures, not the screenful of U+FFFD that a
 // lossy decode of `git show HEAD:shot.png` used to produce. The fixture repo
@@ -404,7 +572,7 @@ describe("review comment alignment", () => {
   after(async () => {
     // Restore README: without this the 30 appended align lines survive
     // the run, and the NEXT run's clean-tree spec boots against a dirty
-    // fixture whose "Git" tab wears a count badge, so its exact-text
+    // fixture whose "Commit" tab wears a count badge, so its exact-text
     // click misses (the suite then fails one file per run, one run late).
     if (taskId && original !== undefined) {
       await browser.execute(
@@ -597,8 +765,8 @@ describe("git multi-repo panel", () => {
     ) as Promise<string[]>;
 
   /** Click one of the right panel's own tabs. Not clickByText: the label grows
-   *  badge digits ("Git" → "Git21") the moment anything is changed. */
-  const openRightTab = (label: "All files" | "Git") =>
+   *  badge digits ("Commit" → "Commit21") the moment anything is changed. */
+  const openRightTab = (label: "All files" | "Commit" | "History") =>
     browser.execute((l) => {
       const el = document.querySelector(
         `[data-testid="right-tab"][data-tab="${l}"]`,
@@ -692,7 +860,7 @@ describe("git multi-repo panel", () => {
       { timeout: 10_000, timeoutMsg: "git status never reported the member change" },
     );
 
-    await openRightTab("Git");
+    await openRightTab("Commit");
 
     // Only the changed repo gets a pill, and it is selected without a click.
     await browser.waitUntil(

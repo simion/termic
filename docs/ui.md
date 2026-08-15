@@ -76,6 +76,14 @@ This is a deliberate behavior CHANGE, not a bug fix. Previously closing the last
 
 The webview stays ALIVE while windowless — it owns PTY lifetime and every work-state signal, so tearing it down would kill the agents. It is not suspended (WebKit only clamps timers to 1 Hz). What windowless mode DOES have to do is collapse the task panes to zero geometry, or xterm keeps drawing for an invisible window: see docs/performance.md bear trap 2b and `src/lib/windowlessMode.ts`.
 
+## Right-panel tabs (All files / Commit / History)
+
+**Commit** is the working tree (Fork-style staging), **History** is what has already been committed (issue #199). The staging tab was called "Git" until History arrived; with two git surfaces the name stopped saying which one you were on.
+
+History is modelled on VS Code's Source Control Graph: one dense row per commit — lane gutter, ref chips, subject, age — clicking a row expands it into the files that commit touched, and clicking a file opens a diff of THAT revision (`scope: "commit:<sha>"`, both sides read out of the object store). Lane maths is a pure function in [`lib/gitGraph.ts`](../src/lib/gitGraph.ts) (unit-tested; the panel only renders what it returns), lane colours come from the `--color-palette-*` tokens so every theme recolours the graph for free, and the gutter is clipped at 6 lanes because a 220px panel cannot spend its width on a wide graph.
+
+Two things the History tab deliberately does NOT do: it shows no review affordances on a historical diff (both "Mark as viewed" and review comments address the file an agent is about to edit, and neither side of a commit diff is that file), and it hides the unpushed markers entirely when the branch has no upstream, where "not pushed" would be true of every commit and mean nothing.
+
 ## Right-panel footer (Setup / Run / Terminal)
 
 Three tabs. Setup + Run stream via `useScriptRuns`. Terminal is opt-in: click `+` → `useApp.enableFooterTerm(wsId)` → AuxTerminal mounts. RunToolbar: Open (expands `project.preview_url` with `$TERMIC_PORT`/`$CONDUCTOR_PORT`/`$PORT`/`$TERMIC_WORKSPACE_NAME`) + Run/Stop (SIGTERMs process group). Default: tab=Run, expanded.

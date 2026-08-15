@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { useUI } from "@/store/ui";
-import type { Project, Task, Tab, TerminalTab, PersistedTab, SplitTree, PaneLeaf, SplitDir } from "@/lib/types";
+import type { Project, Task, Tab, TerminalTab, DiffTab, PersistedTab, SplitTree, PaneLeaf, SplitDir } from "@/lib/types";
 import {
   findLeaf, getAllLeaves, countLeaves, replaceNode, removeLeaf,
   addLeafTab, removeLeafTab, setLeafActiveTabId, pruneLeafTabs, dropEmptyLeaves,
@@ -295,7 +295,7 @@ export interface AppState {
   resumeClosedTab: (taskId: string, entryId: string) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
   persistTab: (taskId: string, tabId: string) => void;
-  openPreviewTab: (taskId: string, data: { type: "edit" | "diff" | "dir"; path: string; title: string; scope?: "unstaged" | "staged"; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
+  openPreviewTab: (taskId: string, data: { type: "edit" | "diff" | "dir"; path: string; title: string; scope?: DiffTab["scope"]; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
   /** Clear an edit tab's `revealAt` after EditorPane has consumed it,
    *  so a re-render doesn't re-jump the cursor. */
   consumeReveal: (taskId: string, tabId: string) => void;

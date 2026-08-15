@@ -46,7 +46,8 @@ until `make e2e` is green and this file reflects it.
 | ✅ Editor open | Click a file → editor tab opens → CodeMirror loads the real contents | `editor.e2e.ts` |
 | ✅ Editor save | Edit in CodeMirror → dirty dot → Cmd+S → written to disk | `editor.e2e.ts` |
 | ✅ Git clean | Clean working-tree status for the fixture repo | `git.e2e.ts` |
-| ✅ Git dirty | Modify a file → Git panel leaves clean state, git status reports it | `git.e2e.ts` |
+| ✅ Git dirty | Modify a file → Commit panel leaves clean state, git status reports it | `git.e2e.ts` |
+| ✅ Git history / graph | History tab lists real commits (made outside the app) newest first with lane gutters + ref chips; a commit expands into its files; a file opens a diff of THAT revision (asserted against a deliberately dirtied working tree) with no review affordances; the branch-scope toggle flips to all branches (GH #199) | `git.e2e.ts` |
 | ✅ Settings | Toggling a preference lands in the prefs store + control reflects it | `settings.e2e.ts` |
 | ✅ Terminal renderer picker | Appearance → Terminal exposes the three-way webgl/canvas/dom picker on macOS (GH #140); the option list is asserted to be exactly those three, and driving the real segmented control through canvas and dom lands in prefs and keeps the legacy `terminalGpuEnabled` in sync | `settings.e2e.ts` |
 | ✅ CLI graduated | The Termic CLI page and its rail item carry NO Experimental badge (0.26.0); docs/ui.md ties the badge to being off by default, so a badge next to a shipped-enabled setting is a contradiction | `settings.e2e.ts` |
