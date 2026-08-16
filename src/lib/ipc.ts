@@ -462,7 +462,7 @@ export const taskGitCommitFiles = (id: string, dirName: string, sha: string) =>
 /** Local branch names for a task's repo (host, or a member via dirName). */
 export const taskGitBranches = (id: string, dirName: string) =>
   invoke<string[]>("task_git_branches", { id, dirName });
-/** Everything differing between `base` and the working tree — the Compare tab
+/** Everything differing between `base` and the working tree — History › Compare
  *  (GH #208). `mergeBase` picks three-dot semantics ("what this branch added",
  *  the default) over a literal tip-to-tree diff. */
 export const taskGitCompare = (id: string, dirName: string, base: string, mergeBase: boolean) =>

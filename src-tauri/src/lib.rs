@@ -6170,7 +6170,7 @@ pub struct GitFile {
     /// mark once the agent touches the file again (the fingerprint moves).
     #[serde(default)]
     pub fp: String,
-    /// Lines added / removed for this path. Only the Compare tab fills these
+    /// Lines added / removed for this path. Only Compare (GH #208) fills these
     /// in (`--numstat` over the whole range); the staging lists leave them
     /// unset rather than paying for a second git process per status poll.
     /// `None` also covers a binary file, which numstat reports as `-`.
@@ -7062,7 +7062,7 @@ fn is_commit_ish(s: &str) -> bool {
 // the same code path.
 
 /// Is `s` safe to hand to git as a revision? Laxer than `is_commit_ish` (hex
-/// only) because the Compare tab passes REFNAMES a user picked, and much
+/// only) because Compare passes REFNAMES a user picked, and much
 /// stricter than "anything": a leading dash reads as an option, and git's own
 /// refname rules already forbid whitespace, control characters and the glob /
 /// rev-syntax bytes. `--end-of-options` at the call site covers the dash on
@@ -7976,12 +7976,12 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
     //   "staged"    → HEAD vs index          (what `git diff --cached` shows)
     //   "unstaged"  → index vs working tree  (what `git diff` shows)
     //   "commit:SHA"→ SHA^ vs SHA            (History tab, issue #199)
-    //   "base:SHA"  → SHA vs working tree    (Compare tab, issue #208)
+    //   "base:SHA"  → SHA vs working tree    (History › Compare, issue #208)
     //   None        → HEAD vs working tree   (full uncommitted delta; the
     //                 pre-#122 behavior, kept for callers with no pane)
     //
     // "base:" is the only scope besides the default whose RIGHT side is the
-    // live file, which is why the Compare tab keeps the review affordances the
+    // live file, which is why Compare keeps the review affordances the
     // History tab has to drop: `fp` is a real worktree fingerprint, so a
     // "viewed" mark clears itself when an agent touches the file again, and a
     // review comment lands on the version somebody is about to edit.

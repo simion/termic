@@ -78,7 +78,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   // and a review comment left here would ride on a file version nobody is
   // about to edit.
   const commitSha = tab.scope?.startsWith("commit:") ? tab.scope.slice("commit:".length) : null;
-  // A Compare-tab diff (GH #208) reads a base commit against the LIVE file, so
+  // A Compare diff (GH #208) reads a base commit against the LIVE file, so
   // it keeps both affordances the History tab has to drop — but its "next
   // file" is the compare list, not the staging panes, so the walk below forks
   // on this.

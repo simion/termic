@@ -39,7 +39,7 @@ import { HistoryPanel, ScopePicker } from "./HistoryPanel";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
 // Per-side status → glyph / color / label. `?` is untracked (rendered as
-// a green +, same as a fresh add). Exported so the Compare tab (GH #208)
+// a green +, same as a fresh add). Exported so Compare (GH #208)
 // renders a status the same way this one does rather than keeping a second
 // copy that can drift.
 export const SC: Record<string, string>  = { M: "M", A: "+", "?": "+", D: "D", R: "R", C: "C", U: "U" };
@@ -1140,7 +1140,7 @@ export type FlatRow =
   | { kind: "dirhdr"; label: string };
 
 /** Flatten a file list into rows for the active view mode. Exported because
- *  the Compare tab (GH #208) renders its OWN rows (churn columns, no stage
+ *  Compare (GH #208) renders its OWN rows (churn columns, no stage
  *  buttons) but must group and order them exactly like the Commit tab does —
  *  two file lists in the same panel that disagreed about where a folder sits
  *  would read as a bug. `pane` only namespaces the collapsed-folder keys. */

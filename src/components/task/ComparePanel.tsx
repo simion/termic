@@ -1,5 +1,11 @@
-// "How does this task read next to another branch" — the right panel's
-// "Compare" tab (issue #208).
+// "How does this task read next to another branch" — the Compare sub-view of
+// the right panel's History tab (issue #208).
+//
+// A sub-view rather than a fourth top-level tab: the panel defaults to 280px
+// and drags down to 220, where four labels plus the Commit badge and the
+// refresh button stop fitting. It belongs under History on merit too, both
+// being read-only views of what the branch has done, where Commit is the one
+// place you act on the tree.
 //
 // The Commit tab only ever shows the working tree, so the moment an agent
 // committed, its work vanished from the panel; the History tab (issue #199)
@@ -59,6 +65,14 @@ function readMergeBase(): boolean {
   try { return localStorage.getItem(LS_MERGE_BASE) !== "0"; } catch { return true; }
 }
 
+/** taskId → the ref that task was last compared against. Compare is a sub-view
+ *  of History, so flipping to the commit graph and back UNMOUNTS this panel;
+ *  without somewhere outside the component to keep it, a deliberately chosen
+ *  base would silently snap back to the task default on every round trip.
+ *  In memory rather than localStorage on purpose: it is worth surviving a
+ *  sub-view switch, not worth accumulating a key per task forever. */
+const lastBase = new Map<string, string>();
+
 /** `+12 −3`, or nothing at all when git couldn't count (a binary file). Zero
  *  is a real answer and still renders, so a pure rename doesn't look broken. */
 function Churn({ added, removed }: { added?: number; removed?: number }) {
@@ -83,10 +97,15 @@ export function ComparePanel({ task, reloadToken, onOpenDiff }: {
   const members = task.composition ?? [];
 
   const [repoDir, setRepoDir] = useState("");
-  // The picker opens on the task's own base ("origin/main" for a normal
-  // worktree task), which is the comparison people want ~every time. It is
-  // only a default: any ref below can replace it.
-  const [base, setBase] = useState(task.base_branch || "");
+  // The picker opens on whatever this task was last compared against, falling
+  // back to its own base ("origin/main" for a normal worktree task), which is
+  // the comparison people want ~every time. Only a default: any ref below can
+  // replace it.
+  const [base, setBaseState] = useState(() => lastBase.get(task.id) ?? task.base_branch ?? "");
+  const setBase = useCallback((ref: string) => {
+    lastBase.set(task.id, ref);
+    setBaseState(ref);
+  }, [task.id]);
   const [mergeBase, setMergeBase] = useState<boolean>(() => readMergeBase());
   const [refs, setRefs] = useState<{ local: string[]; remote: string[] } | null>(null);
   const [cmp, setCmp] = useState<GitCompare | null>(null);
@@ -101,10 +120,12 @@ export function ComparePanel({ task, reloadToken, onOpenDiff }: {
   const changeView = (v: ViewMode) => { setViewMode(v); persist(LS_VIEW, v); };
   const toggleMergeBase = () => setMergeBase(v => { const n = !v; persist(LS_MERGE_BASE, n ? "1" : "0"); return n; });
 
-  // A different task is a different branch: fall back to ITS base rather than
-  // keeping a ref that may not even exist in the new repo.
+  // A different task is a different branch: fall back to ITS remembered ref,
+  // then to ITS base, rather than keeping one that may not even exist in the
+  // new repo. setBaseState (not setBase) so merely switching tasks doesn't
+  // rewrite the remembered choice with a default.
   useEffect(() => {
-    setBase(task.base_branch || "");
+    setBaseState(lastBase.get(task.id) ?? task.base_branch ?? "");
     setRepoDir("");
     setSelected(null);
     setRefs(null);

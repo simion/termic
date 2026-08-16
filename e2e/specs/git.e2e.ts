@@ -423,7 +423,7 @@ describe("git history tab", () => {
   });
 });
 
-// P0: the Compare tab (issue #208). The complaint it answers is that work an
+// P0: History › Compare (issue #208). The complaint it answers is that work an
 // agent COMMITTED was invisible: the Commit tab shows the working tree only,
 // so a task split across several commits read as an empty panel. These cases
 // pin the one thing that must be true — committed, uncommitted and untracked
@@ -463,14 +463,25 @@ describe("git compare tab", () => {
     } catch { /* never created */ }
   });
 
-  const openRightTab = (label: string) =>
-    browser.execute((l) => {
+  /** Compare is a SUB-view of History, not a fourth top-level tab (four
+   *  labels do not fit a 280px panel), so getting to it is two clicks. */
+  const openCompare = async () => {
+    await browser.execute(() => {
       const el = document.querySelector(
-        `[data-testid="right-tab"][data-tab="${l}"]`,
+        '[data-testid="right-tab"][data-tab="History"]',
       ) as HTMLElement | null;
-      if (!el) throw new Error(`no right-panel tab: ${l}`);
+      if (!el) throw new Error("no right-panel tab: History");
       el.click();
-    }, label);
+    });
+    await browser.execute(() => {
+      const el = document.querySelector(
+        '[data-testid="history-subtab"][data-subtab="Compare"]',
+      ) as HTMLElement | null;
+      if (!el) throw new Error("History has no Compare sub-tab");
+      el.click();
+    });
+    await waitVisible('[data-testid="compare-panel"]');
+  };
 
   /** The compare rows on screen, as path → status. */
   const rows = () =>
@@ -510,7 +521,7 @@ describe("git compare tab", () => {
     writeFileSync(path.join(fixture, "README.md"), `# edited by the compare spec ${stamp}\n`);
     writeFileSync(path.join(fixture, "compare-untracked.txt"), "untracked\n");
 
-    await openRightTab("Compare");
+    await openCompare();
     await waitForRow("README.md", "the edited file never appeared in the compare list");
 
     // A repo-root task's base IS the branch it sits on, so the merge base is
@@ -616,6 +627,32 @@ describe("git compare tab", () => {
     const chip = await browser.execute(() =>
       document.querySelector('[data-testid="diff-commit-chip"]') !== null);
     expect(chip).toBe(false);
+  });
+
+  it("flips to the commit graph and back without losing the chosen base", async () => {
+    const clickSub = (label: "Commits" | "Compare") =>
+      browser.execute((l) => {
+        const el = document.querySelector(
+          `[data-testid="history-subtab"][data-subtab="${l}"]`,
+        ) as HTMLElement | null;
+        if (!el) throw new Error(`no History sub-tab: ${l}`);
+        el.click();
+      }, label);
+
+    await clickSub("Commits");
+    await waitVisible('[data-testid="history-panel"]');
+    expect(
+      await browser.execute(() =>
+        document.querySelector('[data-testid="compare-panel"]') !== null),
+    ).toBe(false);
+
+    // Back to Compare: the sub-view remounts, so the deliberately chosen base
+    // has to be remembered outside the component or it snaps to the task
+    // default on every round trip.
+    await clickSub("Compare");
+    await waitVisible('[data-testid="compare-panel"]');
+    await waitForRow("committed.txt", "the compare list never came back");
+    expect(await currentBase()).toBe(baseBranch);
   });
 });
 

@@ -592,7 +592,7 @@ export interface GitFile {
    *  deletion. Used to auto-clear a file's "viewed" mark once the agent
    *  touches it again. See store/fileViewed.ts. */
   fp: string;
-  /** Lines added / removed. Only the Compare tab fills these in; the staging
+  /** Lines added / removed. Only Compare fills these in; the staging
    *  lists leave them undefined rather than paying for a `--numstat` process
    *  on every status poll. Undefined also covers a binary file, whose churn
    *  git reports as `-`. */
@@ -601,7 +601,7 @@ export interface GitFile {
 }
 
 /** Everything that differs between some ref and the working tree — the
- *  Compare tab (issue #208). One flat list: committed, staged, unstaged and
+ *  History › Compare sub-view (issue #208). One flat list: committed, staged, unstaged and
  *  untracked work all land in `files`, because "what does this task look like
  *  next to that branch" doesn't care which of those a change happens to be in. */
 export interface GitCompare {
