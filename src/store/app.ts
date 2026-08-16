@@ -2250,6 +2250,15 @@ export const useApp = create<AppState>((set, get) => ({
 
   setTabLiveTitle: (taskId, tabId, liveTitle) => set(s => {
     const list = s.tabs[taskId] || [];
+    // Bail on a write that changes nothing, the way setWorkState and
+    // setWorkProgress already do. xterm fires onTitleChange for EVERY OSC 0/2
+    // without comparing it to the previous value (InputHandler.setTitle), and
+    // an agent TUI re-emits its unchanged title while it sits at the prompt —
+    // so without this, an idle agent still allocated a tab object, a tabs
+    // array and a tabs record, then woke every store subscriber, several times
+    // a second, per terminal, forever.
+    const cur = list.find(t => t.id === tabId);
+    if (!cur || cur.customTitle || (cur as TerminalTab).liveTitle === liveTitle) return s;
     const next = list.map(t => {
       if (t.id !== tabId) return t;
       // Locked tab: drop the agent's title entirely (user picked one).

@@ -1709,8 +1709,12 @@ const captureArmedRef = useRef(false);
             }
           }
         });
-        // Compose data + sandbox unlisteners into the existing ref so
-        // cleanup tears down both. Avoids adding another ref.
+        // The effect cleanup calls this (with unlistenExitRef) before any
+        // respawn, so the listener never outlives its PTY. NB: a previous
+        // comment here claimed this COMPOSED several unlisteners into one ref;
+        // it does not, it assigns. Anything else that needs tearing down wants
+        // its own ref, not this one — assigning over it would silently drop
+        // whatever was already there and leak a listener per respawn.
         unlistenDataRef.current = unlistenData;
 
         const unlistenExit = await ipc.onPtyExit(ptyId, (code) => {

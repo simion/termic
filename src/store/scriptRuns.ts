@@ -40,9 +40,15 @@ export const useScriptRuns = create<Store>(set => ({
   appendLine: (taskId, kind, line, member = "") => set(s => {
     const k = key(taskId, kind, member);
     const cur = s.runs[k] ?? EMPTY;
-    const next = cur.lines.length >= MAX_LINES
-      ? [...cur.lines.slice(-MAX_LINES + 1), line]
-      : [...cur.lines, line];
+    // ONE array allocation per line, not two. At the cap the old form did
+    // `[...cur.lines.slice(-MAX_LINES + 1), line]`, where the slice allocates
+    // a 1 999-element array and the spread immediately allocates another
+    // 2 000-element one — ~4 000 element copies per log line, forever, for a
+    // dev server that never stops printing. slice-then-push keeps the trim
+    // and drops the second copy.
+    const over = Math.max(0, cur.lines.length + 1 - MAX_LINES);
+    const next = cur.lines.slice(over);
+    next.push(line);
     return { runs: { ...s.runs, [k]: { ...cur, lines: next } } };
   }),
   finish: (taskId, kind, exitCode, success, member = "") => set(s => {

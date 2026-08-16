@@ -255,6 +255,87 @@ describe("setWorkState", () => {
   });
 });
 
+// ── setTabLiveTitle ───────────────────────────────────────────────────
+//
+// An UNCHANGED title must not write. xterm fires onTitleChange for every
+// OSC 0/2 without comparing it to the previous value (InputHandler.setTitle),
+// and an agent TUI re-emits its unchanged title while it sits at the prompt —
+// so a setter that allocated on every one of those woke every store subscriber
+// several times a second, per terminal, forever, with the app idle. Measured
+// on a 16-terminal fixture: 62 store writes/s and 19% of a core, halving to 31
+// writes/s and 12.7% with the bail below.
+//
+// This is a COUNT assertion, which is the class that can gate a PR — a 3-core
+// CI runner counts the same as an M1 Max, where the CPU figure would not
+// survive the trip (docs/performance.md, docs/research/perf-ci.md).
+describe("setTabLiveTitle", () => {
+  it("applies a title that actually changed", () => {
+    const taskId = "ws1";
+    const tab = makeTermTab();
+    addTab(taskId, tab);
+
+    useApp.getState().setTabLiveTitle(taskId, tab.id, "✳ termic");
+
+    expect(getTerminalTab(taskId, tab.id).liveTitle).toBe("✳ termic");
+  });
+
+  it("does not touch the store when the title is unchanged", () => {
+    const taskId = "ws1";
+    const tab = makeTermTab();
+    addTab(taskId, tab);
+    useApp.getState().setTabLiveTitle(taskId, tab.id, "✳ termic");
+
+    const before = useApp.getState();
+    useApp.getState().setTabLiveTitle(taskId, tab.id, "✳ termic");
+    const after = useApp.getState();
+
+    // Same STATE object, not merely equal: a fresh `tabs` record is what
+    // invalidates every selector in every mounted task.
+    expect(after).toBe(before);
+    expect(after.tabs).toBe(before.tabs);
+    expect(after.tabs[taskId]).toBe(before.tabs[taskId]);
+    expect(after.tabs[taskId][0]).toBe(before.tabs[taskId][0]);
+  });
+
+  it("notifies subscribers ONCE for a title repainted 100 times", () => {
+    const taskId = "ws1";
+    const tab = makeTermTab();
+    addTab(taskId, tab);
+
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+    for (let i = 0; i < 100; i++) {
+      useApp.getState().setTabLiveTitle(taskId, tab.id, "✳ termic");
+    }
+    unsub();
+
+    // Only the first write is real; the other 99 are the idle TUI repainting.
+    expect(notifications).toBe(1);
+  });
+
+  it("keeps ignoring the agent's title on a user-renamed tab", () => {
+    const taskId = "ws1";
+    const tab = makeTermTab({ customTitle: true, title: "mine" });
+    addTab(taskId, tab);
+
+    const before = useApp.getState();
+    useApp.getState().setTabLiveTitle(taskId, tab.id, "✳ termic");
+
+    expect(useApp.getState()).toBe(before);
+    expect(getTerminalTab(taskId, tab.id).liveTitle).toBeUndefined();
+  });
+
+  it("is a no-op for a tab id that does not exist", () => {
+    const taskId = "ws1";
+    addTab(taskId, makeTermTab({ id: "a" }));
+
+    const before = useApp.getState();
+    useApp.getState().setTabLiveTitle(taskId, "nope", "✳ termic");
+
+    expect(useApp.getState()).toBe(before);
+  });
+});
+
 // ── closeTab ──────────────────────────────────────────────────────────
 
 describe("closeTab", () => {
