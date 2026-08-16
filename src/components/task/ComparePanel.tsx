@@ -1,41 +1,39 @@
-// "How does this task read next to another branch" — the Compare sub-view of
-// the right panel's History tab (issue #208).
+// "How does this task read next to another branch" — the Compare mode of the
+// right panel's Git tab (issue #208).
 //
-// A sub-view rather than a fourth top-level tab: the panel defaults to 280px
-// and drags down to 220, where four labels plus the Commit badge and the
-// refresh button stop fitting. It belongs under History on merit too, both
-// being read-only views of what the branch has done, where Commit is the one
-// place you act on the tree.
-//
-// The Commit tab only ever shows the working tree, so the moment an agent
-// committed, its work vanished from the panel; the History tab (issue #199)
+// The Changes view only ever shows the working tree, so the moment an agent
+// commits, its work vanishes from the panel; the Graph section (issue #199)
 // shows the commits but never their combined effect. When an agent eats the
 // elephant in six commits, neither answers the question you actually have,
-// which is "what does all of it add up to". This tab is that answer: ONE flat
-// list of every path that differs between a ref and the working tree,
-// committed and uncommitted alike.
+// which is "what does all of it add up to". Compare is that answer: ONE list
+// of every path that differs between a ref and the working tree, committed and
+// uncommitted alike. One list means it does not split committed work from
+// uncommitted into separate sections; it is NOT flat. It renders through the
+// Changes view's own `flattenRows` in whichever of tree / list / combined is
+// stored, so both file lists in this panel group and order identically.
 //
 // Deliberately a GENERIC ref-to-ref compare, not a PR view. Any local or
 // remote-tracking ref in the repo can be the base; the task's own
 // `base_branch` is only what the picker opens on. Comparing a spike against a
 // sibling feature branch is the same code path.
 //
-// Layout, top to bottom:
-//   1. Repo pills    — multi-repo tasks only, same idea as the other two tabs.
-//   2. Compare bar   — `<base> → <branch>`, the base being the picker.
-//   3. Toolbar       — search filter + view-mode menu (shares the Commit tab's
-//                      stored mode, so both file lists group identically).
-//   4. Summary strip — file count, diffstat, viewed progress.
-//   5. File rows     — virtualized; click opens a `base:<sha>` diff.
+// The panel owns only what is specific to comparing:
+//   1. Compare bar   — `<base> → <branch>`, the base being the picker.
+//   2. Summary strip — file count, diffstat, viewed progress.
+//   3. File rows     — virtualized; click opens a `base:<sha>` diff.
+// The repo pills, the filter box and the view-mode menu belong to GitPanel and
+// arrive as props, so switching between Changes and Compare does not reset
+// what you typed or which repo you were looking at.
 //
-// Unlike a History diff, the right side here is the LIVE file, so the review
-// affordances stay switched on: viewed marks anchor to a real worktree
-// fingerprint and an inline comment lands on the version about to be edited.
+// Unlike a diff read out of the graph, the right side here is the LIVE file,
+// so the review affordances stay switched on: viewed marks anchor to a real
+// worktree fingerprint and an inline comment lands on the version about to be
+// edited. That is what makes this the surface for reviewing a whole feature.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight, ChevronDown, Check, Eye, Search, Loader2, GitCompare as GitCompareIcon,
-  ArrowRight, List, ListTree, Rows3, MessageSquare, AlertTriangle,
+  ChevronRight, ChevronDown, Check, Eye, Loader2, GitCompare as GitCompareIcon,
+  ArrowRight, MessageSquare, AlertTriangle,
 } from "lucide-react";
 import type { GitCompare, GitFile, Task } from "@/lib/types";
 import { taskGitCompare, taskGitRefs } from "@/lib/ipc";
@@ -52,9 +50,8 @@ import {
 } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
-import { flattenRows, readView, SC, COL, LBL, type FlatRow, type ViewMode } from "./GitPanel";
+import { flattenRows, SC, COL, LBL, type FlatRow, type ViewMode } from "./GitPanel";
 
-const LS_VIEW = "gitViewMode";
 /** Whether the compare runs from the merge base. Global rather than per task:
  *  it expresses how someone reads a diff, not anything about one branch. */
 const LS_MERGE_BASE = "gitCompareMergeBase";
@@ -65,12 +62,12 @@ function readMergeBase(): boolean {
   try { return localStorage.getItem(LS_MERGE_BASE) !== "0"; } catch { return true; }
 }
 
-/** taskId → the ref that task was last compared against. Compare is a sub-view
- *  of History, so flipping to the commit graph and back UNMOUNTS this panel;
- *  without somewhere outside the component to keep it, a deliberately chosen
- *  base would silently snap back to the task default on every round trip.
- *  In memory rather than localStorage on purpose: it is worth surviving a
- *  sub-view switch, not worth accumulating a key per task forever. */
+/** taskId → the ref that task was last compared against. Compare is a mode of
+ *  the Git tab, so flipping back to Changes UNMOUNTS this panel; without
+ *  somewhere outside the component to keep it, a deliberately chosen base
+ *  would silently snap back to the task default on every round trip. In memory
+ *  rather than localStorage on purpose: it is worth surviving a mode switch,
+ *  not worth accumulating a key per task forever. */
 const lastBase = new Map<string, string>();
 
 /** `+12 −3`, or nothing at all when git couldn't count (a binary file). Zero
@@ -85,18 +82,23 @@ function Churn({ added, removed }: { added?: number; removed?: number }) {
   );
 }
 
-export function ComparePanel({ task, reloadToken, onOpenDiff }: {
+export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onOpenDiff }: {
   task: Task;
+  /** Which repo of a multi-repo task to compare. Owned by GitPanel's pills so
+   *  the two views cannot disagree about which repo you are looking at. */
+  repoDir: string;
+  /** GitPanel's filter box, shared with the Changes view for the same reason. */
+  search: string;
+  /** GitPanel's stored view mode. Shared so a folder sits in the same place in
+   *  both lists; two file lists in one panel that disagreed would read as a bug. */
+  viewMode: ViewMode;
   /** Bumped by the panel header's refresh, an agent settling, and the git
-   *  tick a commit fires — the same signals the other two tabs ride. */
+   *  tick a commit fires — the same signals the Changes view rides. */
   reloadToken: number;
   /** Open a diff for one file, sides = the compare base → the working tree. */
   onOpenDiff: (path: string, baseSha: string, title: string) => void;
 }) {
   const nonGit = useApp(s => s.projects.find(p => p.id === task.project_id)?.non_git);
-  const members = task.composition ?? [];
-
-  const [repoDir, setRepoDir] = useState("");
   // The picker opens on whatever this task was last compared against, falling
   // back to its own base ("origin/main" for a normal worktree task), which is
   // the comparison people want ~every time. Only a default: any ref below can
@@ -111,13 +113,10 @@ export function ComparePanel({ task, reloadToken, onOpenDiff }: {
   const [cmp, setCmp] = useState<GitCompare | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [viewMode, setViewMode] = useState<ViewMode>(() => readView());
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<string | null>(null);
 
   const persist = (key: string, val: string) => { try { localStorage.setItem(key, val); } catch {} };
-  const changeView = (v: ViewMode) => { setViewMode(v); persist(LS_VIEW, v); };
   const toggleMergeBase = () => setMergeBase(v => { const n = !v; persist(LS_MERGE_BASE, n ? "1" : "0"); return n; });
 
   // A different task is a different branch: fall back to ITS remembered ref,
@@ -126,7 +125,6 @@ export function ComparePanel({ task, reloadToken, onOpenDiff }: {
   // rewrite the remembered choice with a default.
   useEffect(() => {
     setBaseState(lastBase.get(task.id) ?? task.base_branch ?? "");
-    setRepoDir("");
     setSelected(null);
     setRefs(null);
   }, [task.id, task.base_branch]);
@@ -150,8 +148,15 @@ export function ComparePanel({ task, reloadToken, onOpenDiff }: {
    *  compare would be a process per keystroke of the filter. */
   const loadRefs = useCallback(() => {
     if (refs) return;
+    // `task_git_refs` is the graph's ref list: heads, remote-tracking refs and
+    // tags, each tagged with its kind. Split it back into the two groups the
+    // picker shows. Tags ride with the remote group rather than getting a
+    // third section: comparing against one is legitimate and rare.
     taskGitRefs(task.id, repoDir)
-      .then(r => setRefs({ local: r.local, remote: r.remote }))
+      .then(rs => setRefs({
+        local: rs.filter(r => r.kind === "branch").map(r => r.name),
+        remote: rs.filter(r => r.kind !== "branch").map(r => r.name),
+      }))
       .catch(() => setRefs({ local: [], remote: [] }));
   }, [refs, task.id, repoDir]);
 
@@ -212,17 +217,7 @@ export function ComparePanel({ task, reloadToken, onOpenDiff }: {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="compare-panel">
-      {/* 1. Repo pills. */}
-      {members.length > 0 && (
-        <div className="flex flex-wrap gap-1 border-b border-[var(--color-border-soft)] px-2 py-1.5">
-          <RepoPill label={task.name} active={repoDir === ""} onClick={() => setRepoDir("")} />
-          {members.map(m => (
-            <RepoPill key={m.dir_name} label={m.dir_name} active={repoDir === m.dir_name} onClick={() => setRepoDir(m.dir_name)} />
-          ))}
-        </div>
-      )}
-
-      {/* 2. Compare bar. Reads left-to-right as the diff does: the base on the
+      {/* 1. Compare bar. Reads left-to-right as the diff does: the base on the
           left is the side being compared FROM, this branch on the right is the
           side being compared TO. Without naming both, a file marked "D" is
           ambiguous (deleted by whom?), which is the single most confusing
@@ -284,36 +279,7 @@ export function ComparePanel({ task, reloadToken, onOpenDiff }: {
         )}
       </div>
 
-      {/* 3. Toolbar: same controls, same order as the Commit tab's. */}
-      <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-[var(--color-border-soft)] px-2">
-        <div className="relative flex flex-1 items-center">
-          <Search className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Filter files"
-            spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
-            className="h-6 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] pl-7 pr-2 text-[12px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
-          />
-        </div>
-        <DropdownRoot>
-          <DropdownTrigger asChild>
-            <button
-              title="View options"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-            >
-              {viewMode === "tree" ? <ListTree className="h-4 w-4" /> : viewMode === "combined" ? <Rows3 className="h-4 w-4" /> : <List className="h-4 w-4" />}
-            </button>
-          </DropdownTrigger>
-          <DropdownMenu align="end">
-            <ViewItem label="View as Tree"          active={viewMode === "tree"}     onSelect={() => changeView("tree")} />
-            <ViewItem label="View as Combined List" active={viewMode === "combined"} onSelect={() => changeView("combined")} />
-            <ViewItem label="View as List"          active={viewMode === "list"}     onSelect={() => changeView("list")} />
-          </DropdownMenu>
-        </DropdownRoot>
-      </div>
-
-      {/* 4. Summary strip. The whole reason someone opens this tab is to judge
+      {/* 2. Summary strip. The whole reason someone opens this tab is to judge
           size and impact before reading a single file, so the count and the
           diffstat come before the list, not buried in it. */}
       {cmp && !err && (
@@ -404,37 +370,11 @@ function Note({ children }: { children: React.ReactNode }) {
   );
 }
 
-function RepoPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      data-testid="compare-repo-pill"
-      onClick={onClick}
-      className={cn(
-        "max-w-full truncate rounded-full px-2 py-0.5 text-[11px] transition-colors",
-        active
-          ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
 function RefItem({ label, active, onSelect }: { label: string; active: boolean; onSelect: () => void }) {
   return (
     <DropdownItem onSelect={onSelect} className="items-center">
       <Check className={cn("h-3.5 w-3.5 shrink-0", !active && "opacity-0")} />
       <span className="truncate font-mono text-[12px]">{label}</span>
-    </DropdownItem>
-  );
-}
-
-function ViewItem({ label, active, onSelect }: { label: string; active: boolean; onSelect: () => void }) {
-  return (
-    <DropdownItem onSelect={onSelect} className="items-center">
-      <Check className={cn("h-3.5 w-3.5", !active && "opacity-0")} />
-      <span className="text-[13px]">{label}</span>
     </DropdownItem>
   );
 }

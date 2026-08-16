@@ -4,12 +4,19 @@
 //   1. Repo sub-tabs   — multi-repo tasks only; one wrapping pill per
 //      repo that has changes (even if just one), each badged with its
 //      changed-file count. Clean repos get no pill.
-//   2. Toolbar         — search filter + view-mode menu (Tree / List /
-//      Combined List + Hide untracked).
+//   2. Toolbar         — Changes / Compare switch, search filter, view-mode
+//      menu (Tree / List / Combined List + Hide untracked). The filter and the
+//      view mode are shared by both modes.
 //   3. Unstaged pane   — resizable, scrollable file list.
 //   4. Resize handle   — drag to repartition the two panes.
 //   5. Staged pane     — resizable, scrollable file list.
 //   6. Commit form     — subject, description, Amend, split Commit button.
+//
+// In Compare mode (issue #208) 3-5 are replaced by ComparePanel: one list of
+// everything this branch differs by against a chosen ref, committed work
+// included, which is the half the staging panes structurally cannot show. The
+// commit form goes with them, since nothing in that list is stageable. The
+// Graph section below (issue #199) is present in both modes.
 //
 // Backend: task_git_status returns staged/unstaged split per repo;
 // task_stage / _unstage / _commit mutate the selected repo. Paths are
@@ -36,6 +43,7 @@ import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuIte
 import { Tip } from "@/components/ui/Tooltip";
 import { CopyPathItems } from "./CopyPathItems";
 import { HistoryPanel, ScopePicker } from "./HistoryPanel";
+import { ComparePanel } from "./ComparePanel";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
 // Per-side status → glyph / color / label. `?` is untracked (rendered as
@@ -57,6 +65,10 @@ const LS_SCOL   = "gitStagedCollapsed";
 /** Graph section: collapsed by default (the working tree is why you opened
  *  this tab), and its own share of the body once expanded. */
 const LS_GCOL   = "gitGraphCollapsed";
+/** Changes (the working tree) vs Compare (this branch against a ref, GH #208).
+ *  Persisted: someone reviewing a feature flips to Compare and stays there for
+ *  the length of the review, across task switches and relaunches. */
+const LS_MODE   = "gitPanelMode";
 const LS_GRATIO = "gitGraphRatio";
 
 /** Every button on the commit footer, so Push and Commit cannot drift apart.
@@ -125,6 +137,10 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
     try { return localStorage.getItem(LS_GCOL) !== "0"; } catch { return true; }
   });
   const [graphRatio, setGraphRatio] = useState<number>(() => readRatio(LS_GRATIO, 0.5));
+  const [mode, setMode] = useState<"changes" | "compare">(() => {
+    try { return localStorage.getItem(LS_MODE) === "compare" ? "compare" : "changes"; } catch { return "changes"; }
+  });
+  const changeMode = (m: "changes" | "compare") => { setMode(m); persist(LS_MODE, m); };
   // Graph scope lives here, not in HistoryPanel: the picker rides the Graph
   // header (this component's markup), so this is where the value it edits has
   // to sit. Reset per repo, since refs belong to one.
@@ -432,7 +448,9 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
   if (!status) {
     return <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
   }
-  if (!repo || (status.total_changed === 0 && !pinnedExists)) {
+  // A repo termic could not read at all (or a plain folder) has nothing to
+  // show and no graph to draw, so it keeps the bare message.
+  if (!repo) {
     return (
       <div className="flex h-full flex-col">
         {!nonGit && <BranchBar task={task} branch={status.repos[0]?.branch ?? task.branch} dir="" />}
@@ -444,6 +462,12 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
       </div>
     );
   }
+  // A CLEAN tree is not the same thing. It used to take the branch above and
+  // return before the toolbar, which meant the Graph and Compare both vanished
+  // the moment you committed: the exact moment they became the only two views
+  // with anything to say (GH #208). The shell renders either way now and the
+  // message takes the file panes' place.
+  const clean = status.total_changed === 0 && !pinnedExists;
 
   // Show repo pills only for repos that actually have changes — even when
   // that's a single repo. Unchanged repos are noise here; the "All files"
@@ -524,8 +548,34 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
         </div>
       )}
 
-      {/* 2. Toolbar: search + view-mode menu */}
+      {/* 2. Toolbar: mode switch + search + view-mode menu. The filter and the
+          view mode are shared by both modes deliberately, so flipping between
+          them keeps what you typed and where a folder sits. */}
       <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-[var(--color-border-soft)] px-2">
+        {!nonGit && (
+          <div className="flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[2px]">
+            {(["changes", "compare"] as const).map(m => (
+              <button
+                key={m}
+                type="button"
+                data-testid={`git-mode-${m}`}
+                data-active={mode === m ? "true" : "false"}
+                onClick={() => changeMode(m)}
+                title={m === "changes"
+                  ? "What you can stage right now"
+                  : "Everything this branch differs by, committed and not"}
+                className={cn(
+                  "flex h-[18px] items-center rounded-[4px] px-1.5 text-[11px] leading-none transition-colors",
+                  mode === m
+                    ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                    : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                )}
+              >
+                {m === "changes" ? "Changes" : "Compare"}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="relative flex flex-1 items-center">
           <Search className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
           <input
@@ -555,10 +605,13 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
         </DropdownRoot>
       </div>
 
-      {/* 3-5. Unstaged / handle / Staged, then the Graph section under them.
-          The working tree and the graph split the body: expanded, the graph
-          takes `graphRatio` of it and the two file lists share the rest, both
-          sides resizable by the divider between them. */}
+      {/* 3-5. The upper half (Changes: Unstaged / handle / Staged, or Compare:
+          one list against a ref), then the Graph section under it. The two
+          split the body: expanded, the graph takes `graphRatio` and the upper
+          half the rest, both sides resizable by the divider between them.
+          Compare occupies the same slot rather than adding a third section:
+          it answers the same question as the staging panes, over a wider
+          window, so showing both at once would be two views of one thing. */}
       <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
       <div
         className="relative flex min-h-0 flex-col"
@@ -566,6 +619,20 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
           ? { flex: "1 1 0%", minHeight: 0 }
           : { flexBasis: `${(1 - graphRatio) * 100}%`, flexGrow: 0, flexShrink: 1, minHeight: 0 }}
       >
+        {clean && mode === "changes" ? (
+          <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
+            No changes. Working tree is clean.
+          </div>
+        ) : mode === "compare" ? (
+          <ComparePanel
+            task={task}
+            repoDir={dir}
+            search={search}
+            viewMode={viewMode}
+            reloadToken={reloadToken}
+            onOpenDiff={(path, sha, title) => onOpenCommitDiff?.(path, sha, title)}
+          />
+        ) : (<>
         <Pane
           title="Unstaged" files={unstaged} pane="unstaged" viewMode={viewMode}
           collapsed={collapsed} setCollapsed={setCollapsed}
@@ -600,6 +667,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
           root={task.path} repoDir={dir}
           className={stagedCollapsed ? "shrink-0" : "min-h-0 flex-1"}
         />
+        </>)}
       </div>
 
       {/* Divider between the working tree and the graph. Only draggable while
@@ -662,7 +730,10 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
       </div>
       </div>
 
-      {/* 6. Commit form */}
+      {/* 6. Commit form. Changes only: the compare list holds committed work
+          too, so a "Commit N files" button under it would be counting a
+          staging area that is not on screen. */}
+      {mode === "changes" && !clean && (
       <div className="flex shrink-0 flex-col gap-1.5 border-t border-[var(--color-border-soft)] p-2">
         <input
           value={subject}
@@ -761,6 +832,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onDoubleClickDiff,
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -423,9 +423,10 @@ describe("git history tab", () => {
   });
 });
 
-// P0: History › Compare (issue #208). The complaint it answers is that work an
-// agent COMMITTED was invisible: the Commit tab shows the working tree only,
-// so a task split across several commits read as an empty panel. These cases
+// P0: the Git tab's Compare mode (issue #208). The complaint it answers is
+// that work an agent COMMITTED was invisible: the staging view shows the
+// working tree only, so a task split across several commits read as an empty
+// panel. These cases
 // pin the one thing that must be true — committed, uncommitted and untracked
 // work all appear in ONE list against a chosen ref — plus the merge-base
 // semantics, the review flow that hangs off it, and the base picker.
@@ -435,7 +436,7 @@ describe("git history tab", () => {
 // spec pins its own `e2e-compare-base` at the pre-commit HEAD: comparing
 // against a ref that genuinely predates the commit is the whole scenario, and
 // a repo-root task's default base cannot supply one.
-describe("git compare tab", () => {
+describe("git compare mode", () => {
   let taskId: string | undefined;
   let headSha = "";
   /** A ref parked at the pre-commit HEAD. Comparing against it is what makes
@@ -452,6 +453,9 @@ describe("git compare tab", () => {
     execSync(`git -C "${fixture}" branch -f ${baseBranch} ${headSha}`);
   });
   after(async () => {
+    // The Git tab's mode is persisted, so leaving it on Compare would hand the
+    // next spec a panel with no staging panes in it.
+    await openChanges().catch(() => {});
     if (taskId) await archiveTask(taskId);
     // This spec COMMITS to the shared fixture checkout, so it has to put the
     // repo back exactly as it found it — the specs after this one assert on a
@@ -463,24 +467,35 @@ describe("git compare tab", () => {
     } catch { /* never created */ }
   });
 
-  /** Compare is a SUB-view of History, not a fourth top-level tab (four
-   *  labels do not fit a 280px panel), so getting to it is two clicks. */
-  const openCompare = async () => {
-    await browser.execute(() => {
+  /** Compare is a MODE of the Git tab, not a tab of its own, so getting to it
+   *  is the Git tab plus the Changes / Compare switch on its toolbar. */
+  const openRightTab = (label: "All files" | "Git") =>
+    browser.execute((l) => {
       const el = document.querySelector(
-        '[data-testid="right-tab"][data-tab="History"]',
+        `[data-testid="right-tab"][data-tab="${l}"]`,
       ) as HTMLElement | null;
-      if (!el) throw new Error("no right-panel tab: History");
+      if (!el) throw new Error(`no right-panel tab: ${l}`);
       el.click();
-    });
+    }, label);
+
+  const openCompare = async () => {
+    await openRightTab("Git");
     await browser.execute(() => {
       const el = document.querySelector(
-        '[data-testid="history-subtab"][data-subtab="Compare"]',
+        '[data-testid="git-mode-compare"]',
       ) as HTMLElement | null;
-      if (!el) throw new Error("History has no Compare sub-tab");
+      if (!el) throw new Error("the Git tab has no Compare mode switch");
       el.click();
     });
     await waitVisible('[data-testid="compare-panel"]');
+  };
+
+  /** Back to the staging view, so a later spec does not inherit Compare (the
+   *  mode is persisted on purpose: a review outlives one task switch). */
+  const openChanges = async () => {
+    await browser.execute(() => {
+      (document.querySelector('[data-testid="git-mode-changes"]') as HTMLElement | null)?.click();
+    });
   };
 
   /** The compare rows on screen, as path → status. */
@@ -625,7 +640,9 @@ describe("git compare tab", () => {
   });
 
   it("narrows the list with the filter", async () => {
-    const input = await $('[data-testid="compare-panel"] input[placeholder="Filter files"]');
+    // The filter is GitPanel's, shared by both modes, so it is outside the
+    // compare panel in the DOM now.
+    const input = await $('[data-testid="git-panel"] input[placeholder="Filter files"], input[placeholder="Filter files"]');
     await input.setValue("committed");
     await browser.waitUntil(
       async () => {
