@@ -516,7 +516,13 @@ describe("git compare tab", () => {
     // committed after the base and then edited nets out to an add, not a
     // modify, which is git being right and not worth asserting twice.
     writeFileSync(path.join(fixture, "committed.txt"), committedBody);
-    execSync(`git -C "${fixture}" add committed.txt`);
+    // Nested, so the tree view below has a real folder to group under. The
+    // list is "one list" in the sense of not splitting committed from
+    // uncommitted; it is NOT flat (GH #208 review) — it shares the Commit
+    // tab's tree/list/combined mode through the same flattenRows.
+    mkdirSync(path.join(fixture, "cmp-nested", "deep"), { recursive: true });
+    writeFileSync(path.join(fixture, "cmp-nested", "deep", "buried.txt"), "buried\n");
+    execSync(`git -C "${fixture}" add committed.txt cmp-nested`);
     execSync(`git -C "${fixture}" commit -q -m "e2e compare probe ${stamp}"`);
     writeFileSync(path.join(fixture, "README.md"), `# edited by the compare spec ${stamp}\n`);
     writeFileSync(path.join(fixture, "compare-untracked.txt"), "untracked\n");
@@ -562,6 +568,52 @@ describe("git compare tab", () => {
     expect(seen["compare-untracked.txt"]).toBe("?");
 
     await snap("git-compare.png");
+  });
+
+  it("groups the changed files into a folder tree, like the Commit tab", async () => {
+    // The reviewer on GH #208 read "one flat list" as "no hierarchy". The list
+    // is one list only in the sense that committed and uncommitted work sit
+    // together in it; it renders through the SAME flattenRows the Commit tab
+    // uses, in whichever of tree / list / combined is stored, defaulting to
+    // tree. So a nested path must appear under folder rows, not as a full path
+    // on one line.
+    const dirs = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll('[data-testid="compare-dir-row"]')].map(e =>
+          e.getAttribute("data-dir")),
+      ) as Promise<string[]>;
+
+    await browser.waitUntil(async () => (await dirs()).includes("cmp-nested"), {
+      timeout: 10_000,
+      timeoutMsg: "the compare list never grouped the nested file under a folder",
+    });
+    // The whole chain is there, not just the first level.
+    expect(await dirs()).toContain("cmp-nested/deep");
+    // And the leaf is labelled by its BASENAME under those folders, which is
+    // what makes the hierarchy readable rather than decorative.
+    const leaf = await browser.execute(() => {
+      const el = [...document.querySelectorAll('[data-testid="compare-file-row"]')].find(
+        e => e.getAttribute("data-path") === "cmp-nested/deep/buried.txt");
+      return el ? (el as HTMLElement).innerText.includes("buried.txt") : null;
+    });
+    expect(leaf).toBe(true);
+
+    // Folders collapse, so a big feature can be read a directory at a time.
+    await browser.execute(() => {
+      const el = [...document.querySelectorAll('[data-testid="compare-dir-row"]')].find(
+        e => e.getAttribute("data-dir") === "cmp-nested") as HTMLElement;
+      el.click();
+    });
+    await browser.waitUntil(
+      async () => !(await rows())["cmp-nested/deep/buried.txt"],
+      { timeout: 8_000, timeoutMsg: "collapsing the folder did not hide its files" },
+    );
+    await browser.execute(() => {
+      const el = [...document.querySelectorAll('[data-testid="compare-dir-row"]')].find(
+        e => e.getAttribute("data-dir") === "cmp-nested") as HTMLElement;
+      el.click();
+    });
+    await waitForRow("cmp-nested/deep/buried.txt", "re-expanding the folder did not restore it");
   });
 
   it("summarizes the comparison before you read a file", async () => {

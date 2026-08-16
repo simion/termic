@@ -483,6 +483,8 @@ function DirRow({ row, setCollapsed }: {
   });
   return (
     <div
+      data-testid="compare-dir-row"
+      data-dir={dirPath}
       onClick={toggle}
       style={{ height: ROW_H, paddingLeft: 6 + depth * 12 }}
       className="flex w-full cursor-pointer items-center gap-1.5 px-2 pr-1 text-left text-[12.5px] text-[var(--color-fg)]/85 hover:bg-[var(--color-hover)]"
