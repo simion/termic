@@ -6157,7 +6157,7 @@ fn task_changes(id: String) -> Result<TaskChanges, String> {
 // the repo's own cwd. The frontend re-prefixes with `dir_name` only when
 // it opens a member diff.
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct GitFile {
     /// Single-character status for this side: index status for staged
     /// entries (M/A/D/R/C), worktree status for unstaged (M/D), or "?"
@@ -6170,6 +6170,14 @@ pub struct GitFile {
     /// mark once the agent touches the file again (the fingerprint moves).
     #[serde(default)]
     pub fp: String,
+    /// Lines added / removed for this path. Only the Compare tab fills these
+    /// in (`--numstat` over the whole range); the staging lists leave them
+    /// unset rather than paying for a second git process per status poll.
+    /// `None` also covers a binary file, which numstat reports as `-`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u32>,
 }
 
 /// Cheap working-tree fingerprint for change detection: modification time
@@ -6259,16 +6267,16 @@ fn parse_porcelain_line(line: &str) -> (Option<GitFile>, Option<GitFile>) {
 
     // Untracked: both columns are "?". Treat as a single unstaged add.
     if x == "?" {
-        return (None, Some(GitFile { status: "?".into(), path, fp: String::new() }));
+        return (None, Some(GitFile { status: "?".into(), path, ..Default::default() }));
     }
 
     let staged = if x != " " {
-        Some(GitFile { status: x.into(), path: path.clone(), fp: String::new() })
+        Some(GitFile { status: x.into(), path: path.clone(), ..Default::default() })
     } else {
         None
     };
     let unstaged = if y != " " {
-        Some(GitFile { status: y.into(), path, fp: String::new() })
+        Some(GitFile { status: y.into(), path, ..Default::default() })
     } else {
         None
     };
@@ -7008,7 +7016,7 @@ fn git_commit_files(cwd: &Path, sha: &str) -> Result<Vec<GitFile>, String> {
             path: path.to_string(),
             // A working-tree fingerprint is meaningless for a historical
             // revision (the "viewed" marks it feeds only track live files).
-            fp: String::new(),
+            ..Default::default()
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -7036,6 +7044,294 @@ async fn task_git_commit_files(
 /// leading-dash argument injection for free.
 fn is_commit_ish(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+// ─────────────────────────── branch compare ───────────────────────────
+//
+// "How does this task read next to some other branch" (issue #208). The
+// Commit tab only ever shows the working tree, so work an agent had already
+// committed was invisible; the History tab (issue #199) shows the commits but
+// never their combined effect. This is the third view: ONE flat file list for
+// the whole delta between a ref and the working tree, committed and
+// uncommitted alike, which is what you want when an agent ate the elephant in
+// six commits and you have to judge the result.
+//
+// Deliberately generic — any local or remote-tracking ref in the repo, not
+// "the PR base". A task's own `base_branch` is only what the picker
+// preselects; comparing a spike branch against a sibling feature branch is
+// the same code path.
+
+/// Is `s` safe to hand to git as a revision? Laxer than `is_commit_ish` (hex
+/// only) because the Compare tab passes REFNAMES a user picked, and much
+/// stricter than "anything": a leading dash reads as an option, and git's own
+/// refname rules already forbid whitespace, control characters and the glob /
+/// rev-syntax bytes. `--end-of-options` at the call site covers the dash on
+/// its own; this is the belt to that pair of braces.
+fn is_safe_rev(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && !s.starts_with('-')
+        && !s.contains("..")
+        && !s.chars().any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
+}
+
+/// Resolve a user-picked ref to a commit sha. Everything downstream — most of
+/// all the `base:<sha>` diff scope the frontend echoes back on every file
+/// click — then stays hex-only and keeps going through `is_commit_ish`, so a
+/// refname is validated exactly once, here, instead of at four call sites.
+fn resolve_rev(cwd: &Path, rev: &str) -> Result<String, String> {
+    if !is_safe_rev(rev) {
+        return Err(format!("{rev} is not a valid ref name"));
+    }
+    // `^{commit}` peels an annotated tag; --quiet turns "no such ref" into an
+    // empty stdout instead of noise on stderr.
+    let sha = git(
+        &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{rev}^{{commit}}")],
+        cwd,
+    )
+    .map(|s| s.trim().to_string())
+    .unwrap_or_default();
+    if sha.is_empty() {
+        return Err(format!("{rev} isn't a branch or commit in this repo"));
+    }
+    Ok(sha)
+}
+
+/// Parse `git diff --name-status -z` into (status letter, path) pairs.
+///
+/// -z rather than the tab-delimited default because a path may contain ANY
+/// byte except NUL — including the tab the default format delimits with, and
+/// the quoting git falls back to would have to be unescaped here instead.
+/// Records are `<status>\0<path>\0`, except R/C which carry a similarity
+/// score and TWO paths (`R075\0old\0new\0`); the new path is the one
+/// `git show <sha>:path` can resolve, so it is the one kept.
+fn parse_name_status_z(out: &str) -> Vec<(String, String)> {
+    let f: Vec<&str> = out.split('\0').collect();
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < f.len() {
+        let status = f[i];
+        if status.is_empty() {
+            break; // the stream's trailing NUL
+        }
+        let renamed = status.starts_with('R') || status.starts_with('C');
+        let path_idx = if renamed { i + 2 } else { i + 1 };
+        let Some(path) = f.get(path_idx).filter(|p| !p.is_empty()) else { break };
+        // R100 / C075 carry a similarity score; the glyph map is keyed by the
+        // letter alone.
+        rows.push((status.chars().next().unwrap().to_string(), (*path).to_string()));
+        i = path_idx + 1;
+    }
+    rows
+}
+
+/// Parse `git diff --numstat -z` into (path, added, removed).
+///
+/// Records are `<add>\t<del>\t<path>\0`, except a rename, where the third
+/// tab-field is EMPTY and the two paths follow as their own NUL-terminated
+/// fields (`1\t0\t\0old\0new\0`). A binary file reports `-` for both counts,
+/// which becomes `None` rather than a misleading zero.
+fn parse_numstat_z(out: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
+    let f: Vec<&str> = out.split('\0').collect();
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < f.len() {
+        let rec = f[i];
+        if rec.is_empty() {
+            break; // the stream's trailing NUL
+        }
+        let mut parts = rec.splitn(3, '\t');
+        let (Some(a), Some(d), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
+            break;
+        };
+        let num = |s: &str| s.parse::<u32>().ok();
+        let (path, next) = if rest.is_empty() {
+            // Rename: the destination is the second of the two path fields.
+            match f.get(i + 2).filter(|p| !p.is_empty()) {
+                Some(dst) => ((*dst).to_string(), i + 3),
+                None => break,
+            }
+        } else {
+            (rest.to_string(), i + 1)
+        };
+        rows.push((path, num(a), num(d)));
+        i = next;
+    }
+    rows
+}
+
+/// Lines in an untracked file, for its churn column. `git diff` never sees
+/// these (they aren't in any tree), and running `diff --no-index` per file
+/// would be a process each — so count here and report `None` for anything
+/// oversized or binary rather than stalling on a stray core dump someone
+/// forgot to gitignore.
+///
+/// `budget` is the bytes left to spend across the WHOLE compare, decremented
+/// as files are read. A per-file cap alone is not enough: an un-ignored
+/// `node_modules` is thousands of individually small files, and reading all of
+/// them would freeze the panel on exactly the repo that needs it most. Past
+/// the budget the counts simply stop being reported, which costs a column,
+/// not the list.
+fn untracked_added(path: &Path, budget: &mut u64) -> Option<u32> {
+    const PER_FILE_CAP: u64 = 1 << 20; // 1 MiB
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > PER_FILE_CAP || meta.len() > *budget {
+        return None;
+    }
+    *budget -= meta.len();
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.contains(&0) {
+        return None; // binary
+    }
+    if bytes.is_empty() {
+        return Some(0);
+    }
+    let nl = bytes.iter().filter(|b| **b == b'\n').count() as u32;
+    // A file not ending in a newline still has that last line.
+    Some(if bytes.last() == Some(&b'\n') { nl } else { nl + 1 })
+}
+
+/// Everything that differs between `base` and the working tree.
+#[derive(Serialize)]
+pub struct GitCompare {
+    /// The ref as the user picked it, echoed back for the header.
+    pub base: String,
+    /// The commit every file's LEFT side is read from, and the sha that goes
+    /// into the `base:<sha>` diff scope. The merge base with HEAD in
+    /// `merge_base` mode, otherwise `base`'s own tip.
+    pub base_sha: String,
+    pub base_short: String,
+    /// HEAD's branch, so the header can say which two things are being
+    /// compared. "" on a detached HEAD.
+    pub branch: String,
+    /// True when `merge_base` was asked for but the two histories share no
+    /// ancestor, so this fell back to comparing against the ref's tip. Rare
+    /// (unrelated histories), and silently diffing something else would be
+    /// worse than saying so.
+    pub no_merge_base: bool,
+    pub files: Vec<GitFile>,
+    /// Summed over `files`, so the header's diffstat matches the rows.
+    pub added: u32,
+    pub removed: u32,
+    /// True when the list was capped at MAX_COMPARE_FILES.
+    pub truncated: bool,
+}
+
+/// Same cap the staging lists use: a comparison against a very old base can
+/// legitimately run to tens of thousands of files, and the panel is a review
+/// surface, not a bulk export.
+const MAX_COMPARE_FILES: usize = 5_000;
+
+fn git_compare(cwd: &Path, base: &str, merge_base: bool) -> Result<GitCompare, String> {
+    let tip = resolve_rev(cwd, base)?;
+    // Three-dot semantics by default: "what this branch added", not "how the
+    // two tips differ". Without it, every commit made on the base since the
+    // task branched shows up inverted, as though the task had deleted work it
+    // simply doesn't have yet — the single most confusing thing a compare view
+    // can do. `merge_base: false` is the escape hatch for when the literal
+    // tip-to-tree difference is what you want.
+    let mut no_merge_base = false;
+    let base_sha = if merge_base {
+        match git(&["merge-base", &tip, "HEAD"], cwd).map(|s| s.trim().to_string()) {
+            Ok(s) if !s.is_empty() => s,
+            // Unrelated histories have no common ancestor.
+            _ => {
+                no_merge_base = true;
+                tip.clone()
+            }
+        }
+    } else {
+        tip.clone()
+    };
+
+    // Both halves of the range in one pass each: name-status for the glyph,
+    // numstat for the churn. Two processes over the same range rather than
+    // one, because git has no format that carries both.
+    let names = git(&["--no-pager", "diff", "--name-status", "-M", "-z", &base_sha], cwd)
+        .unwrap_or_default();
+    let stats = git(&["--no-pager", "diff", "--numstat", "-M", "-z", &base_sha], cwd)
+        .unwrap_or_default();
+    let churn: std::collections::HashMap<String, (Option<u32>, Option<u32>)> =
+        parse_numstat_z(&stats).into_iter().map(|(p, a, d)| (p, (a, d))).collect();
+
+    let mut files: Vec<GitFile> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (status, path) in parse_name_status_z(&names) {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let (added, removed) = churn.get(&path).copied().unwrap_or((None, None));
+        files.push(GitFile {
+            status,
+            fp: file_fp(&cwd.join(&path)),
+            path,
+            added,
+            removed,
+        });
+    }
+
+    // Untracked files are part of "different from the base" even though no
+    // tree contains them — an agent's brand-new, not-yet-added file is exactly
+    // the kind of thing this view exists to surface. `git diff` can't see them,
+    // so they come from ls-files and are labelled "?" like the staging pane
+    // does it.
+    let others = git(&["ls-files", "--others", "--exclude-standard", "-z"], cwd)
+        .unwrap_or_default();
+    // Total bytes the churn counts may read across every untracked file. See
+    // untracked_added: without a shared budget an un-ignored dependency tree
+    // turns this into thousands of reads.
+    let mut budget: u64 = 8 << 20; // 8 MiB
+    for path in others.split('\0').filter(|p| !p.is_empty()) {
+        if !seen.insert(path.to_string()) {
+            continue;
+        }
+        let abs = cwd.join(path);
+        files.push(GitFile {
+            status: "?".into(),
+            path: path.to_string(),
+            fp: file_fp(&abs),
+            added: untracked_added(&abs, &mut budget),
+            removed: Some(0),
+        });
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let truncated = files.len() > MAX_COMPARE_FILES;
+    if truncated {
+        files.truncate(MAX_COMPARE_FILES);
+    }
+    // Summed AFTER the truncation so the header's total describes the rows
+    // actually on screen.
+    let added = files.iter().filter_map(|f| f.added).sum();
+    let removed = files.iter().filter_map(|f| f.removed).sum();
+
+    Ok(GitCompare {
+        base: base.to_string(),
+        base_short: base_sha.chars().take(8).collect(),
+        base_sha,
+        branch: current_branch(cwd).unwrap_or_default(),
+        no_merge_base,
+        files,
+        added,
+        removed,
+        truncated,
+    })
+}
+
+#[tauri::command]
+async fn task_git_compare(
+    id: String,
+    dir_name: String,
+    base: String,
+    merge_base: bool,
+) -> Result<GitCompare, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<GitCompare, String> {
+        let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
+        let cwd = repo_cwd(&w, &dir_name)?;
+        git_compare(&cwd, &base, merge_base)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Resolve the git cwd for a stage/commit op: the host task path
@@ -7680,8 +7976,15 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
     //   "staged"    → HEAD vs index          (what `git diff --cached` shows)
     //   "unstaged"  → index vs working tree  (what `git diff` shows)
     //   "commit:SHA"→ SHA^ vs SHA            (History tab, issue #199)
+    //   "base:SHA"  → SHA vs working tree    (Compare tab, issue #208)
     //   None        → HEAD vs working tree   (full uncommitted delta; the
     //                 pre-#122 behavior, kept for callers with no pane)
+    //
+    // "base:" is the only scope besides the default whose RIGHT side is the
+    // live file, which is why the Compare tab keeps the review affordances the
+    // History tab has to drop: `fp` is a real worktree fingerprint, so a
+    // "viewed" mark clears itself when an agent touches the file again, and a
+    // review comment lands on the version somebody is about to edit.
     // Without the split, a file staged and then edited again showed the
     // full uncommitted diff from BOTH rows.
     //
@@ -7706,10 +8009,12 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
     // (`sha^` doesn't resolve) — that is an add, so the left side is missing.
     let show_at = |rev: &str| git_bytes(&["--no-pager", "show", &format!("{rev}:{rel_path}")], &cwd).ok();
     let commit_sha = scope.and_then(|s| s.strip_prefix("commit:")).filter(|s| is_commit_ish(s));
-    let (original, modified) = match (commit_sha, scope) {
-        (Some(sha), _) => (show_at(&format!("{sha}^")), show_at(sha)),
-        (None, Some("staged")) => (show_head(), show_index()),
-        (None, Some("unstaged")) => (show_index(), read_worktree()),
+    let base_sha = scope.and_then(|s| s.strip_prefix("base:")).filter(|s| is_commit_ish(s));
+    let (original, modified) = match (commit_sha, base_sha, scope) {
+        (Some(sha), _, _) => (show_at(&format!("{sha}^")), show_at(sha)),
+        (None, Some(sha), _) => (show_at(sha), read_worktree()),
+        (None, None, Some("staged")) => (show_head(), show_index()),
+        (None, None, Some("unstaged")) => (show_index(), read_worktree()),
         _ => (show_head(), read_worktree()),
     };
     let fp = modified_path.as_deref().map(file_fp).unwrap_or_default();
@@ -12206,7 +12511,7 @@ pub fn run() {
             task_spotlight_start, task_spotlight_stop, task_spotlight_resync, task_spotlight_status,
             task_diff, task_files, task_list_files_for_finder, task_match_ignored_files, task_send_diff_to_main,
             task_changes, task_git_status, task_git_branches, project_git_branches, project_branch_context, task_git_checkout, task_git_update, task_git_update_info, task_stage, task_unstage, task_commit, task_discard,
-            task_git_log, task_git_refs, task_git_push, task_git_commit_files,
+            task_git_log, task_git_refs, task_git_push, task_git_commit_files, task_git_compare,
             task_file_diff, task_file_diff_sides, task_file_read, task_file_read_base64, task_file_fp, task_file_write, task_dir_list, task_path_stat,
             task_path_rename, task_path_delete, task_reveal_path,
             task_rename, project_rename,
@@ -13974,6 +14279,173 @@ mod tests {
         assert!(!is_commit_ish("--upload-pack=touch /tmp/pwn"));
         assert!(!is_commit_ish("main..HEAD"));
         assert!(!is_commit_ish(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn safe_rev_accepts_refnames_but_not_option_injection() {
+        // The Compare picker hands us real refnames, so unlike is_commit_ish
+        // these must pass.
+        assert!(is_safe_rev("main"));
+        assert!(is_safe_rev("origin/main"));
+        assert!(is_safe_rev("feature/gh-208_compare.v2"));
+        assert!(is_safe_rev("0d86f3a6ba24515f2492137483333ba979e3450d"));
+        // A leading dash is the whole reason this exists.
+        assert!(!is_safe_rev("--upload-pack=touch /tmp/pwn"));
+        assert!(!is_safe_rev("-c"));
+        // Rev SYNTAX is not a refname: the caller peels with ^{commit} itself,
+        // and a range would silently change what is being compared.
+        assert!(!is_safe_rev("main..HEAD"));
+        assert!(!is_safe_rev("HEAD~3"));
+        assert!(!is_safe_rev("main^"));
+        assert!(!is_safe_rev("refs/heads/*"));
+        assert!(!is_safe_rev(""));
+        assert!(!is_safe_rev("has space"));
+        assert!(!is_safe_rev(&"a".repeat(256)));
+    }
+
+    #[test]
+    fn name_status_z_keeps_the_destination_of_a_rename() {
+        // Exactly what `git diff --name-status -M -z` writes: a plain record is
+        // two fields, a rename is three, and the stream ends with a NUL.
+        let rows = parse_name_status_z("M\0keep.txt\0R075\0old.txt\0new.txt\0A\0add.txt\0");
+        assert_eq!(
+            rows,
+            vec![
+                ("M".to_string(), "keep.txt".to_string()),
+                // The similarity score is dropped and the NEW path kept — it is
+                // the one `git show <sha>:path` can resolve.
+                ("R".to_string(), "new.txt".to_string()),
+                ("A".to_string(), "add.txt".to_string()),
+            ],
+        );
+        assert!(parse_name_status_z("").is_empty());
+        // A truncated record is dropped, not panicked on.
+        assert!(parse_name_status_z("R100\0only-one-path\0").is_empty());
+    }
+
+    #[test]
+    fn numstat_z_handles_renames_and_binary_files() {
+        // A rename leaves the third tab-field EMPTY and follows with two
+        // NUL-terminated paths; a binary file reports "-" for both counts.
+        let rows = parse_numstat_z("1\t0\tkeep.txt\04\t2\t\0old.txt\0new.txt\0-\t-\tshot.png\0");
+        assert_eq!(
+            rows,
+            vec![
+                ("keep.txt".to_string(), Some(1), Some(0)),
+                ("new.txt".to_string(), Some(4), Some(2)),
+                // Binary churn is unknown, NOT zero.
+                ("shot.png".to_string(), None, None),
+            ],
+        );
+        assert!(parse_numstat_z("").is_empty());
+    }
+
+    /// A repo on `main` with one committed file, plus a `topic` branch that
+    /// commits one file, edits another without committing, and drops an
+    /// untracked one. The three ways work can exist in a task, in one fixture.
+    fn compare_fixture(repo: &Path) -> String {
+        git_init_with_commit(repo);
+        git_set_identity(repo);
+        git_commit_file(repo, "shared.txt", "one\ntwo\n", "shared on main");
+        let main = git_branch(repo);
+        git_run(repo, &["checkout", "-q", "-b", "topic"]);
+        git_commit_file(repo, "committed.txt", "c\n", "committed on topic");
+        fs::write(repo.join("shared.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(repo.join("untracked.txt"), "u\n").unwrap();
+        main
+    }
+
+    #[test]
+    fn git_compare_merges_committed_staged_and_untracked_work() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let main = compare_fixture(&repo);
+
+        let cmp = git_compare(&repo, &main, true).unwrap();
+        assert_eq!(cmp.branch, "topic");
+        assert!(!cmp.no_merge_base);
+        let by: std::collections::HashMap<&str, &GitFile> =
+            cmp.files.iter().map(|f| (f.path.as_str(), f)).collect();
+
+        // The entire point of the view: a file whose only change is a COMMIT
+        // shows up next to one that is merely edited and one git has never seen.
+        assert_eq!(by["committed.txt"].status, "A");
+        assert_eq!(by["shared.txt"].status, "M");
+        assert_eq!(by["untracked.txt"].status, "?");
+        assert_eq!(by.len(), 3);
+
+        assert_eq!(by["shared.txt"].added, Some(1));
+        assert_eq!(by["shared.txt"].removed, Some(0));
+        // Untracked churn can't come from `git diff` (no tree holds the file),
+        // so it is counted directly.
+        assert_eq!(by["untracked.txt"].added, Some(1));
+        // The header total must equal the rows it sits above.
+        assert_eq!(cmp.added, cmp.files.iter().filter_map(|f| f.added).sum::<u32>());
+        // A worktree-side file carries a real fingerprint, which is what keeps
+        // "mark as viewed" working here (unlike a History diff).
+        assert!(!by["shared.txt"].fp.is_empty());
+    }
+
+    #[test]
+    fn git_compare_defaults_to_the_merge_base_so_base_side_work_is_not_inverted() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let main = compare_fixture(&repo);
+        // Someone lands a commit on the base AFTER this task branched.
+        git_run(&repo, &["checkout", "-q", &main]);
+        git_commit_file(&repo, "later-on-main.txt", "later\n", "landed on main");
+        git_run(&repo, &["checkout", "-q", "topic"]);
+
+        let merged = git_compare(&repo, &main, true).unwrap();
+        assert!(
+            !merged.files.iter().any(|f| f.path == "later-on-main.txt"),
+            "three-dot semantics must ignore work the base gained since the branch point",
+        );
+
+        // Two-dot is the escape hatch, and there the same file DOES appear —
+        // as a deletion, because the topic branch genuinely doesn't have it.
+        let direct = git_compare(&repo, &main, false).unwrap();
+        let later = direct.files.iter().find(|f| f.path == "later-on-main.txt")
+            .expect("tip-to-tree compare sees the base's newer commit");
+        assert_eq!(later.status, "D");
+        assert_ne!(merged.base_sha, direct.base_sha, "the two modes read different left sides");
+    }
+
+    #[test]
+    fn git_compare_rejects_a_ref_that_is_not_in_the_repo() {
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        assert!(git_compare(dir.path(), "no-such-branch", true).is_err());
+        // And never lets a dash reach git as an option.
+        assert!(git_compare(dir.path(), "--exec=touch /tmp/pwn", true).is_err());
+    }
+
+    #[test]
+    fn compare_diff_sides_read_the_base_against_the_working_tree() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let main = compare_fixture(&repo);
+        let cmp = git_compare(&repo, &main, true).unwrap();
+        let scope = format!("base:{}", cmp.base_sha);
+        let task = task_at(&repo);
+
+        // Committed on the branch: absent from the base, present on the right.
+        let added = task_file_diff_sides_for_task(&task, "committed.txt", Some(&scope)).unwrap();
+        assert!(!added.original_exists && added.modified_exists);
+        assert_eq!(added.modified, "c\n");
+
+        // Edited but never committed: the base still has the ORIGINAL, which is
+        // what an unstaged- or staged-scoped diff could not have shown.
+        let edited = task_file_diff_sides_for_task(&task, "shared.txt", Some(&scope)).unwrap();
+        assert_eq!(edited.original, "one\ntwo\n");
+        assert_eq!(edited.modified, "one\ntwo\nthree\n");
+        // The right side is the live file, so the review affordances stay on.
+        assert!(!edited.fp.is_empty());
+
+        // A garbage sha in the scope must not silently fall through to the
+        // default HEAD-vs-worktree sides.
+        let bogus = task_file_diff_sides_for_task(&task, "shared.txt", Some("base:not-hex")).unwrap();
+        assert_eq!(bogus.original, "one\ntwo\n", "an unparseable scope falls back to HEAD");
     }
 
     #[test]

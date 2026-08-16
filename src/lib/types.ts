@@ -592,6 +592,36 @@ export interface GitFile {
    *  deletion. Used to auto-clear a file's "viewed" mark once the agent
    *  touches it again. See store/fileViewed.ts. */
   fp: string;
+  /** Lines added / removed. Only the Compare tab fills these in; the staging
+   *  lists leave them undefined rather than paying for a `--numstat` process
+   *  on every status poll. Undefined also covers a binary file, whose churn
+   *  git reports as `-`. */
+  added?: number;
+  removed?: number;
+}
+
+/** Everything that differs between some ref and the working tree — the
+ *  Compare tab (issue #208). One flat list: committed, staged, unstaged and
+ *  untracked work all land in `files`, because "what does this task look like
+ *  next to that branch" doesn't care which of those a change happens to be in. */
+export interface GitCompare {
+  /** The ref as picked, echoed back for the header. */
+  base: string;
+  /** The commit every file's left side is read from — the merge base with
+   *  HEAD, or the ref's own tip in direct mode. Goes straight into each
+   *  diff tab's `base:<sha>` scope. */
+  base_sha: string;
+  base_short: string;
+  /** HEAD's branch, so the header can name both sides. "" when detached. */
+  branch: string;
+  /** Merge-base mode was asked for but the histories are unrelated, so this
+   *  fell back to the ref's tip. */
+  no_merge_base: boolean;
+  files: GitFile[];
+  added: number;
+  removed: number;
+  /** True when the list was capped at 5 000 entries. */
+  truncated: boolean;
 }
 
 export interface GitRepo {
@@ -891,8 +921,11 @@ export interface DiffTab extends BaseTab {
    *  "staged" diffs HEAD→index, "unstaged" diffs index→worktree.
    *  `commit:<sha>` diffs that commit against its parent — the Graph section
    *  (GH #199), where BOTH sides come out of the object store.
+   *  `base:<sha>` diffs that commit against the WORKING TREE — the Compare
+   *  tab (GH #208). Its right side is the live file, so unlike `commit:` it
+   *  keeps the review affordances (viewed marks, inline comments).
    *  Absent → HEAD→worktree (the full uncommitted delta). */
-  scope?: "unstaged" | "staged" | `commit:${string}`;
+  scope?: "unstaged" | "staged" | `commit:${string}` | `base:${string}`;
 }
 
 /** The complete delta a task produced vs its base (`task_diff`). `diff` folds

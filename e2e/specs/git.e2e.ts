@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, openTask, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
 
 // Git integration is central to termic (every task is a worktree/checkout).
 // This guards the Git panel: switching to it shows the working-tree status.
@@ -420,6 +420,202 @@ describe("git history tab", () => {
     expect(offsets.length).toBeGreaterThan(1);
     // Every row is inset past the gutter's first lane, never at 0.
     expect(Math.min(...offsets)).toBeGreaterThan(0);
+  });
+});
+
+// P0: the Compare tab (issue #208). The complaint it answers is that work an
+// agent COMMITTED was invisible: the Commit tab shows the working tree only,
+// so a task split across several commits read as an empty panel. These cases
+// pin the one thing that must be true — committed, uncommitted and untracked
+// work all appear in ONE list against a chosen ref — plus the merge-base
+// semantics, the review flow that hangs off it, and the base picker.
+//
+// e2e tasks are REPO-ROOT tasks (`openTask` → `taskOpenRepo`), so the task's
+// own `base_branch` is the branch it is already sitting on. That is why the
+// spec pins its own `e2e-compare-base` at the pre-commit HEAD: comparing
+// against a ref that genuinely predates the commit is the whole scenario, and
+// a repo-root task's default base cannot supply one.
+describe("git compare tab", () => {
+  let taskId: string | undefined;
+  let headSha = "";
+  /** A ref parked at the pre-commit HEAD. Comparing against it is what makes
+   *  committed work visible, which is the point of the tab. */
+  const baseBranch = "e2e-compare-base";
+  /** Unique per run: the fixture is shared and a crashed earlier run can leave
+   *  this file already committed with identical bytes, in which case `git add`
+   *  stages nothing and the commit below fails on an empty index. */
+  const stamp = Date.now();
+  const committedBody = `committed ${stamp}\n`;
+
+  before(() => {
+    headSha = execSync(`git -C "${fixture}" rev-parse HEAD`).toString().trim();
+    execSync(`git -C "${fixture}" branch -f ${baseBranch} ${headSha}`);
+  });
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    // This spec COMMITS to the shared fixture checkout, so it has to put the
+    // repo back exactly as it found it — the specs after this one assert on a
+    // clean tree and would fail on the leftovers.
+    execSync(`git -C "${fixture}" reset --hard ${headSha}`);
+    execSync(`git -C "${fixture}" clean -fd`);
+    try {
+      execSync(`git -C "${fixture}" branch -D ${baseBranch}`, { stdio: "ignore" });
+    } catch { /* never created */ }
+  });
+
+  const openRightTab = (label: string) =>
+    browser.execute((l) => {
+      const el = document.querySelector(
+        `[data-testid="right-tab"][data-tab="${l}"]`,
+      ) as HTMLElement | null;
+      if (!el) throw new Error(`no right-panel tab: ${l}`);
+      el.click();
+    }, label);
+
+  /** The compare rows on screen, as path → status. */
+  const rows = () =>
+    browser.execute(() =>
+      Object.fromEntries(
+        [...document.querySelectorAll('[data-testid="compare-file-row"]')].map((e) => [
+          e.getAttribute("data-path"),
+          e.getAttribute("data-status"),
+        ]),
+      ),
+    ) as Promise<Record<string, string>>;
+
+  const waitForRow = (path: string, msg: string) =>
+    browser.waitUntil(async () => path in (await rows()), {
+      timeout: 15_000,
+      timeoutMsg: msg,
+    });
+
+  const currentBase = () =>
+    browser.execute(() =>
+      document.querySelector('[data-testid="compare-base"]')?.getAttribute("data-base"),
+    ) as Promise<string | null>;
+
+  it("compares against the task's own base and shows only uncommitted work", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-compare");
+
+    // The three ways work can exist in a task: committed away from the base,
+    // edited but not committed, and never added at all. README.md is the
+    // modify case because it EXISTS at the base branch — a file first
+    // committed after the base and then edited nets out to an add, not a
+    // modify, which is git being right and not worth asserting twice.
+    writeFileSync(path.join(fixture, "committed.txt"), committedBody);
+    execSync(`git -C "${fixture}" add committed.txt`);
+    execSync(`git -C "${fixture}" commit -q -m "e2e compare probe ${stamp}"`);
+    writeFileSync(path.join(fixture, "README.md"), `# edited by the compare spec ${stamp}\n`);
+    writeFileSync(path.join(fixture, "compare-untracked.txt"), "untracked\n");
+
+    await openRightTab("Compare");
+    await waitForRow("README.md", "the edited file never appeared in the compare list");
+
+    // A repo-root task's base IS the branch it sits on, so the merge base is
+    // HEAD and only uncommitted work can differ. That is the three-dot
+    // contract: commits already on the base are not this branch's changes.
+    expect(await currentBase()).toContain("main");
+    const seen = await rows();
+    expect(seen["README.md"]).toBe("M");
+    expect(seen["compare-untracked.txt"]).toBe("?");
+    expect(seen["committed.txt"]).toBeUndefined();
+  });
+
+  it("brings committed work into the same list against an earlier ref", async () => {
+    // The whole reason the tab exists: pick a ref from before the commits and
+    // work that `git status` cannot see joins the uncommitted work in ONE list.
+    // Radix opens on pointerdown, so a bare .click() isn't enough.
+    await browser.execute(() => {
+      const el = document.querySelector('[data-testid="compare-base"]') as HTMLElement;
+      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+      el.click();
+    });
+    await waitVisible('[role="menu"]');
+    await browser.waitUntil(
+      () => browser.execute((b) =>
+        [...document.querySelectorAll('[role="menuitem"]')].some(
+          (e) => (e as HTMLElement).textContent?.trim() === b), baseBranch),
+      { timeout: 10_000, timeoutMsg: "the branch picker never listed the base branch" },
+    );
+    await clickMenuItem(baseBranch);
+
+    await waitForRow("committed.txt", "picking an earlier base never surfaced the committed file");
+    expect(await currentBase()).toBe(baseBranch);
+    const seen = await rows();
+    expect(seen["committed.txt"]).toBe("A");
+    expect(seen["README.md"]).toBe("M");
+    expect(seen["compare-untracked.txt"]).toBe("?");
+
+    await snap("git-compare.png");
+  });
+
+  it("summarizes the comparison before you read a file", async () => {
+    const summary = await browser.execute(() =>
+      (document.querySelector('[data-testid="compare-summary"]') as HTMLElement).innerText);
+    // Impact at a glance: a file count and a diffstat.
+    expect(summary).toMatch(/\d+ files/);
+    expect(summary).toMatch(/\+\d+/);
+  });
+
+  it("narrows the list with the filter", async () => {
+    const input = await $('[data-testid="compare-panel"] input[placeholder="Filter files"]');
+    await input.setValue("committed");
+    await browser.waitUntil(
+      async () => {
+        const r = await rows();
+        return "committed.txt" in r && !("README.md" in r);
+      },
+      { timeout: 8_000, timeoutMsg: "the filter never narrowed the compare list" },
+    );
+    await input.setValue("");
+    await waitForRow("README.md", "clearing the filter did not restore the list");
+  });
+
+  it("diffs a committed file against the base, not against HEAD", async () => {
+    await browser.execute(() => {
+      const row = [...document.querySelectorAll('[data-testid="compare-file-row"]')].find(
+        (e) => e.getAttribute("data-path") === "committed.txt",
+      ) as HTMLElement;
+      row.click();
+    });
+
+    const scope = (await browser.waitUntil(
+      async () =>
+        browser.execute((id) => {
+          const tab = (window.__termic!.useApp.getState().tabs[id] ?? []).find(
+            (t: any) => t.type === "diff" && t.path === "committed.txt",
+          );
+          return tab?.scope ?? null;
+        }, taskId),
+      { timeout: 10_000, timeoutMsg: "no diff tab opened from the compare list" },
+    )) as unknown as string;
+    expect(scope).toMatch(/^base:[0-9a-f]{7,}$/);
+
+    // The base predates the commit, so the file is an add there; the right
+    // side is the LIVE file, which is what separates this from a History diff.
+    const sides = await browser.execute(
+      (id, sc) => window.__termic!.ipc.taskFileDiffSides(id, "committed.txt", sc),
+      taskId,
+      scope,
+    );
+    expect(sides.original_exists).toBe(false);
+    expect(sides.modified).toBe(committedBody);
+    // A real worktree fingerprint is what keeps "mark as viewed" anchored.
+    expect(sides.fp).not.toBe("");
+  });
+
+  it("keeps the review affordances on, unlike a historical diff", async () => {
+    // Same machinery as a History diff, opposite outcome: because the right
+    // side is the working copy, both affordances a commit diff has to drop are
+    // offered here.
+    await waitForText("Mark as viewed");
+    const chip = await browser.execute(() =>
+      document.querySelector('[data-testid="diff-commit-chip"]') !== null);
+    expect(chip).toBe(false);
   });
 });
 

@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DiffTab, Task, GitFile } from "@/lib/types";
-import { taskFileDiffSides, taskGitStatus, type DiffSides } from "@/lib/ipc";
+import { taskFileDiffSides, taskGitStatus, taskGitCompare, type DiffSides } from "@/lib/ipc";
 import { BinaryDiffBody } from "./BinaryDiffBody";
 import { orderedFiles, readView } from "./GitPanel";
 import { Button } from "@/components/ui/Button";
@@ -78,6 +78,11 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   // and a review comment left here would ride on a file version nobody is
   // about to edit.
   const commitSha = tab.scope?.startsWith("commit:") ? tab.scope.slice("commit:".length) : null;
+  // A Compare-tab diff (GH #208) reads a base commit against the LIVE file, so
+  // it keeps both affordances the History tab has to drop — but its "next
+  // file" is the compare list, not the staging panes, so the walk below forks
+  // on this.
+  const baseSha = tab.scope?.startsWith("base:") ? tab.scope.slice("base:".length) : null;
   const hostRef = useRef<HTMLDivElement>(null);
   // The host div is the scroll container for both modes; its position
   // dies with the box when a hidden task/tab goes display:none in
@@ -94,6 +99,43 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
   const addTab = useApp(s => s.addTab);
   const editorFontSize = usePrefs(s => s.editorFontSize);
 
+  /** "Next unseen file" for a Compare diff (GH #208). The staging walk below
+   *  cannot serve this one: most of a compare list is already committed, so
+   *  those files don't appear in `git status` at all and the walk would stop
+   *  at the first of them. Re-reads the same list the Compare panel renders,
+   *  in the same view order, and steps to the next file whose viewed mark
+   *  isn't current. `mergeBase` is off on purpose — the sha in the scope IS
+   *  the resolved left side, and resolving it a second time against HEAD
+   *  could move it (a "direct" compare's base is not an ancestor). */
+  const advanceWithinCompare = async (sha: string) => {
+    try {
+      // Member files carry a `dir_name/` prefix, host files don't. Longest
+      // match wins so a member called "app" can't claim "apps/whatever".
+      const member = (task.composition ?? [])
+        .filter(m => tab.path.startsWith(`${m.dir_name}/`))
+        .sort((a, b) => b.dir_name.length - a.dir_name.length)[0];
+      const pfx = member ? `${member.dir_name}/` : "";
+      const rel = tab.path.slice(pfx.length);
+      const cmp = await taskGitCompare(task.id, member?.dir_name ?? "", sha, false);
+      const seen = useFileViewed.getState().byTask[task.id] ?? {};
+      const ordered = orderedFiles(cmp.files, readView());
+      const idx = ordered.findIndex(f => f.path === rel);
+      if (idx === -1) return;
+      const next = ordered.slice(idx + 1).find(f => f.fp !== "" && seen[pfx + f.path] !== f.fp);
+      if (!next) return;
+      useApp.getState().openPreviewTab(task.id, {
+        type: "diff",
+        path: pfx + next.path,
+        // Same base, so the walked-to diff shows the sides a click on its row
+        // in the panel would.
+        scope: `base:${sha}`,
+        title: `Δ ${next.path.split("/").pop()}`,
+      });
+    } catch {
+      // Compare failed — leave the current (now-viewed) diff open.
+    }
+  };
+
   // Mark this file viewed and, when ticking it ON, walk to the next file you
   // haven't looked at yet — the GitHub PR-review flow. Mirrors the Git panel's
   // focusNext (advance after acting on a file) but skips files already viewed,
@@ -104,6 +146,10 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
     const wasViewed = viewed;
     useFileViewed.getState().toggle(task.id, tab.path, fp);
     if (wasViewed) return; // un-viewing: stay put
+    if (baseSha) {
+      await advanceWithinCompare(baseSha);
+      return;
+    }
     try {
       const status = await taskGitStatus(task.id);
       const seen = useFileViewed.getState().byTask[task.id] ?? {};

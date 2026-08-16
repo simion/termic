@@ -7,7 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
-  SandboxMode, TaskDiffSummary, CliInstallStatus, BranchContext, GitFile, GitLogPage, GitRef,
+  SandboxMode, TaskDiffSummary, CliInstallStatus, BranchContext, GitCompare, GitFile, GitLogPage, GitRef,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
 import {
@@ -390,8 +390,11 @@ export type DiffSides = {
   original_bytes: number;
   modified_bytes: number;
 };
-export const taskFileDiffSides = (id: string, path: string, scope?: "unstaged" | "staged" | `commit:${string}`) =>
-  invoke<DiffSides>("task_file_diff_sides", { id, path, scope: scope ?? null });
+export const taskFileDiffSides = (
+  id: string,
+  path: string,
+  scope?: "unstaged" | "staged" | `commit:${string}` | `base:${string}`,
+) => invoke<DiffSides>("task_file_diff_sides", { id, path, scope: scope ?? null });
 export const taskFileRead = (id: string, path: string) => invoke<string>("task_file_read", { id, path });
 /** Read a task image or PDF as base64, for the markdown preview's inline
  *  images or the file-tree preview pane (image/PDF extensions, 20 MB cap).
@@ -459,6 +462,11 @@ export const taskGitCommitFiles = (id: string, dirName: string, sha: string) =>
 /** Local branch names for a task's repo (host, or a member via dirName). */
 export const taskGitBranches = (id: string, dirName: string) =>
   invoke<string[]>("task_git_branches", { id, dirName });
+/** Everything differing between `base` and the working tree — the Compare tab
+ *  (GH #208). `mergeBase` picks three-dot semantics ("what this branch added",
+ *  the default) over a literal tip-to-tree diff. */
+export const taskGitCompare = (id: string, dirName: string, base: string, mergeBase: boolean) =>
+  invoke<GitCompare>("task_git_compare", { id, dirName, base, mergeBase });
 /** Local branch names for a project's repo, before any task exists. Feeds the
  *  New Task dialog's auto-numbering of the proposed branch (issue #129). */
 export const projectGitBranches = (projectId: string) =>

@@ -39,10 +39,12 @@ import { HistoryPanel, ScopePicker } from "./HistoryPanel";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 
 // Per-side status → glyph / color / label. `?` is untracked (rendered as
-// a green +, same as a fresh add).
-const SC: Record<string, string>  = { M: "M", A: "+", "?": "+", D: "D", R: "R", C: "C", U: "U" };
-const COL: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", "?": "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", C: "var(--color-accent)", U: "var(--color-err)" };
-const LBL: Record<string, string> = { M: "modified", A: "added", "?": "untracked", D: "deleted", R: "renamed", C: "copied", U: "conflict" };
+// a green +, same as a fresh add). Exported so the Compare tab (GH #208)
+// renders a status the same way this one does rather than keeping a second
+// copy that can drift.
+export const SC: Record<string, string>  = { M: "M", A: "+", "?": "+", D: "D", R: "R", C: "C", U: "U" };
+export const COL: Record<string, string> = { M: "var(--color-accent)", A: "var(--color-ok)", "?": "var(--color-ok)", D: "var(--color-err)", R: "var(--color-accent)", C: "var(--color-accent)", U: "var(--color-err)" };
+export const LBL: Record<string, string> = { M: "modified", A: "added", "?": "untracked", D: "deleted", R: "renamed", C: "copied", U: "conflict" };
 
 export type ViewMode = "tree" | "list" | "combined";
 
@@ -1132,12 +1134,17 @@ function collectLeafPaths(node: TreeNode): string[] {
 
 // ── virtual-scroll flat rows ──
 
-type FlatRow =
+export type FlatRow =
   | { kind: "file"; file: GitFile; label: string; depth: number }
   | { kind: "dir"; name: string; dirPath: string; depth: number; leaves: string[]; isCollapsed: boolean }
   | { kind: "dirhdr"; label: string };
 
-function flattenRows(files: GitFile[], viewMode: ViewMode, collapsed: Set<string>, pane: string): FlatRow[] {
+/** Flatten a file list into rows for the active view mode. Exported because
+ *  the Compare tab (GH #208) renders its OWN rows (churn columns, no stage
+ *  buttons) but must group and order them exactly like the Commit tab does —
+ *  two file lists in the same panel that disagreed about where a folder sits
+ *  would read as a bug. `pane` only namespaces the collapsed-folder keys. */
+export function flattenRows(files: GitFile[], viewMode: ViewMode, collapsed: Set<string>, pane: string): FlatRow[] {
   if (viewMode === "list") {
     return [...files]
       .sort((a, b) => a.path.localeCompare(b.path))
