@@ -366,6 +366,25 @@ describe("MCP tools/call: a real task round-trip through the live webview", () =
     expect(["done", "needs_input", "timeout"]).toContain(r.structuredContent.outcome);
   });
 
+  it("task_diff counts a tracked edit against the base branch", async () => {
+    // The diff is taken against the task's stored base, which is a
+    // remote-tracking ref ("origin/main"). Any repo that cannot resolve it
+    // used to come back as zeros rather than an error, so assert the counts
+    // land, not merely that the call succeeded.
+    const wt = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.path,
+      taskId,
+    ) as string;
+    fs.appendFileSync(path.join(wt, "README.md"), "edited by the mcp spec\n");
+
+    const r = await call("task_diff", { task: "mcp-task", full: true });
+    expect(r.isError).toBe(false);
+    expect(r.structuredContent.kind).toBe("diff");
+    expect(r.structuredContent.files_changed).toBeGreaterThan(0);
+    expect(r.structuredContent.insertions).toBeGreaterThan(0);
+    expect(r.structuredContent.diff).toContain("README.md");
+  });
+
   it("opens a tab, addresses it by the id it returned, then closes it", async () => {
     // The whole point of tab support: a caller that opens a second agent
     // has to be able to talk to THAT tab and clean it up. If the id came
