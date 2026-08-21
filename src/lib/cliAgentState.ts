@@ -34,6 +34,10 @@ export interface TaskAgentState {
    *  leaves are excluded (they are inside a strip tab, not on the
    *  strip), matching TabBar's own filter. */
   tab_states: TabAgentState[];
+  /** Whether the UI has this task's tabs in memory at all. False for a
+   *  task nobody has opened this session: the counts above then describe
+   *  nothing, and the server reports unknown rather than "no tabs". */
+  hydrated: boolean;
 }
 
 /** One strip tab, as pushed to the Rust cache. Field names are the wire
@@ -96,11 +100,24 @@ export function computeAgentStates(s: AppState = useApp.getState()): Record<stri
   const states: Record<string, TaskAgentState> = {};
   for (const task of s.tasks) {
     if (task.archived) continue;
-    const term = (s.tabs[task.id] ?? []).filter(
+    // undefined means the UI has never loaded this task's tabs (nobody
+    // has opened it this session); an empty array means it was loaded and
+    // has none. `hydrated` carries that difference to the CLI, which is
+    // what keeps a count off a task nobody has opened (see the field's
+    // docs on TaskAgentState).
+    const loaded = s.tabs[task.id];
+    const term = (loaded ?? []).filter(
       (t): t is TerminalTab => t.type === "terminal",
     );
     if (term.length === 0) {
-      states[task.id] = { state: "inactive", tabs: 0, queued: 0, capable: false, tab_states: [] };
+      states[task.id] = {
+        state: "inactive",
+        tabs: 0,
+        queued: 0,
+        capable: false,
+        tab_states: [],
+        hydrated: loaded !== undefined,
+      };
       continue;
     }
     let state = "idle";
@@ -110,7 +127,7 @@ export function computeAgentStates(s: AppState = useApp.getState()): Record<stri
     const queued = term.reduce((n, t) => n + (t.queue?.length ?? 0), 0);
     const capable = term.some(t => workDoneCapable(t.cli, s.agents));
     const tab_states = term.filter(t => !t.paneId).map(t => computeTabState(t, s.agents));
-    states[task.id] = { state, tabs: term.length, queued, capable, tab_states };
+    states[task.id] = { state, tabs: term.length, queued, capable, tab_states, hydrated: true };
   }
   return states;
 }

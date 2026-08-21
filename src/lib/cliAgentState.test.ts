@@ -74,8 +74,21 @@ describe("computeAgentStates aggregation", () => {
   it("reports 'inactive' with 0 tabs when a task has no live terminal tabs", () => {
     const s = statesFor({ dormant: [] });
     expect(s.dormant).toEqual({
-      state: "inactive", tabs: 0, queued: 0, capable: false, tab_states: [],
+      state: "inactive", tabs: 0, queued: 0, capable: false, tab_states: [], hydrated: true,
     });
+  });
+
+  it("marks a task the UI has never loaded as unhydrated, not as empty", () => {
+    // A task nobody has opened this session has no tabs in the store,
+    // which is not the same as having none. Reporting it as loaded made
+    // `termic status` say a task with durable tabs had zero, and call
+    // it inactive, on no evidence at all.
+    useApp.setState({ tasks: [task("never-opened")], tabs: {} });
+    const s = computeAgentStates();
+    expect(s["never-opened"].hydrated).toBe(false);
+    // Loaded-and-empty is still a real answer, and says so.
+    useApp.setState({ tasks: [task("emptied")], tabs: { emptied: [] } });
+    expect(computeAgentStates().emptied.hydrated).toBe(true);
   });
 
   it("counts only terminal tabs and reports the count", () => {
