@@ -38,6 +38,7 @@ mod repo_config;
 mod shell_env;
 mod automation;
 mod cli_server;
+mod mcp_server;
 // Row shapes + OS-agnostic logic (subtree walk, cpu_ratio, label_for,
 // signal_from_name) shared by every `procmon` variant below.
 mod procmon_common;
@@ -11816,6 +11817,13 @@ pub struct Settings {
     /// nearly every `false` on disk is the default rather than a decision.
     #[serde(default)]
     pub cli_default_migrated: bool,
+    /// "Enable MCP endpoint" (Settings): binds the loopback MCP listener
+    /// (mcp_server.rs). Default OFF, and unlike `cli_enabled` the listener
+    /// only exists while this is on (bind-on-enable; there is no auto-launch
+    /// dead end on this surface). Also re-read per request so a disable
+    /// applies even to connections racing the unbind.
+    #[serde(default)]
+    pub mcp_enabled: bool,
     /// What the window's close button does: "ask" (default) | "menubar" |
     /// "quit". "ask" shows the close prompt whose "Don't ask again" checkbox
     /// writes the chosen one back here. Stored rather than inferred so the
@@ -12543,6 +12551,9 @@ fn settings_save(app: AppHandle, s: Settings) -> Result<(), String> {
     // to show/hide the menu-bar item, matching close_action/cli_enabled's
     // "re-read per use" behavior.
     let _ = set_tray_visible(&app, tray_on);
+    // Same discipline for the MCP listener (bind-on-enable, both ways).
+    // Idempotent, so no need to diff against the previous settings.
+    mcp_server::apply_enabled(app, s.mcp_enabled);
     Ok(())
 }
 
@@ -14002,6 +14013,7 @@ pub fn run() {
             // verbs stay behind the "Enable CLI" setting + per-boot
             // token). See cli_server.rs + docs/plans/cli.md.
             cli_server::start(app.handle().clone());
+            mcp_server::start_if_enabled(app.handle().clone());
             if !headless {
                 let _ = win.set_focus();
             }
@@ -14061,6 +14073,9 @@ pub fn run() {
             cli_server::cli_prompt_report,
             cli_server::cli_install_symlink,
             cli_server::cli_install_status,
+            mcp_server::mcp_status,
+            mcp_server::mcp_token,
+            mcp_server::mcp_install_client,
             window_close_choice, window_is_windowless, close_prompt_ack,
             tray_set_attention,
             list_monospace_fonts, list_font_families,
