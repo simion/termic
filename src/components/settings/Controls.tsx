@@ -9,15 +9,34 @@ import { settingsLoad, settingsSave, tasksPathConflicts } from "@/lib/ipc";
 import type { Settings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+/** Tail of the in-flight patch chain: every patch awaits it before
+ *  reading, and becomes it. Module scope on purpose, so sections that
+ *  share a page serialize against each other and not just internally. */
+let patchChain: Promise<unknown> = Promise.resolve();
+
 /** Loads the backend Settings object once per mount and hands back a `patch`
  *  that merges into it, so a section saving one field can never wipe another
  *  section's (the whole object round-trips through settingsSave).
  *
- *  Only one settings tab is rendered at a time, so each section re-reads on
- *  mount and a tab switch can't leave a stale copy behind. `patch` reads the
- *  live value through a ref: a section that saves twice in a row (toggle, then
- *  a text field) would otherwise spread the object captured by the first
- *  render and revert the first save. */
+ *  `patch` is a read-modify-write against the BACKEND, not against this
+ *  hook's cache. Two reasons. Within one section, a second save (toggle,
+ *  then a text field) would otherwise spread the object captured by the
+ *  first render and revert the first save. Across sections, a page may now
+ *  render more than one section using this hook (Settings -> CLI & MCP holds
+ *  two), and each has its own snapshot: without re-reading, whichever saves
+ *  last spreads its mount-time copy over the whole file and silently reverts
+ *  the other's change on disk while both keep rendering their own local
+ *  state. settings_save writes the whole struct, so the merge has to start
+ *  from what is actually stored.
+ *
+ *  Patches are also SERIALIZED across every section, through a module
+ *  level chain. The backend re-read introduced an await between reading
+ *  the base and writing it back, so two toggles clicked in quick
+ *  succession could both read the same on-disk state and the second
+ *  would drop the first. Chaining means the second read happens after
+ *  the first write, which is the property the old synchronous merge had
+ *  within one section and never had across two. */
+
 export function useBackendSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const ref = useRef<Settings | null>(null);
@@ -34,20 +53,40 @@ export function useBackendSettings() {
   const patch = useCallback(async (fields: Partial<Settings>): Promise<boolean> => {
     const cur = ref.current;
     if (!cur) return false;
-    const next: Settings = { ...cur, ...fields };
-    ref.current = next;
-    setSettings(next);
-    try {
-      await settingsSave(next);
-      return true;
-    } catch {
-      ref.current = cur;
-      setSettings(cur);
-      return false;
-    }
-  }, []);
+    const run = patchChain.then(() => applyPatch(fields, cur, store));
+    // Keep the chain alive even when this patch rejects, or one failure
+    // would wedge every later save.
+    patchChain = run.catch(() => {});
+    return run;
+  }, [store]);
 
   return { settings, store, patch };
+}
+
+/** One read-modify-write against the backend. Split out so the queue
+ *  above reads as a queue. */
+async function applyPatch(
+  fields: Partial<Settings>,
+  cur: Settings,
+  store: (s: Settings) => void,
+): Promise<boolean> {
+  // Re-read so the merge starts from what is on disk, picking up any
+  // field another section saved since this one mounted. A failed read
+  // falls back to the cached copy: worst case is the old behaviour,
+  // never a refusal to save.
+  const base = await settingsLoad().catch(() => cur);
+  const next: Settings = { ...base, ...fields };
+  store(next);
+  try {
+    await settingsSave(next);
+    return true;
+  } catch {
+    // Revert to what disk held a moment ago, NOT this section's
+    // pre-patch snapshot: that snapshot may predate another section's
+    // save, which is the staleness the re-read above exists to remove.
+    store(base);
+    return false;
+  }
 }
 
 /** Names of the projects `path` would break, debounced and race-safe.

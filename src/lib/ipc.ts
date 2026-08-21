@@ -7,7 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, FileEntry, Agent, RepoConfig,
-  SandboxMode, TaskDiffSummary, CliInstallStatus, BranchContext, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
+  SandboxMode, TaskDiffSummary, CliInstallStatus, McpStatus, BranchContext, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
 import {
@@ -770,6 +770,18 @@ export const cliInstallSymlink = (system: boolean) =>
  *  (termic / termic-dev / termic-beta), and whether that location is on
  *  the user's login PATH. */
 export const cliInstallStatus  = () => invoke<CliInstallStatus>("cli_install_status");
+/** Live MCP endpoint state: the bound URL and the token file's path.
+ *  Whether the feature is on comes from `settings.mcp_enabled`, not here. */
+export const mcpStatus         = () => invoke<McpStatus>("mcp_status");
+/** The endpoint's credential, for the Settings copy affordance ONLY. Fetch
+ *  it on click and hand it straight to the clipboard; never put it in
+ *  component state or render it. Null when the endpoint is not bound. */
+export const mcpToken          = () => invoke<string | null>("mcp_token");
+/** Register the running endpoint with a client ("claude" | "codex"), so
+ *  setup is a button rather than a config block pasted by hand. Resolves
+ *  to a human-readable confirmation; rejects with the reason. */
+export const mcpInstallClient  = (client: "claude" | "codex") =>
+  invoke<string>("mcp_install_client", { client });
 export const listMonospaceFonts = () => invoke<string[]>("list_monospace_fonts");
 /** Every installed font family, unfiltered — for hiding curated picker
  *  entries whose font isn't installed. See list_font_families in lib.rs
