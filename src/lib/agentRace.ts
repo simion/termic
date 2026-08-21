@@ -20,7 +20,7 @@ import { useRace } from "@/store/race";
 import { useUI } from "@/store/ui";
 import { withCreateLock } from "@/lib/createLock";
 import { launchSetupTab } from "@/lib/runTabs";
-import { seedPromptWhenReady, RACE_SETTLE_MS } from "@/lib/seedPrompt";
+import { seedPromptWhenReady } from "@/lib/seedPrompt";
 import { agentDisplayName } from "@/lib/agents";
 import { slugify } from "@/lib/utils";
 
@@ -133,7 +133,7 @@ export async function startRace(opts: {
   // Worktrees run their setup script unfocused, same as a normal create.
   for (const id of taskIds) launchSetupTab(id, { focus: false }).catch(() => {});
   // Seed the shared prompt into each agent once it's input-ready.
-  for (const id of taskIds) seedPromptWhenReady(id, prompt, RACE_SETTLE_MS);
+  for (const id of taskIds) seedPromptWhenReady(id, prompt);
 
   useUI.getState().pushToast(`Race started: ${racers.length} agents on one prompt.`, "success");
   return taskIds;

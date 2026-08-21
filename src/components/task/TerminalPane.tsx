@@ -207,6 +207,9 @@ export function TerminalPane({ task, tab, active }: Props) {
   // (below) stamps the final value once the burst ends, so the store
   // never understates the real last-output time by the window width.
   const lastOutputPatchRef = useRef(0);
+  // Whether firstOutputAt has been stamped for the CURRENT PTY, so the
+  // data handler patches it once rather than per chunk.
+  const firstOutputPatchedRef = useRef(false);
   const lastOutputTrailerRef = useRef<number | null>(null);
   // Scrollback line count over time. Real work GROWS the scrollback
   // (agent prints lines that scroll off). Status-bar ticks ("Cooking
@@ -1698,7 +1701,9 @@ const captureArmedRef = useRef(false);
         const ptyId = spawn.id;
         if (cancelled) { ipc.ptyKill(ptyId).catch(() => {}); return; }
         ptyRef.current = ptyId;
-        patchTab(task.id, tab.id, { ptyId, lastOutputAt: Date.now() });
+        // firstOutputAt starts null: this PTY has not painted yet.
+        firstOutputPatchedRef.current = false;
+        patchTab(task.id, tab.id, { ptyId, lastOutputAt: Date.now(), firstOutputAt: null });
         // Per-PTY debug logger — active only when localStorage.ptyDebug === "1".
         // Writes to termic-pty-<task>-<cli>-<ptyId>.log in OS temp dir.
         // Find it: python3 -c 'import tempfile; print(tempfile.gettempdir())'
@@ -1799,6 +1804,11 @@ const captureArmedRef = useRef(false);
           ctrlSniffer?.(u8);
           const now = Date.now();
           lastDataAtRef.current = now;
+          // One patch per PTY lifetime: the agent has started painting.
+          if (!firstOutputPatchedRef.current) {
+            firstOutputPatchedRef.current = true;
+            patchTab(task.id, tab.id, { firstOutputAt: now });
+          }
           if (now - lastOutputPatchRef.current >= 500) {
             lastOutputPatchRef.current = now;
             patchTab(task.id, tab.id, { lastOutputAt: now });

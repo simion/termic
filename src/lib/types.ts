@@ -893,6 +893,11 @@ export interface TerminalTab extends BaseTab {
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
+  /** When the CURRENT PTY first produced output, i.e. when the agent
+   *  started painting. Null until it does, and distinct from
+   *  `lastOutputAt`, which is stamped at spawn as well. See
+   *  `lib/agentReady` for why prompt injection needs the difference. */
+  firstOutputAt?: number | null;
   /** True for the auto-created default tab when entering a task.
    *  Drives the resume-on-spawn decision: default tab resumes the agent's
    *  prior conversation (if any), user-added tabs always start fresh

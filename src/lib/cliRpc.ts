@@ -21,6 +21,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
+import { waitForAgentReady } from "@/lib/agentReady";
 import { usePrefs } from "@/store/prefs";
 import { usePromptLibrary } from "@/store/prompts";
 import {
@@ -67,11 +68,10 @@ type Progress = (value: unknown) => void;
 type Handler = (params: unknown, progress: Progress) => Promise<unknown> | unknown;
 
 // Same rhythm as the proven recipes (agentRace / runPrompt): poll for
-// the PTY, give the TUI a settle beat, re-read, then type. Wall-clock
-// timers throughout - never rAF (occluded windows freeze rAF, and for
-// the CLI this window is always backgrounded).
+// the PTY, wait for the TUI to be ready (lib/agentReady), re-read, then
+// type. Wall-clock timers throughout - never rAF (occluded windows freeze
+// rAF, and for the CLI this window is always backgrounded).
 const SPAWN_DEADLINE_MS = 15_000;
-const AGENT_SETTLE_MS = 6000;
 const POLL_MS = 150;
 /** How long the setup-output forwarder waits for the setup tab's PTY. */
 const SETUP_PTY_DEADLINE_MS = 10_000;
@@ -325,11 +325,12 @@ async function injectPromptTracked(
     await report(false, "the agent PTY never spawned");
     return;
   }
-  // Settle beat so the prompt lands in the input box, not a splash
-  // screen; then RE-READ the tab (it may have restarted onto a fresh
-  // PTY during the settle - never type into a stale pty).
-  await sleep(AGENT_SETTLE_MS);
-  const tab = agentTabFor(taskId, tabId);
+  // Wait for the TUI to reach its input box, so the prompt lands there
+  // and not in a splash screen that discards it; then RE-READ the tab (it
+  // may have restarted onto a fresh PTY while we waited - never type into
+  // a stale pty).
+  const ready = await waitForAgentReady(() => agentTabFor(taskId, tabId));
+  const tab = ready === "lost" ? undefined : agentTabFor(taskId, tabId);
   if (!tab?.ptyId) {
     await report(false, "the agent tab lost its PTY before the prompt could be typed");
     return;
