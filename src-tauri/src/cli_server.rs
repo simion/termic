@@ -667,9 +667,25 @@ pub(crate) fn handle_request(req: &Request, host: &dyn CliHost, sink: &mut dyn E
     if let Some(refused) = auth_gate(req, host) {
         return refused;
     }
+    dispatch_authenticated(req, host, sink)
+}
+
+/// The post-auth verb dispatch, shared by the socket path (behind
+/// `auth_gate`) and the MCP endpoint (which authenticates at the HTTP
+/// layer with its own token and setting; see mcp_server). Callers MUST
+/// have authenticated: nothing below re-checks a credential.
+pub(crate) fn dispatch_authenticated(
+    req: &Request,
+    host: &dyn CliHost,
+    sink: &mut dyn EventSink,
+) -> Reply {
     match &req.cmd {
+        // Unauthenticated verbs never reach dispatch via the socket
+        // path; via MCP they are not tools, so any arrival is a caller
+        // bug, answered rather than panicked on (MCP has no serve_conn
+        // guarantee in front of this).
         Command::Hello | Command::Raise | Command::OpenUrl { .. } => {
-            unreachable!("handled above")
+            Reply::err(&req.id, ErrorCode::BadRequest, "not available on this surface")
         }
         // A live attach session is handled by serve_conn BEFORE dispatch
         // (it takes over the whole connection); reaching here means a
@@ -3328,8 +3344,10 @@ pub(crate) fn resolve_by_cwd<'a>(
 // ───────────────────────────── token ─────────────────────────────────
 
 /// 244 random bits as 64 hex chars (two v4 uuids; the spec floor is
-/// 128). Exists only here and in the 0600 file the CLI reads.
-fn mint_token() -> String {
+/// 128). Exists only here and in the 0600 file the CLI reads. Also
+/// mints the independent mcp-token (mcp_server); the VALUES are never
+/// shared, only the minting.
+pub(crate) fn mint_token() -> String {
     format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -3337,7 +3355,7 @@ fn mint_token() -> String {
     )
 }
 
-fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
+pub(crate) fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     // Recreate rather than truncate so the 0600 mode is guaranteed even
@@ -3386,9 +3404,17 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
 
 // ───────────────────────────── Tauri host ────────────────────────────
 
-struct TauriHost {
+pub(crate) struct TauriHost {
     app: tauri::AppHandle,
     token: String,
+}
+
+/// Host constructor for the MCP endpoint. The `token` field is only
+/// consulted by `auth_gate`, which the MCP path never calls (it
+/// authenticates at the HTTP layer against mcp-token); it is inert
+/// here but kept real so a future misuse fails closed, not open.
+pub(crate) fn tauri_host(app: tauri::AppHandle, token: String) -> TauriHost {
+    TauriHost { app, token }
 }
 
 impl CliHost for TauriHost {
@@ -4441,11 +4467,13 @@ pub fn cli_install_status(app: tauri::AppHandle) -> CliInstallStatus {
 // ───────────────────────────── tests ─────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
+    //! Test doubles shared by cli_server's own tests and
+    //! mcp_server's: the scripted StubHost, the recording VecSink,
+    //! and the small entity builders.
     use super::*;
-    use std::io::Write as _;
 
-    fn project(id: &str, name: &str, root: &str) -> Project {
+    pub(crate) fn project(id: &str, name: &str, root: &str) -> Project {
         Project {
             id: id.into(),
             name: name.into(),
@@ -4455,7 +4483,7 @@ mod tests {
         }
     }
 
-    fn task(id: &str, name: &str, project_id: &str, path: &str) -> Task {
+    pub(crate) fn task(id: &str, name: &str, project_id: &str, path: &str) -> Task {
         Task {
             id: id.into(),
             name: name.into(),
@@ -4468,70 +4496,70 @@ mod tests {
         }
     }
 
-    fn agent_meta(id: &str, work_done: bool) -> AgentMeta {
+    pub(crate) fn agent_meta(id: &str, work_done: bool) -> AgentMeta {
         AgentMeta { id: id.into(), kind: "agent".into(), work_done, disabled: false, id_resume: id == "claude" }
     }
 
-    struct StubHost {
-        enabled: bool,
-        token: String,
-        projects: Vec<Project>,
-        tasks: Vec<Task>,
-        states: Option<HashMap<String, WorkStateInfo>>,
-        opened: Mutex<Vec<String>>,
-        raised: Mutex<u32>,
+    pub(crate) struct StubHost {
+        pub(crate) enabled: bool,
+        pub(crate) token: String,
+        pub(crate) projects: Vec<Project>,
+        pub(crate) tasks: Vec<Task>,
+        pub(crate) states: Option<HashMap<String, WorkStateInfo>>,
+        pub(crate) opened: Mutex<Vec<String>>,
+        pub(crate) raised: Mutex<u32>,
         /// `termic://` URLs handed over by a second instance (GH #192).
-        deep_links: Mutex<Vec<String>>,
-        agents: Vec<AgentMeta>,
+        pub(crate) deep_links: Mutex<Vec<String>>,
+        pub(crate) agents: Vec<AgentMeta>,
         /// method -> scripted result; unscripted methods error.
-        rpc_results: Mutex<HashMap<String, Result<serde_json::Value, String>>>,
+        pub(crate) rpc_results: Mutex<HashMap<String, Result<serde_json::Value, String>>>,
         /// Recorded (method, params) calls, in order.
-        rpc_calls: Mutex<Vec<(String, serde_json::Value)>>,
+        pub(crate) rpc_calls: Mutex<Vec<(String, serde_json::Value)>>,
         /// Setup chunks fed through on_progress before a new_task result.
-        setup_chunks: Vec<String>,
+        pub(crate) setup_chunks: Vec<String>,
         /// Tasks "created" by a scripted new_task rpc (appended to
         /// `tasks` on the reload handle_new performs).
-        extra_tasks: Mutex<Vec<Task>>,
+        pub(crate) extra_tasks: Mutex<Vec<Task>>,
         /// id -> new name applied by a scripted rename_task rpc, so the
         /// reload handle_rename performs sees the persisted rename the
         /// way the real webview's task_rename write would provide it.
-        renames: Mutex<HashMap<String, String>>,
-        killed: Mutex<Vec<String>>,
+        pub(crate) renames: Mutex<HashMap<String, String>>,
+        pub(crate) killed: Mutex<Vec<String>>,
         /// (tasks with agents, live agents) the stub reports for `quit`.
-        live_agents: (u32, u32),
+        pub(crate) live_agents: (u32, u32),
         /// Bumped by quit_app, so a test can assert teardown happened
         /// exactly once and NOT at all under `--preview`.
-        quit_calls: Mutex<u32>,
+        pub(crate) quit_calls: Mutex<u32>,
         /// Flat side-effect log ("kill:<id>", "rpc:<method>",
         /// "detach:<id>:<reason>") so tests can assert ORDER across
         /// kinds (archive must notify, then kill, then rpc).
-        ops: Mutex<Vec<String>>,
-        cache: AgentCache,
-        reports: PromptReports,
-        git_root: Option<String>,
+        pub(crate) ops: Mutex<Vec<String>>,
+        pub(crate) cache: AgentCache,
+        pub(crate) reports: PromptReports,
+        pub(crate) git_root: Option<String>,
         /// Scripted answer for `repo_worktrees` (`new --from` project
         /// resolution): the repo's working-tree paths, main first.
-        repo_trees: Vec<String>,
+        pub(crate) repo_trees: Vec<String>,
         /// Scripted `apply` outcome, taken once per call.
-        apply_result: Mutex<Option<Result<crate::SendDiffResult, crate::SendDiffError>>>,
+        pub(crate) apply_result: Mutex<Option<Result<crate::SendDiffResult, crate::SendDiffError>>>,
         /// Scripted `diff` outcome, taken once per call.
-        diff_result: Mutex<Option<Result<crate::TaskDiffSummary, String>>>,
+        pub(crate) diff_result: Mutex<Option<Result<crate::TaskDiffSummary, String>>>,
         /// (task_id, kind) -> pty id, for `logs`/`attach` resolution.
-        role_ptys: Mutex<HashMap<(String, String), String>>,
+        pub(crate) role_ptys: Mutex<HashMap<(String, String), String>>,
         /// (task_id, tab_id) -> pty id, for `--tab` resolution
         /// (GH #138 part 2, the PtyRole.tab_id path).
-        tab_ptys: Mutex<HashMap<(String, String), String>>,
+        pub(crate) tab_ptys: Mutex<HashMap<(String, String), String>>,
         /// pty id -> (retained bytes, truncated flag).
-        pty_rings: Mutex<HashMap<String, (Vec<u8>, bool)>>,
+        pub(crate) pty_rings: Mutex<HashMap<String, (Vec<u8>, bool)>>,
         /// Bytes the attach path typed into PTYs.
-        pty_inputs: Mutex<Vec<(String, Vec<u8>)>>,
+        pub(crate) pty_inputs: Mutex<Vec<(String, Vec<u8>)>>,
         /// Live attach tap senders per pty id, so tests can drive (and
         /// end) an attach session.
-        taps: Mutex<HashMap<String, Vec<std::sync::mpsc::SyncSender<crate::PtyTapMsg>>>>,
+        pub(crate) taps: Mutex<HashMap<String, Vec<std::sync::mpsc::SyncSender<crate::PtyTapMsg>>>>,
         /// (pty id, rows, cols) resizes the attach path applied.
-        resizes: Mutex<Vec<(String, u16, u16)>>,
+        pub(crate) resizes: Mutex<Vec<(String, u16, u16)>>,
         /// Fake home dir for the transcript reader.
-        home: Option<PathBuf>,
+        pub(crate) home: Option<PathBuf>,
     }
 
     impl Default for StubHost {
@@ -4583,10 +4611,10 @@ mod tests {
     }
 
     impl StubHost {
-        fn script_rpc(&self, method: &str, result: Result<serde_json::Value, String>) {
+        pub(crate) fn script_rpc(&self, method: &str, result: Result<serde_json::Value, String>) {
             self.rpc_results.lock().unwrap().insert(method.to_string(), result);
         }
-        fn push_states(&self, entries: &[(&str, TaskAgentState)]) {
+        pub(crate) fn push_states(&self, entries: &[(&str, TaskAgentState)]) {
             self.cache.update(
                 entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
             );
@@ -4805,15 +4833,15 @@ mod tests {
         }
     }
 
-    fn req(cmd: Command, token: Option<&str>) -> Request {
+    pub(crate) fn req(cmd: Command, token: Option<&str>) -> Request {
         Request { id: "r".into(), token: token.map(str::to_string), cmd }
     }
 
     /// Sink that records events; can simulate a hung-up client.
     #[derive(Default)]
-    struct VecSink {
-        events: Vec<StreamEvent>,
-        fail: bool,
+    pub(crate) struct VecSink {
+        pub(crate) events: Vec<StreamEvent>,
+        pub(crate) fail: bool,
     }
 
     impl EventSink for VecSink {
@@ -4825,6 +4853,13 @@ mod tests {
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use test_support::*;
 
     fn handle(req: &Request, host: &dyn CliHost) -> Reply {
         handle_request(req, host, &mut VecSink::default())
@@ -5478,7 +5513,7 @@ mod tests {
     fn new_resume_without_from_creates_and_forwards_the_seed() {
         // GH #169 follow-up: --resume is legal on a plain create too (the
         // main-checkout and fresh-worktree paths seed exactly like import).
-        let mut host = StubHost::default();
+        let host = StubHost::default();
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1", "spawned": true })));
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { resume, agent, .. } = &mut cmd {
