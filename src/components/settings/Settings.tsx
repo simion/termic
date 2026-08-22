@@ -14,6 +14,7 @@ import { TasksSection } from "./TasksSection";
 import { NotificationsSection } from "./NotificationsSection";
 import { SandboxSection } from "./SandboxSection";
 import { CliSection } from "./CliSection";
+import { McpSection } from "./McpSection";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { AgentsSection } from "./AgentsSection";
 import { PromptLibrarySection } from "./PromptLibrarySection";
@@ -99,7 +100,7 @@ export function Settings() {
             discoverability than the label is worth. See docs/ui.md. */}
         <RailItem icon={<ShieldCheck className="h-4 w-4" />} label="Sandbox" tabId="sandbox"
           active={tab === "sandbox"} onClick={() => openSettings("sandbox")} />
-        <RailItem icon={<SquareTerminal className="h-4 w-4" />} label="Termic CLI" tabId="cli"
+        <RailItem icon={<SquareTerminal className="h-4 w-4" />} label="CLI & MCP" tabId="cli"
           active={tab === "cli"} onClick={() => openSettings("cli")} />
 
         <div className="mt-5 px-2 pb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
@@ -134,7 +135,9 @@ export function Settings() {
           {tab === "tasks"       && <TasksSection />}
           {tab === "notifications" && <NotificationsSection />}
           {tab === "sandbox"     && <SandboxSection />}
-          {tab === "cli"         && <CliSection />}
+          {/* MCP shares the CLI page: one "control plane" surface, two
+              presentations of the same verbs (docs/plans/mcp.md). */}
+          {tab === "cli"         && <><CliSection /><div className="mt-10"><McpSection /></div></>}
           {tab === "appearance"  && <AppearanceSection />}
           {tab === "agents"      && <AgentsSection />}
           {tab === "prompts"     && <PromptLibrarySection />}

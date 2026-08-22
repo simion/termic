@@ -648,7 +648,7 @@ export const useApp = create<AppState>((set, get) => ({
       const cleared = failCliQueuedPromptsInTabs(
         (s.tabs[taskId] ?? []).map(t =>
           t.type === "terminal"
-            ? { ...t, ptyId: undefined, lastInputAt: null, lastOutputAt: null, workState: undefined }
+            ? { ...t, ptyId: undefined, lastInputAt: null, lastOutputAt: null, firstOutputAt: null, workState: undefined }
             : t,
         ),
         "the task was stopped before the queued prompt delivered",

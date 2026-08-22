@@ -497,6 +497,10 @@ export interface Settings {
    *  but it has to round-trip through the settings object the UI saves, or
    *  the migration would re-fire and undo a user's opt-out. */
   cli_default_migrated?: boolean;
+  /** "Enable MCP endpoint": binds the loopback MCP listener for outside
+   *  clients (Claude Desktop, claude mcp add). Default off; unlike the CLI
+   *  socket the listener only exists while this is on. See docs/plans/mcp.md. */
+  mcp_enabled?: boolean;
   /** What the window's close button does. Absent/"ask" = show the close
    *  prompt (whose "Show this every time" checkbox writes the choice back here);
    *  "menubar" = close to the menu bar, agents keep running; "quit" = quit
@@ -533,6 +537,19 @@ export interface CliInstallStatus {
   name: string;
   /** True when the installed location is on the user's login PATH. */
   on_path: boolean;
+}
+
+/** Live state of the MCP endpoint (mcp_status). */
+export interface McpStatus {
+  /** The codex config block and the claude registration command, both
+   *  rendered by the backend that also writes them, so the page cannot
+   *  drift from what the install buttons do. Null when not bound. */
+  codex_config: string | null;
+  claude_command: string | null;
+  /** Endpoint URL while the listener is bound, else null. */
+  url: string | null;
+  /** Path of the mcp-token file the client reads (never the value). */
+  token_path: string | null;
 }
 
 export interface DiscoveredRepo {
@@ -876,6 +893,11 @@ export interface TerminalTab extends BaseTab {
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
+  /** When the CURRENT PTY first produced output, i.e. when the agent
+   *  started painting. Null until it does, and distinct from
+   *  `lastOutputAt`, which is stamped at spawn as well. See
+   *  `lib/agentReady` for why prompt injection needs the difference. */
+  firstOutputAt?: number | null;
   /** True for the auto-created default tab when entering a task.
    *  Drives the resume-on-spawn decision: default tab resumes the agent's
    *  prior conversation (if any), user-added tabs always start fresh

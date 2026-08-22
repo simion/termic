@@ -224,7 +224,31 @@ describe("startRace", () => {
     expect(seen).toEqual([[1, 3], [2, 3], [3, 3]]);
   });
 
-  it("seeds the shared prompt into each agent once its PTY is up, after the settle", async () => {
+  /** Stand in for TerminalPane: a default agent tab holding a live PTY.
+   *  `lastOutputAt` is the stamp the pane writes AT SPAWN, before the agent
+   *  has painted anything. */
+  const seedTabs = (ids: string[]) => {
+    for (const id of ids) {
+      useApp.setState(s => ({
+        tabs: { ...s.tabs, [id]: [{
+          id: `tab-${id}`, type: "terminal", cli: "claude",
+          is_default: true, ptyId: `pty-${id}`, title: "Claude",
+          lastOutputAt: Date.now(), firstOutputAt: null,
+        } as TerminalTab] },
+      }));
+    }
+  };
+
+  /** The agent painting: fresh PTY output, which is what tells us its TUI
+   *  is awake. */
+  const paint = (ids: string[]) => {
+    for (const id of ids) {
+      const now = Date.now();
+      useApp.getState().patchTab(id, `tab-${id}`, { lastOutputAt: now, firstOutputAt: now });
+    }
+  };
+
+  it("seeds the shared prompt into each agent once it has painted and gone quiet", async () => {
     vi.useFakeTimers();
     try {
       const ids = await startRace({
@@ -232,29 +256,49 @@ describe("startRace", () => {
         racers: [{ cli: "claude", n: 1 }, { cli: "claude", n: 2 }],
         prompt: "do the thing",
       });
+      seedTabs(ids);
 
-      // Stand in for TerminalPane: seed each task's default agent tab + a PTY.
-      for (const id of ids) {
-        useApp.setState(s => ({
-          tabs: { ...s.tabs, [id]: [{
-            id: `tab-${id}`, type: "terminal", cli: "claude",
-            is_default: true, ptyId: `pty-${id}`, title: "Claude",
-          } as TerminalTab] },
-        }));
-      }
-
-      // Poll picks up the PTY but the settle hasn't elapsed yet.
+      // PTY is up, but the agent has not painted: nothing may be typed.
       await vi.advanceTimersByTimeAsync(300);
       expect(sendMessageToPty).not.toHaveBeenCalled();
 
-      // Settle elapses -> the same prompt lands in every racer, lastInputAt
-      // stamped so work-done detection re-arms (as runPrompt does).
-      await vi.advanceTimersByTimeAsync(6000);
+      paint(ids);
+      // Painted, but still mid-boot as far as anyone knows.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sendMessageToPty).not.toHaveBeenCalled();
+
+      // Quiet stretch elapses -> the same prompt lands in every racer,
+      // lastInputAt stamped so work-done detection re-arms (as runPrompt does).
+      await vi.advanceTimersByTimeAsync(5000);
       expect(sendMessageToPty).toHaveBeenCalledTimes(2);
       for (const id of ids) {
         expect(sendMessageToPty).toHaveBeenCalledWith(`pty-${id}`, "do the thing");
         expect((useApp.getState().tabs[id][0] as TerminalTab).lastInputAt).toBeGreaterThan(0);
       }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits out a cold start rather than typing into a TUI that has not painted", async () => {
+    vi.useFakeTimers();
+    try {
+      const ids = await startRace({
+        projectId: "p1",
+        racers: [{ cli: "claude", n: 1 }],
+        prompt: "do the thing",
+      });
+      seedTabs(ids);
+
+      // The old fixed settle would have typed here, into a splash screen
+      // that drops the text (GH: first prompt lost on a cold start).
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(sendMessageToPty).not.toHaveBeenCalled();
+
+      // An agent that never paints is still typed into eventually: the
+      // deadline costs a slow delivery, never a lost one.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sendMessageToPty).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

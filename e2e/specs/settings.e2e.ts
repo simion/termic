@@ -1,7 +1,8 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { dataDir } from "../../wdio.conf.js";
 import { archiveTask, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitVisible } from "../helpers";
 
 /** Click the [role="switch"] in the settings row whose label matches exactly.
@@ -168,7 +169,7 @@ describe("settings rail", () => {
     ["prompts", "Prompts", "Prompts"],
     ["shortcuts", "Shortcuts", "Shortcuts"],
     ["sandbox", "Sandbox", "Global sandbox defaults"],
-    ["cli", "Termic CLI", "Enable CLI"],
+    ["cli", "CLI & MCP", "Enable CLI"],
   ];
 
   it("lists every page in band order", async () => {
@@ -216,23 +217,70 @@ describe("settings rail", () => {
 
   // The CLI graduated in 0.26.0. Inverted rather than deleted: docs/ui.md ties
   // the badge to being off by default, so a badge reappearing next to a
-  // setting we now ship enabled is a real contradiction to catch. Asserts both
-  // sites the badge used to render, the rail item and the page title.
-  it("no longer marks the CLI page experimental", async () => {
-    await clickRail("Termic CLI");
+  // setting we now ship enabled is a real contradiction to catch. The MCP
+  // section sharing this page IS off by default and badged, so the check is
+  // per-title (and the rail item), never page-wide text. The badge is
+  // CSS-uppercased, so assertions read the node's textContent, not innerText.
+  it("badges the MCP section, never the graduated CLI", async () => {
+    await clickRail("CLI & MCP");
     await waitForText("Enable CLI");
-    expect(await paneText()).not.toContain("Experimental");
+    await waitForText("MCP endpoint");
+    const titles: { title: string; badge: string | null }[] = await browser.execute(() =>
+      [...document.querySelectorAll("h1")].map((h) => ({
+        title: h.textContent ?? "",
+        badge: h.parentElement?.querySelector("span")?.textContent ?? null,
+      })),
+    );
+    expect(titles.find((t) => t.title === "MCP endpoint")?.badge).toBe("Experimental");
+    expect(titles.find((t) => t.title === "Termic CLI")?.badge ?? null).toBe(null);
     const railText = await browser.execute(
       () => (document.querySelector('[data-rail-item="cli"]') as HTMLElement)?.textContent ?? "",
     );
     expect(railText.toLowerCase()).not.toContain("exp");
   });
 
+  it("shows the live URL and registration commands that carry no secret", async () => {
+    // The seeded profile enables the endpoint, so the section must show
+    // the real bound URL (mcp_status reads the live handle) plus a
+    // registration command per client.
+    await clickRail("CLI & MCP");
+    await waitForText("Connect a client");
+    await browser.waitUntil(
+      async () => (await paneText()).includes("http://127.0.0.1:"),
+      { timeout: 8_000, timeoutMsg: "the bound MCP URL never rendered" },
+    );
+    const pane = await paneText();
+    // One rule for both clients: a helper command that reads the token
+    // file at connect time. A token is minted on every bind, so anything
+    // that pasted the VALUE would stop working after a restart.
+    expect(pane).toContain("[mcp_servers.termic]");      // codex, TOML
+    expect(pane).toContain("claude mcp add-json");        // claude, its own CLI
+    expect(pane).toContain("headersHelper");
+    expect(pane).toContain("http_headers_helper");
+    expect(pane).toContain("mcp_2026_07_28");
+    expect(pane).not.toContain("--bearer-token-env-var");
+    // And the one-click path exists, so the blocks are the fallback.
+    expect(pane).toContain("Add to Codex");
+    expect(pane).toContain("Add to Claude Code");
+    expect(pane).toContain("claude mcp add");
+    // One credential path for both clients: the custom header, which is
+    // what lets codex's headers helper carry it at all (it refuses
+    // Authorization as reserved).
+    expect(pane).toContain("X-Termic-Token");
+    // The shell setup reads the token file, so the file stays the one
+    // durable copy.
+    expect(pane).toContain("mcp-token");
+    // And the token VALUE never renders, only its path (the copy
+    // affordance fetches it straight to the clipboard).
+    const token = readFileSync(path.join(dataDir, "mcp-token"), "utf8").trim();
+    expect(pane).not.toContain(token);
+  });
+
   it("documents that agents in tasks can drive the CLI", async () => {
     // Task PTYs carry TERMIC_CLI / TERMIC_TASK_ID (lib.rs), so an unsandboxed
     // agent can spawn sibling tasks. The page has to say so: it is the least
     // guessable thing the CLI does.
-    await clickRail("Termic CLI");
+    await clickRail("CLI & MCP");
     await waitForText("Agents can drive it too");
     const pane = await paneText();
     expect(pane).toContain("$TERMIC_CLI");
@@ -243,7 +291,7 @@ describe("settings rail", () => {
     // index.css turns selection off app-wide, so these copy-me commands have to
     // opt back in. Read off the command text, not the `data-selectable`
     // attribute, so only losing selectability fails.
-    await clickRail("Termic CLI");
+    await clickRail("CLI & MCP");
     await waitForText("Getting started");
     const selectable = await browser.execute(() => {
       const cmd = [
@@ -619,7 +667,7 @@ describe("settings navigation", () => {
       "Task settings",
       "Notification settings",
       "Sandbox settings",
-      "Termic CLI settings",
+      "CLI & MCP settings",
     ]) {
       expect(labels.some((l) => l.includes(needle))).toBe(true);
     }

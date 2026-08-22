@@ -449,7 +449,7 @@ export function CommandPalette() {
       ["prompts", "Prompt library", BookText],
       ["shortcuts", "Keyboard shortcuts settings", Keyboard],
       ["sandbox", "Sandbox settings", ShieldCheck],
-      ["cli", "Termic CLI settings", SquareTerminal],
+      ["cli", "CLI & MCP settings", SquareTerminal],
     ];
     for (const [tab, label, icon] of settingsLinks) {
       cmds.push({

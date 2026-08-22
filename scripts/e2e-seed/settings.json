@@ -381,6 +381,7 @@
   "fetch_before_create": null,
   "discovery_dismissed": [],
   "cli_enabled": true,
+  "mcp_enabled": true,
   "worktree_symlink_paths": [
     ".claude",
     ".gemini",

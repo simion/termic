@@ -38,6 +38,7 @@ mod repo_config;
 mod shell_env;
 mod automation;
 mod cli_server;
+mod mcp_server;
 // Row shapes + OS-agnostic logic (subtree walk, cpu_ratio, label_for,
 // signal_from_name) shared by every `procmon` variant below.
 mod procmon_common;
@@ -1868,6 +1869,23 @@ fn resolve_base_ref(repo: &Path, base: &str) -> String {
     }
     // Last resort: whatever HEAD points at, so the create still succeeds.
     "HEAD".to_string()
+}
+
+/// The ref a task's diff is taken against, or None when the worktree has no
+/// tracked baseline at all (a repo with no commits, where even HEAD resolves
+/// to nothing).
+///
+/// Split out from `task_diff_inner` so it can be tested: that function needs a
+/// task record on disk, and `TERMIC_DATA_DIR` is process-global (it would race
+/// parallel tests). Same reasoning as `apply_cli_default_migration`.
+fn diff_base_ref(wt: &Path, stored_base: &str) -> Option<String> {
+    let base = resolve_base_ref(wt, stored_base);
+    let exists = |r: &str| git(&["rev-parse", "--verify", "--quiet", r], wt).is_ok();
+    // HEAD as well as the base. On an unborn or orphan HEAD the base can
+    // resolve perfectly well while `git log <base>..HEAD` still fails, and
+    // reporting that as an error would bury the untracked files the scan
+    // downstream can still list.
+    (exists(&base) && exists("HEAD")).then_some(base)
 }
 
 // ───────────────────────────── PTY manager ─────────────────────────────
@@ -6497,27 +6515,48 @@ async fn task_diff(id: String) -> Result<TaskDiffSummary, String> {
 pub(crate) fn task_diff_inner(id: String) -> Result<TaskDiffSummary, String> {
     let w = load_tasks().into_iter().find(|w| w.id == id).ok_or("no task")?;
     load_projects().into_iter().find(|p| p.id == w.project_id).ok_or("no proj")?;
-    let base = w.base_branch.clone();
     let wt = PathBuf::from(&w.path);
+    // Through resolve_base_ref like every other consumer of a stored base
+    // (task create, races, merge/archive). The stored value is a
+    // remote-tracking ref, and a repo with no remote has none of those: it is
+    // still pinned to "origin/main", because detect_default_remote names the
+    // remote it wishes existed. Diffing against that ref fails, and this
+    // function used to swallow the failure into an empty string, so every task
+    // in a local-only repo reported no changes at all.
+    //
+    // None means no tracked baseline exists (a repo with no commits); the
+    // untracked scan below still reports the files.
+    let base_ref = diff_base_ref(&wt, &w.base_branch);
 
     // Diff base..working-tree, NOT base..HEAD: a raced agent usually leaves its
     // work uncommitted, so base..HEAD would show nothing. `git diff <base>` is
     // the cumulative delta of commits + staged + unstaged (same reasoning as
     // task_send_diff_to_main) - everything the agent actually produced.
-    let commits = git(&["--no-pager", "log", "--oneline", &format!("{base}..HEAD")], &wt).unwrap_or_default();
-    let mut diff = git(&["--no-pager", "diff", &base], &wt).unwrap_or_default();
-
-    // Precise counts from --numstat (`<ins>\t<del>\t<path>` per file; binary
-    // files emit `-\t-`, which parse to 0).
-    let numstat = git(&["--no-pager", "diff", "--numstat", &base], &wt).unwrap_or_default();
+    //
+    // A failure here is reported, never folded into zeros: "no changes" and
+    // "could not work out the changes" are different answers, and only one of
+    // them is worth showing to someone deciding whether to merge.
+    let mut commits = String::new();
+    let mut diff = String::new();
     let mut files_changed = 0usize;
     let mut insertions = 0usize;
     let mut deletions = 0usize;
-    for line in numstat.lines().filter(|l| !l.trim().is_empty()) {
-        let mut cols = line.split('\t');
-        insertions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
-        deletions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
-        files_changed += 1;
+    if let Some(base) = base_ref {
+        let diff_failed = |what: &str, e: anyhow::Error| format!("{what} against {base}: {e}");
+        commits = git(&["--no-pager", "log", "--oneline", &format!("{base}..HEAD")], &wt)
+            .map_err(|e| diff_failed("git log", e))?;
+        diff = git(&["--no-pager", "diff", &base], &wt).map_err(|e| diff_failed("git diff", e))?;
+
+        // Precise counts from --numstat (`<ins>\t<del>\t<path>` per file; binary
+        // files emit `-\t-`, which parse to 0).
+        let numstat = git(&["--no-pager", "diff", "--numstat", &base], &wt)
+            .map_err(|e| diff_failed("git diff --numstat", e))?;
+        for line in numstat.lines().filter(|l| !l.trim().is_empty()) {
+            let mut cols = line.split('\t');
+            insertions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+            deletions += cols.next().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+            files_changed += 1;
+        }
     }
 
     // Untracked (new) files, honoring .gitignore, folded in as additions so an
@@ -11816,6 +11855,13 @@ pub struct Settings {
     /// nearly every `false` on disk is the default rather than a decision.
     #[serde(default)]
     pub cli_default_migrated: bool,
+    /// "Enable MCP endpoint" (Settings): binds the loopback MCP listener
+    /// (mcp_server.rs). Default OFF, and unlike `cli_enabled` the listener
+    /// only exists while this is on (bind-on-enable; there is no auto-launch
+    /// dead end on this surface). Also re-read per request so a disable
+    /// applies even to connections racing the unbind.
+    #[serde(default)]
+    pub mcp_enabled: bool,
     /// What the window's close button does: "ask" (default) | "menubar" |
     /// "quit". "ask" shows the close prompt whose "Don't ask again" checkbox
     /// writes the chosen one back here. Stored rather than inferred so the
@@ -12543,6 +12589,9 @@ fn settings_save(app: AppHandle, s: Settings) -> Result<(), String> {
     // to show/hide the menu-bar item, matching close_action/cli_enabled's
     // "re-read per use" behavior.
     let _ = set_tray_visible(&app, tray_on);
+    // Same discipline for the MCP listener (bind-on-enable, both ways).
+    // Idempotent, so no need to diff against the previous settings.
+    mcp_server::apply_enabled(app, s.mcp_enabled);
     Ok(())
 }
 
@@ -14002,6 +14051,7 @@ pub fn run() {
             // verbs stay behind the "Enable CLI" setting + per-boot
             // token). See cli_server.rs + docs/plans/cli.md.
             cli_server::start(app.handle().clone());
+            mcp_server::start_if_enabled(app.handle().clone());
             if !headless {
                 let _ = win.set_focus();
             }
@@ -14061,6 +14111,9 @@ pub fn run() {
             cli_server::cli_prompt_report,
             cli_server::cli_install_symlink,
             cli_server::cli_install_status,
+            mcp_server::mcp_status,
+            mcp_server::mcp_token,
+            mcp_server::mcp_install_client,
             window_close_choice, window_is_windowless, close_prompt_ack,
             tray_set_attention,
             list_monospace_fonts, list_font_families,
@@ -15983,6 +16036,52 @@ mod tests {
                 .current_dir(repo)
                 .output().unwrap().stdout,
         ).trim().to_string()
+    }
+
+    // diff_base_ref: the diff has to resolve the stored base the same way task
+    // create does. A repo with no remote is still pinned to "origin/main"
+    // (detect_default_remote falls back to the name "origin" whether or not
+    // that remote exists), so passing the stored value through raw made every
+    // git call fail, and the failures were folded into "no changes".
+    #[test]
+    fn diff_base_ref_resolves_a_remote_tracking_base_in_a_local_only_repo() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git_init_with_commit(repo); // local-only: branch "main", no origin.
+
+        assert!(git(&["--no-pager", "diff", "origin/main"], repo).is_err(),
+                "the stored base must be unusable here, or this proves nothing");
+        assert_eq!(diff_base_ref(repo, "origin/main").as_deref(), Some("main"));
+    }
+
+    // No commits means no HEAD, so even resolve_base_ref's fallback lands on a
+    // ref that does not exist. There is nothing to diff against, which is not
+    // the same as a failure: the untracked scan still has files to report.
+    // Same for an orphan HEAD, where the base resolves and HEAD does not.
+    #[test]
+    fn diff_base_ref_is_none_in_a_repo_with_no_commits() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let out = std::process::Command::new("git")
+            .args(["init", "-b", "main"]).current_dir(repo).output().unwrap();
+        assert!(out.status.success());
+
+        assert_eq!(diff_base_ref(repo, "origin/main"), None);
+    }
+
+    #[test]
+    fn diff_base_ref_is_none_on_an_orphan_head() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git_init_with_commit(repo);
+        let out = std::process::Command::new("git")
+            .args(["checkout", "--orphan", "fresh"]).current_dir(repo).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        // The base resolves here; HEAD is what does not, and `git log
+        // main..HEAD` would fail on it.
+        assert_eq!(resolve_base_ref(repo, "origin/main"), "main");
+        assert_eq!(diff_base_ref(repo, "origin/main"), None);
     }
 
     // resolve_base_ref: a worktree branch must be cut from a ref that EXISTS.
