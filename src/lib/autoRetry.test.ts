@@ -31,6 +31,9 @@ describe("looksLikeLimitNotice", () => {
       "Claude usage limit reached. Resets at 2pm",
       "Claude AI usage limit reached|1763049600",
       "You've reached your weekly limit · resets Monday 9am",
+      // Recorded from a real session limit on 2026-08-23. The only sample
+      // here that came off a live account rather than out of a doc.
+      "You've hit your session limit · resets 7:30pm (Europe/Amsterdam)",
     ]) {
       expect(looksLikeLimitNotice(line, claude), line).toBe(true);
     }
@@ -100,6 +103,19 @@ describe("parseResetAt", () => {
     expect(parseResetAt("resets Sunday 9am", NOW)).toBe(at(9, 0, 7));
     // ...but not when it is still ahead.
     expect(parseResetAt("resets Sunday 9pm", NOW)).toBe(at(21));
+  });
+
+  it("resolves the one notice recorded from a live account", () => {
+    // 2026-08-23, Amsterdam machine, Amsterdam account. Parked at 18:44
+    // local and re-prompted at 19:31:21, which is the 19:30 reset plus the
+    // 60s default margin, found on the next 30s tick. This is the case the
+    // whole feature exists for, so it gets its own assertion rather than
+    // living only in the wording list above.
+    const seenAt = new Date(2026, 7, 23, 18, 44, 0).getTime();
+    expect(parseResetAt(
+      "You've hit your session limit · resets 7:30pm (Europe/Amsterdam)",
+      seenAt,
+    )).toBe(new Date(2026, 7, 23, 19, 30, 0).getTime());
   });
 
   it("prefers an explicit unix timestamp over any clock on the line", () => {

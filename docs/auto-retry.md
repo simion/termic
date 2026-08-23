@@ -195,9 +195,31 @@ marker, and a row whose text says wait and reset.
   should assert: the banner appears, the fixture received the arrow keys and
   the CR for the WAIT row (not the paid one), and a short `resumeAt` fires the
   configured message. Tracked in [e2e-coverage.md](e2e-coverage.md).
-- **Verified against claude's real wording only as far as it has been
-  published.** The four notice wordings and the two-row menu in
-  `autoRetry.test.ts` come from Anthropic's docs, issue #18980 and
-  claude-auto-retry's recorded strings, not from driving a real account into a
-  limit. The patterns are overridable per agent precisely because that is a
-  weaker source than a recording.
+- **One real recording, the rest published strings.** On 2026-08-23 this fired
+  for real on a session limit:
+
+  ```
+  You've hit your session limit · resets 7:30pm (Europe/Amsterdam)
+  /usage-credits to finish what you're working on.
+  ```
+
+  Parked, then re-prompted at 19:31:21 local, which is the 19:30 reset plus the
+  60s default margin picked up on the next 30s tick. Confirmed from the
+  session transcript, not from watching the screen. That wording is now
+  asserted in `autoRetry.test.ts`.
+
+  Two things it taught, both of which the design had guessed at:
+
+  1. **A session limit does not always render an interactive menu.** This one
+     printed a plain hint line (`/usage-credits to finish what you're working
+     on.`) with nothing to answer, so the run took the no-menu path: parse the
+     clock, park, re-prompt. `findWaitOption` returning null is the ORDINARY
+     case here, not the degraded one, which is why the park does not depend on
+     finding a menu.
+  2. **The local-time assumption held**, on the case most likely to break it:
+     an Amsterdam account on an Amsterdam machine, with the zone printed in
+     the notice and deliberately ignored.
+
+  The other wordings, and the two-row menu, still come from Anthropic's docs
+  and issue #18980 rather than a recording. The patterns stay overridable per
+  agent for that reason.
