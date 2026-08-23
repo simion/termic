@@ -147,8 +147,15 @@ would miss precisely that case.
   really lifted prints the notice again the moment termic speaks, which re-arms
   the whole path; the ceiling is what stops that becoming a loop. Hitting it
   gives up loudly (an error toast), never silently.
-- **Real user input clears the park and resets the budget.** The ceiling exists
-  to stop an unattended loop, and a keystroke is proof somebody is attending.
+- **Real user input clears the park and resets the budget**, and says so in a
+  toast. The ceiling exists to stop an unattended loop, and a keystroke is
+  proof somebody is attending. The toast is not decoration: cancelling was
+  silent in the first cut, and the first real test run was lost to exactly
+  that, an Enter pressed to check on a parked tab, which cancelled the resume
+  invisibly and left the tab looking like the feature had failed. The person
+  most likely to press Enter "just to check" is the person who walked away.
+- **A fired resume also toasts.** Same reasoning from the other side: nobody
+  is watching when it happens, so it has to leave a mark.
 - **A respawn clears both.** A park belongs to the process that hit the limit.
 - **PTY exit clears the park.** There is nothing to type into, and the exited
   banner already says so.

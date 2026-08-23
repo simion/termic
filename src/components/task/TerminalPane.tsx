@@ -583,12 +583,20 @@ const captureArmedRef = useRef(false);
   const limitResumesRef = useRef(0);
   const limitWait = tab.type === "terminal" ? tab.limitWait : undefined;
 
-  /** Drop the park. `why` is for the debug log only. */
-  const clearLimitWait = useCallback((why: string) => {
+  /** Drop the park. `why` is for the debug log; `announce` puts it on screen.
+   *
+   *  Typing into a parked tab cancels it, which is right (the user is driving
+   *  again) but was silent, and silence is indefensible here: the feature
+   *  exists for someone who walked away, so the person most likely to press
+   *  Enter "just to check" is exactly the person who then waits all evening
+   *  for a resume they cancelled. Measured the hard way, on the first real
+   *  run of this feature. */
+  const clearLimitWait = useCallback((why: string, announce?: string) => {
     const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
     if (!cur?.limitWait) return;
     debugLogRef.current?.("limit-clear", why);
     patchTab(task.id, tab.id, { limitWait: undefined });
+    if (announce) useUI.getState().pushToast(announce, "info");
   }, [task.id, tab.id, patchTab]);
   const clearLimitWaitRef = useRef(clearLimitWait);
   clearLimitWaitRef.current = clearLimitWait;
@@ -621,6 +629,12 @@ const captureArmedRef = useRef(false);
       // still work, but this skips a pointless zero-byte write.
       if (text) sendMessageToPty(ptyId, text);
       else void ipc.ptyWrite(ptyId, [0x0d]).catch(() => {});
+      // The user was not here when it parked, so they are probably not here
+      // when it wakes either. This is the record that it did.
+      useUI.getState().pushToast(
+        `Auto-resumed ${agentDisplayName(tab.cli)} after the usage limit.`,
+        "info",
+      );
       // Stamp it like a keyboard submit so work-done detection re-arms for
       // the turn this just started (same contract as the queue drain).
       patchTab(task.id, tab.id, { lastInputAt: Date.now() });
@@ -2224,7 +2238,10 @@ const captureArmedRef = useRef(false);
             // drop any park, and give them a fresh budget of retries (the
             // ceiling exists to stop an UNATTENDED loop, and this is the
             // proof somebody is attending).
-            clearLimitWaitRef.current("user input");
+            clearLimitWaitRef.current(
+              "user input",
+              `Auto-resume cancelled for ${agentDisplayName(tab.cli)}: you typed into it. It will not re-prompt on its own.`,
+            );
             limitResumesRef.current = 0;
             // Demote workState to idle on Enter — the user is now driving.
             const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id);
