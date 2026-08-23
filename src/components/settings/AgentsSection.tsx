@@ -21,6 +21,7 @@ import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { SignalInspector } from "./SignalInspector";
 import { cn, slugify } from "@/lib/utils";
 import { isTerminalEntry, BUILTIN_TITLE_SIGNALS } from "@/lib/agents";
+import { BUILTIN_LIMIT_SIGNALS } from "@/lib/autoRetry";
 import { SubSection } from "@/components/settings/SubSection";
 import { Toggle } from "@/components/settings/Controls";
 import { usePrefs } from "@/store/prefs";
@@ -571,7 +572,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   // Does this agent have any title pattern at all? Gates the output-scan
   // switch, which has nothing to run without one (see the group below).
   const sig = agent.capabilities?.signals;
-  const hasSignals = !!(sig?.busy?.length || sig?.idle?.length || sig?.attention?.length || sig?.pending?.length);
+  const hasSignals = !!(sig?.busy?.length || sig?.idle?.length || sig?.attention?.length || sig?.pending?.length || sig?.limit?.length);
 
   return (
     // data-agent-card: every card renders the same control labels, so e2e (and
@@ -864,6 +865,13 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               onChange={pending => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), pending } })}
               placeholder={signalPlaceholder(agent.id, "pending", "Waiting for \\d+ jobs? to finish\n\\d+ tasks? still running")}
             />
+            <RegexListField
+              label="Usage limit (screen → out of quota)"
+              hint={"Matched against output LINES. When one hits and \"Resume automatically after a usage limit\" is on (Settings → Tasks), termic picks the agent's \"wait for the reset\" option and re-prompts once the printed reset time has passed. It never picks an option that costs money. Match a real quota exhaustion only: a transient 429 or 529 would park the agent for hours."}
+              value={agent.capabilities?.signals?.limit ?? []}
+              onChange={limit => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), limit } })}
+              placeholder={limitPlaceholder(agent.id)}
+            />
             {/* The fields above are useless without knowing what the
                 agent actually prints. This is where those strings come from. */}
             <SignalInspector
@@ -1041,6 +1049,14 @@ function PathsTextarea({ value, onChange, placeholder }: {
 function signalPlaceholder(cli: string, key: "busy" | "idle" | "attention" | "pending", fallback: string): string {
   const builtin = BUILTIN_TITLE_SIGNALS[cli]?.[key];
   return builtin?.length ? builtin.join("\n") : fallback;
+}
+
+/** Same idea for the limit class, which keeps its built-ins in lib/autoRetry
+ *  rather than BUILTIN_TITLE_SIGNALS: those describe a TITLE, and these are
+ *  matched against output lines. */
+function limitPlaceholder(cli: string): string {
+  const builtin = BUILTIN_LIMIT_SIGNALS[cli];
+  return builtin?.length ? builtin.join("\n") : "usage limit reached\nquota exhausted";
 }
 
 /** Stated once for the whole group rather than three times, once per field.
