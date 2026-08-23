@@ -117,6 +117,16 @@ A parse landing in the past, or more than `MAX_WAIT_MS` (8 days) out, is
 refused rather than clamped: a version string read as a clock would otherwise
 park a tab until next year.
 
+**The one ambiguity that is not refused**, because refusing it would be worse:
+a bare clock with no meridiem. `resets 6:23` seen at 18:22 is read as 06:23
+tomorrow, not 18:23 today, since nothing on the line says which. That direction
+is the deliberate one, it waits too long rather than re-prompting into a limit
+that has not lifted, and the banner shows the resolved time with a "Resume now"
+button next to it. It is only reachable if a CLI prints a 24-hour clock with a
+single-digit hour; every wording recorded from claude carries either a meridiem
+or a two-digit hour. Found while writing the mock agent in `scratchpad/`, whose
+`date '+%p'` silently expanded to nothing on a 24-hour locale.
+
 ## What it costs when it is off
 
 Nothing measurable, and that is load-bearing rather than incidental. Line
