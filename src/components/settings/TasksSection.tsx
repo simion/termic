@@ -43,6 +43,12 @@ export function TasksSection() {
   const branchPrefix = usePrefs(s => s.branchPrefix);
   const setBranchPrefix = usePrefs(s => s.setBranchPrefix);
   const queueMinIntervalMs = usePrefs(s => s.queueMinIntervalMs);
+  const autoResumeOnLimit  = usePrefs(s => s.autoResumeOnLimit);
+  const autoResumeMessage  = usePrefs(s => s.autoResumeMessage);
+  const autoResumeMarginSec = usePrefs(s => s.autoResumeMarginSec);
+  const setAutoResumeOnLimit = usePrefs(s => s.setAutoResumeOnLimit);
+  const setAutoResumeMessage = usePrefs(s => s.setAutoResumeMessage);
+  const setAutoResumeMarginSec = usePrefs(s => s.setAutoResumeMarginSec);
   const setQueueMinIntervalMs = usePrefs(s => s.setQueueMinIntervalMs);
   const confirmBeforeCloseAgentTab = usePrefs(s => s.confirmBeforeCloseAgentTab);
   const setConfirmBeforeCloseAgentTab = usePrefs(s => s.setConfirmBeforeCloseAgentTab);
@@ -236,6 +242,44 @@ export function TasksSection() {
             className="w-24 font-mono"
           />
           <span className="text-[12.5px] text-[var(--color-fg-dim)]">seconds</span>
+        </div>
+      </Block>
+
+      {/* Auto-resume on a usage limit. Ships off: it types into the agent
+          with nobody watching, which is the one behaviour that has to be
+          asked for. The sub-fields stay visible when it is off so the user
+          can see exactly what would be sent before turning it on. */}
+      <Block>
+        <Toggle
+          label="Resume automatically after a usage limit"
+          hint={"When an agent stops because your subscription limit is used up, pick the \"wait for the limit to reset\" option for it and send a message once the printed reset time has passed. Never picks an option that costs money (upgrade, usage credits): if the wait option cannot be identified, the prompt is left for you. Off by default."}
+          value={autoResumeOnLimit}
+          onChange={setAutoResumeOnLimit}
+        />
+        <div className="mt-3">
+          <div className="text-[12.5px] text-[var(--color-fg-dim)]">Message sent when the limit resets</div>
+          <Input
+            value={autoResumeMessage}
+            onChange={(e) => setAutoResumeMessage(e.target.value)}
+            placeholder="Continue where you left off."
+            className="mt-1.5 max-w-md"
+          />
+          <div className="mt-1 text-[12px] text-[var(--color-fg-dim)]">
+            Leave empty to send a bare Enter instead of text.
+          </div>
+        </div>
+        <div className="mt-3 flex max-w-xs items-center gap-2">
+          <Input
+            type="number"
+            min={0}
+            max={3600}
+            value={autoResumeMarginSec}
+            onChange={(e) => setAutoResumeMarginSec(Number(e.target.value) || 0)}
+            className="w-24 font-mono"
+          />
+          <span className="text-[12.5px] text-[var(--color-fg-dim)]">
+            seconds of margin past the printed reset time
+          </span>
         </div>
       </Block>
 

@@ -118,6 +118,7 @@ Deeper references — read when working in that area:
 - [docs/tech-debt.md](docs/tech-debt.md) — index of temporary/removable scaffolding (e.g. the workspace→task migration) + purge checklists
 - [docs/performance.md](docs/performance.md) — perf traps, sub-pixel/rendering hardening, what is measured where (`make perf`)
 - [docs/perf-ci.md](docs/perf-ci.md) — why counts gate PRs and timings only run nightly; what Orca actually does
+- [docs/auto-retry.md](docs/auto-retry.md) — auto-resume on a subscription usage limit (detection, the wait-or-pay menu, the never-spend-money rule)
 - [docs/sandbox.md](docs/sandbox.md) — sandbox-exec + CONNECT proxy, YOLO interaction, deny debugging
 - [docs/shortcuts.md](docs/shortcuts.md) — shortcut system architecture, adding shortcuts, glyph rendering
 - [docs/themes.md](docs/themes.md) — custom theme file format (`~/.config/termic/themes/*.json`), ui/terminal key reference

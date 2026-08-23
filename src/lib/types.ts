@@ -432,6 +432,18 @@ export interface Agent {
        *  the last rows only, because those words stay in the scrollback long
        *  after they stop being true. */
       pending?: string[];
+      /** "You are out of quota" patterns, matched against OUTPUT LINES (like
+       *  `pending`, not like the title lists). Drives auto-resume on a usage
+       *  limit: on a match termic reads the reset time off the same line,
+       *  answers the CLI's wait-or-pay menu with the wait option, and
+       *  re-prompts once the reset has passed. Empty falls back to the
+       *  built-ins in lib/autoRetry. Only consulted when the auto-resume pref
+       *  is on, so a pattern here is inert until the user opts in.
+       *
+       *  Scoped to a real quota exhaustion, NOT transient 429/529 overload:
+       *  the two want different recoveries (a clock versus a backoff), and
+       *  matching a blip here would park the tab for hours. */
+      limit?: string[];
     };
     /** Tier 3: also scan stdout LINES against `signals`, not just the title.
      *  Off by default (the title path is cheaper and safer). Turn on for CLIs
@@ -978,6 +990,32 @@ export interface TerminalTab extends BaseTab {
    *  Watched by a dedicated TerminalPane effect that sends regardless of
    *  `workState` AND bypasses the queue send-interval throttle. */
   queueForceKick?: number;
+  /** Set while this tab is parked on a subscription usage limit and waiting
+   *  for the reset (prefs.autoResumeOnLimit). Runtime-only, like `workState`:
+   *  a limit that outlives the app is a limit the user will meet again on the
+   *  next turn, and a persisted timer firing into a fresh PTY would type into
+   *  whatever happened to be there. Cleared on re-prompt, on user input, and
+   *  on PTY exit. */
+  limitWait?: {
+    /** When the notice was seen. */
+    detectedAt: number;
+    /** Wall-clock to re-prompt at: the parsed reset plus the user's margin.
+     *  Compared against `Date.now()` on a slow interval rather than armed as
+     *  one long setTimeout, so a laptop that slept through the reset still
+     *  wakes up and fires. */
+    resumeAt: number;
+    /** True once the wait-or-pay menu was answered. False when the notice was
+     *  seen without a menu (already answered, or a wording with no prompt),
+     *  in which case the re-prompt is all this does. */
+    answered: boolean;
+    /** True when `resumeAt` is a guess (FALLBACK_WAIT_MS) because the notice
+     *  carried no readable clock. Surfaced in the banner so the user is not
+     *  told a made-up time as if it were printed. */
+    estimated: boolean;
+    /** Re-prompts fired for this parked turn. Bounded by AUTO_RESUME_MAX_TRIES
+     *  so a limit that has not actually lifted cannot loop. */
+    tries: number;
+  };
   /** Bumped to respawn an EXITED agent tab programmatically (the CLI's
    *  `send --resume`), exactly like clicking the exited banner's Restart.
    *  Watched by a TerminalPane effect; no-op while the PTY is live. */

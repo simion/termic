@@ -58,6 +58,9 @@ const LS_FIND_IN_FILES_REGEX = "findInFilesRegex";
 const LS_FIND_IN_FILES_MATCH_CASE = "findInFilesMatchCase";
 const LS_BRANCH_PREFIX = "branchPrefix";
 const LS_QUEUE_MIN_INTERVAL = "queueMinIntervalMs";
+const LS_AUTO_RESUME_LIMIT   = "autoResumeOnLimit";
+const LS_AUTO_RESUME_MESSAGE = "autoResumeMessage";
+const LS_AUTO_RESUME_MARGIN  = "autoResumeMarginSec";
 const LS_SHORTCUTS     = "shortcutBindings";
 const LS_PANE_DIM      = "splitPaneDim";
 const LS_PANE_DIM_AMT  = "splitPaneDimAmount";
@@ -641,6 +644,19 @@ interface PrefsState {
    *  next queued message waits out the remainder. Default 10000 (10s). 0
    *  disables the floor. Applies to "Send now" too. */
   queueMinIntervalMs: number;
+  /** Auto-resume an agent that stopped on a subscription usage limit: answer
+   *  the CLI's wait-or-pay menu with the WAIT option, then re-prompt once the
+   *  printed reset time has passed. OFF by default, and deliberately so. It
+   *  types into the user's agent unattended, which is the one thing that has
+   *  to be asked for rather than assumed. See lib/autoRetry + docs/auto-retry.md. */
+  autoResumeOnLimit: boolean;
+  /** What gets typed when the limit resets. */
+  autoResumeMessage: string;
+  /** Extra seconds waited past the printed reset time before re-prompting.
+   *  The printed time is rounded to the minute and the server's idea of the
+   *  window can lag the client's, so re-prompting exactly on it earns a second
+   *  limit notice. Default 60. */
+  autoResumeMarginSec: number;
   /** Resolved keyboard shortcut bindings (defaults merged with the user's
    *  overrides). Read live by `useShortcuts`; edited from the Shortcuts
    *  settings page. */
@@ -701,6 +717,9 @@ interface PrefsState {
   setSvgDefaultView: (v: MarkdownView) => void;
   setBranchPrefix: (v: string) => void;
   setQueueMinIntervalMs: (ms: number) => void;
+  setAutoResumeOnLimit: (v: boolean) => void;
+  setAutoResumeMessage: (v: string) => void;
+  setAutoResumeMarginSec: (s: number) => void;
   setSplitPaneDim: (v: boolean) => void;
   setSplitPaneDimAmount: (v: number) => void;
   /** Rebind a single shortcut. */
@@ -846,6 +865,13 @@ const initialBranchPrefix = lsGet(LS_BRANCH_PREFIX, "feature");
 // Clamp 0–120s. Default 10s — fast loops (or false "done" oscillation)
 // shouldn't fire prompts at the agent faster than this.
 const initialQueueMinInterval = Math.max(0, Math.min(120000, Math.round(lsGetNum(LS_QUEUE_MIN_INTERVAL, 10000))));
+/** Ships off. See the pref's doc comment for why that is not timidity. */
+const initialAutoResumeOnLimit = lsGetBool(LS_AUTO_RESUME_LIMIT, false);
+export const DEFAULT_AUTO_RESUME_MESSAGE = "Continue where you left off.";
+const initialAutoResumeMessage = lsGet(LS_AUTO_RESUME_MESSAGE, DEFAULT_AUTO_RESUME_MESSAGE);
+/** Clamp 0-3600s. Default 60s past the printed reset. */
+const clampResumeMargin = (s: number) => Math.max(0, Math.min(3600, Math.round(s)));
+const initialAutoResumeMargin = clampResumeMargin(lsGetNum(LS_AUTO_RESUME_MARGIN, 60));
 
 export const usePrefs = create<PrefsState>(set => ({
   themeMode: initialTheme,
@@ -887,6 +913,9 @@ export const usePrefs = create<PrefsState>(set => ({
   svgDefaultView: initialSvgView,
   branchPrefix: initialBranchPrefix,
   queueMinIntervalMs: initialQueueMinInterval,
+  autoResumeOnLimit: initialAutoResumeOnLimit,
+  autoResumeMessage: initialAutoResumeMessage,
+  autoResumeMarginSec: initialAutoResumeMargin,
   shortcuts: loadShortcuts(),
   splitPaneDim: lsGetBool(LS_PANE_DIM, true),
   splitPaneDimAmount: Math.max(0, Math.min(100, Math.round(lsGetNum(LS_PANE_DIM_AMT, 10)))),
@@ -1122,6 +1151,21 @@ export const usePrefs = create<PrefsState>(set => ({
     const clamped = Math.max(0, Math.min(120000, Math.round(ms)));
     try { localStorage.setItem(LS_QUEUE_MIN_INTERVAL, String(clamped)); } catch {}
     set({ queueMinIntervalMs: clamped });
+  },
+  setAutoResumeOnLimit: (v) => {
+    try { localStorage.setItem(LS_AUTO_RESUME_LIMIT, v ? "1" : "0"); } catch {}
+    set({ autoResumeOnLimit: v });
+  },
+  setAutoResumeMessage: (v) => {
+    // Stored as-typed. An empty message is meaningful (it means "wake the
+    // agent with a bare Enter"), so it is not defaulted back here.
+    try { localStorage.setItem(LS_AUTO_RESUME_MESSAGE, v); } catch {}
+    set({ autoResumeMessage: v });
+  },
+  setAutoResumeMarginSec: (s) => {
+    const clamped = clampResumeMargin(s);
+    try { localStorage.setItem(LS_AUTO_RESUME_MARGIN, String(clamped)); } catch {}
+    set({ autoResumeMarginSec: clamped });
   },
   setSplitPaneDim: (v) => {
     try { localStorage.setItem(LS_PANE_DIM, v ? "1" : "0"); } catch {}

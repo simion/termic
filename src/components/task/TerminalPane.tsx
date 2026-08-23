@@ -3,7 +3,7 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
+import { AlertTriangle, TerminalSquare, Copy, Check, ChevronUp, ChevronDown, ChevronRight, X, Loader2, Play } from "lucide-react";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { useUI } from "@/store/ui";
 import { isUserWatching, useApp } from "@/store/app";
@@ -42,6 +42,7 @@ import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agentDisplayName, cliSupportsIdSession, cliSupportsCaptureResume, postLaunchCaptureForCli, decideResume, resumeIdArgsForCli, workDoneCapable, terminalLaunchCommand, isTerminalCli, classifyAgentTitle, compileSignals, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS, STICKY_DONE_MS } from "@/lib/agents";
 import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
+import { limitPatternsForCli, looksLikeLimitNotice, planLimitPark } from "@/lib/autoRetry";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 
@@ -56,6 +57,33 @@ interface Props { task: Task; tab: TerminalTab; active: boolean; }
 // an agent turn would demote spuriously only if every sender signal also fell
 // silent during that gap. Acceptable tradeoff vs. 12 s of stale spinner after
 // a real finish.
+// ── Usage-limit auto-resume knobs (lib/autoRetry owns the parsing) ──
+//
+// A limit notice arrives as bytes; the menu it blocks on is painted a beat
+// later and repainted while it settles. So the notice ARMS a check and the
+// check runs against the visible buffer a few times over the next several
+// seconds, rather than reading the screen the instant the line lands (which
+// reliably sees a half-drawn box, or nothing at all).
+const LIMIT_VERIFY_DELAYS_MS = [400, 1200, 2500, 5000];
+/** Rows of the visible buffer the menu is looked for in. The prompt sits at
+ *  the bottom; reaching further up starts finding numbered lists in the
+ *  agent's own prose. */
+const LIMIT_TAIL_ROWS = 24;
+/** Gap between the arrow keys and the Enter that commits the choice. Same
+ *  reason as agentSend's SUBMIT_DELAY_MS: a CR in the same input burst as the
+ *  keys ahead of it reads as paste continuation, not as a keypress. */
+const LIMIT_SUBMIT_DELAY_MS = 250;
+/** How often a parked tab checks the clock. Wall-clock comparison on an
+ *  interval, NOT one long setTimeout: a laptop that slept through the reset
+ *  has to wake up and fire, and a timer armed for four hours does not
+ *  survive that reliably. 30s is well inside the margin. */
+const LIMIT_TICK_MS = 30_000;
+/** Re-prompts allowed per PTY lifetime. A limit that has not actually lifted
+ *  prints the notice again, which re-arms this whole path; without a ceiling
+ *  the pair would trade a prompt and a refusal until the user came back.
+ *  Reset by real user input and by a respawn. */
+const LIMIT_MAX_RESUMES = 5;
+
 // Seconds a finished "Run setup" tab lingers before auto-closing (counter in
 // the "Setup finished." banner; click closes immediately).
 const SETUP_AUTO_CLOSE_S = 5;
@@ -542,6 +570,66 @@ const captureArmedRef = useRef(false);
     }
   }, []);
 
+  // ── Usage-limit auto-resume ────────────────────────────────────────────
+  //
+  // Detection and the menu answer live in the spawn effect (they need the
+  // PTY and the xterm buffer). This is the other half: the clock. A parked
+  // tab carries `limitWait.resumeAt`; when wall-clock passes it, re-prompt.
+  //
+  // Bounded per PTY, not per park: a limit that has not really lifted prints
+  // the notice again the moment we speak, which re-arms the detector. The
+  // counter is what stops that becoming a loop, so it survives the park being
+  // cleared and is only reset by a real keystroke or a respawn.
+  const limitResumesRef = useRef(0);
+  const limitWait = tab.type === "terminal" ? tab.limitWait : undefined;
+
+  /** Drop the park. `why` is for the debug log only. */
+  const clearLimitWait = useCallback((why: string) => {
+    const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+    if (!cur?.limitWait) return;
+    debugLogRef.current?.("limit-clear", why);
+    patchTab(task.id, tab.id, { limitWait: undefined });
+  }, [task.id, tab.id, patchTab]);
+  const clearLimitWaitRef = useRef(clearLimitWait);
+  clearLimitWaitRef.current = clearLimitWait;
+
+  useEffect(() => {
+    if (!limitWait) return;
+    const fire = () => {
+      if (Date.now() < limitWait.resumeAt) return;
+      const ptyId = ptyRef.current;
+      // The agent died while parked (quit, crash, app-driven restart). There
+      // is nothing to type into, and the exited banner already says so.
+      if (!ptyId) { clearLimitWaitRef.current("pty gone"); return; }
+      if (limitResumesRef.current >= LIMIT_MAX_RESUMES) {
+        clearLimitWaitRef.current("resume ceiling");
+        useUI.getState().pushToast(
+          `Stopped auto-resuming ${agentDisplayName(tab.cli)}: the usage limit is still not lifted after ${LIMIT_MAX_RESUMES} tries.`,
+          "error",
+        );
+        return;
+      }
+      limitResumesRef.current += 1;
+      const text = usePrefs.getState().autoResumeMessage;
+      debugLogRef.current?.("limit-resume", `try ${limitResumesRef.current}: "${text.slice(0, 60)}"`);
+      // Clear the park BEFORE sending: if the limit has not lifted, the
+      // agent's fresh notice re-arms a new park with the new reset time,
+      // and that must not be mistaken for the one we are leaving.
+      clearLimitWaitRef.current("resuming");
+      // An empty message means "wake it with a bare Enter", which is a real
+      // choice for an agent that only needs a nudge. deliverMessage would
+      // still work, but this skips a pointless zero-byte write.
+      if (text) sendMessageToPty(ptyId, text);
+      else void ipc.ptyWrite(ptyId, [0x0d]).catch(() => {});
+      // Stamp it like a keyboard submit so work-done detection re-arms for
+      // the turn this just started (same contract as the queue drain).
+      patchTab(task.id, tab.id, { lastInputAt: Date.now() });
+    };
+    fire();
+    const h = window.setInterval(fire, LIMIT_TICK_MS);
+    return () => window.clearInterval(h);
+  }, [limitWait, task.id, tab.id, tab.cli, patchTab]);
+
   useEffect(() => {
     let cancelled = false;
     const host = hostRef.current;
@@ -562,6 +650,10 @@ const captureArmedRef = useRef(false);
           ...(queue !== cur?.queue ? { queue } : {}),
         });
       }
+      // A park belongs to the process that hit the limit. The new one has
+      // not, so it starts unparked and with a full retry budget.
+      if (cur?.limitWait) patchTab(task.id, tab.id, { limitWait: undefined });
+      limitResumesRef.current = 0;
     }
 
     // Shared link opener (WebLinksAddon, OSC 8 linkHandler, capture-phase
@@ -1142,6 +1234,133 @@ const captureArmedRef = useRef(false);
       compiled && (compiled.attention.length || compiled.busy.length || compiled.idle.length)
         ? compiled
         : null;
+    // ── Usage-limit auto-resume: detection half ──
+    //
+    // Only for a real agent tab: never a shell, a run tab or a plain
+    // terminal entry. Those print whatever they are told to, including the
+    // string "usage limit reached" out of a log file, and none of them has a
+    // menu to answer.
+    const limitPatterns = workDoneEnabled && !isRunTab ? limitPatternsForCli(tab.cli) : [];
+    // The PREF is read live, not captured here. This is the setting somebody
+    // turns on because they are about to leave the machine, so "restart your
+    // agents for it to take effect" would miss the exact case it exists for.
+    // A subscription rather than a `getState()` per chunk: this sits on the
+    // PTY data path.
+    let limitEnabled = usePrefs.getState().autoResumeOnLimit;
+    const unsubLimitPref = limitPatterns.length
+      ? usePrefs.subscribe(st => { limitEnabled = st.autoResumeOnLimit; })
+      : null;
+    /** Whether the limit scanner should run right now. */
+    const limitScanOn = () => limitEnabled && limitPatterns.length > 0;
+
+    // Staged-check state. `limitVerifyTimer` doubles as the "a check is
+    // already running" flag, so it MUST be nulled on every path that ends a
+    // run: a second notice (the limit did not actually lift) has to be able
+    // to arm a fresh check, and an earlier version that only cleared these on
+    // teardown could never re-park for the life of the PTY.
+    let limitVerifyTimer: number | null = null;
+    let limitSubmitTimer: number | null = null;
+    let limitCeilingReported = false;
+
+    /** Read the visible buffer, answer the wait-or-pay menu if one is there,
+     *  and park the tab until the reset. `notice` is the line that armed the
+     *  check, which is where the reset time is printed in every wording seen
+     *  so far. Returns true when the check is finished with (parked, or
+     *  someone else parked first), false to try again on the next tick. */
+    const verifyLimit = (notice: string): boolean => {
+      const term = termRef.current;
+      const ptyId = ptyRef.current;
+      if (!term || !ptyId || cancelled) return true;
+      const live = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+      if (live?.limitWait) return true;
+
+      const now = Date.now();
+      const plan = planLimitPark(
+        notice,
+        visibleTailRows(term, LIMIT_TAIL_ROWS).map(stripAnsi),
+        now,
+        usePrefs.getState().autoResumeMarginSec * 1000,
+      );
+      // Neither a menu to answer nor a clock to wait on. Usually a half-drawn
+      // box on an early tick, so this is a "try again", not a "no". If every
+      // tick lands here the run gives up and the user answers the prompt,
+      // which is the correct outcome for a line that merely TALKED about a
+      // usage limit.
+      if (!plan) return false;
+
+      if (plan.choice) {
+        const { nav, submit, label } = plan.choice;
+        wdlog(`limit menu: selecting "${label}"`);
+        dbg("limit-menu", label);
+        // Arrows first, Enter a beat later (LIMIT_SUBMIT_DELAY_MS), for the
+        // same reason agentSend delays its CR: a submit arriving in the same
+        // input burst as the keys ahead of it reads as paste continuation.
+        const moved = nav.length ? ipc.ptyWrite(ptyId, nav) : Promise.resolve();
+        void moved.then(() => {
+          limitSubmitTimer = window.setTimeout(() => {
+            limitSubmitTimer = null;
+            if (cancelled || ptyRef.current !== ptyId) return;
+            void ipc.ptyWrite(ptyId, submit).catch(() => {});
+          }, LIMIT_SUBMIT_DELAY_MS);
+        }).catch(() => {});
+      }
+
+      patchTab(task.id, tab.id, {
+        limitWait: {
+          detectedAt: now,
+          resumeAt: plan.resumeAt,
+          answered: !!plan.choice,
+          estimated: plan.estimated,
+          tries: limitResumesRef.current,
+        },
+      });
+      wdlog(`limit park: resuming ${new Date(plan.resumeAt).toISOString()}${plan.estimated ? " (estimated)" : ""}`);
+      dbg("limit-park", `${new Date(plan.resumeAt).toISOString()} answered=${!!plan.choice} estimated=${plan.estimated}`);
+      return true;
+    };
+
+    /** One tick of the staged check, re-arming itself until it succeeds or
+     *  runs out of steps. */
+    const runLimitVerify = (notice: string, step: number) => {
+      limitVerifyTimer = null;
+      if (cancelled) return;
+      if (verifyLimit(notice)) return;
+      const next = step + 1;
+      if (next >= LIMIT_VERIFY_DELAYS_MS.length) {
+        dbg("limit-giveup", "no menu and no reset time on screen");
+        return;
+      }
+      limitVerifyTimer = window.setTimeout(
+        () => runLimitVerify(notice, next),
+        LIMIT_VERIFY_DELAYS_MS[next] - LIMIT_VERIFY_DELAYS_MS[step],
+      );
+    };
+
+    /** A limit notice went past. Stage the check rather than reading the
+     *  screen now: the menu is painted after the line and repainted while it
+     *  settles, so reading it immediately finds a half-drawn box. */
+    const noteLimitNotice = (line: string) => {
+      const live = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+      if (live?.limitWait) return;            // already parked
+      if (limitVerifyTimer !== null) return;  // a check is already staged
+      if (limitResumesRef.current >= LIMIT_MAX_RESUMES) {
+        // Say so once. Falling silent here would leave a tab that looks
+        // simply stuck, which is worse than the behaviour with the feature
+        // off, where at least the unanswered prompt is visibly a prompt.
+        if (!limitCeilingReported) {
+          limitCeilingReported = true;
+          useUI.getState().pushToast(
+            `Stopped auto-resuming ${agentDisplayName(tab.cli)}: the usage limit is still not lifted after ${LIMIT_MAX_RESUMES} tries.`,
+            "error",
+          );
+        }
+        return;
+      }
+      wdlog(`limit notice: ${line.slice(0, 120)}`);
+      dbg("limit-notice", line.slice(0, 200));
+      limitVerifyTimer = window.setTimeout(() => runLimitVerify(line, 0), LIMIT_VERIFY_DELAYS_MS[0]);
+    };
+
     const scanDecoder = new TextDecoder("utf-8", { fatal: false });
     let scanLineBuf = "";
     const MAX_SCAN_LINE = 4096;
@@ -1151,8 +1370,15 @@ const captureArmedRef = useRef(false);
     // line would sit in the buffer until the length bound sliced it away and
     // no pattern would ever run against it.
     const SCAN_EOL = /\r\n|[\r\n]/;
+    /** True when SOMETHING wants complete output lines. Both consumers share
+     *  one decode + line split; without this the limit scanner would be a
+     *  second TextDecoder on the same hot path. A function, not a constant,
+     *  because the limit half can be switched on mid-session. With auto-resume
+     *  off (the default) this is exactly as false as it was before the feature
+     *  existed, so the decode never happens. */
+    const lineScanOn = () => !!outputSignals || limitScanOn();
     const scanOutputLines = (u8: Uint8Array) => {
-      if (!outputSignals) return;
+      if (!lineScanOn()) return;
       scanLineBuf += scanDecoder.decode(u8, { stream: true });
       let m: RegExpMatchArray | null;
       while ((m = scanLineBuf.match(SCAN_EOL))) {
@@ -1161,6 +1387,8 @@ const captureArmedRef = useRef(false);
         if (raw.length > MAX_SCAN_LINE) raw = raw.slice(0, MAX_SCAN_LINE);
         const line = stripAnsi(raw).trim();
         if (!line) continue;
+        if (limitScanOn() && looksLikeLimitNotice(line, limitPatterns)) noteLimitNotice(line);
+        if (!outputSignals) continue;
         // Precedence attention > busy > idle, mirroring the title classifier.
         const state = outputSignals.attention.some(re => re.test(line)) ? "attention"
           : outputSignals.busy.some(re => re.test(line)) ? "busy"
@@ -1831,7 +2059,7 @@ const captureArmedRef = useRef(false);
               patchTab(task.id, tab.id, { lastOutputAt: t });
             }, 500 - (now - lastOutputPatchRef.current));
           }
-          if (outputSignals) scanOutputLines(u8);
+          if (lineScanOn()) scanOutputLines(u8);
           if (ptyDebugOn) dbg("data", decodeForDebug(u8, ptyRawOn ? 65_536 : 500));
           // Output activity extends the OSC 9;4 done timer — even if
           // the agent went OSC-idle, fresh bytes mean it's still
@@ -1963,6 +2191,7 @@ const captureArmedRef = useRef(false);
           // sets a fresh id; the resume/sandbox-restart branches above
           // return early and respawn without reaching here.
           patchTab(task.id, tab.id, { ptyId: undefined });
+          clearLimitWaitRef.current("pty exited");
           setExited(true);
         });
         unlistenExitRef.current = unlistenExit;
@@ -1991,6 +2220,12 @@ const captureArmedRef = useRef(false);
           if (data.indexOf("\r") !== -1 || data.indexOf("\n") !== -1) {
             settledRef.current = { lastHash: 0, unchangedCount: 0, marked: false };
             scrollbackRef.current = { lastLen: -1, stableCount: 0, marked: false };
+            // The user is driving, so the auto-resume has nothing left to do:
+            // drop any park, and give them a fresh budget of retries (the
+            // ceiling exists to stop an UNATTENDED loop, and this is the
+            // proof somebody is attending).
+            clearLimitWaitRef.current("user input");
+            limitResumesRef.current = 0;
             // Demote workState to idle on Enter — the user is now driving.
             const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id);
             if (cur?.type === "terminal" && cur.workState === "done") {
@@ -2078,6 +2313,11 @@ const captureArmedRef = useRef(false);
         clearTimeout(lastOutputTrailerRef.current);
         lastOutputTrailerRef.current = null;
       }
+      // Same hazard for the staged limit-menu checks: one firing after a
+      // gen-bump Restart would send arrow keys into a brand-new agent.
+      if (limitVerifyTimer !== null) { clearTimeout(limitVerifyTimer); limitVerifyTimer = null; }
+      if (limitSubmitTimer !== null) { clearTimeout(limitSubmitTimer); limitSubmitTimer = null; }
+      unsubLimitPref?.();
       if (ptyRef.current) ipc.ptyKill(ptyRef.current).catch(() => {});
       // Dispose the renderer addon FIRST so its render loop can't fire
       // on a half-disposed terminal.
@@ -2466,6 +2706,34 @@ const captureArmedRef = useRef(false);
             icon: X,
             onAction: () => useApp.getState().closeTab(task.id, tab.id),
           } : undefined}
+        />
+      )}
+      {limitWait && !exited && (
+        // Same in-flow strip as the exited banner, muted rather than warn
+        // tinted: nothing has gone wrong, the tab is waiting on a clock. The
+        // xterm below stays live, so the notice and the answered menu are
+        // still there to read.
+        <TerminalExitedBanner
+          tone="muted"
+          icon={Play}
+          label={
+            `Usage limit reached. ${agentDisplayName(tab.cli)} resumes at `
+            + new Date(limitWait.resumeAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+            + (limitWait.estimated ? " (estimated, no reset time was printed)." : ".")
+          }
+          actionLabel="Resume now"
+          onAction={() => {
+            // Bring the deadline forward instead of sending from here: the
+            // clock effect owns delivery, the ceiling and the log line, and
+            // a second sender would have to duplicate all three.
+            patchTab(task.id, tab.id, { limitWait: { ...limitWait, resumeAt: Date.now() } });
+          }}
+          secondary={{
+            label: "Cancel",
+            title: "Stop waiting. The agent stays where it is.",
+            icon: X,
+            onAction: () => clearLimitWait("cancelled by user"),
+          }}
         />
       )}
       {/* data-* hooks: the terminal renders to a WebGL canvas, so e2e has no
