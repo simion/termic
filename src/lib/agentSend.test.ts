@@ -22,6 +22,42 @@ const echo = (s: string) => dataCb?.(new TextEncoder().encode(s));
 beforeEach(() => { writes.length = 0; dataCb = undefined; unlisten.mockClear(); });
 
 describe("deliverMessage", () => {
+  // The bug: bytes go to the PTY as typed, so a `\n` inside the text is an
+  // Enter to the agent's TUI. An eight-line prompt was eight submits, seven of
+  // them fragments, and only the trailing line survived as the message.
+  it("sends a multi-line body as ONE bracketed paste, not as N submits", async () => {
+    const body = "line one\nline two\nline three";
+    const p = deliverMessage("pty-1", body);
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    const sent = text(writes[0]);
+    expect(sent).toBe(`\x1b[200~${body}\x1b[201~`);
+    // Every newline is still IN there: the point is that the terminal now
+    // reads them as literal, not that we stripped them.
+    expect(sent.split("\n")).toHaveLength(3);
+    await p;
+  });
+
+  // The submit has to land OUTSIDE the paste markers, or it is literal text
+  // inside the pasted body and nothing is ever sent.
+  it("writes the submit CR after the paste ends, never inside it", async () => {
+    const p = deliverMessage("pty-1", "a\nb");
+    await p;
+    expect(text(writes[0]).endsWith("\x1b[201~")).toBe(true);
+    expect(submitted()).toBe(true);
+    const crIndex = writes.findIndex(w => w.length === 1 && w[0] === CR);
+    expect(crIndex).toBeGreaterThan(0);
+  });
+
+  // The common path must be byte-for-byte what it was, so a single-line send
+  // cannot regress on an agent whose paste mode is off.
+  it("leaves a single-line message completely unwrapped", async () => {
+    const p = deliverMessage("pty-1", "fix the login bug");
+    await p;
+    expect(text(writes[0])).toBe("fix the login bug");
+    expect(text(writes[0])).not.toContain("\x1b[200~");
+  });
+
+
   it("measures the submit gap from when the TEXT write lands, not before it", async () => {
     // Regression. Timing the gap from before `ptyWrite` resolves spends part
     // of it on the IPC round trip, so the real gap shrinks by however slow

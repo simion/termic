@@ -199,9 +199,9 @@ function UsageDetail({ agentId, entry, level, driver }: {
 
       <div className="flex flex-col gap-2.5 px-3 py-2.5">
         <UsageRow label="Session" sub="rolling 5 hours" window={entry.session}
-          driving={driver.label === "5h"} level={level} />
+          driving={driver.label === "5h"} level={level} source={entry.source} />
         <UsageRow label="Weekly" sub="rolling 7 days" window={entry.weekly}
-          driving={driver.label === "wk"} level={level} />
+          driving={driver.label === "wk"} level={level} source={entry.source} />
       </div>
 
       <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[var(--color-fg-faint)]">
@@ -226,7 +226,7 @@ function UsageDetail({ agentId, entry, level, driver }: {
 }
 
 /** One window: name, percentage, its own full-width bar, and when it resets. */
-function UsageRow({ label, sub, window: w, driving, level }: {
+function UsageRow({ label, sub, window: w, driving, level, source }: {
   label: string;
   sub: string;
   window: UsageWindow | null;
@@ -234,15 +234,27 @@ function UsageRow({ label, sub, window: w, driving, level }: {
    *  here too, so the popover and the footer never disagree. */
   driving: boolean;
   level: UsageLevel;
+  /** Which transport reported it. Decides what a MISSING window means, and
+   *  the two meanings are not interchangeable. */
+  source: UsageEntry["source"];
 }) {
-  // A window the provider never reported. Said in WORDS, because an omitted
-  // row would read as a rendering bug: codex on a free plan genuinely has no
-  // session window, and that is worth one line to explain.
+  // A window that is not here. Said in WORDS, because an omitted row reads as
+  // a rendering bug, and the wording has to match the REASON.
+  //
+  // For codex it is a plan fact: a free plan genuinely has no session window
+  // and never will, so "on this plan" is the useful thing to say.
+  //
+  // For claude it is never a plan fact. Claude always has both windows, so a
+  // missing one means this particular payload did not carry it: measured, a
+  // `used_percentage` of null (or a null `five_hour`) drops the window, and
+  // the likely moment for that is just after the window resets. Telling a
+  // Claude Max user their plan has no session limit is simply wrong, and it
+  // is what this said until someone read it on their own screen.
   if (!w) {
     return (
       <div className="flex items-baseline justify-between text-[var(--color-fg-faint)]">
         <span>{label}</span>
-        <span>not reported on this plan</span>
+        <span>{source === "rpc" ? "not reported on this plan" : "not in the last report"}</span>
       </div>
     );
   }

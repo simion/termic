@@ -123,6 +123,9 @@ pub fn start(app: tauri::AppHandle) {
         // regardless of the "Enable CLI" setting, because a disabled CLI
         // keeps its command installed (it just refuses every request), and
         // a stale link is exactly as confusing either way.
+        // Before reconcile, which only ever REPAIRS a link that already
+        // exists. This is what creates the first one.
+        auto_install_user_link();
         reconcile_link();
         server_main(app)
     });
@@ -4521,6 +4524,63 @@ fn reconcile_target(name: &str, installed: Option<PathBuf>, legacy: &[PathBuf]) 
 /// is absent on purpose (Settings installs on the enable click and
 /// nowhere else, so that re-enabling cannot resurrect one you removed),
 /// and anything that is not our symlink is never touched.
+/// Install `termic` into `~/.local/bin` once, unprompted, on launch.
+///
+/// `cli_enabled` defaults to true, but for a long time the ONLY thing that
+/// created the symlink was the Settings toggle's off->on transition. So a
+/// fresh Mac rendered a toggle that already said on, above a hint that said
+/// "On by default", and had no `termic` command anywhere. Reported from a
+/// fresh install, where the only way to get a working command was the
+/// system-wide button.
+///
+/// Deliberately the USER location and never `/usr/local/bin`: writing there
+/// needs an admin prompt, and a launch must never raise one. System-wide stays
+/// on the explicit button, where the user asked for it and can answer the
+/// prompt. The tradeoff is that `~/.local/bin` is NOT on a stock macOS PATH
+/// (`/etc/paths` ships `/usr/local/bin` and not this), so Settings still tells
+/// the user when the command it just installed is not reachable yet.
+///
+/// Runs AT MOST ONCE per profile, gated on `cli_user_link_installed`, and the
+/// marker is set even when the install fails. Retrying every launch would be
+/// the same thing as "install whenever it is missing", and missing is exactly
+/// what a user who deleted the link on purpose looks like. `reconcile_link`
+/// keeps its own narrower contract: it repairs, it never creates.
+/// Should the one-time auto-install run for these settings? Split out so the
+/// three cases can be asserted without touching a real home directory.
+fn should_auto_install(s: &crate::Settings) -> bool {
+    s.cli_enabled && !s.cli_user_link_installed
+}
+
+fn auto_install_user_link() {
+    // Release only, matching `reconcile_link`: `make cli-dev` installs
+    // `termic-dev` by hand and a dev run must not second-guess it.
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let mut settings = crate::load_settings_inner();
+    if !should_auto_install(&settings) {
+        return;
+    }
+    // Someone else already owns the name, or one of ours is already there.
+    // Either way this is not ours to create; mark it done and stand down.
+    let name = install_name();
+    let already = install_targets(name)
+        .into_iter()
+        .any(|l| std::fs::symlink_metadata(&l).is_ok());
+
+    if !already {
+        match bundled_cli_path().and_then(|src| install_user(&src, name)) {
+            Ok(link) => dlog(&format!("[cli] auto-installed {}", link.display())),
+            // Never fatal, never a dialog. A launch that cannot write
+            // ~/.local/bin still has to open the app.
+            Err(e) => dlog(&format!("[cli] auto-install skipped: {e}")),
+        }
+    }
+
+    settings.cli_user_link_installed = true;
+    let _ = crate::save_settings_inner(&settings);
+}
+
 pub fn reconcile_link() {
     // Release only, for the reason in `prune_legacy_links`, plus one of
     // its own: `make cli-dev` installs `termic-dev` by hand, and a dev
@@ -4559,6 +4619,128 @@ pub fn reconcile_link() {
             let _ = std::fs::remove_file(&l);
         }
     }
+}
+
+/// Which startup file a given login shell actually reads for an
+/// INTERACTIVE session, and the line that puts `dir` on PATH in it.
+///
+/// Per shell, because the syntax is not shared and a `export PATH=...`
+/// written into a fish config is a syntax error the user meets on their next
+/// terminal, not here.
+///
+/// macOS runs Terminal.app sessions as LOGIN shells, which is why bash gets
+/// `.bash_profile` rather than `.bashrc`: bash reads only the former for a
+/// login shell, so the usual Linux answer silently does nothing here.
+fn shell_rc_and_line(shell: &str, dir: &Path) -> (PathBuf, String) {
+    let home = dirs::home_dir().unwrap_or_default();
+    let d = dir.display();
+    let base = Path::new(shell).file_name().and_then(|n| n.to_str()).unwrap_or("");
+    match base {
+        "fish" => (
+            home.join(".config/fish/config.fish"),
+            // `fish_add_path` is idempotent and order-aware, and is what fish
+            // itself tells you to use. `set -gx PATH` would re-prepend on
+            // every shell start.
+            format!("fish_add_path {d}"),
+        ),
+        "bash" => (
+            home.join(".bash_profile"),
+            format!("export PATH=\"{d}:$PATH\""),
+        ),
+        // zsh is the macOS default. Everything else that is not fish or bash
+        // is overwhelmingly likely to take POSIX `export` in a file named
+        // like this one.
+        _ => (home.join(".zshrc"), format!("export PATH=\"{d}:$PATH\"")),
+    }
+}
+
+/// Marker written above our line, so a reader knows who put it there and a
+/// user can find and delete it. Also what makes the append IDEMPOTENT.
+const PATH_MARKER: &str = "# Added by Termic: put the termic command on PATH";
+
+/// Is this dir already handled by `rc`? Checks for OUR marker and, more
+/// importantly, for any mention of the directory at all: a user who added it
+/// by hand, in their own wording, must not get a duplicate line appended
+/// underneath theirs.
+fn rc_already_has(existing: &str, dir: &Path) -> bool {
+    let d = dir.display().to_string();
+    let home = dirs::home_dir().unwrap_or_default().display().to_string();
+    // `$HOME/.local/bin` and `~/.local/bin` are the same line to a shell and
+    // must be the same line to us, or every launch appends another copy.
+    let tilde = if !home.is_empty() { d.replacen(&home, "~", 1) } else { d.clone() };
+    let dollar = if !home.is_empty() { d.replacen(&home, "$HOME", 1) } else { d.clone() };
+    existing.lines().any(|l| {
+        let l = l.trim();
+        !l.starts_with('#')
+            && (l.contains(&d) || l.contains(&tilde) || l.contains(&dollar))
+    }) || existing.contains(PATH_MARKER)
+}
+
+/// Append the PATH line to the user's shell startup file.
+///
+/// Offered when the CLI is installed somewhere the shell cannot find it,
+/// which on a stock Mac is the normal case: `auto_install_user_link` puts the
+/// command in `~/.local/bin`, and `/etc/paths` ships `/usr/local/bin` and not
+/// that. Without this the only route to a working command was the
+/// system-wide button and its admin prompt.
+///
+/// Appends, never rewrites: the file is the user's, we add to the end, and
+/// the marker comment says who did it so it can be found and removed.
+#[tauri::command]
+pub async fn cli_add_to_path() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(add_to_path_inner)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn add_to_path_inner() -> Result<String, String> {
+    let dir = user_bin().ok_or("no home directory")?;
+    let shell = crate::shell_env::login_shell();
+    let (rc, line) = shell_rc_and_line(&shell, &dir);
+
+    append_path_line(&rc, &line, &dir)
+}
+
+/// The file half, split out so it can be tested against real files rather
+/// than only through a running app: this is the part that touches a dotfile
+/// the user wrote, and the failure mode is silent corruption.
+///
+/// Returns the message shown in Settings either way, because "already there"
+/// is a success the user needs to read, not an error.
+fn append_path_line(rc: &Path, line: &str, dir: &Path) -> Result<String, String> {
+    let existing = match std::fs::read_to_string(rc) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("read {}: {e}", rc.display())),
+    };
+    if rc_already_has(&existing, dir) {
+        return Ok(format!(
+            "{} already puts {} on PATH. Open a new terminal for it to take effect.",
+            rc.display(),
+            dir.display()
+        ));
+    }
+
+    if let Some(parent) = rc.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    // LEAD with a newline. A dotfile whose last line has no trailing newline
+    // of its own is common, and appending straight onto it would splice our
+    // export into the end of whatever that line was.
+    let addition = format!("\n{PATH_MARKER}\n{line}\n");
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(rc)
+        .map_err(|e| format!("open {}: {e}", rc.display()))?;
+    std::io::Write::write_all(&mut f, addition.as_bytes())
+        .map_err(|e| format!("write {}: {e}", rc.display()))?;
+
+    Ok(format!(
+        "Added {} to your PATH in {}. Open a new terminal for it to take effect.",
+        dir.display(),
+        rc.display()
+    ))
 }
 
 /// Install the CLI onto PATH. `system=false` is the no-prompt path used
@@ -6953,6 +7135,118 @@ mod tests {
         let second: Reply = proto::read_msg(&mut reader).unwrap().unwrap();
         assert!(matches!(first.data, Some(ReplyData::Hello(_))));
         assert!(matches!(second.data, Some(ReplyData::List(_))));
+    }
+
+    /// The gate, stated as the three cases that must behave differently.
+    ///
+    /// The bug this exists for: `cli_enabled` defaults true, the toggle
+    /// rendered on, and nothing ever created the link, so a fresh Mac had a
+    /// settings row promising a command that did not exist.
+    #[test]
+    fn the_auto_install_runs_once_and_never_resurrects_a_removed_link() {
+        // Case 1: fresh profile, CLI on, never installed -> install.
+        let mut fresh = crate::Settings { cli_enabled: true, cli_user_link_installed: false, ..Default::default() };
+        assert!(should_auto_install(&fresh));
+
+        // Case 2: the marker is set the moment it has been TRIED, so a second
+        // launch does nothing. Retrying every launch would be the same thing
+        // as "install whenever missing", and missing is what a deliberate
+        // deletion looks like.
+        fresh.cli_user_link_installed = true;
+        assert!(!should_auto_install(&fresh), "must never run twice");
+
+        // Case 3: the user turned the CLI off. Installing a command for a
+        // disabled feature is worse than not having one.
+        let off = crate::Settings { cli_enabled: false, cli_user_link_installed: false, ..Default::default() };
+        assert!(!should_auto_install(&off));
+    }
+
+    /// Per shell, because the syntax is not shared. An `export PATH=` written
+    /// into a fish config is a syntax error the user meets in their next
+    /// terminal rather than here, where we could have told them.
+    #[test]
+    fn the_path_line_matches_the_shell_that_will_read_it() {
+        let dir = Path::new("/Users/u/.local/bin");
+
+        let (rc, line) = shell_rc_and_line("/bin/zsh", dir);
+        assert!(rc.ends_with(".zshrc"), "{}", rc.display());
+        assert_eq!(line, "export PATH=\"/Users/u/.local/bin:$PATH\"");
+
+        // macOS runs Terminal.app as a LOGIN shell, and bash reads only
+        // .bash_profile for one. `.bashrc` is the usual Linux answer and it
+        // silently does nothing here.
+        let (rc, line) = shell_rc_and_line("/bin/bash", dir);
+        assert!(rc.ends_with(".bash_profile"), "{}", rc.display());
+        assert!(line.starts_with("export PATH="));
+
+        // fish takes neither the syntax nor the filename.
+        let (rc, line) = shell_rc_and_line("/opt/homebrew/bin/fish", dir);
+        assert!(rc.ends_with("config.fish"), "{}", rc.display());
+        assert_eq!(line, "fish_add_path /Users/u/.local/bin");
+
+        // An unknown shell gets the POSIX answer rather than nothing.
+        let (_, line) = shell_rc_and_line("/usr/bin/ksh", dir);
+        assert!(line.starts_with("export PATH="));
+    }
+
+    /// Appending twice is the failure this has to prevent, and "twice" has
+    /// more spellings than our own.
+    #[test]
+    fn an_rc_that_already_has_the_dir_is_left_alone() {
+        let home = dirs::home_dir().unwrap_or_default();
+        let dir = home.join(".local/bin");
+        let literal = dir.display().to_string();
+
+        assert!(!rc_already_has("export EDITOR=vim\n", &dir), "unrelated rc");
+
+        // Ours.
+        assert!(rc_already_has(&format!("{PATH_MARKER}\nexport PATH=\"{literal}:$PATH\"\n"), &dir));
+
+        // Theirs, in each of the three spellings a shell treats as the same
+        // directory. A duplicate under a hand-written line is still a
+        // duplicate, and it is the one a user notices and blames us for.
+        assert!(rc_already_has(&format!("export PATH=\"{literal}:$PATH\"\n"), &dir), "literal");
+        assert!(rc_already_has("export PATH=\"$HOME/.local/bin:$PATH\"\n", &dir), "$HOME form");
+        assert!(rc_already_has("export PATH=\"~/.local/bin:$PATH\"\n", &dir), "tilde form");
+        assert!(rc_already_has("fish_add_path $HOME/.local/bin\n", &dir), "fish form");
+
+        // A COMMENTED-OUT line is not a working PATH entry. Treating it as
+        // one would leave the user with a command that still does not
+        // resolve and an app insisting it already fixed it.
+        assert!(!rc_already_has("# export PATH=\"$HOME/.local/bin:$PATH\"\n", &dir));
+    }
+
+    /// Against real files, because this writes into a dotfile the user wrote
+    /// and the failure mode is silent corruption rather than an error.
+    #[test]
+    fn appending_the_path_line_never_corrupts_the_users_rc() {
+        let dir = std::env::temp_dir().join(format!("termic-rc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rc = dir.join(".zshrc");
+        let bin = dirs::home_dir().unwrap_or_default().join(".local/bin");
+        let line = format!("export PATH=\"{}:$PATH\"", bin.display());
+
+        // A dotfile whose last line has NO trailing newline. Appending
+        // straight onto it would splice the export onto the end of the alias.
+        std::fs::write(&rc, "export EDITOR=vim\nalias ll=\"ls -la\"").unwrap();
+        append_path_line(&rc, &line, &bin).unwrap();
+        let after = std::fs::read_to_string(&rc).unwrap();
+        assert!(after.contains("alias ll=\"ls -la\"\n"), "spliced the last line: {after:?}");
+        assert!(after.contains(PATH_MARKER));
+        assert!(after.trim_end().ends_with(&line), "{after:?}");
+
+        // Running it again must change nothing: the button is clickable twice
+        // and a second PATH entry on every click is what users notice.
+        let msg = append_path_line(&rc, &line, &bin).unwrap();
+        assert_eq!(std::fs::read_to_string(&rc).unwrap(), after, "appended twice");
+        assert!(msg.contains("already"), "{msg}");
+
+        // A shell with no rc file yet gets one created rather than an error.
+        let fresh = dir.join("config/fish/config.fish");
+        append_path_line(&fresh, "fish_add_path x", &bin).unwrap();
+        assert!(fresh.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

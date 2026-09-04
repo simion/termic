@@ -31,6 +31,30 @@ export function sendMessageToPty(ptyId: string, text: string): void {
   void deliverMessage(ptyId, text).catch(() => {});
 }
 
+/** Bracketed paste, around a body that contains newlines.
+ *
+ *  Without this a multi-line prompt is DESTROYED, not merely mangled. The
+ *  bytes go to the PTY as typed, so every `\n` inside the text is an Enter to
+ *  the agent's TUI: an eight-line prompt is eight submits, seven of them
+ *  fragments, and only the last line survives as the message. Reported from a
+ *  real run where an agent kept receiving nothing but the trailing line of a
+ *  handoff prompt and tried to execute it as a command.
+ *
+ *  `ESC [ 200~` ... `ESC [ 201~` is how a terminal says "this is pasted text,
+ *  the newlines are literal". Every agent TUI here enables the mode (DECSET
+ *  2004) because they all support pasting a multi-line prompt.
+ *
+ *  Applied ONLY when the text actually spans lines. A single-line message is
+ *  byte-for-byte what it was before, so the common path cannot regress, and
+ *  an agent that somehow has the mode off keeps working for everything except
+ *  the case that was already broken.
+ *
+ *  The CR that submits is deliberately still written separately, after the
+ *  delay: it must land OUTSIDE the paste, or it is literal text inside it. */
+function wrapIfMultiline(text: string): string {
+  return /[\r\n]/.test(text) ? `\x1b[200~${text}\x1b[201~` : text;
+}
+
 /** How long to watch for the typed text to come back before deciding the
  *  agent is not reading. Measured: a real input box echoes well inside this,
  *  including an 8-line body, which comes back verbatim rather than as a paste
@@ -100,7 +124,7 @@ export function deliverMessage(
   text: string,
   opts: { verifyEcho?: boolean } = {},
 ): Promise<void> {
-  const textBytes = Array.from(new TextEncoder().encode(text));
+  const textBytes = Array.from(new TextEncoder().encode(wrapIfMultiline(text)));
   // Resolve only after BOTH the text AND the Enter (CR) have been written, so
   // an awaiting caller doesn't treat a half-delivered message (text in, never
   // submitted) as sent. Rejects if either write fails.

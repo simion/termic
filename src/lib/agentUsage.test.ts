@@ -196,6 +196,42 @@ describe("the store", () => {
     expect(useAgentUsage.getState().byAgent).not.toBe(first);
   });
 
+  // The bug this exists for: a Claude Max user watched their Session row turn
+  // into "not reported", because one payload carried `used_percentage: null`
+  // and the whole entry was replaced with it.
+  it("keeps a window the newest reading happens to omit", () => {
+    reset();
+    const s = useAgentUsage.getState();
+    s.report("claude", {
+      session: { usedPercent: 3, resetsAt: 10 },
+      weekly: { usedPercent: 18, resetsAt: 20 },
+    }, "statusline");
+    // The next turn reports only the weekly one.
+    s.report("claude", { session: null, weekly: { usedPercent: 19, resetsAt: 20 } }, "statusline");
+    const e = useAgentUsage.getState().byAgent["claude"];
+    expect(e.session?.usedPercent).toBe(3);
+    expect(e.weekly?.usedPercent).toBe(19);
+  });
+
+  it("does not invent a window the source never reported", () => {
+    // codex on a free plan has no session window at all, and carrying one
+    // forward from nothing would be inventing a limit that does not exist.
+    reset();
+    useAgentUsage.getState().report("codex", { session: null, weekly: { usedPercent: 49, resetsAt: 1 } }, "rpc");
+    expect(useAgentUsage.getState().byAgent["codex"].session).toBeNull();
+  });
+
+  it("never carries a window ACROSS sources", () => {
+    // The two transports describe different accounts' shapes. A claude push
+    // must not backfill a codex reading, or the chip shows a window that
+    // account does not have.
+    reset();
+    const s = useAgentUsage.getState();
+    s.report("x", { session: { usedPercent: 5, resetsAt: 1 }, weekly: null }, "statusline");
+    s.report("x", { session: null, weekly: { usedPercent: 7, resetsAt: 2 } }, "rpc");
+    expect(useAgentUsage.getState().byAgent["x"].session).toBeNull();
+  });
+
   it("clears without churning the store when there is nothing to clear", () => {
     reset();
     const before = useAgentUsage.getState().byAgent;

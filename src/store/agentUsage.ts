@@ -34,6 +34,24 @@ export const useAgentUsage = create<AgentUsageState>((set, get) => ({
   byAgent: {},
   report: (agentId, usage, source) => {
     const cur = get().byAgent[agentId];
+    // Carry a window the new reading does NOT carry, when the last one did.
+    //
+    // Claude reports both windows together, and a payload can arrive with one
+    // of them null: measured, a `used_percentage` of null drops that window,
+    // and the likely moment is just after it resets. Replacing wholesale then
+    // blanks a session percentage that was on screen a second earlier, which
+    // reads as the feature breaking rather than as one absent field.
+    //
+    // Only ever ADDS back a window, never removes one, and only from the same
+    // source, so codex's genuinely absent session window (free plan) stays
+    // absent. The age shown is the entry's newest reading, so a carried
+    // window is at most as old as that label already admits.
+    if (cur && cur.source === source) {
+      usage = {
+        session: usage.session ?? cur.session,
+        weekly: usage.weekly ?? cur.weekly,
+      };
+    }
     // The status line fires on EVERY turn, and most turns move a percentage by
     // nothing at all. An unchanged write copies the whole store and re-runs
     // every subscriber's selector (docs/performance.md bear trap 8) on the

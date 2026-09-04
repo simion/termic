@@ -15842,6 +15842,24 @@ pub struct Settings {
     /// nearly every `false` on disk is the default rather than a decision.
     #[serde(default)]
     pub cli_default_migrated: bool,
+    /// One-time marker for the launch-time auto-install of the `termic`
+    /// command into `~/.local/bin`.
+    ///
+    /// `cli_enabled` defaults to TRUE, and for a long time the only thing that
+    /// ever created the symlink was the Settings toggle's off->on transition.
+    /// A fresh profile therefore rendered the toggle already on, the hint said
+    /// "On by default", and no command existed anywhere: nobody got a CLI
+    /// unless they happened to switch it off and back on again. The same was
+    /// true of every profile the `cli_default_migrated` flip reached, since it
+    /// sets the flag and installs nothing.
+    ///
+    /// A marker rather than "install whenever it is missing", because the two
+    /// look identical on disk and mean opposite things: a command that was
+    /// never installed wants installing, and a command the user DELETED wants
+    /// leaving alone. Setting this once, on the first install attempt, is what
+    /// keeps the second case honoured forever.
+    #[serde(default)]
+    pub cli_user_link_installed: bool,
     /// "Enable MCP endpoint" (Settings): binds the loopback MCP listener
     /// (mcp_server.rs). Default OFF, and unlike `cli_enabled` the listener
     /// only exists while this is on (bind-on-enable; there is no auto-launch
@@ -18834,6 +18852,7 @@ pub fn run() {
             cli_server::cli_agent_states,
             cli_server::cli_prompt_report,
             cli_server::cli_install_symlink,
+            cli_server::cli_add_to_path,
             cli_server::cli_install_status,
             mcp_server::mcp_status,
             mcp_server::mcp_token,

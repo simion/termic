@@ -977,6 +977,14 @@ export const detectClis    = () => invoke<CliInfo[]>("detect_clis");
  *  Returns a human-readable result line; rejects with an error string. */
 export const cliInstallSymlink = (system: boolean) =>
   invoke<string>("cli_install_symlink", { system });
+
+/** Append `~/.local/bin` to PATH in the user's shell startup file.
+ *
+ *  Offered when the CLI is installed somewhere the shell cannot find it,
+ *  which on a stock Mac is the NORMAL case: `/etc/paths` ships
+ *  `/usr/local/bin` and not `~/.local/bin`. The alternative route is the
+ *  system-wide install, which needs an admin password; this one does not. */
+export const cliAddToPath = () => invoke<string>("cli_add_to_path");
 /** Where the CLI is installed for this build, the command name
  *  (termic, or termic-dev in a debug build), and whether that location is on
  *  the user's login PATH. */

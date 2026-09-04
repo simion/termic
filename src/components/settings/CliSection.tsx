@@ -12,7 +12,7 @@
 // <data_dir>/cli-token (0600, never in any child's env, cli_server.rs).
 
 import { useEffect, useState } from "react";
-import { cliInstallSymlink, cliInstallStatus } from "@/lib/ipc";
+import { cliInstallSymlink, cliInstallStatus, cliAddToPath } from "@/lib/ipc";
 import type { CliInstallStatus } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
@@ -64,6 +64,26 @@ export function CliSection() {
     }
   }
 
+  /** Append the PATH line, then re-read the install status.
+   *
+   *  The status will still say "not on PATH" straight afterwards, and that is
+   *  correct rather than a bug: `dir_on_login_path` asks the LOGIN shell's
+   *  resolved PATH, which was probed at startup and cannot see a line added a
+   *  second ago. The returned message is what tells the user to open a new
+   *  terminal, so it is shown as-is. */
+  async function addToPath() {
+    setCliInstalling(true);
+    setCliInstallMsg(null);
+    try {
+      setCliInstallMsg(await cliAddToPath());
+      setCliInstall(await cliInstallStatus());
+    } catch (e) {
+      setCliInstallMsg(String(e));
+    } finally {
+      setCliInstalling(false);
+    }
+  }
+
   async function installCli(system: boolean) {
     setCliInstalling(true);
     setCliInstallMsg(null);
@@ -98,7 +118,7 @@ export function CliSection() {
               <code className="font-mono">{cliInstall.path}</code>.{" "}
               {cliInstall.on_path
                 ? <>Run <code className="font-mono">{cliInstall.name} list</code> from any shell.</>
-                : <span className="text-[var(--color-warn,inherit)]">That location is not on your PATH, so use Install system-wide below, or add <code className="font-mono">~/.local/bin</code> to your PATH.</span>}
+                : <span className="text-[var(--color-warn,inherit)]">That location is not on your PATH yet, so the command will not be found until you add it.</span>}
             </p>
           ) : (
             <p className="text-[12.5px] text-[var(--color-fg-dim)]">
@@ -119,13 +139,27 @@ export function CliSection() {
               {cliInstalling ? "Installing…" : "Install system-wide instead (optional, uses /usr/local/bin)"}
             </button>
           ) : (
-            <div className="mt-2 flex items-center gap-2">
-              <Button variant="secondary" size="md" disabled={cliInstalling} onClick={() => installCli(true)}>
-                {cliInstalling ? "Installing…" : "Install system-wide"}
-              </Button>
-              <span className="text-[12px] text-[var(--color-fg-faint)]">
-                symlinks into <code className="font-mono">/usr/local/bin</code> (asks for your password)
-              </span>
+            <div className="mt-2 flex flex-col gap-2">
+              {/* Offered FIRST, and as the primary action, because it needs no
+                  password: it appends one line to the user's own shell
+                  startup file. The system-wide install is the same outcome
+                  through an admin prompt, so it belongs second. */}
+              <div className="flex items-center gap-2">
+                <Button variant="secondary" size="md" disabled={cliInstalling} onClick={addToPath}>
+                  {cliInstalling ? "Working…" : "Add to PATH"}
+                </Button>
+                <span className="text-[12px] text-[var(--color-fg-faint)]">
+                  adds <code className="font-mono">~/.local/bin</code> to your shell startup file (no password)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="secondary" size="md" disabled={cliInstalling} onClick={() => installCli(true)}>
+                  {cliInstalling ? "Installing…" : "Install system-wide"}
+                </Button>
+                <span className="text-[12px] text-[var(--color-fg-faint)]">
+                  symlinks into <code className="font-mono">/usr/local/bin</code> (asks for your password)
+                </span>
+              </div>
             </div>
           )}
           {cliInstallMsg && (
