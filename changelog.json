@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "1.2.2",
+      "version": "1.2.3",
       "date": "2026-09-04",
       "summary": "Muse Code, Codex self-reporting, and plan usage in the task footer."
     },

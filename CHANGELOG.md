@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.2.2] - 2026-09-04
+## [1.2.3] - 2026-09-04
 
 Muse Code, Codex self-reporting, and plan usage in the task footer.
 
@@ -46,6 +46,23 @@ Muse Code, Codex self-reporting, and plan usage in the task footer.
   footer stayed empty. A Codex task in a Docker container is also asked about
   the account that is logged in inside the container, rather than the one on
   your Mac. ([#277](https://github.com/simion/termic/issues/277))
+- The `termic` command now installs itself. The CLI setting has been on by
+  default for a while, but the command was only ever created when you toggled
+  the setting off and on again, so on a fresh Mac the row said it was enabled
+  and no command existed. It is now installed into `~/.local/bin` on launch.
+  Removing it by hand is still respected: it is never put back.
+- **Add to PATH**, next to Install system-wide. `~/.local/bin` is not on a
+  stock macOS PATH, so the command could be installed and still not found. The
+  new button adds it to your shell startup file and needs no password, where
+  Install system-wide asks for one. It writes the right line for your shell,
+  and will not add a second copy of one you already have.
+- Multi-line prompts sent between tasks arrive whole. Newlines were delivered
+  to the receiving agent as Enter, so a multi-line prompt was submitted one
+  line at a time and only the last line survived as the message. Single-line
+  prompts were never affected.
+- The plan usage popover no longer tells Claude subscribers that their plan has
+  no session limit. Claude reports both windows, and a reading that briefly
+  omits one no longer clears the number that was already there.
 - The toolbar's sandbox icon now matches the sidebar, the footer and the mode
   picker for monitoring mode.
 - Settings no longer calls your Docker sandbox Dockerfile "customised" just

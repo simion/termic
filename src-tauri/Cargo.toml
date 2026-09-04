@@ -7,7 +7,7 @@ members = ["../termic-proto", "../termic-cli"]
 
 [package]
 name = "termic"
-version = "1.2.2"
+version = "1.2.3"
 description = "Run claude, gemini, and codex in parallel — each in its own git worktree."
 authors = ["Simion Agavriloaei"]
 edition = "2021"
