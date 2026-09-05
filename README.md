@@ -423,12 +423,14 @@ specs and get an issue at the same time. That is the whole promotion path:
   compiling on Windows at all. The audit in
   [docs/ideas/windows.md](docs/ideas/windows.md) is a prediction: nothing in
   it has been built on Windows yet.
-- **Profiles.** A fully isolated instance with its own window, projects,
-  tasks and settings, so work and personal stay in separate windows on
-  separate monitors. [docs/plans/profiles.md](docs/plans/profiles.md).
-- **Several accounts per agent.** Add both subscriptions once, pick which
-  one a profile uses, and switch a running task to the other when the first
-  one hits its limit, without losing the conversation.
+- **Profiles.** ([#280](https://github.com/simion/termic/issues/280)) A fully
+  isolated instance with its own window, projects, tasks and settings, so work
+  and personal stay in separate windows on separate monitors.
+  [docs/plans/profiles.md](docs/plans/profiles.md).
+- **Several accounts per agent.**
+  ([#278](https://github.com/simion/termic/issues/278)) Add both subscriptions
+  once, pick which one a profile uses, and switch a running task to the other
+  when the first one hits its limit, without losing the conversation.
   [docs/plans/agent-credentials.md](docs/plans/agent-credentials.md).
 - **Ambient agent status.** A Dock tile, or a strip beside the Dock, showing
   what every agent is doing without bringing the window forward.
