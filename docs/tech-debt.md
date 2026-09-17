@@ -16,6 +16,7 @@ layer above Project shipped as [docs/profiles.md](profiles.md).
 | 1 | `workspace` → `task` migration (schema v1) | v0.19.0 | a few minor releases after v0.19 | active |
 | 2 | `migrate_legacy_members()` (multi-repo) | pre-v0.19 | independent (likely already) | active |
 | 3 | `LEGACY_IDS` (pre-registry language ids) | v0.28.x | a few minor releases | active |
+| 4 | `started_at` backfill (`data_migration_version` 1) | task-phase release | a few minor releases after it | active |
 
 ---
 
@@ -193,3 +194,74 @@ losing its highlight is acceptable. A few minor releases.
 3. The note on `ScratchTab.syntax` in `src/lib/types.ts`.
 
 Nothing on the Rust side changes: `ScratchRecord.syntax` is an opaque `String`.
+
+---
+
+## 4. `started_at` backfill (`data_migration_version` 1)
+
+One-time, on-disk backfill that gives `Task.started_at` a value on every record
+written before the field existed. Runs once at startup, after
+`migrate_workspaces_to_tasks` (which is what puts the records in `tasks/` where
+this can find them) and before the window, so the first `tasks_list` already
+carries the stamps and no row flickers from Todo to In progress.
+
+### Why it exists
+
+`started_at` is the first prompt the user submitted into a task, and it is what
+separates "created, agent idling at its prompt" (Todo) from "someone gave it
+work" (In progress). Spawning alone cannot draw that line, because every GUI
+create spawns. Every task on disk when the field shipped predates it, so
+without the backfill a user's whole fleet reads Todo on the first launch after
+upgrading, which is both wrong and loud: the dashboard filter would show
+nothing but Todo.
+
+### The rule
+
+A record with `started_at == None` and either `spawn_count > 0` or
+`has_resumable_history` takes `last_opened_at`, falling back to `created`.
+Neither is when work really started, and both are an upper bound that is right
+to within a session; `created` is the floor, and a task nobody ever opened has
+nothing better. A record carrying neither timestamp is left alone rather than
+stamped with an empty string nothing downstream could parse.
+
+### Complexity: low
+
+| Surface | Where | ~LOC | Role |
+|---|---|---|---|
+| `migrate_started_at_backfill()` | `src-tauri/src/lib.rs` | ~30 | The sweep: every profile's tasks dir, save each changed record, stamp the version last and only when every write landed. Single call site in `.setup()`. |
+| `backfill_started_at()` | `lib.rs` | ~20 | The rule for one record, split out so "running it twice changes nothing" is an assertion about the rule rather than about the guard bailing. |
+| `stamp_data_migration_version()` | `lib.rs` | ~8 | Ladder stamp, never downwards. |
+| `Settings.data_migration_version` + `STARTED_AT_BACKFILL_VERSION` | `lib.rs` | ~4 | The guard. |
+| Tests | `lib.rs` | ~80 | Four cases: stamps a task an agent ran in, falls back to `created`, leaves an untouched task alone, sweeps every profile and stamps the version last. |
+
+### Why it is NOT a `schema_version` bump
+
+`schema_version` gates the workspaces->tasks migration on
+`>= TASKS_SCHEMA_VERSION`, so raising that constant would re-run the whole
+rename migration (backup, stage, atomic rename) on every v1 profile on the next
+launch. `data_migration_version` is a second, independent ladder for task-record
+backfills, in the same spirit as `cli_default_migrated` (entry 1's "Renamed
+persisted fields" note) but counted rather than boolean, because backfills
+accumulate and a bool per step does not say which ones a profile has seen.
+
+### Safe to remove when
+
+Every realistically-active install has launched a build carrying it at least
+once. A few minor releases after the release that introduces it. The cost of
+removing it early is that a dormant install's older tasks all read Todo when it
+finally launches, which is cosmetic and self-corrects the moment the user
+prompts into one.
+
+### What to delete
+
+1. `migrate_started_at_backfill()` and `backfill_started_at()` in
+   `src-tauri/src/lib.rs`, plus the call site in `.setup()`.
+2. `const STARTED_AT_BACKFILL_VERSION`.
+3. The four `the_backfill_*` tests in `lib.rs`.
+4. `Settings.data_migration_version` and `stamp_data_migration_version()` ONLY
+   if no later step has joined the ladder. If one has, keep both and delete
+   step 1 from the "Steps so far" list on the field's doc comment.
+5. This entry and its table row.
+
+Nothing on the frontend side changes: `started_at` itself stays, and the
+backfill is invisible to it.

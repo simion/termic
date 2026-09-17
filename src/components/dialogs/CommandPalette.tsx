@@ -13,7 +13,7 @@ import {
   FolderCog, RefreshCw, ScrollText, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, ListTodo, Bell, SquareTerminal, FolderPlus, History, Square,
   Play, Swords, Megaphone, Columns2, Rows2, Clock, UserPen, GitPullRequest, Activity, Code2,
-  NotepadText, Waypoints, CircleDot, UsersRound, WrapText, type LucideIcon } from "lucide-react";
+  NotepadText, Waypoints, CircleDot, UsersRound, Target, Moon, WrapText, type LucideIcon } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useProfiles } from "@/store/profiles";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -34,6 +34,8 @@ import { effectiveLanguageId, languageLabel } from "@/lib/languages";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { taskLabel } from "@/lib/taskLabel";
+import { canStartWithGoal, isParked, parkMenuLabel, parkReasonText, taskGoalText } from "@/lib/taskNotes";
+import { seedPromptWhenReady, SETUP_SPAWN_DEADLINE_MS } from "@/lib/seedPrompt";
 
 // New-issue page for the project repo. Opened via the OS browser (open_path).
 const ISSUE_URL = "https://github.com/simion/termic/issues/new";
@@ -275,6 +277,64 @@ export function CommandPalette() {
         icon: History, keywords: "session continue previous conversation args",
         run: act(() => useUI.getState().openResumeOverride(task.id)),
       });
+      // The task-scoped half of the phase ladder, mirroring the sidebar task
+      // menu row for row and under exactly the same conditions.
+      if (canStartWithGoal(task)) {
+        cmds.push({
+          // A PLANNED task (a goal, never prompted) delivered through the
+          // same seeder the New Task dialog uses, so it starts as if "Start
+          // later" had never been ticked. Activating first is load-bearing:
+          // an unmounted task never spawns a PTY, and the seeder would sit
+          // out its deadline and give up silently.
+          //
+          // The goal rides in `hint`, not `suffix`: suffix is `shrink-0` with
+          // no truncate, so a pasted-ticket goal would push the row's width
+          // past the dialog. `hint` is the truncating second line.
+          id: "start-with-goal", section: "Task", label: "Start with goal",
+          hint: taskGoalText(task), icon: Play,
+          keywords: "planned todo begin send prompt goal",
+          run: act(() => {
+            const app = useApp.getState();
+            app.setActiveTask(task.id);
+            app.ensureDefaultTab(task.id, task.cli || "claude");
+            seedPromptWhenReady(task.id, taskGoalText(task), SETUP_SPAWN_DEADLINE_MS);
+          }),
+        });
+      }
+      cmds.push({
+        // Free text, not a state: setting one never moves the phase. A task
+        // carrying one that nobody has prompted reads as planned.
+        id: "edit-goal", section: "Task",
+        label: taskGoalText(task) ? "Edit goal…" : "Set a goal…",
+        hint: taskGoalText(task) || undefined, icon: Target,
+        keywords: "note plan planned purpose what for objective",
+        run: act(() => useUI.getState().openTaskGoal(task.id)),
+      });
+      cmds.push({
+        // Park opens the dialog for its optional reason; unpark is immediate,
+        // because there is nothing to ask. Neither is `noRecent`: both are
+        // reversible in one click, unlike Stop and Archive.
+        id: isParked(task) ? "unpark-task" : "park-task", section: "Task",
+        label: parkMenuLabel(task),
+        suffix: isParked(task) ? undefined : "Put it down, with an optional reason",
+        icon: Moon, keywords: "parked blocked waiting later shelve put down snooze",
+        run: act(() => {
+          if (isParked(task)) useApp.getState().setTaskParked(task.id, false);
+          else useUI.getState().openParkTask(task.id);
+        }),
+      });
+      if (isParked(task)) {
+        cmds.push({
+          // Editing the reason must not unpark, and must not restamp. The row
+          // above becomes Unpark once parked, so this is the only way back
+          // into the dialog on a task that is already down.
+          id: "edit-park-reason", section: "Task",
+          label: "Edit park reason…",
+          hint: parkReasonText(task) || undefined, icon: Pencil,
+          keywords: "parked blocked waiting why reason note",
+          run: act(() => useUI.getState().openParkTask(task.id)),
+        });
+      }
       cmds.push({
         // Ends every PTY in the task but keeps the task itself (GH #119).
         // Also the only way to release a mounted task's terminals, which is

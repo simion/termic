@@ -50,6 +50,10 @@ function sendToAgent(taskId: string, prompt: Prompt, tabId: string) {
   }
   sendMessageToPty(target.ptyId, prompt.body);
   useApp.getState().patchTab(taskId, target.id, { lastInputAt: Date.now() });
+  // A library prompt is the user's own text, so it starts the task like any
+  // other submit (src/lib/taskPhase.ts). The busy branch above does not: it
+  // only queues, and the queue's own send stamps when it actually goes out.
+  useApp.getState().markStarted(taskId);
   useUI.getState().pushToast(`Sent "${prompt.title}" to ${label}.`, "success");
 }
 
@@ -87,6 +91,7 @@ function spawnAgentWithPrompt(taskId: string, prompt: Prompt, explicitCli?: stri
         if (!still || still.type !== "terminal" || !still.ptyId) return;
         sendMessageToPty(still.ptyId, prompt.body);
         useApp.getState().patchTab(taskId, newTabId, { lastInputAt: Date.now(), promptPendingTitle: null });
+        useApp.getState().markStarted(taskId);
       }, AGENT_INIT_SETTLE_MS);
       return;
     }

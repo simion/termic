@@ -11,6 +11,9 @@ vi.mock("@/lib/ipc", () => ({
   detectClis: vi.fn().mockResolvedValue([]),
   taskSetTabs: vi.fn().mockResolvedValue(undefined),
   taskSetTabSessionId: vi.fn().mockResolvedValue(undefined),
+  // `setActiveTask` stamps `last_opened_at` through this, so every file that
+  // mocks the ipc module and drives an activation needs it present.
+  taskTouch: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("@/lib/tabFocus", () => ({
   focusTerminalTab: vi.fn(),

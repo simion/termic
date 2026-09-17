@@ -10,6 +10,8 @@ import { CustomCommandDialog } from "./CustomCommandDialog";
 import { EditCommandDialog } from "./EditCommandDialog";
 import { RunCommandsDialog } from "./RunCommandsDialog";
 import { ResumeOverrideDialog } from "./ResumeOverrideDialog";
+import { TaskGoalDialog } from "./TaskGoalDialog";
+import { ParkTaskDialog } from "./ParkTaskDialog";
 import { ShortcutsHelpDialog } from "./ShortcutsHelpDialog";
 import { WelcomeDialog } from "./WelcomeDialog";
 import { ChangelogDialog } from "./ChangelogDialog";
@@ -53,6 +55,8 @@ export function Dialogs() {
       <EditCommandDialog />
       <RunCommandsDialog />
       <ResumeOverrideDialog />
+      <TaskGoalDialog />
+      <ParkTaskDialog />
       <ShortcutsHelpDialog />
       <WelcomeDialog />
       <ChangelogDialog />

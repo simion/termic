@@ -103,3 +103,41 @@ describe("confirm modal", () => {
     await expect(p).resolves.toBe(true);
   });
 });
+
+// The dashboard's phase filter. Session-only by design (no localStorage), so
+// the only things worth pinning are the default, the round trip, and the bail
+// that keeps a re-click of the selected pill from copying the store.
+describe("dashboard phase filter", () => {
+  beforeEach(() => {
+    useUI.setState({ dashboardPhase: null });
+  });
+
+  it("defaults to All", () => {
+    expect(useUI.getState().dashboardPhase).toBeNull();
+  });
+
+  it("round-trips a phase and back to All", () => {
+    useUI.getState().setDashboardPhase("in_review");
+    expect(useUI.getState().dashboardPhase).toBe("in_review");
+    useUI.getState().setDashboardPhase(null);
+    expect(useUI.getState().dashboardPhase).toBeNull();
+  });
+
+  it("notifies ONCE for a phase set twice (docs/performance.md bear trap 8)", () => {
+    let notifications = 0;
+    const unsub = useUI.subscribe(() => { notifications++; });
+    useUI.getState().setDashboardPhase("done");
+    useUI.getState().setDashboardPhase("done");
+    useUI.getState().setDashboardPhase("done");
+    unsub();
+    expect(notifications).toBe(1);
+  });
+
+  it("does not notify when clearing a filter that is already All", () => {
+    let notifications = 0;
+    const unsub = useUI.subscribe(() => { notifications++; });
+    useUI.getState().setDashboardPhase(null);
+    unsub();
+    expect(notifications).toBe(0);
+  });
+});

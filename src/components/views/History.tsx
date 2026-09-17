@@ -7,17 +7,7 @@ import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { cn } from "@/lib/utils";
 import { ChevronRight, Search, Trash2 } from "lucide-react";
 import type { Task } from "@/lib/types";
-
-function groupLabel(iso: string): string {
-  const diffDays = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7)  return `${diffDays} days ago`;
-  if (diffDays < 14) return "Last week";
-  if (diffDays < 21) return "2 weeks ago";
-  if (diffDays < 28) return "3 weeks ago";
-  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date(iso));
-}
+import { relativeDayLabel } from "@/lib/relativeDay";
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
@@ -58,7 +48,7 @@ export function HistoryView() {
   const groups = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const w of archived) {
-      const key = groupLabel(w.archived_at ?? w.created);
+      const key = relativeDayLabel(w.archived_at ?? w.created);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(w);
     }

@@ -579,6 +579,42 @@ export const taskRecentDenials = (id: string, minutes?: number) =>
 // miss the only emission.
 export const taskRename   = (id: string, name: string) => invoke<void>("task_rename", { id, name });
 export const taskRecordSpawn = (id: string) => invoke<number>("task_record_spawn", { id });
+/** Stamp the task's `last_opened_at` and resolve with whatever is now on disk
+ *  (unchanged when the previous stamp is still inside the 60s window). Fired on
+ *  every activation, so the Rust side reads ONE record rather than every
+ *  profile's whole tasks dir. */
+export const taskTouch = (id: string) => invoke<string>("task_touch", { id });
+/** Record that work is happening in the task now, and resolve with whatever
+ *  `started_at` is then on disk. Two writes on the Rust side: `started_at` is
+ *  stamped WRITE-ONCE (a second call leaves the original alone, so the caller
+ *  does not have to be the only one), and `parked_at` + `park_reason` are
+ *  cleared on EVERY call, because a prompt into a parked task means the user
+ *  is working on it again. Synchronous over there (one record read + one
+ *  write), and the reply is dropped by `markStarted` the way `taskTouch`'s
+ *  is. */
+export const taskMarkStarted = (id: string) => invoke<string>("task_mark_started", { id });
+/** Record what the task is for, or clear it with `null`. Free text and not a
+ *  state: nothing derives a phase from it, so there is no write-once rule and
+ *  no clearing rule either. The store has already written its own copy by the
+ *  time this is called, and bails before calling at all when the text is
+ *  unchanged (`setTaskGoal`). */
+export const taskSetGoal = (id: string, goal: string | null) =>
+  invoke<void>("task_set_goal", { id, goal });
+/** Park or unpark the task, with an optional free-text reason, and resolve
+ *  with the resulting `parked_at` (`null` when unparked). The stamp comes back
+ *  because the Rust side owns it: re-parking an already parked task keeps the
+ *  original stamp rather than moving it, so the caller cannot compute the
+ *  answer from the arguments. `setTaskParked` folds the reply back only when
+ *  it differs from what it optimistically wrote. */
+export const taskSetParked = (id: string, parked: boolean, reason: string | null) =>
+  invoke<string | null>("task_set_parked", { id, parked, reason });
+/** Where this task's branch stands against the commit it was cut from, for
+ *  the derived phase (`src/lib/taskPhase.ts`). Read-only and async: it shells
+ *  out to git, so the store polls it at a floor and only while the dashboard
+ *  is mounted (`src/store/taskGit.ts`). Rejects for an archived task and for a
+ *  main-checkout one, neither of which has a branch this question applies to. */
+export const taskGitPhaseState = (id: string) =>
+  invoke<import("@/lib/types").TaskGitState>("task_git_phase_state", { id });
 export const taskSetHasHistory = (id: string, value: boolean) =>
   invoke<void>("task_set_has_history", { id, value });
 export const taskSetAgentSessionId = (id: string, cli: string, uuid: string) =>

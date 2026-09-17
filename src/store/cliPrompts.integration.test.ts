@@ -14,7 +14,16 @@
 // localStorage once at module load.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-vi.mock("@/lib/ipc", () => ({}));
+// Every task activation stamps `last_opened_at` through these; a mock missing
+// them throws on property access, not on call.
+vi.mock("@/lib/ipc", () => ({
+  taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskRecordSpawn: vi.fn().mockResolvedValue(1),
+  taskMarkStarted: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskSetGoal: vi.fn().mockResolvedValue(undefined),
+  taskSetParked: vi.fn().mockResolvedValue(null),
+  taskGitPhaseState: vi.fn().mockRejectedValue(new Error("not mocked")),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 

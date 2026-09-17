@@ -15,7 +15,9 @@ import { defaultCliFirst, visibleCliIds, isTerminalCli, agentDisplayName } from 
 import { taskCreate, taskCreateMulti, settingsLoad, taskImportableWorktrees, taskImportWorktree, sandboxAvailable, taskOpenRepo, projectGitBranches, projectBranchContext, dockerImageStatus, type DockerImageStatus } from "@/lib/ipc";
 import { launchSetupTab } from "@/lib/runTabs";
 import { seedPromptWhenReady, SETUP_SPAWN_DEADLINE_MS } from "@/lib/seedPrompt";
+import { deliverFirstMessage } from "@/lib/taskNotes";
 import { MAX_PROMPT_CHARS } from "@/lib/deepLink";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { withCreateLock } from "@/lib/createLock";
 import { usePendingTasks } from "@/store/pendingTasks";
 import { uniqueBranch, derivedBranch } from "@/lib/quickTask";
@@ -76,6 +78,7 @@ export function NewTaskDialog() {
   const pendingRemove = usePendingTasks(s => s.remove);
   const project = useApp(s => projectId ? s.projects.find(p => p.id === projectId) : null);
   const setActive = useApp(s => s.setActiveTask);
+  const setTaskGoal = useApp(s => s.setTaskGoal);
   const loadAll = useApp(s => s.loadAll);
   const agents = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
@@ -255,6 +258,17 @@ export function NewTaskDialog() {
   // link: the Create button is the confirmation.
   const [prompt, setPrompt] = useState("");
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  // "Start later": write the box down as the task's GOAL instead of typing it
+  // at the agent. Everything else about create is unchanged, worktree and
+  // agent spawn included; the only difference is that nothing is sent, so
+  // nothing stamps `started_at` and the task stays Todo with a record of what
+  // it is for. Before this there was no way to write down what a task was for
+  // without starting it, because the prompt box was the only place to type.
+  //
+  // Unchecked by default and reset on every open (see the reset effect below,
+  // which is the only thing that resets it: this dialog is permanently mounted
+  // from Dialogs.tsx). A sticky one would quietly stop starting tasks.
+  const [startLater, setStartLater] = useState(false);
   // Agents that can't take a typed first message (a plain shell has no
   // prompt box to type into) hide the field rather than silently dropping
   // the text at create time.
@@ -493,6 +507,7 @@ export function NewTaskDialog() {
     setImportSelected(null); setImportList([]); setImportLoading(false);
     setResumeOverride(""); setResumeOpen(false);
     setPrompt(seed?.prompt ?? "");
+    setStartLater(false);
     setImportMode(wantImport);
     // Issue mode is per-OPEN, like import mode beside it. It was left out of
     // this reset, so picking issue #42 in project A and cancelling meant the
@@ -584,11 +599,12 @@ export function NewTaskDialog() {
     setName(wt.branch || baseName);
   }
 
-  // The first message, if the user left one AND the chosen agent can take
-  // one. Typed into the task's default tab once its agent finishes booting
-  // (lib/seedPrompt); best-effort, so a create never fails over a prompt.
+  // What happens to the prompt box, if the user left one AND the chosen agent
+  // can take one: typed into the task's default tab once its agent finishes
+  // booting (lib/seedPrompt), or, with "Start later" ticked, written down as
+  // the task's goal and not sent at all. Best-effort either way, so a create
+  // never fails over a prompt.
   function seedFirstMessage(taskId: string) {
-    if (!canPrompt) return;
     // There used to be a second seeder beside this one that composed and sent
     // the issue prompt itself, which meant an issue task's first message was
     // never shown to the user before it went out. Picking an issue now fills
@@ -600,7 +616,19 @@ export function NewTaskDialog() {
     // spawns. That was never specific to issues - a typed first message on a
     // repo with a slow setup script hit the same wall and vanished - so the
     // patient deadline now covers both.
-    seedPromptWhenReady(taskId, prompt.trim(), SETUP_SPAWN_DEADLINE_MS);
+    //
+    // Which of the two things happens to the text is `deliverFirstMessage`'s
+    // call (lib/taskNotes, unit-tested), not this component's: all three
+    // create paths funnel through here, so the branch lives in one place and
+    // is assertable without rendering a dialog.
+    deliverFirstMessage(
+      taskId,
+      { prompt, canPrompt, startLater },
+      {
+        seed: (id, text) => seedPromptWhenReady(id, text, SETUP_SPAWN_DEADLINE_MS),
+        setGoal: (id, text) => setTaskGoal(id, text),
+      },
+    );
   }
 
   // Adopt an existing worktree. No worktree-add / file-copy / setup
@@ -1199,8 +1227,10 @@ export function NewTaskDialog() {
         </Field>
 
         {/* Optional first message (GH #192). Sent to the agent once it
-            finishes booting. Hidden for a plain terminal, which has no
-            prompt box to type into. Starts at 1 row — growPrompt() (above)
+            finishes booting, or, with "Start later" ticked below, saved as the
+            task's goal and not sent at all. Hidden for a plain terminal, which
+            has no prompt box to type into (the checkbox rides inside this same
+            guard, so the two appear and disappear together). Starts at 1 row — growPrompt() (above)
             grows it on attach and as the user types, so the hint that used to explain
             "typed once ready, nothing sent until Create" isn't needed to
             justify the extra height; the placeholder carries that now. */}
@@ -1240,6 +1270,37 @@ export function NewTaskDialog() {
                   {prompt.length} / {MAX_PROMPT_CHARS}
                 </span>
               )}
+              {/* Start later: the whole point of the goal feature. Writing
+                  down what a task is FOR used to mean starting it, because
+                  this box was the only place to type and submitting it stamps
+                  `started_at`. Ticked, the same text becomes the task's goal
+                  and nothing is sent, so the task is created, its worktree is
+                  cut and its agent still spawns: it just sits at Todo with a
+                  record of what it is for.
+
+                  Inside the `canPrompt` block on purpose, so it appears and
+                  disappears with the field it describes rather than offering
+                  to save a goal from a box that is not on screen. */}
+              <label className="mt-1 flex items-start gap-2 text-[12.5px] text-[var(--color-fg)]">
+                {/* The testid goes on the CHECKBOX, not the label: `Checkbox`
+                    is a styled button rather than a native input, so a label
+                    wrapping it is decoration and clicking it toggles nothing.
+                    A spec has to press the control itself, and `aria-checked`
+                    on it is what says which way it is set. */}
+                <Checkbox
+                  checked={startLater}
+                  onChange={setStartLater}
+                  aria-label="Start later"
+                  data-testid="new-task-start-later"
+                  className="mt-[1px]"
+                />
+                <span>
+                  Start later
+                  <span className="mt-0.5 block text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
+                    Saves the text as this task's goal. Nothing is sent to {agentLabel}.
+                  </span>
+                </span>
+              </label>
             </div>
           </Field>
         )}

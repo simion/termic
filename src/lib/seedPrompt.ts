@@ -81,5 +81,11 @@ export function seedPromptWhenReady(
       return;
     }
     useApp.getState().patchTab(taskId, still.id, { lastInputAt: Date.now() });
+    // The New Task dialog's first message is the user's own text, so a task
+    // created WITH a prompt is In progress from birth while one created empty
+    // stays Todo until somebody types (src/lib/taskPhase.ts). Stamped here
+    // rather than at create, because a prompt that was never delivered (the
+    // withheld/blocked returns above) did not start anything.
+    useApp.getState().markStarted(taskId);
   })();
 }

@@ -3,6 +3,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mocks must be declared before the module under test is imported.
 vi.mock("@/lib/ipc", () => ({
+  // Every task activation stamps `last_opened_at` through these; a mock
+  // missing them throws on property access, not on call.
+  taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskRecordSpawn: vi.fn().mockResolvedValue(1),
+  taskMarkStarted: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskSetGoal: vi.fn().mockResolvedValue(undefined),
+  // Resolves with the resulting `parked_at`; cases that care override it.
+  taskSetParked: vi.fn().mockResolvedValue(null),
+  taskGitPhaseState: vi.fn().mockRejectedValue(new Error("not mocked")),
   ptyWrite: vi.fn(),
   ptyKill: vi.fn().mockResolvedValue(undefined),
   projectsList: vi.fn().mockResolvedValue([]),
@@ -29,7 +38,7 @@ vi.mock("@/lib/agents", () => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { isTabOnScreenIn, isUserWatching, RECENT_TASKS_CAP, useApp } from "@/store/app";
+import { isTabOnScreenIn, isUserWatching, RECENT_TASKS_CAP, TOUCH_MIN_MS, useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
 import { markUnattendedSpawn, takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import type { QueueItem, PaneLeaf, Tab, TerminalTab, PersistedTab } from "@/lib/types";
@@ -1579,5 +1588,716 @@ describe("previewPlace", () => {
     useApp.getState().setActiveTask("A");
     unsub();
     expect(real).toBeGreaterThan(1);
+  });
+});
+
+// ── last_opened_at (task activation stamp) ────────────────────────────
+//
+// The stamp is written on EVERY activation, which is the hottest store path
+// the sidebar has: a ⌘1/⌘2 flick between two tasks is two activations per
+// keystroke. So both halves of the design are count assertions, the class that
+// survives a 3-core CI runner (docs/perf-ci.md):
+//
+//   1. a second activation inside TOUCH_MIN_MS writes NOTHING, keeping the
+//      `tasks` array identity that every mounted task's selectors hang off
+//      (docs/performance.md bear trap 8); and
+//   2. the write that does happen rides INSIDE the set() `setActiveTask` was
+//      making anyway, so the feature adds zero subscriber notifications.
+describe("setActiveTask last_opened_at", () => {
+  const stamped = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.last_opened_at;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("stamps the task and persists it exactly once", () => {
+    const before = Date.now();
+    useApp.getState().setActiveTask("ws1");
+
+    const at = stamped("ws1");
+    expect(at).toBeTruthy();
+    expect(Date.parse(at!)).toBeGreaterThanOrEqual(before);
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+    expect(ipc.taskTouch).toHaveBeenCalledWith("ws1");
+    // The sibling is untouched: a stamp is per task, not per activation.
+    expect(stamped("ws2")).toBeUndefined();
+  });
+
+  it("does not touch the store again inside the 60s window", () => {
+    // Both tasks stamped once, which is the only real work here.
+    useApp.getState().setActiveTask("ws1");
+    useApp.getState().setActiveTask("ws2");
+    const first = stamped("ws1");
+
+    // Now the ⌘1/⌘2 flick: straight back and forth, all inside the window.
+    const before = useApp.getState();
+    useApp.getState().setActiveTask("ws1");
+    useApp.getState().setActiveTask("ws2");
+    useApp.getState().setActiveTask("ws1");
+    const after = useApp.getState();
+
+    // Same ARRAY, not merely equal: a fresh `tasks` is what invalidates every
+    // selector in every mounted task.
+    expect(after.tasks).toBe(before.tasks);
+    expect(stamped("ws1")).toBe(first);
+    // Still the two opening touches: the flick added none.
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(ipc.taskTouch).mock.calls.map(c => c[0])).toEqual(["ws1", "ws2"]);
+  });
+
+  it("re-stamps once the window has passed", () => {
+    const old = new Date(Date.now() - TOUCH_MIN_MS - 1_000).toISOString();
+    useApp.setState({ tasks: [makeTask({ id: "ws1", last_opened_at: old })] });
+
+    useApp.getState().setActiveTask("ws1");
+
+    expect(stamped("ws1")).not.toBe(old);
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+  });
+
+  // Both halves of the freshness predicate's escape hatch, pinned to the same
+  // rule `touch_task_record` follows in lib.rs. They matter here more than
+  // there: a stamp THIS side calls fresh never reaches Rust to be judged.
+  //
+  // NaN because `Date.now() - Date.parse("nonsense")` is NaN and every
+  // comparison against NaN is false; a guard written as `>= TOUCH_MIN_MS`
+  // would freeze the value forever. Negative because a clock that jumped
+  // backwards would otherwise suppress every activation until it caught up.
+  it("replaces a stamp it cannot parse", () => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1", last_opened_at: "yesterday" })] });
+
+    useApp.getState().setActiveTask("ws1");
+
+    expect(Date.parse(stamped("ws1")!)).not.toBeNaN();
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a stamp from the future rather than waiting it out", () => {
+    const ahead = new Date(Date.now() + 3_600_000).toISOString();
+    useApp.setState({ tasks: [makeTask({ id: "ws1", last_opened_at: ahead })] });
+
+    useApp.getState().setActiveTask("ws1");
+
+    expect(stamped("ws1")).not.toBe(ahead);
+    expect(Date.parse(stamped("ws1")!)).toBeLessThanOrEqual(Date.now());
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds ZERO subscriber notifications to an activation", () => {
+    const notificationsFor = (id: string) => {
+      let n = 0;
+      const unsub = useApp.subscribe(() => { n++; });
+      useApp.getState().setActiveTask(id);
+      unsub();
+      return n;
+    };
+
+    // Warm both so the second measurement below is a BAILED touch, not a
+    // first visit.
+    useApp.getState().setActiveTask("ws2");
+    useApp.getState().setActiveTask("ws1");
+
+    // An activation that does stamp, versus one inside the window that does
+    // not. The measurement is the comparison: the stamp rides inside a set()
+    // `setActiveTask` was making anyway, so the two must be equal.
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+    useApp.getState().setActiveTask("ws2");
+    vi.mocked(ipc.taskTouch).mockClear();
+    const stamping = notificationsFor("ws1");
+    const touchCallsWhileStamping = vi.mocked(ipc.taskTouch).mock.calls.length;
+
+    useApp.getState().setActiveTask("ws2");
+    const bailing = notificationsFor("ws1");
+
+    expect(touchCallsWhileStamping).toBe(1);
+    expect(bailing).toBe(stamping);
+    // 2 is the PRE-EXISTING cost of one activation with no tabs open: the
+    // main set(), plus the read-clearing set() under it. The stamp is inside
+    // the first of those, so this number must not move.
+    expect(stamping).toBe(2);
+  });
+
+  it("never touches when the active task is cleared", () => {
+    useApp.getState().setActiveTask("ws1");
+    vi.mocked(ipc.taskTouch).mockClear();
+
+    useApp.getState().setActiveTask(null);
+
+    expect(ipc.taskTouch).not.toHaveBeenCalled();
+  });
+
+  // Agent Race mounts N tasks at once without focusing them. Mounting is not
+  // opening, and stamping there would backdate every task in the race to the
+  // moment the user pressed one button.
+  it("mountTasks never touches", () => {
+    useApp.getState().mountTasks(["ws1", "ws2"]);
+
+    expect(ipc.taskTouch).not.toHaveBeenCalled();
+    expect(stamped("ws1")).toBeUndefined();
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    useApp.getState().setActiveTask("nope");
+
+    expect(ipc.taskTouch).not.toHaveBeenCalled();
+  });
+});
+
+// ── recordSpawn ───────────────────────────────────────────────────────
+//
+// `task_record_spawn` always WROTE the count; nothing read the answer back,
+// so a task created this session stayed at spawn_count 0 in the store until
+// the next `loadAll`. (The derived phase no longer reads it: see the
+// `markStarted` block below for what replaced it and why.)
+describe("recordSpawn", () => {
+  const count = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.spawn_count;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1", spawn_count: 0 })] });
+  });
+
+  it("folds the persisted count back into the store", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockResolvedValueOnce(3);
+
+    useApp.getState().recordSpawn("ws1");
+
+    await vi.waitFor(() => expect(count("ws1")).toBe(3));
+    expect(ipc.taskRecordSpawn).toHaveBeenCalledWith("ws1");
+  });
+
+  it("leaves state identity alone when the count did not change", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockResolvedValueOnce(0);
+    const before = useApp.getState();
+
+    useApp.getState().recordSpawn("ws1");
+    await vi.waitFor(() => expect(ipc.taskRecordSpawn).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState()).toBe(before);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+  });
+
+  it("drops the answer for a task that is gone by the time it lands", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockResolvedValueOnce(2);
+
+    useApp.getState().recordSpawn("ws1");
+    // Archived and reloaded out from under the in-flight call.
+    useApp.setState({ tasks: [] });
+    await vi.waitFor(() => expect(ipc.taskRecordSpawn).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState().tasks).toEqual([]);
+  });
+
+  it("survives a rejected write without throwing", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().recordSpawn("ws1")).not.toThrow();
+    await vi.waitFor(() => expect(ipc.taskRecordSpawn).toHaveBeenCalled());
+    expect(count("ws1")).toBe(0);
+  });
+});
+
+// ── markStarted ───────────────────────────────────────────────────────
+//
+// Write-once, and it rides the same "a human submitted something" gate as
+// `lastInputAt`: every prompt submit in every terminal calls it, so the
+// second call onwards must cost NOTHING (docs/performance.md bear trap 8).
+// Same shape as the `setActiveTask last_opened_at` block above, for the same
+// reason: what is worth asserting is the bail, not the stamp.
+describe("markStarted", () => {
+  const startedAt = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.started_at;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("stamps the task and persists it exactly once", () => {
+    const before = Date.now();
+    useApp.getState().markStarted("ws1");
+
+    const at = startedAt("ws1");
+    expect(at).toBeTruthy();
+    expect(Date.parse(at!)).toBeGreaterThanOrEqual(before);
+    expect(ipc.taskMarkStarted).toHaveBeenCalledTimes(1);
+    expect(ipc.taskMarkStarted).toHaveBeenCalledWith("ws1");
+    // Per task, not per app: the sibling is untouched.
+    expect(startedAt("ws2")).toBeUndefined();
+  });
+
+  it("costs nothing on every submit after the first", () => {
+    useApp.getState().markStarted("ws1");
+    const first = startedAt("ws1");
+    vi.mocked(ipc.taskMarkStarted).mockClear();
+
+    const before = useApp.getState();
+    useApp.getState().markStarted("ws1");
+    useApp.getState().markStarted("ws1");
+    useApp.getState().markStarted("ws1");
+    const after = useApp.getState();
+
+    // Same ARRAY, not merely equal: a fresh `tasks` is what invalidates every
+    // selector in every mounted task.
+    expect(after.tasks).toBe(before.tasks);
+    expect(startedAt("ws1")).toBe(first);
+    expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+  });
+
+  it("never re-stamps a task that arrived from disk already started", () => {
+    // The common case after a relaunch: the record carries the stamp, and the
+    // first Enter of the new session must not move it.
+    const old = "2026-01-02T03:04:05.000Z";
+    useApp.setState({ tasks: [makeTask({ id: "ws1", started_at: old })] });
+
+    useApp.getState().markStarted("ws1");
+
+    expect(startedAt("ws1")).toBe(old);
+    expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+  });
+
+  it("treats a null stamp as not started, the way serde writes an empty one", () => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1", started_at: null })] });
+
+    useApp.getState().markStarted("ws1");
+
+    expect(startedAt("ws1")).toBeTruthy();
+    expect(ipc.taskMarkStarted).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    const before = useApp.getState();
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+
+    useApp.getState().markStarted("nope");
+
+    unsub();
+    expect(notifications).toBe(0);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+  });
+
+  it("notifies subscribers ONCE on the first call and never again", () => {
+    const notificationsFor = (id: string) => {
+      let n = 0;
+      const unsub = useApp.subscribe(() => { n++; });
+      useApp.getState().markStarted(id);
+      unsub();
+      return n;
+    };
+
+    expect(notificationsFor("ws1")).toBe(1);
+    expect(notificationsFor("ws1")).toBe(0);
+    expect(notificationsFor("ws1")).toBe(0);
+  });
+
+  it("survives a rejected write without throwing, keeping the in-memory stamp", () => {
+    vi.mocked(ipc.taskMarkStarted).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().markStarted("ws1")).not.toThrow();
+    expect(startedAt("ws1")).toBeTruthy();
+  });
+
+  // Any prompt un-parks: sending something into a task you put down means you
+  // have picked it up again, and a park the user has to clear by hand is the
+  // stale-by-hand signal the whole design refuses.
+  describe("un-parking", () => {
+    const parkedAt = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.parked_at;
+    const reason = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.park_reason;
+
+    it("clears the park on a task that was already started", () => {
+      useApp.setState({
+        tasks: [makeTask({
+          id: "ws1",
+          started_at: "2026-01-02T03:04:05.000Z",
+          parked_at: "2026-02-02T03:04:05.000Z",
+          park_reason: "waiting on the API key",
+        })],
+      });
+
+      useApp.getState().markStarted("ws1");
+
+      expect(parkedAt("ws1")).toBeNull();
+      expect(reason("ws1")).toBeNull();
+      // The original stamp is untouched: write-once holds here too, not only
+      // on the Rust side.
+      expect(startedAt("ws1")).toBe("2026-01-02T03:04:05.000Z");
+      expect(ipc.taskMarkStarted).toHaveBeenCalledTimes(1);
+    });
+
+    it("stamps and un-parks in ONE notification for a parked task nobody started", () => {
+      useApp.setState({
+        tasks: [makeTask({ id: "ws1", parked_at: "2026-02-02T03:04:05.000Z" })],
+      });
+      let notifications = 0;
+      const unsub = useApp.subscribe(() => { notifications++; });
+
+      useApp.getState().markStarted("ws1");
+
+      unsub();
+      expect(notifications).toBe(1);
+      expect(startedAt("ws1")).toBeTruthy();
+      expect(parkedAt("ws1")).toBeNull();
+    });
+
+    it("costs nothing once the task is started AND unparked", () => {
+      // The steady state after the park is cleared: the second prompt and
+      // every one after it must not copy the state again (bear trap 8).
+      useApp.setState({
+        tasks: [makeTask({
+          id: "ws1",
+          started_at: "2026-01-02T03:04:05.000Z",
+          parked_at: "2026-02-02T03:04:05.000Z",
+        })],
+      });
+      useApp.getState().markStarted("ws1");
+      vi.mocked(ipc.taskMarkStarted).mockClear();
+
+      const before = useApp.getState();
+      useApp.getState().markStarted("ws1");
+      useApp.getState().markStarted("ws1");
+
+      expect(useApp.getState().tasks).toBe(before.tasks);
+      expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+    });
+
+    it("treats a null parked_at as not parked, so a started task still bails", () => {
+      useApp.setState({
+        tasks: [makeTask({
+          id: "ws1", started_at: "2026-01-02T03:04:05.000Z", parked_at: null,
+        })],
+      });
+      const before = useApp.getState();
+
+      useApp.getState().markStarted("ws1");
+
+      expect(useApp.getState().tasks).toBe(before.tasks);
+      expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ── setTaskGoal ───────────────────────────────────────────────────────
+//
+// Free text, not a state: what is worth pinning is that it writes once and
+// that an unchanged submit costs nothing (docs/performance.md bear trap 8).
+describe("setTaskGoal", () => {
+  const goalOf = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.goal;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("records the goal in the store and on disk", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+
+    expect(goalOf("ws1")).toBe("Ship the importer");
+    expect(ipc.taskSetGoal).toHaveBeenCalledTimes(1);
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", "Ship the importer");
+    // Per task, not per app.
+    expect(goalOf("ws2")).toBeUndefined();
+  });
+
+  it("does not touch started_at: writing a goal is not starting work", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+
+    expect(useApp.getState().tasks.find(w => w.id === "ws1")?.started_at).toBeUndefined();
+  });
+
+  it("writes nothing when the goal is unchanged", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    vi.mocked(ipc.taskSetGoal).mockClear();
+
+    const before = useApp.getState();
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+
+    unsub();
+    expect(notifications).toBe(0);
+    // Same ARRAY, not merely equal.
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("treats null, undefined and absent as one value, so clearing an empty goal is a no-op", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskGoal("ws1", null);
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("trims what it stores, the way the record does on the way to disk", () => {
+    useApp.getState().setTaskGoal("ws1", "  Ship the importer  ");
+
+    expect(goalOf("ws1")).toBe("Ship the importer");
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", "Ship the importer");
+  });
+
+  it("a whitespace-only goal is no goal, so it neither writes nor stores a blank", () => {
+    // Rust's `normalize_task_note` collapses this to None. If this side kept
+    // `"  "`, the store would hold a truthy goal the disk does not have, and
+    // the row would read Planned until the next loadAll.
+    const before = useApp.getState();
+
+    useApp.getState().setTaskGoal("ws1", "   ");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("clears a set goal when the box is emptied to whitespace", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    vi.mocked(ipc.taskSetGoal).mockClear();
+
+    useApp.getState().setTaskGoal("ws1", "  ");
+
+    expect(goalOf("ws1")).toBeNull();
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", null);
+  });
+
+  it("clears a goal that was set", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    vi.mocked(ipc.taskSetGoal).mockClear();
+
+    useApp.getState().setTaskGoal("ws1", null);
+
+    expect(goalOf("ws1")).toBeNull();
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", null);
+  });
+
+  it("edits an existing goal", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    useApp.getState().setTaskGoal("ws1", "Ship the importer behind a flag");
+
+    expect(goalOf("ws1")).toBe("Ship the importer behind a flag");
+    expect(ipc.taskSetGoal).toHaveBeenCalledTimes(2);
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskGoal("nope", "Ship the importer");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("survives a rejected write without throwing, keeping the in-memory goal", () => {
+    vi.mocked(ipc.taskSetGoal).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().setTaskGoal("ws1", "Ship the importer")).not.toThrow();
+    expect(goalOf("ws1")).toBe("Ship the importer");
+  });
+});
+
+// ── setTaskParked ─────────────────────────────────────────────────────
+//
+// The one hand-set phase input. Two things carry the design: `parked_at`
+// answers "since when" and must not move when the task is re-parked, and an
+// unchanged park must not write at all (docs/performance.md bear trap 8).
+describe("setTaskParked", () => {
+  const parkedAt = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.parked_at;
+  const reason = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.park_reason;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("parks the task with a stamp and persists it", () => {
+    const before = Date.now();
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+
+    const at = parkedAt("ws1");
+    expect(at).toBeTruthy();
+    expect(Date.parse(at!)).toBeGreaterThanOrEqual(before);
+    expect(reason("ws1")).toBe("waiting on the API key");
+    expect(ipc.taskSetParked).toHaveBeenCalledTimes(1);
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, "waiting on the API key");
+    expect(parkedAt("ws2")).toBeUndefined();
+  });
+
+  it("parks without a reason, which is the common case", () => {
+    useApp.getState().setTaskParked("ws1", true);
+
+    expect(parkedAt("ws1")).toBeTruthy();
+    expect(reason("ws1")).toBeNull();
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, null);
+  });
+
+  it("writes nothing when re-parking with the same reason", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    vi.mocked(ipc.taskSetParked).mockClear();
+
+    const before = useApp.getState();
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+
+    unsub();
+    expect(notifications).toBe(0);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when re-parking a reasonless park with no reason", () => {
+    useApp.getState().setTaskParked("ws1", true);
+    vi.mocked(ipc.taskSetParked).mockClear();
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("ws1", true);
+    useApp.getState().setTaskParked("ws1", true, null);
+    useApp.getState().setTaskParked("ws1", true, undefined);
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("trims the reason, and a whitespace-only one is no reason at all", () => {
+    useApp.getState().setTaskParked("ws1", true, "  waiting on the API key  ");
+    expect(reason("ws1")).toBe("waiting on the API key");
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, "waiting on the API key");
+
+    vi.mocked(ipc.taskSetParked).mockClear();
+    useApp.getState().setTaskParked("ws2", true, "   ");
+    expect(parkedAt("ws2")).toBeTruthy();
+    expect(reason("ws2")).toBeNull();
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws2", true, null);
+  });
+
+  it("re-parking with the same reason retyped with spaces writes nothing", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    vi.mocked(ipc.taskSetParked).mockClear();
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("ws1", true, "  waiting on the API key ");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when unparking a task that is not parked", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("ws1", false);
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("a CHANGED reason writes, and does NOT move parked_at", () => {
+    // The stamp answers "since when", so editing the note must not restart the
+    // clock. Rust refuses to move it; this side has to agree, or the store
+    // disagrees with disk for a round trip and then snaps back.
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    const first = parkedAt("ws1");
+    vi.mocked(ipc.taskSetParked).mockClear();
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(first!);
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the vendor");
+
+    expect(reason("ws1")).toBe("waiting on the vendor");
+    expect(parkedAt("ws1")).toBe(first);
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, "waiting on the vendor");
+  });
+
+  it("dropping the reason off a parked task is a change and writes", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    const first = parkedAt("ws1");
+    vi.mocked(ipc.taskSetParked).mockClear();
+
+    useApp.getState().setTaskParked("ws1", true, null);
+
+    expect(reason("ws1")).toBeNull();
+    expect(parkedAt("ws1")).toBe(first);
+    expect(ipc.taskSetParked).toHaveBeenCalledTimes(1);
+  });
+
+  it("unparking clears both fields and sends no reason", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    vi.mocked(ipc.taskSetParked).mockClear();
+
+    useApp.getState().setTaskParked("ws1", false);
+
+    expect(parkedAt("ws1")).toBeNull();
+    expect(reason("ws1")).toBeNull();
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", false, null);
+  });
+
+  it("folds the real stamp back when Rust answers with a different one", async () => {
+    // Rust owns the stamp: an already parked record on disk keeps its original,
+    // which the optimistic write here cannot know about.
+    const real = "2026-02-02T03:04:05.000Z";
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(real);
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    await vi.waitFor(() => expect(parkedAt("ws1")).toBe(real));
+    expect(reason("ws1")).toBe("waiting on the API key");
+  });
+
+  it("leaves state identity alone when the stamp comes back unchanged", async () => {
+    useApp.getState().setTaskParked("ws1", true);
+    const stamp = parkedAt("ws1")!;
+    vi.mocked(ipc.taskSetParked).mockClear();
+    // The steady case: Rust echoes what the optimistic write already had.
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(stamp);
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    const before = useApp.getState();
+
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState()).toBe(before);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+  });
+
+  it("does not re-park a task a prompt un-parked while the write was in flight", async () => {
+    // markStarted clears the park, and the reply landing afterwards must not
+    // put it back: the prompt is newer evidence than the click.
+    const real = "2026-02-02T03:04:05.000Z";
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(real);
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    useApp.getState().markStarted("ws1");
+    expect(parkedAt("ws1")).toBeNull();
+
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(parkedAt("ws1")).toBeNull();
+    expect(reason("ws1")).toBeNull();
+  });
+
+  it("drops the answer for a task that is gone by the time it lands", async () => {
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce("2026-02-02T03:04:05.000Z");
+
+    useApp.getState().setTaskParked("ws1", true);
+    useApp.setState({ tasks: [] });
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState().tasks).toEqual([]);
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("nope", true, "waiting on the API key");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("survives a rejected write without throwing, keeping the in-memory park", async () => {
+    vi.mocked(ipc.taskSetParked).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().setTaskParked("ws1", true)).not.toThrow();
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    expect(parkedAt("ws1")).toBeTruthy();
   });
 });

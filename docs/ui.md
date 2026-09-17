@@ -800,6 +800,310 @@ own components (`TaskWorkBadge`, `TaskPrBadge`), fed by the same
 (attention > done > working). The PR chip renders what the poller already
 resolved and never starts a lookup, so listing every task costs nothing.
 
+### Phase and age are derived, never stored
+
+A task's phase comes from `taskPhase()` (`src/lib/taskPhase.ts`): the task
+record, plus the live PR snapshot in `usePr`, plus the live git state in
+`useTaskGit`. Five values, first match wins:
+
+| Phase | When |
+|---|---|
+| **Done** | `archived`, or the PR is merged, or `merged_into_base` |
+| **Parked** | `parked_at` is set |
+| **In review** | the PR is open, or (no PR at all AND own commits AND clean AND nothing ahead) |
+| **In progress** | the PR is draft or closed, or `started_at` is set |
+| **Todo** | none of the above |
+
+**The rule the table stands on:** a person may set the states the machine
+cannot see, the machine owns every state it can see, and a manual state clears
+itself the moment evidence arrives. In progress, In review and Done are
+derived only, and no UI may hand-set them: each has a live twin the app already
+polls, and a second hand-kept copy beside one is the redundancy PR #292 was
+rejected for. **Parked is the one hand-set value**, allowed because "I have
+deliberately put this down" leaves no trace in git, in the forge or in any
+process, so it has nothing to contradict. It does not need hand-clearing
+either: `markStarted` wipes `parked_at` and `park_reason` on the next prompt
+into any terminal of the task. Its optional free-text reason is where "blocked
+on the API key" lives, and there is deliberately no Blocked phase, since
+blocked is a reason for parking rather than a stage of the work. Done outranks
+Parked (a parked task whose PR merged is finished either way), and Parked
+outranks even an open PR, because it is the most specific and most recent thing
+a person has said about the work, and the row's PR chip still says the PR is
+open.
+
+**A `goal` is text, not a state.** It records what the task is for, feeds no
+rule in the table, and exists because there was nowhere else to write one down:
+the only place was the agent's prompt box, and submitting that stamps
+`started_at`. A task with a goal and no `started_at` reads as **Planned**, and
+that reading is rendered from those two fields rather than derived into a sixth
+value: a Planned phase would store what `started_at` already answers. There is
+no Planned pill and no `"planned"` in `PHASE_ORDER`; the dashboard row draws
+the goal and that IS the reading. Where goals come from, and the four controls
+that write these two fields, are in "Setting a goal, and parking" below.
+
+**Todo is where every new task starts, and that is the normal case, not a
+rarity.** Creating a task spawns its agent, so a spawn is not evidence that
+anybody has given it work: the agent is sitting at its prompt waiting for one.
+**In progress** begins at `started_at`, the first prompt a human submits into
+any terminal of the task, stamped write-once by `markStarted` in `useApp` at
+each place user text reaches a terminal (the GUI's Enter, a queued prompt, the
+New Task dialog's seed, a library prompt, sent review comments, and the CLI's
+`termic send`). Enter in a plain shell tab counts too: someone running the
+task's tests has started working on it in every sense this screen cares about.
+
+**The git rule** is the second half of In review, and it is what a task that
+was worked on and handed off looks like when there is no PR: `own_commits >= 1`
+(the branch has commits the base cannot reach), `dirty === false` (nothing
+staged, unstaged **or untracked** in the worktree) and `ahead === 0` (the
+remote branch exists and has everything). `ahead === null` means there is no
+remote branch at all, which is not the same as nothing left to push, so it does
+not qualify. `base_known` is deliberately not a condition: the commit count is
+taken against the base branch, not the creation commit, so an imported
+worktree or a reused branch (whose `base_sha` is None by design) qualifies like
+any other. Only `merged_into_base` needs the creation commit, and Rust folds
+that in on its own. A **draft or closed PR outranks this rule entirely**: both
+are an explicit statement by a person about how ready the work is, and a clean
+pushed branch underneath does not overrule it, which is why the rule requires
+`pr` to be absent rather than merely not-open.
+
+**Stop is deliberately not an input.** "The user stopped the task" is the
+obvious signal for handing off, and it is unusable: it is not persisted
+anywhere, so it is every task's state after a relaunch, and a phase that read
+it would move the whole fleet to In review on every launch. The git rule
+answers the same question from facts that survive a restart.
+
+The decisions that table encodes, all of them argued in that file's header:
+archived beats merged (a shelved task is finished whatever its PR did); a draft
+PR is In progress, because a draft says outright that it is not ready to look
+at; a closed unmerged PR falls back to In progress, not Todo, because the
+branch has real work on it; `changes_requested` stays In review, so the phase
+does not oscillate with every review round; a failing check does not move the
+phase at all (CI is a property of the work, not a stage of it, and the PR chip
+already turns red); a failed PR lookup has `pr === null` like "no PR" does and
+therefore falls through, so a machine with no `gh`/`glab` still phases
+correctly; an unknown git state does the same (`undefined` for a task nothing
+has polled, `null` for one whose lookup failed, both "we do not know"); and a
+main-checkout task never enters the git rules at all, because `pollableTasks`
+skips `is_main_checkout`.
+
+**With no PR, the phase moves In progress <-> In review with each work
+cycle**, and that is truthful rather than noisy: edit something and the tree is
+dirty, so it drops back; commit and push and it returns. It is a different
+thing from the review-round oscillation the design avoids, where
+`changes_requested` deliberately does not move the phase because a reviewer's
+opinion is not a change in where the work stands. One consequence on purpose: a
+stray untracked file pins a task at In progress. Unfinished work in the
+worktree is unfinished work, whatever the commits say.
+
+**Once a PR is open, none of that applies.** An open PR reads In review however
+dirty the worktree is and however many commits are unpushed. The asymmetry is
+real and deliberate: without a PR a single untracked file pins a task at In
+progress, and with one, nothing local moves it at all.
+
+An open PR is an explicit act by a person saying the work is ready to be looked
+at. `dirty` and `ahead` are PROXIES for that same statement, used only where
+the person has not made it, and a proxy must not overrule the thing it stands
+in for. The practical half matters as much: a dirty worktree under an open PR
+is what addressing review comments looks like, so a phase that flipped on every
+edit would be noise, for the same reason `changes_requested` is kept out of the
+phase. A draft PR is the control that shows this is a rule rather than an
+oversight: it is the person saying the opposite, so it reads In progress even
+on a clean, fully pushed branch.
+
+**On upgrade**, existing tasks are backfilled: one that had ever spawned an
+agent reads In progress, so nothing that was underway reappears as Todo, while
+tasks created from here start in Todo and earn In progress at their first
+prompt.
+
+**The git pass is scoped to this page.** `useTaskGit`
+(`src/store/taskGit.ts`) is shaped like the PR store, with one deliberate
+difference: `startDashboardGitPolling()` / `stopDashboardGitPolling()` are
+mounted by the Dashboard's effect and nothing else ticks it. That effect is
+gated on there being tasks, the same gate `initPrStatusPoller` has: on launch
+the page mounts before `loadAll` resolves, and starting there would spend the
+immediate pass on an empty store and leave every git-derived phase reading In
+progress until the next tick. The phase is drawn
+only here, the Dashboard is mounted only while no task is open, and
+`task_git_phase_state` shells out to git, so nothing runs while the user is
+driving an agent. Inside a pass: sequential, at most 6 tasks, stalest first, a
+30s floor per task, skipping archived, main-checkout, and any task whose PR is
+open or merged (those decide the phase on their own). Draft and closed PRs are
+still polled, because `merged_into_base` has to be able to beat them: a
+squash-merged branch whose PR was closed rather than merged would otherwise
+never reach Done. See [performance.md](performance.md).
+
+**The filter row** (`data-testid="dashboard-phase-filter"`) sits between Recent
+and the Projects header and renders only when at least one non-archived task
+exists, so a fresh install sees the page it always saw, or while a filter is
+selected, so archiving the last task cannot strand the empty line with no pill
+to clear it. Pills are All then `PHASE_ORDER`, each a `<button>` carrying
+`data-phase`, `data-count` and `aria-pressed`. **All six are always on
+screen**, in lifecycle order (All, Todo, In progress, In review, Done, Parked),
+so the vocabulary stays stable between visits and the row reads left to right
+as a task's life. Parked sits at the END, after Done, and that is deliberately
+not its precedence in the table above: the first four pills are a task's life
+in sequence, and Parked is not a stage of that life, it is a task stepping out
+of the line. Between In review and Done it would break the reading the row
+exists to give, so it goes where a state that SUSPENDS the sequence belongs.
+`PHASE_ORDER` in `src/lib/taskPhase.ts` is the one list all of this comes from.
+Todo used to be conditional, on the theory that a permanent
+"Backlog 0" was a word the user learns to ignore; that premise went with
+`spawn_count`, since a task is now Todo until somebody prompts it and a pill
+that comes and goes is worse than a zero. Clicking the selected pill clears the
+filter.
+Counts are over every non-archived task and do not change when a pill is
+picked. Selecting a phase drops non-matching rows, then drops a card with no
+rows left, then drops a group whose members all went; the Projects header count
+stays the number of projects, because a task filter does not change how many
+projects exist. When nothing matches, one line replaces the cards
+(`data-testid="dashboard-phase-empty"`): "Nothing in progress" / "Nothing in
+review" / "Nothing done" / "Nothing to do", an explicit map
+(`PHASE_EMPTY_LABEL`) rather than a sentence assembled from a label. Recent is
+not filtered: those eight are where you just were, which is a different
+question. The filter lives in `useUI` and is session-only on purpose, since the
+dashboard unmounts the moment a task is opened.
+
+**The age label** (`data-testid="task-age"`) is `taskAgeLabel(last_opened_at)`,
+in the right-hand cluster before the PR chip, with the full stamp in its
+`title`. It appears only from one day old, because a row stamped minutes ago
+does not need telling, and it shows nothing at all for a record written before
+`last_opened_at` existed rather than guessing one. It is uncoloured.
+
+**Neither the pills nor the age carry colour, and the phase is not drawn on the
+row.** The PR chip owns green, purple and red on this page; a coloured phase
+pill invites the reader to match two colour vocabularies that mean different
+things, and a row reading "In review" beside a chip that already says open is
+the redundancy PR #292 was rejected for. The row still exposes
+`data-task-phase` for the e2e suite. The sidebar gets no phase in this pass
+either: its rows are the densest thing in the app and already carry a CLI
+glyph, a work badge and a PR chip. It is the obvious follow-up once the ladder
+has been lived with, not something to add at the same time as inventing it.
+
+**Two things about the ladder ARE on the row, both in the age's register**:
+faint, uncoloured, one line, no chip. That register is the whole rule here,
+and it is what #292 got wrong, since its coloured status square sat beside the
+PR chip using the same colours for opposite meanings (purple was both "merged"
+and "In review").
+
+- **The goal** (`data-testid="task-goal"`), truncated to one line with the full
+  text in its `title`. It is what makes a planned task LOOK planned: without
+  it, a task with a goal and a task nobody has touched are the same empty row.
+  It is laid out `flex-1` (basis 0) rather than `shrink`, so it takes only what
+  the name and branch leave and is the first thing to give when the row runs
+  out of width. Two shrinking items with natural bases split the deficit in
+  proportion to their length, which is how a long goal would crush the task
+  name, the same trap the Git Compare bar's two-row wrap records above. The
+  goal stays on the row after the task starts, because it stays on the record.
+- **The phase glyph** (`data-testid="task-phase"`, carrying `data-phase`), one
+  monochrome shape on EVERY row, between the age and the badges so it lands in
+  the same column whether or not the row has a PR chip. Empty ring for Todo,
+  half filled for In progress, ring with a dot for In review, check for Done,
+  and the same Moon the Park menu item carries. The label, plus a
+  `park_reason` when there is one, is in the `title`.
+
+  The first version of this drew NOTHING on the row, reasoning from #292 that
+  any mark beside the PR chip repeats it. What that produced was a board where
+  Todo, In progress and Parked were invisible and the other two were legible
+  only because the chip happened to be there: three treatments in one column
+  and no answer at all on most rows. #292's objection was narrower. Its status
+  square was COLOURED, in the chip's own vocabulary, so purple meant "merged"
+  on one and "In review" on the other and the two could contradict each other.
+  Neither half holds here: colour stays the chip's, and the phase is DERIVED
+  from the PR state, so a merged PR is Done and the two marks cannot disagree.
+  Monochrome also means the phase still reads for someone who cannot tell the
+  chip's green from its purple, which the chip alone never did.
+
+  The chip is not merely redundant either. It carries what the phase throws
+  away on purpose: failing checks and draft, because CI status is a property
+  of the work rather than a stage of it.
+- **A parked row is DIMMED** (`opacity-60`, what the sidebar already puts on a
+  task with no live PTY), so "put down" and "not running" look alike, which
+  they are. Both the dim and the glyph key on the derived PHASE, not on
+  `parked_at`, so a row can never read Parked while the Parked pill would not
+  list it: Done outranks Parked, and a parked task whose PR merged is finished.
+
+### Setting a goal, and parking
+
+Four controls expose the two hand-set fields. Three of them WRITE: Start later
+and Edit goal write `goal`, Park and Unpark write `parked_at` and
+`park_reason`. Start with goal writes neither, it DELIVERS the goal, and
+`markStarted` does the writing on the far side of that. Every one of the four
+exists on both the sidebar task menu and the command palette, under the same
+conditions, because a task-scoped action reachable from only one of the two is
+an action half the users never find. Their predicates live in `src/lib/taskNotes.ts` so
+one rule answers for both surfaces (and so vitest, which runs `*.test.ts` in a
+node environment, can cover them at all).
+
+**"Start later", in the New Task dialog, is the point of the whole feature.**
+The dialog's Initial prompt box is delivered at create by
+`seedPromptWhenReady`, and delivery ends in `markStarted`, so until now writing
+down what a task was FOR meant starting it: the prompt box was the only place
+to type. Ticking Start later (`data-testid="new-task-start-later"`) writes the
+same text down as the task's goal and sends nothing. Everything else about
+create is unchanged, so the worktree is still cut and the agent still spawns;
+the task simply stays Todo, with a record of what it is for, until somebody
+prompts it. Which of the two happens is `deliverFirstMessage` in
+`lib/taskNotes.ts`, called from the dialog's one seeder, so all three create
+paths (worktree, repo-root, import) take the same branch.
+
+Two rules on the checkbox. It rides INSIDE the same `canPrompt` guard as the
+prompt field, so it appears and disappears with the box it describes rather
+than offering to save a goal from a field that is not on screen. And it is
+**reset on every open** and never persisted: this dialog is permanently mounted
+from `Dialogs.tsx`, so the reset effect is the only thing that clears it, and a
+sticky Start later would quietly stop starting tasks.
+
+**"Start with goal"** (`data-testid="task-menu-start-with-goal"`) delivers a
+planned task's goal through that same seeder with the same patient deadline, so
+the task starts exactly as it would have at create. It shows only for a task
+that HAS a goal, has never been prompted, and runs an agent with a prompt box
+(a plain shell would just get prose typed at it and Return pressed). It
+activates the task and calls `ensureDefaultTab` FIRST, the order
+`spawnIntoTask` uses: an unmounted task never spawns a PTY, so the seeder would
+sit out its deadline and give up silently. It does NOT clear the goal, which
+stays as the record of what the task is for; the row disappears on its own
+because delivery stamps `started_at`.
+
+**"Edit goal…" / "Set a goal…"** (`data-testid="task-menu-edit-goal"`) opens
+`TaskGoalDialog` on the current value. It sits beside Rename, because the two
+are the same kind of thing: what the task is called and what it is for. An
+emptied box clears the goal, the same answer `null`, an absent field and a box
+holding only spaces all give (`normalize_task_note` in Rust,
+`normalizeTaskNote` in `store/app.ts`, `noteText` in `lib/taskNotes.ts`, and
+all three must keep agreeing). The field is a **textarea**, not an input: a
+goal usually arrives from the New Task dialog's multi-line prompt box, and
+`<input type="text">` silently strips the newlines out of its own value.
+
+**"Park task" / "Unpark task"** (`data-testid="task-menu-park"`) follows
+`parked_at`. Park opens `ParkTaskDialog` for the optional free-text reason;
+unpark is immediate, because there is nothing to ask. Because that one row
+flips to Unpark as soon as `parked_at` is set, a parked task gets a second row,
+**"Edit park reason…"** (`data-testid="task-menu-edit-park-reason"`), which
+re-opens the same dialog pre-filled. Saving from there leaves the task parked
+and does NOT move `parked_at`, since the stamp answers "since when" and
+clarifying why is the usual reason to open it twice. The dialog says "Edit park
+reason" and "Save reason" in that mode, and hides the "Also stop the task"
+checkbox: editing a note must not kill the agents. **The park clears
+itself**: the next prompt into any terminal of the task runs `markStarted`,
+which wipes `parked_at` and `park_reason` together, so a parked task you start
+working on again is not left lying about its own state. That is the third
+clause of the rule the whole design stands on, and it is what lets a hand-set
+value exist here at all.
+
+**Blocked is a REASON, not a state.** "Blocked on the API key" goes in the park
+reason. A Blocked phase would be a second hand-set value carrying no evidence,
+which is the shape #292 was rejected for.
+
+**Park and Stop are separate actions, on purpose.** The park dialog offers
+"Also stop the task" when the task is mounted, ticked by default, because
+putting work down usually means wanting the memory back too. It fires
+`stopTask` as a SECOND call after `setTaskParked`, and the coupling goes no
+further: `stopTask` is a resource action (GH #119, kill the PTYs and keep the
+session) and must never on its own set `parked_at`. Stop is every task's state
+after a relaunch, so a Stop that parked would park the whole fleet overnight.
+The checkbox is hidden when nothing is mounted, since there would be nothing to
+free.
+
 ### `work-badge` is no longer a unique testid
 
 The sidebar is always mounted and the dashboard sits on top of it, so a task
@@ -818,9 +1122,12 @@ are pruned in `loadAll` alongside the group maps, so the row never offers a
 dead link. It is hidden entirely when empty, so a fresh install sees the page
 it always saw.
 
-It is localStorage and not a `last_opened_at` on the `Task` record for the same
-reason folder colours are: it is a per-machine UI convenience, and a disk write
-on every task click would be the wrong trade.
+`last_opened_at` on the `Task` record now exists and is the durable, coarse
+stamp the age label reads: one record write, at most once a minute, guarded on
+both sides (see [ipc.md](ipc.md), `task_touch`). Recent stays in localStorage
+anyway, because it is a different thing: an ordered list of the last eight
+visits, at a resolution finer than a minute, which a single per-task stamp
+cannot reproduce.
 
 ## A gauge that is a background, and what it costs the text on it
 

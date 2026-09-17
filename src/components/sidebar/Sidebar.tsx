@@ -10,7 +10,7 @@ import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
+import { LayoutGrid, History, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, Target } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -45,6 +45,8 @@ import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
 import { taskNeedsAttention, taskWorkDone, taskWorking } from "@/lib/taskWorkState";
+import { canStartWithGoal, parkMenuLabel, taskGoalText, isParked } from "@/lib/taskNotes";
+import { seedPromptWhenReady, SETUP_SPAWN_DEADLINE_MS } from "@/lib/seedPrompt";
 
 /** Pick a default name for a freshly-created task (repo-root OR worktree).
  *  Format: "<agent>-N" where N is the next unused index for that CLI among
@@ -2171,6 +2173,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // nothing to stop.
   const isMounted = useApp(s => s.mountedTasks.has(w.id));
   const stopTask = useApp(s => s.stopTask);
+  // Unparking is a one-click menu row with nothing to ask, so it calls the
+  // store straight from here; parking goes through ParkTaskDialog for the
+  // optional reason. Both land on the same action, which owns the
+  // unchanged-value bails.
+  const setTaskParked = useApp(s => s.setTaskParked);
   // Sidebar only shows main-pane terminal tabs; split-pane tabs live in SplitView.
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
   const isLoaded = terminalTabs.some(t => t.ptyId);
@@ -2664,6 +2671,35 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 </DropdownSubContent>
               </DropdownSub>
               <DropdownSeparator />
+              {/* Deliver a PLANNED task's goal, exactly the way the New Task
+                  dialog would have delivered it at create: same seeder, same
+                  patient deadline, so the task starts as if "Start later" had
+                  never been ticked. Only for a task that HAS a goal and has
+                  never been prompted, and only for an agent with a prompt box
+                  (canStartWithGoal); a shell would just get prose typed at it.
+
+                  setActive + ensureDefaultTab FIRST, the same order
+                  spawnIntoTask uses: an unmounted task has no TaskView, so no
+                  PTY ever appears and the seeder would sit out its deadline
+                  and give up silently.
+
+                  The goal is deliberately NOT cleared: it stays as the record
+                  of what this task is for. The row disappears on its own,
+                  because delivering the prompt ends in `markStarted`. */}
+              {canStartWithGoal(w, agents) && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid="task-menu-start-with-goal"
+                  onSelect={() => {
+                    setActive(w.id);
+                    ensureDefaultTab(w.id, w.cli || "claude");
+                    seedPromptWhenReady(w.id, taskGoalText(w), SETUP_SPAWN_DEADLINE_MS);
+                  }}
+                >
+                  <Play className="h-4 w-4" />
+                  <span>Start with goal</span>
+                </DropdownItem>
+              )}
               {spotlightAvailable && (
                 <DropdownItem
                   className="items-center [&>svg]:mt-0"
@@ -2739,6 +2775,18 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <Pencil className="h-4 w-4" />
                 <span>Rename</span>
               </DropdownItem>
+              {/* Beside Rename because they are the same kind of thing: what
+                  this task is CALLED and what it is FOR. The goal is free
+                  text, not a state, so setting one never moves the task's
+                  phase; an emptied box clears it. */}
+              <DropdownItem
+                className="items-center [&>svg]:mt-0"
+                data-testid="task-menu-edit-goal"
+                onSelect={() => useUI.getState().openTaskGoal(w.id)}
+              >
+                <Target className={cn("h-4 w-4", taskGoalText(w) && "text-[var(--color-accent)]")} />
+                <span>{taskGoalText(w) ? "Edit goal…" : "Set a goal…"}</span>
+              </DropdownItem>
               {/* Custom-command tasks carry an editable launch
                   script (agent / shell tasks resolve their command
                   from the registry, so there's nothing to edit). */}
@@ -2802,6 +2850,45 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 </DropdownItem>
               )}
               <DropdownSeparator />
+              {/* Park: "I have deliberately put this down". The one hand-set
+                  phase input in the app, allowed to be one because it has no
+                  live twin and clears itself (the next prompt into any of the
+                  task's terminals un-parks it through `markStarted`). Its
+                  optional reason is where "blocked on the API key" lives;
+                  there is deliberately no Blocked state.
+
+                  Park opens a dialog for that reason and offers to stop the
+                  task too. Unpark is immediate: there is nothing to ask.
+
+                  PARK AND STOP STAY SEPARATE. Stop below is a resource action
+                  (GH #119) and must never on its own set `parked_at`. */}
+              <DropdownItem
+                className="items-center [&>svg]:mt-0"
+                data-testid="task-menu-park"
+                onSelect={() => {
+                  if (isParked(w)) setTaskParked(w.id, false);
+                  else useUI.getState().openParkTask(w.id);
+                }}
+              >
+                <Moon className={cn("h-4 w-4", isParked(w) && "text-[var(--color-accent)]")} />
+                <span>{parkMenuLabel(w)}</span>
+              </DropdownItem>
+              {/* The reason is editable WITHOUT unparking, which is the whole
+                  point of `task_set_parked` refusing to move `parked_at` on a
+                  re-park: the stamp is what "parked 3 days ago" renders from,
+                  and clarifying why is the usual reason to call it twice.
+                  Without this row that path is unreachable, because the row
+                  above flips to Unpark the moment `parked_at` is set. */}
+              {isParked(w) && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid="task-menu-edit-park-reason"
+                  onSelect={() => useUI.getState().openParkTask(w.id)}
+                >
+                  <Pencil className="h-4 w-4" />
+                  <span>Edit park reason…</span>
+                </DropdownItem>
+              )}
               {/* Stop without archiving (GH #119): kill the agents, free
                   the memory, keep the session. Opening the task again
                   respawns with resume — same lifecycle as restarting

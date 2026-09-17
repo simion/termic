@@ -282,6 +282,72 @@ export interface Task {
   created: string;
   archived: boolean;
   archived_at?: string;
+  /** RFC3339 UTC, written by the app on every task activation (`setActiveTask`,
+   *  and `task_touch` behind it). Never typed by a person.
+   *
+   *  Serde writes Rust's `None` as `null`, so this arrives as `null` on a record
+   *  that has one and is ABSENT on a record written before the field existed.
+   *  Both mean the same thing here, "never opened since this was recorded", so
+   *  collapsing them with `??` is correct. (CLAUDE.md forbids that only where
+   *  `null` is a distinct answer from "nothing there yet"; it is not, here.) */
+  last_opened_at?: string | null;
+  /** RFC3339 UTC of the FIRST prompt a human submitted into any terminal of
+   *  this task. Write-once (`task_mark_started` refuses to move it) and
+   *  app-written, never typed. This is what separates Todo from In progress:
+   *  creating a task spawns its agent, so a spawn says nothing about whether
+   *  anybody has given it work.
+   *
+   *  `null` and absent both mean "no prompt has been submitted here", so
+   *  collapsing them is correct (same reasoning as `last_opened_at` above). */
+  started_at?: string | null;
+  /** What this task is FOR, in the user's own words, set from the New Task
+   *  dialog or edited later. Free text, not a state: nothing derives a phase
+   *  from it and nothing keeps it current.
+   *
+   *  It exists because there was nowhere else to write one down. The only
+   *  place a task's purpose could live was the agent's prompt box, and
+   *  submitting that stamps `started_at`, so "note this down for later"
+   *  was impossible. A task with a goal and NO `started_at` is what the UI
+   *  reads as Planned: the phase is still `todo` (see src/lib/taskPhase.ts on
+   *  why Planned is not a fifth value), and the goal is what makes that row
+   *  read as something somebody intends to do rather than an empty shell.
+   *
+   *  `null` and absent both mean "no goal recorded", so collapsing them is
+   *  correct (same reasoning as `last_opened_at` above). */
+  goal?: string | null;
+  /** RFC3339 UTC of when the user deliberately put this task down, set by
+   *  `task_set_parked` and cleared by unparking or by the next prompt.
+   *
+   *  THE ONE HAND-SET SIGNAL IN THE PHASE. Everything else a phase reads is
+   *  evidence the app gathered on its own, and this is the state no evidence
+   *  can supply: "I have stopped working on this on purpose" leaves no trace
+   *  in git or in the forge. It is safe to let a person set it precisely
+   *  because it clears itself the moment evidence arrives: `markStarted`
+   *  wipes it on the next prompt into any terminal of the task, since sending
+   *  a prompt to a parked task means you are working on it again.
+   *
+   *  Re-parking an already parked task does NOT move the stamp, so the value
+   *  answers "since when", not "when was it last touched".
+   *
+   *  `null` and absent both mean "not parked", so collapsing them is correct
+   *  (same reasoning as `last_opened_at` above). */
+  parked_at?: string | null;
+  /** Why the task is parked, in the user's own words ("waiting on the API
+   *  key"), optional even when `parked_at` is set: parking without a reason
+   *  is the common case and demanding one would just get an empty string.
+   *
+   *  This is where "blocked" lives. There is deliberately no Blocked phase:
+   *  blocked is a reason for having put something down, not a stage of the
+   *  work, and a phase for it would be a second hand-set state with no
+   *  evidence behind it. Cleared alongside `parked_at`, never on its own. */
+  park_reason?: string | null;
+  /** The commit this task's branch was cut from, recorded at create. `null`
+   *  on a record written before the field existed, on an imported task, and on
+   *  one whose branch already existed. `task_git_phase_state` then falls back
+   *  to the branch reflog's creation entry, and reports `base_known: false`
+   *  only when neither is available; the phase refuses its git rules in that
+   *  case rather than guessing a base and counting the wrong commits. */
+  base_sha?: string | null;
   /** Manual sidebar position within the project, written by drag-to-reorder
    *  (`taskReorder`). Undefined on tasks the user has never dragged, which
    *  sort AFTER any ordered sibling — so untouched projects stay in creation
@@ -958,6 +1024,38 @@ export interface GitStatus {
   repos: GitRepo[];
   total_changed: number;
   repos_changed: number;
+}
+
+/** The four git facts the derived task phase needs, and nothing else
+ *  (`task_git_phase_state`). Deliberately narrower than `GitStatus`: this is
+ *  polled for every task on the dashboard, so it answers "where does this
+ *  branch stand against its base" in one command rather than handing back a
+ *  file list nobody on that screen renders. See `src/store/taskGit.ts` for the
+ *  polling rules and `src/lib/taskPhase.ts` for how each field is read. */
+export interface TaskGitState {
+  /** Commits on the branch side that the base commit cannot reach. 0 after
+   *  any merge, which is what lets `merged_into_base` and this disagree
+   *  harmlessly: the phase checks merged first. */
+  own_commits: number;
+  /** Staged, unstaged OR untracked in the HOST worktree. Untracked counts on
+   *  purpose: a stray new file is unfinished work, and the phase should not
+   *  call a task handed off while one is sitting there. */
+  dirty: boolean;
+  /** Commits the remote branch does not have. `null` when there is no remote
+   *  branch at all, which is NOT the same as zero: never pushed cannot mean
+   *  "nothing left to push". */
+  ahead: number | null;
+  /** The branch reached the base branch by any route: fast-forward, merge
+   *  commit, rebase or squash. Biased toward false, because a wrong `true`
+   *  tells the user to archive live work. */
+  merged_into_base: boolean;
+  /** Whether the commit the branch was cut from is known: `base_sha` on the
+   *  record, or, for a task that predates that field, the branch reflog's
+   *  creation entry (so it is true for most tasks under git's 90-day reflog
+   *  expiry). Informational for the phase: `own_commits` is counted against
+   *  the base BRANCH and never needed it, and Rust already folds it into
+   *  `merged_into_base` (the fast-forward tier cannot fire without it). */
+  base_known: boolean;
 }
 
 /** One row of the Commit tab's Graph section (issue #199). */

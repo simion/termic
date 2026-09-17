@@ -773,3 +773,47 @@ family as the "Reset to defaults" loss that first put these fields in the TS typ
 (a default entry spread over fields TypeScript did not know about) and as the
 clone-that-snapshots-its-parent trap in `agents.ts`. See
 [agent-accounts.md](agent-accounts.md).
+
+## Task record setters serialize on the main thread, and only there
+
+Every small per-task setter in `lib.rs` (`task_record_spawn`,
+`task_set_has_history`, `task_set_tabs`, `task_set_yolo`, some thirty of them)
+is an unlocked read-modify-write of the task's whole JSON file: load, find,
+mutate one field, `save_task`. Nothing guards two of them against each other.
+They are correct anyway, because they are all sync commands and Tauri runs
+sync commands on the main thread one after another. That invariant was never
+written down, and `task_touch` broke it by accident: it fires on every
+activation, so it was made async + `spawn_blocking` to stay off the main
+thread, which put it on another thread at the exact moment `task_set_tabs`
+and `task_record_spawn` fire for the same task (the pane mounts and spawns
+within milliseconds of the activation). The e2e run then found a task
+activated seconds earlier with `last_opened_at: null` on disk: a sibling had
+read the record before the touch wrote it and written its own copy back
+after. The fix was to make the touch sync like its siblings, which costs one
+small read and one atomic write on the main thread, strictly less than a
+sibling's `load_tasks_all()`.
+
+So: a per-task setter that writes the record is sync, or it takes a lock
+that every other writer of that record also takes. The existing async writers
+(`task_archive_sync`, `task_restore_sync`, `pr_lookup_blocking`,
+`task_pr_create`) are the known exposure: rare and user-paced, or a 30s
+background poll whose read-to-write window is a few microseconds, so nobody
+has seen them lose a write. Adding a frequent one is how the race stops being
+theoretical.
+
+`task_mark_started` is the hard case: it fires on EVERY prompt submission,
+which is exactly when the pane is spawning and `task_record_spawn` and
+`task_set_tabs` are firing for the same task, so it is sync like `task_touch`.
+It used to be write-once as well, which meant there was only ever one write to
+lose; it is not any more, because it also clears the park (a prompt into a
+parked task means the user has picked it back up). The STAMP is still written
+once, but the command can write on any call, so the rule is doing real work
+here rather than being belt-and-braces. It still skips the write when nothing
+changed, which is the case on almost every call. The two setters beside it,
+`task_set_goal` and `task_set_parked`, are sync for the same reason and are
+user-paced on top of it.
+
+`task_git_phase_state` is the other half of the rule: it is IO-heavy enough to
+need `spawn_blocking`, so it is strictly READ-ONLY on the record and must
+never call `save_task`. If it ever needs to persist something, that write
+goes through a sync command, not through the async one that computed it.

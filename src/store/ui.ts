@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import type { Prompt } from "@/store/prompts";
+import type { TaskPhase } from "@/lib/taskPhase";
 
 export interface ConfirmCheckbox {
   label: string;
@@ -124,6 +125,16 @@ interface UIState {
    *  closed. Lives in UI store so opening doesn't churn the task
    *  tree. */
   resumeOverrideTaskId: string | null;
+  /** Task id whose GOAL is being edited, null = closed. The goal is free
+   *  text recording what the task is for; a task carrying one with no
+   *  `started_at` is what the dashboard draws as Planned. Lives in the UI
+   *  store, like every other per-task dialog, so opening it doesn't churn
+   *  the task tree. */
+  taskGoalTaskId: string | null;
+  /** Task id being PARKED, null = closed. Only the park half opens a dialog
+   *  (it asks for the optional reason); unparking is immediate from the menu,
+   *  because there is nothing to ask. */
+  parkTaskId: string | null;
   /** Read-only "Keyboard shortcuts" cheat-sheet modal (opened from the
    *  sidebar footer). Distinct from Settings → Shortcuts (which edits them). */
   /** True while Termic is in windowless mode (window closed to the menu bar,
@@ -268,6 +279,11 @@ interface UIState {
    *  Settings overlay, so it can't refresh itself). RightPanel folds this
    *  into its local reload token. */
   fileTreeNonce: number;
+  /** Dashboard phase filter; `null` is "All". Session-only ON PURPOSE: the
+   *  dashboard unmounts the moment a task is opened, so component state would
+   *  reset on every visit anyway, and a filter is not worth a localStorage
+   *  key (or the migration and pruning that come with one). */
+  dashboardPhase: TaskPhase | null;
 
   // actions
   openNewProject: () => void;
@@ -282,6 +298,10 @@ interface UIState {
   closeRunCommands: () => void;
   openResumeOverride: (taskId: string) => void;
   closeResumeOverride: () => void;
+  openTaskGoal: (taskId: string) => void;
+  closeTaskGoal: () => void;
+  openParkTask: (taskId: string) => void;
+  closeParkTask: () => void;
   openShortcutsHelp: () => void;
   closeShortcutsHelp: () => void;
   openWelcome: () => void;
@@ -338,6 +358,8 @@ interface UIState {
   closeFindInFiles: () => void;
   setBusy: (msg: string | null) => void;
   reloadFileTree: () => void;
+  /** Pick the dashboard's phase filter, or `null` for All. */
+  setDashboardPhase: (phase: TaskPhase | null) => void;
   /** Open the global confirm modal. Returns a Promise that resolves
    *  to true (user confirmed) or false (cancelled / dismissed). Drop-in
    *  replacement for `window.confirm()` with our own chrome + theming. */
@@ -432,6 +454,8 @@ export const useUI = create<UIState>(set => ({
   editCommandTaskId: null,
   runCommandsDialog: null,
   resumeOverrideTaskId: null,
+  taskGoalTaskId: null,
+  parkTaskId: null,
   windowless: false,
   // Assume focused until told otherwise: a first paint that guessed "away"
   // would badge a turn the user watched finish.
@@ -461,6 +485,7 @@ export const useUI = create<UIState>(set => ({
   renameRequest: null,
   busyMessage: null,
   fileTreeNonce: 0,
+  dashboardPhase: null,
   confirm: null,
   terminalDrop: null,
   scratchClose: null,
@@ -487,6 +512,10 @@ export const useUI = create<UIState>(set => ({
   closeRunCommands:   () => set({ runCommandsDialog: null }),
   openResumeOverride: (taskId) => set({ resumeOverrideTaskId: taskId }),
   closeResumeOverride:() => set({ resumeOverrideTaskId: null }),
+  openTaskGoal:       (taskId) => set({ taskGoalTaskId: taskId }),
+  closeTaskGoal:      () => set({ taskGoalTaskId: null }),
+  openParkTask:       (taskId) => set({ parkTaskId: taskId }),
+  closeParkTask:      () => set({ parkTaskId: null }),
   setWindowless: (v) => set({ windowless: v }),
   setWindowFocused: (v) => set(s => (s.windowFocused === v ? s : { windowFocused: v })),
   setClosePromptOpen: (v) => set({ closePromptOpen: v }),
@@ -541,6 +570,10 @@ export const useUI = create<UIState>(set => ({
   })),
   setBusy:           (msg) => set({ busyMessage: msg }),
   reloadFileTree:    () => set(s => ({ fileTreeNonce: s.fileTreeNonce + 1 })),
+  // Bails on an unchanged value like `setWindowFocused` does: re-picking the
+  // pill that is already selected must not copy the store and wake every
+  // subscriber (docs/performance.md bear trap 8).
+  setDashboardPhase: (phase) => set(s => (s.dashboardPhase === phase ? s : { dashboardPhase: phase })),
   askConfirm: (req: any) =>
     // Defer mounting the confirm dialog by a macrotask. When a Radix
     // ContextMenu / Dropdown item's onSelect calls askConfirm, the menu is

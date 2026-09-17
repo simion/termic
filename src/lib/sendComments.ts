@@ -68,6 +68,9 @@ export async function sendCommentsToAgent(
   // Arm work-done detection exactly as a keyboard Enter would: delivery writes
   // straight to the PTY, bypassing term.onData.
   useApp.getState().patchTab(taskId, target.id, { lastInputAt: Date.now() });
+  // Same gate, same reason: the user wrote these comments and just sent them
+  // to an agent, which starts the task (src/lib/taskPhase.ts).
+  useApp.getState().markStarted(taskId);
   // Surface the agent we just fed and drop focus into it, so the user can keep
   // steering immediately.
   useApp.getState().setActiveTabId(taskId, target.id);

@@ -41,7 +41,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, taskGit] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -71,6 +71,9 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/store/profiles"),
         import("@/store/agentUsage"),
         import("@/store/usageUnknownDismissed"),
+        // Appended, never inserted: this list is destructured positionally,
+        // so a name added in the middle silently shifts every one after it.
+        import("@/store/taskGit"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -83,6 +86,13 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // whose PR card is not mounted - there is nothing on screen to click
       // that would run it.
       prStatusPassNow: pr.prStatusPassNow,
+      // The git half of the derived phase, and one pass of its poller. Both
+      // are exposed for the same reason `prStatusPassNow` is, doubled: the
+      // pass only ticks while the DASHBOARD is mounted (see the header of
+      // src/store/taskGit.ts), its cadence is half a minute, and there is
+      // nothing on screen to click that would run it.
+      useTaskGit: taskGit.useTaskGit,
+      taskGitPassNow: taskGit.taskGitPassNow,
       // Profiles (GH #280). Exposed so a spec can read the registry as this
       // window sees it without scraping the strip, and can restore the
       // dormant state in teardown even when the body threw half way.

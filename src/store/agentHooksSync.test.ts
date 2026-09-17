@@ -12,6 +12,14 @@ const agentHooksStatus = vi.fn(async (id: string) => {
 });
 
 vi.mock("@/lib/ipc", () => ({
+  // Every task activation stamps `last_opened_at` through these; a mock
+  // missing them throws on property access, not on call.
+  taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskRecordSpawn: vi.fn().mockResolvedValue(1),
+  taskMarkStarted: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskSetGoal: vi.fn().mockResolvedValue(undefined),
+  taskSetParked: vi.fn().mockResolvedValue(null),
+  taskGitPhaseState: vi.fn().mockRejectedValue(new Error("not mocked")),
   agentHooksSync: (...a: unknown[]) => agentHooksSync(...(a as [])),
   agentHooksStatus: (id: string) => agentHooksStatus(id),
   ptyWrite: vi.fn(), ptyKill: vi.fn().mockResolvedValue(undefined),

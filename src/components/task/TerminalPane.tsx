@@ -711,6 +711,11 @@ const captureArmedRef = useRef(false);
     }
     lastQueueSendAtRef.current = Date.now();
     patchTab(task.id, tab.id, { lastInputAt: Date.now() });
+    // A queued prompt is user text reaching the agent, so it starts the task
+    // exactly like an Enter does (src/lib/taskPhase.ts). Through `getState()`
+    // rather than a subscription: the action is stable, and pulling it in as
+    // a hook value would add it to this callback's deps.
+    useApp.getState().markStarted(task.id);
     const remaining = head.remaining - 1;
     const nextQueue = remaining <= 0
       ? q.filter((_, i) => i !== idx)
@@ -2381,9 +2386,11 @@ const captureArmedRef = useRef(false);
         // race possible). Render the warning chip immediately when the
         // cage degraded.
         setSandboxWarning(spawn.sandbox.warning || null);
-        // Fire-and-forget analytics. Real resume gating lives on the
-        // has_resumable_history flag below, not here.
-        ipc.taskRecordSpawn(task.id).catch(() => {});
+        // Persist the spawn and fold the new count back into the store, so a
+        // task launched this session stops reading as never-spawned. Real
+        // resume gating still lives on the has_resumable_history flag below,
+        // not here.
+        useApp.getState().recordSpawn(task.id);
         // Launching a task is exactly the moment its PR/MR status is worth
         // knowing, not something to wait on the user opening the Git tab
         // for - only the primary agent tab counts as "the task launched",
@@ -2686,6 +2693,11 @@ const captureArmedRef = useRef(false);
               useApp.getState().clearAttention(task.id, tab.id);
             }
             patchTab(task.id, tab.id, { lastInputAt: Date.now() });
+            // The gate this rides is "a human submitted something", which is
+            // the same question the Todo -> In progress edge asks. Write-once
+            // and bails on an already started task, so this costs one lookup
+            // per Enter thereafter (src/store/app.ts).
+            useApp.getState().markStarted(task.id);
             submittedSinceSpawnRef.current = true;
             persistMintedSession();
             noteSubmit(tab.cli);

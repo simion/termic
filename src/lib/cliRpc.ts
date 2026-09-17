@@ -359,6 +359,10 @@ async function injectPromptTracked(
       return;
     }
     useApp.getState().patchTab(taskId, tab.id, { lastInputAt: Date.now() });
+    // A prompt from the CLI is the user's text too, so it starts the task the
+    // same way the GUI's Enter does (src/lib/taskPhase.ts). After the
+    // delivery check, not before: a prompt whose PTY died was not submitted.
+    useApp.getState().markStarted(taskId);
     await report(true);
   } catch (e) {
     await report(false, String((e as Error)?.message ?? e));
@@ -500,6 +504,7 @@ async function deliverOrQueue(
     throw new Error("the agent PTY exited while the prompt was being typed");
   }
   useApp.getState().patchTab(p.taskId, tab.id, { lastInputAt: Date.now() });
+  useApp.getState().markStarted(p.taskId);
   await reportCliPromptDelivery(p.promptId, true);
   return { mode: "delivered", capable };
 }

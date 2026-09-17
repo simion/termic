@@ -63,6 +63,18 @@ export interface TermicApi {
   /** One pass of the background PR status poller (GH #281): the real one
    *  ticks on a multi-minute cadence and has no on-screen trigger. */
   prStatusPassNow: () => Promise<void>;
+  /** Git half of the derived phase (src/store/taskGit.ts). `refresh(id, true)`
+   *  is the one a spec wants between two steps seconds apart: the unforced
+   *  call and `taskGitPassNow` both honour the 30s per-task floor, so the
+   *  second of two consecutive reads would silently be a no-op. */
+  useTaskGit: {
+    getState: () => { byTask: Record<string, any>; refresh: (taskId: string, force?: boolean) => Promise<void> };
+    setState: (p: any) => void;
+  };
+  /** One pass of the dashboard-scoped git poller, floor and all. Exposed for
+   *  the same reason `prStatusPassNow` is: the pass only ticks while the
+   *  dashboard is mounted and there is nothing on screen to press. */
+  taskGitPassNow: () => Promise<void>;
   /** Profiles registry as this window sees it (src/store/profiles.ts, GH
    *  #280). Read for setup/teardown; the strip is what the spec asserts on. */
   useProfiles: { getState: () => any; setState: (p: any) => void };
