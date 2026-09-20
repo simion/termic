@@ -13030,13 +13030,16 @@ fn resolve_task_git_path(w: &Task, path: &str) -> Result<(PathBuf, String), Stri
 /// are shipped as base64 only under the same 20 MB ceiling the preview
 /// channel uses — a bigger one would jank the webview, so it degrades to the
 /// "binary" summary rather than being sent.
-fn diff_sides_kind(abs: Option<&Path>, sides: [Option<&Vec<u8>>; 2]) -> &'static str {
+///
+/// `ext_probe` is only ever extension-checked, never opened, so it may name a
+/// file that no longer exists — the whole point for a deleted image, whose
+/// only remaining side lives in the object store.
+fn diff_sides_kind(ext_probe: &Path, sides: [Option<&Vec<u8>>; 2]) -> &'static str {
     let present = || sides.into_iter().flatten();
     if present().all(|b| std::str::from_utf8(b).is_ok()) {
         return "text";
     }
-    let is_image = abs
-        .and_then(preview_mime_for_ext)
+    let is_image = preview_mime_for_ext(ext_probe)
         .is_some_and(|m| m.starts_with("image/"));
     if is_image && present().all(|b| b.len() as u64 <= PREVIEW_CAP) {
         return "image";
@@ -13100,7 +13103,11 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
         _ => (show_head(), read_worktree()),
     };
     let fp = modified_path.as_deref().map(file_fp).unwrap_or_default();
-    let kind = diff_sides_kind(modified_path.as_deref(), [original.as_ref(), modified.as_ref()]);
+    // `safe_task_path` canonicalizes, so a deleted file leaves `modified_path`
+    // empty — but a deleted image still has an extension to classify on, so
+    // fall back to the unresolved join. Only `.extension()` is read off it.
+    let ext_probe = modified_path.clone().unwrap_or_else(|| cwd.join(&rel_path));
+    let kind = diff_sides_kind(&ext_probe, [original.as_ref(), modified.as_ref()]);
     let b64 = |side: &Option<Vec<u8>>| {
         side.as_ref().map(|b| base64::engine::general_purpose::STANDARD.encode(b))
     };
@@ -13115,7 +13122,7 @@ fn task_file_diff_sides_for_task(w: &Task, path: &str, scope: Option<&str>) -> R
         original: if kind == "text" { text(&original) } else { String::new() },
         modified: if kind == "text" { text(&modified) } else { String::new() },
         mime: (kind == "image")
-            .then(|| modified_path.as_deref().and_then(preview_mime_for_ext).map(str::to_string))
+            .then(|| preview_mime_for_ext(&ext_probe).map(str::to_string))
             .flatten(),
         original_data: if kind == "image" { b64(&original) } else { None },
         modified_data: if kind == "image" { b64(&modified) } else { None },
@@ -27778,6 +27785,60 @@ mod tests {
         assert!(sides.modified_data.is_some());
         assert_eq!(sides.original_bytes, 0);
         assert_eq!(sides.modified_bytes, TINY_PNG.len() as u64);
+    }
+
+    #[test]
+    fn diff_sides_reports_a_deleted_png_as_a_one_sided_image() {
+        // The delete half of add/delete symmetry: the worktree file is gone,
+        // so `safe_task_path` can't canonicalize it and the image probe has
+        // to come off the path's extension alone. That failing used to drop
+        // this to "binary", and the pane showed "Binary file · deleted"
+        // instead of the picture that was removed.
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        git_commit_bytes(dir.path(), "gone.png", TINY_PNG);
+        fs::remove_file(dir.path().join("gone.png")).unwrap();
+
+        let sides = task_file_diff_sides_for_task(&task_at(dir.path()), "gone.png", None).unwrap();
+        assert_eq!(sides.kind, "image");
+        assert_eq!(sides.mime.as_deref(), Some("image/png"));
+        assert!(sides.original_exists);
+        assert!(!sides.modified_exists);
+        assert!(sides.original_data.is_some());
+        assert!(sides.modified_data.is_none());
+        assert_eq!(sides.original_bytes, TINY_PNG.len() as u64);
+        assert_eq!(sides.modified_bytes, 0);
+        // No worktree file → no fingerprint; the pane hides "Viewed" on "".
+        assert!(sides.fp.is_empty());
+    }
+
+    #[test]
+    fn diff_sides_reports_a_commit_scope_deleted_png_as_a_one_sided_image() {
+        // A History diff whose right side is a blob, not the worktree: the
+        // deletion case must not depend on the file's on-disk state at all.
+        let dir = tempdir().unwrap();
+        git_init_with_commit(dir.path());
+        git_set_identity(dir.path());
+        git_commit_bytes(dir.path(), "gone.png", TINY_PNG);
+        fs::remove_file(dir.path().join("gone.png")).unwrap();
+        git_run(dir.path(), &["add", "-A"]);
+        git_run(dir.path(), &["commit", "-m", "drop gone.png"]);
+        let sha = git_head(dir.path());
+        // Recreate the file so the worktree copy exists but is irrelevant:
+        // `commit:` reads both sides from the object store either way.
+        fs::write(dir.path().join("gone.png"), TINY_PNG).unwrap();
+
+        let sides = task_file_diff_sides_for_task(
+            &task_at(dir.path()),
+            "gone.png",
+            Some(&format!("commit:{sha}")),
+        )
+        .unwrap();
+        assert_eq!(sides.kind, "image");
+        assert!(sides.original_exists);
+        assert!(!sides.modified_exists);
+        assert!(sides.original_data.is_some());
+        assert!(sides.modified_data.is_none());
     }
 
     #[test]

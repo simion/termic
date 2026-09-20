@@ -1293,6 +1293,42 @@ describe("image diff", () => {
       { timeout: 10_000, timeoutMsg: "the text diff never mounted CodeMirror" },
     );
   });
+
+  it("renders a deleted PNG as a single Deleted image", async () => {
+    // The deleted-file half of the image diff: the worktree path no longer
+    // exists, so the backend's image probe has nothing to canonicalize and
+    // used to fall back to kind "binary" - the "Binary file · deleted" line.
+    const taskPath = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.path,
+      taskId,
+    );
+    rmSync(path.join(taskPath as string, "shot.png"));
+
+    await browser.execute((id) => {
+      window.__termic!.useApp.getState().bumpGitRevision(id);
+      window.__termic!.useApp.getState().openPreviewTab(id, {
+        type: "diff",
+        path: "shot.png",
+        title: "Δ shot.png",
+        scope: "unstaged",
+      });
+    }, taskId);
+
+    // One <img> (the HEAD side) on the removed-wash panel, no summary line.
+    await browser.waitUntil(
+      async () => {
+        const n = await browser.execute(() =>
+          document.querySelectorAll('img[src^="data:image/png;base64,"]').length);
+        return n === 1;
+      },
+      { timeout: 10_000, timeoutMsg: "the deleted image never rendered its <img>" },
+    );
+    const txt = (await diffPaneText()).toUpperCase();
+    expect(txt).toContain("DELETED");
+    expect(txt).not.toContain("BINARY FILE");
+
+    await snap("image-diff-deleted.png");
+  });
 });
 
 // P1: the staging + commit backend (Fork-style). Cases: a changed file can be
