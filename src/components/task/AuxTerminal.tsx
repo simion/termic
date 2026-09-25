@@ -8,6 +8,7 @@
 // counter that retears down the xterm + spawns a fresh PTY.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -42,6 +43,7 @@ import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
 export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExited, onTitle, initialInput }: { taskId?: string; tabId?: string; taskPath: string; active: boolean; autoFocus?: boolean; onExited?: () => void; onTitle?: (title: string) => void;
   /** Typed at the prompt on spawn. Runs only if it ends with a CR. */
   initialInput?: string }) {
+  const { t } = useTranslation("task");
   // Keep the latest onTitle in a ref so the long-lived spawn effect's
   // onTitleChange handler always calls the current callback without
   // re-running (and respawning the PTY) when the parent re-renders.
@@ -458,8 +460,8 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         // interactive so its scrollback is still selectable/copyable, and it
         // isn't covered. `gen++` relaunches a fresh shell.
         <TerminalExitedBanner
-          label="Shell exited."
-          actionLabel="New shell"
+          label={t("aux.shellExited")}
+          actionLabel={t("aux.newShell")}
           icon={Plus}
           onAction={() => setGen(g => g + 1)}
         />

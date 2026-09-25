@@ -9,6 +9,7 @@
 // the user restarts the agent tab.
 
 import { useEffect, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -19,6 +20,7 @@ import type { TerminalTab } from "@/lib/types";
 import { History, RotateCcw } from "lucide-react";
 
 export function ResumeOverrideDialog() {
+  const { t } = useTranslation("dialogs");
   const taskId = useUI(s => s.resumeOverrideTaskId);
   const close = useUI(s => s.closeResumeOverride);
   const task = useApp(s => s.tasks.find(w => w.id === taskId) ?? null);
@@ -80,32 +82,39 @@ export function ResumeOverrideDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title="Resume override"
+      title={t("resumeOverride.title")}
       className="max-w-lg"
     >
       <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Replaces the default resume arguments for{" "}
-        <span className="font-mono">{task?.name ?? "this task"}</span>'s agent.
-        Use it to resume a named session instead of the auto-managed one, e.g.{" "}
-        <span className="font-mono">--resume {"{WORKSPACE_NAME}"}</span>. Placeholders{" "}
-        <span className="font-mono">{"{WORKSPACE_NAME}"}</span>,{" "}
-        <span className="font-mono">{"{WORKSPACE_SLUG}"}</span>,{" "}
-        <span className="font-mono">{"{BRANCH}"}</span> expand per launch. Leave
-        empty for the default behavior. Restart the agent tab to apply.
+        <Trans
+          t={t}
+          i18nKey="resumeOverride.bodyMain"
+          values={{ task: task?.name ?? t("resumeOverride.thisTask") }}
+          components={{ mono: <span className="font-mono" /> }}
+        />
       </p>
       <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        <span className="font-mono">--name</span> is skipped while an override
-        is set: renaming the session on every relaunch would break this
-        override's lookup on the next one.
+        <Trans
+          t={t}
+          i18nKey="resumeOverride.bodyNameFlag"
+          components={{ mono: <span className="font-mono" /> }}
+        />
       </p>
       <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Only {task?.cli ? <span className="font-mono">{task.cli}</span> : "this task's agent"}{" "}
-        uses it. Another agent opened from the + tab menu keeps its own resume
-        arguments, since the flag spelling is not shared between CLIs.
+        {task?.cli ? (
+          <Trans
+            t={t}
+            i18nKey="resumeOverride.bodyPerCli"
+            values={{ cli: task.cli }}
+            components={{ mono: <span className="font-mono" /> }}
+          />
+        ) : (
+          t("resumeOverride.bodyPerCliNoCli")
+        )}
       </p>
 
       <label className="block text-[13.5px]">
-        Resume arguments
+        {t("resumeOverride.argsLabel")}
         <input
           type="text"
           value={command}
@@ -124,19 +133,19 @@ export function ResumeOverrideDialog() {
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         />
         <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
-          The agent handles a missing session (e.g. claude opens its resume
-          picker). {canRestart
-            ? <>Press <kbd className="font-mono">⌘↵</kbd> to save &amp; restart the running agent.</>
-            : <>Press <kbd className="font-mono">↵</kbd> to save.</>}
+          {t("resumeOverride.hintMissingSession")}{" "}
+          {canRestart
+            ? <Trans t={t} i18nKey="resumeOverride.pressSaveRestart" components={{ kbd: <kbd className="font-mono" /> }} />
+            : <Trans t={t} i18nKey="resumeOverride.pressSave" components={{ kbd: <kbd className="font-mono" /> }} />}
         </span>
       </label>
 
       {err && <p className="mt-3 text-[13.5px] text-[var(--color-err)]">{err}</p>}
 
       <div className="mt-5 flex justify-end gap-2">
-        <Button variant="ghost" onClick={close}>Cancel</Button>
+        <Button variant="ghost" onClick={close}>{t("common:cancel")}</Button>
         <Button variant="secondary" disabled={busy} onClick={() => submit(false)}>
-          <History className="h-4 w-4" /> Save
+          <History className="h-4 w-4" /> {t("common:save")}
         </Button>
         {/* Always shown so the action is discoverable; disabled (with an
             explanation) when there's no live agent to restart, in which
@@ -144,10 +153,10 @@ export function ResumeOverrideDialog() {
         <Button
           variant="primary"
           disabled={busy || !canRestart}
-          title={canRestart ? undefined : "No agent is running in this task yet"}
+          title={canRestart ? undefined : t("resumeOverride.noAgentTitle")}
           onClick={() => submit(true)}
         >
-          <RotateCcw className="h-4 w-4" /> Save &amp; restart
+          <RotateCcw className="h-4 w-4" /> {t("resumeOverride.saveRestart")}
         </Button>
       </div>
     </AppDialog>

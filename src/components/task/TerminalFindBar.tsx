@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronUp, X } from "lucide-react";
 import type { Terminal } from "@xterm/xterm";
 import type { SearchAddon } from "@xterm/addon-search";
@@ -22,6 +23,7 @@ export function TerminalFindBar({ open, onClose, termRef, addonRef }: {
   termRef: RefObject<Terminal | null>;
   addonRef: RefObject<SearchAddon | null>;
 }) {
+  const { t } = useTranslation("task");
   const [query, setQuery] = useState("");
   const [count, setCount] = useState<{ index: number; total: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -74,7 +76,7 @@ export function TerminalFindBar({ open, onClose, termRef, addonRef }: {
         ref={inputRef}
         type="text"
         value={query}
-        placeholder="Find in terminal"
+        placeholder={t("find.placeholder")}
         spellCheck={false}
         autoCorrect="off"
         autoCapitalize="off"
@@ -94,9 +96,9 @@ export function TerminalFindBar({ open, onClose, termRef, addonRef }: {
           {findCountLabel(count.index, count.total, FIND_HIGHLIGHT_LIMIT)}
         </span>
       )}
-      <button type="button" title="Previous match (Shift+Enter)" onClick={() => find(query, "prev", false)} className={btn}><ChevronUp className="h-3.5 w-3.5" /></button>
-      <button type="button" title="Next match (Enter)" onClick={() => find(query, "next", false)} className={btn}><ChevronDown className="h-3.5 w-3.5" /></button>
-      <button type="button" title="Close (Esc)" onClick={onClose} className={`ml-0.5 ${btn}`}><X className="h-3.5 w-3.5" /></button>
+      <button type="button" title={t("find.prevTip")} onClick={() => find(query, "prev", false)} className={btn}><ChevronUp className="h-3.5 w-3.5" /></button>
+      <button type="button" title={t("find.nextTip")} onClick={() => find(query, "next", false)} className={btn}><ChevronDown className="h-3.5 w-3.5" /></button>
+      <button type="button" title={t("find.closeTip")} onClick={onClose} className={`ml-0.5 ${btn}`}><X className="h-3.5 w-3.5" /></button>
     </div>
   );
 }

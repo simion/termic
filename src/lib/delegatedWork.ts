@@ -19,6 +19,8 @@
 // never. So the verdict cannot come from the payload, and this module does not
 // try. It asks a different question, below.
 
+import { i18n } from "@/lib/i18n";
+
 /** Wire labels. The hook sends one of these; anything else is dropped rather
  *  than shown, because the body is agent-controlled text that reaches the UI.
  *  KEEP IN SYNC with `DELEGATED_LABELS` in `agent_hooks.rs`. */
@@ -157,17 +159,26 @@ export function delegatedVerdict(
 }
 
 /** What the chip says. Singular and plural, because "1 subagents" in the UI is
- *  the kind of thing that survives to a screenshot. */
-export function delegatedChipText(w: DelegatedWork): string {
-  const l = DELEGATED_LABELS[w.label];
-  return `${w.count} ${w.count === 1 ? l.one : l.many}`;
+ *  the kind of thing that survives to a screenshot. Pass the calling
+ *  component's `t` (docs/i18n.md); without one it resolves through the global
+ *  i18n at event time, which is what the log lines want anyway. */
+export function delegatedChipText(
+  w: DelegatedWork,
+  t?: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  const resolve = t ?? ((key: string, opts?: Record<string, unknown>) => i18n.t(key, opts));
+  return resolve(`chrome:delegatedChip.${w.label}_${w.count === 1 ? "one" : "other"}`, { count: w.count });
 }
 
 /** The whole sentence for a tooltip: what is outstanding, and whether
- *  anything has come back yet. */
-export function delegatedTitle(w: DelegatedWork): string {
-  const held = delegatedChipText(w);
+ *  anything has come back yet. Same optional-`t` rule as `delegatedChipText`. */
+export function delegatedTitle(
+  w: DelegatedWork,
+  t?: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  const held = delegatedChipText(w, t);
+  const resolve = t ?? ((key: string, opts?: Record<string, unknown>) => i18n.t(key, opts));
   return w.partial
-    ? `Some work came back, ${held} still running`
-    : `${held} still running`;
+    ? resolve("chrome:delegated.titlePartial", { held })
+    : resolve("chrome:delegated.titleRunning", { held });
 }

@@ -29,6 +29,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import * as ipc from "@/lib/ipc";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { showDragGhost, moveDragGhost, hideDragGhost } from "@/lib/dragGhost";
 
 // Per-terminal drop metadata. We store getters (not bare values) so a Restart
@@ -273,7 +274,7 @@ async function handleSandboxedDrop(ptyId: string, taskId: string, paths: string[
     const staged: string[] = [];
     for (const src of paths) {
       try { staged.push(await ipc.terminalStageFile(taskId, src)); }
-      catch (e) { useUI.getState().pushToast(`Couldn't stage ${src}: ${e}`, "error"); }
+      catch (e) { useUI.getState().pushToast(i18n.t("backend:terminalDrop.stageFailed", { path: src, error: String(e) }), "error"); }
     }
     if (staged.length > 0) writePaths(ptyId, staged);
     return;
@@ -288,12 +289,12 @@ async function handleSandboxedDrop(ptyId: string, taskId: string, paths: string[
   let added = 0;
   for (const path of toAllow) {
     try { await ipc.taskSandboxAddAllowedPath(taskId, path); added++; }
-    catch (e) { useUI.getState().pushToast(`Couldn't allow ${path}: ${e}`, "error"); }
+    catch (e) { useUI.getState().pushToast(i18n.t("backend:terminalDrop.allowFailed", { path, error: String(e) }), "error"); }
   }
   writePaths(ptyId, paths);
   if (added > 0) {
     useUI.getState().pushToast(
-      "Path allowed. Restart the agent for the sandbox to pick it up.",
+      i18n.t("backend:terminalDrop.allowedToast"),
       "success",
     );
   }

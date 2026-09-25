@@ -14,6 +14,7 @@
 // and the agent is about to launch on the old image anyway.
 
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, AlertTriangle, Container } from "lucide-react";
 import { useDockerBuild } from "@/store/dockerBuild";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ export function DockerBuildPane({ taskId }: { taskId: string }) {
   const status = useDockerBuild(s => s.status);
   const clear = useDockerBuild(s => s.clear);
   const outputRef = useRef<HTMLDivElement>(null);
+  const { t } = useTranslation("panels");
 
   useEffect(() => {
     const el = outputRef.current;
@@ -45,9 +47,9 @@ export function DockerBuildPane({ taskId }: { taskId: string }) {
           ? <AlertTriangle className="h-4 w-4 shrink-0 text-[var(--color-err)]" />
           : <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--color-fg-dim)]" />}
         <Container className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
-        <span className="truncate">Docker sandbox image</span>
+        <span className="truncate">{t("dockerBuild.title")}</span>
         <span className={cn("shrink-0", failed ? "text-[var(--color-err)]" : "text-[var(--color-fg-faint)]")}>
-          {failed ? "Build failed. Launching with the existing image." : "Rebuilding before launch…"}
+          {failed ? t("dockerBuild.failed") : t("dockerBuild.rebuilding")}
         </span>
         {failed && (
           <button
@@ -55,7 +57,7 @@ export function DockerBuildPane({ taskId }: { taskId: string }) {
             onClick={clear}
             className="ml-auto shrink-0 rounded px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
           >
-            Dismiss
+            {t("dismiss", { ns: "common" })}
           </button>
         )}
       </div>
@@ -66,7 +68,7 @@ export function DockerBuildPane({ taskId }: { taskId: string }) {
         className="min-h-0 flex-1 overflow-auto px-4 py-3 font-mono text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]"
       >
         {lines.length === 0
-          ? <span className="text-[var(--color-fg-faint)]">Waiting for output…</span>
+          ? <span className="text-[var(--color-fg-faint)]">{t("dockerBuild.waiting")}</span>
           : lines.map((line, i) => <div key={i} className="whitespace-pre-wrap break-words">{line}</div>)}
       </div>
     </div>

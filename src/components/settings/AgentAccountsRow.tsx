@@ -11,6 +11,7 @@
 // store: another profile may still be using it.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { Plus, Check, X, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -37,6 +38,7 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
 }) {
   // One card renders at a time (the section has an agent tab strip above it),
   // so this is one call per card shown, not one per agent.
+  const { t } = useTranslation("settings");
   const [view, setView] = useState<AgentAccountsView | null>(null);
   // Local for the "add another" button on an agent that already has sets; the
   // FIRST one is driven from the header, through `adding`.
@@ -79,7 +81,7 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
     // user's existing login renamed and still no second account, which is
     // exactly the confusion this removes. Same shape as the New profile
     // dialog, which names the current setup and the new one together.
-    if (first && !second.trim()) { setErr("Name the second account too."); return; }
+    if (first && !second.trim()) { setErr(t("agents.accounts.errSecond")); return; }
     submitting.current = true;
     try {
       await ipc.accountAdd(agentId, name);
@@ -102,7 +104,7 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
     <div className="mb-3" data-testid={`agent-accounts-${agentId}`}>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-[var(--color-fg-faint)]">
-          {first ? "Name your current login" : "Credentials"}
+          {first ? t("agents.accounts.firstLabel") : t("agents.accounts.label")}
         </span>
 
         {view.accounts.map(a => (
@@ -118,22 +120,22 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
           >
             <button
               type="button"
-              title={a.isDefault ? "Used by new tasks" : "Use this one for new tasks"}
+              title={a.isDefault ? t("agents.accounts.defaultTip") : t("agents.accounts.useTip")}
               onClick={() => void ipc.accountSetDefault(agentId, a.name).then(refresh)}
               className="inline-flex items-center gap-1.5"
             >
               {a.isDefault && <Check className="h-3 w-3 text-[var(--color-accent)]" />}
               {a.name}
               {a.isDefault && (
-                <span className="text-[9px] uppercase tracking-wider opacity-50">default</span>
+                <span className="text-[9px] uppercase tracking-wider opacity-50">{t("agents.accounts.defaultBadge")}</span>
               )}
               {/* "Named but never signed in" is a real state, not an error: it
                   is what this account looks like on a second machine. */}
-              {!a.signedIn && <span className="text-[10.5px] opacity-55">not signed in</span>}
+              {!a.signedIn && <span className="text-[10.5px] opacity-55">{t("agents.accounts.notSignedIn")}</span>}
             </button>
             <button
               type="button"
-              aria-label={`Remove ${a.name}`}
+              aria-label={t("agents.accounts.removeAria", { name: a.name })}
               data-testid={`account-remove-${agentId}-${a.name}`}
               onClick={() => void ipc.accountRemove(agentId, a.name).then(async () => {
                 // Fire onEmptied only on the TRANSITION to empty, from the
@@ -161,7 +163,7 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
               // Naming the login the agent ALREADY has, when this is the first
               // one: the placeholder has to be a name for that, not for a new
               // account the user has not created.
-              placeholder={first ? "Personal" : "Work"}
+              placeholder={first ? t("agents.accounts.placeholderPersonal") : t("agents.accounts.placeholderWork")}
               data-testid={`account-name-${agentId}`}
               onChange={e => setDraft(e.target.value)}
               // No blur-to-submit while there are two fields: tabbing from the
@@ -176,11 +178,11 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
             {first && (
               <>
                 <span className="text-[11px] uppercase tracking-wide text-[var(--color-fg-faint)]">
-                  and add
+                  {t("agents.accounts.andAdd")}
                 </span>
                 <Input
                   value={second}
-                  placeholder="Work"
+                  placeholder={t("agents.accounts.placeholderWork")}
                   data-testid={`account-second-${agentId}`}
                   onChange={e => setSecond(e.target.value)}
                   onKeyDown={e => {
@@ -195,7 +197,7 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
                   data-testid={`account-add-confirm-${agentId}`}
                   disabled={!draft.trim() || !second.trim()}
                   onClick={() => void submit()}
-                >Add</Button>
+                >{t("common:add")}</Button>
               </>
             )}
           </>
@@ -207,7 +209,7 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
             className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
           >
             <Plus className="h-3 w-3" />
-            {view.accounts.length === 0 ? "Add a second login" : "Add"}
+            {view.accounts.length === 0 ? t("agents.accounts.addLogin") : t("common:add")}
           </button>
         )}
       </div>
@@ -217,10 +219,12 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
           and nothing on screen suggested the chips were clickable at all. */}
       {view.accounts.length > 0 && !isAdding && (
         <p className="mt-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
-          New tasks use <span className="text-[var(--color-fg-dim)]">
-            {view.accounts.find(a => a.isDefault)?.name ?? "this agent's ordinary login"}
-          </span>. Click another name to make it the default, or switch one task
-          from its footer.
+          <Trans
+            t={t}
+            i18nKey="agents.accounts.defaultNote"
+            values={{ name: view.accounts.find(a => a.isDefault)?.name ?? t("agents.accounts.ordinaryLogin") }}
+            components={{ 1: <span className="text-[var(--color-fg-dim)]" /> }}
+          />
         </p>
       )}
 
@@ -229,7 +233,14 @@ export function AgentAccountsRow({ agentId, onEmptied, adding, onDoneAdding, non
       {view.envIsSharedRoot && view.accounts.length > 0 && (
         <p className="mt-1.5 flex items-start gap-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-          <span>Switching sets <code className="mono">{view.envVar}</code>, which other tools in the same environment also read.</span>
+          <span>
+            <Trans
+              t={t}
+              i18nKey="agents.accounts.sharedEnv"
+              values={{ var: view.envVar }}
+              components={{ 1: <code className="mono" /> }}
+            />
+          </span>
         </p>
       )}
 
@@ -260,6 +271,7 @@ export function AgentAccountsAction({ agentId, onStartAdd, nonce }: {
    *  broken. The header stays a trigger. */
   onStartAdd?: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const [view, setView] = useState<AgentAccountsView | null>(null);
 
 
@@ -285,10 +297,10 @@ export function AgentAccountsAction({ agentId, onStartAdd, nonce }: {
       type="button"
       data-testid={`agent-accounts-${agentId}`}
       onClick={() => onStartAdd?.()}
-      title={`Sign in to this agent with a second account and switch between them per task. Nothing is copied: each account keeps its own login, and the one you have now keeps working.`}
+      title={t("agents.accounts.secondAccountTip")}
       className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-dashed border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"
     >
-      <Plus className="h-3 w-3" /> Second account
+      <Plus className="h-3 w-3" /> {t("agents.accounts.secondAccount")}
     </button>
   );
 }

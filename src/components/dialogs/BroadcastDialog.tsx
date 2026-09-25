@@ -10,6 +10,7 @@
 //                                           in the project.
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -37,6 +38,7 @@ function tabLabel(t: TerminalTab): string {
 }
 
 export function BroadcastDialog() {
+  const { t } = useTranslation("dialogs");
   const taskId = useUI(s => s.broadcastForTaskId);
   const projectId = useUI(s => s.broadcastForProjectId);
   const close = useUI(s => s.closeBroadcast);
@@ -124,7 +126,7 @@ export function BroadcastDialog() {
     // agents like Gemini never get a working→done transition for broadcast work.
     for (const x of picked) patchTab(x.taskId, x.tab.id, { lastInputAt: now });
     close();
-    pushToast(`Broadcast to ${picked.length} agent${picked.length === 1 ? "" : "s"}`);
+    pushToast(t(picked.length === 1 ? "broadcast.toastOne" : "broadcast.toastMany", { count: picked.length }));
   }
 
   const selectedCount = targets.filter(x => isSelected(x.tab)).length;
@@ -134,17 +136,17 @@ export function BroadcastDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title="Broadcast message"
+      title={t("broadcast.title")}
       description={projectId
-        ? "Send one message to the main agent of every task in this project."
-        : "Send one message to several open agents at once."}
+        ? t("broadcast.descProject")
+        : t("broadcast.descTask")}
       className="max-w-2xl"
     >
       {targets.length === 0 ? (
         <p className="mt-2 text-[13.5px] text-[var(--color-fg-dim)]">
           {projectId
-            ? "No running main agents in this project yet. Open a task first."
-            : "No running agents in this task yet. Open an agent tab first."}
+            ? t("broadcast.emptyProject")
+            : t("broadcast.emptyTask")}
         </p>
       ) : (
         <>
@@ -195,17 +197,17 @@ export function BroadcastDialog() {
             value={msg}
             onChange={e => { setMsg(e.target.value); grow(e.currentTarget); }}
             rows={5}
-            placeholder="Message to broadcast…"
+            placeholder={t("broadcast.placeholder")}
             className="mt-3 max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
           />
 
           <div className="mt-3 flex items-center justify-between">
             <span className="text-[12px] text-[var(--color-fg-faint)]">
-              {selectedCount} of {targets.length} selected
+              {t("broadcast.selectedCount", { selected: selectedCount, total: targets.length })}
             </span>
             <Button variant="primary" size="sm" disabled={!canSend} onClick={send}>
               <Megaphone className="h-3.5 w-3.5" />
-              Send
+              {t("broadcast.send")}
             </Button>
           </div>
         </>

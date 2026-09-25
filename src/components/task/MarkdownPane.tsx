@@ -5,6 +5,7 @@
 // feeding the preview, `file.md#heading` reveals, and the remote-image gate.
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { EditorView } from "@codemirror/view";
 import type { EditTab, ExternalTab, ScratchTab, Task } from "@/lib/types";
 import { EditorPane } from "./EditorPane";
@@ -40,6 +41,7 @@ export function MarkdownPane(
   // doc shows however you last looked at one. Toggling writes BOTH the
   // per-tab override and the global pref, so the choice survives relaunch.
   const defaultView = usePrefs(s => s.markdownDefaultView);
+  const { t } = useTranslation("panels");
   const view: SourceView = tab.mdView ?? defaultView;
   const setView = (v: SourceView) => {
     useApp.getState().patchTab(task.id, tab.id, { mdView: v });
@@ -131,7 +133,7 @@ export function MarkdownPane(
       active={active}
       editor={<EditorPane task={task} tab={tab} onContent={onContent} active={active && view !== "preview"} />}
       preview={({ showPreview, showEditor }) => (
-        <Suspense fallback={<div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading preview…</div>}>
+        <Suspense fallback={<div className="p-4 text-[14px] text-[var(--color-fg-dim)]">{t("shared.loadingPreview")}</div>}>
           <MarkdownPreview
             text={text}
             themeDark={themeDark}

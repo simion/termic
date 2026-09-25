@@ -11,6 +11,7 @@
 // remounted it, which took a shared hook and a Rust broadcast to paper over.
 // There is one copy now.
 
+import { useTranslation, Trans } from "react-i18next";
 import { Check, ArrowRightLeft, Plus } from "lucide-react";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { useApp } from "@/store/app";
@@ -27,6 +28,7 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
    *  over the page it just opened. */
   onNavigate: () => void;
 }) {
+  const { t } = useTranslation("task");
   const { candidate, offering, auto, notice, label, pick, toggleAuto } = sw;
   return (
     <div className="border-t border-[var(--color-border-soft)] p-1.5">
@@ -53,12 +55,17 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
         >
           <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
           <span className="min-w-0 flex-1">
-            Over {SWITCH_AT_PERCENT}%. Switch to <span className="font-medium">{candidate}</span>
+            <Trans
+              t={t}
+              i18nKey="accounts.switchOffer"
+              values={{ percent: SWITCH_AT_PERCENT, candidate }}
+              components={{ b: <span className="font-medium" /> }}
+            />
           </span>
         </button>
       )}
       <div className="px-2 pb-1.5 pt-1 text-[11px] uppercase tracking-wide opacity-50">
-        Credentials
+        {t("accounts.credentials")}
       </div>
       {pillOrder(view!).map(a => (
         <button
@@ -67,7 +74,7 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
           data-testid={`account-pick-${a.name}`}
           onClick={() => { onNavigate(); void pick(a.name); }}
           title={a.signedIn ? undefined
-            : `${a.name} has no login yet. Picking it opens a tab where you can run this agent's own login.`}
+            : t("accounts.noLoginTitle", { name: a.name })}
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-[var(--color-bg-2)]"
         >
           <span className="min-w-0 flex-1 truncate">{a.name}</span>
@@ -75,7 +82,7 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
               and left the row looking inert, which is exactly how someone
               concludes the account is broken. Clicking it now opens the tab
               where the login can actually happen, so the label says so. */}
-          {!a.signedIn && <span className="shrink-0 text-[10.5px] opacity-55">sign in</span>}
+          {!a.signedIn && <span className="shrink-0 text-[10.5px] opacity-55">{t("accounts.signIn")}</span>}
           {a.name === label && <Check className="h-3.5 w-3.5 shrink-0 opacity-70" />}
         </button>
       ))}
@@ -94,7 +101,7 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
           className="mt-1 flex w-full items-center gap-2 rounded-md border-t border-[var(--color-border-soft)] px-2 pb-1 pt-2 text-left text-[12.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
         >
           <Plus className="h-3.5 w-3.5 shrink-0 opacity-70" />
-          Add another account...
+          {t("accounts.addAnother")}
         </button>
       )}
       {/* The opt-in, in the menu the user is already in when they switch by
@@ -109,12 +116,12 @@ export function AccountSwitcher({ agentId, view, sw, onNavigate }: {
         >
           <Checkbox checked={auto} onChange={next => void toggleAuto(next)} className="mt-0.5" />
           <span className="min-w-0 flex-1 leading-snug">
-            Switch automatically at limit reached
+            {t("accounts.autoSwitch")}
             {/* One line, and it is about the CONSEQUENCE: "switch" does not
                 sound like "restarts your agent", and that is the thing worth
                 knowing before ticking the box rather than after. */}
             <span className="block text-[11px] text-[var(--color-fg-faint)]">
-              Switching restarts the agent. The session continues.
+              {t("accounts.autoSwitchHint")}
             </span>
           </span>
         </label>

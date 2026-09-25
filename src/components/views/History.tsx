@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { taskRestore, taskDelete } from "@/lib/ipc";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
@@ -8,26 +11,29 @@ import { cn } from "@/lib/utils";
 import { ChevronRight, Search, Trash2 } from "lucide-react";
 import type { Task } from "@/lib/types";
 
-function groupLabel(iso: string): string {
+function groupLabel(iso: string, t: TFunction): string {
   const diffDays = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7)  return `${diffDays} days ago`;
-  if (diffDays < 14) return "Last week";
-  if (diffDays < 21) return "2 weeks ago";
-  if (diffDays < 28) return "3 weeks ago";
-  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date(iso));
+  if (diffDays === 0) return t("history.today");
+  if (diffDays === 1) return t("history.yesterday");
+  if (diffDays < 7)  return t("history.daysAgo", { count: diffDays });
+  if (diffDays < 14) return t("history.lastWeek");
+  if (diffDays < 21) return t("history.weeksAgo", { count: 2 });
+  if (diffDays < 28) return t("history.weeksAgo", { count: 3 });
+  // Dates follow the UI language, not the OS locale: a Chinese UI over an
+  // English macOS still reads 三月, matching every other string on the page.
+  return new Intl.DateTimeFormat(i18n.language, { month: "long", year: "numeric" }).format(new Date(iso));
 }
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(i18n.language, {
     month: "short", day: "numeric",
     ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
   }).format(d);
 }
 
 export function HistoryView() {
+  const { t } = useTranslation("chrome");
   const projects  = useApp(s => s.projects);
   const tasks = useApp(s => s.tasks);
   const agents    = useApp(s => s.agents);
@@ -58,12 +64,12 @@ export function HistoryView() {
   const groups = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const w of archived) {
-      const key = groupLabel(w.archived_at ?? w.created);
+      const key = groupLabel(w.archived_at ?? w.created, t);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(w);
     }
     return [...map.entries()];
-  }, [archived]);
+  }, [archived, t]); // t: group labels re-translate on a live language switch
 
   // Everything archived, filter ignored: "Empty archive" is about the archive,
   // not about what the search box happens to be showing. The confirmation
@@ -80,9 +86,11 @@ export function HistoryView() {
     const doomed = useApp.getState().tasks.filter(w => w.archived);
     if (doomed.length === 0) return;
     const ok = await useUI.getState().askConfirm({
-      title: `Empty the archive?`,
-      message: `This permanently deletes ${doomed.length} archived ${doomed.length === 1 ? "task" : "tasks"}. It cannot be undone.`,
-      confirmLabel: "Delete all",
+      title: t("history.confirmTitle"),
+      message: doomed.length === 1
+        ? t("history.confirmMessageOne", { count: doomed.length })
+        : t("history.confirmMessageMany", { count: doomed.length }),
+      confirmLabel: t("history.confirmLabel"),
       destructive: true,
     });
     if (!ok) return;
@@ -94,9 +102,9 @@ export function HistoryView() {
     await loadAll();
     setEmptying(false);
     if (failed > 0) {
-      useUI.getState().pushToast(`Couldn't delete ${failed} of ${doomed.length} tasks`, "error");
+      useUI.getState().pushToast(t("history.deleteFailed", { failed, total: doomed.length }), "error");
     } else {
-      useUI.getState().pushToast(`Archive emptied (${doomed.length})`, "success");
+      useUI.getState().pushToast(t("history.emptied", { count: doomed.length }), "success");
     }
   }
 
@@ -107,7 +115,7 @@ export function HistoryView() {
       await loadAll();
       setActive(task.id);
     } catch (err) {
-      useUI.getState().pushToast(typeof err === "string" ? err : "Restore failed", "error");
+      useUI.getState().pushToast(typeof err === "string" ? err : t("restoreFailed"), "error");
     } finally {
       setRestoring(prev => { const s = new Set(prev); s.delete(id); return s; });
     }
@@ -121,7 +129,7 @@ export function HistoryView() {
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Filter tasks..."
+          placeholder={t("history.filterPlaceholder")}
           className="flex-1 bg-transparent text-[13.5px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] outline-none"
         />
         {/* Permanent delete, so it sits here as a plain quiet control rather
@@ -133,7 +141,7 @@ export function HistoryView() {
             type="button"
             onClick={emptyArchive}
             disabled={emptying}
-            title="Permanently delete every archived task"
+            title={t("history.emptyArchiveTip")}
             className={cn(
               "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px] transition-colors",
               emptying
@@ -142,7 +150,7 @@ export function HistoryView() {
             )}
           >
             <Trash2 className="h-3.5 w-3.5 shrink-0" />
-            {emptying ? "Emptying…" : "Empty archive"}
+            {emptying ? t("history.emptying") : t("history.emptyArchive")}
           </button>
         )}
       </div>
@@ -152,7 +160,7 @@ export function HistoryView() {
         <div className="mx-auto max-w-3xl">
           {archived.length === 0 ? (
             <p className="py-8 text-[13.5px] text-[var(--color-fg-dim)]">
-              {query ? "No tasks match your filter." : "No archived tasks."}
+              {query ? t("history.noMatch") : t("history.noArchived")}
             </p>
           ) : groups.map(([label, task]) => (
             <div key={label} className="mb-2">
@@ -184,7 +192,7 @@ export function HistoryView() {
 
                     {/* Project name */}
                     <span className="w-[130px] shrink-0 truncate text-[var(--color-fg-dim)]">
-                      {proj?.name ?? "Unknown"}
+                      {proj?.name ?? t("history.unknownProject")}
                     </span>
 
                     {/* Separator */}
@@ -204,7 +212,7 @@ export function HistoryView() {
                     {/* Right: date + restore button */}
                     <div className="ml-auto shrink-0 pl-6 flex items-center gap-3">
                       {isRestoring ? (
-                        <span className="text-[12.5px] text-[var(--color-fg-dim)]">Restoring…</span>
+                        <span className="text-[12.5px] text-[var(--color-fg-dim)]">{t("history.restoring")}</span>
                       ) : (
                         <>
                           <span className="text-[12.5px] tabular-nums text-[var(--color-fg-faint)]">
@@ -215,7 +223,7 @@ export function HistoryView() {
                               onClick={() => restore(w.id)}
                               className="text-[12.5px] font-medium text-[var(--color-accent)] hover:underline"
                             >
-                              Restore →
+                              {t("history.restore")}
                             </button>
                           )}
                         </>

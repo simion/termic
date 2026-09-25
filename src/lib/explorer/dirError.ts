@@ -11,6 +11,8 @@
 // underneath and in the title, because the errno and the resolved path are
 // what make a report like #250 diagnosable.
 
+import { i18n } from "@/lib/i18n";
+
 export interface DirError {
   /** Human headline, no trailing period (the row adds its own separator). */
   short: string;
@@ -18,17 +20,20 @@ export interface DirError {
   detail: string;
 }
 
+// Values are backend:dirError KEYS, resolved at call time so a language
+// switch applies to the next failed read. The regexes match the raw Rust
+// error text, which never localizes.
 const RULES: Array<[RegExp, string]> = [
   // A symlinked folder pointing outside the task. It always fails, and no
   // amount of retrying changes that, so say so instead of offering hope.
-  [/path escapes task/i, "This folder links outside the task"],
-  [/`\.\.` segments not allowed|absolute paths not allowed/i, "Path not allowed"],
-  [/os error 2\b|no such file or directory/i, "This folder no longer exists"],
-  [/os error 13\b|permission denied/i, "Permission denied"],
-  [/os error 20\b|not a directory/i, "This is not a folder any more"],
-  [/os error 62\b|too many levels of symbolic links/i, "Symlink loop"],
-  [/os error 24\b|too many open files/i, "Too many open files"],
-  [/^no task\b/i, "This task is gone from disk"],
+  [/path escapes task/i, "escapesTask"],
+  [/`\.\.` segments not allowed|absolute paths not allowed/i, "pathNotAllowed"],
+  [/os error 2\b|no such file or directory/i, "gone"],
+  [/os error 13\b|permission denied/i, "permissionDenied"],
+  [/os error 20\b|not a directory/i, "notADirectory"],
+  [/os error 62\b|too many levels of symbolic links/i, "symlinkLoop"],
+  [/os error 24\b|too many open files/i, "tooManyOpenFiles"],
+  [/^no task\b/i, "taskGone"],
 ];
 
 /** Classify a `task_dir_list` rejection. `e` is whatever the promise rejected
@@ -36,8 +41,8 @@ const RULES: Array<[RegExp, string]> = [
  *  bridge itself is possible too, so everything goes through `String()`. */
 export function explainDirError(e: unknown): DirError {
   const detail = (typeof e === "string" ? e : e instanceof Error ? e.message : String(e)).trim();
-  for (const [re, short] of RULES) if (re.test(detail)) return { short, detail };
+  for (const [re, key] of RULES) if (re.test(detail)) return { short: i18n.t(`backend:dirError.${key}`), detail };
   // Unrecognised: the raw message IS the headline. Better a cryptic errno on
   // screen than the generic sentence that made #250 unactionable.
-  return { short: detail || "Unknown error", detail };
+  return { short: detail || i18n.t("backend:dirError.unknown"), detail };
 }

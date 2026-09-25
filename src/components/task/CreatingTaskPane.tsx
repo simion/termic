@@ -10,6 +10,7 @@
 // takes over, not a modal-shaped insert floating in it.
 
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, AlertTriangle } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePendingTask, usePendingTasks } from "@/store/pendingTasks";
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 
 export function CreatingTaskPane({ id }: { id: string }) {
+  const { t } = useTranslation("task");
   // Resolved: a cloned agent inherits its parent's icon.
   const agents = useApp(s => s.agents);
   const pending = usePendingTask(id);
@@ -48,7 +50,7 @@ export function CreatingTaskPane({ id }: { id: string }) {
         <CliIcon cli={resolveIconId(pending.cli, agents)} className="h-4 w-4 shrink-0" />
         <span className="truncate">{pending.name}</span>
         <span className={cn("shrink-0", isError ? "text-[var(--color-err)]" : "text-[var(--color-fg-faint)]")}>
-          {isError ? "Creation failed." : "Creating…"}
+          {isError ? t("creating.failed") : t("creating.creating")}
         </span>
         {isError && (
           <Button
@@ -57,7 +59,7 @@ export function CreatingTaskPane({ id }: { id: string }) {
             className="ml-auto"
             onClick={() => { remove(id); setActive(null); }}
           >
-            Dismiss
+            {t("common:dismiss")}
           </Button>
         )}
       </div>
@@ -73,7 +75,7 @@ export function CreatingTaskPane({ id }: { id: string }) {
         className="min-h-0 flex-1 overflow-auto px-4 py-3 font-mono text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]"
       >
         {pending.log.length === 0
-          ? <span className="text-[var(--color-fg-faint)]">Waiting for output…</span>
+          ? <span className="text-[var(--color-fg-faint)]">{t("creating.waiting")}</span>
           : pending.log.map((line, i) => <div key={i} className="whitespace-pre-wrap break-words">{line}</div>)
         }
       </div>

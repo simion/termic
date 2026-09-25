@@ -16,6 +16,7 @@
 // live spinner but fine for labelling an offline sample.
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import {
   capturePhase,
   captureSamples,
@@ -46,10 +47,11 @@ function useSignalLogVersion(): number {
   );
 }
 
+/** Label keys, resolved through t() at render: the words are per-locale. */
 const CLASS_LABEL: Record<SignalClass, string> = {
-  busy: "Busy",
-  idle: "Done",
-  attention: "Needs you",
+  busy: "agents.signals.classBusy",
+  idle: "agents.signals.classDone",
+  attention: "agents.signals.classAttention",
 };
 
 const CLASS_TONE: Record<SignalClass, string> = {
@@ -66,6 +68,7 @@ export interface SignalInspectorProps {
 }
 
 export function SignalInspector({ agentId, signals, onAddPattern }: SignalInspectorProps) {
+  const { t } = useTranslation("settings");
   const version = useSignalLogVersion();
   const [open, setOpen] = useState(false);
   const observations = open ? observationsFor(agentId) : [];
@@ -107,7 +110,7 @@ export function SignalInspector({ agentId, signals, onAddPattern }: SignalInspec
           onClick={() => setOpen(true)}
           className="text-[12.5px] text-[var(--color-accent)] hover:underline"
         >
-          Show what this agent is emitting…
+          {t("agents.signals.show")}
         </button>
       </div>
     );
@@ -117,20 +120,20 @@ export function SignalInspector({ agentId, signals, onAddPattern }: SignalInspec
     <div className="border-t border-[var(--color-border-soft)] pt-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="text-[12.5px] font-medium text-[var(--color-fg)]">
-          Observed titles
+          {t("agents.signals.observed")}
         </div>
         <div className="flex items-center gap-2">
           {phase === "off" && (
             <Button variant="ghost" onClick={() => startCapture(agentId)}>
-              Capture a turn
+              {t("agents.signals.capture")}
             </Button>
           )}
           {(phase === "waiting-for-submit" || phase === "recording") && (
-            <Button variant="ghost" onClick={() => stopCapture()}>Stop</Button>
+            <Button variant="ghost" onClick={() => stopCapture()}>{t("shared.stop")}</Button>
           )}
           {phase === "done" && (
             <Button variant="ghost" onClick={() => startCapture(agentId)}>
-              Capture again
+              {t("agents.signals.captureAgain")}
             </Button>
           )}
           <Button variant="ghost" onClick={() => resetSignalLog(agentId)}>
@@ -141,7 +144,7 @@ export function SignalInspector({ agentId, signals, onAddPattern }: SignalInspec
             onClick={() => setOpen(false)}
             className="text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
           >
-            Hide
+            {t("common:hide")}
           </button>
         </div>
       </div>
@@ -149,14 +152,13 @@ export function SignalInspector({ agentId, signals, onAddPattern }: SignalInspec
       {phase === "waiting-for-submit" && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5 px-2.5 py-2 text-[12px] text-[var(--color-fg-dim)]">
           <Circle className="h-2.5 w-2.5 shrink-0 animate-pulse fill-current text-[var(--color-accent)]" />
-          Send one prompt to a task running this agent. Recording stops on its own
-          when the turn finishes.
+          {t("agents.signals.waiting")}
         </div>
       )}
       {phase === "recording" && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/5 px-2.5 py-2 text-[12px] text-[var(--color-fg-dim)]">
           <Circle className="h-2.5 w-2.5 shrink-0 animate-pulse fill-current text-[var(--color-warn)]" />
-          Recording the turn…
+          {t("agents.signals.recording")}
         </div>
       )}
 
@@ -166,8 +168,7 @@ export function SignalInspector({ agentId, signals, onAddPattern }: SignalInspec
 
       {observations.length === 0 ? (
         <div className="rounded-md border border-dashed border-[var(--color-border)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-dim)]">
-          Nothing seen yet. Start a task with this agent and its terminal titles
-          show up here.
+          {t("agents.signals.empty")}
         </div>
       ) : (
         <div className="max-h-[260px] overflow-y-auto rounded-md border border-[var(--color-border-soft)]">
@@ -186,8 +187,7 @@ export function SignalInspector({ agentId, signals, onAddPattern }: SignalInspec
         </div>
       )}
       <div className="mt-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
-        Adding from here inserts the title as an exact match. A capture proposes
-        patterns that cover a whole spinner instead.
+        {t("agents.signals.footnote")}
       </div>
     </div>
   );
@@ -198,6 +198,7 @@ function ObservationRow({ o, live, onAddPattern }: {
   live: SignalClass | null;
   onAddPattern: (cls: SignalClass, pattern: string) => void;
 }) {
+  const { t } = useTranslation("settings");
   return (
     <tr className="border-b border-[var(--color-border-soft)] last:border-0">
       {/* The whole point of this table is reading what the agent ACTUALLY
@@ -209,7 +210,7 @@ function ObservationRow({ o, live, onAddPattern }: {
           the button in the last cell copies it exactly. */}
       <td className="w-full px-2.5 py-1.5">
         <div className="select-text whitespace-pre-wrap break-all font-mono text-[var(--color-fg)]">
-          {o.title || <span className="text-[var(--color-fg-faint)]">(empty title)</span>}
+          {o.title || <span className="text-[var(--color-fg-faint)]">{t("agents.signals.emptyTitle")}</span>}
         </div>
       </td>
       <td className="whitespace-nowrap px-2 py-1.5 text-right align-top tabular-nums text-[var(--color-fg-faint)]">
@@ -220,15 +221,15 @@ function ObservationRow({ o, live, onAddPattern }: {
           from a button label. Assertions need something unambiguous. */}
       <td className="whitespace-nowrap px-2 py-1.5 align-top" data-live-class={live ?? "none"}>
         {live ? (
-          <span className={cn("text-[11.5px]", CLASS_TONE[live])}>{CLASS_LABEL[live]}</span>
+          <span className={cn("text-[11.5px]", CLASS_TONE[live])}>{t(CLASS_LABEL[live])}</span>
         ) : (
-          <span className="text-[11.5px] text-[var(--color-fg-faint)]">unmatched</span>
+          <span className="text-[11.5px] text-[var(--color-fg-faint)]">{t("agents.signals.unmatched")}</span>
         )}
       </td>
       <td className="whitespace-nowrap px-2 py-1.5 text-right align-top">
         <button
           type="button"
-          title="Copy this title"
+          title={t("agents.signals.copyTitle")}
           onClick={() => copyToClipboard(o.title, "title")}
           className="rounded px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         >
@@ -238,7 +239,7 @@ function ObservationRow({ o, live, onAddPattern }: {
           <button
             key={cls}
             type="button"
-            title={`Add as ${CLASS_LABEL[cls]}`}
+            title={t("agents.signals.addAs", { class: t(CLASS_LABEL[cls]) })}
             // Escape: these fields are regex sources, and a title like
             // "Working (2/3)" would otherwise become a pattern that matches
             // something else entirely (or fails to compile).
@@ -246,7 +247,7 @@ function ObservationRow({ o, live, onAddPattern }: {
             className="ml-1 rounded px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
           >
             <Plus className="mr-0.5 inline h-3 w-3" />
-            {CLASS_LABEL[cls]}
+            {t(CLASS_LABEL[cls])}
           </button>
         ))}
       </td>
@@ -258,6 +259,7 @@ function ProposalPanel({ proposals, onAddPattern }: {
   proposals: ReturnType<typeof proposeSignals>;
   onAddPattern: (cls: SignalClass, pattern: string) => void;
 }) {
+  const { t } = useTranslation("settings");
   const groups: { cls: SignalClass; items: typeof proposals.busy }[] = [
     { cls: "busy", items: proposals.busy },
     { cls: "idle", items: proposals.idle },
@@ -267,18 +269,17 @@ function ProposalPanel({ proposals, onAddPattern }: {
   return (
     <div className="mb-2 rounded-md border border-[var(--color-ok-fg)]/40 bg-[var(--color-ok-fg)]/5 p-2.5">
       <div className="mb-1.5 text-[12px] font-medium text-[var(--color-fg)]">
-        Suggested from that turn
+        {t("agents.signals.proposals")}
       </div>
       {!any && (
         <div className="text-[11.5px] text-[var(--color-fg-dim)]">
-          Nothing usable. The agent may not set a terminal title at all, in which
-          case turn on output matching below and try again.
+          {t("agents.signals.nothingUsable")}
         </div>
       )}
       {groups.map(({ cls, items }) => items.length > 0 && (
         <div key={cls} className="mb-1.5 last:mb-0">
           <div className={cn("text-[11px] uppercase tracking-wide", CLASS_TONE[cls])}>
-            {CLASS_LABEL[cls]}
+            {t(CLASS_LABEL[cls])}
           </div>
           {items.map(p => (
             <div key={p.pattern} className="flex items-center gap-2 py-0.5">
@@ -288,12 +289,12 @@ function ProposalPanel({ proposals, onAddPattern }: {
               {/* Show the evidence: a proposer that writes regexes without
                   saying what it saw gets distrusted the first time it's wrong. */}
               <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]" title={p.evidence.join("\n")}>
-                {p.kind === "glyph-class" ? "covers the spinner"
-                  : p.kind === "common-text" ? "shared text"
-                  : "exact title"}
+                {p.kind === "glyph-class" ? t("agents.signals.kindGlyph")
+                  : p.kind === "common-text" ? t("agents.signals.kindText")
+                  : t("agents.signals.kindExact")}
               </span>
               <Button variant="ghost" onClick={() => onAddPattern(cls, p.pattern)}>
-                Use
+                {t("agents.signals.use")}
               </Button>
             </div>
           ))}
@@ -304,10 +305,16 @@ function ProposalPanel({ proposals, onAddPattern }: {
         // one (claude's busy titles share the task name with its idle title),
         // and a silently missing suggestion looks like a bug.
         <div className="mt-1.5 border-t border-[var(--color-border-soft)] pt-1.5 text-[11px] text-[var(--color-fg-faint)]">
-          Skipped {proposals.rejected.length} suggestion
-          {proposals.rejected.length > 1 ? "s" : ""} that would also have matched
-          another state (e.g. <code className="font-mono">{proposals.rejected[0].pattern}</code>{" "}
-          matches <code className="font-mono">{proposals.rejected[0].conflictsWith}</code>).
+          <Trans
+            t={t}
+            i18nKey="agents.signals.skipped"
+            count={proposals.rejected.length}
+            values={{
+              pattern: proposals.rejected[0].pattern,
+              conflict: proposals.rejected[0].conflictsWith,
+            }}
+            components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+          />
         </div>
       )}
     </div>

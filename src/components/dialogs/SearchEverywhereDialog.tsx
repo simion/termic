@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useTranslation } from "react-i18next";
 import { Compass, Search } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -24,7 +25,7 @@ import type { SymbolHit } from "@/lib/lsp/symbolSearch";
 import { languagesPresent } from "@/lib/lsp/projectLanguages";
 import { SERVERS, languageName } from "@/lib/lsp/languages";
 import { codeIntelNameLower } from "@/lib/lsp/featureName";
-import { MEMORY_SHORT, serverFor } from "@/lib/lsp/serverNames";
+import { memoryShort, serverFor } from "@/lib/lsp/serverNames";
 import { CodeIntelActions } from "@/components/task/CodeIntelActions";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
@@ -48,6 +49,7 @@ interface OfferRow {
 type Row = OfferRow | FileRow | SymbolRow;
 
 export function SearchEverywhereDialog() {
+  const { t } = useTranslation("dialogs");
   const taskId = useUI(s => s.searchEverywhereTaskId);
   const close = useUI(s => s.closeSearchEverywhere);
   const openPreviewTab = useApp(s => s.openPreviewTab);
@@ -323,7 +325,7 @@ export function SearchEverywhereDialog() {
   function costLine(row: OfferRow): string {
     if (row.installable) return "";
     const name = serverFor(row.exe, row.server);
-    const cost = MEMORY_SHORT[name];
+    const cost = memoryShort(name);
     return cost ? `${name}, ${cost}` : name;
   }
 
@@ -400,8 +402,8 @@ export function SearchEverywhereDialog() {
           <span className="flex min-w-0 flex-col">
             <span className="text-[13.5px] font-medium text-[var(--color-fg)]">
               {row.installable
-                ? `Install the ${languageName(row.server)} language server (${row.label})`
-                : `Search ${languageName(row.server)} symbols too`}
+                ? t("searchEverywhere.offerTitleInstall", { language: languageName(row.server), label: row.label })
+                : t("searchEverywhere.offerTitleEnable", { language: languageName(row.server) })}
             </span>
             <span className="text-[11.5px] text-[var(--color-fg-dim)]">
               {/* The memory figure, on the row, because turning this on from
@@ -409,8 +411,8 @@ export function SearchEverywhereDialog() {
                   say a single number. The number is the consent, so it stays;
                   the modal was only ever its container, and a modal stacked
                   over an open dialog is the worst container available. */}
-              Classes and functions, not just file names.
-              {costLine(row) && ` Runs ${costLine(row)}.`}
+              {t("searchEverywhere.offerSub")}
+              {costLine(row) && ` ${t("searchEverywhere.offerSubCost", { cost: costLine(row) })}`}
             </span>
           </span>
           <span className="ml-auto shrink-0">
@@ -422,7 +424,7 @@ export function SearchEverywhereDialog() {
                 onMouseDown={(e) => { e.preventDefault(); void installAndArm(row); }}
                 className="rounded-md bg-[var(--color-accent-deep)] px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-60"
               >
-                {installing === row.server ? "Downloading…" : "Install"}
+                {installing === row.server ? t("searchEverywhere.downloading") : t("searchEverywhere.install")}
               </button>
             ) : (
               <CodeIntelActions
@@ -473,7 +475,7 @@ export function SearchEverywhereDialog() {
                 pretending this was the only one. */}
             {row.hit.alsoIn ? (
               <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
-                +{row.hit.alsoIn} more
+                {t("searchEverywhere.more", { count: row.hit.alsoIn })}
               </span>
             ) : null}
             <span className="ml-auto min-w-0 truncate text-[12px] text-[var(--color-fg-faint)]">
@@ -489,18 +491,20 @@ export function SearchEverywhereDialog() {
    *  result, it is the reason there are none. */
   const indexed = rows.map((row, index) => ({ row, index }));
   const offerEntry = indexed.find(e => e.row.kind === "offer");
-  const sections: Array<{ title: string; rows: typeof indexed; empty: string; hint?: string }> = [];
+  const sections: Array<{ id: string; title: string; rows: typeof indexed; empty: string; hint?: string }> = [];
   if (armed.length) {
     sections.push({
-      title: "Symbols",
+      id: "symbols",
+      title: t("searchEverywhere.sectionSymbols"),
       rows: indexed.filter(e => e.row.kind === "symbol"),
-      empty: searching ? "Searching…" : query.trim() ? "No symbols" : "Type to search symbols",
+      empty: searching ? t("searchEverywhere.symbolsSearching") : query.trim() ? t("searchEverywhere.symbolsNoMatch") : t("searchEverywhere.symbolsIdle"),
     });
   }
   sections.push({
-    title: "Files",
+    id: "files",
+    title: t("searchEverywhere.sectionFiles"),
     rows: indexed.filter(e => e.row.kind === "file"),
-    empty: query.trim() ? "No files" : "Type to search files",
+    empty: query.trim() ? t("searchEverywhere.filesNoMatch") : t("searchEverywhere.filesIdle"),
     // Where this half of the dialog lives on its own. Someone who only ever
     // wants a file should not have to come through the symbol search to get
     // one, and the header is where they are already looking when they scroll
@@ -519,9 +523,9 @@ export function SearchEverywhereDialog() {
           className="termic-pop fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}
         >
-          <Dialog.Title className="sr-only">Search everywhere</Dialog.Title>
+          <Dialog.Title className="sr-only">{t("searchEverywhere.srTitle")}</Dialog.Title>
           <Dialog.Description className="sr-only">
-            Search files, and symbols in checkouts with {codeIntelNameLower(typeChecking)} on.
+            {t("searchEverywhere.srDesc", { feature: codeIntelNameLower(typeChecking) })}
           </Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
@@ -538,8 +542,8 @@ export function SearchEverywhereDialog() {
               // that this is where you find a class by name. Files stay last:
               // they are what everyone already expects a search box to do.
               placeholder={armed.length
-                ? "Search classes, functions, symbols and files"
-                : "Search files"}
+                ? t("searchEverywhere.placeholderArmed")
+                : t("searchEverywhere.placeholderFiles")}
               className="w-full bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
             />
           </div>
@@ -553,12 +557,12 @@ export function SearchEverywhereDialog() {
                 height: type one more character and the whole list moved. Both
                 sections are always here, and an empty one says so. */}
             {sections.map(section => (
-              <div key={section.title}>
+              <div key={section.id}>
                 <div className="flex items-center gap-2 px-3 pb-0.5 pt-2 text-[11px] uppercase tracking-wide text-[var(--color-fg-faint)]">
                   <span>{section.title}</span>
                   {section.hint && (
                     <span className="ml-auto normal-case tracking-normal">
-                      {section.hint} to search only files
+                      {t("searchEverywhere.filesOnlyHint", { keys: section.hint })}
                     </span>
                   )}
                 </div>
@@ -566,7 +570,7 @@ export function SearchEverywhereDialog() {
                   ? section.rows.map(({ row, index }) => renderRow(row, index))
                   : (
                     <div
-                      data-testid={`se-empty-${section.title.toLowerCase()}`}
+                      data-testid={`se-empty-${section.id}`}
                       className="px-3 py-1.5 text-[12.5px] text-[var(--color-fg-faint)]"
                     >
                       {section.empty}
@@ -579,7 +583,7 @@ export function SearchEverywhereDialog() {
                 out it exists at the moment they went looking for a symbol. */}
             {!armed.length && offers.filter(o => o.server !== rows.find(r => r.kind === "offer")?.server).length > 0 && (
               <div className="border-t border-[var(--color-border-soft)] px-3 py-2.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                <span className="mr-2">Searching files only. Add symbols:</span>
+                <span className="mr-2">{t("searchEverywhere.discoveryLead")}</span>
                 {offers.filter(o => o.server !== rows.find(r => r.kind === "offer")?.server).map(o => (
                   <button
                     key={o.server}
@@ -588,8 +592,8 @@ export function SearchEverywhereDialog() {
                     className="mr-2 rounded border border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
                   >
                     {o.installable
-                      ? `Install ${languageName(o.server)} (${o.label})`
-                      : `Enable ${languageName(o.server)}`}
+                      ? t("searchEverywhere.installLanguage", { language: languageName(o.server), label: o.label })
+                      : t("searchEverywhere.enableLanguage", { language: languageName(o.server) })}
                   </button>
                 ))}
               </div>

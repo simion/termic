@@ -4,6 +4,7 @@
 // project from our list — does NOT delete anything from disk.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { projectUpdate, projectRemove, projectSetMembers, pathIsGitRepo, projectTasksPathDefault, repoConfigLoad, repoConfigSave } from "@/lib/ipc";
@@ -20,6 +21,7 @@ import { ScriptField } from "./ScriptField";
 import { BrowserCommandField } from "./BrowserCommandField";
 import { LINK_CLICK_MODIFIER as CLICK_MOD } from "@/lib/previewBrowser";
 import { cn, cleanLines } from "@/lib/utils";
+import { i18n } from "@/lib/i18n";
 import { isValidPortName } from "@/lib/namedPorts";
 import { isTerminalEntry } from "@/lib/agents";
 import { CodeIntelSettings } from "./CodeIntelSettings";
@@ -52,6 +54,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   const globalBrowser = useApp(s => s.previewBrowser);
   const setView = useApp(s => s.setView);
   const agents = useApp(s => s.agents);
+  const { t } = useTranslation("settings");
 
   // Local working copy. Every patch debounces a `project_update` call (500ms
   // after last keystroke) — no explicit Save button. The status indicator
@@ -164,7 +167,9 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       })
       .catch(e => {
         if (cancelled) return;
-        setErr(`Couldn't read .termic.yaml: ${e}`);
+        // i18n.t, not t: this effect re-fetches on [projectId], and adding t
+        // (whose identity changes on language switch) would re-run the fetch.
+        setErr(i18n.t("settings:repo.yamlError", { error: String(e) }));
         setRc(empty);
         setScriptTarget("personal"); setSandboxTarget("personal");
       });
@@ -218,7 +223,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   const tasksPathInvalidRef = useRef(false);
   tasksPathInvalidRef.current = tasksPathInvalid;
 
-  if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">Project not found.</div>;
+  if (!project || !draft) return <div className="text-[13.5px] text-[var(--color-fg-faint)]">{t("repo.notFound")}</div>;
 
   async function performSave(next: Project) {
     // Snapshot the keys we're about to commit + clear the accumulator
@@ -436,21 +441,21 @@ export function RepositorySection({ projectId }: { projectId: string }) {
     const parts: string[] = [];
     parts.push(
       taskCount === 0
-        ? "No tasks to remove."
-        : `Archives ${taskCount} task${taskCount === 1 ? "" : "s"}.`,
+        ? t("repo.removeNoTasks")
+        : t("repo.removeArchives", { count: taskCount }),
     );
-    if (wtCount > 0) parts.push(`${wtCount} git worktree${wtCount === 1 ? "" : "s"} removed from disk (rm -rf).`);
-    if (taskCount - wtCount > 0) parts.push(`${taskCount - wtCount} main-checkout entr${taskCount - wtCount === 1 ? "y" : "ies"} unregistered.`);
-    parts.push(`Your repo at ${proj.root_path} is NOT touched. Cannot be undone.`);
+    if (wtCount > 0) parts.push(t("repo.removeWorktrees", { count: wtCount }));
+    if (taskCount - wtCount > 0) parts.push(t("repo.removeMainEntries", { count: taskCount - wtCount }));
+    parts.push(t("repo.removeUntouched", { path: proj.root_path }));
     const ok = await useUI.getState().askConfirm({
-      title: `Remove project "${proj.name}"?`,
+      title: t("repo.removeTitle", { name: proj.name }),
       message: parts.join(" "),
-      confirmLabel: "Remove project",
+      confirmLabel: t("repo.removeConfirm"),
       destructive: true,
     });
     if (!ok) return;
     const { setBusy } = useUI.getState();
-    setBusy(`Removing "${proj.name}" and ${taskCount} task${taskCount === 1 ? "" : "s"}…`);
+    setBusy(t("repo.removeBusy", { name: proj.name, count: taskCount }));
     try {
       await projectRemove(proj.id);
       await loadAll();
@@ -510,11 +515,11 @@ export function RepositorySection({ projectId }: { projectId: string }) {
   // "Code intelligence" once diagnostics are on (lib/lsp/featureName.ts), so
   // the tab and the panel it opens can never disagree.
   const tabs: { id: SubTab; label: string }[] = [
-    { id: "scripts",  label: isMulti ? "Members & scripts" : "Scripts & run" },
-    { id: "sandbox",  label: "Sandbox" },
+    { id: "scripts",  label: t(isMulti ? "repo.tabScriptsMulti" : "repo.tabScripts") },
+    { id: "sandbox",  label: t("repo.sandboxHeading") },
     { id: "codenav",  label: codeIntelName(typeChecking) },
-    { id: "git",      label: "Git" },
-    { id: "advanced", label: "More" },
+    { id: "git",      label: t("repo.tabGit") },
+    { id: "advanced", label: t("repo.tabMore") },
   ];
 
   return (
@@ -534,13 +539,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         />
         <div className="text-[12px] text-[var(--color-fg-faint)] min-h-[1em] shrink-0">
-          {status === "saving" && <span>Saving…</span>}
+          {status === "saving" && <span>{t("common:saving")}</span>}
           {status === "saved"  && (
             <span className="flex items-center gap-1 text-[var(--color-ok)]">
-              <Check className="h-3.5 w-3.5" /> Saved
+              <Check className="h-3.5 w-3.5" /> {t("shared.saved")}
             </span>
           )}
-          {status === "error"  && <span className="text-[var(--color-err)]">Save failed</span>}
+          {status === "error"  && <span className="text-[var(--color-err)]">{t("shared.saveFailed")}</span>}
         </div>
       </div>
 
@@ -551,24 +556,24 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           fg + soft hover. Visible always so users can flip between
           tabs without scrolling first. */}
       <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
-        {tabs.map(t => (
+        {tabs.map(th => (
           <button
-            key={t.id}
+            key={th.id}
             type="button"
-            data-repo-tab={t.id}
-            onClick={() => setSubTab(t.id)}
+            data-repo-tab={th.id}
+            onClick={() => setSubTab(th.id)}
             className={cn(
               "relative -mb-px flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors",
-              subTab === t.id
+              subTab === th.id
                 ? "text-[var(--color-fg)]"
                 : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
             )}
           >
-            {t.label}
+            {th.label}
             {/* Underline that lines up with the bottom border of the
                 tab strip. -mb-px on the parent puts us right on top of
                 the border. */}
-            {subTab === t.id && (
+            {subTab === th.id && (
               <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]" />
             )}
           </button>
@@ -584,22 +589,22 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           {!isMulti && (
             <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
               {([
-                { id: "personal", label: "Personal",     hint: "overrides when set"   },
-                { id: "yaml",     label: ".termic.yaml", hint: "committed to git repo" },
-              ] as const).map(t => (
+                { id: "personal", label: t("repo.targetPersonal"), hint: t("repo.targetPersonalHint")   },
+                { id: "yaml",     label: t("repo.targetYaml"),     hint: t("repo.targetYamlHint") },
+              ] as const).map(th => (
                 <button
-                  key={t.id} type="button"
-                  onClick={() => setScriptTarget(t.id)}
+                  key={th.id} type="button"
+                  onClick={() => setScriptTarget(th.id)}
                   className={cn(
                     "relative -mb-px flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors",
-                    scriptTarget === t.id
+                    scriptTarget === th.id
                       ? "text-[var(--color-fg)]"
                       : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                   )}
                 >
-                  {t.label}
-                  <span className="text-[11px] font-normal text-[var(--color-fg-faint)]">{t.hint}</span>
-                  {scriptTarget === t.id && (
+                  {th.label}
+                  <span className="text-[11px] font-normal text-[var(--color-fg-faint)]">{th.hint}</span>
+                  {scriptTarget === th.id && (
                     <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]" />
                   )}
                 </button>
@@ -609,13 +614,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
 
           {/* Preview URL */}
           <div>
-            <div className="text-[14px] font-medium">Preview URL</div>
+            <div className="text-[14px] font-medium">{t("repo.previewLabel")}</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              URL the terminal panel's Open button opens. Supports{" "}
-              <Token>$TERMIC_WORKSPACE_NAME</Token>,{" "}
-              <Token>$TERMIC_PORT</Token>, etc.
-              Extra named ports work here too (e.g. <Token>$API_PORT</Token>).
-              Blank = auto-detect from output logs.
+              <Trans
+                t={t}
+                i18nKey="repo.previewHint"
+                components={{ 1: <Token />, 3: <Token />, 5: <Token /> }}
+              />
             </div>
             <Input
               value={!isMulti && scriptTarget === "yaml" ? (rc?.scripts.preview_url ?? "") : draft.preview_url}
@@ -631,12 +636,9 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               .termic.yaml: a launch command is machine-specific, so a
               committed one would be a dead link for a teammate on Linux. */}
           <div>
-            <div className="text-[14px] font-medium">Open links in</div>
+            <div className="text-[14px] font-medium">{t("repo.browserLabel")}</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              Which browser this project uses for the Preview URL above, the
-              Open button on the run toolbar, and links you {CLICK_MOD}-click in
-              a terminal. Useful when one project needs a different browser
-              (or browser profile) from the rest.
+              {t("repo.browserHint", { mod: CLICK_MOD })}
             </div>
             <div className="mt-2">
               <BrowserCommandField
@@ -654,24 +656,24 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           ) : (
             <div className="flex flex-col gap-5">
               <ScriptField
-                label="Setup script"
-                hint="Runs when a new task is created."
+                label={t("repo.setupLabel")}
+                hint={t("repo.setupHint")}
                 value={scriptTarget === "yaml" ? (rc?.scripts.setup ?? "") : (draft.setup_script ?? "")}
                 onChange={(v) => scriptTarget === "yaml" ? patchScript("setup", v) : patch("setup_script", v)}
                 placeholder="docker compose up -d"
                 flash={scriptTarget === "personal" && flashKeys.has("setup_script")}
               />
               <ScriptField
-                label="Run script"
-                hint={<>Runs when you click the Run button. Use <Token>$TERMIC_PORT</Token> so each task gets its own port. Extra named ports are available under their own names.</>}
+                label={t("repo.runLabel")}
+                hint={<Trans t={t} i18nKey="repo.runHint" components={{ 1: <Token /> }} />}
                 value={scriptTarget === "yaml" ? (rc?.scripts.run ?? "") : (draft.run_script ?? "")}
                 onChange={(v) => scriptTarget === "yaml" ? patchScript("run", v) : patch("run_script", v)}
                 placeholder="PORT=$TERMIC_PORT npm run dev"
                 flash={scriptTarget === "personal" && flashKeys.has("run_script")}
               />
               <ScriptField
-                label="Archive script"
-                hint="Runs before a task is archived. Termic already removes the worktree dir + its contents, so this is for stopping external services your run script started."
+                label={t("repo.archiveLabel")}
+                hint={t("repo.archiveHint")}
                 value={scriptTarget === "yaml" ? (rc?.scripts.archive ?? "") : (draft.archive_script ?? "")}
                 onChange={(v) => scriptTarget === "yaml" ? patchScript("archive", v) : patch("archive_script", v)}
                 placeholder="docker compose down"
@@ -687,13 +689,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               declare them by editing .termic.yaml directly. */}
           {!isMulti && (
             <div>
-              <div className="text-[14px] font-medium">Extra named ports</div>
+              <div className="text-[14px] font-medium">{t("repo.portsLabel")}</div>
               <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                One env var name per line (e.g. <Token>API_PORT</Token>). Each task gets
-                its own unique port for every name, exposed to scripts, agents and the
-                preview URL under exactly that name, alongside <Token>$TERMIC_PORT</Token>.
-                Existing tasks pick up newly added names on their next run or terminal;
-                ports already assigned never change.
+                <Trans
+                  t={t}
+                  i18nKey="repo.portsHint"
+                  components={{ 1: <Token />, 3: <Token /> }}
+                />
               </div>
               <textarea
                 value={portsText}
@@ -715,7 +717,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               />
               {badPortNames.length > 0 && (
                 <div data-testid="extra-named-ports-warning" className="mt-1 text-[12px] text-[var(--color-warn)]">
-                  Ignored (invalid or reserved): {badPortNames.join(", ")}
+                  {t("repo.portsWarning", { names: badPortNames.join(", ") })}
                 </div>
               )}
             </div>
@@ -726,13 +728,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               (personal + committed, with a test button) in a dedicated modal. */}
           {!isMulti && (
             <div className="border-t border-[var(--color-border-soft)] pt-6">
-              <div className="text-[14px] font-medium">Run commands</div>
+              <div className="text-[14px] font-medium">{t("repo.runCmdLabel")}</div>
               <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                Extra commands shown in the Run dropdown, each opening its own run tab. Separate from the single Run script above. Manage personal + shared commands, and test them, in one place. You can also add one by right-clicking a file in the tree.
+                {t("repo.runCmdHint")}
               </div>
               <div className="mt-3">
                 <Button variant="secondary" size="sm" onClick={() => useUI.getState().openRunCommands(projectId)}>
-                  <SlidersHorizontal className="h-3.5 w-3.5" /> Run configuration…
+                  <SlidersHorizontal className="h-3.5 w-3.5" /> {t("repo.runCmdButton")}
                 </Button>
               </div>
             </div>
@@ -742,11 +744,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               HOST repo only (the task's root dir); each member carries its
               own list in the Members & scripts editor above (GH #264). */}
           <div>
-            <div className="text-[14px] font-medium">Files to copy</div>
+            <div className="text-[14px] font-medium">{t("repo.filesLabel")}</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              {isMulti
-                ? <>Copied from this project's own repo root into the root of each new task. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code> at the root, <code className="font-mono">**/.env*</code> at any depth). Members get their own list, in Members &amp; scripts above.</>
-                : <>Copied from the repo root into each new task. One per line, glob patterns OK (e.g. <code className="font-mono">.env*</code> at the root, <code className="font-mono">**/.env*</code> at any depth).</>}
+              <Trans
+                t={t}
+                i18nKey={isMulti ? "repo.filesHintMulti" : "repo.filesHintSingle"}
+                components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+              />
             </div>
             <textarea
               value={filesText}
@@ -771,9 +775,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               and the standalone CLI. Saved live (debounced) like the other
               .termic.yaml fields. */}
           <div className="border-t border-[var(--color-border-soft)] pt-6">
-            <div className="text-[14px] font-medium">Hidden files</div>
+            <div className="text-[14px] font-medium">{t("repo.hiddenLabel")}</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              Patterns hidden from the "All files" tree for this repo. Saved to <code className="font-mono">.termic.yaml</code> (committed, team-shared) and merged with your personal list (Settings → General).
+              <Trans
+                t={t}
+                i18nKey="repo.hiddenHint"
+                components={{ 1: <code className="font-mono" /> }}
+              />
             </div>
             <div className="mt-3">
               <ExcludeEditor value={rc?.exclude ?? []} onChange={patchExclude} />
@@ -807,21 +815,21 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             {codeIntelName(typeChecking)}
           </h2>
           <p className="mb-3 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-            A language server runs per CHECKOUT, from your own toolchain, and holds its index (hundreds of megabytes to several gigabytes) until it stops.
+            {t("repo.intelIntro")}
           </p>
           {/* The radios had no heading of their own: they simply followed the
               language checkboxes, so what they were choosing BETWEEN had to be
               inferred from three hints. The panel intro used to carry that
               sentence, which by this point in the page was two blocks away. */}
-          <div className="mb-2 text-[12.5px] font-medium text-[var(--color-fg)]">Auto start</div>
+          <div className="mb-2 text-[12.5px] font-medium text-[var(--color-fg)]">{t("repo.autoHeading")}</div>
           <p className="mb-2 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-            Arm new tasks for this project without asking in each one. Which checkouts that covers decides how many servers can end up running.
+            {t("repo.autoHint")}
           </p>
           <div className="flex flex-col gap-2">
             {([
-              ["off", "Off", "Each task asks. Nothing runs until you say so."],
-              ["main", "Main checkout only", "One server per language, ever. Every task on the main checkout shares it, so the tenth costs what the first did."],
-              ["all", "Main checkout and worktrees", "One server per language PER WORKTREE, and it multiplies: four languages across ten worktrees would be forty. rust-analyzer alone holds about 3 GB, so termic starts at most 6 this way and leaves the rest to the button on the editor, where each one's cost is shown."],
+              ["off", t("repo.autoOff"), t("repo.autoOffHint")],
+              ["main", t("repo.autoMain"), t("repo.autoMainHint")],
+              ["all", t("repo.autoAll"), t("repo.autoAllHint")],
             ] as const).map(([value, label, hint]) => (
               <label key={value} className="flex cursor-pointer items-start gap-3 select-none">
                 <input
@@ -847,9 +855,9 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 task asks, one chip click at a time. */}
             {auto !== "off" && (
               <div className="mt-4 border-l-2 border-[var(--color-border-soft)] pl-4">
-                <div className="mb-2 text-[12.5px] font-medium text-[var(--color-fg)]">Languages</div>
+                <div className="mb-2 text-[12.5px] font-medium text-[var(--color-fg)]">{t("repo.languagesHeading")}</div>
                 <p className="mb-2 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-                  Which of them start on their own, ticked from what this repo turned out to be written in. Each server is its own process with its own memory, so a repo that is several languages (a Django project has Python and the JavaScript in its templates) is several servers. Unticking one only stops it starting by itself: the button on the editor still offers it, with its cost.
+                  {t("repo.languagesHint")}
                 </p>
                 <div className="flex flex-wrap gap-x-5 gap-y-2">
                   {CODE_INTEL_LANGUAGES.map(({ id, label }) => {
@@ -876,7 +884,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                   })}
                 </div>
                 {detecting && (
-                  <p className="mt-2 text-[12px] text-[var(--color-fg-faint)]">Looking at the repo…</p>
+                  <p className="mt-2 text-[12px] text-[var(--color-fg-faint)]">{t("repo.detecting")}</p>
                 )}
               </div>
             )}
@@ -888,10 +896,10 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               each row prints the machine setting it is overriding. */}
           <div className="mt-4 border-t border-[var(--color-border-soft)] pt-4">
             <div className="mb-2 text-[12.5px] font-medium text-[var(--color-fg)]">
-              Language servers for this project
+              {t("repo.serversHeading")}
             </div>
             <p className="mb-3 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-              Leave everything on Automatic to follow your machine's settings.
+              {t("repo.serversHint")}
             </p>
             <CodeIntelServers
               project={draft}
@@ -913,9 +921,18 @@ export function RepositorySection({ projectId }: { projectId: string }) {
 
       {subTab === "sandbox" && (
         <div>
-          <h2 className="text-[16px] font-medium">Sandbox</h2>
+          <h2 className="text-[16px] font-medium">{t("repo.sandboxHeading")}</h2>
           <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">
-            When a task is sandboxed, the agent runs under macOS seatbelt: the filesystem is allow-listed (task + agent state + caches + dirs you list); HTTPS goes through an in-process per-task proxy filtered against the host allowlist. Secrets (<code className="font-mono">~/.ssh</code>, <code className="font-mono">~/.aws</code>, <code className="font-mono">~/.gnupg</code>, <code className="font-mono">~/.netrc</code>, <code className="font-mono">~/.kube</code>, …) and personal data (<code className="font-mono">~/Documents</code>, <code className="font-mono">~/Desktop</code>, <code className="font-mono">~/Downloads</code>, browser data, mail) are denied by default.
+            <Trans
+              t={t}
+              i18nKey="repo.sandboxIntro"
+              components={{
+                1: <code className="font-mono" />, 3: <code className="font-mono" />,
+                5: <code className="font-mono" />, 7: <code className="font-mono" />,
+                9: <code className="font-mono" />, 11: <code className="font-mono" />,
+                13: <code className="font-mono" />, 15: <code className="font-mono" />,
+              }}
+            />
           </p>
           <div className="mt-4 flex flex-col gap-5">
             {/* The SAME picker the New Task dialog uses, so "what a new task
@@ -924,10 +941,9 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 the sidebar applies, which previously had no way to say
                 anything but on/off. */}
             <div>
-              <div className="text-[13.5px] font-medium">New tasks default to</div>
+              <div className="text-[13.5px] font-medium">{t("repo.defaultLabel")}</div>
               <div className="mt-0.5 mb-2 text-[12.5px] text-[var(--color-fg-dim)]">
-                Applied to every task created for this project, including the quick + menu in the
-                sidebar. The New Task dialog starts here and lets you change it per task.
+                {t("repo.defaultHint")}
               </div>
               <SandboxPicker
           onEnableDocker={() => { useApp.getState().openSettings("docker"); }}
@@ -936,8 +952,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 onChange={setProjectDefaultSelection}
                 dockerOffered={dockerOffered}
                 dockerUnavailableReason={
-                  dockerOffered ? undefined
-                    : "Turn Docker sandboxing on and build the image in Settings → Docker Sandbox first."
+                  dockerOffered ? undefined : t("repo.dockerUnavailable")
                 }
               />
             </div>
@@ -948,11 +963,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 Personal (projects.json) only, never .termic.yaml: a committed
                 file must not be able to switch approvals off for a clone. */}
             <div>
-              <div className="text-[13.5px] font-medium">New tasks start in YOLO</div>
+              <div className="text-[13.5px] font-medium">{t("repo.yoloDefault.label")}</div>
               <div className="mt-0.5 mb-2 text-[12.5px] text-[var(--color-fg-dim)]">
-                Whether new tasks of this project skip the agent's own permission prompts. The New Task
-                dialog starts here and lets you change it per task. Saved on this machine only, not in{" "}
-                <code className="font-mono">.termic.yaml</code>.
+                <Trans
+                  t={t}
+                  i18nKey="repo.yoloDefault.hint"
+                  components={{ 1: <code className="font-mono" /> }}
+                />
               </div>
               <select
                 data-testid="project-default-yolo"
@@ -966,9 +983,9 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                   flashRing("default_yolo"),
                 )}
               >
-                <option value="inherit">App default ({appDefaultYolo ? "on" : "off"})</option>
-                <option value="on">On</option>
-                <option value="off">Off</option>
+                <option value="inherit">{t("repo.yoloDefault.inherit", { value: t(appDefaultYolo ? "repo.yoloDefault.on" : "repo.yoloDefault.off") })}</option>
+                <option value="on">{t("repo.yoloDefault.on")}</option>
+                <option value="off">{t("repo.yoloDefault.off")}</option>
               </select>
             </div>
 
@@ -976,12 +993,13 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 than shown inert. */}
             {projectDefaultSelection === "docker" && (
               <div>
-                <div className="text-[13.5px] font-medium">Default extra mounts</div>
+                <div className="text-[13.5px] font-medium">{t("repo.mountsLabel")}</div>
                 <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                  Bind-mounted into every new Docker task of this project, one per line as{" "}
-                  <code className="font-mono">host_path:container_path</code>. Leave empty to use the
-                  global list from Settings → Docker Sandbox. Editing this only affects tasks created
-                  from now on.
+                  <Trans
+                    t={t}
+                    i18nKey="repo.mountsHint"
+                    components={{ 1: <code className="font-mono" /> }}
+                  />
                 </div>
                 <textarea
                   value={(draft.docker_extra_mounts ?? []).join("\n")}
@@ -1003,22 +1021,22 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 at spawn time. */}
             <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
               {([
-                { id: "personal", label: "Personal",     hint: "local only · merged on top" },
-                { id: "yaml",     label: ".termic.yaml", hint: "committed to git repo" },
-              ] as const).map(t => (
+                { id: "personal", label: t("repo.targetPersonal"), hint: t("repo.targetPersonalSandboxHint") },
+                { id: "yaml",     label: t("repo.targetYaml"),     hint: t("repo.targetYamlHint") },
+              ] as const).map(th => (
                 <button
-                  key={t.id} type="button"
-                  onClick={() => setSandboxTarget(t.id)}
+                  key={th.id} type="button"
+                  onClick={() => setSandboxTarget(th.id)}
                   className={cn(
                     "relative -mb-px flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors",
-                    sandboxTarget === t.id
+                    sandboxTarget === th.id
                       ? "text-[var(--color-fg)]"
                       : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                   )}
                 >
-                  {t.label}
-                  <span className="text-[11px] font-normal text-[var(--color-fg-faint)]">{t.hint}</span>
-                  {sandboxTarget === t.id && (
+                  {th.label}
+                  <span className="text-[11px] font-normal text-[var(--color-fg-faint)]">{th.hint}</span>
+                  {sandboxTarget === th.id && (
                     <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]" />
                   )}
                 </button>
@@ -1026,8 +1044,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
             </div>
 
             <Field
-              label="Allowed paths"
-              hint="Dirs the agent can read AND write. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
+              label={t("repo.allowedPathsLabel")}
+              hint={t("repo.allowedPathsHint")}
               control={
                 <textarea
                   value={sandboxTarget === "yaml"
@@ -1052,8 +1070,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
               }
             />
             <Field
-              label="Allowed hosts"
-              hint="One per line. Use * as a wildcard. Per-CLI vendor + GitHub + npm/pypi/crates.io are always allowed; these are extras."
+              label={t("repo.allowedHostsLabel")}
+              hint={t("repo.allowedHostsHint")}
               control={
                 <textarea
                   value={sandboxTarget === "yaml"
@@ -1086,18 +1104,18 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           {/* The same field the project `+` menu's "Branch from" row writes,
               so the two can't disagree. */}
           <GitField
-            label="Branch new tasks from"
-            hint="Each task is an isolated copy of your codebase, branched off here. The project + menu writes this too."
+            label={t("repo.branchLabel")}
+            hint={t("repo.branchHint")}
             control={<Input value={draft.base_branch} onChange={(e) => patch("base_branch", e.target.value)} className={cn("font-mono", flashRing("base_branch"))} placeholder="origin/master" />}
           />
           <GitField
-            label="Remote"
-            hint="Git remote name (used when resolving the base branch)."
+            label={t("repo.remoteLabel")}
+            hint={t("repo.remoteHint")}
             control={<Input value={draft.remote} onChange={(e) => patch("remote", e.target.value)} className={cn("font-mono", flashRing("remote"))} placeholder="origin" />}
           />
           <GitField
-            label="When a pull request merges"
-            hint="Termic watches the PR/MR of each task you look at. On merge it can offer to archive the task (toast with an Archive button), archive it automatically, or do nothing."
+            label={t("repo.mergeLabel")}
+            hint={t("repo.mergeHint")}
             control={
               <select
                 value={draft.on_pr_merge ?? "ask"}
@@ -1107,15 +1125,15 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                   flashRing("on_pr_merge"),
                 )}
               >
-                <option value="ask">Ask (toast)</option>
-                <option value="auto">Archive automatically</option>
-                <option value="off">Do nothing</option>
+                <option value="ask">{t("repo.mergeAsk")}</option>
+                <option value="auto">{t("repo.mergeAuto")}</option>
+                <option value="off">{t("repo.mergeOff")}</option>
               </select>
             }
           />
           <GitField
-            label="Watch PR comments"
-            hint="When a launched task of this project has a pull request, new comments are automatically queued into its main agent to address. Equivalent to switching on the bell on every PR card. Off = opt in per task."
+            label={t("repo.watchLabel")}
+            hint={t("repo.watchHint")}
             control={
               <select
                 value={draft.watch_pr_comments ? "on" : "off"}
@@ -1125,14 +1143,14 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                   flashRing("watch_pr_comments"),
                 )}
               >
-                <option value="off">Per task (bell)</option>
-                <option value="on">Always</option>
+                <option value="off">{t("repo.watchPerTask")}</option>
+                <option value="on">{t("repo.watchAlways")}</option>
               </select>
             }
           />
           <GitField
-            label="Act on comments from"
-            hint="A PR/MR comment gets fed to the agent to address, with real shell access. Anyone who can see a pull request can usually comment on it regardless of repo permissions, so by default only commenters with verified standing (owner, member, collaborator) are acted on."
+            label={t("repo.actLabel")}
+            hint={t("repo.actHint")}
             control={
               <select
                 value={draft.watch_untrusted_comments ? "on" : "off"}
@@ -1142,8 +1160,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                   flashRing("watch_untrusted_comments"),
                 )}
               >
-                <option value="off">Collaborators only</option>
-                <option value="on">Everyone</option>
+                <option value="off">{t("repo.actCollaborators")}</option>
+                <option value="on">{t("repo.actEveryone")}</option>
               </select>
             }
           />
@@ -1153,12 +1171,12 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           <div className="border-t border-[var(--color-border-soft)] pt-6">
             <div className="mb-3 flex items-center gap-2 text-[14px] font-medium text-[var(--color-fg)]">
               <AudioWaveform className="h-4 w-4 text-[var(--color-accent)]" />
-              Spotlight
+              {t("repo.spotlightHeading")}
             </div>
 
             {isMulti ? (
               <p className="text-[13px] text-[var(--color-fg-faint)]">
-                Spotlight is not supported for multi-repo projects.
+                {t("repo.spotlightUnsupported")}
               </p>
             ) : (
               <div className="flex flex-col gap-4">
@@ -1169,16 +1187,10 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                   />
                   <div>
                     <span className="text-[13.5px] font-medium text-[var(--color-fg)]">
-                      Enable spotlight for this project
+                      {t("repo.spotlightEnable")}
                     </span>
                     <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-                      When enabled, you can spotlight a task from its settings menu.
-                      Spotlight syncs that task's changes to your main checkout automatically
-                      so you can run and test from there. Committed changes appear as a checkpoint
-                      commit on main; uncommitted edits sync as working-tree changes; untracked
-                      files are copied (.gitignore respected). Main must be clean to start.
-                      Stopping spotlight removes the checkpoint commit and restores main.
-                      While spotlight is active, the run script executes at the repo root.
+                      {t("repo.spotlightHint")}
                     </p>
                   </div>
                 </label>
@@ -1189,7 +1201,12 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                       <div className="flex items-center gap-3 rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-3 py-2">
                         <AudioWaveform className="termic-spotlight-wave h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
                         <span className="flex-1 text-[13px] text-[var(--color-fg)]">
-                          <strong>{spotlightTaskName}</strong> is spotlighted right now
+                          <Trans
+                            t={t}
+                            i18nKey="repo.spotlightActive"
+                            values={{ name: spotlightTaskName }}
+                            components={{ 1: <strong /> }}
+                          />
                         </span>
                         <button
                           type="button"
@@ -1198,12 +1215,12 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                           )}
                           className="rounded px-2.5 py-1 text-[12px] font-medium bg-[var(--color-bg-3)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
                         >
-                          Stop
+                          {t("shared.stop")}
                         </button>
                       </div>
                     ) : (
                       <p className="text-[12.5px] text-[var(--color-fg-faint)]">
-                        No task is spotlighted right now.
+                        {t("repo.spotlightNone")}
                       </p>
                     )}
                   </div>
@@ -1217,8 +1234,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
       {subTab === "advanced" && (
         <div className="flex flex-col gap-7">
           <Field
-            label="Default CLI"
-            hint="Which agent to spawn for new tasks in this repo. Pick Terminal for a plain login shell (no agent)."
+            label={t("repo.defaultCliLabel")}
+            hint={t("repo.defaultCliHint")}
             control={
               <select
                 value={draft.default_cli}
@@ -1244,8 +1261,8 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 {cliMissing && (
                   <option value={draft.default_cli}>
                     {draft.default_cli
-                      ? `${draft.default_cli} (not in your agents list)`
-                      : "Not set"}
+                      ? t("repo.cliMissing", { cli: draft.default_cli })
+                      : t("repo.cliNotSet")}
                   </option>
                 )}
                 {/* Built from the editable agent registry so custom
@@ -1257,18 +1274,18 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                 {cliChoices.map(a => (
                   <option key={a.id} value={a.id}>{a.display_name}</option>
                 ))}
-                <option value="shell">Terminal</option>
+                <option value="shell">{t("repo.cliTerminal")}</option>
               </select>
             }
           />
           <Field
-            label="Root path"
-            hint="The git repo on disk. Do not move or delete this directory; remove the project in Termic instead."
+            label={t("repo.rootLabel")}
+            hint={t("repo.rootHint")}
             control={<Input value={draft.root_path} readOnly className="font-mono opacity-70 cursor-not-allowed" />}
           />
           <Field
-            label="Tasks path"
-            hint="Where this repo's new worktrees live. Leave it empty to follow the default tasks path. A value here overrides that for this repo only: a full path (starting with / or ~) becomes the worktree root as-is, a relative one resolves inside the repo. Don't move or delete subdirectories; archive tasks in Termic instead."
+            label={t("repo.tasksPathLabel")}
+            hint={t("repo.tasksPathHint")}
             control={
               <>
                 <Input
@@ -1288,9 +1305,7 @@ export function RepositorySection({ projectId }: { projectId: string }) {
                     className="mt-1.5 text-[12.5px] text-[var(--color-err)]"
                     data-testid="project-tasks-path-conflict"
                   >
-                    This lands inside the repo itself, so new tasks would be created on top
-                    of your working tree. Changes here are not being saved until you pick
-                    a directory outside the repo, or a subdirectory of it.
+                    {t("repo.tasksPathConflict")}
                   </div>
                 )}
               </>
@@ -1304,13 +1319,18 @@ export function RepositorySection({ projectId }: { projectId: string }) {
           <div className="mt-2 rounded-md border border-[var(--color-err)]/40 bg-[var(--color-err)]/5 p-4">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-[13.5px] font-medium text-[var(--color-fg)]">Remove project</div>
+                <div className="text-[13.5px] font-medium text-[var(--color-fg)]">{t("repo.removeLabel")}</div>
                 <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                  Drops the project from the sidebar + archives every task under it. The actual repo at <code className="font-mono">{draft.root_path}</code> stays on disk.
+                  <Trans
+                    t={t}
+                    i18nKey="repo.removeHint"
+                    values={{ path: draft.root_path }}
+                    components={{ 1: <code className="font-mono" /> }}
+                  />
                 </div>
               </div>
               <Button variant="danger" size="sm" onClick={remove} className="shrink-0">
-                <Trash2 className="h-3.5 w-3.5" /> Remove
+                <Trash2 className="h-3.5 w-3.5" /> {t("common:remove")}
               </Button>
             </div>
           </div>
@@ -1357,7 +1377,10 @@ function GitField({ label, hint, control }: { label: string; hint?: string; cont
  *  app-wide `user-select: none` chrome rule is opted-out via
  *  select-text + cursor: text so the chip behaves like a real
  *  copyable token. */
-function Token({ children }: { children: string }) {
+// children is optional so <Trans components={{ 1: <Token /> }} /> type-checks:
+// i18next re-renders the element with the tag's text injected as children.
+function Token({ children }: { children?: string }) {
+  const { t } = useTranslation("settings");
   return (
     <code
       onClick={(e) => {
@@ -1373,7 +1396,7 @@ function Token({ children }: { children: string }) {
       // for the single-click-selects-all UX.
       style={{ userSelect: "all", WebkitUserSelect: "all" }}
       className="cursor-text rounded bg-[var(--color-accent-soft)] px-1 py-px font-mono text-[11.5px] text-[var(--color-accent)]"
-      title="Click to select"
+      title={t("repo.tokenTip")}
     >{children}</code>
   );
 }
@@ -1388,6 +1411,7 @@ function MultiMembersEditor({ project, onSaved }: {
   project: Project;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const allProjects = useApp(s => s.projects);
   const pushToast = useUI(s => s.pushToast);
   type Row = ProjectMember;
@@ -1447,7 +1471,7 @@ function MultiMembersEditor({ project, onSaved }: {
     setBusy(true); setError(null);
     try {
       await projectSetMembers(project.id, rows);
-      pushToast(`Updated ${rows.length} member${rows.length === 1 ? "" : "s"} on “${project.name}”`, "success");
+      pushToast(t("repo.membersSaved", { count: rows.length, name: project.name }), "success");
       onSaved();
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); }
@@ -1456,18 +1480,18 @@ function MultiMembersEditor({ project, onSaved }: {
   return (
     <div>
       <div className="flex items-center gap-2 text-[14px] font-medium">
-        <Layers className="h-4 w-4 text-[var(--color-accent)]" /> Members & scripts
+        <Layers className="h-4 w-4 text-[var(--color-accent)]" /> {t("repo.membersTitle")}
       </div>
       <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-        Repos to mount inside every task under this multi-repo project,
-        the <b>Setup / Run / Archive</b> commands to use for each, and the{" "}
-        <b>Files</b> each one needs copied from its repo root into its worktree
-        (gitignored things a build needs: <code className="font-mono">.env</code>,
-        keystores, service-account keys). These live on the multi-repo project,
-        independent of the member project's own scripts; leave Files empty and
-        that repo's own committed <code className="font-mono">.termic.yaml</code>{" "}
-        list applies instead. Edits apply to <b>future</b> tasks; existing ones
-        freeze at creation.
+        <Trans
+          t={t}
+          i18nKey="repo.membersDesc"
+          components={{
+            1: <b />, 3: <b />,
+            5: <code className="font-mono" />, 7: <code className="font-mono" />,
+            9: <b />,
+          }}
+        />
       </div>
       {/* Cross-member port discovery: every member's scripts +
           agent PTYs see a TERMIC_PORT_<DIR> var for each sibling,
@@ -1477,7 +1501,7 @@ function MultiMembersEditor({ project, onSaved }: {
           sanitization rules. */}
       {rows.length > 0 && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
-          <span className="text-[var(--color-fg-dim)]">Env vars:</span>
+          <span className="text-[var(--color-fg-dim)]">{t("repo.envVars")}</span>
           <Token>$TERMIC_PORT</Token>
           {rows.map(r => {
             const sanitized = r.name
@@ -1497,7 +1521,7 @@ function MultiMembersEditor({ project, onSaved }: {
           done via the explicit Remove button. */}
       {rows.length === 0 ? (
         <div className="mt-2 rounded-md border border-dashed border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-6 text-center text-[12.5px] text-[var(--color-fg-faint)]">
-          No members yet. Add repos below: pick from your existing projects or add any folder from disk.
+          {t("repo.membersEmpty")}
         </div>
       ) : (
         <div className="mt-2 flex flex-col gap-2">
@@ -1509,7 +1533,7 @@ function MultiMembersEditor({ project, onSaved }: {
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{row.name}</span>
                     {row.non_git && (
-                      <span className="shrink-0 rounded bg-[var(--color-bg-1)] px-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]">folder</span>
+                      <span className="shrink-0 rounded bg-[var(--color-bg-1)] px-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]">{t("repo.folderBadge")}</span>
                     )}
                   </div>
                   <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{row.root_path}</div>
@@ -1517,16 +1541,16 @@ function MultiMembersEditor({ project, onSaved }: {
                 <button
                   type="button"
                   onClick={() => remove(row.root_path)}
-                  title="Remove from this multi-repo project"
+                  title={t("repo.removeMemberTip")}
                   className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>
               <div className="flex flex-col gap-2 border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2">
-                <MemberScriptRow label="Setup"   value={row.setup_script}   placeholder="docker compose up -d"        onChange={v => update(row.root_path, { setup_script: v })} />
-                <MemberScriptRow label="Run"     value={row.run_script}     placeholder="PORT=$TERMIC_PORT npm run dev" onChange={v => update(row.root_path, { run_script: v })} />
-                <MemberScriptRow label="Archive" value={row.archive_script} placeholder="docker compose down"            onChange={v => update(row.root_path, { archive_script: v })} />
+                <MemberScriptRow label={t("repo.setupShort")}   value={row.setup_script}   placeholder="docker compose up -d"        onChange={v => update(row.root_path, { setup_script: v })} />
+                <MemberScriptRow label={t("repo.runShort")}     value={row.run_script}     placeholder="PORT=$TERMIC_PORT npm run dev" onChange={v => update(row.root_path, { run_script: v })} />
+                <MemberScriptRow label={t("repo.archiveShort")} value={row.archive_script} placeholder="docker compose down"            onChange={v => update(row.root_path, { archive_script: v })} />
                 <MemberFilesRow
                   value={row.files_to_copy ?? []}
                   onChange={v => update(row.root_path, { files_to_copy: v })}
@@ -1552,7 +1576,7 @@ function MultiMembersEditor({ project, onSaved }: {
       {error && <div className="mt-2 text-[12.5px] text-[var(--color-err)]">{error}</div>}
       <div className="mt-3">
         <Button variant="primary" size="sm" disabled={!dirty || busy} onClick={save}>
-          {busy ? "Saving…" : `Save members & scripts (${rows.length})`}
+          {busy ? t("common:saving") : t("repo.saveMembers", { count: rows.length })}
         </Button>
       </div>
     </div>
@@ -1591,17 +1615,18 @@ function MemberFilesRow({ value, onChange, repoName }: {
   onChange: (v: string[]) => void;
   repoName?: string;
 }) {
+  const { t } = useTranslation("settings");
   return (
     <div className="flex items-start gap-2">
       <label className="w-16 shrink-0 pt-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-        Files
+        {t("repo.filesShort")}
       </label>
       <textarea
         value={value.join("\n")}
         onChange={(e) => onChange(e.target.value.split("\n"))}
         rows={2}
         placeholder=".env*&#10;app/google-services.json"
-        title="Globs copied from this repo's root into its worktree, one per line. Empty falls back to the repo's own .termic.yaml list."
+        title={t("repo.filesTip")}
         data-testid={`member-files-to-copy-${repoName ?? ""}`}
         autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg-1)] px-2 py-1 font-mono text-[12px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
@@ -1622,6 +1647,7 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
    *  registration). */
   onQuickAdd?: (path: string) => Promise<void>;
 }) {
+  const { t } = useTranslation("settings");
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [diskPath, setDiskPath] = useState("");
@@ -1632,7 +1658,7 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
         onClick={() => setOpen(true)}
         className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
       >
-        + Add member
+        {t("repo.addMember")}
       </button>
     );
   }
@@ -1650,20 +1676,18 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border-soft)]">
       <div className="flex items-center justify-between px-3 py-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-        <span>Available repositories</span>
+        <span>{t("repo.available")}</span>
         <button
           type="button"
           onClick={() => setOpen(false)}
           className="rounded p-0.5 hover:text-[var(--color-fg)]"
-          aria-label="Close"
+          aria-label={t("common:close")}
         >
           <X className="h-3 w-3" />
         </button>
       </div>
       <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
-        Pick one of your existing projects to copy in, or use “Add repo from
-        disk” for any folder. Members are self-contained: each carries its own
-        scripts, and nothing is registered as a standalone project.
+        {t("repo.pickerHint")}
       </div>
       {candidates.map(c => (
         <button
@@ -1676,13 +1700,13 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
             <div className="truncate text-[13.5px] font-medium text-[var(--color-fg)]">{c.name}</div>
             <div className="truncate font-mono text-[11.5px] text-[var(--color-fg-faint)]">{c.root_path}</div>
           </div>
-          <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">Add</span>
+          <span className="shrink-0 text-[11.5px] uppercase tracking-wider text-[var(--color-accent)] opacity-70">{t("repo.addBadge")}</span>
         </button>
       ))}
       {onQuickAdd && (
         <div className="border-t border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/40 px-3 py-2.5">
           <div className="mb-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-            Add repo from disk
+            {t("repo.addFromDisk")}
           </div>
           <div className="flex gap-2">
             <Input
@@ -1693,13 +1717,13 @@ function AddMemberPicker({ candidates, onAdd, onQuickAdd }: {
               className="flex-1"
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
-            <Button variant="secondary" size="lg" onClick={browseDisk} disabled={busy}>Browse…</Button>
+            <Button variant="secondary" size="lg" onClick={browseDisk} disabled={busy}>{t("common:browse")}</Button>
             <Button variant="primary" size="lg" onClick={addDisk} disabled={busy || !diskPath.trim()}>
-              {busy ? "Adding…" : "Add"}
+              {busy ? t("repo.adding") : t("repo.addBadge")}
             </Button>
           </div>
           <p className="mt-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-            Adds the folder as a member of this project only (no standalone project). A plain folder mounts as the main checkout only (no worktree).
+            {t("repo.addDiskNote")}
           </p>
         </div>
       )}

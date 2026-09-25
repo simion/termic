@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import * as ipc from "@/lib/ipc";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { usePrefs } from "@/store/prefs";
 import { useAgentUsage, usageKey, type UsageEntry } from "@/store/agentUsage";
 import { pillLabel, pillText } from "@/lib/accountPill";
@@ -113,13 +114,10 @@ export function useAccountSwitching(
       }
       const res = await useUI.getState().askConfirm({
         key: `account-restart-${taskId}`,
-        title: `Restart ${agentId} on ${name}?`,
-        message:
-          `The running agent keeps its current login until it restarts. `
-          + `Restarting resumes this conversation on ${name}; picking Later `
-          + `leaves it staged for the next start.`,
-        confirmLabel: "Restart now",
-        cancelLabel: "Later",
+        title: i18n.t("backend:accountSwitching.restartTitle", { agent: agentId, name }),
+        message: i18n.t("backend:accountSwitching.restartMessage", { name }),
+        confirmLabel: i18n.t("backend:accountSwitching.restartNow"),
+        cancelLabel: i18n.t("backend:accountSwitching.later"),
         dontAskAgain: true,
       });
       // Only remember the opt-out when they went THROUGH with it. The

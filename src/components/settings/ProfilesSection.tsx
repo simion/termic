@@ -7,6 +7,7 @@
 // uses profiles from ever seeing a strip, a name or a color.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Trash2, Check } from "lucide-react";
 import { useProfiles } from "@/store/profiles";
 import { useUI } from "@/store/ui";
@@ -19,6 +20,7 @@ import { profileOpen, profileUpdate, profilesDisable } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 
 export function ProfilesSection() {
+  const { t } = useTranslation("settings");
   const profiles = useProfiles(s => s.profiles);
   const current = useProfiles(s => s.current);
   const refresh = useProfiles(s => s.refresh);
@@ -31,42 +33,38 @@ export function ProfilesSection() {
     <div className="flex flex-col gap-5">
       <div>
         <div className="flex items-center gap-2.5">
-          <h2 className="text-[15px] font-semibold">Profiles</h2>
+          <h2 className="text-[15px] font-semibold">{t("rail.profiles")}</h2>
           {/* Same badge as the rail item, same meaning: off by default because
               we are not confident in it yet, and it can be turned off keeping
               every byte of data. See docs/ui.md. */}
           <span className="rounded bg-[var(--color-accent)]/15 px-1.5 py-0.5 text-[11px] uppercase tracking-wider text-[var(--color-accent)]">
-            Experimental
+            {t("shared.experimental")}
           </span>
         </div>
         {/* Two paragraphs, not one block. Three sentences run together read as
             a wall at this size, and the second one answers a different
             question (what is shared) than the first (what a profile is). */}
         <p className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-          A profile is a fully separate Termic: its own projects, tasks,
-          settings and agents, in its own window. Two can be open at once and
-          neither sees the other's work.
+          {t("profiles.desc1")}
         </p>
         <p className="mt-2 text-[12.5px] leading-relaxed text-[var(--color-fg-faint)]">
-          Agent logins are the one thing they share: you sign in once, on this
-          machine.
+          {t("profiles.desc2")}
         </p>
       </div>
 
       {profiles.length === 0 ? (
         <div className="rounded-lg border border-dashed border-[var(--color-border)] p-7 text-center">
           <p className="text-[13px] text-[var(--color-fg-dim)]">
-            You have one setup, and no profiles yet.
+            {t("profiles.emptyTitle")}
           </p>
           <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-fg-faint)]">
-            Creating your first profile also names the one you are using now,
-            so you can tell the two windows apart.
+            {t("profiles.empty1")}
           </p>
           <p className="mt-1 text-[12px] leading-relaxed text-[var(--color-fg-faint)]">
-            Your projects, tasks and settings stay exactly where they are.
+            {t("profiles.empty2")}
           </p>
           <Button className="mt-4" onClick={openNewProfile} data-testid="profiles-create-first">
-            <Plus className="mr-1.5 h-4 w-4" /> Create a profile
+            <Plus className="mr-1.5 h-4 w-4" /> {t("profiles.createFirst")}
           </Button>
         </div>
       ) : (
@@ -86,7 +84,7 @@ export function ProfilesSection() {
           ))}
           <div className="flex items-center justify-between">
             <Button variant="ghost" onClick={openNewProfile} data-testid="profiles-create">
-              <Plus className="mr-1.5 h-4 w-4" /> New profile
+              <Plus className="mr-1.5 h-4 w-4" /> {t("profiles.newProfile")}
             </Button>
             {/* Backing out of the feature is its own door, and it has to be:
                 deleting a profile is refused while its window is open, and the
@@ -98,7 +96,7 @@ export function ProfilesSection() {
                 data-testid="profiles-disable"
                 onClick={() => void profilesDisable().then(() => refresh()).catch(() => {})}
               >
-                Stop using profiles
+                {t("profiles.disable")}
               </Button>
             )}
           </div>
@@ -107,8 +105,7 @@ export function ProfilesSection() {
 
       {profiles.length === 1 && (
         <p className="text-[11.5px] text-[var(--color-fg-faint)]">
-          "Stop using profiles" keeps every project, task and setting exactly
-          where it is. It only stops giving this window a name.
+          {t("profiles.disableNote")}
         </p>
       )}
 
@@ -121,6 +118,7 @@ function ProfileRow({ slug, name, accent, isCurrent, isOpen, onChanged, onDelete
   isCurrent: boolean; isOpen: boolean;
   onChanged: () => void; onDelete: () => void; onSwitch: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const [draft, setDraft] = useState(name);
   // Re-seed when the store changes underneath (another window renamed it).
   useEffect(() => { setDraft(name); }, [name]);
@@ -185,11 +183,11 @@ function ProfileRow({ slug, name, accent, isCurrent, isOpen, onChanged, onDelete
       <div className="flex shrink-0 items-center gap-1.5">
         {isCurrent ? (
           <span className="flex items-center gap-1 text-[11.5px] text-[var(--color-fg-dim)]">
-            <Check className="h-3.5 w-3.5" /> This window
+            <Check className="h-3.5 w-3.5" /> {t("profiles.thisWindow")}
           </span>
         ) : (
           <Button size="sm" variant="ghost" onClick={onSwitch} data-testid={`profile-switch-${slug}`}>
-            {isOpen ? "Focus" : "Open"}
+            {isOpen ? t("profiles.focus") : t("common:open")}
           </Button>
         )}
         {/* Deleting the profile you are IN is refused by Rust (its window is
@@ -197,7 +195,7 @@ function ProfileRow({ slug, name, accent, isCurrent, isOpen, onChanged, onDelete
         <Button
           size="icon"
           variant="icon"
-          title={isCurrent ? "Close this window first" : "Delete profile"}
+          title={isCurrent ? t("profiles.closeFirst") : t("profiles.deleteProfile")}
           disabled={isCurrent}
           onClick={onDelete}
           data-testid={`profile-delete-${slug}`}

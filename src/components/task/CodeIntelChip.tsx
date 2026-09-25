@@ -20,6 +20,7 @@
 //     read as one rather than as the setting forgetting itself.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Compass } from "lucide-react";
 import type { Project, Task } from "@/lib/types";
 import { useApp } from "@/store/app";
@@ -30,7 +31,7 @@ import { lspServerFor } from "@/lib/lsp/languages";
 import { lspOffer, type LspOffer } from "@/lib/lsp/install";
 import { confirmAndInstall } from "@/lib/lsp/installFlow";
 import { cn } from "@/lib/utils";
-import { MEMORY_NOTE, serverFor } from "@/lib/lsp/serverNames";
+import { memoryNote, serverFor } from "@/lib/lsp/serverNames";
 import { codeIntelName, codeIntelNameLower } from "@/lib/lsp/featureName";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { CodeIntelActions } from "./CodeIntelActions";
@@ -42,6 +43,7 @@ export function CodeIntelChip({ task, registryName, path }: {
   registryName: string;
   path: string;
 }) {
+  const { t } = useTranslation("panels");
   const offered = usePrefs(s => s.codeIntelligence);
   const askFirst = usePrefs(s => s.confirmBeforeCodeIntel);
   // The feature's NAME follows the type-checking switch: with it off, all of
@@ -154,16 +156,16 @@ export function CodeIntelChip({ task, registryName, path }: {
   const ask = async () => {
     if (!askFirst) { arm(key, task.id); return; }
     const res = await askConfirm({
-      title: `Turn on ${codeIntelNameLower(typeChecking)}?`,
+      title: t("codeIntel.turnOnTitle", { feature: codeIntelNameLower(typeChecking) }),
       message: [
-        MEMORY_NOTE[serverFor(offer?.exe ?? null, server)]
-          ?? "A language server can hold a lot of memory and does not release it until it stops.",
+        memoryNote(serverFor(offer?.exe ?? null, server))
+          || t("codeIntel.memoryFallback"),
         isMain
-          ? "It runs once for this checkout, however many tasks share it, so a second task on the main checkout costs nothing extra."
-          : "It runs once for THIS worktree. Every other worktree with navigation on runs its own copy, with its own index.",
-        "It stops when this checkout's last task is closed or archived, so turning it on now does not commit the machine to it forever.",
+          ? t("codeIntel.mainNote")
+          : t("codeIntel.worktreeNoteChip"),
+        t("codeIntel.stopsNote"),
       ].join("\n\n"),
-      confirmLabel: "Turn on",
+      confirmLabel: t("codeIntel.turnOn"),
       dontAskAgain: true,
       // Keyed: the pane can be closed (or the task archived) while the prompt
       // stands, and an un-withdrawn confirm blocks the whole window.
@@ -201,13 +203,12 @@ export function CodeIntelChip({ task, registryName, path }: {
             without it the panel opened with a memory figure for something the
             reader had not been told the purpose of. */}
         <div className="mt-1 text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
-          Go to definition, find usages, an outline of the file and types on hover,
-          answered by {serverName} rather than guessed from the text.
+          {t("codeIntel.description", { server: serverName })}
         </div>
         <div className="mt-1 text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
           {armed
-            ? detail || "Running for this checkout, shared by every task on it."
-            : MEMORY_NOTE[serverName] ?? "Holds its index in memory until it stops."}
+            ? detail || t("codeIntel.runningShared")
+            : memoryNote(serverName) || t("codeIntel.memoryFallbackShort")}
         </div>
       </div>
 
@@ -220,7 +221,7 @@ export function CodeIntelChip({ task, registryName, path }: {
 
       {!armed && needsInstall && (
         <div className="text-[11.5px] leading-snug text-[var(--color-fg-dim)]">
-          Not on this machine: termic downloads its own copy ({mb} MB, checksum-verified, never on your PATH).
+          {t("codeIntel.notInstalled", { mb })}
         </div>
       )}
 
@@ -264,11 +265,11 @@ export function CodeIntelChip({ task, registryName, path }: {
           <Compass className="h-3 w-3 shrink-0" />
         )}
         {installing
-          ? "Downloading…"
+          ? t("codeIntel.downloading")
           : armed
             ? featureName
             : needsInstall
-              ? `Install ${offer!.installLabel}`
+              ? t("codeIntel.install", { label: offer!.installLabel })
               : featureName}
       </button>
       </PopoverTrigger>

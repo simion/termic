@@ -56,10 +56,32 @@ export const SANDBOX_VISUALS: Record<SandboxMode, SandboxVisual> = {
  *    MONITORING           | ENFORCING (filesystem + network)  */
 export const SANDBOX_PICKER_ORDER: SandboxMode[] = ["off", "enforce-fs", "monitor", "enforce"];
 
+/** Locale key for a mode under chrome:sandbox.modes. */
+const MODE_KEY: Record<SandboxMode, string> = {
+  off: "off", "enforce-fs": "enforceFs", monitor: "monitor", enforce: "enforce",
+};
+
+/** Translated label/shortLabel/desc for a mode. Takes the caller's `t` (bound
+ *  to the chrome namespace) so the text re-renders on a language switch;
+ *  SANDBOX_VISUALS keeps the English strings as the visual table's data, but
+ *  user-visible surfaces should go through here. */
+export function sandboxModeText(mode: SandboxMode, t: (k: string) => string): Pick<SandboxVisual, "label" | "shortLabel" | "desc"> {
+  const k = `sandbox.modes.${MODE_KEY[mode]}`;
+  return { label: t(`${k}.label`), shortLabel: t(`${k}.shortLabel`), desc: t(`${k}.desc`) };
+}
+
 /** Uppercase only the leading keyword for the picker's chip styling:
  *  "Enforcing (filesystem only)" → "ENFORCING (filesystem only)". */
 export function sandboxPickerLabel(mode: SandboxMode): string {
   const l = SANDBOX_VISUALS[mode].label;
+  const i = l.indexOf(" ");
+  return i === -1 ? l.toUpperCase() : l.slice(0, i).toUpperCase() + l.slice(i);
+}
+
+/** Translated variant of sandboxPickerLabel. Chinese has no case, so the
+ *  uppercase pass is a no-op there and the label renders as-is. */
+export function sandboxPickerLabelT(mode: SandboxMode, t: (k: string) => string): string {
+  const l = sandboxModeText(mode, t).label;
   const i = l.indexOf(" ");
   return i === -1 ? l.toUpperCase() : l.slice(0, i).toUpperCase() + l.slice(i);
 }

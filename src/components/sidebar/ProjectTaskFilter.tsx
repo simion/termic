@@ -7,6 +7,7 @@
 // sidebar's local state, since the icon and the bar both read it.
 
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Bell, ListFilter, Search, X } from "lucide-react";
 import { Tip } from "@/components/ui/Tooltip";
 import { useUI } from "@/store/ui";
@@ -24,10 +25,11 @@ export function ProjectFilterToggle({ projectId, active, revealed, onToggle }: {
   revealed: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation("sidebar");
   return (
-    <Tip content={active ? "Filtering tasks" : "Filter tasks"}>
+    <Tip content={active ? t("taskFilter.tipActive") : t("taskFilter.tip")}>
       <button
-        aria-label="Filter tasks"
+        aria-label={t("taskFilter.tip")}
         aria-pressed={active}
         data-testid={`project-filter-toggle-${projectId}`}
         // Whether the controls are held open without hover. Specs read this
@@ -59,6 +61,7 @@ export function ProjectFilterBar({ projectId, notifCount, focusKey, onClose, onA
   /** A filter just went from off to on (the sidebar expands the project). */
   onActivate: () => void;
 }) {
+  const { t } = useTranslation("sidebar");
   const text = useUI(s => s.taskFilters[projectId]?.text ?? "");
   const bell = useUI(s => s.taskFilters[projectId]?.bell ?? false);
   const setText = useUI(s => s.setTaskFilterText);
@@ -82,7 +85,7 @@ export function ProjectFilterBar({ projectId, notifCount, focusKey, onClose, onA
         <input
           ref={inputRef}
           value={text}
-          placeholder="Filter by task or tab name"
+          placeholder={t("taskFilter.inputPlaceholder")}
           data-testid={`project-filter-input-${projectId}`}
           onChange={e => {
             if (text.trim() === "" && e.target.value.trim() !== "" && !bell) onActivate();
@@ -101,7 +104,7 @@ export function ProjectFilterBar({ projectId, notifCount, focusKey, onClose, onA
         />
         {text !== "" && (
           <button
-            aria-label="Clear filter"
+            aria-label={t("taskFilter.clear")}
             data-testid={`project-filter-clear-${projectId}`}
             onMouseDown={e => e.preventDefault()}
             onClick={e => { e.stopPropagation(); clearText(); }}
@@ -109,9 +112,9 @@ export function ProjectFilterBar({ projectId, notifCount, focusKey, onClose, onA
           ><X className="h-3.5 w-3.5" /></button>
         )}
       </div>
-      <Tip content={bell ? "Show all tasks" : "Show only tasks with notifications"}>
+      <Tip content={bell ? t("taskFilter.bellTipActive") : t("taskFilter.bellTip")}>
         <button
-          aria-label="Show only tasks with notifications"
+          aria-label={t("taskFilter.bellTip")}
           aria-pressed={bell}
           data-testid={`project-filter-bell-${projectId}`}
           className={cn(iconBtn, "flex h-7 shrink-0 items-center gap-0.5 px-1.5", bell && litBtn)}

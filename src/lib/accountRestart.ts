@@ -17,6 +17,7 @@
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { ptyKill } from "@/lib/ipc";
 import { sendMessageToPty } from "@/lib/agentSend";
 import type { TerminalTab } from "@/lib/types";
@@ -57,7 +58,7 @@ export function openSignInTab(taskId: string, agentId: string, account: string):
     type: "terminal",
     // Named for the job, not the agent: this tab is disposable, and a second
     // tab called "claude" beside the real one is the confusing version.
-    title: `Sign in: ${account}`,
+    title: i18n.t("backend:accountSwitching.signInTab", { account }),
     cli: agentId,
   });
   return true;

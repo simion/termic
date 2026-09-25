@@ -14,6 +14,7 @@
 // the UpdaterBanner pill in the unified bar. Sidebar wraps this + the
 // footer in one `mt-auto` group, so the card sits flush above the footer.
 
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate, entryFor, cmpVersion } from "@/store/update";
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { X, ArrowDownToLine, RotateCw, ArrowRight, Sparkles } from "lucide-react";
 
 export function UpdateCard() {
+  const { t } = useTranslation("sidebar");
   const compact = useApp(s => s.compactSidebar);
   const openChangelog = useUI(s => s.openChangelog);
 
@@ -54,7 +56,7 @@ export function UpdateCard() {
 
   const summary =
     entry?.summary ||
-    (mode === "update" ? "A new version of Termic is ready to install." : "");
+    (mode === "update" ? t("updateCard.defaultSummary") : "");
 
   return (
     <div className="relative mx-2 mb-2 shrink-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] p-3">
@@ -62,7 +64,7 @@ export function UpdateCard() {
           padding, no empty header row. */}
       <button
         type="button"
-        aria-label="Dismiss"
+        aria-label={t("dismiss", { ns: "common" })}
         onClick={() => (mode === "update" ? dismissUpdate() : dismissWhatsNew())}
         className="absolute right-1.5 top-1.5 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
       >
@@ -75,7 +77,7 @@ export function UpdateCard() {
       {mode === "whatsnew" && (
         <div className="mb-1.5 flex items-center gap-1 text-[var(--color-accent)]">
           <Sparkles className="h-3.5 w-3.5 shrink-0" />
-          <span className="text-[11px] font-semibold">What's new</span>
+          <span className="text-[11px] font-semibold">{t("updateCard.whatsNew")}</span>
         </div>
       )}
 
@@ -101,7 +103,7 @@ export function UpdateCard() {
         }}
         className="mt-2 flex items-center gap-1 text-[12px] font-medium text-[var(--color-accent)] hover:underline"
       >
-        Changelog
+        {t("updateCard.changelog")}
         <ArrowRight className="h-3 w-3" />
       </button>
 
@@ -115,19 +117,19 @@ export function UpdateCard() {
           {installing === null && (
             <>
               <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
-              <span>Update now</span>
+              <span>{t("updateCard.updateNow")}</span>
             </>
           )}
           {installing === "downloading" && (
             <>
               <RotateCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
-              <span>Downloading…</span>
+              <span>{t("updateCard.downloading")}</span>
             </>
           )}
           {installing === "installing" && (
             <>
               <RotateCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
-              <span>Restarting…</span>
+              <span>{t("updateCard.restarting")}</span>
             </>
           )}
         </button>

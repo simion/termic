@@ -4,9 +4,10 @@
 // Still a UI-only view over the SAME two independent backend fields
 // (`sandbox_mode` / `docker_sandbox_enabled`, see SandboxSelection in
 // lib/types.ts) - no new data model, just one picker instead of two.
+import { useTranslation, Trans } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { SandboxMode, SandboxSelection } from "@/lib/types";
-import { SANDBOX_VISUALS, sandboxPickerLabel, SandboxIcon, DockerSandboxIcon, DOCKER_SANDBOX_COLOR } from "@/components/SandboxIcon";
+import { SANDBOX_VISUALS, sandboxPickerLabelT, sandboxModeText, SandboxIcon, DockerSandboxIcon, DOCKER_SANDBOX_COLOR } from "@/components/SandboxIcon";
 
 /** Row-major order: OFF / ENFORCING (FS) on top, MONITORING / ENFORCING
  *  below, DOCKER on its own row - it's a different MECHANISM, not another
@@ -34,6 +35,7 @@ export function SandboxPicker({
   onEnableDocker?: () => void;
   compact?: boolean;
 }) {
+  const { t } = useTranslation("chrome");
   return (
     <div className="flex flex-col gap-2">
       <div className="grid grid-cols-2 gap-2">
@@ -47,7 +49,7 @@ export function SandboxPicker({
               type="button"
               disabled={unsupported}
               onClick={() => onChange(id)}
-              title={unsupported ? "Sandbox is macOS-only (requires sandbox-exec)." : v.desc}
+              title={unsupported ? t("sandbox.picker.macOnly") : sandboxModeText(id, t).desc}
               className={cn(
                 "flex flex-col items-start gap-1 rounded-md border text-left transition-colors",
                 compact ? "px-3 py-2" : "px-3 py-2.5",
@@ -61,10 +63,10 @@ export function SandboxPicker({
                     so the states are color-coded at a glance. */}
                 <SandboxIcon mode={id} className="h-4 w-4 shrink-0" />
                 <span className="text-[12px] font-semibold tracking-wide" style={{ color: active ? "var(--color-fg)" : "var(--color-fg-dim)" }}>
-                  {sandboxPickerLabel(id)}
+                  {sandboxPickerLabelT(id, t)}
                 </span>
               </div>
-              <span className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px] leading-snug")}>{v.desc}</span>
+              <span className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px] leading-snug")}>{sandboxModeText(id, t).desc}</span>
             </button>
           );
         })}
@@ -76,9 +78,9 @@ export function SandboxPicker({
       {(() => {
         const active = value === "docker";
         const disabled = !dockerOffered;
-        const desc = "Filesystem cage inside a container. Network is unrestricted for now.";
+        const desc = t("sandbox.picker.dockerDesc");
         const title = disabled
-          ? (dockerUnavailableReason ?? "Enable Docker sandbox and build the image in Settings → Docker Sandbox first.")
+          ? (dockerUnavailableReason ?? t("sandbox.picker.dockerEnableHint"))
           : desc;
         return (
           <button
@@ -97,7 +99,7 @@ export function SandboxPicker({
             <div className="flex items-center gap-1.5">
               <DockerSandboxIcon className="h-4 w-4 shrink-0" />
               <span className="text-[12px] font-semibold tracking-wide" style={{ color: active ? "var(--color-fg)" : "var(--color-fg-dim)" }}>
-                DOCKER CONTAINER
+                {t("sandbox.picker.dockerTitle")}
               </span>
             </div>
             <span className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px] leading-snug")}>{desc}</span>
@@ -117,7 +119,7 @@ export function SandboxPicker({
           data-testid="sandbox-picker-enable-docker"
           className="self-start rounded text-left text-[11.5px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-accent)]"
         >
-          {dockerUnavailableReason ?? "Set up Docker sandboxing…"}
+          {dockerUnavailableReason ?? t("sandbox.picker.dockerSetup")}
         </button>
       )}
     </div>
@@ -130,8 +132,7 @@ export function SandboxPicker({
 export function DockerEngineNote({ compact = false }: { compact?: boolean }) {
   return (
     <div className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "text-[11.5px] leading-snug")}>
-      Filesystem cage only for now: the agent can only touch what termic mounts, but{" "}
-      <u>network access is unrestricted</u> (a network allow-list for Docker mode is planned once this is stable).
+      <Trans i18nKey="sandbox.dockerNote" ns="chrome" components={{ u: <u /> }} />
     </div>
   );
 }

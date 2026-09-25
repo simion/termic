@@ -18,6 +18,7 @@
 // separately, and a bulk delete is the worst place to answer it for someone.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useProfiles } from "@/store/profiles";
@@ -68,6 +69,7 @@ function Choice({ checked, onSelect, title, detail, testid }: {
 }
 
 export function DeleteProfileDialog() {
+  const { t } = useTranslation("dialogs");
   const slug = useUI(s => s.deleteProfileSlug);
   const setSlug = useUI(s => s.setDeleteProfileSlug);
   const refresh = useProfiles(s => s.refresh);
@@ -118,20 +120,19 @@ export function DeleteProfileDialog() {
     <AppDialog
       open={open}
       onOpenChange={v => { if (!v) setSlug(null); }}
-      title={preview ? `Delete profile "${preview.name}"?` : "Delete profile"}
+      title={preview ? t("deleteProfile.titleNamed", { name: preview.name }) : t("deleteProfile.titleFallback")}
       className="max-w-lg"
     >
       <div className="flex flex-col gap-4" data-testid="delete-profile-dialog">
         {!preview && !err && (
-          <div className="text-[13px] text-[var(--color-fg-dim)]">Checking what this profile owns...</div>
+          <div className="text-[13px] text-[var(--color-fg-dim)]">{t("deleteProfile.checking")}</div>
         )}
 
         {windowOpen && (
           <div className="flex gap-2 rounded-lg border border-[var(--color-warning)] p-3 text-[12.5px]">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warning)]" />
             <span>
-              This profile's window is open. Deleting closes it, and anything
-              running in it stops.
+              {t("deleteProfile.windowOpenWarn")}
             </span>
           </div>
         )}
@@ -143,13 +144,13 @@ export function DeleteProfileDialog() {
               data-testid="delete-profile-counts"
               className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-[var(--color-bg-2)] px-3 py-2 text-[12.5px]"
             >
-              <span>{preview.tasks} {preview.tasks === 1 ? "task" : "tasks"}</span>
+              <span>{t(preview.tasks === 1 ? "deleteProfile.tasksOne" : "deleteProfile.tasksMany", { count: preview.tasks })}</span>
               {preview.dirty > 0 && (<><span className="opacity-40">·</span>
-                <span className="text-[var(--color-warning)]">{preview.dirty} with uncommitted changes</span></>)}
+                <span className="text-[var(--color-warning)]">{t("deleteProfile.dirtyWarn", { count: preview.dirty })}</span></>)}
               {preview.unpushed > 0 && (<><span className="opacity-40">·</span>
-                <span>{preview.unpushed} unpushed {preview.unpushed === 1 ? "branch" : "branches"}</span></>)}
+                <span>{t(preview.unpushed === 1 ? "deleteProfile.unpushedOne" : "deleteProfile.unpushedMany", { count: preview.unpushed })}</span></>)}
               {preview.mainCheckouts > 0 && (<><span className="opacity-40">·</span>
-                <span>{preview.mainCheckouts} open repo {preview.mainCheckouts === 1 ? "folder" : "folders"} (never removed)</span></>)}
+                <span>{t(preview.mainCheckouts === 1 ? "deleteProfile.foldersOne" : "deleteProfile.foldersMany", { count: preview.mainCheckouts })}</span></>)}
             </div>
 
             <div role="radiogroup" className="flex flex-col gap-2">
@@ -157,18 +158,18 @@ export function DeleteProfileDialog() {
                 testid="delete-profile-keep"
                 checked={!deleteWorktrees}
                 onSelect={() => { setDeleteWorktrees(false); setAcked(false); }}
-                title="Keep the worktrees on disk"
-                detail={`${preview.worktreesHint} is left untouched.`}
+                title={t("deleteProfile.keepTitle")}
+                detail={t("deleteProfile.keepDetail", { hint: preview.worktreesHint })}
               />
               <Choice
                 testid="delete-profile-remove"
                 checked={deleteWorktrees}
                 onSelect={() => setDeleteWorktrees(true)}
-                title="Delete the worktrees too"
+                title={t("deleteProfile.removeTitle")}
                 detail={
                   preview.tasks - preview.mainCheckouts > 0
-                    ? `Removes ${preview.tasks - preview.mainCheckouts} ${preview.tasks - preview.mainCheckouts === 1 ? "worktree" : "worktrees"}. Branches are kept.`
-                    : "Nothing to remove. Branches are kept."
+                    ? t(preview.tasks - preview.mainCheckouts === 1 ? "deleteProfile.removeDetailOne" : "deleteProfile.removeDetailMany", { count: preview.tasks - preview.mainCheckouts })
+                    : t("deleteProfile.removeDetailEmpty")
                 }
               />
             </div>
@@ -176,7 +177,7 @@ export function DeleteProfileDialog() {
             {needsAck && (
               <label className="flex items-center gap-2 text-[12.5px]" data-testid="delete-profile-ack">
                 <Checkbox checked={acked} onChange={setAcked} />
-                <span>I understand {preview.dirty} {preview.dirty === 1 ? "task has" : "tasks have"} uncommitted changes</span>
+                <span>{t(preview.dirty === 1 ? "deleteProfile.ackOne" : "deleteProfile.ackMany", { count: preview.dirty })}</span>
               </label>
             )}
           </>
@@ -189,9 +190,9 @@ export function DeleteProfileDialog() {
         )}
 
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setSlug(null)} disabled={busy}>Cancel</Button>
+          <Button variant="ghost" onClick={() => setSlug(null)} disabled={busy}>{t("common:cancel")}</Button>
           <Button variant="danger" onClick={() => void run()} disabled={!canDelete} data-testid="delete-profile-confirm">
-            {busy ? "Deleting..." : "Delete profile"}
+            {busy ? t("deleteProfile.deleting") : t("deleteProfile.deleteProfile")}
           </Button>
         </div>
       </div>

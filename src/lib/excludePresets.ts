@@ -9,9 +9,14 @@
 //
 // Single source of truth — both settings surfaces import this.
 
+import { i18n } from "@/lib/i18n";
+
 export interface ExcludePreset {
   id: string;
   label: string;
+  /** settings:exclude key suffix for the localized label, resolved at render
+   *  (see presetLabel). The English label is the fallback. */
+  labelKey: string;
   /** One-line description shown under the chip. */
   hint: string;
   patterns: string[];
@@ -21,6 +26,7 @@ export const EXCLUDE_PRESETS: ExcludePreset[] = [
   {
     id: "python",
     label: "Python",
+    labelKey: "presetPython",
     hint: "caches, venvs, build metadata",
     patterns: [
       "__pycache__",
@@ -37,6 +43,7 @@ export const EXCLUDE_PRESETS: ExcludePreset[] = [
   {
     id: "node",
     label: "Node / JS",
+    labelKey: "presetNode",
     hint: "node_modules and bundler caches",
     patterns: [
       "node_modules",
@@ -51,24 +58,28 @@ export const EXCLUDE_PRESETS: ExcludePreset[] = [
   {
     id: "rust",
     label: "Rust",
+    labelKey: "presetRust",
     hint: "the target build directory",
     patterns: ["target"],
   },
   {
     id: "build",
     label: "Build output",
+    labelKey: "presetBuild",
     hint: "common compiled / generated dirs",
     patterns: ["dist", "build", "out", ".cache", "coverage", "*.log"],
   },
   {
     id: "ide",
     label: "IDE / editor",
+    labelKey: "presetIde",
     hint: "JetBrains, VS Code, swap files",
     patterns: [".idea", ".vscode", "*.swp", "*.swo"],
   },
   {
     id: "macos",
     label: "macOS",
+    labelKey: "presetMacos",
     hint: "Finder / system cruft",
     patterns: [".DS_Store", ".Spotlight-V100", ".Trashes", "._*"],
   },
@@ -99,4 +110,10 @@ export function dropPatterns(existing: string[], remove: string[]): string[] {
 export function presetApplied(preset: ExcludePreset, list: string[]): boolean {
   const set = new Set(list.map(s => s.trim()));
   return preset.patterns.every(p => set.has(p.trim()));
+}
+
+/** Localized label for a preset chip, resolved at render so a language switch
+ *  applies without a reload. Falls back to the preset's own English text. */
+export function presetLabel(p: ExcludePreset): string {
+  return p.labelKey ? i18n.t(`settings:exclude.${p.labelKey}`) : p.label;
 }

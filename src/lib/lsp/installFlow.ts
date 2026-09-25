@@ -11,8 +11,9 @@
 // grant key and task it is arming for.
 
 import { lspInstall } from "./install";
-import { MEMORY_NOTE, serverFor } from "./serverNames";
+import { memoryNote, serverFor } from "./serverNames";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 
 export interface InstallRequest {
   /** Language/server id, e.g. "typescript". */
@@ -31,11 +32,11 @@ export interface InstallRequest {
 export function installMessage(req: InstallRequest): string {
   const mb = req.bytes ? Math.round(req.bytes / 1_000_000) : 0;
   return [
-    `Nothing on this machine serves ${req.language}, so termic can fetch its own copy${
-      mb ? `: ${mb} MB` : ""
-    }, verified against a checksum shipped in this release, into termic's own folder. `
-    + "It is never added to your PATH and deleting termic deletes it.",
-    MEMORY_NOTE[serverFor(null, req.server)] ?? "",
+    i18n.t("backend:lsp.installMessage", {
+      language: req.language,
+      size: mb ? i18n.t("backend:lsp.installSize", { mb }) : "",
+    }),
+    memoryNote(serverFor(null, req.server)),
   ].filter(Boolean).join("\n\n");
 }
 
@@ -50,9 +51,9 @@ export function installMessage(req: InstallRequest): string {
 export async function confirmAndInstall(req: InstallRequest): Promise<boolean> {
   const ui = useUI.getState();
   const ok = await ui.askConfirm({
-    title: `Download ${req.label}?`,
+    title: i18n.t("backend:lsp.downloadTitle", { label: req.label }),
     message: installMessage(req),
-    confirmLabel: "Download",
+    confirmLabel: i18n.t("backend:lsp.downloadConfirm"),
     key: `code-intel-install:${req.server}`,
   });
   if (!ok) return false;
@@ -63,7 +64,7 @@ export async function confirmAndInstall(req: InstallRequest): Promise<boolean> {
     // Never silent: a failed download that reported nothing looks exactly like
     // a successful one that did not work, which is what sent this bug through
     // review in the first place.
-    useUI.getState().pushToast(`Could not install ${req.label}: ${e}`, "error");
+    useUI.getState().pushToast(i18n.t("backend:lsp.installFailed", { label: req.label, error: String(e) }), "error");
     return false;
   }
 }

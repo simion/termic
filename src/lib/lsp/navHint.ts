@@ -29,6 +29,7 @@ import { usePrefs } from "@/store/prefs";
 import { useCodeIntel, checkoutRoot, grantKey } from "@/store/codeIntel";
 import { useUI } from "@/store/ui";
 import { lspServerFor } from "./languages";
+import { i18n } from "@/lib/i18n";
 
 /** Show the hint at `pos`, or dismiss it with null. */
 const setHint = StateEffect.define<{ pos: number; language: string; server: string | null } | null>();
@@ -92,8 +93,7 @@ function tooltipFor(
         // to be useful, so point at it rather than leaving the reader to
         // wonder whether the click took.
         useUI.getState().pushToast(
-          `${state.language} ${currentCodeIntelName().toLowerCase()} is on. `
-          + `The compass button shows when the server is ready.`,
+          i18n.t("backend:navHint.on", { language: state.language, feature: currentCodeIntelName().toLowerCase() }),
           "success",
         );
       });

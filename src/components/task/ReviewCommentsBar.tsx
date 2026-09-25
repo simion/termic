@@ -9,6 +9,8 @@
 // so TerminalPane re-arms work-done detection.
 
 import { useMemo, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useTaskComments, useReviewComments } from "@/store/reviewComments";
@@ -26,10 +28,10 @@ function tabLabel(t: TerminalTab): string {
   return t.customTitle ? t.title : (t.liveTitle || t.title);
 }
 
-function locLabel(start: number | null, end: number | null): string {
-  if (start == null) return "whole file";
-  if (end != null && end !== start) return `lines ${start}–${end}`;
-  return `line ${start}`;
+function locLabel(t: TFunction, start: number | null, end: number | null): string {
+  if (start == null) return t("reviewBar.wholeFile");
+  if (end != null && end !== start) return t("reviewBar.lines", { start, end });
+  return t("reviewBar.line", { start });
 }
 
 export function ReviewCommentsBar({ taskId, compact = false, className }: {
@@ -37,6 +39,7 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
   compact?: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation("panels");
   const comments = useTaskComments(taskId);
   const remove = useReviewComments(s => s.remove);
   const clear = useReviewComments(s => s.clear);
@@ -101,7 +104,7 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
 
   return (
     <PopoverRoot open={open} onOpenChange={setOpen}>
-      <Tip content={`${count} pending review comment${count === 1 ? "" : "s"}`} side="top">
+      <Tip content={count === 1 ? t("reviewBar.pendingTipOne") : t("reviewBar.pendingTipMany", { count })} side="top">
         <span className={cn("inline-flex shrink-0", className)}>
           <PopoverTrigger asChild>
             <button
@@ -118,7 +121,7 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
               )}
             >
               <MessagesSquare className="h-3.5 w-3.5 shrink-0" />
-              <span className="tabular-nums">{count} pending comment{count === 1 ? "" : "s"}</span>
+              <span className="tabular-nums">{count === 1 ? t("reviewBar.pendingOne") : t("reviewBar.pendingMany", { count })}</span>
             </button>
           </PopoverTrigger>
         </span>
@@ -127,13 +130,13 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
       <PopoverContent side="top" align="start" className="flex w-[380px] flex-col gap-2">
         <div className="flex items-center justify-between">
           <span className="text-[12.5px] font-medium text-[var(--color-fg)]">
-            Review comments
+            {t("reviewBar.title")}
           </span>
           <button
             onClick={() => { clear(taskId); setOpen(false); }}
             className="flex items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-err)]"
           >
-            <Trash2 className="h-3 w-3" /> Discard all
+            <Trash2 className="h-3 w-3" /> {t("reviewBar.discardAll")}
           </button>
         </div>
 
@@ -144,7 +147,7 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
             <li key={file} className="flex flex-col gap-1">
               <button
                 onClick={() => jumpTo(file)}
-                title="Open this file's diff"
+                title={t("reviewBar.openDiff")}
                 className="truncate text-left font-mono text-[11px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)]"
               >
                 {file}
@@ -156,7 +159,7 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="font-mono text-[10.5px] text-[var(--color-fg-faint)]">
-                      {locLabel(c.startLine, c.endLine)}
+                      {locLabel(t, c.startLine, c.endLine)}
                     </div>
                     {/* The body is optional when a selection was queued on its
                         own, so fall back to naming that rather than showing an
@@ -165,12 +168,12 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
                       "mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-snug",
                       c.body.trim() ? "text-[var(--color-fg)]" : "italic text-[var(--color-fg-faint)]",
                     )}>
-                      {c.body.trim() || "Selection only"}
+                      {c.body.trim() || t("reviewBar.selectionOnly")}
                     </div>
                   </div>
                   <button
                     onClick={() => remove(taskId, c.id)}
-                    title="Remove comment"
+                    title={t("reviewBar.removeComment")}
                     className="mt-0.5 shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -210,12 +213,12 @@ export function ReviewCommentsBar({ taskId, compact = false, className }: {
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-[var(--color-fg-faint)]">
             {target
-              ? <>Sends to <span className="text-[var(--color-fg-dim)]">{tabLabel(target)}</span></>
-              : "No running agent in this task"}
+              ? <Trans i18nKey="reviewBar.sendsTo" values={{ label: tabLabel(target) }} components={{ span: <span className="text-[var(--color-fg-dim)]" /> }} />
+              : t("reviewBar.noAgent")}
           </span>
           <Button variant="primary" size="sm" className="gap-1.5" data-testid="review-comments-send"
                   disabled={!target || sending} onClick={send}>
-            <Send className="h-3.5 w-3.5" /> {sending ? "Sending…" : "Send"}
+            <Send className="h-3.5 w-3.5" /> {sending ? t("reviewBar.sending") : t("reviewBar.send")}
           </Button>
         </div>
       </PopoverContent>

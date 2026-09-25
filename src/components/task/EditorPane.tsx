@@ -8,6 +8,7 @@
 // a grammar is a chunk fetch, hence lib/langSwitch guarding every apply.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { EditTab, ScratchTab, ExternalTab, Task } from "@/lib/types";
 import { EditorState, Compartment, Annotation, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, tooltips } from "@codemirror/view";
@@ -137,6 +138,7 @@ export function EditorPane({ task, tab, active, onContent }: {
    *  Plain editor tabs pass nothing. */
   onContent?: (view: EditorView) => void;
 }) {
+  const { t } = useTranslation("panels");
   const isScratch = tab.type === "scratch";
   // GH #240: an out-of-task file is read-only and has no task-relative path,
   // so every TASK-SCOPED feature below keys off this rather than `!isScratch`.
@@ -442,7 +444,7 @@ export function EditorPane({ task, tab, active, onContent }: {
           // would throw from Rust. The buffer is `readOnly` too, so there is
           // nothing unsaved to lose.
           if (tab.type === "external") {
-            useUI.getState().pushToast("Outside the task, opened read-only", "info");
+            useUI.getState().pushToast(t("editor.readOnlyToast"), "info");
             return true;
           }
           const name = tab.path.split("/").pop() || tab.path;
@@ -450,7 +452,7 @@ export function EditorPane({ task, tab, active, onContent }: {
             .then(() => {
               dirtyRef.current = false;
               useApp.getState().patchTab(task.id, tab.id, { dirty: false });
-              useUI.getState().pushToast(`Saved ${name}`, "success");
+              useUI.getState().pushToast(t("editor.savedToast", { name }), "success");
               // Git-only tick (NOT bumpFsRevision: that would make every
               // open editor — this one included — re-read from disk, and a
               // keystroke landing between the write and that re-read would
@@ -465,7 +467,7 @@ export function EditorPane({ task, tab, active, onContent }: {
                 v.dispatch({ effects: refreshBlame.of() });
               }
             })
-            .catch(e => useUI.getState().pushToast(`Save failed: ${e}`, "error"));
+            .catch(e => useUI.getState().pushToast(t("editor.saveFailed", { error: e }), "error"));
           return true;
         };
 
@@ -974,29 +976,29 @@ export function EditorPane({ task, tab, active, onContent }: {
     // bleeds through during the load frame (terminals stay mounted
     // underneath via the visibility-toggle keep-alive).
     <div ref={hostRef} className="relative h-full overflow-hidden bg-[var(--color-bg)]">
-      {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
+      {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">{t("shared.loading")}</div>}
       {err && isUnviewable(err) && unviewableAbs && (
         <UnviewableFileNotice abs={unviewableAbs} message={err.message} />
       )}
       {err && (!isUnviewable(err) || !unviewableAbs) && (
-        <div className="p-4 text-[14px] text-[var(--color-err)]">Error: {err.message}</div>
+        <div className="p-4 text-[14px] text-[var(--color-err)]">{t("shared.errorWithMessage", { message: err.message })}</div>
       )}
       {/* Dirty buffers only: disk diverged while the user has unsaved edits,
           so ask before clobbering (clean buffers reload silently, GH #57). */}
       {diskChanged && isActive && (
         <div className="absolute right-3 top-3 z-30 flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-2 text-[13px] text-[var(--color-fg)] shadow-lg">
-          <span>This file changed on disk. Reload discards your edits.</span>
+          <span>{t("editor.diskChanged")}</span>
           <button
             onClick={acceptDiskReload}
             className="rounded bg-[var(--color-accent)] px-2 py-[3px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
           >
-            Reload
+            {t("editor.reload")}
           </button>
           <button
             onClick={() => setDiskChanged(false)}
             className="rounded px-2 py-[3px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
           >
-            Keep mine
+            {t("editor.keepMine")}
           </button>
         </div>
       )}
@@ -1018,6 +1020,7 @@ export function EditorPane({ task, tab, active, onContent }: {
  *  so `openInDefaultApp`'s "nothing is registered for .blend, showed it in
  *  Finder instead" toast comes along for free. */
 function UnviewableFileNotice({ abs, message }: { abs: string; message: string }) {
+  const { t } = useTranslation("panels");
   const name = abs.split("/").pop() || abs;
   const reveal = () => {
     revealPath(abs).catch((e: unknown) => useUI.getState().pushToast(String(e), "error"));
@@ -1030,10 +1033,10 @@ function UnviewableFileNotice({ abs, message }: { abs: string; message: string }
       <div className="max-w-[420px] text-[13px] text-[var(--color-fg-dim)]">{message}</div>
       <div className="flex items-center gap-2">
         <Button variant="secondary" size="sm" onClick={() => void openInDefaultApp(abs, name)}>
-          <ExternalLink className="h-3.5 w-3.5" /> Open in default app
+          <ExternalLink className="h-3.5 w-3.5" /> {t("editor.openInDefaultApp")}
         </Button>
         <Button variant="secondary" size="sm" onClick={reveal}>
-          <FolderOpen className="h-3.5 w-3.5" /> Reveal in {FILE_MANAGER}
+          <FolderOpen className="h-3.5 w-3.5" /> {t("editor.revealIn", { manager: FILE_MANAGER })}
         </Button>
       </div>
     </div>

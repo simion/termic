@@ -26,6 +26,7 @@
 //      truthiness, is what the edge is measured on.
 
 import type { Tab } from "@/lib/types";
+import { i18n } from "@/lib/i18n";
 
 type UnreadLike = { unread?: { repeat?: boolean } | null } | undefined;
 
@@ -50,11 +51,17 @@ export function shouldNotifyUnread(next: UnreadLike, prev: UnreadLike): boolean 
 /** The wording shown in the banner body for each reason. Kept next to the rule
  *  above so the two cannot drift, and exported so a test can assert every
  *  reason has a phrase (a missing one used to fall through to "is idle", which
- *  reads as nothing happening). */
+ *  reads as nothing happening). Values are backend-locale KEYS, resolved at
+ *  display time so a language switch applies to the next banner. */
 export const UNREAD_PHRASE: Record<NonNullable<Tab["unread"]>["reason"], string> = {
-  bell: "wants input",
-  exit: "exited",
-  done: "finished",
-  attention: "needs your input",
-  idle: "is idle",
+  bell: "phraseBell",
+  exit: "phraseExit",
+  done: "phraseDone",
+  attention: "phraseAttention",
+  idle: "phraseIdle",
 };
+
+/** Resolve one UNREAD_PHRASE key to its localized wording. */
+export function unreadPhrase(reason: NonNullable<Tab["unread"]>["reason"]): string {
+  return i18n.t(`backend:attentionNotify.${UNREAD_PHRASE[reason]}`);
+}

@@ -3,6 +3,7 @@
 // drop-in replacement for window.confirm() with our own chrome + theming + a clear "destructive" red variant.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
@@ -10,6 +11,7 @@ import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function ConfirmDialog() {
+  const { t } = useTranslation("dialogs");
   const confirm = useUI(s => s.confirm);
   const resolve = useUI(s => s.resolveConfirm);
 
@@ -127,11 +129,11 @@ export function ConfirmDialog() {
               data-testid="confirm-show-every-time"
             />
             <div className="flex flex-col gap-0.5">
-              <span>Show this every time</span>
+              <span>{t("confirm.showEveryTime")}</span>
               {/* Unticking this runs the action with no confirmation from
                   here on, so name the way back. */}
               <span className="text-[12px] text-[var(--color-fg-dim)]/70">
-                Untick to skip it from now on. Change it later in Settings &gt; Tasks.
+                {t("confirm.showEveryTimeHint")}
               </span>
             </div>
           </label>
@@ -139,7 +141,7 @@ export function ConfirmDialog() {
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" type="button" onClick={() => resolve(false, checked, !showEveryTime)} data-testid="confirm-cancel">
-          {req.cancelLabel ?? "Cancel"}
+          {req.cancelLabel ?? t("common:cancel")}
         </Button>
         <Button
           variant="primary"
@@ -155,7 +157,7 @@ export function ConfirmDialog() {
           }
           autoFocus
         >
-          {req.confirmLabel ?? "Confirm"}
+          {req.confirmLabel ?? t("common:confirm")}
         </Button>
       </div>
     </AppDialog>

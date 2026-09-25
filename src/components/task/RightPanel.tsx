@@ -10,6 +10,7 @@
 // ambiguous; folding them back together makes "Git" right again.
 
 import React, { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveTask } from "@/store/app";
@@ -57,6 +58,7 @@ type FootTab = "setup" | "run" | "term" | "spotlight";
 // pushed through the app store — same pattern as DiffPane's view mode.
 
 export function RightPanel() {
+  const { t } = useTranslation("task");
   const task = useActiveTask();
   const addTab = useApp(s => s.addTab);
   const split = useApp(s => !!s.terminalSplit[task?.id ?? ""]);
@@ -377,14 +379,14 @@ export function RightPanel() {
           // Union of all synced paths (a file can be in committed AND uncommitted).
           const all = Array.from(new Set([...committed_files, ...uncommitted_files, ...untracked_files]));
           if (all.length === 0) {
-            addSpotlightLog("Synced · no changes");
+            addSpotlightLog(t("rightPanel.syncedNoChanges"));
             return;
           }
           const shown = all.slice(0, 12);
           const lines = [
-            `Synced ${all.length} file${all.length !== 1 ? "s" : ""}:`,
+            t(all.length === 1 ? "rightPanel.syncedFilesOne" : "rightPanel.syncedFilesOther", { count: all.length }),
             ...shown.map(f => `  ${f}`),
-            ...(all.length > shown.length ? [`  +${all.length - shown.length} more`] : []),
+            ...(all.length > shown.length ? [t("rightPanel.syncedMore", { count: all.length - shown.length })] : []),
           ];
           addSpotlightLog(lines.join("\n"));
         },
@@ -472,7 +474,7 @@ export function RightPanel() {
     // stopSpotlight also stops the root run (its Run tab stays, exited —
     // it can only be restarted from a spotlighted task).
     stopSpotlight(task.id)
-      .then(() => addSpotlightLog("Spotlight stopped"))
+      .then(() => addSpotlightLog(t("rightPanel.spotlightStopped")))
       .catch(err => {
         const msg = String(err);
         addSpotlightLog(msg, true);
@@ -510,12 +512,12 @@ export function RightPanel() {
         }}
       />
       <header className="flex h-10 shrink-0 items-stretch border-b border-[var(--color-border-soft)]">
-        <RTab label="All files" active={view === "files"} onClick={() => setView("files")} />
-        <RTab label="Git" active={view === "changes"} onClick={() => setView("changes")}
+        <RTab label={t("rightPanel.allFiles")} active={view === "files"} onClick={() => setView("files")} />
+        <RTab label={t("rightPanel.git")} active={view === "changes"} onClick={() => setView("changes")}
           badge={(gitStatus?.total_changed ?? 0) > 0 ? gitStatus!.total_changed : undefined}
           repoBadge={(gitStatus?.repos_changed ?? 0) > 1 ? gitStatus!.repos_changed : undefined} />
         <div className="flex shrink-0 items-center px-1.5">
-          <Tip content="Refresh files and git status" side="bottom">
+          <Tip content={t("rightPanel.refreshTip")} side="bottom">
             <button
               onClick={doRefresh}
               className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
@@ -603,7 +605,7 @@ export function RightPanel() {
         )}>
           <button
             onClick={() => setFootCollapsed(c => !c)}
-            title={footCollapsed ? "Expand" : "Collapse"}
+            title={footCollapsed ? t("rightPanel.expandTip") : t("rightPanel.collapseTip")}
             className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
           >
             {footCollapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -612,7 +614,7 @@ export function RightPanel() {
               keep a real tab only when it is competing with Run/Setup/Terminal. */}
           {spotlightAvailable && !onlySpotlightFooter && (
             <FTab
-              label="Spotlight"
+              label={t("rightPanel.spotlight")}
               icon={isSpotlighted
                 ? <AudioWaveform className="termic-spotlight-wave h-3 w-3 text-[var(--color-accent)]" />
                 : undefined}
@@ -622,7 +624,7 @@ export function RightPanel() {
           )}
           {showSetupTab && (
             <FTab
-              label="Setup"
+              label={t("rightPanel.setup")}
               active={footTab === "setup"}
               onClick={() => { setFootTab("setup"); setFootCollapsed(false); }}
               onClose={() => {
@@ -633,7 +635,7 @@ export function RightPanel() {
           )}
           {footerTerm && (
             <FTab
-              label="Terminal"
+              label={t("rightPanel.terminal")}
               active={footTab === "term"}
               onClick={() => { setFootTab("term"); setFootCollapsed(false); }}
               onClose={() => {
@@ -648,7 +650,7 @@ export function RightPanel() {
             <div className="ml-auto flex shrink-0 items-center gap-1">
               <button
                 onClick={handleSpotlightResync}
-                title="Resync spotlight"
+                title={t("rightPanel.resyncTip")}
                 className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
@@ -658,7 +660,7 @@ export function RightPanel() {
                 className="flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium bg-[var(--color-bg-3)] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
               >
                 <Square className="h-3 w-3" fill="currentColor" />
-                Stop
+                {t("rightPanel.stop")}
               </button>
             </div>
           ) : spotlightSelected && !isSpotlighted ? (
@@ -669,7 +671,7 @@ export function RightPanel() {
                 className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-[12px] font-medium text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] hover:border-[var(--color-accent)]"
               >
                 <AudioWaveform className="h-3 w-3" />
-                Spotlight
+                {t("rightPanel.spotlight")}
               </button>
             </div>
           ) : footTab !== "term" ? (
@@ -750,6 +752,7 @@ export function RightPanel() {
 function FTab({ label, icon, active, onClick, onClose }: {
   label: string; icon?: React.ReactNode; active: boolean; onClick: () => void; onClose?: () => void;
 }) {
+  const { t } = useTranslation("task");
   return (
     <div
       className={cn(
@@ -768,7 +771,7 @@ function FTab({ label, icon, active, onClick, onClose }: {
         <button
           onClick={(e) => { e.stopPropagation(); onClose(); }}
           className="ml-0.5 mr-0.5 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
-          title="Close tab"
+          title={t("rightPanel.closeTabTip")}
         ><X className="h-3 w-3" /></button>
       )}
     </div>
@@ -786,6 +789,7 @@ function RunToolbar({ task, project, yamlPreviewUrl = "", compact }: {
    *  panel without overflow. */
   compact?: boolean;
 }) {
+  const { t } = useTranslation("task");
   const url = expandPreviewUrl(project, task, yamlPreviewUrl);
   // GH #245: honour the configured browser (project override, else app-wide).
   const previewBrowser = useApp(s => s.previewBrowser);
@@ -797,7 +801,7 @@ function RunToolbar({ task, project, yamlPreviewUrl = "", compact }: {
     compact ? <Tip content={tip} side="top">{node}</Tip> : node;
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1">
-      {url && tipWrap(`Open ${url}`,
+      {url && tipWrap(t("rightPanel.openUrlTip", { url }),
         <Button
           size="sm" variant="secondary"
           onClick={() => { void openWebUrlForProject(url, previewBrowser, project); }}
@@ -805,7 +809,7 @@ function RunToolbar({ task, project, yamlPreviewUrl = "", compact }: {
           className={btnCls}
         >
           <Globe className="h-3 w-3" />
-          {!compact && <span>Open</span>}
+          {!compact && <span>{t("common:open")}</span>}
         </Button>
       )}
       {url && <CopyUrlButton url={url} />}
@@ -817,6 +821,7 @@ function RunToolbar({ task, project, yamlPreviewUrl = "", compact }: {
  *  copy so the user gets feedback without a toast. Tooltip carries the URL
  *  so users can see what's about to be copied before clicking. */
 function CopyUrlButton({ url }: { url: string }) {
+  const { t } = useTranslation("task");
   const [copied, setCopied] = useState(false);
   const doCopy = async () => {
     try {
@@ -828,7 +833,7 @@ function CopyUrlButton({ url }: { url: string }) {
     }
   };
   return (
-    <Tip content={copied ? "Copied" : `Copy ${url}`} side="top">
+    <Tip content={copied ? t("common:copied") : t("rightPanel.copyUrlTip", { url })} side="top">
       <Button size="sm" variant="secondary" onClick={doCopy} className="h-6 w-6 p-0">
         {copied
           ? <Check className="h-3 w-3 text-[var(--color-ok)]" />
@@ -870,6 +875,7 @@ function ScriptStream({ taskId, kind, run, hasScript, dismissKey, onStart, onCon
   onConfigure?: () => void;
   onDismiss?: () => void;
 }) {
+  const { t } = useTranslation("task");
   void taskId;
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
@@ -901,18 +907,18 @@ function ScriptStream({ taskId, kind, run, hasScript, dismissKey, onStart, onCon
       return (
         <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
           <Settings className="h-8 w-8 text-[var(--color-fg-faint)] opacity-40" />
-          <div className="text-[13.5px] font-medium text-[var(--color-fg)]">No run script configured</div>
+          <div className="text-[13.5px] font-medium text-[var(--color-fg)]">{t("rightPanel.noRunScript")}</div>
           <p className="text-[12px] text-[var(--color-fg-faint)]">
-            Add a run script in project settings to start your dev server here.
+            {t("rightPanel.noRunScriptHint")}
           </p>
           <div className="flex flex-col items-center gap-1.5">
             {onConfigure && (
               <Button size="sm" variant="secondary" onClick={onConfigure} className="gap-1.5">
-                <Settings className="h-3 w-3" /> Configure project
+                <Settings className="h-3 w-3" /> {t("rightPanel.configureProject")}
               </Button>
             )}
             <Button size="sm" variant="ghost" onClick={handleDismiss} className="text-[var(--color-fg-faint)]">
-              No thanks
+              {t("rightPanel.noThanks")}
             </Button>
           </div>
         </div>
@@ -923,17 +929,17 @@ function ScriptStream({ taskId, kind, run, hasScript, dismissKey, onStart, onCon
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <Play className="h-10 w-10 text-[var(--color-fg-faint)] opacity-40" />
         <div className="text-[13.5px] font-medium text-[var(--color-fg)]">
-          {kind === "setup" ? "No setup script output" : "No run script output"}
+          {kind === "setup" ? t("rightPanel.noSetupOutput") : t("rightPanel.noRunOutput")}
         </div>
         <Button size="sm" variant="secondary" onClick={onStart} className="gap-1.5">
           <Play className="h-3 w-3" />
-          {kind === "setup" ? "Run setup" : "Run task"}
+          {kind === "setup" ? t("rightPanel.runSetup") : t("rightPanel.runTask")}
           <kbd className="ml-1 text-[10.5px] text-[var(--color-fg-faint)]">⌘R</kbd>
         </Button>
         <p className="text-[12px] text-[var(--color-fg-faint)]">
           {kind === "setup"
-            ? "Setup script output will appear here after running setup."
-            : "Test your changes here."}
+            ? t("rightPanel.setupOutputHint")
+            : t("rightPanel.runOutputHint")}
         </p>
       </div>
     );
@@ -949,8 +955,8 @@ function ScriptStream({ taskId, kind, run, hasScript, dismissKey, onStart, onCon
         {run.lines.map((line, i) => (
           <div key={i} className="whitespace-pre-wrap break-words">{stripAnsi(line)}</div>
         ))}
-        {run.status === "done"  && <div className="mt-1 text-[var(--color-ok)]">✓ exited 0</div>}
-        {run.status === "error" && <div className="mt-1 text-[var(--color-err)]">✗ exited {run.exitCode ?? "?"}</div>}
+        {run.status === "done"  && <div className="mt-1 text-[var(--color-ok)]">{t("rightPanel.exitedOk")}</div>}
+        {run.status === "error" && <div className="mt-1 text-[var(--color-err)]">{t("rightPanel.exitedErr", { code: run.exitCode ?? "?" })}</div>}
       </div>
     </div>
   );
@@ -961,6 +967,7 @@ function ScriptStream({ taskId, kind, run, hasScript, dismissKey, onStart, onCon
 // text alongside the label (no accent-colored badge pill) so a "0"
 // reads as informational rather than urgent.
 function RTab({ label, active, badge, repoBadge, onClick }: { label: string; active: boolean; badge?: number; repoBadge?: number; onClick: () => void }) {
+  const { t } = useTranslation("task");
   return (
     <button
       onClick={onClick}
@@ -981,7 +988,7 @@ function RTab({ label, active, badge, repoBadge, onClick }: { label: string; act
           changes. Sits before the total so it reads "N repos, M files". */}
       {repoBadge !== undefined && (
         <span
-          title={`${repoBadge} repos changed`}
+          title={t("rightPanel.reposChangedTip", { count: repoBadge })}
           className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-ok)] px-1.5 text-[11px] font-semibold leading-none text-black tabular-nums"
         >
           {repoBadge}
@@ -990,7 +997,7 @@ function RTab({ label, active, badge, repoBadge, onClick }: { label: string; act
       {/* Total changed files (accent). */}
       {badge !== undefined && (
         <span
-          title={`${badge} files changed`}
+          title={t("rightPanel.filesChangedTip", { count: badge })}
           className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--color-accent)] px-1.5 text-[11px] font-semibold leading-none text-[var(--color-accent-fg)] tabular-nums"
         >
           {badge}
@@ -1015,6 +1022,7 @@ function SpotlightContent({
   log: Array<{ time: Date; msg: string; error?: boolean }>;
   onStart: () => void;
 }) {
+  const { t } = useTranslation("task");
   const logRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll log to bottom on new entries.
@@ -1031,10 +1039,10 @@ function SpotlightContent({
           onClick={onStart}
           className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 py-2 text-[13.5px] font-medium text-[var(--color-fg)] hover:border-[var(--color-accent)] hover:bg-[var(--color-hover)] transition-colors"
         >
-          Start spotlight
+          {t("rightPanel.startSpotlight")}
         </button>
         <p className="text-[12px] text-[var(--color-fg-faint)]">
-          Sync your changes to the repository root.
+          {t("rightPanel.spotlightHint")}
         </p>
       </div>
     );
@@ -1050,7 +1058,7 @@ function SpotlightContent({
       className="h-full overflow-auto px-3 py-2 font-mono text-[11.5px] leading-snug text-[var(--color-fg-dim)]"
     >
       {log.length === 0 && (
-        <div className="text-[var(--color-fg-faint)]">Spotlight started. Waiting for changes…</div>
+        <div className="text-[var(--color-fg-faint)]">{t("rightPanel.spotlightWaiting")}</div>
       )}
       {log.map((entry, i) => (
         <div key={i} className={cn("whitespace-pre-wrap", entry.error && "text-[var(--color-err)]")}>

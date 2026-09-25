@@ -13,6 +13,7 @@
 // owns it, and only the sidebar has one. Omitting the prop drops the item
 // rather than offering an action that would do nothing.
 
+import { useTranslation } from "react-i18next";
 import { ContextMenuItem, ContextMenuLabel, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { ACCENTS } from "@/lib/accents";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,7 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
   /** Task groups reuse this menu; the word is theirs to pick. */
   ungroupLabel?: string;
 }) {
+  const { t } = useTranslation("sidebar");
   return (
     <>
       <ContextMenuLabel>{name}</ContextMenuLabel>
@@ -41,7 +43,7 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
           active pick carries a ring. */}
       <div className="flex items-center gap-0.5 px-1 pb-1">
         <ContextMenuItem
-          aria-label="Default"
+          aria-label={t("groupActions.defaultColour")}
           checked={!accent}
           onSelect={() => onSetColor(null)}
           className="rounded-full p-1"
@@ -76,12 +78,12 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
       {onRename && (
         <ContextMenuItem onSelect={onRename}>
           <Pencil />
-          Rename group
+          {t("groupActions.renameGroup")}
         </ContextMenuItem>
       )}
       <ContextMenuItem onSelect={onUngroup}>
         <FolderMinus />
-        {ungroupLabel}
+        {ungroupLabel ?? t("groupActions.ungroup")}
       </ContextMenuItem>
     </>
   );

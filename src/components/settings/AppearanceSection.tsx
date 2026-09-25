@@ -6,6 +6,7 @@ import { CodeIntelServers } from "./CodeIntelServers";
 import { usePrefs, resolveTheme, BUNDLED_FONT_ID, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, sortFontOptions, stackFor } from "@/store/prefs";
 import type { TerminalRendererKind } from "@/store/prefs";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { codeIntelName } from "@/lib/lsp/featureName";
@@ -21,13 +22,14 @@ import { EditorState, Compartment } from "@codemirror/state";
 
 type AppearanceTab = "terminal" | "editor" | "interface";
 
-const TABS: { id: AppearanceTab; label: string }[] = [
-  { id: "terminal",  label: "Terminal" },
-  { id: "editor",    label: "Editor" },
-  { id: "interface", label: "Interface" },
+const TABS: { id: AppearanceTab; labelKey: string }[] = [
+  { id: "terminal",  labelKey: "appearance.tabTerminal" },
+  { id: "editor",    labelKey: "appearance.tabEditor" },
+  { id: "interface", labelKey: "appearance.tabInterface" },
 ];
 
 export function AppearanceSection() {
+  const { t } = useTranslation("settings");
   // Terminal leads: the embedded terminal is the product, and it is the font
   // stack people come here to change.
   const [subTab, setSubTab] = useState<AppearanceTab>("terminal");
@@ -125,15 +127,15 @@ export function AppearanceSection() {
   return (
     <div className="flex flex-col gap-8">
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-[20px] font-medium">Appearance</h1>
+        <h1 className="text-[20px] font-medium">{t("rail.appearance")}</h1>
         <Button
           variant="secondary"
           size="sm"
           disabled={atDefaults}
           onClick={resetAppearance}
-          title="Restore all Appearance settings (fonts, sizes, zoom, spacing, and terminal options) to their defaults."
+          title={t("appearance.resetTip")}
         >
-          Reset to defaults
+          {t("appearance.reset")}
         </Button>
       </div>
 
@@ -144,21 +146,21 @@ export function AppearanceSection() {
           unmounts its preview, which kills the terminal one's pty
           (AuxTerminal.tsx). */}
       <div className="flex items-center gap-1 border-b border-[var(--color-border-soft)]">
-        {TABS.map(t => (
+        {TABS.map(tab => (
           <button
-            key={t.id}
+            key={tab.id}
             type="button"
-            data-appearance-tab={t.id}
-            onClick={() => selectTab(t.id)}
+            data-appearance-tab={tab.id}
+            onClick={() => selectTab(tab.id)}
             className={cn(
               "relative -mb-px flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors",
-              subTab === t.id
+              subTab === tab.id
                 ? "text-[var(--color-fg)]"
                 : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
             )}
           >
-            {t.label}
-            {subTab === t.id && (
+            {t(tab.labelKey)}
+            {subTab === tab.id && (
               <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-[var(--color-accent)]" />
             )}
           </button>
@@ -167,32 +169,32 @@ export function AppearanceSection() {
 
       {subTab === "terminal" && <div className="flex flex-col gap-8">
       <Field
-        label="Terminal font"
-        hint="Font for all xterm terminals (main + scratch shell)."
+        label={t("appearance.termFont.label")}
+        hint={t("appearance.termFont.hint")}
         control={
           <FontSelect value={terminalFontId} onChange={setTerminalFontId} fonts={fonts} />
         }
       />
 
       <Field
-        label="Terminal font size"
-        hint={`${terminalFontSize}px`}
+        label={t("appearance.termFontSize.label")}
+        hint={t("appearance.termFontSize.hint", { size: terminalFontSize })}
         control={
           <NumberInput value={terminalFontSize} onChange={setTerminalFontSize} min={10} max={20} />
         }
       />
 
       <Field
-        label="Terminal letter spacing"
-        hint={`${terminalLetterSpacing}px added per cell. xterm packs glyphs snug; bump 1–2px to match iTerm / Terminal.app spacing.`}
+        label={t("appearance.letterSpacing.label")}
+        hint={t("appearance.letterSpacing.hint", { spacing: terminalLetterSpacing })}
         control={
           <LetterSpacingPicker value={terminalLetterSpacing} onChange={setTerminalLetterSpacing} />
         }
       />
 
       <Field
-        label="Terminal scrollback"
-        hint={`${terminalScrollback.toLocaleString()} lines. Agent terminals keep this many lines; the scratch shell keeps half.`}
+        label={t("appearance.scrollback.label")}
+        hint={t("appearance.scrollback.hint", { count: terminalScrollback.toLocaleString() })}
         control={
           <NumberInput value={terminalScrollback} onChange={setTerminalScrollback} min={1000} max={100000} step={1000} />
         }
@@ -200,8 +202,8 @@ export function AppearanceSection() {
 
       {IS_MAC && (
         <Toggle
-          label={`Use ${ALT_LABEL} as Meta key`}
-          hint={`Send ${ALT_LABEL}+key as an ESC-prefixed sequence so terminal editors (vim, emacs, nano) see it as Meta/Alt. When off, ${ALT_LABEL} types accented characters as usual.`}
+          label={t("appearance.meta.label", { alt: ALT_LABEL })}
+          hint={t("appearance.meta.hint", { alt: ALT_LABEL })}
           value={terminalOptionAsMeta}
           onChange={setTerminalOptionAsMeta}
         />
@@ -218,8 +220,8 @@ export function AppearanceSection() {
           the default, canvas only wins when terminals mostly sit idle, and
           DOM is a compatibility fallback rather than a saving. */}
       <Field
-        label="Terminal renderer"
-        hint={"GPU (WebGL) is the default and the right choice for almost everyone. Switch only if you hit glitches: text drawn wrong, flicker or leftover artifacts, or typing that lags on a setup running WebGL through a software rasterizer. Canvas and DOM both cost more than twice the CPU of WebGL under heavy output, so there is no performance reason to move off it. Applies to terminals opened after the change."}
+        label={t("appearance.renderer.label")}
+        hint={t("appearance.renderer.hint")}
         control={<RendererPicker value={terminalRenderer} onChange={setTerminalRenderer} />}
       />
 
@@ -239,9 +241,9 @@ export function AppearanceSection() {
           onClick={() => setPreviewArmed(true)}
           className="flex w-full flex-col items-center gap-1 rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-6 text-[13px] text-[var(--color-fg-dim)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-fg)]"
         >
-          <span className="font-medium">Show live preview</span>
+          <span className="font-medium">{t("appearance.preview.show")}</span>
           <span className="text-[12px] text-[var(--color-fg-faint)]">
-            Runs a real shell here so font, size and spacing render exactly as they will in a task.
+            {t("appearance.preview.hint")}
           </span>
         </button>
       )}
@@ -257,24 +259,24 @@ export function AppearanceSection() {
 
       {subTab === "editor" && <div className="flex flex-col gap-8">
       <Field
-        label="Editor font"
-        hint="Font for the code editor and diff viewer."
+        label={t("appearance.editorFont.label")}
+        hint={t("appearance.editorFont.hint")}
         control={
           <FontSelect value={editorFontId} onChange={setEditorFontId} fonts={fonts} />
         }
       />
 
       <Field
-        label="Editor theme (dark)"
-        hint="Syntax color scheme for the code editor and diff viewer, when termic's own theme is dark."
+        label={t("appearance.themeDark.label")}
+        hint={t("appearance.themeDark.hint")}
         control={
           <ThemeSelect value={editorThemeIdDark} onChange={setEditorThemeIdDark} />
         }
       />
 
       <Field
-        label="Editor theme (light)"
-        hint="Syntax color scheme for the code editor and diff viewer, when termic's own theme is light."
+        label={t("appearance.themeLight.label")}
+        hint={t("appearance.themeLight.hint")}
         control={
           <ThemeSelect value={editorThemeIdLight} onChange={setEditorThemeIdLight} />
         }
@@ -283,30 +285,30 @@ export function AppearanceSection() {
       <CodePreview />
 
       <Field
-        label="Editor font size"
-        hint={`${editorFontSize}px`}
+        label={t("appearance.editorFontSize.label")}
+        hint={t("appearance.editorFontSize.hint", { size: editorFontSize })}
         control={
           <NumberInput value={editorFontSize} onChange={setEditorFontSize} min={10} max={20} />
         }
       />
 
       <Toggle
-        label="Code ligatures"
-        hint="Render font ligatures like `=>`, `!==`, `>=` as combined glyphs in the editor."
+        label={t("appearance.ligatures.label")}
+        hint={t("appearance.ligatures.hint")}
         value={codeLigatures}
         onChange={setCodeLigatures}
       />
 
       <Toggle
-        label="Word wrap"
-        hint="Wrap long lines to the width of the editor instead of scrolling sideways. Also in the command palette."
+        label={t("appearance.wordWrap.label")}
+        hint={t("appearance.wordWrap.hint")}
         value={editorWordWrap}
         onChange={setEditorWordWrap}
       />
 
       <Toggle
-        label="Inline git blame"
-        hint="Show who last changed the line the cursor is on, after the code. Click it to open that commit's diff."
+        label={t("appearance.blame.label")}
+        hint={t("appearance.blame.hint")}
         value={inlineBlame}
         onChange={setInlineBlame}
       />
@@ -331,30 +333,29 @@ export function AppearanceSection() {
             sends the reader looking for a checker they have not turned on. */}
         <h2 className="text-[15px] font-medium">{codeIntelName(codeIntelDiagnostics)}</h2>
         <p className="mt-1 text-[13px] leading-relaxed text-[var(--color-fg-dim)]">
-          Go to definition, find usages, an outline of the file, and types on hover, using the
-          same tools a full IDE uses.{codeIntelDiagnostics ? " Type errors are underlined too." : ""}{" "}
-          Nothing runs until you switch it on for a project, from the compass button above the
-          editor.
+          {t("appearance.intel.desc")}
+          {codeIntelDiagnostics ? t("appearance.intel.descErrors") : ""}
+          {t("appearance.intel.descTail")}
         </p>
 
         <div className="mt-5 flex flex-col gap-6">
           <Toggle
-            label="Offer it in the editor"
-            hint="Turning this off hides the button everywhere and runs nothing at all."
+            label={t("appearance.intel.offerLabel")}
+            hint={t("appearance.intel.offerHint")}
             value={codeIntelligence}
             onChange={setCodeIntelligence}
           />
 
           <Toggle
-            label="Type checking"
-            badge="Experimental"
+            label={t("appearance.intel.typeCheckLabel")}
+            badge={t("shared.experimental")}
             // Two sentences: what it does, and what to expect. The long
             // version explained mypy's config model in a settings row, which
             // is a paragraph nobody finishes; the detail it was carrying now
             // lives where somebody hunting a specific underline will look
             // (docs/lsp.md), and the rule id is printed on the underline
             // itself so it can be looked up.
-            hint="Underlines type errors, using your project's own checker config. Expect false alarms on framework code (missing stubs, a library's own annotations): each underline names the rule, so you can silence it in that config. Navigation works either way."
+            hint={t("appearance.intel.typeCheckHint")}
             value={codeIntelDiagnostics}
             onChange={setCodeIntelDiagnostics}
           />
@@ -382,18 +383,19 @@ export function AppearanceSection() {
                     either, which would imply an extension point that does not
                     exist. These are separate processes, spawned from the
                     machine's own toolchain. */}
-                <span className="text-[13px] font-medium">Language servers</span>
+                <span className="text-[13px] font-medium">{t("appearance.intel.serversLabel")}</span>
                 <span className="text-[12px] text-[var(--color-fg-dim)]">
-                  what can run, and what this machine already has
+                  {t("appearance.intel.serversSub")}
                 </span>
               </button>
               {serversOpen && (
                 <div className="mt-3">
                   <p className="mb-3 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-                    One per language, started only for a project you switch this on for. Where a
-                    language has more than one, pick the one you want; Automatic uses the order
-                    below. A copy inside the project (<code className="font-mono">node_modules</code>,
-                    a virtualenv) always wins over these.
+                    <Trans
+                      t={t}
+                      i18nKey="appearance.intel.serversHint"
+                      components={{ 1: <code className="font-mono" /> }}
+                    />
                   </p>
                   <CodeIntelServers />
                 </div>
@@ -406,10 +408,10 @@ export function AppearanceSection() {
 
       {subTab === "interface" && <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-6">
-        <h2 className="text-[15px] font-medium">Window</h2>
+        <h2 className="text-[15px] font-medium">{t("appearance.windowHeading")}</h2>
         <Field
-          label="UI zoom"
-          hint={`${uiScale}% of native. Scales the whole app (sidebar, tabs, files and git panels, terminals) like browser zoom.\nShortcuts: ${CMD_LABEL} +, ${CMD_LABEL} -, ${CMD_LABEL} 0.`}
+          label={t("appearance.uiZoom.label")}
+          hint={t("appearance.uiZoom.hint", { scale: uiScale, cmd: CMD_LABEL })}
           control={
             <NumberInput value={uiScale} onChange={setUiScale} min={50} max={200} step={10} />
           }
@@ -432,6 +434,7 @@ export function AppearanceSection() {
 // split; it is about how the sidebar reveals a task's agents, which is the
 // same kind of setting as the pane dimming above it.
 function SidebarSection() {
+  const { t } = useTranslation("settings");
   const taskExpandMode = usePrefs(s => s.taskExpandMode);
   const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
   const sidebarHoverReveal = usePrefs(s => s.sidebarHoverReveal);
@@ -439,19 +442,19 @@ function SidebarSection() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h2 className="text-[15px] font-medium">Sidebar</h2>
+      <h2 className="text-[15px] font-medium">{t("appearance.sidebarHeading")}</h2>
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-medium">Task expand behavior</div>
+          <div className="text-[14px] font-medium">{t("appearance.expand.label")}</div>
           <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-            How a task's agent list reveals itself in the sidebar.
+            {t("appearance.expand.hint")}
           </div>
         </div>
         <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
           {([
-            ["chevron", "Chevron only", "Row click only activates. Use the chevron to expand."],
-            ["click",   "Click name",   "Click the active row's name to toggle; auto-expand at 2+ agents."],
-            ["always",  "Auto open",    "Start expanded. The chevron still collapses, and that sticks."],
+            ["chevron", t("appearance.expand.chevron"), t("appearance.expand.chevronHint")],
+            ["click",   t("appearance.expand.click"),   t("appearance.expand.clickHint")],
+            ["always",  t("appearance.expand.always"),  t("appearance.expand.alwaysHint")],
           ] as const).map(([id, label, hint]) => (
             <Tip key={id} content={hint} side="top">
               <button
@@ -469,8 +472,8 @@ function SidebarSection() {
         </div>
       </div>
       <Toggle
-        label="Hover to reveal the collapsed sidebar"
-        hint="Slides the full sidebar out over the icon rail on hover."
+        label={t("appearance.hoverReveal.label")}
+        hint={t("appearance.hoverReveal.hint")}
         value={sidebarHoverReveal}
         onChange={setSidebarHoverReveal}
       />
@@ -479,6 +482,7 @@ function SidebarSection() {
 }
 
 function PanesSection() {
+  const { t } = useTranslation("settings");
   const splitPaneDim = usePrefs(s => s.splitPaneDim);
   const setSplitPaneDim = usePrefs(s => s.setSplitPaneDim);
   const splitPaneDimAmount = usePrefs(s => s.splitPaneDimAmount);
@@ -486,17 +490,17 @@ function PanesSection() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h2 className="text-[15px] font-medium">Panes</h2>
+      <h2 className="text-[15px] font-medium">{t("appearance.panesHeading")}</h2>
       <Toggle
-        label="Dim inactive split panes"
-        hint="Overlay a dark mask over split panes that do not have keyboard focus."
+        label={t("appearance.dim.label")}
+        hint={t("appearance.dim.hint")}
         value={splitPaneDim}
         onChange={setSplitPaneDim}
       />
       {splitPaneDim && (
         <Field
-          label="Dimming amount"
-          hint={`${splitPaneDimAmount}%`}
+          label={t("appearance.dim.amountLabel")}
+          hint={t("appearance.dim.amountHint", { amount: splitPaneDimAmount })}
           control={
             <input
               type="range"
@@ -560,6 +564,7 @@ function FontSelect({ value, onChange, fonts }: {
   onChange: (id: string) => void;
   fonts: typeof MONO_FONT_OPTIONS;
 }) {
+  const { t } = useTranslation("settings");
   // One shared pref rendered on each picker (it widens the list both feed
   // from), so the affordance sits with the control it affects instead of
   // as a page-level toggle that looks tied to whichever picker it's near.
@@ -579,15 +584,15 @@ function FontSelect({ value, onChange, fonts }: {
         onChange={(e) => onChange(e.target.value)}
         className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 py-1.5 text-[13.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] min-w-[180px]"
       >
-        <optgroup label="Bundled">{bundled.map(renderOption)}</optgroup>
-        <optgroup label="Installed">{installed.map(renderOption)}</optgroup>
+        <optgroup label={t("appearance.fonts.bundled")}>{bundled.map(renderOption)}</optgroup>
+        <optgroup label={t("appearance.fonts.installed")}>{installed.map(renderOption)}</optgroup>
       </select>
       <label
-        title="List every installed font family, not just fonts detected as monospace. Applies to both font pickers. Proportional fonts will misalign terminal output."
+        title={t("appearance.fonts.showAllTip")}
         className="flex cursor-pointer select-none items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
       >
         <Checkbox checked={showAll} onChange={setShowAll} className="h-3.5 w-3.5" />
-        <span>Show all fonts</span>
+        <span>{t("appearance.fonts.showAll")}</span>
       </label>
     </div>
   );
@@ -658,17 +663,18 @@ function NumberInput({ value, onChange, min, max, step = 1 }: { value: number; o
 
 // Integer px only. Fractional values misalign the WebGL atlas; values
 // beyond ~3px start making TUI column math read wrong.
-const LETTER_SPACINGS: { px: number; label: string }[] = [
-  { px: 0, label: "Compact" },
-  { px: 1, label: "Default" },
-  { px: 2, label: "Roomy" },
-  { px: 3, label: "Wide" },
+const LETTER_SPACINGS: { px: number; labelKey: "compact" | "default" | "roomy" | "wide" }[] = [
+  { px: 0, labelKey: "compact" },
+  { px: 1, labelKey: "default" },
+  { px: 2, labelKey: "roomy" },
+  { px: 3, labelKey: "wide" },
 ];
 
 function LetterSpacingPicker({ value, onChange }: { value: number; onChange: (px: number) => void }) {
+  const { t } = useTranslation("settings");
   return (
     <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
-      {LETTER_SPACINGS.map(({ px, label }) => (
+      {LETTER_SPACINGS.map(({ px, labelKey }) => (
         <button
           key={px} type="button" onClick={() => onChange(px)}
           className={cn(
@@ -677,7 +683,7 @@ function LetterSpacingPicker({ value, onChange }: { value: number; onChange: (px
               ? "bg-[var(--color-accent-deep)] text-white"
               : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
           )}
-        >{label}</button>
+        >{t(`appearance.letterSpacing.${labelKey}`)}</button>
       ))}
     </div>
   );

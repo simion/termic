@@ -12,12 +12,14 @@
 //   Discard  -> delete the pad for good (destructive)
 //   Esc / click-away / Cancel -> keep the tab AND the pad exactly as they were
 
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { AlertTriangle } from "lucide-react";
 
 export function ScratchCloseDialog() {
+  const { t } = useTranslation("dialogs");
   const req = useUI(s => s.scratchClose);
   const resolve = useUI(s => s.resolveScratchClose);
   if (!req) return null;
@@ -26,7 +28,7 @@ export function ScratchCloseDialog() {
     <AppDialog
       open
       onOpenChange={(v) => { if (!v) resolve("cancel"); }}
-      title="Close this scratchpad?"
+      title={t("scratchClose.title")}
       className="max-w-xl"
       onCloseAutoFocus={(e) => e.preventDefault()}
     >
@@ -36,12 +38,12 @@ export function ScratchCloseDialog() {
           {/* Name what Discard costs in the copy, because the pad has never
               been written anywhere the user chose and there is no file to go
               looking for afterwards. */}
-          "{req.title}" was never saved to a file. Discarding deletes it.
+          {t("scratchClose.body", { title: req.title })}
         </p>
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" type="button" onClick={() => resolve("cancel")} data-testid="scratch-close-cancel">
-          Cancel
+          {t("common:cancel")}
         </Button>
         <Button
           variant="ghost"
@@ -50,10 +52,10 @@ export function ScratchCloseDialog() {
           data-testid="scratch-close-discard"
           className="text-[var(--color-err)] hover:bg-[var(--color-err)]/12"
         >
-          Discard
+          {t("scratchClose.discard")}
         </Button>
         <Button variant="primary" type="button" onClick={() => resolve("save")} data-testid="scratch-close-save" autoFocus>
-          Save…
+          {t("scratchClose.saveDots")}
         </Button>
       </div>
     </AppDialog>

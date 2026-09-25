@@ -2,6 +2,7 @@
 // out of the app (desktop notification, sound) and inside it (the tab and
 // sidebar indicators).
 
+import { useTranslation, Trans } from "react-i18next";
 import { ensureNotifyPermission, previewCompletionSound } from "@/lib/ipc";
 import { Button } from "@/components/ui/Button";
 import { usePrefs } from "@/store/prefs";
@@ -18,6 +19,7 @@ import type { DelegatedWork } from "@/lib/delegatedWork";
 const HELD: DelegatedWork = { label: "subagent", count: 2, ids: [] };
 
 export function NotificationsSection() {
+  const { t } = useTranslation("settings");
   const desktopNotifications = usePrefs(s => s.desktopNotifications);
   const setDesktopNotifications = usePrefs(s => s.setDesktopNotifications);
   const completionSound = usePrefs(s => s.completionSound);
@@ -35,12 +37,12 @@ export function NotificationsSection() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionTitle title="Notifications" />
+      <SectionTitle title={t("rail.notifications")} />
 
       <Block first>
         <Toggle
-          label="Desktop notifications"
-          hint="Notify when an inactive agent finishes or rings the bell. Clicking back in jumps to that tab."
+          label={t("notifications.desktop.label")}
+          hint={t("notifications.desktop.hint")}
           value={desktopNotifications}
           onChange={(v) => {
             setDesktopNotifications(v);
@@ -60,8 +62,8 @@ export function NotificationsSection() {
             instead of letting Preview suggest otherwise. */}
         <div className={cn(!desktopNotifications && "pointer-events-none opacity-50 select-none")}>
         <Toggle
-          label="Completion sound"
-          hint="Pick which sound plays inside desktop notifications when an inactive agent finishes a turn. Default: Funk."
+          label={t("notifications.sound.label")}
+          hint={t("notifications.sound.hint")}
           value={completionSound}
           onChange={setCompletionSound}
         />
@@ -92,20 +94,20 @@ export function NotificationsSection() {
                   ? taskLabel(task, usePrefs.getState().useBranchAsTaskName)
                   : "";
                 const title = task && proj?.name
-                  ? `${proj.name} · ${label || "task"}`
-                  : (label || "project · task");
-                previewCompletionSound(completionSoundId, { title, body: "agent finished" });
+                  ? `${proj.name} · ${label || t("notifications.sound.taskFallback")}`
+                  : (label || t("notifications.sound.titleFallback"));
+                previewCompletionSound(completionSoundId, { title, body: t("notifications.sound.body") });
               }}
-              title="Play a preview of the selected completion sound"
+              title={t("notifications.sound.previewTip")}
             >
-              Preview
+              {t("notifications.sound.preview")}
             </Button>
           </div>
         </div>
         </div>
         {!desktopNotifications && (
           <p className="mt-2 text-[12px] text-[var(--color-fg-faint)]">
-            Turn on Desktop notifications above to enable completion sounds.
+            {t("notifications.sound.lockedNote")}
           </p>
         )}
       </Block>
@@ -120,13 +122,13 @@ export function NotificationsSection() {
           and a user who answers no does not want a quieter ring instead. */}
       <Block>
         <div className="text-[13px] font-medium text-[var(--color-fg)]">
-          Agent status marks
+          {t("notifications.marksTitle")}
         </div>
         <div className="mt-3 flex flex-col gap-3.5">
           <Toggle
             mark={<TaskWorkBadge reason="working" preview />}
-            label="Working"
-            hint="The agent is working right now. Covers every mid-turn mark, including the two below."
+            label={t("notifications.markWorking.label")}
+            hint={t("notifications.markWorking.hint")}
             value={workingIndicator}
             onChange={setWorkingIndicator}
           />
@@ -139,15 +141,14 @@ export function NotificationsSection() {
               <TaskWorkBadge reason="delegated" delegated={HELD} preview />
             </span>
             <div className="text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-              Waiting on subagents or scripts it started. Nothing is being computed, and this can
-              last hours. Follows Working.
+              {t("notifications.markDelegated")}
             </div>
           </div>
           <div className="ml-6">
             <Toggle
               mark={<TaskWorkBadge reason="working" delegated={{ ...HELD, partial: true }} preview />}
-              label="Partially done"
-              hint="Some of that work reported back while the rest still runs. Off leaves the mark above until everything is in. Either way the turn is not called done until it is."
+              label={t("notifications.markPartial.label")}
+              hint={t("notifications.markPartial.hint")}
               value={partialDoneIndicator}
               onChange={setPartialDoneIndicator}
               disabled={!workingIndicator}
@@ -155,15 +156,15 @@ export function NotificationsSection() {
           </div>
           <Toggle
             mark={<TaskWorkBadge reason="done" preview />}
-            label="Work done"
-            hint="The agent finished its turn. This is the mark a desktop notification goes with."
+            label={t("notifications.markDone.label")}
+            hint={t("notifications.markDone.hint")}
             value={settledHighlight}
             onChange={setSettledHighlight}
           />
           <Toggle
             mark={<TaskWorkBadge reason="attention" preview />}
-            label="Needs attention"
-            hint="The agent is blocked on you: a permission prompt, a question, or anything else it cannot get past on its own."
+            label={t("notifications.markAttention.label")}
+            hint={t("notifications.markAttention.hint")}
             value={attentionIndicator}
             onChange={setAttentionIndicator}
           />
@@ -175,12 +176,17 @@ export function NotificationsSection() {
           Agents page because it writes into an agent's own config, so this is
           a pointer rather than the thing itself. */}
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-        These marks read Termic&apos;s idea of what an agent is doing. To have the
-        agent report that itself instead, see <button
-          type="button"
-          className="text-[var(--color-accent)] hover:underline"
-          onClick={() => useApp.getState().openSettings("agents", undefined, AGENT_HOOKS_HIGHLIGHT)}
-        >Agent hooks</button> under Agents &amp; Terminals.
+        <Trans
+          t={t}
+          i18nKey="notifications.hooksNote"
+          components={{ 1: (
+            <button
+              type="button"
+              className="text-[var(--color-accent)] hover:underline"
+              onClick={() => useApp.getState().openSettings("agents", undefined, AGENT_HOOKS_HIGHLIGHT)}
+            />
+          ) }}
+        />
       </p>
     </div>
   );

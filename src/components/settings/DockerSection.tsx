@@ -9,6 +9,7 @@
 // the spawn path would freeze the webview). See docs/docker-sandbox.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -33,6 +34,7 @@ import { formatDockerArgv } from "@/lib/dockerArgv";
 import { Loader2, CircleCheck, CircleAlert, ChevronDown, Lock, X, Container } from "lucide-react";
 
 export function DockerSection() {
+  const { t } = useTranslation("settings");
   const { settings, patch, store } = useBackendSettings();
   const [status, setStatus] = useState<DockerStatus | null>(null);
   const [image, setImage] = useState<DockerImageStatus | null>(null);
@@ -255,10 +257,10 @@ export function DockerSection() {
   const imageNeedsBuilding = !image?.available || !!image?.stale || dirty;
   const buildNeedsNoCache = !imageNeedsBuilding;
   const buildLabel = !image?.available
-    ? "Build image"
+    ? t("docker.buildImage")
     : imageNeedsBuilding
-      ? "Rebuild image"
-      : "Update agents";
+      ? t("docker.rebuildImage")
+      : t("docker.updateAgents");
 
   /** First-run path: flip the switch and start the build in one click. The
    *  setting is persisted BEFORE the build starts, so a build the user
@@ -294,7 +296,7 @@ export function DockerSection() {
     const unlistenLog = await onDockerBuildLog(line => setBuildLog(l => [...l, line]));
     const unlistenDone = await onDockerBuildDone(({ success }) => {
       setBuilding(false);
-      setBuildLog(l => [...l, success ? "✓ Build finished." : "✗ Build failed."]);
+      setBuildLog(l => [...l, success ? t("docker.buildOk") : t("docker.buildFail")]);
       refresh();
       stop();
     });
@@ -311,15 +313,14 @@ export function DockerSection() {
   }
 
   if (!settings) {
-    return <div className="text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
+    return <div className="text-[13.5px] text-[var(--color-fg-faint)]">{t("common:loading")}</div>;
   }
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionTitle title="Docker Sandbox" badge="Experimental" />
+      <SectionTitle title={t("rail.docker")} badge={t("shared.experimental")} />
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-        The same agents you configure in Settings → Agents &amp; Terminals, run inside a container instead of
-        under Seatbelt. One image serves all of them; pick Docker per task from its sandbox dialog.
+        {t("docker.intro")}
       </p>
 
       {/* Always visible, not a <details>: the sandbox dialog tried collapsing
@@ -337,18 +338,19 @@ export function DockerSection() {
           weaker than Seatbelt's. */}
       <div className="flex flex-col gap-2 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-3.5 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
         <div>
-          <b className="text-[var(--color-fg)]">Filesystem: </b>
-          only what termic mounts: the worktree, its git metadata, and your git name and email so commits
-          you make in there are yours. The rest of your Mac is invisible.
+          <b className="text-[var(--color-fg)]">{t("docker.fsLabel")}</b>
+          {t("docker.fsBody")}
         </div>
         <div>
-          <b className="text-[var(--color-fg)]"><u>Network: unrestricted for now</u></b>, unlike Seatbelt's host
-          allowlist. An allow-list for Docker mode is planned.
+          <b className="text-[var(--color-fg)]"><u>{t("docker.netLabel")}</u></b>{t("docker.netBody")}
         </div>
         <div>
-          <b className="text-[var(--color-fg)]">Logins: </b>
-          kept per agent, so you log in once rather than once per task. Never your real{" "}
-          <code className="font-mono">~/.claude</code>.
+          <b className="text-[var(--color-fg)]">{t("docker.loginsLabel")}</b>
+          <Trans
+            t={t}
+            i18nKey="docker.loginsBody"
+            components={{ 1: <code className="font-mono" /> }}
+          />
         </div>
       </div>
 
@@ -363,11 +365,9 @@ export function DockerSection() {
         {!enabled && !image?.available ? (
           <div className="flex flex-col gap-2.5">
             <div>
-              <div className="text-[14px] font-medium">Docker sandbox</div>
+              <div className="text-[14px] font-medium">{t("docker.firstRun.title")}</div>
               <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                Runs agents inside a container instead of the macOS seatbelt. Needs a one-time image build,
-                a few minutes, and Docker running. Existing tasks are unaffected: you pick Docker per task
-                afterwards.
+                {t("docker.firstRun.hint")}
               </div>
             </div>
             <div>
@@ -379,25 +379,25 @@ export function DockerSection() {
                 data-testid="docker-enable-and-build"
               >
                 {building
-                  ? <><Loader2 className="h-4 w-4 animate-spin" /> Building the image…</>
-                  : <><Container className="h-4 w-4" /> Enable Docker sandboxing and build image</>}
+                  ? <><Loader2 className="h-4 w-4 animate-spin" /> {t("docker.firstRun.building")}</>
+                  : <><Container className="h-4 w-4" /> {t("docker.firstRun.enableAndBuild")}</>}
               </Button>
               {!status?.binary && (
                 <div className="mt-2 text-[12.5px] text-[var(--color-warn)]">
-                  Docker isn't installed. Install Docker Desktop, then come back.
+                  {t("docker.firstRun.notInstalled")}
                 </div>
               )}
               {status?.binary && !status?.daemon && (
                 <div className="mt-2 text-[12.5px] text-[var(--color-warn)]">
-                  Docker is installed but not running. Start Docker Desktop, then come back.
+                  {t("docker.firstRun.notRunning")}
                 </div>
               )}
             </div>
           </div>
         ) : (
           <Toggle
-            label="Enable Docker sandbox"
-            hint={"While off, no Docker UI appears anywhere and Docker is never invoked. The built image is kept, so turning it back on costs nothing."}
+            label={t("docker.enable.label")}
+            hint={t("docker.enable.hint")}
             value={enabled}
             onChange={v => patch({ docker_sandbox_enabled: v })}
           />
@@ -414,7 +414,7 @@ export function DockerSection() {
               Verify) and answering "is my image right?" meant visiting all
               four. The two long ones collapse, so the landing view stays the
               short answer and the detail is one click away.  */}
-          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">Image</div>
+          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">{t("docker.imageHeading")}</div>
           {/* One block, two columns: both are one-line readouts of the same
               question, and stacking them made a short answer occupy a whole
               screen of vertical space. The build actions stay full width
@@ -438,11 +438,11 @@ export function DockerSection() {
                 type="button"
                 data-testid="docker-dockerfile-status"
                 onClick={() => setShowDockerfile(v => !v)}
-                title={showDockerfile ? "Hide the Dockerfile" : "Edit the Dockerfile"}
+                title={showDockerfile ? t("docker.hideDockerfile") : t("docker.editDockerfile")}
                 className="group min-w-0 text-left"
               >
                 <div className="flex items-center gap-1 text-[14px] font-medium">
-                  Dockerfile
+                  {t("docker.dockerfileHeading")}
                   <ChevronDown className={cn(
                     "h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] transition-transform group-hover:text-[var(--color-fg-dim)]",
                     showDockerfile && "rotate-180",
@@ -451,11 +451,11 @@ export function DockerSection() {
                 <DockerfileStatusLine isDefault={!!image?.is_default} dirty={dirty} />
               </button>
               <div className="min-w-0">
-                <div className="text-[14px] font-medium">Image</div>
+                <div className="text-[14px] font-medium">{t("docker.imageLabel")}</div>
                 <ImageStatusLine image={image} />
               </div>
               <div className="min-w-0">
-                <div className="text-[14px] font-medium">Docker</div>
+                <div className="text-[14px] font-medium">{t("docker.dockerLabel")}</div>
                 <DockerAvailability status={status} />
               </div>
             </div>
@@ -471,9 +471,11 @@ export function DockerSection() {
               <div className="mt-3 flex items-start gap-1.5 text-[12.5px] leading-snug text-[var(--color-warn)]">
                 <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
-                  This Dockerfile does not install the GitHub / GitLab CLIs. Agents in a container will not have{" "}
-                  <code className="font-mono">gh</code> or <code className="font-mono">glab</code>. Reset to default
-                  to pick them up, or add them yourself.
+                  <Trans
+                    t={t}
+                    i18nKey="docker.cliWarn"
+                    components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+                  />
                 </span>
               </div>
             )}
@@ -493,9 +495,7 @@ export function DockerSection() {
             {showDockerfile && (
               <div className="mt-3 border-t border-[var(--color-border-soft)] pt-3">
                 <div className="text-[12.5px] text-[var(--color-fg-dim)]">
-                  One generic image for all agents. Edit the commented regions to add MCP servers, CLI tools, or
-                  baked skills. Personal logins (agent auth, MCP OAuth) are NOT set up here, just run the agent and
-                  log in once inside Docker; those persist via your mounted config directory.
+                  {t("docker.editorHint")}
                 </div>
                 <div
                   ref={setHost}
@@ -503,10 +503,10 @@ export function DockerSection() {
                 />
                 <div className="mt-3 flex items-center gap-2">
                   <Button variant="primary" disabled={!dirty || dfBusy || building} onClick={saveDockerfile}>
-                    {dfBusy ? "Saving…" : "Save"}
+                    {dfBusy ? t("common:saving") : t("common:save")}
                   </Button>
                   <Button variant="secondary" disabled={(image?.is_default && !dirty) || dfBusy || building} onClick={resetDockerfile}>
-                    Reset to default
+                    {t("docker.resetDefault")}
                   </Button>
                 </div>
               </div>
@@ -531,15 +531,15 @@ export function DockerSection() {
                 disabled={building || dfBusy || !status?.daemon}
                 onClick={() => build(buildNeedsNoCache)}
                 title={buildNeedsNoCache
-                  ? "Rebuilds from scratch, which is what picks up newer agent versions: the image installs them unpinned, so a cached rebuild would change nothing."
-                  : "Builds the image from the Dockerfile, reusing any layers that have not changed."}
+                  ? t("docker.buildTipNoCache")
+                  : t("docker.buildTipCached")}
               >
                 {building
-                  ? <span className="flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Building…</span>
+                  ? <span className="flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("docker.building")}</span>
                   : buildLabel}
               </Button>
               {!status?.daemon && (
-                <span className="text-[12px] text-[var(--color-warn)]">Start Docker to build.</span>
+                <span className="text-[12px] text-[var(--color-warn)]">{t("docker.startToBuild")}</span>
               )}
               {/* The reason to press the button, beside the button. In the
                   Image column it was a three-line paragraph that pushed the
@@ -548,12 +548,12 @@ export function DockerSection() {
               {(image?.stale || dirty) && image?.available && status?.daemon && (
                 <span className="flex items-center gap-1.5 text-[12px] text-[var(--color-warn)]">
                   <CircleAlert className="h-3.5 w-3.5 shrink-0" />
-                  Dockerfile changed since this image was built.
+                  {t("docker.staleWarn")}
                 </span>
               )}
               {buildLog.length > 0 && (
                 <Button variant="ghost" onClick={() => setShowLog(s => !s)}>
-                  {showLog ? "Hide log" : "Show log"}
+                  {showLog ? t("docker.hideLog") : t("docker.showLog")}
                 </Button>
               )}
             </div>
@@ -572,13 +572,9 @@ export function DockerSection() {
               the Rust-side default) since a fresh settings object may not
               carry the field yet. */}
           <Block>
-            <div className="text-[14px] font-medium">Rebuild frequency</div>
+            <div className="text-[14px] font-medium">{t("docker.rebuild.title")}</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              How often the image is considered out of date. When a Docker-mode agent launches and the image
-              has not been rebuilt within this window, termic asks first, or just does it in the background if
-              you tick the box below. Rebuilding is the only thing that updates an agent CLI: binaries live in
-              the image, and a container is destroyed when its terminal closes, so an agent that updates itself
-              mid-session loses that update on the next launch.
+              {t("docker.rebuild.hint")}
             </div>
             <div className="mt-2 max-w-xs">
               <DockerRebuildFrequencyPicker
@@ -597,10 +593,8 @@ export function DockerSection() {
                   onChange={(v: boolean) => patch({ docker_rebuild_auto: v })}
                 />
                 <span className="text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-                  <span className="font-medium text-[var(--color-fg)]">Rebuild automatically.</span>{" "}
-                  On by default. Keeps the image current on this schedule without asking, in the
-                  background, so agents launch straight away and pick up the new image next time.
-                  Turn it off to be asked before each rebuild instead.
+                  <span className="font-medium text-[var(--color-fg)]">{t("docker.rebuild.auto")}</span>{" "}
+                  {t("docker.rebuild.autoBody")}
                 </span>
               </label>
             )}
@@ -620,9 +614,13 @@ export function DockerSection() {
               className="flex w-full items-center justify-between gap-3 text-left"
             >
               <div>
-                <div className="text-[14px] font-medium">Command preview</div>
+                <div className="text-[14px] font-medium">{t("docker.preview.title")}</div>
                 <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                  The exact <code className="font-mono">docker run</code> a task launch builds, agent command included.
+                  <Trans
+                    t={t}
+                    i18nKey="docker.preview.sub"
+                    components={{ 1: <code className="font-mono" /> }}
+                  />
                 </div>
               </div>
               <ChevronDown className={cn("h-4 w-4 shrink-0 text-[var(--color-fg-faint)] transition-transform", showPreview && "rotate-180")} />
@@ -630,14 +628,14 @@ export function DockerSection() {
             {showPreview && (
               <div className="mt-3">
                 <div className="flex items-center gap-2">
-                  <label className="text-[12.5px] text-[var(--color-fg-dim)]">Agent</label>
+                  <label className="text-[12.5px] text-[var(--color-fg-dim)]">{t("docker.preview.agentLabel")}</label>
                   <select
                     value={previewAgent}
                     onChange={(e) => setPreviewAgent(e.target.value)}
                     data-testid="docker-preview-agent"
                     className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
                   >
-                    <option value="">First enabled agent</option>
+                    <option value="">{t("docker.preview.firstAgent")}</option>
                     {agentDirs.map(a => (
                       <option key={a.agent_id} value={a.agent_id}>{a.display_name}</option>
                     ))}
@@ -652,7 +650,7 @@ export function DockerSection() {
                     the panel was closed a moment ago. */}
                 <div className="mt-2 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3">
                   {previewLoading && !preview && (
-                    <div className="text-[12px] text-[var(--color-fg-faint)]">Loading…</div>
+                    <div className="text-[12px] text-[var(--color-fg-faint)]">{t("common:loading")}</div>
                   )}
                   {previewErr && <div className="text-[12px] text-[var(--color-err)]">{previewErr}</div>}
                   {preview && (
@@ -669,8 +667,7 @@ export function DockerSection() {
                         </div>
                       )}
                       <div className="mt-2 border-t border-[var(--color-border-soft)] pt-2 text-[11.5px] text-[var(--color-fg-faint)]">
-                        Your task's worktree is mounted in place of the placeholder path above. Everything else,
-                        the mounts, the environment and the hardening flags, is what a real launch uses.
+                        {t("docker.preview.footnote")}
                       </div>
                     </div>
                   )}
@@ -681,7 +678,7 @@ export function DockerSection() {
           {/* What a task gets, rather than what the image contains. Nothing
               here acts on the running system, which is what separates it from
               Image above. */}
-          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">Configuration</div>
+          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-fg-faint)]">{t("docker.configHeading")}</div>
           {/* Per-agent config dirs: the confirmed built-in list ("Logins"
               above) is read-only - it's what makes login/session sharing
               actually work - plus whatever extra dirs the user wants
@@ -696,9 +693,9 @@ export function DockerSection() {
               className="flex w-full items-center justify-between gap-3 text-left"
             >
               <div>
-                <div className="text-[14px] font-medium">Persisted directories &amp; environment</div>
+                <div className="text-[14px] font-medium">{t("docker.persisted.title")}</div>
                 <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                  Directories that survive a container restart, shared or per agent, and the environment each one runs with.
+                  {t("docker.persisted.sub")}
                 </div>
               </div>
               <ChevronDown className={cn("h-4 w-4 shrink-0 text-[var(--color-fg-faint)] transition-transform", showAgentDirs && "rotate-180")} />
@@ -718,22 +715,36 @@ export function DockerSection() {
                     code comments, which is where it belongs. */}
                 <div className="flex flex-col gap-1.5 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--color-fg-dim)]">
                   <div>
-                    Kept across container restarts. Each entry is a path{" "}
-                    <b className="text-[var(--color-fg)]">inside the container</b>: a bare name means the
-                    agent's home there, so <code className="font-mono">.claude</code> is{" "}
-                    <code className="font-mono">/root/.claude</code>. Full paths like{" "}
-                    <code className="font-mono">/data/models</code> work too.
+                    <Trans
+                      t={t}
+                      i18nKey="docker.persisted.fact1"
+                      components={{
+                        1: <b className="text-[var(--color-fg)]" />,
+                        3: <code className="font-mono" />,
+                        5: <code className="font-mono" />,
+                        7: <code className="font-mono" />,
+                      }}
+                    />
                   </div>
                   <div>
-                    Backed by a folder termic owns, never your real{" "}
-                    <code className="font-mono">~/.claude</code>. Per-agent by default, so cloning an agent
-                    gets it a separate one and a work login stays apart from a personal one; the{" "}
-                    <b className="text-[var(--color-fg)]">All agents</b> row is the exception, one folder
-                    every agent shares.
+                    <Trans
+                      t={t}
+                      i18nKey="docker.persisted.fact2"
+                      components={{
+                        1: <code className="font-mono" />,
+                        3: <b className="text-[var(--color-fg)]" />,
+                      }}
+                    />
                   </div>
                   <div className="text-[var(--color-fg-faint)]">
-                    <code className="font-mono">/root</code> is only where HOME points. The container runs
-                    as your own user, with no <code className="font-mono">sudo</code> and no way to elevate.
+                    <Trans
+                      t={t}
+                      i18nKey="docker.persisted.fact3"
+                      components={{
+                        1: <code className="font-mono" />,
+                        3: <code className="font-mono" />,
+                      }}
+                    />
                   </div>
                 </div>
 
@@ -778,16 +789,17 @@ export function DockerSection() {
               dirs" above: an extra mount's use case (persisting an MCP
               server's own data dir, say) isn't tied to which agent runs. */}
           <Block>
-            <div className="text-[14px] font-medium">Default extra mounts</div>
+            <div className="text-[14px] font-medium">{t("docker.mounts.title")}</div>
             <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              Bind-mount these host directories into every NEW Docker-sandboxed task by default, one per line as{" "}
-              <code className="font-mono">host_path:container_path</code> (same field and format as a task's own
-              "Extra mounts"). The user can edit, remove, or add to them per task afterward - editing this list only
-              affects tasks created from now on.
+              <Trans
+                t={t}
+                i18nKey="docker.mounts.hint"
+                components={{ 1: <code className="font-mono" /> }}
+              />
             </div>
             <div className="mt-3">
               <ListField
-                label="Extra mounts"
+                label={t("docker.mounts.label")}
                 placeholder={"$HOME/mcp-data:/data/mcp"}
                 value={defaultMounts}
                 onChange={setDefaultMounts}
@@ -795,7 +807,7 @@ export function DockerSection() {
             </div>
             <div className="mt-3">
               <Button variant="primary" disabled={!defaultMountsDirty || mountsBusy} onClick={saveDefaultMounts}>
-                {mountsBusy ? "Saving…" : "Save"}
+                {mountsBusy ? t("common:saving") : t("common:save")}
               </Button>
             </div>
           </Block>
@@ -814,17 +826,18 @@ export function DockerSection() {
  *  different images, and the second one is the reason a rebuild can look like
  *  it ignored your change. */
 function DockerfileStatusLine({ isDefault, dirty }: { isDefault: boolean; dirty: boolean }) {
+  const { t } = useTranslation("settings");
   if (dirty) {
     return (
       <div className="mt-1 flex items-start gap-1.5 text-[12.5px] leading-snug text-[var(--color-warn)]">
-        <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" /> <span>Unsaved edits</span>
+        <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" /> <span>{t("docker.unsaved")}</span>
       </div>
     );
   }
   return (
     <div className="mt-1 flex items-start gap-1.5 text-[12.5px] leading-snug text-[var(--color-fg-faint)]">
       <CircleCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
-      <span>{isDefault ? "Default" : "Customized"}</span>
+      <span>{isDefault ? t("docker.dfDefault") : t("docker.dfCustomized")}</span>
     </div>
   );
 }
@@ -837,25 +850,26 @@ function shortDockerVersion(v: string): string {
 }
 
 function DockerAvailability({ status }: { status: DockerStatus | null }) {
-  if (!status) return <div className="mt-1 text-[12.5px] text-[var(--color-fg-faint)]">Checking…</div>;
+  const { t } = useTranslation("settings");
+  if (!status) return <div className="mt-1 text-[12.5px] text-[var(--color-fg-faint)]">{t("docker.availability.checking")}</div>;
   if (!status.binary) {
     return (
       <div className="mt-1 flex items-start gap-1.5 text-[12.5px] leading-snug text-[var(--color-warn)]">
-        <CircleAlert className="h-3.5 w-3.5 shrink-0 mt-0.5" /> `docker` not found on PATH. Install Docker Desktop, OrbStack, or colima.
+        <CircleAlert className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {t("docker.availability.notFound")}
       </div>
     );
   }
   if (!status.daemon) {
     return (
       <div className="mt-1 flex items-start gap-1.5 text-[12.5px] leading-snug text-[var(--color-warn)]">
-        <CircleAlert className="h-3.5 w-3.5 shrink-0 mt-0.5" /> Docker is installed but the daemon is not running. Start it to build / run.
+        <CircleAlert className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {t("docker.availability.daemonDown")}
       </div>
     );
   }
   return (
     <div className="mt-1 flex items-start gap-1.5 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
       <CircleCheck className="h-3.5 w-3.5 shrink-0 mt-0.5 text-[var(--color-ok)]" />
-      <span title={status.version ?? undefined}>Ready{status.version ? ` · ${shortDockerVersion(status.version)}` : ""}</span>
+      <span title={status.version ?? undefined}>{t("docker.availability.ready")}{status.version ? ` · ${shortDockerVersion(status.version)}` : ""}</span>
     </div>
   );
 }
@@ -864,17 +878,18 @@ function DockerAvailability({ status }: { status: DockerStatus | null }) {
  *  apply your edits" warning, which is an instruction rather than a state and
  *  now sits next to the button that carries it out. */
 function ImageStatusLine({ image }: { image: DockerImageStatus | null }) {
+  const { t } = useTranslation("settings");
   if (!image) return null;
   return (
     <div className="mt-1 flex flex-col gap-1 text-[12.5px]">
       {image.available ? (
         <span className="flex items-start gap-1.5 leading-snug text-[var(--color-fg-dim)]">
           <CircleCheck className="h-3.5 w-3.5 shrink-0 mt-0.5 text-[var(--color-ok)]" />
-          <span>Built · <code className="font-mono">{image.last_built_tag ?? image.current_tag}</code></span>
+          <span>{t("docker.builtPrefix")}<code className="font-mono">{image.last_built_tag ?? image.current_tag}</code></span>
         </span>
       ) : (
         <span className="flex items-start gap-1.5 leading-snug text-[var(--color-fg-faint)]">
-          <CircleAlert className="h-3.5 w-3.5 shrink-0 mt-0.5" /> <span>Not built yet. Build it to use Docker mode in a task.</span>
+          <CircleAlert className="h-3.5 w-3.5 shrink-0 mt-0.5" /> <span>{t("docker.notBuilt")}</span>
         </span>
       )}
       {image.available && (
@@ -911,7 +926,7 @@ function parseDockerEnvLines(text: string): Record<string, string> {
  *  one-line input. Shared by the per-agent rows and the all-agents row so the
  *  two cannot drift into looking like different features - which is exactly
  *  what a separate "Shared config dirs" section did. */
-function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, placeholder = ".mytool or /data/cache" }: {
+function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, placeholder }: {
   label: string;
   sub?: string;
   locked?: string[];
@@ -920,6 +935,7 @@ function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, plac
   canAdd?: boolean;
   placeholder?: string;
 }) {
+  const { t } = useTranslation("settings");
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
 
@@ -937,7 +953,7 @@ function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, plac
       {locked.map(d => (
         <span
           key={d}
-          title="Built-in - confirmed to hold real state, can't be removed"
+          title={t("docker.persisted.lockTip")}
           className="flex items-center gap-1 rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-fg-dim)]"
         >
           <Lock className="h-2.5 w-2.5 text-[var(--color-fg-faint)]" />
@@ -953,7 +969,7 @@ function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, plac
           <button
             type="button"
             onClick={() => onChange(dirs.filter(x => x !== d))}
-            aria-label={`Remove ${d}`}
+            aria-label={t("docker.persisted.removeDir", { dir: d })}
             className="text-[var(--color-fg-faint)] hover:text-[var(--color-err)]"
           >
             <X className="h-2.5 w-2.5" />
@@ -970,7 +986,7 @@ function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, plac
             if (e.key === "Enter") commit();
             if (e.key === "Escape") { setDraft(""); setAdding(false); }
           }}
-          placeholder={placeholder}
+          placeholder={placeholder ?? t("docker.persisted.dirPlaceholder")}
           spellCheck={false}
           className="w-24 rounded border border-[var(--color-accent-soft)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-fg)] outline-none"
         />
@@ -980,7 +996,7 @@ function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, plac
           onClick={() => setAdding(true)}
           className="rounded border border-dashed border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
         >
-          + add
+          {t("docker.persisted.addDir")}
         </button>
       ) : null}
     </div>
@@ -996,27 +1012,33 @@ function DirChips({ label, sub, locked = [], dirs, onChange, canAdd = true, plac
  *  No environment column: env is per agent by definition. The right half
  *  explains WHY this row is shared, which is the question the row raises. */
 function SharedDirsRow({ dirs, onChange }: { dirs: string[]; onChange: (next: string[]) => void }) {
+  const { t } = useTranslation("settings");
   return (
     <div className="grid grid-cols-2 items-stretch gap-x-4 gap-y-1.5 rounded-md border border-[var(--color-accent-soft)] bg-[var(--color-accent)]/[0.04] px-3 py-2">
       <div className="flex min-w-0 flex-col gap-1.5">
         <DirChips
-          label="All agents"
+          label={t("docker.persisted.allAgents")}
           dirs={dirs}
           onChange={onChange}
           placeholder=".config/gh"
         />
         {dirs.length === 0 && (
           <span className="text-[11px] text-[var(--color-fg-faint)]">
-            Nothing shared. Agents in a container will have no <code className="font-mono">gh</code> /{" "}
-            <code className="font-mono">glab</code> login.
+            <Trans
+              t={t}
+              i18nKey="docker.persisted.sharedEmpty"
+              components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+            />
           </span>
         )}
       </div>
       <div className="flex min-w-0 flex-col justify-center text-[11px] leading-relaxed text-[var(--color-fg-faint)]">
         <span>
-          Mounted into every container, for every agent, one folder each. A GitHub token is yours rather than
-          any one agent's, so <code className="font-mono">gh auth login</code> once inside any Docker task
-          covers them all. Your own <code className="font-mono">~/.config/gh</code> is never mounted.
+          <Trans
+            t={t}
+            i18nKey="docker.persisted.sharedWhy"
+            components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+          />
         </span>
       </div>
     </div>
@@ -1034,6 +1056,7 @@ function AgentDirsRow({ dirs, onChangeExtra, onTogglePersist, dockerEnv, onChang
   dockerEnv: Record<string, string>;
   onChangeDockerEnv: (next: Record<string, string>) => void;
 }) {
+  const { t } = useTranslation("settings");
   const canAdd = dirs.is_builtin || dirs.persist_enabled;
 
   // Two columns of equal height: what is KEPT on the left, what the container
@@ -1059,16 +1082,15 @@ function AgentDirsRow({ dirs, onChangeExtra, onTogglePersist, dockerEnv, onChang
             checked={dirs.persist_enabled}
             onChange={e => onTogglePersist(e.target.checked)}
           />
-          Persist config in Docker mode
+          {t("docker.persisted.persist")}
           {dirs.persist_enabled && dirs.extra.length === 0 && (
-            <span className="text-[var(--color-warn)]">(add a dir above, nothing is mounted yet)</span>
+            <span className="text-[var(--color-warn)]">{t("docker.persisted.persistWarn")}</span>
           )}
         </label>
       )}
       {!dirs.is_builtin && !dirs.persist_offerable && (
         <span className="text-[11px] text-[var(--color-fg-faint)]">
-          Not supported in Docker mode: its config and its binary share a location, so mounting anything here
-          would risk hiding the binary the image installed.
+          {t("docker.persisted.persistUnsupported")}
         </span>
       )}
       </div>
@@ -1078,9 +1100,9 @@ function AgentDirsRow({ dirs, onChangeExtra, onTogglePersist, dockerEnv, onChang
           it - empty means the normal one is used unchanged. */}
       <div className="flex min-w-0 flex-col gap-1">
         <div className="text-[11px] text-[var(--color-fg-faint)]">
-          Environment (Docker)
+          {t("docker.persisted.envLabel")}
           {Object.keys(dockerEnv).length > 0 && (
-            <span className="text-[var(--color-fg-dim)]"> · {Object.keys(dockerEnv).length} set</span>
+            <span className="text-[var(--color-fg-dim)]"> · {t("docker.persisted.envCount", { count: Object.keys(dockerEnv).length })}</span>
           )}
         </div>
         <textarea
@@ -1089,7 +1111,7 @@ function AgentDirsRow({ dirs, onChangeExtra, onTogglePersist, dockerEnv, onChang
           rows={2}
           spellCheck={false}
           data-testid={`docker-agent-env-${dirs.agent_id}`}
-          placeholder={"KEY=VALUE, one per line\nEmpty = this agent's normal environment"}
+          placeholder={t("docker.persisted.envPlaceholder")}
           // flex-1 (not field-sizing) so it fills the column and both sides
           // end level, which is the point of the two-column layout.
           className="min-h-[3.25rem] w-full flex-1 resize-y rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 font-mono text-[11.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"

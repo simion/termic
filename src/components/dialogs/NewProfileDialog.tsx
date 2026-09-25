@@ -18,6 +18,7 @@
 // legitimate end state.
 
 import { useEffect, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useProfiles } from "@/store/profiles";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -33,6 +34,7 @@ import { cn } from "@/lib/utils";
 
 
 export function NewProfileDialog() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.newProfileOpen);
   const setOpen = useUI(s => s.setNewProfileOpen);
   const profiles = useProfiles(s => s.profiles);
@@ -106,11 +108,11 @@ export function NewProfileDialog() {
     <AppDialog
       open={open}
       onOpenChange={setOpen}
-      title="New profile"
+      title={t("newProfile.title")}
       // No description on the FIRST run: the panel below already explains what
       // is about to happen, and a header that repeats it reads as crowded
       // before the user has read either.
-      description={isFirst ? undefined : "Its own window, projects, tasks and settings."}
+      description={isFirst ? undefined : t("newProfile.description")}
       className="max-w-lg"
       // Radix restores focus to the trigger when a dialog closes, and the
       // trigger is in the window we are about to navigate AWAY from. Left
@@ -126,12 +128,12 @@ export function NewProfileDialog() {
                 surprise: nobody opening "New profile" expects to be asked to
                 name something that already exists. */}
             <div className="mb-1.5 flex items-center gap-2">
-              <label className="text-[12.5px] font-medium">Your current setup</label>
+              <label className="text-[12.5px] font-medium">{t("newProfile.yourCurrentSetup")}</label>
               {/* The badge does the work a sentence could not: "this window"
                   in prose reads as chrome, in a pill it reads as a label ON
                   the thing in front of you. */}
               <span className="rounded-[4px] bg-[var(--color-accent-deep)]/20 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-[var(--color-accent)]">
-                This window
+                {t("newProfile.thisWindow")}
               </span>
             </div>
             <div className="mb-2 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
@@ -139,15 +141,14 @@ export function NewProfileDialog() {
                   the user's OWN setup rather than a second empty form. They
                   are also exactly the things people fear a new profile will
                   move. */}
-              {currentSetupSummary(projectCount, taskCount)} Give it a name so
-              you can tell the two windows apart.
+              {currentSetupSummary(projectCount, taskCount)} {t("newProfile.setupNameHint")}
             </div>
             <div className="flex items-center gap-2">
               <ProfileDot accent={existingAccent} />
               <Input
                 value={existingName}
                 onChange={e => setExistingName(e.target.value)}
-                placeholder="Personal"
+                placeholder={t("newProfile.existingPlaceholder")}
                 data-testid="existing-profile-name"
                 className="flex-1"
               />
@@ -159,7 +160,7 @@ export function NewProfileDialog() {
 
         <div>
           <label className="mb-1.5 block text-[12.5px] font-medium">
-            {isFirst ? "The new profile" : "Name"}
+            {isFirst ? t("newProfile.newLabel") : t("newProfile.nameLabel")}
           </label>
           <div className="flex items-center gap-2">
             <ProfileDot accent={accent} />
@@ -167,7 +168,7 @@ export function NewProfileDialog() {
               autoFocus
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="Work"
+              placeholder={t("newProfile.namePlaceholder")}
               data-testid="new-profile-name"
               onKeyDown={e => { if (e.key === "Enter" && canCreate) void create(); }}
               className="flex-1"
@@ -178,7 +179,7 @@ export function NewProfileDialog() {
         </div>
 
         <div>
-          <label className="mb-1.5 block text-[12.5px] font-medium">Tasks folder</label>
+          <label className="mb-1.5 block text-[12.5px] font-medium">{t("newProfile.tasksFolderLabel")}</label>
           <Input
             value={tasksPath}
             onChange={e => setTasksPath(e.target.value)}
@@ -186,10 +187,10 @@ export function NewProfileDialog() {
             data-testid="new-profile-tasks-path"
           />
           <p className="mt-1 text-[11.5px] text-[var(--color-fg-faint)]">
-            Where this profile's worktrees are created.
+            {t("newProfile.tasksFolderHint")}{" "}
             {seededPath
-              ? <> Leave empty for <code className="mono">{seededPath}</code>.</>
-              : <> Leave empty to use the default.</>}
+              ? <Trans t={t} i18nKey="newProfile.leaveEmptyFor" values={{ path: seededPath }} components={{ code: <code className="mono" /> }} />
+              : t("newProfile.leaveEmptyDefault")}
           </p>
         </div>
 
@@ -200,9 +201,9 @@ export function NewProfileDialog() {
         )}
 
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>Cancel</Button>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>{t("common:cancel")}</Button>
           <Button onClick={() => void create()} disabled={!canCreate} data-testid="new-profile-create">
-            {busy ? "Creating..." : "Create profile"}
+            {busy ? t("newProfile.creating") : t("newProfile.createProfile")}
           </Button>
         </div>
       </div>
@@ -219,6 +220,7 @@ export function NewProfileDialog() {
  *  accent is otherwise a guess, because the wash is deliberately faint and the
  *  dots show the colour at full strength. */
 function TitleBarPreview({ name, accent }: { name: string; accent: string }) {
+  const { t } = useTranslation("dialogs");
   return (
     <div
       aria-hidden
@@ -236,7 +238,7 @@ function TitleBarPreview({ name, accent }: { name: string; accent: string }) {
       </span>
       <ProfileDot accent={accent} />
       <span className="min-w-0 truncate text-[12px] font-medium text-[var(--color-fg)]">
-        {name.trim() || "Untitled"}
+        {name.trim() || t("newProfile.untitled")}
       </span>
     </div>
   );

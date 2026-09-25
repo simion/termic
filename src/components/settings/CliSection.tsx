@@ -12,6 +12,7 @@
 // <data_dir>/cli-token (0600, never in any child's env, cli_server.rs).
 
 import { useEffect, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { cliInstallSymlink, cliInstallStatus, cliAddToPath } from "@/lib/ipc";
 import type { CliInstallStatus } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
@@ -19,6 +20,7 @@ import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
 import { cn } from "@/lib/utils";
 
 export function CliSection() {
+  const { t } = useTranslation("settings");
   const { settings, patch } = useBackendSettings();
   // "Enable CLI": backend Settings field, saved immediately on toggle.
   // Gates every authenticated verb of the `termic` control socket
@@ -102,27 +104,41 @@ export function CliSection() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionTitle title="Termic CLI" />
+      <SectionTitle title={t("cli.title")} />
 
       <Block first>
         <Toggle
-          label="Enable CLI"
-          hint={`Let the ${name} command drive this app from any shell: create tasks and stream their setup, wait for an agent to go quiet, list and check tasks, archive them, and add or remove projects. On by default, and access needs a token only this Mac's user can read. Agents in an enforced sandbox never get access. Turning this off refuses every command immediately (the command stays installed).`}
+          label={t("cli.enable.label")}
+          hint={t("cli.enable.hint", { name })}
           value={cliEnabled}
           onChange={saveCliEnabled}
         />
         <div className={cn("mt-3", !cliEnabled && "pointer-events-none opacity-50 select-none")}>
           {cliInstall?.path ? (
             <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-              <code className="font-mono">{cliInstall.name}</code> is installed at{" "}
-              <code className="font-mono">{cliInstall.path}</code>.{" "}
+              <Trans
+                t={t}
+                i18nKey="cli.installedAt"
+                values={{ name: cliInstall.name, path: cliInstall.path }}
+                components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+              />{" "}
               {cliInstall.on_path
-                ? <>Run <code className="font-mono">{cliInstall.name} list</code> from any shell.</>
-                : <span className="text-[var(--color-warn,inherit)]">That location is not on your PATH yet, so the command will not be found until you add it.</span>}
+                ? <Trans
+                    t={t}
+                    i18nKey="cli.runList"
+                    values={{ command: `${cliInstall.name} list` }}
+                    components={{ 1: <code className="font-mono" /> }}
+                  />
+                : <span className="text-[var(--color-warn,inherit)]">{t("cli.notOnPath")}</span>}
             </p>
           ) : (
             <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-              Enabling installs <code className="font-mono">{name}</code> into <code className="font-mono">~/.local/bin</code> automatically.
+              <Trans
+                t={t}
+                i18nKey="cli.autoInstall"
+                values={{ name }}
+                components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+              />
             </p>
           )}
           {/* The system-wide install is only a REQUIRED step when the
@@ -136,7 +152,7 @@ export function CliSection() {
               onClick={() => installCli(true)}
               className="mt-2 text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)] disabled:opacity-50"
             >
-              {cliInstalling ? "Installing…" : "Install system-wide instead (optional, uses /usr/local/bin)"}
+              {cliInstalling ? t("cli.installing") : t("cli.installSystemWideOptional")}
             </button>
           ) : (
             <div className="mt-2 flex flex-col gap-2">
@@ -146,18 +162,26 @@ export function CliSection() {
                   through an admin prompt, so it belongs second. */}
               <div className="flex items-center gap-2">
                 <Button variant="secondary" size="md" disabled={cliInstalling} onClick={addToPath}>
-                  {cliInstalling ? "Working…" : "Add to PATH"}
+                  {cliInstalling ? t("cli.working") : t("cli.addToPath")}
                 </Button>
                 <span className="text-[12px] text-[var(--color-fg-faint)]">
-                  adds <code className="font-mono">~/.local/bin</code> to your shell startup file (no password)
+                  <Trans
+                    t={t}
+                    i18nKey="cli.addToPathHint"
+                    components={{ 1: <code className="font-mono" /> }}
+                  />
                 </span>
               </div>
               <div className="flex items-center gap-2">
                 <Button variant="secondary" size="md" disabled={cliInstalling} onClick={() => installCli(true)}>
-                  {cliInstalling ? "Installing…" : "Install system-wide"}
+                  {cliInstalling ? t("cli.installing") : t("cli.installSystemWide")}
                 </Button>
                 <span className="text-[12px] text-[var(--color-fg-faint)]">
-                  symlinks into <code className="font-mono">/usr/local/bin</code> (asks for your password)
+                  <Trans
+                    t={t}
+                    i18nKey="cli.systemWideHint"
+                    components={{ 1: <code className="font-mono" /> }}
+                  />
                 </span>
               </div>
             </div>
@@ -169,9 +193,14 @@ export function CliSection() {
       </Block>
 
       <Block>
-        <div className="text-[14px] font-medium">Getting started</div>
+        <div className="text-[14px] font-medium">{t("cli.started.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Run these from inside a registered repo. <code className="font-mono">{name} help</code> lists the full surface.
+          <Trans
+            t={t}
+            i18nKey="cli.started.hint"
+            values={{ help: `${name} help` }}
+            components={{ 1: <code className="font-mono" /> }}
+          />
         </div>
         <div
           data-selectable
@@ -189,17 +218,17 @@ export function CliSection() {
           outright: it was previously only implied by the sandbox carve-out in
           the toggle's hint. */}
       <Block>
-        <div className="text-[14px] font-medium">Agents can drive it too</div>
+        <div className="text-[14px] font-medium">{t("cli.agents.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          A task's terminals are handed the command's path and the task's own id, so an agent working
-          in one can create more tasks, wait for them to finish, and read what they produced. That is
-          how one agent farms work out to several in parallel. Agents in an enforced sandbox are
-          refused, so this applies to unsandboxed tasks only.
+          {t("cli.agents.hint")}
         </div>
         <p className="mt-2.5 text-[12px] text-[var(--color-fg-faint)]">
-          No setup on the agent's side: it finds everything from{" "}
-          <code className="font-mono">$TERMIC_CLI</code> and{" "}
-          <code className="font-mono">{name} help --json</code>.
+          <Trans
+            t={t}
+            i18nKey="cli.agents.foot"
+            values={{ helpJson: `${name} help --json` }}
+            components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+          />
         </p>
       </Block>
     </div>

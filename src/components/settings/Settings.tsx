@@ -3,6 +3,7 @@
 // the selected section. Reached via the gear icon in the sidebar or ⌘,.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
@@ -24,6 +25,7 @@ import { PromptLibrarySection } from "./PromptLibrarySection";
 import { DockerSection } from "./DockerSection";
 
 export function Settings() {
+  const { t } = useTranslation("settings");
   const view = useApp(s => s.view);
   const closeSettings = useApp(s => s.closeSettings);
   const openSettings = useApp(s => s.openSettings);
@@ -69,7 +71,7 @@ export function Settings() {
             onClick={closeSettings}
           >
             <X className="h-[18px] w-[18px]" />
-            {escArmed ? "Esc again to close" : "Close settings"}
+            {escArmed ? t("rail.closeArmed") : t("rail.close")}
           </Button>
         </div>
 
@@ -82,28 +84,28 @@ export function Settings() {
             once, then the perimeter. Hairlines mark the three bands; they get
             no uppercase labels (PROJECTS earns one only because it is a
             dynamic list with an empty state). */}
-        <RailItem icon={<SettingsIcon className="h-4 w-4" />} label="General" tabId="general"
+        <RailItem icon={<SettingsIcon className="h-4 w-4" />} label={t("rail.general")} tabId="general"
           active={tab === "general"} onClick={() => openSettings("general")} />
-        <RailItem icon={<Palette className="h-4 w-4" />} label="Appearance" tabId="appearance"
+        <RailItem icon={<Palette className="h-4 w-4" />} label={t("rail.appearance")} tabId="appearance"
           active={tab === "appearance"} onClick={() => openSettings("appearance")} />
-        <RailItem icon={<Terminal className="h-4 w-4" />} label="Agents & Terminals" tabId="agents"
+        <RailItem icon={<Terminal className="h-4 w-4" />} label={t("rail.agents")} tabId="agents"
           active={tab === "agents"} onClick={() => openSettings("agents")} />
 
         <RailDivider />
 
-        <RailItem icon={<ListTodo className="h-4 w-4" />} label="Tasks" tabId="tasks"
+        <RailItem icon={<ListTodo className="h-4 w-4" />} label={t("rail.tasks")} tabId="tasks"
           active={tab === "tasks"} onClick={() => openSettings("tasks")} />
-        <RailItem icon={<Bell className="h-4 w-4" />} label="Notifications" tabId="notifications"
+        <RailItem icon={<Bell className="h-4 w-4" />} label={t("rail.notifications")} tabId="notifications"
           active={tab === "notifications"} onClick={() => openSettings("notifications")} />
-        <RailItem icon={<Library className="h-4 w-4" />} label="Prompts" tabId="prompts"
+        <RailItem icon={<Library className="h-4 w-4" />} label={t("rail.prompts")} tabId="prompts"
           active={tab === "prompts"} onClick={() => openSettings("prompts")} />
-        <RailItem icon={<Keyboard className="h-4 w-4" />} label="Shortcuts" tabId="shortcuts"
+        <RailItem icon={<Keyboard className="h-4 w-4" />} label={t("rail.shortcuts")} tabId="shortcuts"
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />
         {/* Experimental in the sense docs/ui.md defines: off by default because
             we are not yet confident in it, with a stated way out (Profiles
             can be turned off, keeping every byte of data). Both halves of
             this release qualify, and both are dormant until you opt in. */}
-        <RailItem icon={<UsersRound className="h-4 w-4" />} label="Profiles" badge="Exp" tabId="profiles"
+        <RailItem icon={<UsersRound className="h-4 w-4" />} label={t("rail.profiles")} badge={t("rail.badgeExp")} tabId="profiles"
           active={tab === "profiles"} onClick={() => openSettings("profiles")} />
 
         <RailDivider />
@@ -113,18 +115,18 @@ export function Settings() {
             page: the CLI is the only feature that qualifies today, and exiling
             the release's headline feature to a Labs page costs more
             discoverability than the label is worth. See docs/ui.md. */}
-        <RailItem icon={<ShieldCheck className="h-4 w-4" />} label="Sandbox" tabId="sandbox"
+        <RailItem icon={<ShieldCheck className="h-4 w-4" />} label={t("rail.sandbox")} tabId="sandbox"
           active={tab === "sandbox"} onClick={() => openSettings("sandbox")} />
-        <RailItem icon={<Container className="h-4 w-4" />} label="Docker Sandbox" badge="Exp" tabId="docker"
+        <RailItem icon={<Container className="h-4 w-4" />} label={t("rail.docker")} badge={t("rail.badgeExp")} tabId="docker"
           active={tab === "docker"} onClick={() => openSettings("docker")} />
-        <RailItem icon={<SquareTerminal className="h-4 w-4" />} label="CLI & MCP" tabId="cli"
+        <RailItem icon={<SquareTerminal className="h-4 w-4" />} label={t("rail.cli")} tabId="cli"
           active={tab === "cli"} onClick={() => openSettings("cli")} />
 
         <div className="mt-5 px-2 pb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-          Projects
+          {t("rail.projects")}
         </div>
         {projects.length === 0 && (
-          <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">No projects yet.</div>
+          <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">{t("rail.noProjects")}</div>
         )}
         {projects.map(p => {
           const isMulti = (p.type ?? "single") === "multi";
@@ -167,7 +169,7 @@ export function Settings() {
           {tab === "repositories" && (
             isRepoSelected
               ? <RepositorySection projectId={repoId!} />
-              : <div className="text-[13.5px] text-[var(--color-fg-faint)]">Pick a project on the left to edit its settings.</div>
+              : <div className="text-[13.5px] text-[var(--color-fg-faint)]">{t("rail.pickProject")}</div>
           )}
         </div>
       </section>
@@ -184,6 +186,7 @@ export function Settings() {
  *  for it are the same question, and the dialog renders at z-50 over this
  *  overlay's z-40. */
 function RailFooterVersion() {
+  const { t } = useTranslation("settings");
   const version = useUpdate(s => s.currentVersion);
   // Only while a check is in flight. The RESULT goes to a toast, matching the
   // command palette's "Check for updates" exactly: two surfaces for one action
@@ -196,7 +199,7 @@ function RailFooterVersion() {
     try {
       const r = await useUpdate.getState().checkNow();
       useUI.getState().pushToast(
-        r === "available" ? "Update available" : r === "error" ? "Update check failed" : "You're up to date",
+        r === "available" ? t("rail.updateAvailable") : r === "error" ? t("rail.updateCheckFailed") : t("rail.upToDate"),
         r === "error" ? "error" : "success",
       );
     } finally {
@@ -208,7 +211,7 @@ function RailFooterVersion() {
       <button
         data-testid="settings-version"
         onClick={() => useUI.getState().openChangelog()}
-        title="View the changelog"
+        title={t("rail.viewChangelog")}
         className="min-w-0 flex-1 rounded-md px-2.5 py-1.5 text-left text-[11.5px] tabular-nums text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg-dim)]"
       >
         Termic {version}
@@ -220,8 +223,8 @@ function RailFooterVersion() {
         data-testid="settings-check-updates"
         onClick={() => void checkForUpdates()}
         disabled={checking}
-        title="Check for updates"
-        aria-label="Check for updates"
+        title={t("rail.checkUpdates")}
+        aria-label={t("rail.checkUpdates")}
         className="shrink-0 rounded-md p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg-dim)] disabled:opacity-60"
       >
         <RefreshCw className={cn("h-3.5 w-3.5", checking && "animate-spin")} />

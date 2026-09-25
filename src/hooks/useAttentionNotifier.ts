@@ -14,7 +14,8 @@ import { notify, onNotifyClick } from "@/lib/ipc";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { TerminalTab } from "@/lib/types";
 import { taskLabel } from "@/lib/taskLabel";
-import { shouldNotifyUnread, UNREAD_PHRASE } from "@/lib/attentionNotify";
+import { shouldNotifyUnread, UNREAD_PHRASE, unreadPhrase } from "@/lib/attentionNotify";
+import { i18n } from "@/lib/i18n";
 
 const DEBOUNCE_MS = 8000;
 
@@ -57,22 +58,23 @@ export function useAttentionNotifier() {
           lastFiredRef.current[key] = now;
           const w = state.tasks.find(w => w.id === taskId);
           const proj = w ? state.projects.find(p => p.id === w.project_id) : undefined;
-          const reason = UNREAD_PHRASE[t.unread!.reason] ?? "is idle";
+          const reason = t.unread!.message?.trim() ? "" : unreadPhrase(t.unread!.reason);
           // Title = "project · task". The terminal/cli name was
           // noise — the body already says what happened.
           // The task half is whatever the sidebar calls it, so a banner
           // and the row it points at agree (GH #260).
           const wLabel = w ? taskLabel(w, usePrefs.getState().useBranchAsTaskName) : "";
+          const taskFallback = i18n.t("backend:attentionNotify.taskFallback");
           const title = proj?.name
-            ? `${proj.name} · ${wLabel || "task"}`
-            : (wLabel || "task");
+            ? `${proj.name} · ${wLabel || taskFallback}`
+            : (wLabel || taskFallback);
           // The agent's own wording when it gave us one ("Claude needs your
           // permission" beats "agent needs your input"). Single path: the
           // terminal used to forward OSC 9 bodies itself AND mark unread,
           // which meant two banners for one event.
           notify(
             title,
-            t.unread!.message?.trim() || `agent ${reason}`,
+            t.unread!.message?.trim() || (reason && i18n.t("backend:attentionNotify.agentBody", { phrase: reason })),
             { taskId, tabId: t.id },
             { sound: t.unread!.reason === "done" },
           ).catch(() => {});

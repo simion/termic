@@ -7,6 +7,7 @@
 // hit-tests these blocks to decide whether a dropped row joins or leaves.
 
 import { useEffect, useRef, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
@@ -47,6 +48,7 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
   children: ReactNode;
 }) {
   const color = groupColorCss(group);
+  const { t } = useTranslation("sidebar");
   // The rename draft lives in the UI store, not in this component: Move to
   // group > New group starts it from the TASK's menu, and the block it
   // targets is mounted by the same reload, so local state could be lost to a
@@ -143,8 +145,8 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
               type="button"
               data-no-drag
               data-testid={`task-group-toggle-${group.id}`}
-              aria-label={collapsed ? "Expand group" : "Collapse group"}
-              title={collapsed ? "Expand group" : "Collapse group"}
+              aria-label={collapsed ? t("taskGroup.expand") : t("taskGroup.collapse")}
+              title={collapsed ? t("taskGroup.expand") : t("taskGroup.collapse")}
               aria-expanded={!collapsed}
               onClick={(e) => { e.stopPropagation(); if (e.detail <= 1) onToggleCollapsed?.(); }}
               onDoubleClick={(e) => e.stopPropagation()}
@@ -162,7 +164,7 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
                   autoFocus
                   data-testid={`task-group-rename-${group.id}`}
                   value={renaming}
-                  placeholder="Follow the lead task's name"
+                  placeholder={t("taskGroup.renamePlaceholder")}
                   onChange={e => setRenaming(e.target.value)}
                   onBlur={commitRename}
                   onKeyDown={e => {
@@ -192,7 +194,7 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
             onSetColor={key => { void taskGroupUpdate(group.id, group.name ?? null, key).finally(reload); }}
             onRename={() => setRenaming(label)}
             onUngroup={() => { void taskGroupDissolve(group.id).finally(reload); }}
-            ungroupLabel="Ungroup tasks"
+            ungroupLabel={t("taskGroup.ungroupTasks")}
           />
         </ContextMenuContent>
       </ContextMenuRoot>
@@ -214,6 +216,7 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
  *  the caption re-renders when the SET of marks changes, not on every tab
  *  write (docs/performance.md, selector fanout). */
 function GroupBadges({ groupId, memberIds, count }: { groupId: string; memberIds: string[]; count: number }) {
+  const { t } = useTranslation("sidebar");
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const workingIndicator = usePrefs(s => s.workingIndicator);
   const attentionIndicator = usePrefs(s => s.attentionIndicator);
@@ -239,7 +242,7 @@ function GroupBadges({ groupId, memberIds, count }: { groupId: string; memberIds
       {key.split(",").map(k => k === "partial" ? (
         // TaskWorkBadge's partial mark needs a report to title it; the group
         // stands for several, so it draws the same outlined dot directly.
-        <span key={k} title="Some delegated work came back" aria-label="Partially done" className="flex items-center justify-center">
+        <span key={k} title={t("taskGroup.delegatedPartialTip")} aria-label={t("taskGroup.delegatedPartialAria")} className="flex items-center justify-center">
           <span className="block h-2 w-2 rounded-full border-[1.5px]" style={{ borderColor: "var(--color-info)" }} />
         </span>
       ) : (

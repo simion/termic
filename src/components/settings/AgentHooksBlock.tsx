@@ -23,6 +23,7 @@
 // installed for it inside a container. See docs/agent-hooks.md.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, Check, CircleAlert } from "lucide-react";
 import { agentHooksInstall, agentHooksPlan, agentHooksRemove, agentHooksStatus, agentHooksAutoGet, agentHooksAutoSet, agentHooksSync, cachedHomeDir } from "@/lib/ipc";
 import { Toggle } from "@/components/settings/Controls";
@@ -38,6 +39,7 @@ import type { AgentHookStatus, HookPlan } from "@/lib/types";
 export const AGENT_HOOKS_HIGHLIGHT = "agent-hooks";
 
 export function AgentHooksBlock() {
+  const { t } = useTranslation("settings");
   const detectedClis = useApp(s => s.detectedClis);
   const agents = useApp(s => s.agents);
   const [status, setStatus] = useState<Record<string, AgentHookStatus>>({});
@@ -90,8 +92,8 @@ export function AgentHooksBlock() {
       document.getElementById(`setting-${AGENT_HOOKS_HIGHLIGHT}`)
         ?.scrollIntoView({ behavior: "smooth", block: "start" }));
     setFlash(true);
-    const t = window.setTimeout(() => setFlash(false), 1600);
-    return () => { window.clearTimeout(t); window.cancelAnimationFrame(raf); };
+    const th = window.setTimeout(() => setFlash(false), 1600);
+    return () => { window.clearTimeout(th); window.cancelAnimationFrame(raf); };
   }, [settingsHighlight]);
 
   const toggleDetails = async (id: string) => {
@@ -205,7 +207,7 @@ export function AgentHooksBlock() {
         className="flex w-full items-center gap-2 text-left"
       >
         <ChevronRight className={cn("h-4 w-4 shrink-0 text-[var(--color-fg-faint)] transition-transform", expanded && "rotate-90")} />
-        <span className="text-[14px] font-semibold text-[var(--color-fg)]">Agent hooks</span>
+        <span className="text-[14px] font-semibold text-[var(--color-fg)]">{t("agents.hooks.title")}</span>
         {/* Collapsed, this line is the only thing reporting coverage, and the
             count alone made "5 of 5" and "3 of 5" look identical at a glance:
             both are dim grey text ending in "installed", and the digit doing
@@ -221,7 +223,7 @@ export function AgentHooksBlock() {
           data-testid="agent-hooks-summary"
           data-state={installedCount === 0 ? "none" : partial ? "partial" : "complete"}
           title={partial
-            ? "Some detected agents are not reporting their own state. Expand to see which."
+            ? t("agents.hooks.partialTip")
             : undefined}
           className={cn(
             "ml-auto flex items-center gap-1.5 text-[12.5px]",
@@ -241,8 +243,8 @@ export function AgentHooksBlock() {
               : <Check className="h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" aria-hidden />
           )}
           {installedCount > 0
-            ? `${installedCount} of ${wirable.length} installed`
-            : "Let agents report their own state"}
+            ? t("agents.hooks.summaryCount", { installed: installedCount, total: wirable.length })
+            : t("agents.hooks.summaryNone")}
         </span>
       </button>
 
@@ -250,8 +252,8 @@ export function AgentHooksBlock() {
           make here is "all of them", and it should not take an expand. */}
       <div data-testid="agent-hooks-auto" data-on={auto ? "1" : "0"} className="mt-3">
         <Toggle
-          label="Install hooks for every agent"
-          hint="Includes agents you add later."
+          label={t("agents.hooks.autoLabel")}
+          hint={t("agents.hooks.autoHint")}
           value={!!auto}
           onChange={v => { if (busy !== "*") void setAutoInstall(v); }}
         />
@@ -263,13 +265,7 @@ export function AgentHooksBlock() {
       {expanded && (
         <div className="mt-3 flex flex-col gap-3">
           <p className="text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-            Termic installs a small script into the agent&apos;s own config so it
-            reports when a turn starts, when it needs you, and when it is done.
-            Without it Termic infers all three from the terminal, which is
-            usually right: Claude paints its idle glyph while blocked on a
-            permission prompt, and again while its subagents run, so a task can
-            read as finished when it is not. Removal puts the config back byte
-            for byte, and each row shows exactly what it writes.
+            {t("agents.hooks.desc")}
           </p>
           <div className="flex flex-col gap-2">
             {wirable.map(id => {
@@ -285,9 +281,9 @@ export function AgentHooksBlock() {
                     <span className="text-[14px] font-medium">{agentDisplayName(id, agents)}</span>
                     <div className="flex items-center gap-2">
                       <span className="text-[12.5px] text-[var(--color-fg-dim)]">
-                        {blocked ? "disableAllHooks is set in this config"
-                          : st.host.installed ? "installed"
-                          : "not installed"}
+                        {blocked ? t("agents.hooks.blocked")
+                          : st.host.installed ? t("agents.hooks.installed")
+                          : t("agents.hooks.notInstalled")}
                       </span>
                       {!blocked && (
                         <Button
@@ -295,7 +291,7 @@ export function AgentHooksBlock() {
                           disabled={busy === id}
                           onClick={() => act(id, !st.host.installed)}
                         >
-                          {busy === id ? "..." : st.host.installed ? "Remove" : "Install"}
+                          {busy === id ? "..." : st.host.installed ? t("common:remove") : t("agents.hooks.install")}
                         </Button>
                       )}
                     </div>
@@ -308,7 +304,7 @@ export function AgentHooksBlock() {
                       onClick={() => void toggleDetails(id)}
                       className="self-start text-[12.5px] text-[var(--color-fg-dim)] underline decoration-dotted hover:text-[var(--color-fg)]"
                     >
-                      {open === id ? "Hide what this installs" : "Show exactly what this installs"}
+                      {open === id ? t("agents.hooks.hideInstalls") : t("agents.hooks.showInstalls")}
                     </button>
                   )}
                   {open === id && plan[id] && (() => {
@@ -355,11 +351,11 @@ export function AgentHooksBlock() {
                         </div>
                         <div className="break-all text-[var(--color-fg-subtle)]">
                           <code>{tildePath(file.path, home)}</code>
-                          {file.config && p.config_is_shared && " (yours; termic merges into it)"}
+                          {file.config && p.config_is_shared && ` (${t("agents.hooks.yoursMerges")})`}
                         </div>
                         {file.events.length > 0 && (
                           <div className="text-[var(--color-fg-subtle)]">
-                            Runs on {file.events.join(", ")}
+                            {t("agents.hooks.runsOn", { events: file.events.join(", ") })}
                           </div>
                         )}
                         <pre className="max-h-[320px] overflow-auto whitespace-pre">{file.body}</pre>

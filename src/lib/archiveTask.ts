@@ -14,6 +14,7 @@ import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { useArchivingTasks } from "@/store/archivingTasks";
 import { taskArchive } from "@/lib/ipc";
+import { i18n } from "@/lib/i18n";
 import { openPrArchiveWarning } from "@/store/pr";
 import type { ConfirmCheckbox } from "@/store/ui";
 import type { Task } from "@/lib/types";
@@ -38,7 +39,9 @@ export async function archiveAndRefresh(taskId: string, deleteBranch: boolean): 
     // drops the task.
     const name = useApp.getState().tasks.find(t => t.id === taskId)?.name;
     useUI.getState().pushToast(
-      `Archived${name ? ` "${name}"` : ""}, but cleanup failed: ${String(err)}`,
+      name
+        ? i18n.t("backend:archiveTask.cleanupFailedNamed", { name, error: String(err) })
+        : i18n.t("backend:archiveTask.cleanupFailed", { error: String(err) }),
       "error",
       { ttlMs: 10000 },
     );
@@ -68,22 +71,24 @@ function archivePrompt(w: Task, deleteBranchDefault: boolean): { message: string
   const prWarning = openPrArchiveWarning(w.id);
   if (w.is_main_checkout) {
     return {
-      message: prWarning + "This removes the Termic entry for the project's main checkout. The repo on disk is NOT touched, so you can re-open it from the project's + menu any time. Any agent running here will be terminated.",
-      confirmLabel: "Remove entry",
+      message: prWarning + i18n.t("backend:archiveTask.mainMessage"),
+      confirmLabel: i18n.t("backend:archiveTask.mainConfirm"),
     };
   }
   if ((w.composition?.length ?? 0) > 0) {
     const members = (w.composition ?? []).filter(m => m.mode === "worktree").map(m => m.dir_name);
     return {
-      message: prWarning + `Easy to get back: the task stays in History and the branches stay in git, so you can recreate it later. This removes the on-disk worktrees (the host + ${members.join(", ") || "none"}) and any member symlinks to live checkouts (those live repos are NOT touched). Any running agent will be terminated.`,
-      confirmLabel: "Archive",
-      checkbox: { label: "Delete the git branches", defaultValue: deleteBranchDefault },
+      message: prWarning + i18n.t("backend:archiveTask.compositionMessage", {
+        members: members.join(", ") || i18n.t("backend:archiveTask.compositionNone"),
+      }),
+      confirmLabel: i18n.t("backend:archiveTask.compositionConfirm"),
+      checkbox: { label: i18n.t("backend:archiveTask.deleteBranches"), defaultValue: deleteBranchDefault },
     };
   }
   return {
-    message: prWarning + "Easy to get back: the task stays in History and the branch stays in git, so you can spin up a fresh worktree on it later. This removes only the on-disk worktree directory (build artifacts: node_modules, .venv, untracked files) and terminates any running agent.",
-    confirmLabel: "Archive",
-    checkbox: { label: "Delete the git branch:", branchName: w.branch || undefined, defaultValue: deleteBranchDefault },
+    message: prWarning + i18n.t("backend:archiveTask.worktreeMessage"),
+    confirmLabel: i18n.t("backend:archiveTask.worktreeConfirm"),
+    checkbox: { label: i18n.t("backend:archiveTask.deleteBranch"), branchName: w.branch || undefined, defaultValue: deleteBranchDefault },
   };
 }
 
@@ -107,16 +112,16 @@ export async function confirmAndArchive(w: Task): Promise<void> {
     // happened — and the only pointer back to where the task went. Pushed
     // BEFORE awaiting: the archive can take tens of seconds (script +
     // node_modules rmdir) and the confirmation belongs to the click.
-    ui.pushToast(`Archived "${label}". It's in History.`, "info", {
+    ui.pushToast(i18n.t("backend:archiveTask.archivedToast", { name: label }), "info", {
       ttlMs: 6000,
-      action: { label: "History", onClick: () => useApp.getState().setView("history") },
+      action: { label: i18n.t("backend:archiveTask.history"), onClick: () => useApp.getState().setView("history") },
     });
     await done;
     return;
   }
 
   const ok = await ui.askConfirm({
-    title: `Archive "${label}"?`,
+    title: i18n.t("backend:archiveTask.confirmTitle", { name: label }),
     message,
     confirmLabel,
     // Not red: archiving is recoverable (History keeps the task, git keeps

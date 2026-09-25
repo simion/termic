@@ -48,6 +48,7 @@ import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
+import { i18n } from "@/lib/i18n";
 import { taskLabel } from "@/lib/taskLabel";
 
 export interface PrEntry {
@@ -523,9 +524,9 @@ async function checkComments(taskId: string) {
       }
       const noun = provider === "gitlab" ? "MR" : "PR";
       useUI.getState().pushToast(
-        `${fresh.length} new comment${fresh.length !== 1 ? "s" : ""} on ${noun} ${ref}. Queued for the agent to address.`,
+        i18n.t(fresh.length === 1 ? "backend:pr.commentsToastOne" : "backend:pr.commentsToastOther", { count: fresh.length, noun, ref }),
         "success",
-        url ? { action: { label: "Open", onClick: () => { openPath(url).catch(() => {}); } } } : undefined,
+        url ? { action: { label: i18n.t("backend:pr.open"), onClick: () => { openPath(url).catch(() => {}); } } } : undefined,
       );
       // Same opt-in as every other agent-activity banner (useAttentionNotifier)
       // - this can land while the app is backgrounded or the task isn't the
@@ -533,16 +534,20 @@ async function checkComments(taskId: string) {
       if (usePrefs.getState().desktopNotifications) {
         notify(
           taskLabel(ws, usePrefs.getState().useBranchAsTaskName),
-          `${fresh.length} new comment${fresh.length !== 1 ? "s" : ""} on ${noun} ${ref}, queued for the agent`,
+          i18n.t(fresh.length === 1 ? "backend:pr.commentsNotifyOne" : "backend:pr.commentsNotifyOther", { count: fresh.length, noun, ref }),
           { taskId, tabId: target.id },
         ).catch(() => {});
       }
     } else {
       // Lost the agent between the gate and now - surface, don't notify.
       useUI.getState().pushToast(
-        `${fresh.length} new comment${fresh.length !== 1 ? "s" : ""} on ${provider === "gitlab" ? "MR" : "PR"} ${ref}. No running agent to hand them to.`,
+        i18n.t(fresh.length === 1 ? "backend:pr.commentsNoAgentOne" : "backend:pr.commentsNoAgentOther", {
+          count: fresh.length,
+          provider: provider === "gitlab" ? "MR" : "PR",
+          ref,
+        }),
         "info",
-        url ? { action: { label: "Open", onClick: () => { openPath(url).catch(() => {}); } } } : undefined,
+        url ? { action: { label: i18n.t("backend:pr.open"), onClick: () => { openPath(url).catch(() => {}); } } } : undefined,
       );
     }
   } catch (err) {
@@ -643,8 +648,8 @@ function maybeHandleMerged(taskId: string, prev: PrLookup | null | undefined, ne
     notify(taskLabel(task, usePrefs.getState().useBranchAsTaskName), body).catch(() => {});
   };
   if (mode === "auto") {
-    useUI.getState().pushToast(`${label} merged. Archiving "${task.name}"`, "success");
-    notifyMerge(`${label} merged, archiving`);
+    useUI.getState().pushToast(i18n.t("backend:pr.mergedAutoToast", { label, name: task.name }), "success");
+    notifyMerge(i18n.t("backend:pr.mergedAutoNotify", { label }));
     // Worktree + task entry only, NOT the branch: this runs unattended with
     // no confirmation, so it must be the reversible half of archiving. The
     // branch (and the task in History) survive - deleting it too is a
@@ -664,11 +669,11 @@ function maybeHandleMerged(taskId: string, prev: PrLookup | null | undefined, ne
   // checkbox and all - not a bare archiveAndRefresh. This is "ask" mode:
   // the whole point is the user gets a real say, not just a single
   // one-click button skipping the branch-delete decision everywhere else.
-  useUI.getState().pushToast(`${label} merged. Archive "${task.name}"?`, "warning", {
+  useUI.getState().pushToast(i18n.t("backend:pr.mergedAskToast", { label, name: task.name }), "warning", {
     sticky: true,
-    action: { label: "Archive", onClick: () => { void confirmAndArchive(task); } },
+    action: { label: i18n.t("backend:pr.archiveAction"), onClick: () => { void confirmAndArchive(task); } },
   });
-  notifyMerge(`${label} merged. Archive "${task.name}"?`);
+  notifyMerge(i18n.t("backend:pr.mergedAskNotify", { label, name: task.name }));
 }
 
 /** A task's PR/MR just went from none to existing. Every mounted task keeps

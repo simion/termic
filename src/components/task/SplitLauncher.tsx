@@ -8,6 +8,7 @@
 // launcher unmounts automatically (the leaf now has a tabId to render).
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import type { Task } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { visibleCliIds, isTerminalEntry } from "@/lib/agents";
@@ -22,6 +23,7 @@ interface LauncherItem {
 }
 
 export function SplitLauncher({ task, paneId }: { task: Task; paneId: string }) {
+  const { t } = useTranslation("task");
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const addPaneTab = useApp(s => s.addPaneTab);
@@ -30,7 +32,7 @@ export function SplitLauncher({ task, paneId }: { task: Task; paneId: string }) 
   const items = useMemo<LauncherItem[]>(() => {
     const visible = visibleCliIds(registry.map(a => a.id), registry, detectedClis);
     const out: LauncherItem[] = [
-      { cli: "shell", label: "Terminal", iconId: "shell", section: "terminal" },
+      { cli: "shell", label: t("newTab.terminal"), iconId: "shell", section: "terminal" },
     ];
     for (const a of registry.filter(a => isTerminalEntry(a) && !a.disabled)) {
       out.push({ cli: a.id, label: a.display_name, iconId: resolveIconId(a.id, registry), section: "terminal" });
@@ -39,7 +41,7 @@ export function SplitLauncher({ task, paneId }: { task: Task; paneId: string }) 
       out.push({ cli: a.id, label: a.display_name, iconId: resolveIconId(a.id, registry), section: "agent" });
     }
     return out;
-  }, [registry, detectedClis]);
+  }, [registry, detectedClis, t]);
 
   const [sel, setSel] = useState(0);
   useEffect(() => { setSel(s => Math.min(Math.max(s, 0), Math.max(0, items.length - 1))); }, [items.length]);
@@ -88,7 +90,7 @@ export function SplitLauncher({ task, paneId }: { task: Task; paneId: string }) 
             <div key={`${it.section}:${it.cli}`}>
               {firstOfSection && (
                 <div className="px-2 pb-0.5 pt-1.5 text-[10.5px] font-medium uppercase tracking-[0.06em] text-[var(--color-fg-faint)]">
-                  {it.section === "terminal" ? "New terminal" : "New agent"}
+                  {it.section === "terminal" ? t("newTab.newTerminal") : t("newTab.newAgent")}
                 </div>
               )}
               <button
@@ -111,7 +113,11 @@ export function SplitLauncher({ task, paneId }: { task: Task; paneId: string }) 
         })}
       </div>
       <div className="text-[11px] text-[var(--color-fg-faint)]">
-        <kbd className="font-sans">↑↓</kbd> navigate · <kbd className="font-sans">↵</kbd> launch · <kbd className="font-sans">esc</kbd> close
+        <Trans
+          t={t}
+          i18nKey="splitLauncher.hint"
+          components={{ kbd: <kbd className="font-sans" /> }}
+        />
       </div>
     </div>
   );

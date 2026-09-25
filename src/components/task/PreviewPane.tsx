@@ -14,6 +14,7 @@
 // does, see the fsRevision effect below).
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { EditTab, Task } from "@/lib/types";
 import { taskFileFp, taskFileReadBase64 } from "@/lib/ipc";
 import { previewKindForPath, taskPdfSrc } from "@/lib/previewPaths";
@@ -23,6 +24,7 @@ import { useApp } from "@/store/app";
 type PdfState = { id: string; path: string; fp?: string; err?: string };
 
 export function PreviewPane({ task, tab }: { task: Task; tab: EditTab }) {
+  const { t } = useTranslation("panels");
   const kind = previewKindForPath(tab.path);
 
   const [loading, setLoading] = useState(true);
@@ -83,7 +85,7 @@ export function PreviewPane({ task, tab }: { task: Task; tab: EditTab }) {
           return;
         }
         if (!mime || !data) {
-          setErr("empty response");
+          setErr(t("previewPane.emptyResponse"));
           setLoading(false);
           return;
         }
@@ -136,8 +138,8 @@ export function PreviewPane({ task, tab }: { task: Task; tab: EditTab }) {
     // survives a tab switch as long as this URL holds still.
     return (
       <div className="relative h-full overflow-auto bg-[var(--color-bg)]">
-        {!pdf && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
-        {pdf?.err && <div className="p-4 text-[14px] text-[var(--color-err)]">Error: {pdf.err}</div>}
+        {!pdf && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">{t("shared.loading")}</div>}
+        {pdf?.err && <div className="p-4 text-[14px] text-[var(--color-err)]">{t("shared.errorWithMessage", { message: pdf.err })}</div>}
         {pdf?.fp && (
           <embed src={taskPdfSrc(task.id, tab.path, pdf.fp)} type="application/pdf" className="h-full w-full" />
         )}
@@ -147,8 +149,8 @@ export function PreviewPane({ task, tab }: { task: Task; tab: EditTab }) {
 
   return (
     <div className="relative h-full overflow-auto bg-[var(--color-bg)]">
-      {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
-      {err && <div className="p-4 text-[14px] text-[var(--color-err)]">Error: {err}</div>}
+      {loading && <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">{t("shared.loading")}</div>}
+      {err && <div className="p-4 text-[14px] text-[var(--color-err)]">{t("shared.errorWithMessage", { message: err })}</div>}
       {url && (
         <div className="flex h-full items-center justify-center p-4">
           <img src={url} alt={tab.title} className="max-h-full max-w-full object-contain" />

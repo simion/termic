@@ -4,6 +4,7 @@
 // and the "which siblings does this close" rules live here.
 
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Pin, PinOff, X, SquareSplitHorizontal, SquareSplitVertical, Move } from "lucide-react";
 import {
   ContextMenuRoot, ContextMenuTrigger, ContextMenuContent,
@@ -40,6 +41,7 @@ export function TabContextMenu({
   onMoveToSplit?: () => void;
   children: ReactNode;
 }) {
+  const { t } = useTranslation("task");
   const others = closableSiblings(tabs, tabId, "others");
   const right = closableSiblings(tabs, tabId, "right");
   return (
@@ -51,32 +53,32 @@ export function TabContextMenu({
       <ContextMenuTrigger className="contents">{children}</ContextMenuTrigger>
       <ContextMenuContent>
         {pinned ? (
-          <ContextMenuItem onSelect={onUnpin}><PinOff /> Unpin</ContextMenuItem>
+          <ContextMenuItem onSelect={onUnpin}><PinOff /> {t("tabMenu.unpin")}</ContextMenuItem>
         ) : (
-          <ContextMenuItem onSelect={onPin}><Pin /> Pin</ContextMenuItem>
+          <ContextMenuItem onSelect={onPin}><Pin /> {t("tabMenu.pin")}</ContextMenuItem>
         )}
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={onClose}><X /> Close</ContextMenuItem>
+        <ContextMenuItem onSelect={onClose}><X /> {t("tabMenu.close")}</ContextMenuItem>
         <ContextMenuItem disabled={!others.length} onSelect={() => onCloseMany(others)}>
-          Close others
+          {t("tabMenu.closeOthers")}
         </ContextMenuItem>
         <ContextMenuItem disabled={!right.length} onSelect={() => onCloseMany(right)}>
-          Close to the right
+          {t("tabMenu.closeRight")}
         </ContextMenuItem>
         {(onSplitRight || onSplitDown || onMoveToSplit) && <ContextMenuSeparator />}
         {onSplitRight && (
           <ContextMenuItem disabled={!canSplitOut} onSelect={onSplitRight}>
-            <SquareSplitHorizontal /> Split right
+            <SquareSplitHorizontal /> {t("tabMenu.splitRight")}
           </ContextMenuItem>
         )}
         {onSplitDown && (
           <ContextMenuItem disabled={!canSplitOut} onSelect={onSplitDown}>
-            <SquareSplitVertical /> Split down
+            <SquareSplitVertical /> {t("tabMenu.splitDown")}
           </ContextMenuItem>
         )}
         {onMoveToSplit && (
           <ContextMenuItem onSelect={onMoveToSplit}>
-            <Move /> Move to split&hellip;
+            <Move /> {t("tabMenu.moveToSplit")}
           </ContextMenuItem>
         )}
       </ContextMenuContent>

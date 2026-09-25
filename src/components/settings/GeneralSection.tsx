@@ -7,6 +7,7 @@
 // (agents, etc.) instead of wiping them.
 
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { settingsSave } from "@/lib/ipc";
 import type { Settings } from "@/lib/types";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -24,9 +25,13 @@ import { usePr } from "@/store/pr";
 import { CircleCheck, CircleX, RefreshCw } from "lucide-react";
 import { IS_MAC } from "@/lib/shortcuts";
 import { Tip } from "@/components/ui/Tooltip";
+import type { LanguagePref } from "@/lib/i18n";
 
 export function GeneralSection() {
+  const { t } = useTranslation("settings");
   const { settings, store, patch } = useBackendSettings();
+  const language = usePrefs(s => s.language);
+  const setLanguage = usePrefs(s => s.setLanguage);
   // What the window's close button does. A backend Settings field Rust
   // re-reads on every close, so a change here applies without a restart.
   // Three-way rather than a toggle because "ask me" has to remain reachable:
@@ -160,20 +165,41 @@ export function GeneralSection() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionTitle title="General" />
+      <SectionTitle title={t("rail.general")} />
 
-      <Block first>
-        <div className="text-[14px] font-medium">Repos directory</div>
+      {/* UI language. Applies live through i18next: every mounted
+          useTranslation subscriber re-renders on the switch. */}
+      <Block first id="setting-language">
+        <div className="text-[14px] font-medium">{t("general.language.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Where Termic scans for unadded git repos when you click "Add project".
+          {t("general.language.hint")}
+        </div>
+        <div className="mt-2 max-w-sm">
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value as LanguagePref)}
+            className="h-9 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
+            data-testid="language-select"
+          >
+            <option value="system">{t("general.language.system")}</option>
+            <option value="en">{t("general.language.en")}</option>
+            <option value="zh-CN">{t("general.language.zhCN")}</option>
+          </select>
+        </div>
+      </Block>
+
+      <Block>
+        <div className="text-[14px] font-medium">{t("general.reposDir.title")}</div>
+        <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+          {t("general.reposDir.hint")}
         </div>
         <div className="mt-2 flex gap-2">
           <Input value={reposDir} onChange={(e) => setReposDir(e.target.value)} placeholder="~/Projects" className="font-mono" />
-          <Button variant="secondary" onClick={browse}>Browse…</Button>
+          <Button variant="secondary" onClick={browse}>{t("common:browse")}</Button>
         </div>
         <div className="mt-3">
           <Button variant="primary" disabled={!dirty || busy} onClick={save}>
-            {busy ? "Saving…" : "Save"}
+            {busy ? t("common:saving") : t("common:save")}
           </Button>
         </div>
       </Block>
@@ -190,16 +216,20 @@ export function GeneralSection() {
           machine. Per-project, team-shared excludes live in each repo's
           .termic.yaml (Settings → Projects). */}
       <Block>
-        <div className="text-[14px] font-medium">Hidden files (personal)</div>
+        <div className="text-[14px] font-medium">{t("general.hidden.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Patterns hidden from the "All files" tree across every project on this machine. Pick a preset or add your own. For team-shared, per-repo excludes, use a project's <code className="font-mono">.termic.yaml</code> (Settings → Projects).
+          <Trans
+            t={t}
+            i18nKey="general.hidden.hint"
+            components={{ 1: <code className="font-mono" /> }}
+          />
         </div>
         <div className="mt-3">
           <ExcludeEditor value={fileExclude} onChange={setFileExclude} />
         </div>
         <div className="mt-3">
           <Button variant="primary" disabled={!excludeDirty || busy} onClick={saveExclude}>
-            {busy ? "Saving…" : "Save hidden files"}
+            {busy ? t("common:saving") : t("general.hidden.save")}
           </Button>
         </div>
       </Block>
@@ -208,18 +238,12 @@ export function GeneralSection() {
           express a specific browser PROFILE, which is what the issue asks
           for. Empty keeps the OS default and the exact pre-#245 code path. */}
       <Block id="setting-preview-browser">
-        <div className="text-[14px] font-medium">Open links in</div>
+        <div className="text-[14px] font-medium">{t("general.browser.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Termic opens a link in three places: the globe button that appears
-          while a run is going, the Open button on the run toolbar, and any URL
-          you {CLICK_MOD}-click in a terminal. This setting picks the browser
-          for all three. Everything else (the Termic website, an issue link)
-          keeps using your system default.
+          {t("general.browser.hint1", { mod: CLICK_MOD })}
         </div>
         <div className="mt-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          It is a command, not just an app, so you can pick a specific browser
-          profile. Leave it empty to use your default browser, exactly as
-          before. One project can override this in Settings → Projects.
+          {t("general.browser.hint2")}
         </div>
         <div className="mt-3 max-w-xl">
           <BrowserCommandField
@@ -235,7 +259,7 @@ export function GeneralSection() {
             onClick={savePreviewBrowser}
             data-testid="general-browser-save"
           >
-            {busy ? "Saving…" : "Save browser"}
+            {busy ? t("common:saving") : t("general.browser.save")}
           </Button>
         </div>
       </Block>
@@ -246,11 +270,9 @@ export function GeneralSection() {
           elsewhere would save a setting nothing reads. */}
       {IS_MAC && <Block id="setting-close-action">
         <div className="flex flex-col gap-1">
-          <div className="text-[13.5px] text-[var(--color-fg)]">When you close the window</div>
+          <div className="text-[13.5px] text-[var(--color-fg)]">{t("general.closeAction.label")}</div>
           <p className="text-[12.5px] text-[var(--color-fg-dim)] leading-relaxed max-w-2xl">
-            Closing used to quit Termic and stop every running agent. Keeping
-            them in the menu bar leaves them working, and Quit (⌘Q, or the
-            menu-bar item) becomes the only thing that stops them.
+            {t("general.closeAction.hint")}
           </p>
           <div className="mt-2 max-w-sm">
             <select
@@ -259,9 +281,9 @@ export function GeneralSection() {
               className="h-9 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] pl-3 pr-8 text-[13px] text-[var(--color-fg)] outline-none transition-colors focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--color-accent-soft)]"
               data-testid="close-action-select"
             >
-              <option value="ask">Ask me each time</option>
-              <option value="menubar">Keep agents running in the menu bar</option>
-              <option value="quit">Quit Termic and stop agents</option>
+              <option value="ask">{t("general.closeAction.ask")}</option>
+              <option value="menubar">{t("general.closeAction.menubar")}</option>
+              <option value="quit">{t("general.closeAction.quit")}</option>
             </select>
           </div>
         </div>
@@ -269,13 +291,8 @@ export function GeneralSection() {
 
       <Block id="setting-tray-enabled">
         <Toggle
-          label="Show Termic in the menu bar"
-          hint={
-            "A small icon that's always there while Termic is running: a badge and dropdown for tasks that need your input or just finished, and Show/Quit."
-            + (IS_MAC
-              ? " Turning it off also means closing to the menu bar (above) falls back to the dock icon as your way back in."
-              : "")
-          }
+          label={t("general.tray.label")}
+          hint={t("general.tray.hint") + (IS_MAC ? t("general.tray.hintMac") : "")}
           value={trayEnabled}
           onChange={saveTrayEnabled}
         />
@@ -285,8 +302,8 @@ export function GeneralSection() {
           a visible way back. */}
       {IS_MAC && <Block id="setting-offer-touchid-sudo">
         <Toggle
-          label="Offer Touch ID for sudo"
-          hint="When a terminal asks for your sudo password, offer to turn on Touch ID for sudo. Accepting runs a short script, in a tab where you can read it, that adds pam_tid.so to /etc/pam.d/sudo_local."
+          label={t("general.touchId.label")}
+          hint={t("general.touchId.hint")}
           value={offerTouchIdForSudo}
           onChange={setOfferTouchIdForSudo}
         />
@@ -300,8 +317,8 @@ export function GeneralSection() {
         )}
       >
         <Toggle
-          label="Load remote images in markdown preview"
-          hint="Off by default: images hosted on external sites are blocked in the markdown preview, so opening an untrusted file (a dependency's README, a fetched page) can't silently fire a network request. A per-document button in the preview can still load them for just that file."
+          label={t("general.remoteImages.label")}
+          hint={t("general.remoteImages.hint")}
           value={loadRemoteImages}
           onChange={setLoadRemoteImages}
         />
@@ -315,6 +332,7 @@ export function GeneralSection() {
  *  CLI-backed by design (no tokens stored in termic), so this block is
  *  where users learn what to install and how to sign in. */
 function ForgeStatusBlock() {
+  const { t } = useTranslation("settings");
   const forges = usePr(s => s.forges);
   const refreshForges = usePr(s => s.refreshForges);
   const [probing, setProbing] = useState(false);
@@ -326,8 +344,8 @@ function ForgeStatusBlock() {
   return (
     <div>
       <div className="flex items-center gap-2">
-        <div className="text-[14px] font-medium">Pull request integrations</div>
-        <Tip content="Re-detect the CLIs">
+        <div className="text-[14px] font-medium">{t("general.forge.title")}</div>
+        <Tip content={t("general.forge.reprobe")}>
           <button
             onClick={reprobe}
             className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
@@ -337,9 +355,7 @@ function ForgeStatusBlock() {
         </Tip>
       </div>
       <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-        PR/MR status, creating a PR, merge detection, and starting a task from an issue all run through
-        the official CLIs. Termic never stores tokens: sign in once with each CLI and it all works.
-        Self-hosted GitHub Enterprise and GitLab work too, as long as the CLI is signed in to that host.
+        {t("general.forge.hint")}
       </div>
       <div className="mt-3 flex flex-col gap-2">
         {(forges ?? []).map(f => (
@@ -351,20 +367,27 @@ function ForgeStatusBlock() {
             {!f.found ? (
               <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
                 <CircleX className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
-                Not installed.
+                {t("general.forge.notInstalled")}
                 <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px]">brew install {f.id}</code>
               </span>
             ) : !f.authed ? (
               <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-warn)]">
                 <CircleX className="h-3.5 w-3.5" />
-                Installed, not signed in.
+                {t("general.forge.notSignedIn")}
                 <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px] text-[var(--color-fg)]">{f.id} auth login</code>
               </span>
             ) : (
               <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
                 <CircleCheck className="h-3.5 w-3.5 shrink-0" style={{ color: "#3fb950" }} />
                 <span className="truncate">
-                  Signed in{f.account ? <> as <span className="text-[var(--color-fg)]">{f.account}</span></> : null}
+                  {f.account ? (
+                    <Trans
+                      t={t}
+                      i18nKey="general.forge.signedInAs"
+                      values={{ account: f.account }}
+                      components={{ 1: <span className="text-[var(--color-fg)]" /> }}
+                    />
+                  ) : t("general.forge.signedIn")}
                   {/* Hosts matter: this is how a self-hosted user confirms
                       termic will recognise their instance's remotes. */}
                   {f.hosts?.length ? (
@@ -377,7 +400,7 @@ function ForgeStatusBlock() {
           </div>
         ))}
         {forges === null && (
-          <div className="text-[12.5px] text-[var(--color-fg-faint)]">Probing CLIs…</div>
+          <div className="text-[12.5px] text-[var(--color-fg-faint)]">{t("general.forge.probing")}</div>
         )}
       </div>
     </div>

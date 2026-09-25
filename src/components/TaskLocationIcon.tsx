@@ -1,4 +1,5 @@
 import { GitBranch, Link2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 // One representative icon for a task's location, used everywhere a task's
@@ -19,8 +20,9 @@ export function TaskLocationIcon({
   className?: string;
   size?: string;
 }) {
+  const { t } = useTranslation("chrome");
   const Icon = isMainCheckout ? Link2 : GitBranch;
-  const label = isMainCheckout ? "main checkout" : "worktree";
+  const label = isMainCheckout ? t("taskLocation.main") : t("taskLocation.worktree");
   // One neutral gray for both states, a touch more faded than the task title.
   // The glyph shape (link = main checkout, branch = worktree) carries the
   // distinction; the color is deliberately quiet.

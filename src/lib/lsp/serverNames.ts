@@ -6,6 +6,8 @@
 // ask for it: a person who turned this on from the search dialog agreed to
 // exactly the same thing as one who used the chip.
 
+import { i18n } from "@/lib/i18n";
+
 /** The server a language means when nothing has been RESOLVED yet: the one
  *  termic would download, or, for the PATH-only ones, the one it would look
  *  for. A fallback only: when the machine has something, the name comes off
@@ -121,3 +123,48 @@ export const MEMORY_SHORT: Record<string, string> = {
   "ruby-lsp": "about 200 MB",
   "terraform-ls": "about 30 MB on a small project",
 };
+
+// Localized views of the two tables above. The English records stay as the
+// fallback for a server the locales do not know (a PATH binary whose name
+// nobody measured); a known name resolves through backend:lsp so a language
+// switch applies to the next tooltip/dialog without a reload.
+
+const MEMORY_KEYS: Record<string, string> = {
+  "TypeScript 7 (tsgo)": "memoryTsgo",
+  "typescript-language-server": "memoryTypescript",
+  zuban: "memoryZuban",
+  ty: "memoryTy",
+  basedpyright: "memoryBasedpyright",
+  "rust-analyzer": "memoryRustAnalyzer",
+  gopls: "memoryGopls",
+  clangd: "memoryClangd",
+  "sourcekit-lsp": "memorySourcekit",
+  "ruby-lsp": "memoryRubyLsp",
+  "terraform-ls": "memoryTerraformLs",
+};
+
+const MEMORY_SHORT_KEYS: Record<string, string> = {
+  "TypeScript 7 (tsgo)": "memoryShortTsgo",
+  "typescript-language-server": "memoryShortTypescript",
+  zuban: "memoryShortZuban",
+  ty: "memoryShortTy",
+  basedpyright: "memoryShortBasedpyright",
+  "rust-analyzer": "memoryShortRustAnalyzer",
+  gopls: "memoryShortGopls",
+  clangd: "memoryShortClangd",
+  "sourcekit-lsp": "memoryShortSourcekit",
+  "ruby-lsp": "memoryShortRubyLsp",
+  "terraform-ls": "memoryShortTerraformLs",
+};
+
+/** The memory note for `server`, localized. Empty for an unknown server. */
+export function memoryNote(server: string): string {
+  const key = MEMORY_KEYS[server];
+  return (key ? i18n.t(`backend:lsp.${key}`) : MEMORY_NOTE[server]) ?? "";
+}
+
+/** The one-line figure for `server`, localized. Empty for an unknown server. */
+export function memoryShort(server: string): string {
+  const key = MEMORY_SHORT_KEYS[server];
+  return (key ? i18n.t(`backend:lsp.${key}`) : MEMORY_SHORT[server]) ?? "";
+}

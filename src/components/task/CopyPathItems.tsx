@@ -15,6 +15,7 @@
 // Cross-platform: the file-manager label adapts (Finder on macOS, File Manager
 // elsewhere) and the open/reveal IPCs dispatch per-OS on the Rust side.
 
+import { useTranslation } from "react-i18next";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { copyToClipboard, joinPath } from "@/lib/clipboard";
 import { openPath, revealPath } from "@/lib/ipc";
@@ -23,6 +24,7 @@ import { useUI } from "@/store/ui";
 import { Copy, CornerUpLeft, ExternalLink, FolderOpen } from "lucide-react";
 
 export function CopyPathItems({ rel, root, isDir = false }: { rel: string; root: string; isDir?: boolean }) {
+  const { t } = useTranslation("task");
   const abs = joinPath(root, rel);
   const name = rel.split("/").pop() || rel;
   const revealInFileManager = () => {
@@ -37,18 +39,18 @@ export function CopyPathItems({ rel, root, isDir = false }: { rel: string; root:
           file manager", so for a folder this would duplicate the entry below. */}
       {!isDir && (
         <ContextMenuItem onSelect={() => void openInDefaultApp(abs, name)}>
-          <ExternalLink /> Open in default app
+          <ExternalLink /> {t("copyPath.openInDefaultApp")}
         </ContextMenuItem>
       )}
       <ContextMenuItem onSelect={revealInFileManager}>
-        <FolderOpen /> {isDir ? `Open in ${FILE_MANAGER}` : `Reveal in ${FILE_MANAGER}`}
+        <FolderOpen /> {isDir ? t("copyPath.openInManager", { manager: FILE_MANAGER }) : t("copyPath.revealInManager", { manager: FILE_MANAGER })}
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => copyToClipboard(rel, "relative path")}>
-        <CornerUpLeft /> Copy path (relative)
+        <CornerUpLeft /> {t("copyPath.copyRelative")}
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => copyToClipboard(abs, "path")}>
-        <Copy /> Copy path (absolute)
+        <Copy /> {t("copyPath.copyAbsolute")}
       </ContextMenuItem>
     </>
   );

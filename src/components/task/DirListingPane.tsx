@@ -8,6 +8,7 @@
 // (fsRevision) just re-reads silently.
 
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, CornerLeftUp, FolderOpen } from "lucide-react";
 import type { DirTab, FileEntry, Task } from "@/lib/types";
 import { taskDirList, taskFileRead } from "@/lib/ipc";
@@ -43,6 +44,7 @@ export function DirListingPane(
     ownsFind?: boolean;
   },
 ) {
+  const { t } = useTranslation("panels");
   const dir = tab.path;
   // Entries are LABELLED with the folder they were read for. Recycling this
   // tab to another folder must not flash the previous folder's contents
@@ -124,7 +126,7 @@ export function DirListingPane(
         <div className="flex min-w-0 flex-1 items-center overflow-hidden">
           <button
             onClick={() => navigateDirTab(task.id, tab.id, "")}
-            title="Task root"
+            title={t("dirListing.taskRoot")}
             className={cn(
               "max-w-[240px] truncate rounded px-1 py-0.5 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
               segments.length ? "text-[var(--color-fg-dim)]" : "text-[var(--color-fg)]",
@@ -158,7 +160,7 @@ export function DirListingPane(
             const { short, detail } = explainDirError(err.msg);
             return (
               <div className="mb-3 rounded border border-[var(--color-border)] px-3 py-2 text-[12.5px] text-[var(--color-fg-dim)]">
-                <div className="text-[var(--color-err)]">Couldn't read this folder. {short}.</div>
+                <div className="text-[var(--color-err)]">{t("dirListing.couldntRead", { detail: short })}</div>
                 {detail !== short && (
                   <div className="mt-1 break-all text-[11.5px] text-[var(--color-fg-faint)]">{detail}</div>
                 )}
@@ -166,7 +168,7 @@ export function DirListingPane(
             );
           })()}
           {entries === null ? (
-            <div className="text-[13px] text-[var(--color-fg-dim)]">Loading…</div>
+            <div className="text-[13px] text-[var(--color-fg-dim)]">{t("shared.loading")}</div>
           ) : (
             <div data-testid="dir-listing" className="overflow-hidden rounded border border-[var(--color-border)]">
               {/* ".." first, the way GitHub and every file manager do it.
@@ -178,7 +180,7 @@ export function DirListingPane(
                 <button
                   data-testid="dir-up"
                   onClick={() => navigateDirTab(task.id, tab.id, parent)}
-                  title={parent ? `Up to ${parent}` : "Up to the task root"}
+                  title={parent ? t("dirListing.upTo", { path: parent }) : t("dirListing.upToRoot")}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                 >
                   <CornerLeftUp className="h-4 w-4 shrink-0" />..
@@ -192,7 +194,7 @@ export function DirListingPane(
                   "flex items-center gap-2 px-3 py-6 text-[13px] text-[var(--color-fg-dim)]",
                   parent !== null && "border-t border-[var(--color-border-soft)]",
                 )}>
-                  <FolderOpen className="h-4 w-4" />This folder is empty.
+                  <FolderOpen className="h-4 w-4" />{t("dirListing.empty")}
                 </div>
               )}
               {entries.map((e, i) => (
@@ -228,7 +230,7 @@ export function DirListingPane(
               {/* Height-capped rather than h-full: MarkdownPreview fills its
                   container, and this one sits inside the page's own scroller. */}
               <div className="h-[70vh]">
-                <Suspense fallback={<div className="p-4 text-[13px] text-[var(--color-fg-dim)]">Loading preview…</div>}>
+                <Suspense fallback={<div className="p-4 text-[13px] text-[var(--color-fg-dim)]">{t("shared.loadingPreview")}</div>}>
                   <MarkdownPreview
                     text={readme.text}
                     visible={visible}

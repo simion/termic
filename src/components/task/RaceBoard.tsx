@@ -5,6 +5,7 @@
 // own. Returns null everywhere else, so it costs nothing in the common case.
 
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useRace, raceOf } from "@/store/race";
 import { useUI } from "@/store/ui";
@@ -19,6 +20,7 @@ import type { TerminalTab } from "@/lib/types";
 export type WorkDot = "idle" | "working" | "done";
 
 export function RaceBoard() {
+  const { t } = useTranslation("panels");
   const races = useRace(s => s.races);
   const agents = useApp(s => s.agents);
   const tasks = useApp(s => s.tasks);
@@ -95,7 +97,7 @@ export function RaceBoard() {
       <button
         onClick={() => canCompare && openCompare(race.id)}
         disabled={!canCompare}
-        title={canCompare ? "Compare the racers' diffs side by side" : "Compare unlocks once every agent has finished"}
+        title={canCompare ? t("raceBoard.compareTip") : t("raceBoard.compareLocked")}
         className={cn(
           "flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[12px] transition-colors",
           canCompare
@@ -104,11 +106,11 @@ export function RaceBoard() {
         )}
       >
         <Columns2 className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">Compare</span>
+        <span className="hidden sm:inline">{t("raceBoard.compare")}</span>
       </button>
       <button
         onClick={() => setHiddenIds(prev => new Set(prev).add(race.id))}
-        title="Hide the race bar for this session (the race keeps running)"
+        title={t("raceBoard.hide")}
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
       >
         <X className="h-3.5 w-3.5" />
@@ -125,9 +127,10 @@ export function RaceBoard() {
 // a misfire costs nothing when every racer is expected to be working anyway.
 // Shared with RaceCompare's column headers.
 export function StateDot({ state }: { state: WorkDot }) {
+  const { t } = useTranslation("panels");
   if (state === "working") {
     return (
-      <span className="shrink-0 text-[var(--color-fg-faint)]" title="Agent working" aria-label="Working">
+      <span className="shrink-0 text-[var(--color-fg-faint)]" title={t("raceBoard.working")} aria-label={t("raceBoard.workingAria")}>
         <Spinner size={12} />
       </span>
     );
@@ -137,13 +140,13 @@ export function StateDot({ state }: { state: WorkDot }) {
       <span
         className="block h-2 w-2 shrink-0 rounded-full"
         style={{ backgroundColor: "var(--color-info)" }}
-        title="Agent finished a turn"
-        aria-label="Work done"
+        title={t("raceBoard.doneTitle")}
+        aria-label={t("raceBoard.doneAria")}
       />
     );
   }
   // Hollow ring, NOT a filled dot: a small filled bullet on a tab-shaped
   // chip reads as the universal "modified, unsaved" marker. An empty ring
   // reads "not started", which is what idle means here.
-  return <span className="h-2 w-2 shrink-0 rounded-full border border-[var(--color-fg-faint)]" title="Idle" />;
+  return <span className="h-2 w-2 shrink-0 rounded-full border border-[var(--color-fg-faint)]" title={t("raceBoard.idle")} />;
 }

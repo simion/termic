@@ -18,6 +18,7 @@
 //      honest answer for an app deleted while the menu was open.
 
 import { Fragment, useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -33,6 +34,7 @@ import { useUI } from "@/store/ui";
 import type { ExternalAppInfo, Task } from "@/lib/types";
 
 export function OpenWithButton({ task }: { task: Task }) {
+  const { t } = useTranslation("chrome");
   const pick = usePrefs(s => s.openWithApp);
   const setPick = usePrefs(s => s.setOpenWithApp);
   const [apps, setApps] = useState<ExternalAppInfo[] | null>(null);
@@ -42,13 +44,13 @@ export function OpenWithButton({ task }: { task: Task }) {
 
   const launch = useCallback((key: string, name: string) => {
     openWithApp(key, task.id).catch((e: unknown) => {
-      useUI.getState().pushToast(`Could not open in ${name}: ${String(e)}`, "error");
+      useUI.getState().pushToast(t("openWith.openFailed", { name, error: String(e) }), "error");
       // The app is gone (uninstalled since it was picked, or since the menu
       // listed it). Revert to the file manager, which needs no detection, so
       // the next click does something instead of failing again.
       setPick(FILE_MANAGER_PICK);
     });
-  }, [task.id, setPick]);
+  }, [task.id, setPick, t]);
 
   const loadApps = useCallback((open: boolean) => {
     if (!open || apps) return;
@@ -61,7 +63,7 @@ export function OpenWithButton({ task }: { task: Task }) {
     // drag mechanisms (docs/ui.md "Window chrome / drag") and the group's
     // wrapper only opts out of two of them.
     <div className="flex items-center overflow-hidden rounded-md">
-      <Tip content={`Open in ${label}`} side="bottom">
+      <Tip content={t("openWith.openIn", { label })} side="bottom">
         <Button
           size="icon" variant="icon"
           className="w-6 rounded-r-none"
@@ -74,7 +76,7 @@ export function OpenWithButton({ task }: { task: Task }) {
         </Button>
       </Tip>
       <DropdownRoot onOpenChange={loadApps}>
-        <Tip content="Open with" side="bottom">
+        <Tip content={t("openWith.openWith")} side="bottom">
           <DropdownTrigger asChild>
             <Button
               size="icon" variant="icon"
@@ -91,7 +93,7 @@ export function OpenWithButton({ task }: { task: Task }) {
             open after a pick (the same fix as the Prompts menu). */}
         <DropdownMenu align="end" className="min-w-[180px]" onCloseAutoFocus={(e) => e.preventDefault()}>
           {apps === null && (
-            <div className="px-2 py-1.5 text-[13px] text-[var(--color-fg-faint)]">Looking…</div>
+            <div className="px-2 py-1.5 text-[13px] text-[var(--color-fg-faint)]">{t("openWith.looking")}</div>
           )}
           {apps !== null && groupApps(apps).map((group, i) => (
             // Fragment, not a div: Radix finds menu items through its own
@@ -119,7 +121,7 @@ export function OpenWithButton({ task }: { task: Task }) {
               menu that looks like it failed to load. */}
           {apps !== null && apps.length <= 1 && (
             <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">
-              No other apps detected.
+              {t("openWith.noOtherApps")}
             </div>
           )}
         </DropdownMenu>

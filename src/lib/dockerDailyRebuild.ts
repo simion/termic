@@ -13,6 +13,7 @@ import { dockerImageStatus, dockerBuildImage, onDockerBuildDone, onDockerBuildLo
 import type { Task } from "./types";
 import { useUI } from "@/store/ui";
 import { useDockerBuild } from "@/store/dockerBuild";
+import { i18n } from "@/lib/i18n";
 
 export type DockerRebuildFrequency = "off" | "daily" | "weekly";
 
@@ -46,9 +47,9 @@ export function isRebuildDue(frequency: "daily" | "weekly", lastBuiltDateIso: st
 /** Human-readable "when was this last built" line, shared by Settings →
  *  Docker and the rebuild prompt dialog. */
 export function describeLastBuildDate(lastBuiltDateIso: string | null, now: Date = new Date()): string {
-  if (!lastBuiltDateIso) return "It has never finished a build.";
+  if (!lastBuiltDateIso) return i18n.t("backend:dockerRebuild.lastBuiltNever");
   const last = new Date(`${lastBuiltDateIso}T00:00:00`);
-  if (Number.isNaN(last.getTime())) return "It has never finished a build.";
+  if (Number.isNaN(last.getTime())) return i18n.t("backend:dockerRebuild.lastBuiltNever");
   // Calendar days, like isRebuildDue - NOT `now - last` rounded. Measuring
   // from the current time meant an image built at 09:00 TODAY read as "last
   // built yesterday" from about midday onward (0.6 of a day, rounded up),
@@ -56,9 +57,9 @@ export function describeLastBuildDate(lastBuiltDateIso: string | null, now: Date
   // functions disagreeing is the real bug: the prompt said the image was a
   // day older than the check that decided a rebuild was due.
   const days = Math.max(0, calendarDaysBetween(last, now));
-  if (days <= 0) return "It was last built earlier today.";
-  if (days === 1) return "It was last built yesterday.";
-  return `It was last built ${days} days ago.`;
+  if (days <= 0) return i18n.t("backend:dockerRebuild.lastBuiltToday");
+  if (days === 1) return i18n.t("backend:dockerRebuild.lastBuiltYesterday");
+  return i18n.t("backend:dockerRebuild.lastBuiltDaysAgo", { days });
 }
 
 // Single-flight: two Docker-mode tasks launched close together must not
@@ -130,13 +131,13 @@ async function promptAndRebuild(task: Task, lastBuiltDate: string | null, ask: b
     // point of the choice is that the agent starts now. `inFlight` still
     // single-flights it, so a second launch will not kick off a rival build.
     useUI.getState().pushToast(
-      "Rebuilding the Docker sandbox image in the background. The next agent will use it.",
+      i18n.t("backend:dockerRebuild.backgroundStarted"),
       "info",
       { ttlMs: 8000 },
     );
     void dockerBuildImage(true).catch(() => {
       useUI.getState().pushToast(
-        "Docker sandbox image rebuild failed. Check Settings → Docker Sandbox.",
+        i18n.t("backend:dockerRebuild.failedSettings"),
         "error",
         { ttlMs: 8000 },
       );
@@ -145,7 +146,7 @@ async function promptAndRebuild(task: Task, lastBuiltDate: string | null, ask: b
   }
 
   useUI.getState().pushToast(
-    "Rebuilding the Docker sandbox image before launch...",
+    i18n.t("backend:dockerRebuild.beforeLaunch"),
     "info",
     { ttlMs: 15000 },
   );
@@ -191,10 +192,10 @@ async function promptAndRebuild(task: Task, lastBuiltDate: string | null, ask: b
   // build clears itself, since the terminal is what should be there.
   if (success) useDockerBuild.getState().clear();
   if (success) {
-    useUI.getState().pushToast("Docker sandbox image rebuilt.", "success", { ttlMs: 4000 });
+    useUI.getState().pushToast(i18n.t("backend:dockerRebuild.rebuilt"), "success", { ttlMs: 4000 });
   } else {
     useUI.getState().pushToast(
-      "Docker sandbox image rebuild failed - launching with the existing image. Check Settings → Docker Sandbox.",
+      i18n.t("backend:dockerRebuild.failedExisting"),
       "error",
       { ttlMs: 8000 },
     );

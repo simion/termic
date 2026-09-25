@@ -12,6 +12,7 @@
 // per worktree branch); base from the task's base branch.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { usePr } from "@/store/pr";
@@ -23,6 +24,7 @@ import type { TerminalTab } from "@/lib/types";
 import { Sparkles } from "lucide-react";
 
 export function CreatePrDialog() {
+  const { t } = useTranslation("dialogs");
   const taskId = useUI(s => s.createPrForTaskId);
   const close = useUI(s => s.closeCreatePr);
   const task = useApp(s => taskId ? s.tasks.find(w => w.id === taskId) : null);
@@ -37,7 +39,10 @@ export function CreatePrDialog() {
 
   const lookup = usePr(s => taskId ? s.byTask[taskId]?.lookup ?? null : null);
   const provider = lookup?.provider ?? task?.pr_provider ?? "github";
-  const noun = provider === "gitlab" ? "merge request" : "pull request";
+  const noun = provider === "gitlab" ? t("createPr.nounMr") : t("createPr.nounPr");
+  // The prompt typed into the agent's terminal is an instruction for the CLI,
+  // not UI copy, so it stays English regardless of the UI language.
+  const promptNoun = provider === "gitlab" ? "merge request" : "pull request";
   const cliName = provider === "gitlab" ? "glab" : "gh";
 
   // (Re-)seed the form whenever the dialog opens: title from the last
@@ -62,9 +67,12 @@ export function CreatePrDialog() {
       usePr.getState().setLookup(task.id, fresh);
       const url = fresh.pr?.url ?? "";
       pushToast(
-        `${provider === "gitlab" ? "MR" : "PR"} created${fresh.pr ? `: ${provider === "gitlab" ? "!" : "#"}${fresh.pr.number}` : ""}`,
+        t("createPr.created", {
+          kind: provider === "gitlab" ? "MR" : "PR",
+          ref: fresh.pr ? `: ${provider === "gitlab" ? "!" : "#"}${fresh.pr.number}` : "",
+        }),
         "success",
-        url ? { action: { label: "Open", onClick: () => { openPath(url).catch(() => {}); } } } : undefined,
+        url ? { action: { label: t("common:open"), onClick: () => { openPath(url).catch(() => {}); } } } : undefined,
       );
       close();
     } catch (e) {
@@ -85,21 +93,21 @@ export function CreatePrDialog() {
     const activeId = useApp.getState().activeTab[task.id];
     const target = tabs.find(t => t.id === activeId) ?? tabs[0];
     if (!target?.ptyId) {
-      setErr("No running agent tab in this task. Start an agent first, or use Create.");
+      setErr(t("createPr.errNoAgent"));
       return;
     }
     const createCmd = provider === "gitlab"
       ? `glab mr create --target-branch ${base} --title <title> --description <description>${draft ? " --draft" : ""}`
       : `gh pr create --base ${base} --title <title> --body <body>${draft ? " --draft" : ""}`;
     const prompt =
-      `Create a ${noun} for the current branch. ` +
+      `Create a ${promptNoun} for the current branch. ` +
       `First review everything the branch changes (e.g. \`git diff $(git merge-base ${base} HEAD)\` plus untracked files), ` +
       `commit anything that should ship, and push. ` +
       `Then create it with \`${createCmd}\`, writing a concise title and a reviewer-friendly description: what changed, why, and how to verify. ` +
       `Do not merge anything.`;
     const bytes = new TextEncoder().encode(prompt + "\r");
     ptyWrite(target.ptyId, Array.from(bytes)).catch(() => {});
-    pushToast(`Sent to ${agentDisplayName(target.cli, useApp.getState().agents)}. It will push and open the ${noun}.`, "success");
+    pushToast(t("createPr.toastSent", { agent: agentDisplayName(target.cli, useApp.getState().agents), noun }), "success");
     close();
   }
 
@@ -107,14 +115,14 @@ export function CreatePrDialog() {
     <AppDialog
       open={!!taskId}
       onOpenChange={(v) => (v ? null : close())}
-      title={provider === "gitlab" ? "Create merge request" : "Create pull request"}
-      description={`Pushes the branch and creates the ${noun} via the ${cliName} CLI.`}
+      title={provider === "gitlab" ? t("createPr.titleGitlab") : t("createPr.titleGithub")}
+      description={t("createPr.description", { noun, cli: cliName })}
     >
       <div className="mt-2 flex flex-col gap-2">
         <input
           value={title}
           onChange={e => setTitle(e.target.value)}
-          placeholder="Title"
+          placeholder={t("createPr.titlePlaceholder")}
           autoFocus
           spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
           className="h-8 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[13px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
@@ -122,14 +130,14 @@ export function CreatePrDialog() {
         <textarea
           value={body}
           onChange={e => setBody(e.target.value)}
-          placeholder="Description (optional)"
+          placeholder={t("createPr.bodyPlaceholder")}
           rows={5}
           spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
           className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12.5px] leading-snug text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
         />
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
-            Base
+            {t("createPr.base")}
             <input
               value={base}
               onChange={e => setBase(e.target.value)}
@@ -139,19 +147,19 @@ export function CreatePrDialog() {
           </label>
           <label className="flex cursor-pointer items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
             <input type="checkbox" checked={draft} onChange={e => setDraft(e.target.checked)} />
-            Draft
+            {t("createPr.draft")}
           </label>
         </div>
         {err && <p className="break-words text-[12.5px] text-[var(--color-err)]">{err}</p>}
         <div className="mt-1 flex items-center justify-between gap-2">
           <Button variant="ghost" size="sm" onClick={draftWithAgent} disabled={busy}
-            title="Ask the task's agent to write the description and create it">
-            <Sparkles className="h-4 w-4" /> Draft with agent
+            title={t("createPr.draftWithAgentTitle")}>
+            <Sparkles className="h-4 w-4" /> {t("createPr.draftWithAgent")}
           </Button>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={close} disabled={busy}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={close} disabled={busy}>{t("common:cancel")}</Button>
             <Button variant="primary" size="sm" onClick={create} disabled={busy || !title.trim()}>
-              {busy ? "Creating…" : "Create"}
+              {busy ? t("createPr.creating") : t("common:create")}
             </Button>
           </div>
         </div>

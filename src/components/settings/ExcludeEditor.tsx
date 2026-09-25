@@ -3,7 +3,8 @@
 // parent owns persistence (personal Settings vs a project's .termic.yaml).
 
 import { Check, Plus } from "lucide-react";
-import { EXCLUDE_PRESETS, mergePatterns, dropPatterns, presetApplied, type ExcludePreset } from "@/lib/excludePresets";
+import { Trans, useTranslation } from "react-i18next";
+import { EXCLUDE_PRESETS, mergePatterns, dropPatterns, presetApplied, presetLabel, type ExcludePreset } from "@/lib/excludePresets";
 import { Tip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +16,7 @@ export function ExcludeEditor({ value, onChange, placeholder, className }: {
   placeholder?: string;
   className?: string;
 }) {
+  const { t } = useTranslation("settings");
   // Clicking a preset toggles it: add all its patterns if any are missing,
   // else strip them. Keeps the chip a single, reversible action.
   function togglePreset(p: ExcludePreset) {
@@ -43,7 +45,7 @@ export function ExcludeEditor({ value, onChange, placeholder, className }: {
                 )}
               >
                 {applied ? <Check className="h-3 w-3 text-[var(--color-accent)]" /> : <Plus className="h-3 w-3" />}
-                <span>{p.label}</span>
+                <span>{presetLabel(p)}</span>
               </button>
             </Tip>
           );
@@ -58,7 +60,16 @@ export function ExcludeEditor({ value, onChange, placeholder, className }: {
         className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 font-mono text-[12.5px] leading-relaxed text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
       />
       <p className="text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-        One glob per line. Matches a file/folder name at any depth (<code className="font-mono">node_modules</code>, <code className="font-mono">*.pyc</code>) or a path (<code className="font-mono">docs/build</code>). <code className="font-mono">.git</code> is always hidden.
+        <Trans
+          t={t}
+          i18nKey="exclude.hint"
+          components={{
+            1: <code className="font-mono" />,
+            3: <code className="font-mono" />,
+            5: <code className="font-mono" />,
+            7: <code className="font-mono" />,
+          }}
+        />
       </p>
     </div>
   );

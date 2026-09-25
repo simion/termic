@@ -5,6 +5,7 @@
 // only launches.
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
@@ -22,6 +23,7 @@ import { Flag, Loader2, Minus, Plus } from "lucide-react";
 const MAX_PER_CLI = 4;
 
 export function RaceDialog() {
+  const { t } = useTranslation("dialogs");
   const projectId = useUI(s => s.raceProjectId);
   const close = useUI(s => s.closeRace);
   const agents = useApp(s => s.agents);
@@ -108,13 +110,13 @@ export function RaceDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title="Start an agent race"
-      description="Fire one prompt at several agents at once. Each races in its own worktree; compare and pick a winner when they finish."
+      title={t("race.title")}
+      description={t("race.description")}
       className="max-w-2xl"
     >
       <div className="mt-2 flex flex-col gap-1">
         {choices.length === 0 ? (
-          <p className="text-[13.5px] text-[var(--color-fg-dim)]">No agents available. Install an agent CLI first.</p>
+          <p className="text-[13.5px] text-[var(--color-fg-dim)]">{t("race.noAgents")}</p>
         ) : choices.map(a => {
           const n = counts[a.id] ?? 0;
           const iconId = resolveIconId(a.id, agents);
@@ -156,34 +158,34 @@ export function RaceDialog() {
         value={prompt}
         onChange={e => setPrompt(e.target.value)}
         rows={5}
-        placeholder="The prompt every agent runs…"
+        placeholder={t("race.promptPlaceholder")}
         className="mt-3 max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
       />
 
       <div className="mt-3 flex items-center gap-2.5">
         <label
           htmlFor="race-name"
-          title="Names the race: tasks become <name>: Agent #n. Leave empty for an auto-generated id."
+          title={t("race.nameTitle")}
           className="w-14 shrink-0 text-[12.5px] text-[var(--color-fg-dim)]"
         >
-          Name
+          {t("race.nameLabel")}
         </label>
         <input
           id="race-name"
           autoCorrect="off" autoCapitalize="off" autoComplete="off" spellCheck={false}
           value={name}
           onChange={e => { setName(e.target.value); setNameEdited(true); }}
-          placeholder="optional"
+          placeholder={t("race.namePlaceholder")}
           className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
         />
       </div>
       <div className="mt-2 flex items-center gap-2.5">
         <label
           htmlFor="race-branch"
-          title="The branches' middle segment: each racer gets race/<this>/agent-n. Leave empty for an auto-generated id."
+          title={t("race.branchTitle")}
           className="w-14 shrink-0 text-[12.5px] text-[var(--color-fg-dim)]"
         >
-          Branch
+          {t("race.branchLabel")}
         </label>
         <div className="flex min-w-0 flex-1 items-center rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] focus-within:border-[var(--color-accent-soft)]">
           <span className="shrink-0 text-[var(--color-fg-faint)]">race/</span>
@@ -205,7 +207,7 @@ export function RaceDialog() {
               );
               setBranchEdited(true);
             }}
-            placeholder="auto"
+            placeholder={t("race.branchPlaceholder")}
             className="min-w-0 flex-1 bg-transparent text-[var(--color-fg)] outline-none"
           />
           <span className="shrink-0 text-[var(--color-fg-faint)]">/agent-n</span>
@@ -218,7 +220,7 @@ export function RaceDialog() {
           red, same vocabulary as the sidebar's zap badge. */}
       <div className="mt-3 flex items-center gap-5">
         <label
-          title="Create every racer sandboxed (Enforce). Agents auto-approve inside the cage, so the race runs unattended without prompts."
+          title={t("race.sandboxTitle")}
           className="flex cursor-pointer select-none items-center gap-2 text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
         >
           <input
@@ -227,13 +229,13 @@ export function RaceDialog() {
             onChange={e => setSandbox(e.target.checked)}
             className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0"
           />
-          Sandbox
+          {t("race.sandboxLabel")}
         </label>
         <label
           data-testid="race-yolo"
           title={sandbox
-            ? "YOLO: auto-on (Enforcing). Inside the cage, skipping prompts is safe."
-            : "Skip permission prompts with NO sandbox: every racer runs unconfined. Same red zap as the sidebar badge."}
+            ? t("race.yoloTitleSandboxed")
+            : t("race.yoloTitleBare")}
           className={cn(
             "flex items-center gap-2 text-[12.5px] select-none",
             sandbox
@@ -249,7 +251,7 @@ export function RaceDialog() {
             onChange={e => setYolo(e.target.checked)}
             className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0 disabled:cursor-default"
           />
-          YOLO{sandbox ? " (auto)" : ""}
+          YOLO{sandbox ? t("race.yoloAuto") : ""}
         </label>
       </div>
 
@@ -258,16 +260,16 @@ export function RaceDialog() {
         {busy && progress ? (
           <span className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)]">
             <Loader2 className="h-3 w-3 animate-spin" />
-            Creating worktree {progress.n} of {progress.total}…
+            {t("race.progress", { n: progress.n, total: progress.total })}
           </span>
         ) : (
           <span className="text-[12px] text-[var(--color-fg-faint)]">
-            {total < 2 ? "Pick at least 2 agents" : `${total} agents racing`}
+            {total < 2 ? t("race.pickAtLeast") : t("race.racingCount", { count: total })}
           </span>
         )}
         <Button variant="primary" size="sm" disabled={!canStart} onClick={start}>
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Flag className="h-3.5 w-3.5" />}
-          Start race
+          {t("race.startRace")}
         </Button>
       </div>
     </AppDialog>

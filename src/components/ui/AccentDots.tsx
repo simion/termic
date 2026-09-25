@@ -10,6 +10,7 @@
 // wizard and Settings both render this row and a drift between them would be
 // two pickers that look like different features.
 
+import { useTranslation } from "react-i18next";
 import { ACCENTS, ACCENT_NONE, isHexAccent, profileAccentCss } from "@/lib/accents";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +28,7 @@ export function AccentDots({ value, onChange, idPrefix }: {
    *  spec silently drove the first and coloured the wrong profile. */
   idPrefix: string;
 }) {
+  const { t } = useTranslation("chrome");
   const custom = isHexAccent(value);
   return (
     <div className="flex items-center gap-1">
@@ -36,12 +38,12 @@ export function AccentDots({ value, onChange, idPrefix }: {
           as an option in the same row rather than as a missing swatch. */}
       <button
         type="button"
-        aria-label="No colour"
+        aria-label={t("accentDots.noColour")}
         aria-pressed={value === ACCENT_NONE}
         data-testid={`${idPrefix}-accent-none`}
         onClick={() => onChange(ACCENT_NONE)}
         className="rounded-full p-1 hover:bg-[var(--color-bg-2)]"
-        title="No colour"
+        title={t("accentDots.noColour")}
       >
         <span
           className={cn(
@@ -77,7 +79,7 @@ export function AccentDots({ value, onChange, idPrefix }: {
           row rather than a different kind of control. */}
       <label
         className="relative rounded-full p-1 hover:bg-[var(--color-bg-2)]"
-        title="Custom colour"
+        title={t("accentDots.customColour")}
       >
         <span
           className={cn(
@@ -94,7 +96,7 @@ export function AccentDots({ value, onChange, idPrefix }: {
         />
         <input
           type="color"
-          aria-label="Custom colour"
+          aria-label={t("accentDots.customColour")}
           data-testid={`${idPrefix}-accent-custom`}
           value={custom ? value : CUSTOM_SEED}
           onChange={e => onChange(e.target.value)}

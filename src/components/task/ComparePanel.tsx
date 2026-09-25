@@ -31,6 +31,7 @@
 // edited. That is what makes this the surface for reviewing a whole feature.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronRight, ChevronDown, Check, Eye, Loader2, GitCompare as GitCompareIcon,
   ArrowRight, MessageSquare, AlertTriangle, FileText,
@@ -111,6 +112,7 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
   // back to its own base ("origin/main" for a normal worktree task), which is
   // the comparison people want ~every time. Only a default: any ref below can
   // replace it.
+  const { t } = useTranslation("panels");
   const [base, setBaseState] = useState(() => lastBase.get(task.id) ?? task.base_branch ?? "");
   const setBase = useCallback((ref: string) => {
     lastBase.set(task.id, ref);
@@ -224,7 +226,7 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
   const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const endIdx = Math.min(rows.length - 1, Math.ceil((scrollTop + containerH) / ROW_H) + OVERSCAN);
 
-  const branchLabel = cmp?.branch || task.branch || "working tree";
+  const branchLabel = cmp?.branch || task.branch || t("compare.workingTree");
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="compare-panel">
@@ -247,7 +249,7 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
             <button
               data-testid="compare-base"
               data-base={base}
-              title={`Comparing against ${base || "nothing yet"}. Click to pick another branch.`}
+              title={t("compare.comparingAgainst", { base: base || t("compare.nothingYet") })}
               // Sized to the ref it holds, not to a share of the row: a
               // `max-w-[55%]` truncated "feature/new-claude-w…" while the
               // three characters of "main" opposite it sat in open space.
@@ -256,18 +258,18 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
               // instead, which is what the bar's flex-wrap is for.
               className="flex h-6 min-w-0 shrink items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 transition-colors hover:border-[var(--color-accent-soft)]"
             >
-              <span className="truncate font-mono text-[var(--color-fg)]">{base || "Pick a branch"}</span>
+              <span className="truncate font-mono text-[var(--color-fg)]">{base || t("compare.pickBranch")}</span>
               <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />
             </button>
           </DropdownTrigger>
           <DropdownMenu align="start">
-            <DropdownLabel>Compare against</DropdownLabel>
+            <DropdownLabel>{t("compare.compareAgainst")}</DropdownLabel>
             {!refs ? (
               <div className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading branches…
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("compare.readingBranches")}
               </div>
             ) : refs.local.length + refs.remote.length === 0 ? (
-              <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">No branches in this repo.</div>
+              <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">{t("compare.noBranches")}</div>
             ) : (
               <>
                 {refs.local.map(b => <RefItem key={`l:${b}`} label={b} active={b === base} onSelect={() => setBase(b)} />)}
@@ -281,9 +283,9 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
             <DropdownItem onSelect={toggleMergeBase} className="items-start">
               <Check className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", !mergeBase && "opacity-0")} />
               <span className="flex flex-col gap-0.5">
-                <span className="text-[12px]">From common ancestor</span>
+                <span className="text-[12px]">{t("compare.fromCommonAncestor")}</span>
                 <span className="max-w-[220px] text-[11px] leading-snug text-[var(--color-fg-faint)]">
-                  Ignore commits the other branch gained since this one started. Off compares the two tips directly.
+                  {t("compare.commonAncestorHint")}
                 </span>
               </span>
             </DropdownItem>
@@ -297,13 +299,13 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
           // once one name alone is wider than the panel.
           className="min-w-0 shrink truncate font-mono text-[var(--color-fg-dim)]"
           data-testid="compare-target"
-          title={`${branchLabel}, including uncommitted changes`}
+          title={t("compare.targetTip", { branch: branchLabel })}
         >
           {branchLabel}
         </span>
         {!mergeBase && (
-          <Tip content="Comparing the two branch tips directly, not from where they diverged" side="left">
-            <span className="ml-auto shrink-0 rounded bg-[var(--color-bg-3)] px-1 text-[10px] text-[var(--color-fg-faint)]">direct</span>
+          <Tip content={t("compare.directTip")} side="left">
+            <span className="ml-auto shrink-0 rounded bg-[var(--color-bg-3)] px-1 text-[10px] text-[var(--color-fg-faint)]">{t("compare.direct")}</span>
           </Tip>
         )}
       </div>
@@ -318,7 +320,7 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
           className="flex h-7 shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2.5 text-[11.5px] text-[var(--color-fg-dim)]"
         >
           <span className="shrink-0 tabular-nums">
-            {files.length} {files.length === 1 ? "file" : "files"}
+            {files.length === 1 ? t("shared.fileOne") : t("shared.fileMany", { count: files.length })}
           </span>
           <Churn added={added} removed={removed} />
           {viewedCount > 0 && (
@@ -333,10 +335,10 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
       {cmp?.no_merge_base && (
         <Note>
           <AlertTriangle className="h-3 w-3 shrink-0" />
-          {base} shares no history with this branch, so this compares the two tips.
+          {t("compare.noMergeBase", { base })}
         </Note>
       )}
-      {cmp?.truncated && <Note>List capped at 5 000 files. Narrow it with the filter above.</Note>}
+      {cmp?.truncated && <Note>{t("compare.truncated")}</Note>}
 
       {/* 5. Rows. */}
       <div
@@ -346,18 +348,18 @@ export function ComparePanel({ task, repoDir, search, viewMode, reloadToken, onO
       >
         {err && <Empty tone="err">{err}</Empty>}
         {!err && !base && (
-          <Empty>This task records no base branch. Pick one above to compare against.</Empty>
+          <Empty>{t("compare.noBase")}</Empty>
         )}
         {!err && base && loading && !cmp && (
           <div className="flex items-center gap-2 px-3 py-3 text-[12px] text-[var(--color-fg-faint)]">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Comparing…
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("compare.comparing")}
           </div>
         )}
         {!err && cmp && files.length === 0 && (
           <Empty>
             {search.trim()
-              ? "No changed file matches that filter."
-              : `Nothing differs from ${cmp.base}.`}
+              ? t("compare.noMatch")
+              : t("compare.nothingDiffers", { base: cmp.base })}
           </Empty>
         )}
 
@@ -482,6 +484,7 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen, 
   onOpen: (path: string) => void;
   onOpenWholeFile: (path: string) => void;
 }) {
+  const { t } = useTranslation("panels");
   const key = file.status;
   const fullPath = repoDir ? `${repoDir}/${file.path}` : file.path;
   const viewed = useIsViewed(taskId, fullPath, file.fp);
@@ -528,7 +531,7 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen, 
             {label}
           </span>
           {commentCount > 0 && (
-            <Tip side="left" content={`${commentCount} inline ${commentCount === 1 ? "comment" : "comments"}`}>
+            <Tip side="left" content={commentCount === 1 ? t("shared.inlineCommentOne") : t("shared.inlineCommentMany", { count: commentCount })}>
               <span className="flex shrink-0 items-center gap-0.5 rounded bg-[var(--color-bg-3)] px-1 text-[10.5px] tabular-nums text-[var(--color-fg-dim)]">
                 <MessageSquare className="h-2.5 w-2.5" />
                 {commentCount}
@@ -537,10 +540,10 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen, 
           )}
           <Churn added={file.added} removed={file.removed} />
           {canView && (
-            <Tip side="left" content="Open the file (⌥-click the row)">
+            <Tip side="left" content={t("shared.openFileTip")}>
               <button
                 onClick={e => { e.stopPropagation(); onOpenWholeFile(file.path); }}
-                aria-label="Open file"
+                aria-label={t("shared.openFile")}
                 className={cn(
                   "flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded transition-colors",
                   "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
@@ -552,7 +555,7 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen, 
             </Tip>
           )}
           {canView && (
-            <Tip side="left" content={viewed ? "Mark as not viewed" : "Mark as viewed"}>
+            <Tip side="left" content={viewed ? t("shared.markNotViewed") : t("shared.markViewed")}>
               <button
                 onClick={e => { e.stopPropagation(); useFileViewed.getState().toggle(taskId, fullPath, file.fp); }}
                 aria-pressed={viewed}
@@ -576,11 +579,11 @@ function FileRow({ file, label, depth, taskId, root, repoDir, selected, onOpen, 
         {canView && (<>
           <ContextMenuItem onSelect={() => onOpenWholeFile(file.path)}>
             <FileText />
-            Open file
+            {t("shared.openFile")}
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => useFileViewed.getState().toggle(taskId, fullPath, file.fp)}>
             <Check />
-            {viewed ? "Mark as not viewed" : "Mark as viewed"}
+            {viewed ? t("shared.markNotViewed") : t("shared.markViewed")}
           </ContextMenuItem>
         </>)}
         <ContextMenuSeparator />

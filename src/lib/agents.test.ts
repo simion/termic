@@ -1,3 +1,4 @@
+import { i18n } from "@/lib/i18n";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock Tauri and IPC before importing the module under test. The real
@@ -21,7 +22,7 @@ vi.mock("@/lib/utils", () => ({
   slugify: (s: string) => s.toLowerCase().replace(/\s+/g, "-"),
 }));
 
-import { resumeIdArgsForCli, resumePickerArgsForCli, cliSupportsCaptureResume, postLaunchCaptureForCli, spawnArgsForCli, defaultCliFirst, visibleCliIds, cliSupportsIdSession, cliSupportsResumeById, agentDisplayName, decideResume, spawnResumeShape, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle, compileSignals, BUILTIN_TITLE_SIGNALS, BUILTIN_OUTPUT_SIGNALS, builtinBaseId, YOLO_ARGS_NOTES, resolveAgent, agentOverrides, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS } from "@/lib/agents";
+import { resumeIdArgsForCli, resumePickerArgsForCli, cliSupportsCaptureResume, postLaunchCaptureForCli, spawnArgsForCli, defaultCliFirst, visibleCliIds, cliSupportsIdSession, cliSupportsResumeById, agentDisplayName, decideResume, spawnResumeShape, isTerminalCli, workDoneCapable, terminalLaunchCommand, classifyAgentTitle, compileSignals, BUILTIN_TITLE_SIGNALS, BUILTIN_OUTPUT_SIGNALS, builtinBaseId, YOLO_ARGS_NOTES, yoloArgsNote, resolveAgent, agentOverrides, hasPendingWork, notificationWantsAttention, PENDING_TAIL_ROWS } from "@/lib/agents";
 import type { Agent, CliInfo } from "@/lib/types";
 import type { ResumeDecision } from "@/lib/agents";
 
@@ -1697,9 +1698,9 @@ describe("YOLO_ARGS_NOTES", () => {
   ] as unknown as NonNullable<Parameters<typeof classifyAgentTitle>[2]>;
 
   it("reaches codex and every clone of it", () => {
-    expect(YOLO_ARGS_NOTES[builtinBaseId("codex", agents)]).toBeTruthy();
-    expect(YOLO_ARGS_NOTES[builtinBaseId("work-codex", agents)])
-      .toBe(YOLO_ARGS_NOTES.codex);
+    expect(yoloArgsNote(builtinBaseId("codex", agents))).toBeTruthy();
+    expect(yoloArgsNote(builtinBaseId("work-codex", agents)))
+      .toBe(yoloArgsNote("codex"));
   });
 
   it("leaves agents with no caveat without one", () => {
@@ -1710,12 +1711,16 @@ describe("YOLO_ARGS_NOTES", () => {
   it("names the error the user actually sees, and the flags that replace it", () => {
     // The note is only findable by someone pasting Codex's own wording into
     // a search, so the substring it quotes has to stay verbatim.
-    expect(YOLO_ARGS_NOTES.codex).toContain("requirements do not allow sandbox_mode");
-    expect(YOLO_ARGS_NOTES.codex).toContain("-a never -s workspace-write");
+    expect(yoloArgsNote("codex")).toContain("requirements do not allow sandbox_mode");
+    expect(yoloArgsNote("codex")).toContain("-a never -s workspace-write");
   });
 
   it("is free of em dashes, like all user-visible copy", () => {
-    for (const note of Object.values(YOLO_ARGS_NOTES)) expect(note).not.toContain("—");
+    for (const lng of ["en", "zh-CN"]) {
+      void i18n.changeLanguage(lng);
+      expect(yoloArgsNote("codex")).not.toContain("—");
+    }
+    void i18n.changeLanguage("en");
   });
 });
 

@@ -11,6 +11,7 @@
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { repoConfigLoad, repoConfigLoadAt } from "@/lib/ipc";
 import { runCommandLabel } from "@/lib/runCommands";
 import type { Project, RunCommand, Task, TerminalTab } from "@/lib/types";
@@ -92,7 +93,7 @@ export async function resolveRunTargets(taskId: string): Promise<RunTarget[]> {
     targets.push({
       member: "",
       label: project?.name || task.name,
-      title: "Run",
+      title: i18n.t("backend:runTabs.run"),
       script: hostScript,
       previewUrl: expandPreviewUrl(project, task, yaml?.scripts?.preview_url ?? ""),
     });
@@ -108,7 +109,7 @@ export async function resolveRunTargets(taskId: string): Promise<RunTarget[]> {
       targets.push({
         member: m.dir_name,
         label: m.dir_name,
-        title: `Run · ${m.dir_name}`,
+        title: i18n.t("backend:runTabs.runMember", { member: m.dir_name }),
         script,
         previewUrl: null,
       });
@@ -158,7 +159,7 @@ export async function launchSetupTab(taskId: string, opts?: { focus?: boolean })
   useApp.getState().addTabToActivePane(taskId, {
     id: crypto.randomUUID(),
     type: "terminal",
-    title: "Setup",
+    title: i18n.t("backend:runTabs.setup"),
     cli: "custom",
     command: script,
     runTab: { member: "", kind: "setup", previewUrl: null },

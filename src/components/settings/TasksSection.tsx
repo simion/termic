@@ -7,6 +7,7 @@
 // new-task settings.
 
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { settingsSave } from "@/lib/ipc";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "@/lib/types";
@@ -27,6 +28,7 @@ function trimSlashes(p: string): string {
 }
 
 export function TasksSection() {
+  const { t } = useTranslation("settings");
   const { settings, store, patch } = useBackendSettings();
   const [busy, setBusy] = useState(false);
   // Pre-create base fetch (GH #79). Backend Settings field; saved immediately
@@ -171,16 +173,20 @@ export function TasksSection() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionTitle title="Tasks" />
+      <SectionTitle title={t("rail.tasks")} />
 
       {/* Global default tasks path. Absolute = one shared root holding every
           project, a folder each (what Termic has always done). Relative = each
           project keeps its worktrees inside its own directory. Required, and
           seeded with the built-in default so the value is always visible. */}
       <Block first>
-        <div className="text-[14px] font-medium">Default tasks path</div>
+        <div className="text-[14px] font-medium">{t("tasks.path.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Where new task worktrees are created. A full path (one starting with <code className="font-mono">/</code> or <code className="font-mono">~</code>) keeps every project's tasks under one root, in a folder named after the project. A relative path puts each project's tasks inside that project's own directory instead. Existing tasks never move; this applies to the next one you create.
+          <Trans
+            t={t}
+            i18nKey="tasks.path.hint"
+            components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+          />
         </div>
         <div className="mt-2 flex gap-2">
           <Input
@@ -189,22 +195,22 @@ export function TasksSection() {
             className="font-mono"
             data-testid="default-tasks-path-input"
           />
-          <Button variant="secondary" onClick={browseTasksPath}>Browse…</Button>
+          <Button variant="secondary" onClick={browseTasksPath}>{t("common:browse")}</Button>
         </div>
         <div className="mt-1.5 text-[12.5px] text-[var(--color-fg-faint)]">
           {!trimmedTasksPath && (
-            <span className="text-[var(--color-err)]">A tasks path is required.</span>
+            <span className="text-[var(--color-err)]">{t("tasks.path.required")}</span>
           )}
           {!!trimmedTasksPath && conflicts.length > 0 && (
             <span className="text-[var(--color-err)]" data-testid="default-tasks-path-conflict">
-              {`This lands inside the repo itself for ${
-                conflicts.length === 1 ? conflictNames : `${conflicts.length} projects: ${conflictNames}`
-              }. New tasks there would be created on top of your working tree. Pick a directory outside the repo, or a subdirectory of it.`}
+              {conflicts.length === 1
+                ? t("tasks.path.conflictOne", { names: conflictNames })
+                : t("tasks.path.conflictMany", { count: conflicts.length, names: conflictNames })}
             </span>
           )}
           {!!trimmedTasksPath && conflicts.length === 0 && (
             <>
-              New tasks go to{" "}
+              {t("tasks.path.preview")}{" "}
               <code className="font-mono" data-testid="default-tasks-path-preview">
                 {tasksPathIsAbsolute
                   ? `${trimSlashes(trimmedTasksPath)}/<project>/<task>`
@@ -215,15 +221,20 @@ export function TasksSection() {
         </div>
         <div className="mt-3">
           <Button variant="primary" disabled={!canSaveTasksPath || busy} onClick={saveTasksPath}>
-            {busy ? "Saving…" : "Save tasks path"}
+            {busy ? t("common:saving") : t("tasks.path.save")}
           </Button>
         </div>
       </Block>
 
       <Block>
-        <div className="text-[14px] font-medium">Branch prefix</div>
+        <div className="text-[14px] font-medium">{t("tasks.branchPrefix.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Prepended to auto-generated branch names for new tasks (<code className="font-mono">{prefixPreview}</code>). Leave empty for no prefix. You can still edit the branch per task.
+          <Trans
+            t={t}
+            i18nKey="tasks.branchPrefix.hint"
+            values={{ preview: prefixPreview }}
+            components={{ 1: <code className="font-mono" /> }}
+          />
         </div>
         <div className="mt-2 max-w-xs">
           <Input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="feature" className="font-mono" />
@@ -235,8 +246,8 @@ export function TasksSection() {
           row tooltip and is still what rename edits. */}
       <Block>
         <Toggle
-          label="Use the branch name as the task name"
-          hint="Label each worktree task by its branch instead of the title typed when it was created, in the sidebar, the breadcrumb and everywhere else a task is named. Tasks running in a project's main checkout, and tasks in a plain folder, keep their title. The typed name stays in the row tooltip, and renaming a task still edits it."
+          label={t("tasks.branchName.label")}
+          hint={t("tasks.branchName.hint")}
           value={useBranchAsTaskName}
           onChange={setUseBranchAsTaskName}
         />
@@ -244,8 +255,8 @@ export function TasksSection() {
 
       <Block>
         <Toggle
-          label="Fetch base before creating a task"
-          hint="Refresh the base branch from its remote (a quick, single-ref git fetch) right before a new task's branch is cut, so it starts from the latest commit instead of a stale local copy. Best-effort: if the remote is offline or unreachable, the task still creates from your local ref. Turn off on flaky networks."
+          label={t("tasks.fetch.label")}
+          hint={t("tasks.fetch.hint")}
           value={fetchBeforeCreate}
           onChange={saveFetchBeforeCreate}
         />
@@ -255,9 +266,13 @@ export function TasksSection() {
           because that is the only thing it affects: a task's ports are frozen
           when it is created, so this never moves a live one. */}
       <Block>
-        <div className="text-[14px] font-medium">Task port range</div>
+        <div className="text-[14px] font-medium">{t("tasks.ports.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          The window <code className="font-mono">$TERMIC_PORT</code> and every extra named port are allocated from. Each task takes a consecutive block, so the range needs room for a few ports per task. Existing tasks keep the ports they were given; this applies to the next task you create.
+          <Trans
+            t={t}
+            i18nKey="tasks.ports.hint"
+            components={{ 1: <code className="font-mono" /> }}
+          />
         </div>
         <div className="mt-2 flex max-w-sm items-center gap-2">
           <Input
@@ -269,7 +284,7 @@ export function TasksSection() {
             className="w-28 font-mono"
             data-testid="task-port-min-input"
           />
-          <span className="text-[12.5px] text-[var(--color-fg-dim)]">to</span>
+          <span className="text-[12.5px] text-[var(--color-fg-dim)]">{t("tasks.ports.to")}</span>
           <Input
             type="number"
             min={PORT_RANGE_FLOOR}
@@ -285,16 +300,14 @@ export function TasksSection() {
             <span className="text-[var(--color-err)]" data-testid="task-port-range-error">{portRangeMsg}</span>
           ) : (
             <span data-testid="task-port-range-hint">
-              Room for about {tasksThatFit(portMinNum, portMaxNum)} tasks.
-              {portMinNum < PORT_RANGE_DEFAULT.min
-                ? " Ports this low are where dev servers usually live. Pick a range nothing else on this machine uses, or a server started on a port that is already taken will fail to bind."
-                : ""}
+              {t("tasks.ports.room", { count: tasksThatFit(portMinNum, portMaxNum) })}
+              {portMinNum < PORT_RANGE_DEFAULT.min ? t("tasks.ports.lowWarn") : ""}
             </span>
           )}
         </div>
         <div className="mt-3">
           <Button variant="primary" disabled={!canSavePortRange || busy} onClick={savePortRange}>
-            {busy ? "Saving…" : "Save port range"}
+            {busy ? t("common:saving") : t("tasks.ports.save")}
           </Button>
         </div>
       </Block>
@@ -306,24 +319,24 @@ export function TasksSection() {
           new worktree task. Only ones that exist in the repo are linked; clear
           the list to disable. Files as well as dirs (GH #251). */}
       <Block>
-        <div className="text-[14px] font-medium">Worktree config symlinks</div>
+        <div className="text-[14px] font-medium">{t("tasks.symlinks.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Repo-root files and folders symlinked into each new worktree task, one per line, so agents keep project config (subagents, skills, commands, MCP servers) that is gitignored out of a plain checkout. Only entries that exist in the repo are linked. Clear the list to turn this off.
+          {t("tasks.symlinks.hint")}
         </div>
         <div className="mt-3">
-          <ListField label="Paths to symlink" placeholder={".claude\n.gemini\n.codex\n.mcp.json"} value={symlinkPaths} onChange={setSymlinkPaths} />
+          <ListField label={t("tasks.symlinks.label")} placeholder={".claude\n.gemini\n.codex\n.mcp.json"} value={symlinkPaths} onChange={setSymlinkPaths} />
         </div>
         <div className="mt-3">
           <Button variant="primary" disabled={!symlinkDirty || busy} onClick={saveSymlinkPaths}>
-            {busy ? "Saving…" : "Save symlink paths"}
+            {busy ? t("common:saving") : t("tasks.symlinks.save")}
           </Button>
         </div>
       </Block>
 
       <Block>
-        <div className="text-[14px] font-medium">Queue send interval</div>
+        <div className="text-[14px] font-medium">{t("tasks.queue.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          Minimum delay between consecutive queued messages sent to an agent (the "ralph loop"). Even if the agent finishes faster, or a false "done" fires, the next message waits this long. Set to 0 to disable. "Send now" ignores this and sends immediately.
+          {t("tasks.queue.hint")}
         </div>
         <div className="mt-2 flex max-w-xs items-center gap-2">
           <Input
@@ -334,14 +347,14 @@ export function TasksSection() {
             onChange={(e) => setQueueMinIntervalMs((Number(e.target.value) || 0) * 1000)}
             className="w-24 font-mono"
           />
-          <span className="text-[12.5px] text-[var(--color-fg-dim)]">seconds</span>
+          <span className="text-[12.5px] text-[var(--color-fg-dim)]">{t("tasks.queue.seconds")}</span>
         </div>
       </Block>
 
       <Block>
         <Toggle
-          label="Confirm before closing an agent tab"
-          hint="Ask before closing a non-shell terminal or agent tab. Turning this off (or unchecking it once from the close dialog) closes tabs immediately; a toast then points back to the '+' menu's Resume section to bring one back."
+          label={t("tasks.confirmClose.label")}
+          hint={t("tasks.confirmClose.hint")}
           value={confirmBeforeCloseAgentTab}
           onChange={setConfirmBeforeCloseAgentTab}
         />
@@ -351,8 +364,8 @@ export function TasksSection() {
           anyone who unticked it there has a visible way back. */}
       <Block>
         <Toggle
-          label="Confirm before archiving a task"
-          hint={"Ask before archiving a task. With this off (or after unticking \"Show this every time\" in the dialog), archiving happens straight away and a toast points at History."}
+          label={t("tasks.confirmArchive.label")}
+          hint={t("tasks.confirmArchive.hint")}
           value={confirmBeforeArchiveTask}
           onChange={setConfirmBeforeArchiveTask}
         />
@@ -369,8 +382,8 @@ export function TasksSection() {
           once is otherwise unreachable. */}
       <Block>
         <Toggle
-          label="Confirm before restarting an agent to switch account"
-          hint={"Switching a task to another credential set needs the agent to restart, which resumes the conversation. With this off the restart happens straight away."}
+          label={t("tasks.confirmRestart.label")}
+          hint={t("tasks.confirmRestart.hint")}
           value={confirmBeforeAccountRestart}
           onChange={setConfirmBeforeAccountRestart}
         />
@@ -378,10 +391,8 @@ export function TasksSection() {
 
       <Block>
         <Toggle
-          label="Delete the branch when archiving"
-          hint={confirmBeforeArchiveTask
-            ? "Start the archive dialog's \"Delete the git branch\" box ticked. You can still untick it for any single archive. A project's main checkout is never affected."
-            : "Archiving also deletes the task's branch. A project's main checkout is never affected."}
+          label={t("tasks.deleteBranch.label")}
+          hint={confirmBeforeArchiveTask ? t("tasks.deleteBranch.hintOn") : t("tasks.deleteBranch.hintOff")}
           value={archiveDeleteBranch}
           onChange={setArchiveDeleteBranch}
         />

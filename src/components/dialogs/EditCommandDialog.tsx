@@ -6,6 +6,7 @@
 // PTY is untouched until the user restarts the agent tab.
 
 import { useEffect, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -14,6 +15,7 @@ import { taskSetCustomCommand } from "@/lib/ipc";
 import { SquareChevronRight } from "lucide-react";
 
 export function EditCommandDialog() {
+  const { t } = useTranslation("dialogs");
   const taskId = useUI(s => s.editCommandTaskId);
   const close = useUI(s => s.closeEditCommand);
   const task = useApp(s => s.tasks.find(w => w.id === taskId) ?? null);
@@ -51,18 +53,20 @@ export function EditCommandDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title="Edit launch command"
+      title={t("editCommand.title")}
       className="max-w-lg"
     >
       <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Runs in <span className="font-mono">{task?.name ?? "the task"}</span>'s
-        repo root in a login shell. A multiline bash script is fine: newlines,
-        loops, and multiple commands all run. Changes apply the next time the
-        terminal launches, so restart the agent tab to pick them up live.
+        <Trans
+          t={t}
+          i18nKey="editCommand.body"
+          values={{ name: task?.name ?? t("editCommand.fallbackName") }}
+          components={{ mono: <span className="font-mono" /> }}
+        />
       </p>
 
       <label className="block text-[13.5px]">
-        Command
+        {t("editCommand.commandLabel")}
         <textarea
           value={command}
           onChange={e => setCommand(e.target.value)}
@@ -81,16 +85,20 @@ export function EditCommandDialog() {
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         />
         <span className="mt-1 block text-[11.5px] text-[var(--color-fg-faint)]">
-          Press <kbd className="font-mono">⌘↵</kbd> to save.
+          <Trans
+            t={t}
+            i18nKey="editCommand.pressToSave"
+            components={{ kbd: <kbd className="font-mono" /> }}
+          />
         </span>
       </label>
 
       {err && <p className="mt-3 text-[13.5px] text-[var(--color-err)]">{err}</p>}
 
       <div className="mt-5 flex justify-end gap-2">
-        <Button variant="ghost" onClick={close}>Cancel</Button>
+        <Button variant="ghost" onClick={close}>{t("common:cancel")}</Button>
         <Button variant="primary" disabled={!command.trim() || busy} onClick={submit}>
-          <SquareChevronRight className="h-4 w-4" /> Save
+          <SquareChevronRight className="h-4 w-4" /> {t("common:save")}
         </Button>
       </div>
     </AppDialog>

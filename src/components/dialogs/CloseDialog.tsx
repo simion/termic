@@ -17,6 +17,7 @@
 // "ask", so a user who ticked "Don't ask again" never sees this.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -25,6 +26,7 @@ import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function CloseDialog() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.closePromptOpen);
   const nonce = useUI(s => s.closePromptNonce);
   const setOpen = useUI(s => s.setClosePromptOpen);
@@ -58,7 +60,7 @@ export function CloseDialog() {
       open
       // Dismissal cancels the close outright - no IPC, nothing happens.
       onOpenChange={(v) => { if (!v) setOpen(false); }}
-      title="Close Termic?"
+      title={t("closeDialog.title")}
       className={cn(
         "max-w-xl",
         stacked && "ring-2 ring-[var(--color-warn)]/70 shadow-[0_0_0_8px_rgba(245,197,66,0.12),0_25px_50px_-12px_rgba(0,0,0,0.75)]",
@@ -72,8 +74,7 @@ export function CloseDialog() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--color-warn)]" />
           <p className="text-[14px] text-[var(--color-fg-dim)] leading-relaxed flex-1">
-            Keep your agents running in the menu bar, or quit Termic and stop
-            them.
+            {t("closeDialog.body")}
           </p>
         </div>
 
@@ -86,11 +87,11 @@ export function CloseDialog() {
             data-testid="close-dont-ask"
           />
           <div className="flex flex-col gap-0.5">
-            <span>Don't ask again</span>
+            <span>{t("closeDialog.dontAskAgain")}</span>
             {/* Ticking this next to "Quit Termic" arms the red button to stop
                 every agent with no confirmation, so name the way back. */}
             <span className="text-[12px] text-[var(--color-fg-dim)]/70">
-              Change it later in Settings, General.
+              {t("closeDialog.changeLater")}
             </span>
           </div>
         </label>
@@ -104,7 +105,7 @@ export function CloseDialog() {
           className="text-[var(--color-err)] hover:bg-[var(--color-err)]/10"
           data-testid="close-quit"
         >
-          Quit Termic
+          {t("closeDialog.quit")}
         </Button>
         <Button
           variant="primary"
@@ -113,7 +114,7 @@ export function CloseDialog() {
           autoFocus
           data-testid="close-menubar"
         >
-          Keep in Menu Bar
+          {t("closeDialog.keepInMenuBar")}
         </Button>
       </div>
     </AppDialog>

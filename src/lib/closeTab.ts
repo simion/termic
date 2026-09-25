@@ -9,6 +9,7 @@
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
+import { i18n } from "@/lib/i18n";
 import type { ScratchTab, Tab } from "@/lib/types";
 import { agentDisplayName, isTerminalCli } from "@/lib/agents";
 import { discardScratchPad } from "@/lib/scratchTabs";
@@ -24,7 +25,8 @@ function scheduledLostOnClose(tab: Tab | undefined, paneTab: boolean): number {
   return (tab.queue ?? []).filter(isScheduled).length;
 }
 
-const scheduledPhrase = (n: number) => `${n} scheduled ${n === 1 ? "message" : "messages"}`;
+const scheduledPhrase = (n: number) =>
+  i18n.t(n === 1 ? "backend:closeTab.scheduledPhraseOne" : "backend:closeTab.scheduledPhraseOther", { count: n });
 
 /** The scratchpad close prompt (GH #244), resolving true when the pad's tab
  *  may close. A pad has never been written anywhere the user chose, so
@@ -67,9 +69,9 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
     // No checkbox in the request → askConfirm resolves a plain boolean; the
     // === true keeps TS happy across its overloads.
     const ok = await useUI.getState().askConfirm({
-      title: "Close without saving?",
-      message: `"${name}" has unsaved changes. Closing the tab will discard them. ⌘S to save first.`,
-      confirmLabel: "Discard & close",
+      title: i18n.t("backend:closeTab.unsavedTitle"),
+      message: i18n.t("backend:closeTab.unsavedMessage", { name }),
+      confirmLabel: i18n.t("backend:closeTab.unsavedConfirm"),
       destructive: true,
     });
     return ok === true;
@@ -80,9 +82,9 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
   const lost = scheduledLostOnClose(tab, paneTab);
   if (lost) {
     const ok = await useUI.getState().askConfirm({
-      title: "Delete scheduled messages?",
-      message: `This tab has ${scheduledPhrase(lost)}. Closing the tab deletes ${lost === 1 ? "it" : "them"}.`,
-      confirmLabel: "Close tab",
+      title: i18n.t("backend:closeTab.scheduledTitle"),
+      message: i18n.t(lost === 1 ? "backend:closeTab.scheduledMessageOne" : "backend:closeTab.scheduledMessageOther", { phrase: scheduledPhrase(lost) }),
+      confirmLabel: i18n.t("backend:closeTab.closeTabConfirm"),
       destructive: true,
     });
     return ok === true;
@@ -108,7 +110,7 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
     // requestClosePaneTab toast a Resume shortcut once the close lands.
     if (!usePrefs.getState().confirmBeforeCloseAgentTab) return true;
     const label = tab.cli === "custom"
-      ? (tab.title || "this command")
+      ? (tab.title || i18n.t("backend:closeTab.thisCommand"))
       : agentDisplayName(tab.cli, useApp.getState().agents);
     const isMain = !paneTab && !!tab.is_default;
     // "The session resumes when you reopen the task" is only true when this
@@ -124,15 +126,15 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
     // gets the red button or copy that implies loss (issue #102).
     const gone = !isMain && !termLike && paneTab;
     const ok = await useUI.getState().askConfirm({
-      title: `Close ${label}?`,
+      title: i18n.t("backend:closeTab.agentCloseTitle", { label }),
       message: termLike
-        ? "Stops the running process and closes the tab."
+        ? i18n.t("backend:closeTab.stopsProcess")
         : sleeps
-          ? "Stops the running process. The session resumes when you reopen the task."
+          ? i18n.t("backend:closeTab.stopsProcessResumes")
           : gone
-            ? "Ends this agent's session. A pane tab isn't kept, so this one can't be resumed."
-            : "Ends this agent's session. Bring it back any time from the Resume list in the + menu.",
-      confirmLabel: "Close tab",
+            ? i18n.t("backend:closeTab.endsSessionPane")
+            : i18n.t("backend:closeTab.endsSessionResume"),
+      confirmLabel: i18n.t("backend:closeTab.closeTabConfirm"),
       destructive: gone,
       dontAskAgain: true,
     });
@@ -167,18 +169,18 @@ async function confirmBulkClose(tabs: Tab[]): Promise<boolean> {
   if (!dirty.length && !scheduled && (!live.length || !usePrefs.getState().confirmBeforeCloseAgentTab)) return true;
   const parts: string[] = [];
   if (dirty.length) {
-    parts.push(`termic discards the unsaved changes in ${dirty.length} ${dirty.length === 1 ? "file" : "files"}.`);
+    parts.push(i18n.t(dirty.length === 1 ? "backend:closeTab.bulkDirtyOne" : "backend:closeTab.bulkDirtyOther", { count: dirty.length }));
   }
   if (live.length) {
-    parts.push(`termic ends ${live.length} agent ${live.length === 1 ? "session" : "sessions"}.`);
+    parts.push(i18n.t(live.length === 1 ? "backend:closeTab.bulkLiveOne" : "backend:closeTab.bulkLiveOther", { count: live.length }));
   }
   if (scheduled) {
-    parts.push(`It deletes ${scheduledPhrase(scheduled)}.`);
+    parts.push(i18n.t("backend:closeTab.bulkScheduled", { phrase: scheduledPhrase(scheduled) }));
   }
   const ok = await useUI.getState().askConfirm({
-    title: `Close ${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}?`,
+    title: i18n.t(tabs.length === 1 ? "backend:closeTab.bulkTitleOne" : "backend:closeTab.bulkTitleOther", { count: tabs.length }),
     message: parts.join(" "),
-    confirmLabel: "Close tabs",
+    confirmLabel: i18n.t("backend:closeTab.closeTabsConfirm"),
     destructive: true,
   });
   return ok === true;
@@ -194,12 +196,12 @@ async function confirmBulkClose(tabs: Tab[]): Promise<boolean> {
 function toastClosedTab(taskId: string, tab: Tab, paneTab: boolean) {
   if (tab.type !== "terminal" || tab.cli === "shell") return;
   const label = tab.cli === "custom"
-    ? (tab.title || "this command")
+    ? (tab.title || i18n.t("backend:closeTab.thisCommand"))
     : agentDisplayName(tab.cli, useApp.getState().agents);
   // Pane tabs are never snapshotted into closedTabs (see app.ts's closeTab) —
   // there's nothing to point the user back to, so just confirm the close.
   if (paneTab) {
-    useUI.getState().pushToast(`Closed "${label}".`, "info");
+    useUI.getState().pushToast(i18n.t("backend:closeTab.closedToast", { label }), "info");
     return;
   }
   // Same split as the confirm dialog's copy: only a close that emptied the
@@ -210,7 +212,7 @@ function toastClosedTab(taskId: string, tab: Tab, paneTab: boolean) {
   const slept = !(useApp.getState().tabs[taskId] ?? [])
     .some(t => !(t as { paneId?: string }).paneId);
   if (slept) {
-    useUI.getState().pushToast(`Closed "${label}". It resumes automatically when you reopen this task.`, "info");
+    useUI.getState().pushToast(i18n.t("backend:closeTab.closedSleptToast", { label }), "info");
     return;
   }
   // Bind THIS close's entry now (toastClosedTab runs synchronously right
@@ -219,10 +221,10 @@ function toastClosedTab(taskId: string, tab: Tab, paneTab: boolean) {
   // close (or a menu Resume) within the toast's ttl would make this button
   // reopen the wrong tab. resumeClosedTab no-ops if the id is already gone.
   const entryId = useApp.getState().closedTabs[taskId]?.[0]?.id;
-  useUI.getState().pushToast(`Closed "${label}". Resume it from the + menu.`, "info", {
+  useUI.getState().pushToast(i18n.t("backend:closeTab.closedResumeToast", { label }), "info", {
     ttlMs: 6000,
     action: {
-      label: "Resume",
+      label: i18n.t("backend:closeTab.resume"),
       onClick: () => { if (entryId) useApp.getState().resumeClosedTab(taskId, entryId); },
     },
   });

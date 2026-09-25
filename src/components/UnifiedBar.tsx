@@ -5,6 +5,7 @@
 // empty space, with `no-drag` opted-in on every interactive child.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, useActiveTask } from "@/store/app";
 import { useProfiles } from "@/store/profiles";
@@ -32,7 +33,7 @@ import { confirmAndArchive } from "@/lib/archiveTask";
 import {
   DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator,
 } from "@/components/ui/Dropdown";
-import { usePromptLibrary } from "@/store/prompts";
+import { usePromptLibrary, promptTitle } from "@/store/prompts";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { bindingGlyphs } from "@/lib/shortcuts";
@@ -48,6 +49,7 @@ import { cn } from "@/lib/utils";
 const TRAFFIC_LIGHT_WIDTH = 84;
 
 export function UnifiedBar() {
+  const { t } = useTranslation("chrome");
   const agents = useApp(s => s.agents);
   // The profile's accent as a wash across the left of the bar (GH #280).
   // Selected as the finished CSS string so this bar re-renders only when the
@@ -149,7 +151,7 @@ export function UnifiedBar() {
         className="flex items-center gap-2"
         style={{ WebkitAppRegion: "no-drag" } as any}
       >
-        <Tip content={compact ? "Expand sidebar" : "Collapse sidebar"} side="bottom">
+        <Tip content={compact ? t("unifiedBar.expandSidebar") : t("unifiedBar.collapseSidebar")} side="bottom">
           <Button size="icon" variant="icon" onClick={() => {
             // Suppress the 220ms grid-template-columns transition for
             // this single toggle. Animating the column lerp makes the
@@ -210,8 +212,8 @@ export function UnifiedBar() {
               </>
             ) : (
               <>
-                <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]" title={taskCrumb === task.name ? undefined : `Task name: ${task.name}`}>{taskCrumb}</span>
-                <span className="leading-tight text-[var(--color-fg-faint)]">on</span>
+                <span className="min-w-0 truncate pr-0.5 font-medium leading-tight text-[var(--color-fg)]" title={taskCrumb === task.name ? undefined : t("taskNameTitle", { name: task.name })}>{taskCrumb}</span>
+                <span className="leading-tight text-[var(--color-fg-faint)]">{t("unifiedBar.onBranch")}</span>
                 <span className="truncate font-mono text-[12px] leading-tight text-[var(--color-fg-dim)]">{task.branch}</span>
                 <TaskLocationIcon isMainCheckout={task.is_main_checkout} className="self-center" />
               </>
@@ -226,14 +228,14 @@ export function UnifiedBar() {
             {(task.composition?.length ?? 0) > 0 && (
               <span
                 className="ml-1 inline-flex shrink-0 items-center rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider leading-none text-[var(--color-fg-dim)]"
-                title={task.composition!.map(m => m.mode === "worktree" ? `${m.dir_name} @${m.branch}` : `${m.dir_name} (live)`).join(" · ")}
+                title={task.composition!.map(m => m.mode === "worktree" ? `${m.dir_name} @${m.branch}` : `${m.dir_name} ${t("unifiedBar.live")}`).join(" · ")}
               >
-                {task.composition!.length} repos
+                {t("unifiedBar.repoCount", { count: task.composition!.length })}
               </span>
             )}
           </>
         ) : (
-          <span className="text-[var(--color-fg-faint)]">No task selected</span>
+          <span className="text-[var(--color-fg-faint)]">{t("unifiedBar.noTask")}</span>
         )}
       </div>
 
@@ -259,11 +261,11 @@ export function UnifiedBar() {
                   palette over the same list. Naming the binding here is the
                   only place the two surfaces meet. Glyphs come from the live
                   binding, so a rebind can't leave the tooltip lying. */}
-              <Tip content={tipWithKey("Prompts", "prompt-palette")} side="bottom">
+              <Tip content={tipWithKey(t("unifiedBar.prompts"), "prompt-palette")} side="bottom">
                 <DropdownTrigger asChild>
                   <Button size="sm" variant="ghost" className="gap-1.5" data-no-drag data-testid="prompts-menu">
                     <MessageSquareText className="h-4 w-4" />
-                    <span>Prompts</span>
+                    <span>{t("unifiedBar.prompts")}</span>
                   </Button>
                 </DropdownTrigger>
               </Tip>
@@ -272,17 +274,17 @@ export function UnifiedBar() {
                   leave it stuck open after picking a prompt. */}
               <DropdownMenu align="end" className="min-w-[200px]" onCloseAutoFocus={(e) => e.preventDefault()}>
                 {enabledPrompts.length === 0 && (
-                  <div className="px-2 py-1.5 text-[13px] text-[var(--color-fg-faint)]">No prompts yet.</div>
+                  <div className="px-2 py-1.5 text-[13px] text-[var(--color-fg-faint)]">{t("unifiedBar.promptsEmpty")}</div>
                 )}
                 {enabledPrompts.map(p => (
                   <DropdownItem key={p.id} onSelect={() => openPromptFire(p)}>
-                    <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                    <span className="min-w-0 flex-1 truncate">{promptTitle(p, t)}</span>
                   </DropdownItem>
                 ))}
                 <DropdownSeparator />
                 <DropdownItem onSelect={() => openSettings("prompts")}>
                   <Library className="h-4 w-4" />
-                  <span>Manage prompts…</span>
+                  <span>{t("unifiedBar.managePrompts")}</span>
                 </DropdownItem>
               </DropdownMenu>
             </DropdownRoot>
@@ -293,15 +295,13 @@ export function UnifiedBar() {
                 rather than risk mixing change sets; the error bubbles
                 up via the alert below. */}
             {!task.is_main_checkout && (
-              <Tip content="Bring this worktree's diff into the project's main checkout" side="bottom">
+              <Tip content={t("unifiedBar.sendToMainTip")} side="bottom">
                 <Button size="sm" variant="ghost" className="gap-1.5"
                   onClick={async () => {
                     const ok = await useUI.getState().askConfirm({
-                      title: `Send "${taskCrumb}" to main?`,
-                      message:
-                        `Applies all tracked changes (committed + staged + unstaged) and copies untracked files into ${proj.root_path}. ` +
-                        `The main checkout must be clean. Commit or stash there first.`,
-                      confirmLabel: "Send to main",
+                      title: t("unifiedBar.sendToMainTitle", { name: taskCrumb }),
+                      message: t("unifiedBar.sendToMainMessage", { path: proj.root_path }),
+                      confirmLabel: t("unifiedBar.sendToMain"),
                     });
                     if (!ok) return;
                     try {
@@ -310,29 +310,29 @@ export function UnifiedBar() {
                       // omit the zero halves so it reads as a result, not
                       // a checklist of nothings-happened.
                       const parts: string[] = [];
-                      if (r.tracked_files)   parts.push(`${r.tracked_files} tracked diff${r.tracked_files === 1 ? "" : "s"} applied`);
-                      if (r.untracked_files) parts.push(`${r.untracked_files} untracked file${r.untracked_files === 1 ? "" : "s"} copied`);
-                      const summary = parts.length ? parts.join(", ") : "no changes to send";
-                      useUI.getState().pushToast(`Sent to main checkout: ${summary}`, "success");
+                      if (r.tracked_files)   parts.push(t(r.tracked_files === 1 ? "unifiedBar.trackedOne" : "unifiedBar.trackedMany", { count: r.tracked_files }));
+                      if (r.untracked_files) parts.push(t(r.untracked_files === 1 ? "unifiedBar.untrackedOne" : "unifiedBar.untrackedMany", { count: r.untracked_files }));
+                      const summary = parts.length ? parts.join(", ") : t("unifiedBar.noChanges");
+                      useUI.getState().pushToast(t("unifiedBar.sentToast", { summary }), "success");
                     } catch (e) {
                       await useUI.getState().askConfirm({
-                        title: "Send to main failed",
+                        title: t("unifiedBar.sendToMainFailed"),
                         message: String(e),
-                        confirmLabel: "OK",
+                        confirmLabel: t("ok", { ns: "common" }),
                         cancelLabel: "",
                         destructive: true,
                       });
                     }
                   }}>
                   <ArrowUpToLine className="h-4 w-4" />
-                  <span>Send to main</span>
+                  <span>{t("unifiedBar.sendToMain")}</span>
                 </Button>
               </Tip>
             )}
             {(() => {
               if (task.docker_sandbox_enabled) {
                 return (
-                  <Tip content="Sandbox: Docker container (filesystem cage, network open)" side="bottom">
+                  <Tip content={t("unifiedBar.sbDockerTip")} side="bottom">
                     <Button size="icon" variant="icon"
                       onClick={() => useUI.getState().openSandbox(task.id)}
                     >
@@ -342,10 +342,10 @@ export function UnifiedBar() {
                 );
               }
               const sbMode = effectiveSandboxMode(task);
-              const tip = sbMode === "enforce" ? "Sandbox: Enforcing"
-                : sbMode === "enforce-fs" ? "Sandbox: Enforcing filesystem (network open)"
-                : sbMode === "monitor" ? "Sandbox: Monitoring (logging access)"
-                : "Sandbox: off. Click to enable";
+              const tip = sbMode === "enforce" ? t("unifiedBar.sbEnforce")
+                : sbMode === "enforce-fs" ? t("unifiedBar.sbEnforceFs")
+                : sbMode === "monitor" ? t("unifiedBar.sbMonitor")
+                : t("unifiedBar.sbOff");
               return (
                 <Tip content={tip} side="bottom">
                   <Button size="icon" variant="icon"
@@ -361,7 +361,7 @@ export function UnifiedBar() {
                 </Tip>
               );
             })()}
-            <Tip content="Archive task" side="bottom">
+            <Tip content={t("unifiedBar.archiveTask")} side="bottom">
               {/* Copy, delete-branch checkbox and the "Show this every time"
                   opt-out all live in confirmAndArchive - this button used to
                   inline its own near-copy of the prompt, which then drifted
@@ -373,7 +373,7 @@ export function UnifiedBar() {
             </Tip>
             <OpenWithButton task={task} />
             <div className="mx-1 h-4 w-px bg-[var(--color-border-soft)]" />
-            <Tip content={tipWithKey("Toggle right panel", "toggle-right-sidebar")} side="bottom">
+            <Tip content={tipWithKey(t("unifiedBar.toggleRightPanel"), "toggle-right-sidebar")} side="bottom">
               <Button size="icon" variant="icon" onClick={toggleRP} data-testid="toggle-right-panel">
                 <PanelRight className="h-4 w-4" />
               </Button>

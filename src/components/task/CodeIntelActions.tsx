@@ -12,12 +12,13 @@
 // repo they live in. So: this task, or always for this project.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
 import { useCodeIntel, checkoutRoot, grantKey } from "@/store/codeIntel";
 import { languageName } from "@/lib/lsp/languages";
-import { MEMORY_NOTE, serverFor } from "@/lib/lsp/serverNames";
+import { memoryNote, serverFor } from "@/lib/lsp/serverNames";
 import { codeIntelNameLower } from "@/lib/lsp/featureName";
 import { lspOffer, type LspOffer } from "@/lib/lsp/install";
 import { projectUpdate } from "@/lib/ipc";
@@ -54,6 +55,7 @@ export function CodeIntelActions({ taskId, server, onDone, compact, focusedActio
    *  shoved the results off the screen. Same actions, same order. */
   compact?: boolean;
 }) {
+  const { t } = useTranslation("panels");
   const task = useApp(s => s.tasks.find(t => t.id === taskId));
   // See `lib/lsp/featureName.ts`: navigation until the checker is on.
   const typeChecking = usePrefs(s => s.codeIntelDiagnostics);
@@ -86,16 +88,16 @@ export function CodeIntelActions({ taskId, server, onDone, compact, focusedActio
     const exe = offer?.exe ?? null;
     if (!disclosed && usePrefs.getState().confirmBeforeCodeIntel) {
       const res = await useUI.getState().askConfirm({
-        title: `Turn on ${codeIntelNameLower(typeChecking)}?`,
+        title: t("codeIntel.turnOnTitle", { feature: codeIntelNameLower(typeChecking) }),
         message: [
-          MEMORY_NOTE[serverFor(exe, server)]
-            ?? "A language server can hold a lot of memory and does not release it until it stops.",
+          memoryNote(serverFor(exe, server))
+            || t("codeIntel.memoryFallback"),
           task.is_main_checkout
-            ? "It runs once for this checkout, however many tasks share it, so a second task on the main checkout costs nothing extra."
-            : "It runs once for THIS worktree. Every other worktree with it on runs its own copy, with its own index.",
-          "It stops when this checkout's last task is closed or archived, so turning it on now does not commit the machine to it forever.",
+            ? t("codeIntel.mainNote")
+            : t("codeIntel.worktreeNote"),
+          t("codeIntel.stopsNote"),
         ].join("\n\n"),
-        confirmLabel: "Turn on",
+        confirmLabel: t("codeIntel.turnOn"),
         dontAskAgain: true,
         // Keyed: the pane can be closed (or the task archived) while the
         // prompt stands, and an un-withdrawn confirm blocks the whole window.
@@ -202,8 +204,8 @@ export function CodeIntelActions({ taskId, server, onDone, compact, focusedActio
         <Action
           id="turn-off"
           index={0}
-          label="Turn off"
-          hint={always ? "Also stops arming it automatically" : "Stops the server for this checkout"}
+          label={t("codeIntel.turnOff")}
+          hint={always ? t("codeIntel.turnOffAlwaysHint") : t("codeIntel.turnOffHint")}
           onClick={() => void turnOff()}
         />
       ) : (
@@ -211,16 +213,16 @@ export function CodeIntelActions({ taskId, server, onDone, compact, focusedActio
           <Action
             id="turn-on-for-this-task"
             index={0}
-            label={compact ? "This task" : "Turn on for this task"}
-            hint="Ends when this checkout's last task closes"
+            label={compact ? t("codeIntel.thisTask") : t("codeIntel.turnOnForTask")}
+            hint={t("codeIntel.taskHint")}
             onClick={() => { void armNow(); }}
             primary
           />
           <Action
             id="always-for-this-project"
             index={1}
-            label={compact ? "Always" : "Always for this project"}
-            hint={`Arms every ${languageName(server)} task in this project`}
+            label={compact ? t("codeIntel.always") : t("codeIntel.alwaysForProject")}
+            hint={t("codeIntel.alwaysHint", { language: languageName(server) })}
             onClick={() => {
               void (async () => {
                 // The standing instruction only follows a yes: declining the

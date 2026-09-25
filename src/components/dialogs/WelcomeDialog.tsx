@@ -19,6 +19,7 @@
 // is intentionally blocked so the user can't accidentally bypass setup.
 
 import { useEffect, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -41,6 +42,7 @@ import type { DelegatedWork } from "@/lib/delegatedWork";
 type Step = 0 | 1 | 2 | 3 | 4;
 
 export function WelcomeDialog() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.welcomeOpen);
   const close = useUI(s => s.closeWelcome);
   const [step, setStep] = useState<Step>(0);
@@ -70,7 +72,10 @@ export function WelcomeDialog() {
 
   useEffect(() => {
     if (!open || !dir) { setSummary(""); setRepos([]); setSelectedPaths(new Set()); return; }
-    const t = window.setTimeout(async () => {
+    // `t` is deliberately NOT a dep: re-running would re-fire the repo
+    // discovery IPC on a language switch. The stored summary localizes the
+    // next time the dir changes.
+    const timer = window.setTimeout(async () => {
       try {
         const found = await discoverRepos(dir);
         setRepos(found);
@@ -80,11 +85,12 @@ export function WelcomeDialog() {
         setSelectedPaths(new Set());
         const unadded = found.filter(r => !r.already_added).length;
         setSummary(found.length === 0
-          ? `No git repos found in ${dir}.`
-          : `Found ${found.length} repo${found.length === 1 ? "" : "s"} (${unadded} not yet added).`);
-      } catch { setSummary("Couldn't read that path."); setRepos([]); setSelectedPaths(new Set()); }
+          ? t("welcome.summaryNone", { dir })
+          : t(found.length === 1 ? "welcome.summaryFoundOne" : "welcome.summaryFoundMany", { count: found.length, unadded }));
+      } catch { setSummary(t("welcome.summaryError")); setRepos([]); setSelectedPaths(new Set()); }
     }, 200);
-    return () => window.clearTimeout(t);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dir, open]);
 
   async function browse() {
@@ -121,7 +127,7 @@ export function WelcomeDialog() {
         const okCount = created.filter(p => p !== null).length;
         if (okCount > 0) {
           useUI.getState().pushToast(
-            `Added ${okCount} project${okCount === 1 ? "" : "s"}`,
+            t(okCount === 1 ? "welcome.toastAddedOne" : "welcome.toastAddedMany", { count: okCount }),
             "success",
           );
         }
@@ -167,11 +173,11 @@ export function WelcomeDialog() {
               beside the logo and the pips. `truncate` makes going over show
               as an ellipsis rather than quietly growing the header. */}
           <div className="truncate text-[18px] font-semibold leading-tight">
-            {step === 0 && "Welcome to Termic"}
-            {step === 1 && "Where do you keep your repos?"}
-            {step === 2 && "Enable agent hooks"}
-            {step === 3 && "Pick your theme"}
-            {step === 4 && "Which projects should Termic add?"}
+            {step === 0 && t("welcome.step0Title")}
+            {step === 1 && t("welcome.step1Title")}
+            {step === 2 && t("welcome.step2Title")}
+            {step === 3 && t("welcome.step3Title")}
+            {step === 4 && t("welcome.step4Title")}
           </div>
         </div>
         {/* Tiny pip indicator. Click to jump (handy for skipping back). */}
@@ -182,7 +188,7 @@ export function WelcomeDialog() {
         >
           {Array.from({ length: lastStep + 1 }, (_, i) => i).map(i => (
             <button key={i} onClick={() => setStep(i as Step)}
-              aria-label={`Step ${i + 1}`}
+              aria-label={t("welcome.stepAria", { n: i + 1 })}
               className={cn(
                 "h-1.5 w-6 rounded-full transition-colors",
                 i === step ? "bg-[var(--color-accent)]" : "bg-[var(--color-border)] hover:bg-[var(--color-border-soft)]",
@@ -218,17 +224,17 @@ export function WelcomeDialog() {
         <div>
           {step < lastStep && (
             <Button variant="ghost" type="button" onClick={next} disabled={busy}>
-              Skip
+              {t("common:skip")}
             </Button>
           )}
         </div>
         <div className="flex gap-2">
           <Button variant="ghost" type="button" onClick={back} disabled={step === 0 || busy}>
-            Back
+            {t("common:back")}
           </Button>
           {step < lastStep && (
             <Button variant="primary" type="button" onClick={next} disabled={busy}>
-              Next
+              {t("common:next")}
             </Button>
           )}
           {/* `>=`, not `===`: discovery can come back empty while the user is
@@ -237,10 +243,10 @@ export function WelcomeDialog() {
           {step >= lastStep && (
             <Button variant="primary" type="button" onClick={() => finish(!dir.trim())} disabled={busy}>
               {busy
-                ? "Adding…"
+                ? t("welcome.adding")
                 : selectedPaths.size > 0
-                  ? `Add ${selectedPaths.size} project${selectedPaths.size === 1 ? "" : "s"}`
-                  : "Get started"}
+                  ? t(selectedPaths.size === 1 ? "welcome.addProjectsOne" : "welcome.addProjectsMany", { count: selectedPaths.size })
+                  : t("welcome.getStarted")}
             </Button>
           )}
         </div>
@@ -255,6 +261,7 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
   setClis: (v: CliInfo[]) => void;
   browse: () => void;
 }) {
+  const { t } = useTranslation("dialogs");
   // Manually point Termic at an agent CLI binary when PATH detection
   // missed it. Common reasons: the user's `claude` is a shell function
   // (only visible to interactive zsh), or termic was launched from
@@ -264,7 +271,7 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
   async function pickBinary(name: string) {
     const displayName = CLI_LABEL[name] ?? name;
     const picked = await openDialog({
-      title: `Pick the ${displayName} binary`,
+      title: t("welcome.pickBinaryTitle", { name: displayName }),
       multiple: false,
       directory: false,
     });
@@ -294,22 +301,22 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-        Termic scans it and suggests the repos you have not added yet.
+        {t("welcome.reposScanned")}
       </p>
       <label className="block text-[13.5px]">
         <div className="flex gap-2">
           <Input value={dir} onChange={e => setDir(e.target.value)} placeholder="~/Projects" />
-          <Button variant="secondary" type="button" onClick={browse}>Browse…</Button>
+          <Button variant="secondary" type="button" onClick={browse}>{t("common:browse")}</Button>
         </div>
         <div className="mt-1 text-[12px] text-[var(--color-fg-faint)]">{summary}</div>
       </label>
 
       <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3">
         <div className="mb-2 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-          Agent CLIs on your PATH
+          {t("welcome.agentClisTitle")}
         </div>
         {clis.length === 0 && (
-          <div className="text-[13.5px] text-[var(--color-fg-faint)]">Checking…</div>
+          <div className="text-[13.5px] text-[var(--color-fg-faint)]">{t("welcome.checking")}</div>
         )}
         {clis.map(c => (
           <div key={c.name} className={cn("flex items-center gap-2 py-1 text-[13.5px]", !c.found && "opacity-70")}>
@@ -329,14 +336,14 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
               </span>
             ) : (
               <>
-                <span className="text-[var(--color-fg-faint)] text-[12px]">not installed</span>
+                <span className="text-[var(--color-fg-faint)] text-[12px]">{t("welcome.notInstalled")}</span>
                 <button
                   type="button"
                   onClick={() => pickBinary(c.name)}
                   className="ml-auto rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-0.5 text-[11.5px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
-                  title={`Locate the ${CLI_LABEL[c.name] ?? c.name} binary manually`}
+                  title={t("welcome.setPathTitle", { name: CLI_LABEL[c.name] ?? c.name })}
                 >
-                  Set path…
+                  {t("welcome.setPath")}
                 </button>
               </>
             )}
@@ -356,6 +363,7 @@ function StepRepos({ dir, setDir, summary, clis, setClis, browse }: {
  *  found-green / missing-gray language as the agent rows above: most
  *  people have one forge, not both, and a wall of red reads as failure. */
 function ForgeRows() {
+  const { t } = useTranslation("dialogs");
   const forges = usePr(s => s.forges);
   const refreshForges = usePr(s => s.refreshForges);
   useEffect(() => { void refreshForges(); }, [refreshForges]);
@@ -363,10 +371,10 @@ function ForgeRows() {
     <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3">
       <div className="mb-2 flex items-center gap-1.5 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-dim)]">
         <GitPullRequest className="h-3.5 w-3.5" />
-        Pull requests
+        {t("welcome.prSectionTitle")}
       </div>
       {forges === null && (
-        <div className="text-[13.5px] text-[var(--color-fg-faint)]">Checking…</div>
+        <div className="text-[13.5px] text-[var(--color-fg-faint)]">{t("welcome.checking")}</div>
       )}
       {(forges ?? []).map(f => (
         <div key={f.id} className={cn("flex items-center gap-2 py-1 text-[13.5px]", !f.authed && "opacity-70")}>
@@ -378,12 +386,12 @@ function ForgeRows() {
           </span>
           {!f.found ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
-              <span className="font-mono">{f.id}</span> not installed ·{" "}
+              <span className="font-mono">{f.id}</span> {t("welcome.notInstalled")} ·{" "}
               <span className="font-mono">brew install {f.id}</span>
             </span>
           ) : !f.authed ? (
             <span className="text-[12px] text-[var(--color-fg-faint)]">
-              signed out · <span className="font-mono">{f.id} auth login</span>
+              {t("welcome.signedOut")} · <span className="font-mono">{f.id} auth login</span>
             </span>
           ) : (
             <span className="truncate font-mono text-[12px] text-[var(--color-fg-dim)]" title={f.path}>
@@ -393,8 +401,7 @@ function ForgeRows() {
         </div>
       ))}
       <div className="mt-1.5 text-[12px] text-[var(--color-fg-faint)]">
-        Without these, PR status, creating a PR, merge detection, and starting a task from an issue stay
-        off. Everything else works. You can set them up later; Settings re-checks each visit.
+        {t("welcome.forgeNote")}
       </div>
     </div>
   );
@@ -440,7 +447,10 @@ type ConceptRow = {
 const HELD = (over: Partial<DelegatedWork> = {}): DelegatedWork =>
   ({ label: "subagent", count: 2, ids: [], ...over });
 
-const CONCEPT_ROWS: ConceptRow[] = [
+/** A function of `t`, not a module constant: every caption is a lesson the
+ *  user is reading in their own language, and the factory re-runs on a
+ *  language switch (StepConcepts re-renders through its own `t`). */
+const conceptRowsOf = (t: (key: string, opts?: Record<string, unknown>) => string): ConceptRow[] => [
   // The two locations FIRST, adjacent and otherwise identical, so the only
   // thing that differs between them is the icon. Main checkout leads because
   // it is what a new task gets. Everything below teaches a mark instead, so
@@ -448,21 +458,21 @@ const CONCEPT_ROWS: ConceptRow[] = [
   // These two name the icon, because the icon IS the lesson: the rows are
   // otherwise identical and the caption is the only place the word appears.
   { name: "hotfix-typo", main: true, loc: true, caption: (
-    <><Term icon={Link2}>Main checkout</Term> edits files directly in your repo</>) },
+    <><Term icon={Link2}>{t("welcome.conceptMainCheckout")}</Term> {t("welcome.conceptMainEdits")}</>) },
   { name: "fix-login", loc: true, caption: (
-    <><Term icon={GitBranch}>Worktree</Term> a separate folder and branch</>) },
+    <><Term icon={GitBranch}>{t("welcome.conceptWorktree")}</Term> {t("welcome.conceptWorktreeDesc")}</>) },
   { name: "refactor-auth", open: true, badge: <TaskWorkBadge reason="working" />,
-    caption: "The agent is working" },
+    caption: t("welcome.conceptWorking") },
   { name: "nightly-sweep", open: true,
     badge: <TaskWorkBadge reason="delegated" delegated={HELD()} />,
-    caption: "Waiting on subagents or scripts" },
+    caption: t("welcome.conceptDelegated") },
   { name: "flaky-test", open: true,
     badge: <TaskWorkBadge reason="working" delegated={HELD({ count: 1, partial: true })} />,
-    caption: "Partially done, still waiting" },
+    caption: t("welcome.conceptPartial") },
   { name: "release-notes", open: true, badge: <TaskWorkBadge reason="done" />,
-    caption: "Work done" },
+    caption: t("welcome.conceptDone") },
   { name: "deps-bump", open: true, badge: <TaskWorkBadge reason="attention" />,
-    caption: "Needs your attention" },
+    caption: t("welcome.conceptAttention") },
 ];
 
 /** The word a caption is teaching, brighter than the rest of the line, with
@@ -480,10 +490,11 @@ function Term({ icon: Icon, children }: { icon: typeof Link2; children: React.Re
 /** The two rows above the task list, rendered twice: once in the replica and
  *  once invisibly beside it, which is what keeps the captions aligned. */
 function SidebarReplicaHeaders() {
+  const { t } = useTranslation("dialogs");
   return (
     <>
       <div className="flex items-center justify-between px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-        <span>Projects</span>
+        <span>{t("welcome.replicaProjects")}</span>
         <FolderPlus className="h-3.5 w-3.5" />
       </div>
       <div className="flex items-center justify-between rounded-md py-1.5 pl-2 pr-0 text-[12px] font-semibold uppercase tracking-[0.06em] text-[var(--color-fg)]">
@@ -498,19 +509,20 @@ function SidebarReplicaHeaders() {
 }
 
 function StepConcepts() {
+  const { t } = useTranslation("dialogs");
+  const conceptRows = conceptRowsOf(t);
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-        A <strong className="font-medium text-[var(--color-fg)]">project</strong> is a git repo you have
-        added. A <strong className="font-medium text-[var(--color-fg)]">task</strong> is one piece of work
-        inside it, with its own agents, terminal and diff.
+        <Trans t={t} i18nKey="welcome.conceptIntro"
+          components={{ b: <strong className="font-medium text-[var(--color-fg)]" /> }} />
       </p>
 
       <div className="flex gap-3">
         {/* The replica. Widths and paddings are the sidebar's own. */}
         <div className="w-[176px] shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] px-2 py-2">
           <SidebarReplicaHeaders />
-          {CONCEPT_ROWS.map(r => (
+          {conceptRows.map(r => (
             <div
               key={r.name}
               className="mb-px ml-3 flex h-[var(--task-row-h)] items-center gap-1 rounded-md px-1 text-[13px] text-[var(--color-fg-dim)]"
@@ -541,7 +553,7 @@ function StepConcepts() {
           {/* The headers again, invisible, so the captions line up with the
               rows whatever those headers measure. */}
           <div aria-hidden className="invisible"><SidebarReplicaHeaders /></div>
-          {CONCEPT_ROWS.map(r => (
+          {conceptRows.map(r => (
             <div
               key={r.name}
               className="mb-px flex h-[var(--task-row-h)] items-center truncate whitespace-nowrap text-[11.5px] text-[var(--color-fg-faint)]"
@@ -556,34 +568,29 @@ function StepConcepts() {
           shape, so the choice is already familiar when it is live. */}
       <div className="rounded-md border border-[var(--color-border)] p-3">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <span className="text-[13px] font-medium text-[var(--color-fg)]">Task type</span>
+          <span className="text-[13px] font-medium text-[var(--color-fg)]">{t("welcome.conceptTaskType")}</span>
           <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
             {/* Main checkout lit, because that is what the dialog actually
                 seeds for a single repo (`readLastMode() ?? "repo_root"` in
                 NewTaskDialog). Drawing the other one selected taught the
                 wrong default, which is worse than teaching nothing. */}
             <span className="flex h-7 items-center gap-1.5 rounded-[5px] bg-[var(--color-accent-deep)] px-2.5 text-[12.5px] text-white">
-              <Link2 className="h-3.5 w-3.5" /> Main checkout
+              <Link2 className="h-3.5 w-3.5" /> {t("welcome.conceptMainCheckout")}
             </span>
             <span className="flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              <GitBranch className="h-3.5 w-3.5" /> Worktree
+              <GitBranch className="h-3.5 w-3.5" /> {t("welcome.conceptWorktree")}
             </span>
           </div>
         </div>
         <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
           <Link2 className="mr-1 inline h-3 w-3 align-[-2px]" />
-          <strong className="font-medium text-[var(--color-fg-dim)]">Main checkout</strong> is what a new
-          task uses. The agent works in the repo folder you already have open, on its current branch, so its
-          edits appear in your editor as it makes them. Run one task at a time here. Archiving it leaves
-          everything in place.
+          <Trans t={t} i18nKey="welcome.conceptMainBody"
+            components={{ b: <strong className="font-medium text-[var(--color-fg-dim)]" /> }} />
         </p>
         <p className="mt-1.5 text-[12px] leading-snug text-[var(--color-fg-faint)]">
           <GitBranch className="mr-1 inline h-3 w-3 align-[-2px]" />
-          <strong className="font-medium text-[var(--color-fg-dim)]">Worktree</strong> gives the task
-          <strong className="font-medium text-[var(--color-fg-dim)]"> its own folder on disk</strong>, under
-          <code className="mx-1">~/termic/tasks/</code>, with its own branch. Your repo folder stays as it
-          is, so several agents can work at the same time, and none of it reaches your editor until you merge
-          the branch. Archiving the task deletes the folder. The toggle remembers what you picked last.
+          <Trans t={t} i18nKey="welcome.conceptWorktreeBody"
+            components={{ b: <strong className="font-medium text-[var(--color-fg-dim)]" />, code: <code className="mx-1" /> }} />
         </p>
       </div>
     </div>
@@ -596,6 +603,7 @@ function StepConcepts() {
 const ALL = "\u0000all";
 
 function StepHooks({ clis }: { clis: CliInfo[] }) {
+  const { t } = useTranslation("dialogs");
   const [rows, setRows] = useState<Record<string, AgentHookStatus>>({});
   const [busy, setBusy] = useState<string | null>(null);
   // `auto_install_hooks` in settings.json, read once on arrival so the box
@@ -687,13 +695,10 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
           problem and call the fix "a small hook", which names it without
           saying what it is: a file? a daemon? something phoning home? */}
       <p className="text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        A hook is a few lines Termic adds to the agent&apos;s own settings file. The agent runs
-        them when a turn starts, when it needs you, and when it finishes, and they tell Termic.
-        Nothing leaves your machine.
+        {t("welcome.hooksIntro")}
       </p>
       <p className="text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Without them Termic has to read the terminal and guess. Claude paints its idle marker
-        while it waits for you to approve something, which reads as finished.
+        {t("welcome.hooksWithout")}
       </p>
       {/* The same switch as Settings -> Agents & Terminals
           (`agent_hooks_auto_set`), not a second one that means something
@@ -716,14 +721,13 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
         />
         <span className="min-w-0">
           <span className="block text-[13px] font-medium text-[var(--color-fg)]">
-            Keep every agent hooked up
+            {t("welcome.hooksAutoLabel")}
             <span className="ml-1.5 rounded bg-[var(--color-accent)]/15 px-1.5 py-px text-[10.5px] uppercase tracking-wider text-[var(--color-accent)]">
-              Recommended
+              {t("welcome.recommended")}
             </span>
           </span>
           <span className="mt-0.5 block text-[12px] leading-snug text-[var(--color-fg-dim)]">
-            Installs the hook for any agent you add later too, so you never get a tab that
-            reports the wrong state because nobody wired it.
+            {t("welcome.hooksAutoHint")}
           </span>
         </span>
       </label>
@@ -731,15 +735,15 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
       {offCount > 1 && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-2">
           <span className="text-[12.5px] text-[var(--color-fg-dim)]">
-            {offCount} agents have no hook yet.
+            {t(offCount === 1 ? "welcome.hooksOffOne" : "welcome.hooksOffMany", { count: offCount })}
           </span>
           <Button variant="secondary" type="button" disabled={!!busy} onClick={installAll}>
-            {busy === ALL ? "Installing…" : "Install for all"}
+            {busy === ALL ? t("welcome.installingAll") : t("welcome.installForAll")}
           </Button>
         </div>
       )}
       <div className="text-[11px] uppercase tracking-wide text-[var(--color-fg-faint)]">
-        Agents found on this machine
+        {t("welcome.agentsFound")}
       </div>
       {/* Capped at about four rows. Nine agents at two lines each ran the
           dialog past the bottom of a laptop screen, which put Next off
@@ -749,7 +753,7 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
       <div className="-mt-1.5 flex max-h-[248px] flex-col gap-1.5 overflow-y-auto pr-1">
         {detected.length === 0 && (
           <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-            No agent CLIs detected yet. You can turn this on later in Settings.
+            {t("welcome.hooksNone")}
           </p>
         )}
         {detected.map(id => {
@@ -764,11 +768,11 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
                   {plans[id]?.entries.length ? (
                     <div
                       className="truncate text-[11px] text-[var(--color-fg-faint)]"
-                      title={`${plans[id].entries.map(e => `${e.event} reports ${e.reports}`).join("\n")}\n\nin ${plans[id].config_path}`}
+                      title={`${plans[id].entries.map(e => `${e.event} reports ${e.reports}`).join("\n")}\n\n${t("welcome.hookPlanIn", { file: plans[id].config_path })}`}
                     >
                       {plans[id].entries.map(e => e.event).join(", ")}
-                      {" in "}
-                      {plans[id].config_path.replace(/^.*\//, "")}
+                      {" "}
+                      {t("welcome.hookPlanIn", { file: plans[id].config_path.replace(/^.*\//, "") })}
                     </div>
                   ) : null}
                 </div>
@@ -782,15 +786,15 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
                     the special case is gone and every unsupported agent reads
                     the same. */}
                 <span className="text-[11.5px] text-[var(--color-fg-dim)]">
-                  {!st ? "checking…"
-                    : !st.supported ? "not supported yet"
-                    : st.host.disabled_all ? "hooks are disabled in this config"
-                    : st.host.installed ? "on" : "off"}
+                  {!st ? t("welcome.hookChecking")
+                    : !st.supported ? t("welcome.hookUnsupported")
+                    : st.host.disabled_all ? t("welcome.hookDisabled")
+                    : st.host.installed ? t("welcome.hookOn") : t("welcome.hookOff")}
                 </span>
                 {st?.supported && !st.host.disabled_all && (
                   <Button variant="ghost" type="button" disabled={busy === id}
                     onClick={() => toggle(id, !st.host.installed)}>
-                    {busy === id ? "…" : st.host.installed ? "Remove" : "Install"}
+                    {busy === id ? "…" : st.host.installed ? t("common:remove") : t("welcome.install")}
                   </Button>
                 )}
               </div>
@@ -801,7 +805,7 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
       {/* Name the file. This is the user's own config, not ours. */}
       {Object.values(rows).some(r => r.supported && r.host.installed) && (
         <p className="text-[11.5px] text-[var(--color-fg-dim)]">
-          Remove takes the lines back out, here or in Settings.
+          {t("welcome.hooksNote")}
         </p>
       )}
     </div>
@@ -823,22 +827,23 @@ const THEME_ITEMS: { id: ThemeMode; label: string; icon: typeof Sun; swatch: [st
   { id: "rosepine",  label: "Rosé Pine",      icon: Flower2, swatch: ["#191724", "#e0def4", "#ebbcba"] },
 ];
 function StepTheme() {
+  const { t } = useTranslation("dialogs");
   const themeMode = usePrefs(s => s.themeMode);
   const setThemeMode = usePrefs(s => s.setThemeMode);
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[13px] text-[var(--color-fg-dim)]">
-        Live-applies as you click. Change anytime from the top toolbar.
+        {t("welcome.themeIntro")}
       </p>
       <div className="grid grid-cols-2 gap-2">
-        {THEME_ITEMS.map(t => {
-          const active = t.id === themeMode;
-          const Ic = t.icon;
-          const [bg, fg, accent] = t.swatch;
+        {THEME_ITEMS.map(item => {
+          const active = item.id === themeMode;
+          const Ic = item.icon;
+          const [bg, fg, accent] = item.swatch;
           return (
             <button
-              key={t.id} type="button"
-              onClick={() => { setThemeMode(t.id); applyTheme(t.id); }}
+              key={item.id} type="button"
+              onClick={() => { setThemeMode(item.id); applyTheme(item.id); }}
               className={cn(
                 "flex items-center gap-2.5 rounded-md border px-3 py-2 text-left transition-colors",
                 active
@@ -857,17 +862,17 @@ function StepTheme() {
               <div className="flex min-w-0 flex-col">
                 <span className="flex items-center gap-1.5 text-[13px] font-medium text-[var(--color-fg)]">
                   <Ic className="h-3.5 w-3.5 text-[var(--color-fg-dim)]" />
-                  {t.label}
+                  {item.label}
                 </span>
                 <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                  {t.id === "auto" && "follows macOS"}
-                  {t.id === "light" && "cream + terracotta"}
-                  {t.id === "claude" && "warm charcoal + clay"}
-                  {t.id === "dark" && "deeper near-black"}
-                  {t.id === "solarized" && "Schoonover palette"}
-                  {t.id === "cobalt" && "deep navy + sky blue"}
-                  {t.id === "matrix" && "phosphor green CRT"}
-                  {t.id === "rosepine" && "dusky purple + rose"}
+                  {item.id === "auto" && t("welcome.themeSubAuto")}
+                  {item.id === "light" && t("welcome.themeSubLight")}
+                  {item.id === "claude" && t("welcome.themeSubClaude")}
+                  {item.id === "dark" && t("welcome.themeSubDark")}
+                  {item.id === "solarized" && t("welcome.themeSubSolarized")}
+                  {item.id === "cobalt" && t("welcome.themeSubCobalt")}
+                  {item.id === "matrix" && t("welcome.themeSubMatrix")}
+                  {item.id === "rosepine" && t("welcome.themeSubRosepine")}
                 </span>
               </div>
             </button>
@@ -890,6 +895,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
   selected: Set<string>;
   setSelected: (v: Set<string>) => void;
 }) {
+  const { t } = useTranslation("dialogs");
   const unadded = repos.filter(r => !r.already_added);
   const added = repos.filter(r => r.already_added);
 
@@ -918,10 +924,9 @@ function StepProjects({ dir, repos, selected, setSelected }: {
   if (!dir.trim()) {
     return (
       <div className="flex flex-col gap-3 text-[13px] text-[var(--color-fg-dim)]">
-        <p>You skipped the repos directory in step 1. No projects to suggest.</p>
+        <p>{t("welcome.skippedDir")}</p>
         <p className="text-[12px] text-[var(--color-fg-faint)]">
-          You can add projects any time from the dashboard's "Add project" card,
-          or pick a repos dir in Settings → General to enable discovery.
+          {t("welcome.skippedDirHint")}
         </p>
       </div>
     );
@@ -929,10 +934,16 @@ function StepProjects({ dir, repos, selected, setSelected }: {
   if (repos.length === 0) {
     return (
       <div className="flex flex-col gap-3 text-[13px] text-[var(--color-fg-dim)]">
-        <p>No git repos found in <code className="mono">{dir}</code>.</p>
+        <p>
+          <Trans
+            t={t}
+            i18nKey="welcome.noReposInDir"
+            values={{ dir }}
+            components={{ code: <code className="mono" /> }}
+          />
+        </p>
         <p className="text-[12px] text-[var(--color-fg-faint)]">
-          Either the path is empty or you went back and changed it. Give the
-          scanner a moment, or pick a different dir in step 1.
+          {t("welcome.noReposHint")}
         </p>
       </div>
     );
@@ -943,13 +954,13 @@ function StepProjects({ dir, repos, selected, setSelected }: {
       <div className="flex items-center justify-between text-[12.5px] text-[var(--color-fg-dim)]">
         <span>
           {unadded.length === 0
-            ? `All ${repos.length} repo${repos.length === 1 ? "" : "s"} already added. Nothing new to pick.`
-            : `${unadded.length} unadded repo${unadded.length === 1 ? "" : "s"} in ${dir}. Tick what you want.`}
+            ? t(repos.length === 1 ? "welcome.allAddedOne" : "welcome.allAddedMany", { count: repos.length })
+            : t(unadded.length === 1 ? "welcome.unaddedInfoOne" : "welcome.unaddedInfoMany", { count: unadded.length, dir })}
         </span>
         {unadded.length > 0 && (
           <div className="flex gap-2">
-            <button type="button" onClick={checkAll} className="text-[var(--color-accent)] hover:underline">all</button>
-            <button type="button" onClick={checkNone} className="text-[var(--color-fg-faint)] hover:text-[var(--color-fg)] hover:underline">none</button>
+            <button type="button" onClick={checkAll} className="text-[var(--color-accent)] hover:underline">{t("welcome.all")}</button>
+            <button type="button" onClick={checkNone} className="text-[var(--color-fg-faint)] hover:text-[var(--color-fg)] hover:underline">{t("welcome.none")}</button>
           </div>
         )}
       </div>
@@ -959,7 +970,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter…"
+          placeholder={t("welcome.filterPlaceholder")}
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
@@ -970,7 +981,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
 
       {unadded.length > 0 && visibleUnadded.length === 0 && (
         <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-          No repos match "{filter}".
+          {t("welcome.noReposMatch", { filter })}
         </div>
       )}
 
@@ -998,7 +1009,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
       {added.length > 0 && (
         <details className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg-1)]/50 px-3 py-2 text-[12px] text-[var(--color-fg-dim)]">
           <summary className="cursor-pointer select-none">
-            {added.length} repo{added.length === 1 ? "" : "s"} already added (won't duplicate)
+            {t(added.length === 1 ? "welcome.alreadyAddedOne" : "welcome.alreadyAddedMany", { count: added.length })}
           </summary>
           <ul className="mt-1.5 flex flex-col gap-0.5 pl-1">
             {added.map(r => (
@@ -1009,8 +1020,7 @@ function StepProjects({ dir, repos, selected, setSelected }: {
       )}
 
       <p className="text-[11.5px] text-[var(--color-fg-faint)]">
-        Each project lets you spawn tasks (git worktrees) per agent. You
-        can also add projects later from the dashboard.
+        {t("welcome.projectsFooter")}
       </p>
     </div>
   );

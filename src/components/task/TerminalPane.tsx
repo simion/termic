@@ -3,6 +3,8 @@
 // across tab switches (parent toggles visibility) so we don't reconnect PTYs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
+import { i18n } from "@/lib/i18n";
 import { AlertTriangle, TerminalSquare, Copy, Check, ChevronDown, ChevronRight, X, Loader2 } from "lucide-react";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { useUI } from "@/store/ui";
@@ -51,7 +53,7 @@ import { waitForAgentReady } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
 import type { TerminalTab, Task, SandboxMode } from "@/lib/types";
 import { effectiveSandboxMode, isTaskCaged } from "@/lib/types";
-import { SandboxIcon, SANDBOX_VISUALS, DockerSandboxIcon } from "@/components/SandboxIcon";
+import { SandboxIcon, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
@@ -214,6 +216,7 @@ function stripAnsi(s: string): string {
 // whenever the pref changes (see the themeMode effect below).
 
 export function TerminalPane({ task, tab, active }: Props) {
+  const { t } = useTranslation("task");
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -742,7 +745,7 @@ const captureArmedRef = useRef(false);
       scheduledInFlightRef.current = null;
       debugLogRef.current?.("scheduled-send", `"${item.text.slice(0, 40)}"`);
       const late = item.notBefore != null ? lateBy(item.notBefore, sentAt) : null;
-      if (late) useUI.getState().pushToast(`Scheduled message sent (due ${late} ago)`, "info");
+      if (late) useUI.getState().pushToast(i18n.t("task:terminal.scheduledSent", { late }), "info");
     } catch (e) {
       keep(String(e));
     }
@@ -777,7 +780,7 @@ const captureArmedRef = useRef(false);
       // items do not keep it running (they never needed it), but they do
       // mean the queue is not "finished", so no toast while any remain.
       patchTab(task.id, tab.id, { queueActive: false });
-      if (!q.length) useUI.getState().pushToast("Message queue finished");
+      if (!q.length) useUI.getState().pushToast(i18n.t("task:terminal.queueFinished"));
       return false;
     }
     const head = q[idx];
@@ -1058,7 +1061,7 @@ const captureArmedRef = useRef(false);
         // which can still reveal a directory.
       }
       if (!(await ipc.pathExists(abs).catch(() => false))) {
-        useUI.getState().pushToast("That path no longer exists", "error");
+        useUI.getState().pushToast(i18n.t("task:terminal.pathGone"), "error");
         return;
       }
       // Is it text? Not answerable from the extension: `.ts` is TypeScript AND
@@ -1118,7 +1121,7 @@ const captureArmedRef = useRef(false);
           }
           setPathMenu({ x, y, candidates: matches, line: target.line, col: target.col });
         })
-        .catch(() => useUI.getState().pushToast("Couldn't list files to open that path", "error"));
+        .catch(() => useUI.getState().pushToast(i18n.t("task:terminal.listFilesFailed"), "error"));
     }
     const onActivate = (target: ClickTarget, x: number, y: number) => {
       if (target.kind === "url") openLink("capture")(target.uri);
@@ -1204,7 +1207,7 @@ const captureArmedRef = useRef(false);
         .catch(err => {
           // Silence here would read as "paste is broken": the image is gone
           // from the prompt either way, so say why.
-          useUI.getState().pushToast(`Could not paste that image: ${String(err)}`, "error");
+          useUI.getState().pushToast(i18n.t("task:terminal.pasteImageFailed", { error: String(err) }), "error");
         });
     };
     host.addEventListener("paste", onPaste, true);
@@ -2292,7 +2295,7 @@ const captureArmedRef = useRef(false);
         // the leftover shell lives, so `fireDone`'s screen-scan hold would
         // defer this done forever. That scan is the FALLBACK for the payload
         // fact this hook has just read directly; it must not overrule it.
-        fireDone(`delegated work carried over (${delegatedChipText(work)})`,
+        fireDone(i18n.t("chrome:delegated.carriedOver", { held: delegatedChipText(work) }),
           "done", false, true, true);
         return;
       }
@@ -3011,10 +3014,10 @@ const captureArmedRef = useRef(false);
               const remembers = useApp.getState().agentHooksInstalled[tab.cli] === true;
               useUI.getState().pushToast(
                 (hasPicker
-                  ? `Couldn't resume the previous ${agentDisplayName(tab.cli)} session. Pick one to continue, or press Esc to start a new one.`
-                    + (remembers ? "" : " Install agent hooks so Termic remembers the one you pick.")
-                  : `Couldn't resume the previous ${agentDisplayName(tab.cli)} session. Started a fresh one.`)
-                + (why ? ` ${agentDisplayName(tab.cli)} said: "${why}"` : ""),
+                  ? i18n.t("task:terminal.resumeFailedPicker", { agent: agentDisplayName(tab.cli) })
+                    + (remembers ? "" : i18n.t("task:terminal.resumeFailedRemember"))
+                  : i18n.t("task:terminal.resumeFailed", { agent: agentDisplayName(tab.cli) }))
+                + (why ? i18n.t("task:terminal.resumeFailedSaid", { agent: agentDisplayName(tab.cli), why }) : ""),
                 "info",
               );
               useApp.getState().setTabSessionId(task.id, tab.id, "");
@@ -3379,10 +3382,13 @@ const captureArmedRef = useRef(false);
       asked = true;
       const ok = await useUI.getState().askConfirm({
         key: confirmKey,
-        title: `Restart ${agentDisplayName(tab.cli)} to ${effYolo ? "enable" : "disable"} YOLO?`,
-        message: `${agentDisplayName(tab.cli)} applies YOLO only on a fresh launch. Restart now (the session auto-resumes), or pick Later and it takes effect on the next restart.`,
-        confirmLabel: "Restart now",
-        cancelLabel: "Later",
+        title: i18n.t("task:terminal.yoloRestartTitle", {
+          agent: agentDisplayName(tab.cli),
+          action: i18n.t(`task:terminal.${effYolo ? "yoloEnable" : "yoloDisable"}`),
+        }),
+        message: i18n.t("task:terminal.yoloRestartMessage", { agent: agentDisplayName(tab.cli) }),
+        confirmLabel: i18n.t("task:terminal.restartNow"),
+        cancelLabel: i18n.t("task:terminal.later"),
       });
       asked = false;
       if (ok && !cancelled) { setExited(false); setGen(g => g + 1); }
@@ -3711,12 +3717,12 @@ const captureArmedRef = useRef(false);
         <TerminalExitedBanner
           label={exitedRunTab
             ? (tab.runTab?.failed
-                ? (exitedRunKind === "setup" ? "Setup failed." : "Run failed.")
-                : (exitedRunKind === "setup" ? "Setup finished." : "Run stopped."))
-            : `${agentDisplayName(tab.cli)} exited.`}
+                ? (exitedRunKind === "setup" ? t("terminal.setupFailed") : t("terminal.runFailed"))
+                : (exitedRunKind === "setup" ? t("terminal.setupFinished") : t("terminal.runStopped")))
+            : t("terminal.exited", { agent: agentDisplayName(tab.cli) })}
           actionLabel={exitedRunTab
-            ? (exitedRunKind === "setup" ? "Run setup again" : "Run again")
-            : `Restart ${agentDisplayName(tab.cli)}`}
+            ? (exitedRunKind === "setup" ? t("terminal.runSetupAgain") : t("terminal.runAgain"))
+            : t("terminal.restartAgent", { agent: agentDisplayName(tab.cli) })}
           tone={exitedRunTab ? "muted" : "warning"}
           onAction={() => {
             // Restarting from the banner is a fresh run: drop any prior
@@ -3729,8 +3735,8 @@ const captureArmedRef = useRef(false);
             setGen(g => g + 1);
           }}
           secondary={setupDone && closeIn != null ? {
-            label: `Close (${closeIn})`,
-            title: `Closing in ${closeIn}s. Click to close now.`,
+            label: t("terminal.closeCountdown", { seconds: closeIn }),
+            title: t("terminal.closeCountdownTip", { seconds: closeIn }),
             icon: X,
             onAction: () => useApp.getState().closeTab(task.id, tab.id),
           } : undefined}
@@ -3770,9 +3776,9 @@ const captureArmedRef = useRef(false);
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-bg)]/80">
           <Loader2 className="h-6 w-6 animate-spin text-[var(--color-accent)]" />
           <div className="text-center">
-            <div className="text-[13px] text-[var(--color-fg)]">Starting {agentDisplayName(tab.cli)}…</div>
+            <div className="text-[13px] text-[var(--color-fg)]">{t("terminal.starting", { agent: agentDisplayName(tab.cli) })}</div>
             <div className="mt-0.5 text-[12px] text-[var(--color-fg-dim)]">
-              Sending "{tab.promptPendingTitle}" when it is ready.
+              {t("terminal.sendingWhenReady", { title: tab.promptPendingTitle })}
             </div>
           </div>
         </div>
@@ -3785,6 +3791,7 @@ export function FooterBar({ task, sandboxWarning }: {
   task: { id: string; cli?: string; path?: string; sandbox_enabled?: boolean; sandbox_mode?: SandboxMode; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[]; docker_sandbox_enabled?: boolean };
   sandboxWarning: string | null;
 }) {
+  const { t } = useTranslation("task");
   const splitOpen     = useApp(s => !!s.terminalSplit[task.id]);
   const splitCollapsed = useApp(s => !!s.terminalSplitCollapsed[task.id]);
   const toggleBottomTerminal = useApp(s => s.toggleBottomTerminal);
@@ -3835,23 +3842,29 @@ export function FooterBar({ task, sandboxWarning }: {
   }, [task.id, mode]);
 
   // Sandbox half — the "degraded" warning state, else the standard
-  // per-mode icon + label sourced from SANDBOX_VISUALS (see SandboxIcon).
+  // per-mode icon + label (label from the footer.* locale keys, icon from
+  // SandboxIcon).
   const sandboxNode = sandboxWarning ? (
     <>
       <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warn)]" />
-      <span className="font-medium">Sandbox degraded</span>
+      <span className="font-medium">{t("footer.sandboxDegraded")}</span>
       <span className="text-[var(--color-fg-faint)]">·</span>
       <span className="truncate">{sandboxWarning}</span>
     </>
   ) : task.docker_sandbox_enabled ? (
     <>
       <DockerSandboxIcon className="h-3.5 w-3.5" />
-      <span className="@max-[560px]:hidden">Sandbox: docker container</span>
+      <span className="@max-[560px]:hidden">{t("footer.sandboxDocker")}</span>
     </>
   ) : (
     <>
       <SandboxIcon mode={mode} className="h-3.5 w-3.5" />
-      <span className="@max-[560px]:hidden">Sandbox: {SANDBOX_VISUALS[mode].shortLabel.toLowerCase()}</span>
+      <span className="@max-[560px]:hidden">
+        {mode === "off" ? t("footer.sandboxOff")
+          : mode === "enforce-fs" ? t("footer.sandboxEnforceFs")
+          : mode === "monitor" ? t("footer.sandboxMonitor")
+          : t("footer.sandboxEnforce")}
+      </span>
     </>
   );
 
@@ -3889,14 +3902,14 @@ export function FooterBar({ task, sandboxWarning }: {
         <button
           type="button"
           onClick={() => toggleBottomTerminal(task.id)}
-          title="Open a bottom terminal split"
+          title={t("footer.openBottomSplitTip")}
           className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[12.5px] text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
         >
           <TerminalSquare className="h-3.5 w-3.5" />
           {/* Label goes before the numbers do: the icon is unambiguous next
               to the one beside it, and the usage figures are what the user is
               actually reading in a narrow footer. */}
-          <span className="@max-[680px]:hidden">Terminal</span>
+          <span className="@max-[680px]:hidden">{t("footer.terminal")}</span>
         </button>
       )}
       {/* Right group: the blocked-hosts chip on the LEFT, the sandbox status
@@ -3945,7 +3958,7 @@ export function FooterBar({ task, sandboxWarning }: {
           {moreClass && (
             <span
               data-testid="agent-chips-more"
-              title="More agents than fit here. Widen the window, or switch tabs to see them."
+              title={t("terminal.moreAgentsTip")}
               className={cn("shrink-0 px-0.5 text-[var(--color-fg-faint)]", moreClass)}
             >
               ···
@@ -3958,7 +3971,7 @@ export function FooterBar({ task, sandboxWarning }: {
         <button
           type="button"
           onClick={() => useUI.getState().openSandbox(task.id)}
-          title={sandboxWarning ?? (task.sandbox_enabled ? "Edit sandbox" : "Enable sandbox")}
+          title={sandboxWarning ?? (task.sandbox_enabled ? t("footer.editSandboxTip") : t("footer.enableSandboxTip"))}
           className="flex items-center gap-1.5 truncate hover:text-[var(--color-fg)]"
         >
           {sandboxNode}
@@ -3974,6 +3987,7 @@ export function FooterBar({ task, sandboxWarning }: {
 // that adds the host to the task's allowed list + respawns the
 // agent under the new profile. Polls every 1.5s while open.
 function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli: string; count: number; mode: SandboxMode }) {
+  const { t } = useTranslation("task");
   const monitor = mode === "monitor";
   // ENFORCING (FS): the network sandbox is OFF, so there are no blocked
   // hosts to ever show. Drop every network surface from this popover —
@@ -4011,12 +4025,12 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
     ipc.sandboxSetMonitorFilters(taskId, excludeTask, wbOnly).catch(() => {});
   }, [monitor, taskId, excludeTask, wbOnly]);
   const SCOPES: { id: "agent" | "project" | "repo"; label: string; hint: string }[] = [
-    { id: "agent",   label: "Per agent",        hint: `Every task that runs ${cli}, in any project.` },
-    { id: "project", label: "Per project (me)", hint: "Only this project, only on your machine." },
-    { id: "repo",    label: ".termic.yaml",     hint: "Committed to the repo, shared with your team." },
+    { id: "agent",   label: t("denied.scopeAgent"),   hint: t("denied.scopeAgentHint", { cli }) },
+    { id: "project", label: t("denied.scopeProject"), hint: t("denied.scopeProjectHint") },
+    { id: "repo",    label: t("denied.scopeRepo"),    hint: t("denied.scopeRepoHint") },
   ];
   const scopeLabel = (s: "agent" | "project" | "repo") =>
-    s === "agent" ? `${cli} (agent)` : s === "repo" ? ".termic.yaml" : "this project";
+    s === "agent" ? t("denied.scopeAgentLabel", { cli }) : s === "repo" ? t("denied.scopeRepo") : t("denied.scopeProjectLabel");
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"aggregate" | "detailed">("aggregate");
   // ENFORCING data (blocked-only).
@@ -4086,11 +4100,11 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
       else                             await ipc.taskSandboxAddAllowedHost(taskId, host);
       setAllowed(prev => new Set(prev).add(host));
       useUI.getState().pushToast(
-        `Allowed ${host} for ${scopeLabel(allowScope)}. Restart the agent for it to take effect.`,
+        t("denied.allowedHostToast", { host, scope: scopeLabel(allowScope) }),
         "success",
       );
     } catch (e) {
-      useUI.getState().pushToast(`Couldn't allow ${host}: ${e}`, "error");
+      useUI.getState().pushToast(t("denied.allowHostFailed", { host, error: String(e) }), "error");
     } finally { setAllowing(null); }
   }
   async function allowPath(path: string) {
@@ -4107,26 +4121,26 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
       // their own surfaces (Settings → Agents / the .termic.yaml file).
       const undoable = allowScope === "project";
       useUI.getState().pushToast(
-        `Allowed ${display} for ${scopeLabel(allowScope)}. Restart the agent to apply.`,
+        t("denied.allowedPathToast", { path: display, scope: scopeLabel(allowScope) }),
         "success",
         {
           ttlMs: 6000,
           action: undoable ? {
-            label: "Undo",
+            label: t("denied.undo"),
             onClick: async () => {
               try {
                 await ipc.taskSandboxRemoveAllowedPath(taskId, path);
                 setAllowed(prev => { const n = new Set(prev); n.delete(path); return n; });
-                useUI.getState().pushToast(`Removed ${display} from allow-list`, "info");
+                useUI.getState().pushToast(t("denied.removedToast", { path: display }), "info");
               } catch (e) {
-                useUI.getState().pushToast(`Undo failed: ${e}`, "error");
+                useUI.getState().pushToast(t("denied.undoFailed", { error: String(e) }), "error");
               }
             },
           } : undefined,
         },
       );
     } catch (e) {
-      useUI.getState().pushToast(`Couldn't allow ${path}: ${e}`, "error");
+      useUI.getState().pushToast(t("denied.allowPathFailed", { path, error: String(e) }), "error");
     } finally { setAllowing(null); }
   }
 
@@ -4142,10 +4156,12 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
           onClick={(e) => e.stopPropagation()}
           className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-[var(--color-warn)] hover:bg-[var(--color-warn)]/10"
           title={monitor
-            ? `${count} access${count === 1 ? "" : "es"} logged (files + network). Click for the detailed activity log.`
-            : `${count} request${count === 1 ? "" : "s"} blocked by the sandbox. Click to see details.`}
+            ? t(count === 1 ? "denied.accessesLoggedTipOne" : "denied.accessesLoggedTipOther", { count })
+            : t(count === 1 ? "denied.blockedTipOne" : "denied.blockedTipOther", { count })}
         >
-          {monitor ? `${count} access${count === 1 ? "" : "es"}` : `${count} blocked`}
+          {monitor
+            ? t(count === 1 ? "denied.accessesBadgeOne" : "denied.accessesBadgeOther", { count })
+            : t("denied.blockedBadge", { count })}
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -4174,8 +4190,8 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
                 scopeChosen ? "text-[var(--color-fg-faint)]" : "font-medium text-[var(--color-warn)]",
               )}>
                 <span>{scopeChosen
-                  ? `Save allowed paths${fsOnly ? "" : " + domains"} to:`
-                  : `Pick where to save allowed paths${fsOnly ? "" : " + domains"}:`}</span>
+                  ? t(fsOnly ? "denied.saveTo" : "denied.saveToDomains")
+                  : t(fsOnly ? "denied.pickTo" : "denied.pickToDomains")}</span>
               </div>
               {/* Radio list — one per line with a short explanation.
                   Picking a scope collapses this back to the summary row. */}
@@ -4212,12 +4228,12 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
                 type="button"
                 onClick={() => setScopeEditing(true)}
                 className="flex w-full items-center gap-1.5 rounded text-left text-[11px] text-[var(--color-fg-faint)] transition-colors hover:text-[var(--color-fg-dim)]"
-                title="Change where allowed paths and domains are saved"
+                title={t("denied.changeScopeTip")}
               >
-                <span>Saving to</span>
+                <span>{t("denied.savingTo")}</span>
                 <span className="font-medium text-[var(--color-fg-dim)]">{SCOPES.find(s => s.id === allowScope)?.label}</span>
                 <span className="ml-auto inline-flex items-center gap-0.5 text-[var(--color-fg-faint)]">
-                  Change
+                  {t("denied.change")}
                   <ChevronDown className="h-3 w-3" />
                 </span>
               </button>
@@ -4237,13 +4253,13 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
           )}
           {!monitor && (<>
           {hosts.length === 0 && paths.length === 0 && (
-            <div className="px-1 py-1 text-[var(--color-fg-faint)]">Loading…</div>
+            <div className="px-1 py-1 text-[var(--color-fg-faint)]">{t("common:loading")}</div>
           )}
 
           {visibleHosts.length > 0 && (
             <>
               <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-                <span>Blocked hosts</span>
+                <span>{t("denied.blockedHosts")}</span>
                 <span>{visibleHosts.length}</span>
               </div>
               <ul className="flex flex-col">
@@ -4253,7 +4269,7 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
                     className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]"
                   >
                     <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={h.host}>{h.host}</span>
-                    <CopyButton value={h.host} title="Copy host" />
+                    <CopyButton value={h.host} title={t("denied.copyHostTip")} />
                     <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
                       {h.count}× · {relTime(h.last_seen_unix_ms)}
                     </span>
@@ -4262,9 +4278,9 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
                       onClick={() => allow(h.host)}
                       disabled={allowing === h.host || !scopeChosen}
                       className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                      title={`Add ${h.host} to allowed hosts. Takes effect on next agent restart.`}
+                      title={t("denied.allowHostTip", { host: h.host })}
                     >
-                      {allowing === h.host ? "…" : "Allow"}
+                      {allowing === h.host ? "…" : t("denied.allow")}
                     </button>
                   </li>
                 ))}
@@ -4275,11 +4291,11 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
           {visiblePaths.length > 0 && (
             <>
               <div className="mt-3 mb-0.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-                <span>Blocked filesystem paths</span>
+                <span>{t("denied.blockedPaths")}</span>
                 <span>{visiblePaths.length}</span>
               </div>
               <div className="mb-1.5 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-                Click any path segment to allow that prefix. Hover to preview which part you'll allow: green = will be allowed, dimmed = trimmed off.
+                {t("denied.pathsHint")}
               </div>
               <ul className="flex flex-col">
                 {visiblePaths.map(p => (
@@ -4297,10 +4313,10 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
                       pending={allowing === p.path || !scopeChosen}
                       onAllow={(prefix) => allowPath(prefix)}
                     />
-                    <CopyButton value={p.path} title="Copy full path" className="ml-auto" />
+                    <CopyButton value={p.path} title={t("denied.copyFullPathTip")} className="ml-auto" />
                     <span
                       className="shrink-0 text-[11px] text-[var(--color-fg-faint)]"
-                      title={p.last_proc ? `Process: ${p.last_proc}(${p.last_pid})` : undefined}
+                      title={p.last_proc ? t("denied.processTip", { proc: p.last_proc, pid: p.last_pid }) : undefined}
                     >
                       {p.last_proc && (
                         <span className="mr-2 font-mono text-[var(--color-fg-dim)]">
@@ -4316,9 +4332,9 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
           )}
 
           <div className="mt-2 max-w-[460px] px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-            Clicking adds the {fsOnly ? "path" : "path or host"} to this task's allow-list.
+            {t(fsOnly ? "denied.allowEffectPath" : "denied.allowEffectPathHost")}
             <br />
-            Takes effect on next agent restart. The running agent keeps its current (narrower) permissions.
+            {t("denied.restartNote")}
           </div>
           </>)}
       </PopoverContent>
@@ -4353,15 +4369,16 @@ function OpBadge({ op }: { op: string }) {
   );
 }
 function WouldBlockTag({ on }: { on: boolean }) {
+  const { t } = useTranslation("task");
   if (on) return (
     <span className="shrink-0 rounded px-1 py-[1px] text-[10px] text-[var(--color-warn)]"
       style={{ background: "color-mix(in srgb, var(--color-warn) 15%, transparent)" }}
-      title="ENFORCING mode would block this. Click the path/host to whitelist it.">would block</span>
+      title={t("monitor.wouldBlockTip")}>{t("monitor.wouldBlock")}</span>
   );
   return (
     <span className="shrink-0 rounded px-1 py-[1px] text-[10px] text-[var(--color-ok)]"
       style={{ background: "color-mix(in srgb, var(--color-ok) 12%, transparent)" }}
-      title="Allowed under ENFORCING too.">ok</span>
+      title={t("monitor.okTip")}>{t("monitor.ok")}</span>
   );
 }
 
@@ -4384,6 +4401,7 @@ function MonitorActivity({
   onAllowPath: (p: string) => void;
   shortenPath: (p: string) => string;
 }) {
+  const { t } = useTranslation("task");
   // Hide accesses inside the task (+ member) dirs when toggled — the
   // agent hammers them constantly and they're always allowed, so pure noise.
   const inTask = (p: string) => taskDirs.some(d => p === d || p.startsWith(d + "/"));
@@ -4437,63 +4455,63 @@ function MonitorActivity({
     <div className="flex flex-col">
       {/* Tab strip (Settings-style button group). */}
       <div className="mb-2 flex items-center gap-1">
-        {(["aggregate", "detailed"] as const).map(t => (
+        {(["aggregate", "detailed"] as const).map(tb => (
           <button
-            key={t}
+            key={tb}
             type="button"
-            onClick={() => setTab(t)}
+            onClick={() => setTab(tb)}
             className={cn(
               "rounded px-2 py-0.5 text-[11.5px] font-medium capitalize",
-              tab === t
+              tab === tb
                 ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
                 : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
             )}
           >
-            {t}
+            {t(`monitor.${tb}`)}
           </button>
         ))}
         <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
-          title="Only record accesses the cage WOULD block (the rows you need to allow-list). Drops always-allowed noise (not stored).">
+          title={t("monitor.onlyWouldBlockTip")}>
           <input type="checkbox" checked={wbOnly} onChange={e => setWbOnly(e.target.checked)} className="h-3 w-3 accent-[var(--color-warn)]" />
-          <span>Only would-block</span>
+          <span>{t("monitor.onlyWouldBlock")}</span>
         </label>
         <label className="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
-          title="Don't record accesses inside this task's own dir (always allowed, pure noise).">
+          title={t("monitor.excludeTaskTip")}>
           <input type="checkbox" checked={excludeTask} onChange={e => setExcludeTask(e.target.checked)} className="h-3 w-3 accent-[var(--color-accent)]" />
-          <span>Exclude task dir{hiddenTask > 0 ? ` (${hiddenTask})` : ""}</span>
+          <span>{hiddenTask > 0 ? t("monitor.excludeTaskCounted", { count: hiddenTask }) : t("monitor.excludeTask")}</span>
         </label>
         <span className="text-[11px] text-[var(--color-fg-faint)]">
-          {fileCount + netCount} access{fileCount + netCount === 1 ? "" : "es"}
+          {t(fileCount + netCount === 1 ? "monitor.accessCountOne" : "monitor.accessCountOther", { count: fileCount + netCount })}
           {(wbFiles + wbHosts) > 0 && (
-            <span className="ml-1 text-[var(--color-warn)]">· {wbFiles + wbHosts} would block</span>
+            <span className="ml-1 text-[var(--color-warn)]">{t("monitor.wouldBlockCount", { count: wbFiles + wbHosts })}</span>
           )}
         </span>
       </div>
 
       {vHosts.length === 0 && vPaths.length === 0 && (
-        <div className="px-1 py-2 text-[var(--color-fg-faint)]">Waiting for activity… the agent hasn't touched anything yet.</div>
+        <div className="px-1 py-2 text-[var(--color-fg-faint)]">{t("monitor.waiting")}</div>
       )}
 
       {/* ── NETWORK (same in both tabs) ── */}
       {vHosts.length > 0 && (
         <>
           <div className="mb-1 mt-0.5 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-            <span>Network</span><span>{vHosts.length} host{vHosts.length === 1 ? "" : "s"}</span>
+            <span>{t("monitor.network")}</span><span>{t(vHosts.length === 1 ? "monitor.hostCountOne" : "monitor.hostCountOther", { count: vHosts.length })}</span>
           </div>
           <ul className="mb-2 flex flex-col">
             {vHosts.map(h => (
               <li key={h.host} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--color-hover)]">
                 <span className="min-w-0 flex-1 truncate whitespace-nowrap font-mono text-[var(--color-fg)]" title={`${h.host}:${h.port}`}>{h.host}<span className="text-[var(--color-fg-faint)]">:{h.port}</span></span>
                 <WouldBlockTag on={h.would_block} />
-                <CopyButton value={h.host} title="Copy host" />
+                <CopyButton value={h.host} title={t("denied.copyHostTip")} />
                 <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{h.count}× · {relTime(h.last_seen_unix_ms)}</span>
                 <button
                   type="button"
                   onClick={() => onAllowHost(h.host)}
                   disabled={allowing === h.host || !scopeChosen}
                   className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                  title={`Add ${h.host} to allowed hosts.`}
-                >{allowing === h.host ? "…" : "Allow"}</button>
+                  title={t("monitor.addHostTip", { host: h.host })}
+                >{allowing === h.host ? "…" : t("denied.allow")}</button>
               </li>
             ))}
           </ul>
@@ -4503,8 +4521,10 @@ function MonitorActivity({
       {/* ── FILESYSTEM ── */}
       {vPaths.length > 0 && (
         <div className="mb-1 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-          <span>Filesystem</span>
-          <span>{tab === "aggregate" ? `${folders.length} folder${folders.length === 1 ? "" : "s"}` : `${vPaths.length} entr${vPaths.length === 1 ? "y" : "ies"}`}</span>
+          <span>{t("monitor.filesystem")}</span>
+          <span>{tab === "aggregate"
+            ? t(folders.length === 1 ? "monitor.folderCountOne" : "monitor.folderCountOther", { count: folders.length })
+            : t(vPaths.length === 1 ? "monitor.entryCountOne" : "monitor.entryCountOther", { count: vPaths.length })}</span>
         </div>
       )}
 
@@ -4514,15 +4534,17 @@ function MonitorActivity({
         return (
           <div key={g.folder} className="rounded">
             <div className="flex items-center gap-1.5 rounded px-1 py-1 hover:bg-[var(--color-hover)]">
-              <button type="button" onClick={() => toggle(g.folder)} className="shrink-0 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]" title={isOpen ? "Collapse" : "Expand"}>
+              <button type="button" onClick={() => toggle(g.folder)} className="shrink-0 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]" title={isOpen ? t("monitor.collapseTip") : t("monitor.expandTip")}>
                 {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               </button>
               <span className="min-w-0 flex-1">
                 <PathSegments display={shortenPath(g.folder)} pending={allowing === g.folder || !scopeChosen} onAllow={onAllowPath} />
               </span>
               {g.wouldBlock > 0 && <WouldBlockTag on />}
-              <span className="shrink-0 font-mono text-[10px] text-[var(--color-fg-faint)]" title="operation kinds in this folder">{[...g.ops].join(" ")}</span>
-              <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{g.entries.length} file{g.entries.length === 1 ? "" : "s"} · {g.count}×</span>
+              <span className="shrink-0 font-mono text-[10px] text-[var(--color-fg-faint)]" title={t("monitor.opsTip")}>{[...g.ops].join(" ")}</span>
+              <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">
+                {t(g.entries.length === 1 ? "monitor.folderFilesOne" : "monitor.folderFilesOther", { count: g.entries.length, times: g.count })}
+              </span>
             </div>
             {isOpen && (
               <ul className="ml-5 flex flex-col border-l border-[var(--color-border-soft)] pl-2">
@@ -4537,8 +4559,8 @@ function MonitorActivity({
                       onClick={() => onAllowPath(p.path)}
                       disabled={allowing === p.path || !scopeChosen}
                       className="shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] hover:border-[var(--color-ok)]/40 hover:text-[var(--color-fg)] disabled:opacity-50"
-                      title={`Allow ${p.path}`}
-                    >{allowing === p.path ? "…" : "Allow"}</button>
+                      title={t("denied.allowPathTip", { path: p.path })}
+                    >{allowing === p.path ? "…" : t("denied.allow")}</button>
                   </li>
                 ))}
               </ul>
@@ -4562,8 +4584,8 @@ function MonitorActivity({
                     <PathSegments display={shortenPath(p.path)} pending={allowing === p.path || !scopeChosen} onAllow={onAllowPath} />
                   </span>
                   {p.would_block && <WouldBlockTag on />}
-                  <CopyButton value={p.path} title="Copy full path" />
-                  <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]" title={p.last_proc ? `${p.last_proc}(${p.last_pid})` : undefined}>
+                  <CopyButton value={p.path} title={t("denied.copyFullPathTip")} />
+                  <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]" title={p.last_proc ? t("denied.processTip", { proc: p.last_proc, pid: p.last_pid }) : undefined}>
                     {p.last_proc && <span className="mr-2 font-mono text-[var(--color-fg-dim)]">{p.last_proc}({p.last_pid})</span>}
                     {p.count}× · {relTime(p.last_seen_unix_ms)}
                   </span>
@@ -4572,7 +4594,7 @@ function MonitorActivity({
             </ul>
             {rows.length > CAP && (
               <div className="px-1 py-1 text-[11px] text-[var(--color-fg-faint)]">
-                Showing newest {CAP} of {rows.length} filesystem entries. Use Aggregate to see all, grouped by folder.
+                {t("monitor.shownCap", { cap: CAP, total: rows.length })}
               </div>
             )}
           </>
@@ -4580,9 +4602,7 @@ function MonitorActivity({
       })()}
 
       <div className="mt-2 px-1 text-[11px] leading-snug text-[var(--color-fg-faint)]">
-        Monitoring logs access; it does not block. Items tagged{" "}
-        <span className="text-[var(--color-warn)]">would block</span> are the ones to whitelist
-        (click the path/host or its Allow button) before switching to Enforcing.
+        <Trans t={t} i18nKey="monitor.footerNote" components={{ warn: <span className="text-[var(--color-warn)]" /> }} />
       </div>
     </div>
   );
@@ -4603,6 +4623,7 @@ function MonitorActivity({
  *  dim to hint at the cut-off. Lets the user pick a parent dir without
  *  having to retype the path into the sandbox dialog. */
 function CopyButton({ value, title, className }: { value: string; title: string; className?: string }) {
+  const { t } = useTranslation("task");
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -4614,7 +4635,7 @@ function CopyButton({ value, title, className }: { value: string; title: string;
           setTimeout(() => setCopied(false), 1200);
         }).catch(() => {});
       }}
-      title={copied ? "Copied" : title}
+      title={copied ? t("common:copied") : title}
       className={cn(
         "shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
         className,
@@ -4630,6 +4651,7 @@ function PathSegments({ display, onAllow, pending }: {
   onAllow: (prefix: string) => void;
   pending: boolean;
 }) {
+  const { t } = useTranslation("task");
   // Hover state: index up to which the user is "selecting" — segments
   // 0..=hovered get the green-on-hover treatment, segments after dim.
   const [hovered, setHovered] = useState<number | null>(null);
@@ -4663,7 +4685,7 @@ function PathSegments({ display, onAllow, pending }: {
               onMouseEnter={() => setHovered(i)}
               onClick={() => onAllow(prefixAt(i))}
               disabled={pending}
-              title={`Allow ${prefixAt(i)}. Takes effect on next agent restart.`}
+              title={t("denied.allowPrefixTip", { prefix: prefixAt(i) })}
               className={cn(
                 "rounded px-1 transition-colors disabled:opacity-50",
                 isPrefix && "bg-[var(--color-ok)]/15 text-[var(--color-fg)]",
@@ -4681,12 +4703,12 @@ function PathSegments({ display, onAllow, pending }: {
 function relTime(unixMs: number): string {
   const delta = Math.max(0, Date.now() - unixMs);
   const s = Math.floor(delta / 1000);
-  if (s < 30) return "just now";
+  if (s < 30) return i18n.t("task:monitor.relJustNow");
   const m = Math.floor(s / 60);
-  if (m < 5)  return "<5m ago";
-  if (m < 60) return `${Math.round(m / 5) * 5}m ago`;
+  if (m < 5)  return i18n.t("task:monitor.relUnder5m");
+  if (m < 60) return i18n.t("task:monitor.relMinutes", { minutes: Math.round(m / 5) * 5 });
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return i18n.t("task:monitor.relHours", { hours: h });
   const d = Math.floor(h / 24);
-  return d === 1 ? "yesterday" : `${d}d ago`;
+  return d === 1 ? i18n.t("task:monitor.relYesterday") : i18n.t("task:monitor.relDays", { days: d });
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { ChevronDown, ChevronRight, Settings } from "lucide-react";
 import type { Project } from "@/lib/types";
 import { useCodeIntel } from "@/store/codeIntel";
@@ -19,15 +20,16 @@ export function CodeIntelSettings({
   project: Project;
   onChange: (patch: { code_intel_settings?: Record<string, unknown> }) => void;
 }) {
+  const { t } = useTranslation("settings");
   const activeLangs = project.code_intel_languages ?? CODE_INTEL_LANGUAGES.map((l) => l.id);
 
   if (activeLangs.length === 0) return null;
 
   return (
     <div className="mt-6 flex flex-col gap-3">
-      <div className="text-[13px] font-medium text-[var(--color-fg)]">Server Configuration</div>
+      <div className="text-[13px] font-medium text-[var(--color-fg)]">{t("codeIntel.configHeading")}</div>
       <p className="text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-        Learn how to configure your running servers or provide advanced JSON overrides if needed.
+        {t("codeIntel.configDesc")}
       </p>
       {activeLangs.map((lang) => (
         <LanguageServerConfig
@@ -59,6 +61,7 @@ function LanguageServerConfig({
   project: Project;
   onChange: (val: Record<string, unknown> | null) => void;
 }) {
+  const { t } = useTranslation("settings");
   const [offer, setOffer] = useState<LspOffer | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -106,7 +109,7 @@ function LanguageServerConfig({
             <p className="mb-3 leading-relaxed text-[var(--color-fg)]">{guide.summary}</p>
             {guide.configFiles.length > 0 && (
               <div className="mb-3">
-                <strong className="text-[var(--color-fg)]">Configuration files:</strong>
+                <strong className="text-[var(--color-fg)]">{t("codeIntel.configFiles")}</strong>
                 <ul className="mt-1.5 list-disc pl-4 marker:text-[var(--color-border)] flex flex-col gap-1">
                   {guide.configFiles.map((f, i) => (
                     <li key={i}>
@@ -120,13 +123,13 @@ function LanguageServerConfig({
             )}
             {guide.excludes && (
               <div className="mb-3">
-                <strong className="text-[var(--color-fg)]">Ignoring paths:</strong>{" "}
+                <strong className="text-[var(--color-fg)]">{t("codeIntel.ignoring")}</strong>{" "}
                 <span>{guide.excludes}</span>
               </div>
             )}
             {guide.env.length > 0 && (
               <div className="mb-3">
-                <strong className="text-[var(--color-fg)]">Environment variables:</strong>
+                <strong className="text-[var(--color-fg)]">{t("codeIntel.envVars")}</strong>
                 <ul className="mt-1.5 list-disc pl-4 marker:text-[var(--color-border)] flex flex-col gap-1">
                   {guide.env.map((e, i) => (
                     <li key={i}>
@@ -143,7 +146,7 @@ function LanguageServerConfig({
                 rel="noreferrer"
                 className="text-[var(--color-accent)] hover:underline"
               >
-                Read {guide.name} documentation
+                {t("codeIntel.readDocs", { name: guide.name })}
               </a>
             </div>
           </div>
@@ -171,6 +174,7 @@ function AdvancedSettingsBlock({
   guide: ServerGuide;
   onChange: (val: Record<string, unknown> | null) => void;
 }) {
+  const { t } = useTranslation("settings");
   const currentVal = project.code_intel_settings?.[language];
   const [text, setText] = useState(
     currentVal ? JSON.stringify(currentVal, null, 2) : ""
@@ -181,11 +185,15 @@ function AdvancedSettingsBlock({
   return (
     <div className="mt-2 border-t border-[var(--color-border-soft)] pt-4">
       <div className="mb-1 text-[13px] font-medium text-[var(--color-fg)]">
-        Advanced overrides
+        {t("codeIntel.advanced")}
       </div>
       <p className="mb-3 leading-relaxed">
-        Only use this for settings that exist purely over LSP and cannot be configured via files. 
-        Sent as <code>{guide.rawChannel === "init" ? "initializationOptions" : "workspace/configuration"}</code>.
+        <Trans
+          t={t}
+          i18nKey="codeIntel.advancedHint"
+          values={{ channel: guide.rawChannel === "init" ? "initializationOptions" : "workspace/configuration" }}
+          components={{ 1: <code /> }}
+        />
       </p>
       
       <RestartNote language={language} />
@@ -242,6 +250,7 @@ function RestartNote({ language }: { language: string }) {
   // as an infinite loop - React #185, "Maximum update depth exceeded", the
   // moment this row is expanded. Comparing element-wise makes the snapshot
   // stable while the roots are unchanged.
+  const { t } = useTranslation("settings");
   const armedRoots = useCodeIntel(useShallow(s =>
     Object.entries(s.grants)
       .filter(([key, tasks]) => key.split("\u0000")[1] === language && tasks.length > 0)
@@ -251,7 +260,7 @@ function RestartNote({ language }: { language: string }) {
   if (!armedRoots.length) {
     return (
       <p className="mb-3 text-[11.5px] text-[var(--color-fg-faint)]">
-        Applied the next time this server starts.
+        {t("codeIntel.appliedNext")}
       </p>
     );
   }
@@ -273,8 +282,8 @@ function RestartNote({ language }: { language: string }) {
     <div className="mb-3 flex items-center gap-2 text-[11.5px] text-[var(--color-fg-dim)]">
       <span>
         {armedRoots.length === 1
-          ? "This server is running with the settings it started with."
-          : `${armedRoots.length} copies of this server are running with the settings they started with.`}
+          ? t("codeIntel.runningOne")
+          : t("codeIntel.runningMany", { count: armedRoots.length })}
       </span>
       <button
         type="button"
@@ -282,7 +291,7 @@ function RestartNote({ language }: { language: string }) {
         disabled={restarting}
         className="rounded border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg)] hover:bg-[var(--color-hover)] disabled:opacity-50"
       >
-        {restarting ? "Restarting…" : "Restart to apply"}
+        {restarting ? t("codeIntel.restarting") : t("codeIntel.restart")}
       </button>
     </div>
   );

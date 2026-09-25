@@ -219,6 +219,7 @@ yours.
 Deeper references — read when working in that area:
 
 - [docs/ipc.md](docs/ipc.md) — Tauri commands, critical payload shapes, long-running IPC discipline
+- [docs/i18n.md](docs/i18n.md) — i18next namespaces, wiring rules (hooks vs i18n.t, Trans, plurals), zh-CN conventions, parity test
 - [docs/data-model.md](docs/data-model.md) — data dirs, Project/Task/Settings/Tab entities
 - [docs/tech-debt.md](docs/tech-debt.md) — index of temporary/removable scaffolding (e.g. the workspace→task migration) + purge checklists
 - [docs/performance.md](docs/performance.md) — perf traps, sub-pixel/rendering hardening, what is measured where (`make perf`)

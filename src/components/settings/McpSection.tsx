@@ -24,6 +24,7 @@
 // copy affordance fetches it on click and hands it to the clipboard.
 
 import { useEffect, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { mcpInstallClient, mcpStatus, mcpToken } from "@/lib/ipc";
 import type { McpStatus } from "@/lib/types";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -41,6 +42,7 @@ const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, cl
 /** A copyable monospace block. One component so every snippet shares the
  *  same chrome and copy affordance. */
 function CopyRow({ text, label, className }: { text: string; label: string; className?: string }) {
+  const { t } = useTranslation("settings");
   return (
     <div
       data-selectable
@@ -55,7 +57,7 @@ function CopyRow({ text, label, className }: { text: string; label: string; clas
         onClick={() => copyToClipboard(text, label)}
         className="shrink-0 text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]"
       >
-        Copy
+        {t("common:copy")}
       </button>
     </div>
   );
@@ -65,17 +67,19 @@ function CopyRow({ text, label, className }: { text: string; label: string; clas
 function ClientHeader({ title, action, busy, disabled, onInstall }: {
   title: string; action: string; busy: boolean; disabled: boolean; onInstall: () => void;
 }) {
+  const { t } = useTranslation("settings");
   return (
     <div className="mt-5 flex items-center justify-between gap-4">
       <div className="text-[13px] font-medium">{title}</div>
       <Button variant="secondary" size="md" disabled={disabled} onClick={onInstall}>
-        {busy ? "Adding…" : action}
+        {busy ? t("mcp.adding") : action}
       </Button>
     </div>
   );
 }
 
 export function McpSection() {
+  const { t } = useTranslation("settings");
   const { settings, patch } = useBackendSettings();
   // Seeded false for the pre-settingsLoad frame, same reasoning as
   // CliSection: a wrong "enabled" flash is the worse flash.
@@ -126,10 +130,10 @@ export function McpSection() {
   async function copyToken() {
     const value = await mcpToken().catch(() => null);
     if (!value) {
-      useUI.getState().pushToast("The endpoint is not running, so there is no token", "error");
+      useUI.getState().pushToast(t("mcp.noToken"), "error");
       return;
     }
-    await copyToClipboard(value, "MCP token");
+    await copyToClipboard(value, t("mcp.copyTokenLabel"));
   }
 
   const url = status?.url ?? null;
@@ -145,12 +149,12 @@ export function McpSection() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionTitle title="MCP endpoint" badge="Experimental" />
+      <SectionTitle title={t("mcp.title")} badge={t("shared.experimental")} />
 
       <Block first>
         <Toggle
-          label="Enable MCP endpoint"
-          hint="Serve this app's tasks and projects as MCP tools on a local-only address, for clients that cannot use the CLI. Off means nothing is listening. Access needs a token only your user account can read."
+          label={t("mcp.enable.label")}
+          hint={t("mcp.enable.hint")}
           value={mcpEnabled}
           onChange={saveMcpEnabled}
         />
@@ -158,31 +162,34 @@ export function McpSection() {
 
       {mcpEnabled && (
         <Block>
-          <div className="text-[14px] font-medium">Connect a client</div>
+          <div className="text-[14px] font-medium">{t("mcp.connect")}</div>
           {status === null ? (
             // mcpStatus() races settingsLoad(), so the enabled branch can
             // render before the URL arrives. Saying "could not bind" in
             // that window would call the healthy path broken.
             <p className="mt-0.5 text-[12.5px] text-[var(--color-fg-faint)]">
-              Reading the endpoint state...
+              {t("mcp.reading")}
             </p>
           ) : url && tokenPath ? (
             <>
               <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                Listening here. Clients authenticate with the token in{" "}
-                <code className="font-mono">{tokenPath}</code>.
+                <Trans
+                  t={t}
+                  i18nKey="mcp.listening"
+                  values={{ path: tokenPath }}
+                  components={{ 1: <code className="font-mono" /> }}
+                />
               </div>
-              <CopyRow text={url} label="MCP URL" className="mt-3 items-center text-[12.5px]" />
+              <CopyRow text={url} label={t("mcp.copyUrlLabel")} className="mt-3 items-center text-[12.5px]" />
               <button
                 type="button"
                 onClick={copyToken}
                 className="mt-2 text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]"
               >
-                Copy token to clipboard
+                {t("mcp.copyToken")}
               </button>
               <p className="mt-1 text-[12px] text-[var(--color-fg-faint)]">
-                For clients that take only a pasted value. The token changes on every restart, so
-                prefer the setups below, which read the file.
+                {t("mcp.tokenNote")}
               </p>
 
               {/* Each client's button sits in its own header: the action
@@ -191,40 +198,41 @@ export function McpSection() {
                   blocks by position. */}
               <ClientHeader
                 title="Codex"
-                action="Add to Codex"
+                action={t("mcp.addToCodex")}
                 busy={installing === "codex"}
                 disabled={installing !== null}
                 onInstall={() => install("codex")}
               />
               <p className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                Writes this to <code className="font-mono">~/.codex/config.toml</code>, backing up
-                the current file. It also turns on the protocol revision, which is a codex-wide
-                setting.
+                <Trans
+                  t={t}
+                  i18nKey="mcp.codexHint"
+                  components={{ 1: <code className="font-mono" /> }}
+                />
               </p>
               {installed?.client === "codex" && (
                 <p className="mt-1.5 text-[12px] text-[var(--color-fg-dim)]">{installed.message}</p>
               )}
-              {codexConfig && <CopyRow text={codexConfig} label="codex config" className="mt-1.5" />}
+              {codexConfig && <CopyRow text={codexConfig} label={t("mcp.copyCodexLabel")} className="mt-1.5" />}
 
               <ClientHeader
                 title="Claude Code"
-                action="Add to Claude Code"
+                action={t("mcp.addToClaude")}
                 busy={installing === "claude"}
                 disabled={installing !== null}
                 onInstall={() => install("claude")}
               />
               <p className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                Needs no extra setting, on 2.1.238 or newer. Registered through claude's own
-                command, so a running session cannot clobber the config.
+                {t("mcp.claudeHint")}
               </p>
               {installed?.client === "claude" && (
                 <p className="mt-1.5 text-[12px] text-[var(--color-fg-dim)]">{installed.message}</p>
               )}
-              {claudeCommand && <CopyRow text={claudeCommand} label="claude command" className="mt-1.5" />}
+              {claudeCommand && <CopyRow text={claudeCommand} label={t("mcp.copyClaudeLabel")} className="mt-1.5" />}
             </>
           ) : (
             <p className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              The endpoint could not bind. Check the log, or toggle the setting off and on.
+              {t("mcp.bindFailed")}
             </p>
           )}
         </Block>

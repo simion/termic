@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useTranslation } from "react-i18next";
 import { Search, Check } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -31,6 +32,7 @@ import type { EditTab, ExternalTab, ScratchTab } from "@/lib/types";
 type Row = { name: string; keywords: string };
 
 export function SyntaxPalette() {
+  const { t } = useTranslation("dialogs");
   const target = useUI(s => s.syntaxPaletteFor);
   const close = useUI(s => s.closeSyntaxPalette);
   const open = !!target;
@@ -151,8 +153,8 @@ export function SyntaxPalette() {
           className="termic-pop fixed left-1/2 top-[14vh] z-50 w-[min(420px,92vw)] -translate-x-1/2 overflow-hidden rounded-xl border border-[var(--color-border)] shadow-2xl outline-none backdrop-blur-lg"
           onKeyDown={onKeyDown}
         >
-          <Dialog.Title className="sr-only">Set syntax</Dialog.Title>
-          <Dialog.Description className="sr-only">Choose the language this file is highlighted as.</Dialog.Description>
+          <Dialog.Title className="sr-only">{t("syntaxPalette.srTitle")}</Dialog.Title>
+          <Dialog.Description className="sr-only">{t("syntaxPalette.srDesc")}</Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
             <input
@@ -162,13 +164,13 @@ export function SyntaxPalette() {
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"
-              placeholder="Set syntax…"
+              placeholder={t("syntaxPalette.placeholder")}
               className="w-full bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
             />
           </div>
           <div ref={listRef} className="no-scrollbar max-h-[min(50vh,360px)] overflow-y-auto py-1">
             {rows.length === 0 && (
-              <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">No matching syntax</div>
+              <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">{t("syntaxPalette.noMatching")}</div>
             )}
             {rows.map(({ lang, matches }, i) => (
               <button

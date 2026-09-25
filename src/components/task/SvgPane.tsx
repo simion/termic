@@ -13,6 +13,7 @@
 // to it, including unsaved changes.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { EditorView } from "@codemirror/view";
 import type { EditTab, Task } from "@/lib/types";
 import { EditorPane } from "./EditorPane";
@@ -30,6 +31,7 @@ export function SvgPane(
   // source still expects an SVG to open as a picture, which is what clicking
   // one in the file tree has always done.
   const defaultView = usePrefs(s => s.svgDefaultView);
+  const { t } = useTranslation("panels");
   const view: SourceView = tab.mdView ?? defaultView;
   const setView = (v: SourceView) => {
     useApp.getState().patchTab(task.id, tab.id, { mdView: v });
@@ -104,7 +106,7 @@ export function SvgPane(
             )
             : editorStalled
               ? <PreviewPane task={task} tab={tab} />
-              : <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">Loading…</div>}
+              : <div className="p-4 text-[14px] text-[var(--color-fg-dim)]">{t("shared.loading")}</div>}
         </div>
       )}
     />

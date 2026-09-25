@@ -30,10 +30,15 @@ export function liveGroups(tasks: Task[]): TaskGroup[] {
 
 /** The label a group shows: its own name, else its lead's CURRENT name (so
  *  renaming the orchestrator renames an unnamed group), else a generic word
- *  for a group whose lead record is gone. */
-export function groupLabel(g: TaskGroup, tasks: Task[]): string {
+ *  for a group whose lead record is gone. `t` is the caller component's
+ *  sidebar-namespace translator (docs/i18n.md: a pure helper that renders for
+ *  a component takes `t` as a parameter); without it the fallback stays the
+ *  English source string, which is what the unit test pins. */
+export function groupLabel(g: TaskGroup, tasks: Task[], t?: (k: string) => string): string {
   if (g.name?.trim()) return g.name.trim();
-  return tasks.find(t => t.id === g.id)?.name ?? "Task group";
+  const lead = tasks.find(task => task.id === g.id)?.name;
+  if (lead) return lead;
+  return t ? t("taskGroup.fallback") : "Task group";
 }
 
 /** The order founding picks accents in. Not the palette's order: that one

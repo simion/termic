@@ -7,6 +7,7 @@
 // agents from.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { Sun, Moon, Monitor, Code2, Sunrise, Droplet, Binary, Flower2 } from "lucide-react";
 import { usePrefs, resolveTheme } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
@@ -26,6 +27,7 @@ const THEME_ROW =
 const THEME_ROW_ACTIVE = "font-medium text-[var(--color-accent)]";
 
 export function ThemePicker() {
+  const { t } = useTranslation("chrome");
   // Self-contained: it reads and writes the one preference it is about.
   // It used to take these as props from the title bar, which is why moving it
   // to the sidebar footer would otherwise have meant threading theme state
@@ -45,8 +47,10 @@ export function ThemePicker() {
   const items: Item[] = [
     // "System" = follow OS prefers-color-scheme. Stored as `auto` for backward
     // compatibility with existing localStorage values.
-    { id: "auto",      label: "System",         icon: Monitor },
-    { id: "light",     label: "Light",          icon: Sun },
+    // Palette names (Claude, Dark+, Cobalt, ...) are proper nouns and stay
+    // English in every locale; only the two generic modes translate.
+    { id: "auto",      label: t("themePicker.system"), icon: Monitor },
+    { id: "light",     label: t("themePicker.light"),  icon: Sun },
     { id: "claude",    label: "Claude",         icon: Moon },
     { id: "dark",      label: "Dark+",          icon: Code2 },
     { id: "solarized", label: "Solarized Dark", icon: Sunrise },
@@ -103,7 +107,7 @@ export function ThemePicker() {
             // reads as a sticker on top of the icon, not part of it.
             <span
               className="absolute -bottom-1 -right-1 flex h-[10px] w-[10px] items-center justify-center rounded-full bg-[var(--color-accent)] text-[7px] font-bold leading-none text-[var(--color-accent-fg)] ring-1 ring-[var(--color-bg)]"
-              aria-label="auto"
+              aria-label={t("themePicker.autoBadge")}
             >A</span>
           )}
         </span>
@@ -139,16 +143,16 @@ export function ThemePicker() {
           {customThemes.length > 0 && (
             <div className="my-1 border-t border-[var(--color-border-soft)]" />
           )}
-          {customThemes.map(t => {
-            const active = t.id === themeMode;
+          {customThemes.map(th => {
+            const active = th.id === themeMode;
             return (
               <button
-                key={t.id}
-                onClick={() => setThemeMode(t.id)}
+                key={th.id}
+                onClick={() => setThemeMode(th.id)}
                 className={cn(THEME_ROW, active && THEME_ROW_ACTIVE)}
               >
                 <Palette className={cn("h-4 w-4 shrink-0", active ? "text-[var(--color-accent)]" : "text-[var(--color-fg-dim)]")} />
-                <span className="truncate">{t.name}</span>
+                <span className="truncate">{th.name}</span>
                 {active && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />}
               </button>
             );
@@ -159,12 +163,12 @@ export function ThemePicker() {
               concept, title says what clicking does (the icon alone carries
               too little). */}
           <button
-            title="Open the themes folder"
+            title={t("themePicker.openThemesFolder")}
             onClick={() => { themesDir().then(openPath).catch(() => {}); }}
             className={THEME_ROW}
           >
             <FolderOpen className="h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
-            <span>Custom themes</span>
+            <span>{t("themePicker.customThemes")}</span>
           </button>
           {/* One-time tip: agent CLIs persist their own theme. We set
               COLORFGBG on spawn so most TUIs auto-pick, but claude and
@@ -177,7 +181,11 @@ export function ThemePicker() {
               the margins, so the spacing has to be written for where the block
               actually lands (visually the top of an upward menu). */}
           <div className="mb-1 border-t border-[var(--color-border-soft)] px-2 py-1.5 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-            Tip: run <span className="mono text-[var(--color-fg-dim)]">/theme</span> inside claude / codex once to match.
+            <Trans
+              t={t}
+              i18nKey="themePicker.agentThemeTip"
+              components={{ code: <span className="mono text-[var(--color-fg-dim)]" /> }}
+            />
           </div>
         </div>
       )}

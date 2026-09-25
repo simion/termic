@@ -17,6 +17,7 @@
 // widen this to terminals.
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { DockerBuildPane } from "@/components/task/DockerBuildPane";
 import type { Task, Tab, TerminalTab } from "@/lib/types";
 import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
@@ -65,6 +66,7 @@ const MIN_WIDTH = 120;
 // folder in the tree, the filename reveals the file. The locate button on the
 // right reveals the file too.
 function EditorBreadcrumb({ task }: { task: Task }) {
+  const { t } = useTranslation("task");
   const activeId = useActiveTabId(task.id);
   const tab = useApp(s => (s.tabs[task.id] ?? []).find(t => t.id === activeId));
   const revealInTree = useApp(s => s.revealInTree);
@@ -78,12 +80,12 @@ function EditorBreadcrumb({ task }: { task: Task }) {
     return (
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 text-[12px]">
         <span className="min-w-0 flex-1 truncate text-[var(--color-fg-faint)]">
-          Scratchpad, not saved to the project yet. ⌘S picks a place for it.
+          {t("breadcrumb.scratchHint")}
         </span>
         <button
           data-testid="syntax-button"
           onClick={() => openSyntaxPalette(task.id, tab.id)}
-          title="Set syntax"
+          title={t("breadcrumb.setSyntaxTip")}
           className="shrink-0 rounded px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         >
           {languageLabel(effectiveLanguageId(tab))}
@@ -106,26 +108,26 @@ function EditorBreadcrumb({ task }: { task: Task }) {
           {tab.path}
         </span>
         <span className="shrink-0 rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)]">
-          Read-only
+          {t("breadcrumb.readOnly")}
         </span>
         <button
           data-testid="syntax-button"
           onClick={() => openSyntaxPalette(task.id, tab.id)}
-          title="Set syntax"
+          title={t("breadcrumb.setSyntaxTip")}
           className="shrink-0 rounded px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         >
           {languageLabel(effectiveLanguageId(tab))}
         </button>
         <button
           onClick={() => void copyToClipboard(tab.path, "path")}
-          title="Copy path"
+          title={t("breadcrumb.copyPathTip")}
           className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         >
           <Copy className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={() => revealPath(tab.path).catch(() => {})}
-          title="Reveal in Finder"
+          title={t("breadcrumb.revealInFinderTip")}
           className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
         >
           <FolderOpen className="h-3.5 w-3.5" />
@@ -165,7 +167,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
                 <ContextMenuTrigger asChild>
                   <button
                     onClick={() => revealInTree(task.id, rel, !isLast)}
-                    title={isLast ? "Locate in file tree" : `Reveal ${rel} in file tree`}
+                    title={isLast ? t("breadcrumb.locateTip") : t("breadcrumb.revealTip", { rel })}
                     className={cn(
                       "max-w-[240px] truncate rounded px-1 py-0.5 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
                       isLast ? "text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]",
@@ -198,19 +200,19 @@ function EditorBreadcrumb({ task }: { task: Task }) {
           <button
             data-testid="syntax-button"
             onClick={() => openSyntaxPalette(task.id, tab.id)}
-            title="Set syntax"
+            title={t("breadcrumb.setSyntaxTip")}
             className="shrink-0 rounded px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
           >
             {languageLabel(effectiveLanguageId(tab))}
           </button>
         )}
-        <button onClick={copyPath} title="Copy path" className={iconBtn}>
+        <button onClick={copyPath} title={t("breadcrumb.copyPathTip")} className={iconBtn}>
           {copied ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" /> : <Copy className="h-3.5 w-3.5" />}
         </button>
-        <button onClick={() => openPath(folderAbs).catch(() => {})} title="Open in file manager" className={iconBtn}>
+        <button onClick={() => openPath(folderAbs).catch(() => {})} title={t("breadcrumb.openInFileManagerTip")} className={iconBtn}>
           <FolderOpen className="h-3.5 w-3.5" />
         </button>
-        <button onClick={() => revealInTree(task.id, path, false)} title="Locate in file tree" className={iconBtn}>
+        <button onClick={() => revealInTree(task.id, path, false)} title={t("breadcrumb.locateTip")} className={iconBtn}>
           <LocateFixed className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -219,6 +221,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
 }
 
 export function TaskView({ task }: { task: Task }) {
+  const { t } = useTranslation("task");
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
   const tabs = useTaskTabs(task.id);
   const activeId = useActiveTabId(task.id);
@@ -642,14 +645,14 @@ export function TaskView({ task }: { task: Task }) {
                 <div data-scroll-strip="" className="flex min-w-0 flex-1 items-stretch gap-0 overflow-x-auto no-scrollbar">
                   {(bottomTabs || []).filter(t => !t.pinned).map(renderBottomPill)}
                   <button
-                    title="New shell tab"
+                    title={t("breadcrumb.newShellTabTip")}
                     onClick={() => addBottomTab(task.id)}
                     className="ml-1 shrink-0 self-center rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                   ><Plus className="h-4 w-4" /></button>
                 </div>
                 <div className="ml-auto flex items-center gap-0.5">
                   <button
-                    title={collapsed ? "Expand terminal" : "Collapse terminal"}
+                    title={collapsed ? t("breadcrumb.expandTerminalTip") : t("breadcrumb.collapseTerminalTip")}
                     onClick={() => toggleCollapsed(task.id)}
                     className="rounded-md p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
                   >

@@ -6,6 +6,7 @@
 // through a data: URL, same channel as PreviewPane.
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { DiffSides } from "@/lib/ipc";
 import { cn, formatBytes } from "@/lib/utils";
 
@@ -53,21 +54,22 @@ function ImageSide({ label, data, mime, bytes, wash, className }: {
 }
 
 export function BinaryDiffBody({ sides }: { sides: DiffSides }) {
+  const { t } = useTranslation("panels");
   const both = sides.original_exists && sides.modified_exists;
   // A one-sided diff is an add or a delete: label it as such rather than
   // showing an empty "Before" panel next to the real one.
-  const beforeLabel = both ? "Before" : "Deleted";
-  const afterLabel = both ? "After" : "Added";
+  const beforeLabel = both ? t("binaryDiff.before") : t("binaryDiff.deleted");
+  const afterLabel = both ? t("binaryDiff.after") : t("binaryDiff.added");
 
   if (sides.kind !== "image" || !sides.mime) {
     return (
       <div className="flex h-full items-center justify-center p-4">
         <div className="font-mono text-[12.5px] text-[var(--color-fg-dim)]">
           {both
-            ? `Binary file · ${formatBytes(sides.original_bytes)} → ${formatBytes(sides.modified_bytes)}`
+            ? t("binaryDiff.changed", { before: formatBytes(sides.original_bytes), after: formatBytes(sides.modified_bytes) })
             : sides.modified_exists
-              ? `Binary file · added · ${formatBytes(sides.modified_bytes)}`
-              : `Binary file · deleted · ${formatBytes(sides.original_bytes)}`}
+              ? t("binaryDiff.addedFile", { size: formatBytes(sides.modified_bytes) })
+              : t("binaryDiff.deletedFile", { size: formatBytes(sides.original_bytes) })}
         </div>
       </div>
     );

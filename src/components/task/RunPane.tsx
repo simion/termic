@@ -12,6 +12,7 @@
 // restart automatically picks worktree vs repo root.)
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task, TerminalTab } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { TerminalPane } from "./TerminalPane";
@@ -25,6 +26,7 @@ export function RunPane({ task, tab, active }: {
   const [gen, setGen] = useState(0);
   const [started, setStarted] = useState(!tab.runTab?.idle);
   const patchTab = useApp(s => s.patchTab);
+  const { t } = useTranslation("panels");
 
   // A fresh run clears any prior failed flag — it's about the LAST run, not
   // this one, and should disappear the moment the user acts on it.
@@ -54,13 +56,13 @@ export function RunPane({ task, tab, active }: {
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-[var(--color-bg)]">
         <button
           onClick={() => { clearFailed(); setStarted(true); }}
-          title={`Run ${tab.title}`}
+          title={t("runPane.runTitle", { title: tab.title })}
           className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--color-border)] text-[var(--color-fg-dim)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-fg)]"
         >
           <Play className="ml-0.5 h-5 w-5" />
         </button>
         <span className="text-[13px] text-[var(--color-fg-dim)]">
-          {tab.title} is not running. Press play to start it.
+          {t("runPane.notRunning", { title: tab.title })}
         </span>
       </div>
     );

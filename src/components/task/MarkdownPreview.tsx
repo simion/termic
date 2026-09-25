@@ -50,6 +50,8 @@ import { navigateDirTab, openDirTab } from "@/lib/dirTabs";
 import { useApp } from "@/store/app";
 import { clipboardHtmlForRange } from "@/lib/markdownCopy";
 import { useUI } from "@/store/ui";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
 import { TerminalExitedBanner } from "./TerminalExitedBanner";
 
 // Monotonic id source for mermaid render targets. Math.random/Date.now are
@@ -232,7 +234,7 @@ function applyImageCacheEntry(img: HTMLImageElement, entry: ImgCacheEntry | unde
   } else if (entry) {
     img.removeAttribute("src");
     if (!img.title || img.dataset.mdError !== undefined) {
-      img.title = entry.err ?? "image load failed";
+      img.title = entry.err ?? i18n.t("panels:mdPreview.imageLoadFailed");
       img.dataset.mdError = "";
     }
   }
@@ -315,7 +317,7 @@ export function hydrateTaskImages(
     if (!ctx) continue; // no task (Changelog dialog): stays src-less
     if (ctx.external) {
       // Outside the task: no contained read can serve it, see MarkdownCtx.
-      img.title = "Images beside a file outside the task are not loaded";
+      img.title = i18n.t("panels:mdPreview.externalImages");
       continue;
     }
     const resolved = resolveTaskHref(baseDir, raw, memberDirs);
@@ -428,7 +430,7 @@ function renderMermaidError(el: HTMLElement, message: string, src: string) {
   el.innerHTML = "";
   const pre = document.createElement("pre");
   pre.className = "mermaid-error";
-  pre.textContent = `Mermaid render error: ${message}\n\n${src}`;
+  pre.textContent = `${i18n.t("panels:mdPreview.mermaidError", { message })}\n\n${src}`;
   el.appendChild(pre);
 }
 
@@ -712,6 +714,7 @@ export function MarkdownPreview(
     onAlwaysLoadRemoteImages?: () => void;
   },
 ) {
+  const { t } = useTranslation("panels");
   const hostRef = useRef<HTMLDivElement>(null);
   const imgCacheRef = useRef<ImgCache | null>(null);
   if (!imgCacheRef.current) imgCacheRef.current = { map: new Map(), bytes: 0, inflight: new Map() };
@@ -1136,11 +1139,11 @@ export function MarkdownPreview(
     try {
       stat = await taskPathStat(ctx.taskId, resolved);
     } catch (err) {
-      useUI.getState().pushToast(`Couldn't open ${resolved}: ${err}`, "error");
+      useUI.getState().pushToast(t("mdPreview.openFailed", { path: resolved, error: err }), "error");
       return;
     }
     if (!stat.exists) {
-      useUI.getState().pushToast(`File not found: ${resolved}`, "error");
+      useUI.getState().pushToast(t("mdPreview.fileNotFound", { path: resolved }), "error");
       return;
     }
     if (stat.is_dir) {
@@ -1162,7 +1165,7 @@ export function MarkdownPreview(
     if (BINARY_LINK_RE.test(resolved)) {
       // Editor can't render images/archives — reveal in the OS file manager.
       taskRevealPath(ctx.taskId, resolved)
-        .catch(err => useUI.getState().pushToast(`Couldn't reveal ${resolved}: ${err}`, "error"));
+        .catch(err => useUI.getState().pushToast(t("mdPreview.revealFailed", { path: resolved, error: err }), "error"));
       return;
     }
     // A file link from a listing's README pins the listing first, exactly
@@ -1205,7 +1208,7 @@ export function MarkdownPreview(
     try {
       await fileReadExternal(abs);
     } catch (err) {
-      useUI.getState().pushToast(`Couldn't open ${abs}: ${err}`, "error");
+      useUI.getState().pushToast(t("mdPreview.openFailed", { path: abs, error: err }), "error");
       return;
     }
     useApp.getState().openPreviewTab(c.taskId, { type: "external", path: abs, title });
@@ -1257,19 +1260,19 @@ export function MarkdownPreview(
       )}
       {bannerKind === "blocked" && onUnblockRemoteImages && (
         <TerminalExitedBanner
-          label="Images from external sites are blocked in this preview."
-          actionLabel="Show images"
+          label={t("mdPreview.imagesBlocked")}
+          actionLabel={t("mdPreview.showImages")}
           onAction={onUnblockRemoteImages}
           icon={ImageOff}
           tone="muted"
           center
-          secondary={onAlwaysLoadRemoteImages ? { label: "Always", onAction: handleAlways } : undefined}
+          secondary={onAlwaysLoadRemoteImages ? { label: t("mdPreview.always"), onAction: handleAlways } : undefined}
         />
       )}
       {bannerKind === "confirm" && (
         <TerminalExitedBanner
-          label="Remote images now load in every markdown preview."
-          actionLabel="Settings"
+          label={t("mdPreview.imagesNowLoad")}
+          actionLabel={t("mdPreview.settings")}
           onAction={() => useApp.getState().openSettings("general", undefined, "load-remote-images")}
           icon={Check}
           tone="muted"
@@ -1308,6 +1311,7 @@ function FindBar({
   onPrev: () => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation("panels");
   const navBtn = "flex h-6 w-6 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--color-fg-dim)]";
   return (
     <div className="absolute right-4 top-3 z-10 flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-1)] py-1 pl-2.5 pr-1 shadow-lg">
@@ -1319,7 +1323,7 @@ function FindBar({
           if (e.key === "Enter") { e.preventDefault(); e.shiftKey ? onPrev() : onNext(); }
           else if (e.key === "Escape") { e.preventDefault(); onClose(); }
         }}
-        placeholder="Find in preview"
+        placeholder={t("mdPreview.findPlaceholder")}
         spellCheck={false}
         autoCorrect="off"
         autoCapitalize="off"
@@ -1330,13 +1334,13 @@ function FindBar({
       <span className="min-w-[3.25rem] shrink-0 text-right text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
         {query ? `${count ? index + 1 : 0}/${count}` : ""}
       </span>
-      <button onClick={onPrev} disabled={!count} title="Previous match (Shift+Enter)" className={navBtn}>
+      <button onClick={onPrev} disabled={!count} title={t("mdPreview.prevMatch")} className={navBtn}>
         <ChevronUp className="h-3.5 w-3.5" />
       </button>
-      <button onClick={onNext} disabled={!count} title="Next match (Enter)" className={navBtn}>
+      <button onClick={onNext} disabled={!count} title={t("mdPreview.nextMatch")} className={navBtn}>
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
-      <button onClick={onClose} title="Close (Esc)" className={navBtn}>
+      <button onClick={onClose} title={t("mdPreview.closeFind")} className={navBtn}>
         <X className="h-3.5 w-3.5" />
       </button>
     </div>

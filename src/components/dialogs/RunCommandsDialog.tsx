@@ -8,6 +8,7 @@
 // load/save helpers for persistence — no field↔store mapping lives here.
 
 import { useEffect, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -27,6 +28,7 @@ const EMPTY: RunConfig = { run: "", setup: "", preview: "", commands: [] };
 type Store = "personal" | "yaml";
 
 export function RunCommandsDialog() {
+  const { t } = useTranslation("dialogs");
   const req = useUI(s => s.runCommandsDialog);
   const close = useUI(s => s.closeRunCommands);
   const projectId = req?.projectId ?? null;
@@ -94,15 +96,15 @@ export function RunCommandsDialog() {
   }
 
   const tabs: { id: Store; label: string; hint: string }[] = [
-    { id: "personal", label: "Personal",     hint: "this machine only" },
-    { id: "yaml",     label: ".termic.yaml",  hint: "committed, team-shared" },
+    { id: "personal", label: t("runCommands.tabPersonal"), hint: t("runCommands.tabPersonalHint") },
+    { id: "yaml",     label: t("runCommands.tabYaml"),      hint: t("runCommands.tabYamlHint") },
   ];
 
   return (
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title="Run configuration"
+      title={t("runCommands.title")}
       className="max-w-2xl"
       // Don't auto-focus the first control (the Personal tab) on open — the
       // focus ring on the tab reads as a mis-styled button. Focus lands
@@ -110,7 +112,12 @@ export function RunCommandsDialog() {
       onOpenAutoFocus={(e) => e.preventDefault()}
     >
       <p className="mb-3 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Run setup for <span className="font-mono">{project?.name ?? "this repo"}</span>. <b>Personal</b> stays on this machine; <b>.termic.yaml</b> is committed and shared with your team. Right-clicking a file seeds a command as <span className="font-mono">./file</span>. Edit it to anything and press play to test.
+        <Trans
+          t={t}
+          i18nKey="runCommands.intro"
+          values={{ project: project?.name ?? t("runCommands.thisRepo") }}
+          components={{ b: <b />, mono: <span className="font-mono" /> }}
+        />
       </p>
 
       {/* Personal / .termic.yaml tabs — same underline style as Settings. */}
@@ -132,9 +139,13 @@ export function RunCommandsDialog() {
 
       <div className="flex flex-col gap-5">
         <div>
-          <div className="text-[13.5px] font-medium">Preview URL</div>
+          <div className="text-[13.5px] font-medium">{t("runCommands.previewUrl")}</div>
           <div className="mt-0.5 text-[12px] text-[var(--color-fg-dim)]">
-            Opened by the terminal panel's Open button. Supports <span className="font-mono">$TERMIC_PORT</span>, <span className="font-mono">$TERMIC_WORKSPACE_NAME</span>, and any extra named port.
+            <Trans
+              t={t}
+              i18nKey="runCommands.previewUrlHint"
+              components={{ mono: <span className="font-mono" /> }}
+            />
           </div>
           <Input
             value={cfg.preview}
@@ -144,23 +155,29 @@ export function RunCommandsDialog() {
           />
         </div>
         <ScriptField
-          label="Setup script"
-          hint="Runs once when a new task is created."
+          label={t("runCommands.setupScript")}
+          hint={t("runCommands.setupHint")}
           value={cfg.setup}
           onChange={(v) => patch({ setup: v })}
           placeholder="npm install"
         />
         <ScriptField
-          label="Run script"
-          hint={<>Runs when you click the Run button. Use <span className="font-mono">$TERMIC_PORT</span> so each task gets its own port. Extra named ports are available under their own names.</>}
+          label={t("runCommands.runScript")}
+          hint={
+            <Trans
+              t={t}
+              i18nKey="runCommands.runHint"
+              components={{ mono: <span className="font-mono" /> }}
+            />
+          }
           value={cfg.run}
           onChange={(v) => patch({ run: v })}
           placeholder="PORT=$TERMIC_PORT npm run dev"
         />
         <div>
-          <div className="text-[13.5px] font-medium">Run commands</div>
+          <div className="text-[13.5px] font-medium">{t("runCommands.runCommandsLabel")}</div>
           <div className="mt-0.5 mb-2 text-[12px] text-[var(--color-fg-dim)]">
-            Extra commands shown in the Run dropdown, each opening its own run tab.
+            {t("runCommands.runCommandsHint")}
           </div>
           <RunCommandsEditor
             value={cfg.commands}
@@ -172,9 +189,9 @@ export function RunCommandsDialog() {
       {err && <p className="mt-3 text-[13.5px] text-[var(--color-err)]">{err}</p>}
 
       <div className="mt-6 flex justify-end gap-2">
-        <Button variant="ghost" onClick={close}>Cancel</Button>
+        <Button variant="ghost" onClick={close}>{t("common:cancel")}</Button>
         <Button variant="primary" disabled={busy} onClick={save}>
-          <Check className="h-4 w-4" /> Save
+          <Check className="h-4 w-4" /> {t("common:save")}
         </Button>
       </div>
     </AppDialog>

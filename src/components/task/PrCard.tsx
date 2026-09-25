@@ -11,6 +11,7 @@
 // after a successful push.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import {
   GitPullRequest, GitPullRequestDraft, GitPullRequestClosed, GitMerge,
   CircleCheck, CircleX, ExternalLink, RefreshCw, Plus, Bell, BellOff,
@@ -33,22 +34,24 @@ const PROBE_MS = 5 * 60_000;
 // State pill: icon + label + color, GitHub's palette (open green, draft
 // gray, merged purple, closed red) mapped onto theme-ish values. The
 // exact purples/greens are intentional one-offs - PR state colors are a
-// cross-tool convention users already know, not theme accents.
-const STATE: Record<PrStatus["state"], { label: string; color: string; Icon: typeof GitPullRequest }> = {
-  open:   { label: "Open",   color: "#3fb950", Icon: GitPullRequest },
-  draft:  { label: "Draft",  color: "var(--color-fg-faint)", Icon: GitPullRequestDraft },
-  merged: { label: "Merged", color: "#a371f7", Icon: GitMerge },
-  closed: { label: "Closed", color: "var(--color-err)", Icon: GitPullRequestClosed },
+// cross-tool convention users already know, not theme accents. Labels are
+// i18n keys (pr subtree), resolved at render.
+const STATE: Record<PrStatus["state"], { labelKey: string; color: string; Icon: typeof GitPullRequest }> = {
+  open:   { labelKey: "pr.stateOpen",   color: "#3fb950", Icon: GitPullRequest },
+  draft:  { labelKey: "pr.stateDraft",  color: "var(--color-fg-faint)", Icon: GitPullRequestDraft },
+  merged: { labelKey: "pr.stateMerged", color: "#a371f7", Icon: GitMerge },
+  closed: { labelKey: "pr.stateClosed", color: "var(--color-err)", Icon: GitPullRequestClosed },
 };
 
 function ChecksChip({ checks }: { checks: PrStatus["checks"] }) {
+  const { t } = useTranslation("panels");
   if (checks === "none") return null;
   // "pending" gets ui/Spinner, not a rotated CircleCheck-shaped icon - see
   // its own doc comment for why a rotated stroked-arc SVG wobbles at this
   // size (the same reason the refresh button's spinner does).
   if (checks === "pending") {
     return (
-      <Tip content="Checks running" side="bottom">
+      <Tip content={t("pr.checksRunning")} side="bottom">
         <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11.5px] leading-none" style={{ color: "var(--color-warn)" }}>
           {/* Measured against the row's actual pixel centers (bell/refresh/
               link icons and text with a descender all land on the same row
@@ -61,8 +64,8 @@ function ChecksChip({ checks }: { checks: PrStatus["checks"] }) {
     );
   }
   const map = {
-    passing: { Icon: CircleCheck, color: "#3fb950", label: "Checks passing" },
-    failing: { Icon: CircleX, color: "var(--color-err)", label: "Checks failing" },
+    passing: { Icon: CircleCheck, color: "#3fb950", label: t("pr.checksPassing") },
+    failing: { Icon: CircleX, color: "var(--color-err)", label: t("pr.checksFailing") },
   } as const;
   const { Icon, color, label } = map[checks];
   return (
@@ -79,11 +82,12 @@ function ChecksChip({ checks }: { checks: PrStatus["checks"] }) {
 }
 
 function ReviewChip({ review }: { review: PrStatus["review"] }) {
+  const { t } = useTranslation("panels");
   if (review === "none") return null;
   const map = {
-    approved: { color: "#3fb950", label: "Approved" },
-    changes_requested: { color: "var(--color-err)", label: "Changes requested" },
-    review_required: { color: "var(--color-warn)", label: "Review required" },
+    approved: { color: "#3fb950", label: t("pr.approved") },
+    changes_requested: { color: "var(--color-err)", label: t("pr.changesRequested") },
+    review_required: { color: "var(--color-warn)", label: t("pr.reviewRequired") },
   } as const;
   const { color, label } = map[review];
   return (
@@ -92,6 +96,7 @@ function ReviewChip({ review }: { review: PrStatus["review"] }) {
 }
 
 export function PrCard({ task }: { task: Task }) {
+  const { t } = useTranslation("panels");
   const entry = usePr(s => s.byTask[task.id]);
   const refresh = usePr(s => s.refresh);
   const refreshForges = usePr(s => s.refreshForges);
@@ -169,19 +174,20 @@ export function PrCard({ task }: { task: Task }) {
   if (lookup.status === "no-remote" || lookup.status === "unsupported-remote") return null;
 
   const providerLabel = lookup.provider === "gitlab" ? "GitLab" : "GitHub";
-  const prNoun = lookup.provider === "gitlab" ? "merge request" : "pull request";
+  const prNoun = lookup.provider === "gitlab" ? t("pr.mergeRequest") : t("pr.pullRequest");
 
   // ── hint states: the user must see WHY there's no PR data ──
   if (lookup.status !== "ok") {
+    const cli = lookup.provider === "gitlab" ? "glab" : "gh";
     const hint =
       lookup.status === "cli-missing" ? {
-        title: `${providerLabel} ${prNoun}s need the ${lookup.provider === "gitlab" ? "glab" : "gh"} CLI`,
-        body: <>Install it with <Code>brew install {lookup.provider === "gitlab" ? "glab" : "gh"}</Code>, then sign in with <Code>{lookup.provider === "gitlab" ? "glab" : "gh"} auth login</Code>.</>,
+        title: t("pr.cliMissingTitle", { provider: providerLabel, noun: prNoun, cli }),
+        body: <Trans i18nKey="pr.cliMissingBody" values={{ install: `brew install ${cli}`, auth: `${cli} auth login` }} components={{ code: <Code /> }} />,
       } : lookup.status === "cli-unauthed" ? {
-        title: `Sign in to ${providerLabel}`,
-        body: <>Run <Code>{lookup.provider === "gitlab" ? "glab" : "gh"} auth login</Code> in a terminal, then refresh.</>,
+        title: t("pr.signInTitle", { provider: providerLabel }),
+        body: <Trans i18nKey="pr.signInBody" values={{ command: `${cli} auth login` }} components={{ code: <Code /> }} />,
       } : {
-        title: `Couldn't reach ${providerLabel}`,
+        title: t("pr.unreachable", { provider: providerLabel }),
         body: <span className="break-words">{lookup.message}</span>,
       };
     return (
@@ -205,14 +211,14 @@ export function PrCard({ task }: { task: Task }) {
         <div className="flex items-center gap-2">
           <GitPullRequest className="h-4 w-4 shrink-0 -translate-y-px text-[var(--color-fg-faint)]" />
           <span className="min-w-0 flex-1 truncate text-[12.5px] leading-none text-[var(--color-fg-dim)]">
-            No {prNoun} yet
+            {t("pr.noPrYet", { noun: prNoun })}
           </span>
           <RefreshBtn spinning={spinning} onClick={doRefresh} />
           <button
             onClick={() => openCreatePr(task.id)}
             className="flex h-6 shrink-0 items-center gap-1 rounded-md bg-[var(--color-accent)] px-2 text-[11.5px] font-medium leading-none text-white hover:brightness-110"
           >
-            <Plus className="h-3.5 w-3.5" /> Create
+            <Plus className="h-3.5 w-3.5" /> {t("create", { ns: "common" })}
           </button>
         </div>
       </Card>
@@ -221,7 +227,8 @@ export function PrCard({ task }: { task: Task }) {
 
   // ── the PR card proper ──
   const pr = lookup.pr;
-  const { label, color, Icon } = STATE[pr.state];
+  const { labelKey, color, Icon } = STATE[pr.state];
+  const label = t(labelKey);
   const numberLabel = pr.provider === "gitlab" ? `!${pr.number}` : `#${pr.number}`;
   // Two rows on purpose. The right panel is narrow, and one row of
   // [pill][title][CI][review][3 buttons] gave the title `flex-1 min-w-0`
@@ -234,7 +241,7 @@ export function PrCard({ task }: { task: Task }) {
   return (
     <Card>
       <div className="flex items-center gap-2">
-        <Tip content={`${label} · ${providerLabel}`} side="bottom">
+        <Tip content={t("pr.stateTip", { state: label, provider: providerLabel })} side="bottom">
           {/* Plain text + icon, same as the CI/review chips next to it - no
               pill background. Measured pixel centers (see ChecksChip):
               -translate-y-px corrects this icon's ~1-2px low render. */}
@@ -248,7 +255,7 @@ export function PrCard({ task }: { task: Task }) {
         <span className="min-w-0 flex-1" />
         {(pr.state === "open" || pr.state === "draft") && <WatchBell task={task} />}
         <RefreshBtn spinning={spinning} onClick={doRefresh} />
-        <Tip content={`Open on ${providerLabel}`} side="bottom">
+        <Tip content={t("pr.openOn", { provider: providerLabel })} side="bottom">
           <button
             onClick={() => openPath(pr.url).catch(() => {})}
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
@@ -277,7 +284,10 @@ function Card({ children }: { children: ReactNode }) {
   );
 }
 
-function Code({ children }: { children: ReactNode }) {
+/** Inline-code styling for Trans-interpolated tokens: react-i18next clones
+ *  this element with the translated children, so the prop is optional here
+ *  even though every real render has one. */
+function Code({ children }: { children?: ReactNode }) {
   return (
     <code className="rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[11px] text-[var(--color-fg)]">
       {children}
@@ -295,12 +305,13 @@ function WatchBell({ task }: { task: Task }) {
   const watching = useApp(s => !!s.tasks.find(w => w.id === task.id)?.pr_watch);
   const always = useApp(s => !!s.projects.find(p => p.id === task.project_id)?.watch_pr_comments);
   const setWatch = usePr(s => s.setWatch);
+  const { t } = useTranslation("panels");
   const active = watching || always;
   const tip = always
-    ? "Watching comments (always on for this project - see its Repository settings). New comments are queued into the main agent."
+    ? t("pr.watchAlways")
     : active
-    ? "Watching comments: new PR comments are queued into the main agent to address. Click to stop."
-    : "Watch comments: when new PR comments arrive, queue them into the main agent to address.";
+    ? t("pr.watchOn")
+    : t("pr.watchOff");
   const Icon = active ? Bell : BellOff;
   return (
     <Tip content={tip} side="bottom">
@@ -321,8 +332,9 @@ function WatchBell({ task }: { task: Task }) {
 }
 
 function RefreshBtn({ spinning, onClick }: { spinning: boolean; onClick: () => void }) {
+  const { t } = useTranslation("panels");
   return (
-    <Tip content="Refresh PR status" side="bottom">
+    <Tip content={t("pr.refreshStatus")} side="bottom">
       <button
         onClick={onClick}
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"

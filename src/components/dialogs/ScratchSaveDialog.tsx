@@ -15,6 +15,7 @@
 // security boundary.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -53,6 +54,7 @@ function splitPath(v: string): { dir: string; name: string } {
 }
 
 export function ScratchSaveDialog() {
+  const { t } = useTranslation("dialogs");
   const req = useUI(s => s.scratchSave);
   const resolve = useUI(s => s.resolveScratchSave);
   const taskId = req?.taskId ?? null;
@@ -131,7 +133,7 @@ export function ScratchSaveDialog() {
     if (!taskId || !tab || busy) return;
     const rel = path.trim().replace(/^\/+/, "");
     const leaf = splitPath(rel).name;
-    if (!leaf) { setErr("Give the file a name."); return; }
+    if (!leaf) { setErr(t("scratchSave.errNoName")); return; }
     setBusy(true);
     setErr(null);
     try {
@@ -140,9 +142,9 @@ export function ScratchSaveDialog() {
       let overwrite = false;
       if (await ipc.scratchPromoteTargetExists(taskId, rel)) {
         const ok = await useUI.getState().askConfirm({
-          title: "Overwrite this file?",
-          message: `"${rel}" already exists in this task. Saving replaces its contents.`,
-          confirmLabel: "Overwrite",
+          title: t("scratchSave.overwriteTitle"),
+          message: t("scratchSave.overwriteMessage", { path: rel }),
+          confirmLabel: t("scratchSave.overwrite"),
           destructive: true,
         });
         if (ok !== true) { setBusy(false); return; }
@@ -155,7 +157,7 @@ export function ScratchSaveDialog() {
       // The file tree and the Git panel have a new file to notice.
       useApp.getState().bumpFsRevision(taskId);
       useApp.getState().bumpGitRevision(taskId);
-      useUI.getState().pushToast(`Saved ${leaf}`, "success");
+      useUI.getState().pushToast(t("scratchSave.toastSaved", { name: leaf }), "success");
       resolve(true);
     } catch (e) {
       setErr(String(e));
@@ -189,8 +191,8 @@ export function ScratchSaveDialog() {
     <AppDialog
       open
       onOpenChange={(v) => { if (!v) resolve(false); }}
-      title="Save to project"
-      description="Scratchpads live outside the repo until you save them. Pick where this one goes."
+      title={t("scratchSave.title")}
+      description={t("scratchSave.description")}
       className="max-w-2xl"
     >
       <div className="flex flex-col gap-3 pt-1" onKeyDown={onKeyDown}>
@@ -207,11 +209,11 @@ export function ScratchSaveDialog() {
           className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-3 py-2 font-mono text-[13px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)] focus:outline-none"
         />
         <div className="text-[12px] text-[var(--color-fg-faint)]">
-          Relative to the task root. ↑↓ then Tab picks a folder, Enter saves.
+          {t("scratchSave.hint")}
         </div>
         <div ref={listRef} className="max-h-[38vh] min-h-[120px] overflow-y-auto rounded-md border border-[var(--color-border-soft)] py-1">
           {matches.length === 0 && (
-            <div className="px-3 py-2 text-[13px] text-[var(--color-fg-faint)]">No matching folder</div>
+            <div className="px-3 py-2 text-[13px] text-[var(--color-fg-faint)]">{t("scratchSave.noFolder")}</div>
           )}
           {matches.map((r, i) => (
             <button
@@ -227,7 +229,7 @@ export function ScratchSaveDialog() {
             >
               <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
               <span className="truncate">
-                {r.f ? <Highlighted text={r.f} matches={r.m} /> : <span className="italic">task root</span>}
+                {r.f ? <Highlighted text={r.f} matches={r.m} /> : <span className="italic">{t("scratchSave.taskRoot")}</span>}
               </span>
             </button>
           ))}
@@ -235,9 +237,9 @@ export function ScratchSaveDialog() {
         {err && <div className="text-[13px] text-[var(--color-err)]">{err}</div>}
       </div>
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="ghost" type="button" onClick={() => resolve(false)}>Cancel</Button>
+        <Button variant="ghost" type="button" onClick={() => resolve(false)}>{t("common:cancel")}</Button>
         <Button variant="primary" type="button" onClick={() => void save()} disabled={busy} data-testid="scratch-save-confirm">
-          {busy ? "Saving…" : "Save"}
+          {busy ? t("common:saving") : t("common:save")}
         </Button>
       </div>
     </AppDialog>

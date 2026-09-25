@@ -7,6 +7,7 @@
 // drag-to-rearrange was removed: it hijacked pointer events from the pills.
 
 import { useState, useMemo, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task, Tab } from "@/lib/types";
 import type { PaneLeaf } from "@/lib/splitTree";
 import { useApp } from "@/store/app";
@@ -35,6 +36,7 @@ interface PaneHeaderProps {
 }
 
 export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
+  const { t } = useTranslation("task");
   const paneId = leaf.id;
 
   // Backward compat: HMR keeps old in-memory state with `tabId` (not `tabIds`/`activeTabId`).
@@ -138,7 +140,7 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
         // Cursor-following ghost — the pill itself doesn't move on a
         // cross-pane drag, so this is the "you are dragging" signal.
         const t = paneTabs.find(tt => tt.id === tabId);
-        showDragGhost(t ? (((t as any).liveTitle as string) || t.title) : "Tab", ev.clientX, ev.clientY);
+        showDragGhost(t ? (((t as any).liveTitle as string) || t.title) : ghostFallback, ev.clientX, ev.clientY);
       }
       moveDragGhost(ev.clientX, ev.clientY);
       clearDropTarget();
@@ -185,7 +187,7 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
     const y = rect ? rect.top + rect.height / 2 : 0;
     const t = paneTabs.find(tt => tt.id === tabId);
     startMenuDrag({
-      label: t ? (((t as { liveTitle?: string }).liveTitle) || t.title) : "Tab",
+      label: t ? (((t as { liveTitle?: string }).liveTitle) || t.title) : ghostFallback,
       x, y,
       hitTest: hitTestDropTarget,
       onDrop: (target) => {
@@ -228,6 +230,8 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
 
   const [open, setOpen]               = useState(false);
   const suppressDropdownReturn        = useRef(false);
+  // Drag-ghost label for a tab with no title yet ("Tab"), translated.
+  const ghostFallback = t("paneHeader.dragGhostFallback");
 
   function spawnPaneTab(cli: string) {
     suppressDropdownReturn.current = true;
@@ -301,7 +305,7 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
       <div className="flex min-w-0 flex-1 items-stretch pl-2">
         {paneTabs.length === 0 ? (
           <span className="flex items-center px-2 text-[12.5px] italic text-[var(--color-fg-faint)]">
-            New pane
+            {t("paneHeader.newPane")}
           </span>
         ) : (
           <>
@@ -336,12 +340,12 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
             }
           }}
         >
-          <DropdownLabel>New terminal</DropdownLabel>
+          <DropdownLabel>{t("newTab.newTerminal")}</DropdownLabel>
           <DropdownItem onSelect={() => spawnPaneTab('shell')}>
             <span className="shrink-0 text-[var(--color-fg-dim)]">
               <CliIcon cli="shell" className="h-4 w-4" />
             </span>
-            Terminal
+            {t("newTab.terminal")}
           </DropdownItem>
           {customTerminals.map(a => (
             <DropdownItem key={a.id} onSelect={() => spawnPaneTab(a.id)}>
@@ -354,7 +358,7 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
           {agentEntries.length > 0 && (
             <>
               <DropdownSeparator />
-              <DropdownLabel>New agent</DropdownLabel>
+              <DropdownLabel>{t("newTab.newAgent")}</DropdownLabel>
               {agentEntries.map(a => (
                 <DropdownItem key={a.id} onSelect={() => spawnPaneTab(a.id)}>
                   <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
@@ -371,7 +375,7 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
       {/* Close pane. */}
       <button
         data-pane-close=""
-        title="Close pane"
+        title={t("paneHeader.closePaneTip")}
         onClick={(e) => { e.stopPropagation(); onClose(); }}
         className="shrink-0 self-center rounded p-1 mr-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
       >

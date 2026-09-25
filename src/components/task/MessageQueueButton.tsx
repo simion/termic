@@ -16,6 +16,7 @@
 // never promise a time.
 
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
@@ -29,11 +30,12 @@ import type { TerminalTab } from "@/lib/types";
 import { dateInputValue, formatScheduleDate, isScheduled, localDateValue, startOfDayIn } from "@/lib/scheduledQueue";
 
 /** "Send after" presets, in days from today. Each resolves to local midnight
- *  of that day, so "in a week" still sends that morning. */
-const SCHEDULE_PRESETS: Array<{ label: string; days: number }> = [
-  { label: "Tomorrow", days: 1 },
-  { label: "In 3 days", days: 3 },
-  { label: "In a week", days: 7 },
+ *  of that day, so "in a week" still sends that morning. Labels are i18n keys
+ *  into the queue subtree, resolved at render. */
+const SCHEDULE_PRESETS: Array<{ key: string; days: number }> = [
+  { key: "tomorrow", days: 1 },
+  { key: "in3Days", days: 3 },
+  { key: "inWeek", days: 7 },
 ];
 
 const MAX_REPEAT = 99;
@@ -54,6 +56,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
    *  pane's agent instead of the main pane's active tab. */
   preferTabId?: string;
 }) {
+  const { t } = useTranslation("task");
   const tabsForTask = useApp(s => s.tabs[taskId]);
   const activeTabId = useApp(s => s.activeTab[taskId]);
   // The agent this button defaults to: an explicit override (right-pane
@@ -85,7 +88,9 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   const queueRunning = !!activeAgent?.queueActive;
   const showBadge = queuedCount > 0;
   // Scheduled-only reads "1 scheduled": "1 queued" suggests it is next up.
-  const badgeLabel = queuedCount > scheduledCount ? `${queuedCount} queued` : `${scheduledCount} scheduled`;
+  const badgeLabel = queuedCount > scheduledCount
+    ? t("queue.queuedBadge", { count: queuedCount })
+    : t("queue.scheduledBadge", { count: scheduledCount });
 
   const [open, setOpen] = useState(false);
   // Selected target defaults to the active agent (if capable) each time the
@@ -166,12 +171,12 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   }
 
   const tip = !canQueue
-    ? "Run an agent here to queue messages for it"
+    ? t("queue.tipRunAgent")
     : showBadge
       ? queuedCount > scheduledCount
-        ? `${queuedCount} queued · the next is sent when the agent finishes`
-        : `${scheduledCount} scheduled · sent when this chat is open on or after the date`
-      : "Auto-send messages to the agent, one after each turn it finishes";
+        ? t("queue.tipQueued", { count: queuedCount })
+        : t("queue.tipScheduled", { count: scheduledCount })
+      : t("queue.tipIdle");
 
   return (
     <PopoverRoot open={open} onOpenChange={onOpenChange}>
@@ -206,7 +211,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                   queued" is a number you are watching, "Queue messages" is a
                   label for a button whose icon already says it. */}
               <span className={cn("tabular-nums", !showBadge && "@max-[680px]:hidden")}>
-                {showBadge ? badgeLabel : "Queue messages"}
+                {showBadge ? badgeLabel : t("queue.button")}
               </span>
             </button>
           </PopoverTrigger>
@@ -250,9 +255,9 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
 
         {/* Queue list — head (next to send) on top, newest at the bottom. */}
         <div className="flex items-center justify-between text-[11px] text-[var(--color-fg-faint)]">
-          <span>{queue.length === 0 ? "Queue empty" : `Queue (${queue.length})`}</span>
+          <span>{queue.length === 0 ? t("queue.empty") : t("queue.count", { count: queue.length })}</span>
           {queue.length > 0 && (
-            <button onClick={clearAll} className="hover:text-[var(--color-fg-dim)]">Clear all</button>
+            <button onClick={clearAll} className="hover:text-[var(--color-fg-dim)]">{t("queue.clearAll")}</button>
           )}
         </div>
         {queue.length > 0 && (
@@ -270,24 +275,24 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                 <span className="mt-0.5 w-3 shrink-0 text-right font-mono text-[10.5px] text-[var(--color-fg-faint)]">{i + 1}</span>
                 <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[var(--color-fg)]">{q.text}</span>
                 {q.notBefore != null && (
-                  <Tip content={`Sends when this chat is open on or after ${formatScheduleDate(q.notBefore)}`} side="top">
+                  <Tip content={t("queue.scheduledTip", { date: formatScheduleDate(q.notBefore) })} side="top">
                     <span
                       data-testid="queue-item-scheduled"
                       className="mt-0.5 flex shrink-0 items-center gap-1 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10.5px] text-[var(--color-fg-dim)]"
                     >
                       <CalendarClock className="h-3 w-3" />
-                      {q.notBefore <= Date.now() ? "due" : formatScheduleDate(q.notBefore)}
+                      {q.notBefore <= Date.now() ? t("queue.due") : formatScheduleDate(q.notBefore)}
                     </span>
                   </Tip>
                 )}
                 {q.repeat > 1 && (
-                  <span className="mt-0.5 shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[10.5px] text-[var(--color-fg-dim)]" title="Sends remaining">
+                  <span className="mt-0.5 shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[10.5px] text-[var(--color-fg-dim)]" title={t("queue.repeatCountTip")}>
                     ×{running && i === 0 ? q.remaining : q.repeat}
                   </span>
                 )}
                 <button
                   onClick={() => removeItem(q.id)}
-                  title="Remove"
+                  title={t("queue.removeTip")}
                   className="mt-0.5 shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] group-hover:opacity-100"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -309,19 +314,19 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addMessage(); }
             }}
             rows={2}
-            placeholder="Add a message (e.g. continue)…"
+            placeholder={t("queue.placeholder")}
             className="box-border max-h-32 min-h-[44px] w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] leading-snug text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
           />
           <div className="flex flex-wrap items-center gap-1" data-testid="queue-send-after">
             <span className="mr-0.5 flex items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)]">
-              <CalendarClock className="h-3 w-3" /> Send after
+              <CalendarClock className="h-3 w-3" /> {t("queue.sendAfter")}
             </span>
-            {[{ label: "Next turn", days: 0 }, ...SCHEDULE_PRESETS].map(p => {
+            {[{ key: "nextTurn", days: 0 }, ...SCHEDULE_PRESETS].map(p => {
               const value = p.days === 0 ? null : startOfDayIn(p.days);
               const on = !pickingDate && notBefore === value;
               return (
                 <button
-                  key={p.label}
+                  key={p.key}
                   type="button"
                   data-testid={`queue-send-after-${p.days}`}
                   aria-pressed={on}
@@ -333,7 +338,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                       : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
                   )}
                 >
-                  {p.label}
+                  {t(`queue.${p.key}`)}
                 </button>
               );
             })}
@@ -357,12 +362,12 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                 onClick={() => { setPickingDate(true); setNotBefore(startOfDayIn(1)); }}
                 className="rounded-md border border-[var(--color-border)] px-1.5 py-px text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]"
               >
-                Pick a date
+                {t("queue.pickDate")}
               </button>
             )}
           </div>
           <div className="flex items-center gap-2">
-            {notBefore == null && <label className="flex items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)]" title="Send this message N times (each waits for its own work-done)">
+            {notBefore == null && <label className="flex items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)]" title={t("queue.repeatTip")}>
               <Repeat className="h-3 w-3" />
               <input
                 type="number"
@@ -376,20 +381,20 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
               ×
             </label>}
             {queue.length > 0 && (
-              <Tip content="Send the next queued message right now, ignoring the work-done wait and the send interval" side="top">
+              <Tip content={t("queue.sendNowTip")} side="top">
                 <Button variant="ghost" size="sm" className="ml-auto gap-1.5" onClick={sendNow}>
-                  <Send className="h-3 w-3" /> Send now
+                  <Send className="h-3 w-3" /> {t("queue.sendNow")}
                 </Button>
               </Tip>
             )}
             <Button variant="primary" size="sm" className={cn("gap-1.5", queue.length === 0 && "ml-auto")} disabled={!draft.trim()} onClick={addMessage}>
-              {notBefore == null ? "Add" : "Schedule"} <CornerDownLeft className="h-3 w-3" />
+              {notBefore == null ? t("queue.add") : t("queue.schedule")} <CornerDownLeft className="h-3 w-3" />
             </Button>
           </div>
           <p className="text-[10.5px] leading-snug text-[var(--color-fg-faint)]" data-testid="queue-hint">
             {notBefore == null
-              ? `Sends on each work-done. A false "done" can advance early; remove items any time.`
-              : `Sends the next time this chat is open on or after ${formatScheduleDate(notBefore)}.`}
+              ? t("queue.hintQueue")
+              : t("queue.hintScheduled", { date: formatScheduleDate(notBefore) })}
           </p>
         </div>
       </PopoverContent>

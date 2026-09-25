@@ -10,6 +10,7 @@
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import * as ipc from "@/lib/ipc";
 import type { ScratchTab } from "@/lib/types";
 import { SCRATCH_UNTITLED } from "@/lib/scratchTitle";
@@ -49,7 +50,7 @@ export async function newScratchTab(taskId: string): Promise<string> {
   try {
     await ipc.scratchWrite(taskId, scratchId, "");
   } catch (e) {
-    useUI.getState().pushToast(`Couldn't create the scratchpad: ${e}`, "error");
+    useUI.getState().pushToast(i18n.t("backend:scratchTabs.createFailed", { error: String(e) }), "error");
   }
   return tab.id;
 }
@@ -100,6 +101,6 @@ export async function discardScratchPad(taskId: string, scratchId: string): Prom
   try {
     await ipc.scratchDelete(taskId, scratchId);
   } catch (e) {
-    useUI.getState().pushToast(`Couldn't delete the scratchpad: ${e}`, "error");
+    useUI.getState().pushToast(i18n.t("backend:scratchTabs.deleteFailed", { error: String(e) }), "error");
   }
 }

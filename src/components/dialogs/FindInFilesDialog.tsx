@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useTranslation, Trans } from "react-i18next";
 import { Search, X, Zap } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useUI } from "@/store/ui";
@@ -112,6 +113,7 @@ function highlight(hit: GrepHit, needle: string, opts: GrepOpts): React.ReactNod
 }
 
 export function FindInFilesDialog() {
+  const { t } = useTranslation("dialogs");
   const taskId = useUI(s => s.findInFilesTaskId);
   const close = useUI(s => s.closeFindInFiles);
   const openPreviewTab = useApp(s => s.openPreviewTab);
@@ -352,27 +354,40 @@ export function FindInFilesDialog() {
   const totalHits = groups.reduce((n, g) => n + g.hits.length, 0);
 
   function countText(): string {
-    const matches = `${totalHits} match${totalHits === 1 ? "" : "es"}`;
-    const files = `${groups.length} file${groups.length === 1 ? "" : "s"}`;
-    return `${matches} in ${files}${truncated ? " (truncated)" : ""}`;
+    const matches = t(totalHits === 1 ? "findInFiles.matchCountOne" : "findInFiles.matchCountMany", { count: totalHits });
+    const files = t(groups.length === 1 ? "findInFiles.fileCountOne" : "findInFiles.fileCountMany", { count: groups.length });
+    return `${matches} ${files}${truncated ? t("findInFiles.truncatedSuffix") : ""}`;
   }
 
   function statusLeft(): React.ReactNode {
     const trimmed = query.trim();
     if (!trimmed) {
+      const scope = projectName ?? t("findInFiles.thisTask");
+      const backendName = backend === "ripgrep" ? "ripgrep" : "git grep";
+      /* Held back until the probe lands, so the backend name never
+          flips under the user a frame after the dialog opens. */
+      if (!backend) {
+        return (
+          <Trans
+            t={t}
+            i18nKey="findInFiles.searchingInNoBackend"
+            values={{ scope }}
+            components={{ b: <span className="font-semibold text-[var(--color-fg)]" />, code: <code className="text-[12px]" /> }}
+          />
+        );
+      }
       return (
-        <>
-          Searching <span className="font-semibold text-[var(--color-fg)]">{projectName ?? "this task"}</span>
-          {/* Held back until the probe lands, so the backend name never
-              flips under the user a frame after the dialog opens. */}
-          {backend && <> via <code className="text-[12px]">{backend === "ripgrep" ? "ripgrep" : "git grep"}</code></>}
-          . Respects <code className="text-[12px]">.gitignore</code>.
-        </>
+        <Trans
+          t={t}
+          i18nKey="findInFiles.searchingIn"
+          values={{ scope, backend: backendName }}
+          components={{ b: <span className="font-semibold text-[var(--color-fg)]" />, code: <code className="text-[12px]" /> }}
+        />
       );
     }
-    if (trimmed.length < MIN_QUERY) return `Type at least ${MIN_QUERY} characters to search.`;
+    if (trimmed.length < MIN_QUERY) return t("findInFiles.minChars", { count: MIN_QUERY });
     if (groups.length) return countText();
-    return searching ? "" : "No matches";
+    return searching ? "" : t("findInFiles.noMatches");
   }
 
   return (
@@ -385,8 +400,8 @@ export function FindInFilesDialog() {
           className="termic-pop fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}
         >
-          <Dialog.Title className="sr-only">Find in files</Dialog.Title>
-          <Dialog.Description className="sr-only">Search file contents across the task.</Dialog.Description>
+          <Dialog.Title className="sr-only">{t("findInFiles.srTitle")}</Dialog.Title>
+          <Dialog.Description className="sr-only">{t("findInFiles.srDesc")}</Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
             <input
@@ -397,19 +412,23 @@ export function FindInFilesDialog() {
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"
-              placeholder={`Find in ${projectName ?? "files"} (${regexMode ? "regexp" : "literal"}, ${matchCase ? "case-sensitive" : "case-insensitive"})`}
+              placeholder={t("findInFiles.placeholder", {
+                scope: projectName ?? t("findInFiles.scopeFiles"),
+                syntax: regexMode ? t("findInFiles.syntaxRegexp") : t("findInFiles.syntaxLiteral"),
+                case: matchCase ? t("findInFiles.caseSensitive") : t("findInFiles.caseInsensitive"),
+              })}
               className="w-full bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
             />
             <FlagToggle
               on={matchCase} onToggle={() => setMatchCase(!matchCase)}
-              glyph="Aa" title="Match case" testId="fif-case"
+              glyph="Aa" title={t("findInFiles.matchCaseTitle")} testId="fif-case"
             />
             <FlagToggle
               on={regexMode} onToggle={() => setRegexMode(!regexMode)}
               glyph=".*"
               title={backend === "ripgrep"
-                ? "Use a regular expression (Rust regex)"
-                : "Use a regular expression (POSIX ERE)"}
+                ? t("findInFiles.regexTitleRipgrep")
+                : t("findInFiles.regexTitleGitGrep")}
               testId="fif-regex"
             />
             {/* Fallback only: ripgrep is faster on big repos, so tell the
@@ -419,7 +438,7 @@ export function FindInFilesDialog() {
                 type="button"
                 onMouseDown={e => e.preventDefault()}
                 onClick={() => { openUrl(RIPGREP_INSTALL_URL).catch(() => {}); }}
-                title="Searching with git grep. Install ripgrep for faster search."
+                title={t("findInFiles.rgHintTitle")}
                 data-testid="fif-rg-hint"
                 data-no-drag
                 className="inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
@@ -444,11 +463,11 @@ export function FindInFilesDialog() {
             <span className="truncate">{statusLeft()}</span>
             {searching && (
               <span className="flex shrink-0 items-center gap-1">
-                searching…
+                {t("findInFiles.searching")}
                 <button
                   type="button"
                   onClick={cancelSearch}
-                  title="Cancel search (Esc)"
+                  title={t("findInFiles.cancelSearchTitle")}
                   data-no-drag
                   className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
                 >

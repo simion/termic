@@ -1,6 +1,9 @@
 // MUST be first: migrates renamed localStorage keys (workspace -> task) before
 // any store module reads them at init. See src/lib/lsMigration.ts.
 import "@/lib/lsMigration";
+// i18n must initialize before App renders (resources are bundled, so this is
+// synchronous). The prefs store's setLanguage drives runtime switching.
+import "@/lib/i18n";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 // GH #70: register + start loading the terminal's owned JetBrains Mono faces at

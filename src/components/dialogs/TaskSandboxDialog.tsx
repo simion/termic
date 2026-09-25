@@ -6,6 +6,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TextareaHTMLAttributes } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
@@ -21,10 +22,11 @@ import {
 import { effectiveSandboxMode, type SandboxMode, type SandboxSelection, type Settings } from "@/lib/types";
 import { AlertTriangle, Shield, Zap, Save, RotateCw } from "lucide-react";
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
-import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
+import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { dockerToggleMessage, leaveDockerMessage } from "@/lib/sandboxSwitchCopy";
 
 export function TaskSandboxDialog() {
+  const { t } = useTranslation("dialogs");
   const taskId = useUI(s => s.sandboxForTaskId);
   const close = useUI(s => s.closeSandbox);
   const task = useApp(s => s.tasks.find(w => w.id === taskId) ?? null);
@@ -169,9 +171,9 @@ export function TaskSandboxDialog() {
   async function toggleDocker(next: boolean) {
     if (!task || dockerBusy) return;
     const ok = await useUI.getState().askConfirm({
-      title: next ? `Run "${task.name}" in Docker?` : `Stop running "${task.name}" in Docker?`,
+      title: next ? t("taskSandbox.dockerToggleTitleRun", { name: task.name }) : t("taskSandbox.dockerToggleTitleStop", { name: task.name }),
       message: dockerToggleMessage(next),
-      confirmLabel: next ? "Run in Docker" : "Stop using Docker",
+      confirmLabel: next ? t("taskSandbox.confirmRunDocker") : t("taskSandbox.confirmStopDocker"),
     });
     if (!ok) return;
     setDockerBusy(true);
@@ -233,13 +235,11 @@ export function TaskSandboxDialog() {
     // so the dialog text is generic. The user is explicitly asking
     // for this; soft-warning is enough.
     const ok = await useUI.getState().askConfirm({
-      title: `Save sandbox changes for "${taskLabel(task, useBranchAsTaskName)}"?`,
+      title: t("taskSandbox.confirmSaveTitle", { name: taskLabel(task, useBranchAsTaskName) }),
       message: restart
-        ? "Any agent running in this task will be terminated and AUTO-restarted under the new sandbox profile. " +
-          "This is by design: the running process holds the OLD profile until it's replaced."
-        : "Saving without restart. Any agent currently running in this task keeps its OLD sandbox profile until it next respawns. " +
-          "New tabs use the saved profile immediately.",
-      confirmLabel: restart ? "Save & restart" : "Save without restart",
+        ? t("taskSandbox.confirmMsgRestart")
+        : t("taskSandbox.confirmMsgNoRestart"),
+      confirmLabel: restart ? t("taskSandbox.confirmRestart") : t("taskSandbox.confirmNoRestart"),
     });
     if (!ok) return;
     setBusy(true); setErr(null);
@@ -314,9 +314,9 @@ export function TaskSandboxDialog() {
   async function leaveDockerFor(next: SandboxMode) {
     if (!task || dockerBusy) return;
     const ok = await useUI.getState().askConfirm({
-      title: `Switch "${taskLabel(task, useBranchAsTaskName)}" out of Docker?`,
+      title: t("taskSandbox.leaveDockerTitle", { name: taskLabel(task, useBranchAsTaskName) }),
       message: leaveDockerMessage(next === "off" ? "off" : "seatbelt"),
-      confirmLabel: next === "off" ? "Stop using Docker" : "Switch to Seatbelt",
+      confirmLabel: next === "off" ? t("taskSandbox.confirmStopDocker") : t("taskSandbox.confirmSwitchSeatbelt"),
     });
     if (!ok) return;
     setDockerBusy(true);
@@ -360,8 +360,8 @@ export function TaskSandboxDialog() {
     <AppDialog
       open={!!taskId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={task ? `Sandbox · ${taskLabel(task, useBranchAsTaskName)}` : "Sandbox"}
-      description="Restrict what the agent in this task can read, write, and reach."
+      title={task ? t("taskSandbox.titleNamed", { name: taskLabel(task, useBranchAsTaskName) }) : t("taskSandbox.titleFallback")}
+      description={t("taskSandbox.description")}
       // Wider than the default max-w-md so the textareas don't get
       // squeezed into a column. Cap height to the viewport so the
       // body scrolls when content overflows (sandbox dialog has more
@@ -399,12 +399,11 @@ export function TaskSandboxDialog() {
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
             <span>
-              <b className="text-[var(--color-fg)]">Monitoring (observe, don't block).</b>{" "}
-              The agent runs with full access. Every file operation and every
-              HTTP/HTTPS request are recorded (non-HTTP traffic like git-over-SSH
-              goes direct and isn't logged). Click the activity chip in the
-              footer to see the detailed log; whitelist anything flagged
-              "would block" before switching to Enforcing.
+              <Trans
+                t={t}
+                i18nKey="taskSandbox.monitorNote"
+                components={{ b: <b className="text-[var(--color-fg)]" /> }}
+              />
             </span>
           </div>
         )}
@@ -412,10 +411,14 @@ export function TaskSandboxDialog() {
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
             <span>
-              <b className="text-[var(--color-fg)]">Sandbox unavailable on this OS.</b>{" "}
-              Termic's cage uses macOS Seatbelt (<code className="mono">sandbox-exec</code>); Linux + Windows
-              equivalents aren't wired up yet. The network proxy and the
-              CLI agent still work, just without the filesystem cage.
+              <Trans
+                t={t}
+                i18nKey="taskSandbox.osUnavailable"
+                components={{
+                  b: <b className="text-[var(--color-fg)]" />,
+                  code: <code className="mono" />,
+                }}
+              />
             </span>
           </div>
         )}
@@ -425,12 +428,12 @@ export function TaskSandboxDialog() {
             <DockerEngineNote />
             <div>
               <Button variant="ghost" onClick={toggleDockerPreview} disabled={!task}>
-                {showDockerPreview ? "Hide command preview" : "Preview command"}
+                {showDockerPreview ? t("taskSandbox.hidePreview") : t("taskSandbox.previewCmd")}
               </Button>
               {showDockerPreview && (
                 <div className="mt-2 rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3 text-[12px]">
                   {dockerPreviewLoading && (
-                    <div className="text-[var(--color-fg-faint)]">Loading…</div>
+                    <div className="text-[var(--color-fg-faint)]">{t("common:loading")}</div>
                   )}
                   {dockerPreviewErr && (
                     <div className="text-[var(--color-err)]">{dockerPreviewErr}</div>
@@ -450,7 +453,7 @@ export function TaskSandboxDialog() {
                           <div key={i} className="flex flex-col gap-0.5">
                             <div className="font-mono text-[11px] text-[var(--color-fg)]">
                               {m.host} <span className="text-[var(--color-fg-faint)]">→</span> {m.container}
-                              <span className="ml-1.5 text-[var(--color-fg-faint)]">{m.read_only ? "(read-only)" : "(read/write)"}</span>
+                              <span className="ml-1.5 text-[var(--color-fg-faint)]">{m.read_only ? t("taskSandbox.readOnly") : t("taskSandbox.readWrite")}</span>
                             </div>
                             <div className="text-[11px] text-[var(--color-fg-faint)]">{m.why}</div>
                           </div>
@@ -462,8 +465,8 @@ export function TaskSandboxDialog() {
               )}
             </div>
             <Field
-              label="Extra mounts"
-              hint={'Bind-mount extra host directories into the container for this task, one per line as host_path:container_path (Docker\'s own -v shape). For persisting something a fresh container otherwise loses on restart, like a custom MCP server\'s own data dir - the per-agent config dir above already covers logins/sessions. ~, $HOME, and $WORKSPACE expand on the host side.'}
+              label={t("taskSandbox.extraMountsLabel")}
+              hint={t("taskSandbox.extraMountsHint")}
             >
               <AutoGrowTextarea
                 value={mountsText}
@@ -475,7 +478,7 @@ export function TaskSandboxDialog() {
               />
               <div className="mt-2 flex items-center gap-2">
                 <Button variant="secondary" onClick={saveDockerMounts} disabled={!mountsDirty || mountsBusy}>
-                  {mountsBusy ? "Saving…" : "Save mounts & restart"}
+                  {mountsBusy ? t("common:saving") : t("taskSandbox.saveMounts")}
                 </Button>
                 {mountsErr && <span className="text-[12px] text-[var(--color-err)]">{mountsErr}</span>}
               </div>
@@ -492,10 +495,11 @@ export function TaskSandboxDialog() {
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-ok)]/25 bg-[var(--color-ok)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-ok)]" />
             <span>
-              <b className="text-[var(--color-fg)]">YOLO auto-on inside the cage.</b>{" "}
-              The agent's own permission prompts are skipped because the
-              seatbelt profile is the real boundary. The global YOLO toggle
-              becomes informational for this task.
+              <Trans
+                t={t}
+                i18nKey="taskSandbox.yoloNote"
+                components={{ b: <b className="text-[var(--color-fg)]" /> }}
+              />
             </span>
           </div>
         )}
@@ -513,31 +517,31 @@ export function TaskSandboxDialog() {
             (vs the bundled Presets which are app-owned). */}
         {enabled && (
           <div className="flex flex-wrap items-center gap-2 text-[13px]">
-            <span className="text-[var(--color-fg-faint)]">Preset:</span>
+            <span className="text-[var(--color-fg-faint)]">{t("taskSandbox.presetLabel")}</span>
             {SANDBOX_PRESETS.map(p => (
               <button
                 key={p.id} type="button"
-                title={p.hint}
+                title={presetHint(p)}
                 onClick={() => {
                   setRwText(p.rwPaths.join("\n"));
                   setHostsText(p.allowedHosts.join("\n"));
                 }}
                 className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
               >
-                {p.label}
+                {presetLabel(p)}
               </button>
             ))}
             {project && (
               <button
                 type="button"
-                title={`Re-sync from ${project.name}'s current sandbox defaults (Settings → Projects).`}
+                title={t("taskSandbox.resetProjectDefaultsTitle", { project: project.name })}
                 onClick={() => {
                   setRwText((project.sandbox_rw_paths ?? []).join("\n"));
                   setHostsText((project.sandbox_allowed_hosts ?? []).join("\n"));
                 }}
                 className="rounded-md border border-[var(--color-accent-soft)] bg-[var(--color-bg)] px-2 py-0.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent)] hover:text-[var(--color-fg)]"
               >
-                Reset to project defaults
+                {t("taskSandbox.resetProjectDefaults")}
               </button>
             )}
           </div>
@@ -548,8 +552,8 @@ export function TaskSandboxDialog() {
             Hidden entirely for OFF — nothing to configure. */}
         {enabled && (<>
         <Field
-          label="Allowed paths"
-          hint="Extra dirs the agent can read AND write, on top of the task + agent + runtime defaults shown on the right. One per line. ~, $HOME, and $WORKSPACE expand at spawn time."
+          label={t("taskSandbox.allowedPathsLabel")}
+          hint={t("taskSandbox.allowedPathsHint")}
         >
           {/* Two columns, locked to the same height. box-border on
               both so the explicit h-[] applies to the OUTER box
@@ -569,7 +573,7 @@ export function TaskSandboxDialog() {
               disabled={!enabled}
             />
             <DefaultsPanel className="box-border h-[180px] overflow-y-auto [scrollbar-gutter:stable]">
-              <ChipGroup tone="allow" label="Always allowed, read + write (task + runtime)">
+              <ChipGroup tone="allow" label={t("taskSandbox.chipGroupRw")}>
                 <Chip tone="allow">task</Chip>
                 <Chip tone="allow">~/.npm</Chip>
                 <Chip tone="allow">~/.cache</Chip>
@@ -583,9 +587,9 @@ export function TaskSandboxDialog() {
                 <Chip tone="allow">~/Library/Keychains</Chip>
                 <Chip tone="allow">/private/tmp</Chip>
                 <Chip tone="allow">TMPDIR</Chip>
-                <Chip tone="allow" muted>shell + git dotfiles</Chip>
+                <Chip tone="allow" muted>{t("taskSandbox.chipShellDotfiles")}</Chip>
               </ChipGroup>
-              <ChipGroup tone="allow" label="Always allowed, read only (system bins + linker)">
+              <ChipGroup tone="allow" label={t("taskSandbox.chipGroupRo")}>
                 <Chip tone="allow">/usr</Chip>
                 <Chip tone="allow">/opt</Chip>
                 <Chip tone="allow">/bin</Chip>
@@ -593,26 +597,23 @@ export function TaskSandboxDialog() {
                 <Chip tone="allow">/dev</Chip>
                 <Chip tone="allow">/etc</Chip>
                 <Chip tone="allow">~/.ssh/known_hosts</Chip>
-                <Chip tone="allow" muted>dyld / ld.so cache</Chip>
-                <Chip tone="allow" muted>/lib /lib64 (linux)</Chip>
-                <Chip tone="allow" muted>/proc /sys /run (linux)</Chip>
+                <Chip tone="allow" muted>{t("taskSandbox.chipDyld")}</Chip>
+                <Chip tone="allow" muted>{t("taskSandbox.chipLibLinux")}</Chip>
+                <Chip tone="allow" muted>{t("taskSandbox.chipProcLinux")}</Chip>
               </ChipGroup>
               {agent && (agent.sandbox_allowed_paths?.length ?? 0) > 0 && (
-                <ChipGroup tone="allow" label={`Always allowed for ${agent.display_name || agent.id}`}>
+                <ChipGroup tone="allow" label={t("taskSandbox.chipGroupAgent", { agent: agent.display_name || agent.id })}>
                   {(agent.sandbox_allowed_paths ?? []).map(p => (
                     <Chip key={p} tone="allow">{p.replace(/^\$HOME/, "~")}</Chip>
                   ))}
                 </ChipGroup>
               )}
               <p className="mt-2 text-[11.5px] leading-snug text-[var(--color-fg-faint)]">
-                Pure allow-list: anything not listed here or on the left is
-                denied (contents <i>and</i> existence). Secrets like{" "}
-                <span className="font-mono">~/.ssh</span>,{" "}
-                <span className="font-mono">~/.aws</span>,{" "}
-                <span className="font-mono">~/.gnupg</span> and browser data
-                aren't listed, so they're denied. Allow <i>narrowly</i> — a
-                broad parent (e.g. <span className="font-mono">$HOME</span>)
-                would expose everything under it.
+                <Trans
+                  t={t}
+                  i18nKey="taskSandbox.allowlistNote"
+                  components={{ i: <i />, mono: <span className="font-mono" /> }}
+                />
               </p>
             </DefaultsPanel>
           </div>
@@ -621,15 +622,15 @@ export function TaskSandboxDialog() {
           <div className="flex items-start gap-2 rounded-md border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/10 px-3 py-2 text-[13px] text-[var(--color-fg-dim)]">
             <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
             <span>
-              <b className="text-[var(--color-fg)]">Network is unrestricted in this mode.</b>{" "}
-              The filesystem cage above is fully enforced, but the agent can
-              reach any host directly (no proxy, no host allow-list). Use this
-              when your egress is controlled elsewhere, or you need non-HTTP
-              traffic. Switch to Enforcing for the host allow-list.
+              <Trans
+                t={t}
+                i18nKey="taskSandbox.fsOnlyNote"
+                components={{ b: <b className="text-[var(--color-fg)]" /> }}
+              />
             </span>
           </div>
         ) : (
-          <Field label="Add allowed hosts" hint="One per line. Use * as a wildcard. Examples: *.mycompany.com, bitbucket.org">
+          <Field label={t("taskSandbox.allowedHostsLabel")} hint={t("taskSandbox.allowedHostsHint")}>
             <div className="grid grid-cols-2 items-stretch gap-3">
               <AutoGrowTextarea
                 value={hostsText}
@@ -640,13 +641,13 @@ export function TaskSandboxDialog() {
                 disabled={!enabled}
               />
               <DefaultsPanel className="h-full">
-                <ChipGroup tone="allow" label="Always reachable">
-                  <Chip tone="allow">vendor API for {task?.cli ?? "this CLI"}</Chip>
+                <ChipGroup tone="allow" label={t("taskSandbox.alwaysReachable")}>
+                  <Chip tone="allow">{t("taskSandbox.chipVendorApi", { cli: task?.cli ?? t("taskSandbox.thisCli") })}</Chip>
                   <Chip tone="allow">github.com</Chip>
                   <Chip tone="allow">npmjs.org</Chip>
                   <Chip tone="allow">pypi.org</Chip>
                   <Chip tone="allow">crates.io</Chip>
-                  <Chip tone="allow" muted>CA OCSP</Chip>
+                  <Chip tone="allow" muted>{t("taskSandbox.chipCaOcsp")}</Chip>
                 </ChipGroup>
               </DefaultsPanel>
             </div>
@@ -668,26 +669,26 @@ export function TaskSandboxDialog() {
             Save button is always reachable no matter how long the form
             gets after autogrow expands the textareas. */}
         <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-[var(--color-border-soft)] pt-3">
-          <Button variant="ghost" type="button" onClick={close} disabled={busy}>Cancel</Button>
+          <Button variant="ghost" type="button" onClick={close} disabled={busy}>{t("common:cancel")}</Button>
           <Button
             variant="secondary" type="button" onClick={() => save(false)}
             disabled={busy || !dirty}
             title={!dirty
-              ? "No changes to save"
-              : "Persist the profile but leave the running agent alone. It keeps the OLD profile until it next respawns."}
+              ? t("taskSandbox.noChangesTitle")
+              : t("taskSandbox.noRestartTitle")}
             className="gap-1.5"
           >
             <Save className="h-3.5 w-3.5" />
-            Save without restart
+            {t("taskSandbox.saveWithoutRestart")}
           </Button>
           <Button
             variant="primary" type="button" onClick={() => save(true)}
             disabled={busy || !dirty}
-            title={!dirty ? "No changes to save" : undefined}
+            title={!dirty ? t("taskSandbox.noChangesTitle") : undefined}
             className="gap-1.5"
           >
             <RotateCw className="h-3.5 w-3.5" />
-            {busy ? "Saving…" : "Save & restart terminal"}
+            {busy ? t("common:saving") : t("taskSandbox.saveRestart")}
           </Button>
         </div>
       </div>
@@ -721,9 +722,10 @@ function AutoGrowTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 // set for this field. Sits between the field's hint and its textarea
 // so users see "covered" stuff before they type something redundant.
 function BuiltInsLine({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation("dialogs");
   return (
     <div className="mb-1.5 text-[12px] leading-snug text-[var(--color-fg-faint)]">
-      <span className="font-medium text-[var(--color-fg-dim)]">Already covered:</span>{" "}
+      <span className="font-medium text-[var(--color-fg-dim)]">{t("taskSandbox.alreadyCoveredColon")}</span>{" "}
       {children}
     </div>
   );
@@ -735,13 +737,14 @@ function BuiltInsLine({ children }: { children: React.ReactNode }) {
 // (allow / deny) and a row of Chip pills. Reads top-to-bottom in
 // O(scan) instead of forcing the user to parse a comma-soup.
 function DefaultsPanel({ children, className }: { children: React.ReactNode; className?: string }) {
+  const { t } = useTranslation("dialogs");
   return (
     <div className={cn(
       "rounded-md border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5",
       className,
     )}>
       <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-fg-faint)]">
-        Already covered
+        {t("taskSandbox.alreadyCovered")}
       </div>
       <div className="flex flex-col gap-2">{children}</div>
     </div>

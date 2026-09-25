@@ -7,6 +7,8 @@
 // Keep the two in step - a UI that accepts a range Rust then ignores is worse
 // than one that never accepted it.
 
+import { i18n } from "@/lib/i18n";
+
 /** Default window. Chosen to sit above the ports ordinary dev servers use,
  *  which is exactly what a user narrowing it to 3000-4000 gives up. */
 export const PORT_RANGE_DEFAULT = { min: 18100, max: 65535 } as const;
@@ -37,10 +39,10 @@ export function resolvePortRange(
  *  One string per distinct mistake: "invalid" alone leaves the user guessing
  *  which of the two numbers to change. */
 export function portRangeError(min: number, max: number): string | null {
-  if (!Number.isInteger(min) || !Number.isInteger(max)) return "Both ports must be whole numbers.";
-  if (min < PORT_RANGE_FLOOR) return `The lowest port must be ${PORT_RANGE_FLOOR} or above. Below that is reserved for system services.`;
-  if (max > 65535) return "The highest port must be 65535 or below.";
-  if (max <= min) return "The highest port must be above the lowest.";
+  if (!Number.isInteger(min) || !Number.isInteger(max)) return i18n.t("backend:portRange.wholeNumbers");
+  if (min < PORT_RANGE_FLOOR) return i18n.t("backend:portRange.floor", { floor: PORT_RANGE_FLOOR });
+  if (max > 65535) return i18n.t("backend:portRange.max65535");
+  if (max <= min) return i18n.t("backend:portRange.maxAboveMin");
   if (max - min < PORT_BLOCK_MIN) return `A range needs at least ${PORT_BLOCK_MIN} ports: each task takes a consecutive block.`;
   return null;
 }

@@ -18,6 +18,7 @@ import { taskCreate, taskSetYolo } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useRace } from "@/store/race";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { withCreateLock } from "@/lib/createLock";
 import { launchSetupTab } from "@/lib/runTabs";
 import { seedPromptWhenReady } from "@/lib/seedPrompt";
@@ -135,13 +136,13 @@ export async function startRace(opts: {
   // Seed the shared prompt into each agent once it's input-ready.
   for (const id of taskIds) seedPromptWhenReady(id, prompt);
 
-  useUI.getState().pushToast(`Race started: ${racers.length} agents on one prompt.`, "success");
+  useUI.getState().pushToast(i18n.t(racers.length === 1 ? "backend:agentRace.startedOne" : "backend:agentRace.startedOther", { count: racers.length }), "success");
   return taskIds;
 }
 
 /** The prompt's first non-empty line, capped, for the board label. */
 function firstLine(s: string): string {
   const line = s.trim().split("\n")[0]?.trim() ?? "";
-  if (!line) return "Untitled prompt";
+  if (!line) return i18n.t("backend:agentRace.untitledPrompt");
   return line.length > 80 ? line.slice(0, 79) + "…" : line;
 }

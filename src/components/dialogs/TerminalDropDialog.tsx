@@ -6,6 +6,7 @@
 // dropped file's raw path would let the agent see the path but fail to read
 // the file — looking broken. We ask the user how to share it instead.
 
+import { useTranslation, Trans } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
@@ -20,30 +21,34 @@ function parentDir(p: string): string {
 }
 
 export function TerminalDropDialog() {
+  const { t } = useTranslation("dialogs");
   const drop = useUI(s => s.terminalDrop);
   const resolve = useUI(s => s.resolveTerminalDrop);
   if (!drop) return null;
 
   const { paths } = drop.req;
   const single = paths.length === 1;
-  const fileLabel = single ? baseName(paths[0]) : `${paths.length} files`;
+  const fileLabel = single ? baseName(paths[0]) : t("terminalDrop.filesCount", { count: paths.length });
   // For the "allow folder" hint, show the common parent when it's the same
   // for every file; otherwise just say "their folders".
   const parents = Array.from(new Set(paths.map(parentDir)));
-  const folderHint = parents.length === 1 ? parents[0] : "their folders";
+  const folderHint = parents.length === 1 ? parents[0] : t("terminalDrop.theirFolders");
 
   return (
     <AppDialog
       open
       onOpenChange={(v) => { if (!v) resolve({ kind: "cancel" }); }}
-      title="Share a file with a sandboxed agent"
+      title={t("terminalDrop.title")}
       className="max-w-lg"
     >
       <div className="flex flex-col gap-4 pt-1 text-[13.5px] text-[var(--color-fg-dim)] leading-relaxed">
         <p>
-          This task is sandboxed, so the agent can't read files from
-          locations like Desktop or Downloads. Choose how to share{" "}
-          <span className="font-medium text-[var(--color-fg)]">{fileLabel}</span>:
+          <Trans
+            t={t}
+            i18nKey="terminalDrop.intro"
+            values={{ file: fileLabel }}
+            components={{ b: <span className="font-medium text-[var(--color-fg)]" /> }}
+          />
         </p>
 
         <div className="flex flex-col gap-2">
@@ -56,10 +61,10 @@ export function TerminalDropDialog() {
             <Clock className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent)]" />
             <div>
               <div className="font-medium text-[var(--color-fg)]">
-                Copy to a temp folder <span className="text-[11px] font-normal text-[var(--color-accent)]">recommended</span>
+                {t("terminalDrop.copyTemp")} <span className="text-[11px] font-normal text-[var(--color-accent)]">{t("terminalDrop.recommended")}</span>
               </div>
               <div className="text-[12px] text-[var(--color-fg-faint)]">
-                Copies the file somewhere the agent can already read and inserts that path. Works immediately, no restart, no permanent access.
+                {t("terminalDrop.copyTempHint")}
               </div>
             </div>
           </button>
@@ -72,9 +77,14 @@ export function TerminalDropDialog() {
           >
             <FolderOpen className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
             <div>
-              <div className="font-medium text-[var(--color-fg)]">Allow the folder</div>
+              <div className="font-medium text-[var(--color-fg)]">{t("terminalDrop.allowFolder")}</div>
               <div className="text-[12px] text-[var(--color-fg-faint)] break-all">
-                Adds <code className="font-mono">{folderHint}</code> to this task's allowed paths. Inserts the real path. Takes effect after the agent restarts.
+                <Trans
+                  t={t}
+                  i18nKey="terminalDrop.allowFolderHint"
+                  values={{ folder: folderHint }}
+                  components={{ code: <code className="font-mono" /> }}
+                />
               </div>
             </div>
           </button>
@@ -88,10 +98,10 @@ export function TerminalDropDialog() {
             <FileCheck2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-fg-dim)]" />
             <div>
               <div className="font-medium text-[var(--color-fg)]">
-                Allow {single ? "this exact file" : "these exact files"}
+                {t(single ? "terminalDrop.allowFileTitleOne" : "terminalDrop.allowFileTitleMany")}
               </div>
               <div className="text-[12px] text-[var(--color-fg-faint)]">
-                Adds only the dropped {single ? "file" : "files"} to the allow-list. Inserts the real path. Takes effect after the agent restarts.
+                {t(single ? "terminalDrop.allowFileHintOne" : "terminalDrop.allowFileHintMany")}
               </div>
             </div>
           </button>
@@ -100,7 +110,7 @@ export function TerminalDropDialog() {
 
       <div className="mt-4 flex justify-end">
         <Button variant="ghost" type="button" onClick={() => resolve({ kind: "cancel" })}>
-          Cancel
+          {t("common:cancel")}
         </Button>
       </div>
     </AppDialog>

@@ -17,6 +17,7 @@
 // trap 2: a visibility-hidden pane keeps rendering.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { cn } from "@/lib/utils";
 import { FileCode2, Eye, Columns2 } from "lucide-react";
@@ -60,6 +61,7 @@ export function SourcePreviewShell(
     preview: (s: { showPreview: boolean; showEditor: boolean }) => React.ReactNode;
   },
 ) {
+  const { t } = useTranslation("panels");
   const showEditor = view === "source" || view === "split";
   const showPreview = view === "preview" || view === "split";
 
@@ -97,9 +99,9 @@ export function SourcePreviewShell(
     <div className="flex h-full flex-col bg-[var(--color-bg)]" data-testid="source-preview-shell" data-view={view}>
       {/* Mode toolbar — right-aligned, matches the bottom-split strip geometry. */}
       <div className="flex h-8 shrink-0 items-center justify-end gap-0.5 border-b border-[var(--color-border-soft)] px-2">
-        <ToolbarButton mode="source"  active={view === "source"}  onClick={() => setView("source")}><FileCode2 className="h-3.5 w-3.5" />Editor</ToolbarButton>
-        <ToolbarButton mode="preview" active={view === "preview"} onClick={() => setView("preview")}><Eye className="h-3.5 w-3.5" />Preview</ToolbarButton>
-        <ToolbarButton mode="split"   active={view === "split"}   onClick={() => setView("split")}><Columns2 className="h-3.5 w-3.5" />Split</ToolbarButton>
+        <ToolbarButton mode="source"  active={view === "source"}  onClick={() => setView("source")}><FileCode2 className="h-3.5 w-3.5" />{t("sourcePreview.editor")}</ToolbarButton>
+        <ToolbarButton mode="preview" active={view === "preview"} onClick={() => setView("preview")}><Eye className="h-3.5 w-3.5" />{t("sourcePreview.preview")}</ToolbarButton>
+        <ToolbarButton mode="split"   active={view === "split"}   onClick={() => setView("split")}><Columns2 className="h-3.5 w-3.5" />{t("sourcePreview.split")}</ToolbarButton>
       </div>
 
       <div ref={containerRef} className="relative flex min-h-0 flex-1">

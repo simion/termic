@@ -5,6 +5,7 @@
 // - Indentation reflects depth; chevrons rotate to indicate expansion state.
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, Pencil, Trash2, Play, Plus, Minus } from "lucide-react";
 import type { FileEntry } from "@/lib/types";
 import { taskDirList, taskPathRename, taskPathDelete } from "@/lib/ipc";
@@ -46,6 +47,7 @@ const expandedByTask = new Map<string, Set<string>>();
 const RETRY_DELAY_MS = 200;
 
 export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
+  const { t } = useTranslation("task");
   // Absolute task root, used to build the "Copy path" (absolute) item.
   // Tree `rel` paths are task-root-relative, so absolute = root/rel.
   const root = useApp(s => s.tasks.find(w => w.id === taskId)?.path ?? "");
@@ -285,7 +287,7 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
     const { short, detail } = explainDirError(err);
     return (
       <div data-testid="tree-root-failed" className="px-3 py-2 text-[12.5px]">
-        <div className="text-[var(--color-err)]">Couldn't read the task folder. {short}.</div>
+        <div className="text-[var(--color-err)]">{t("fileTree.rootFailed", { short })}</div>
         {detail !== short && (
           <div className="mt-1 break-all text-[11.5px] text-[var(--color-fg-faint)]">{detail}</div>
         )}
@@ -293,7 +295,7 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
     );
   }
   if (!rootEntries) return <div className="px-3 py-2 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
-  if (rootEntries.length === 0) return <div className="px-3 py-2 text-[13.5px] text-[var(--color-fg-faint)]">(empty)</div>;
+  if (rootEntries.length === 0) return <div className="px-3 py-2 text-[13.5px] text-[var(--color-fg-faint)]">{t("fileTree.empty")}</div>;
 
   return (
     <div ref={treeRef} className="flex flex-col select-none">
@@ -337,6 +339,7 @@ interface NodeProps {
 }
 
 function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch, loading, failed, retry, projectId, savedCmds, reloadCmds }: NodeProps) {
+  const { t } = useTranslation("task");
   const openPreviewTab = useApp(s => s.openPreviewTab);
   const persistTab = useApp(s => s.persistTab);
   const closeTab = useApp(s => s.closeTab);
@@ -397,11 +400,11 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
 
   async function remove() {
     const ok = await useUI.getState().askConfirm({
-      title: `Delete ${entry.name}?`,
+      title: t("fileTree.deleteTitle", { name: entry.name }),
       message: entry.is_dir
-        ? "This permanently deletes the folder and everything inside it."
-        : "This permanently deletes the file.",
-      confirmLabel: "Delete",
+        ? t("fileTree.deleteDirMessage")
+        : t("fileTree.deleteFileMessage"),
+      confirmLabel: t("common:delete"),
       destructive: true,
     });
     if (!ok) return;
@@ -533,26 +536,26 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
           <>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={runOnce}>
-              <Play /> Run
+              <Play /> {t("fileTree.run")}
             </ContextMenuItem>
             {isSavedCmd ? (
               <ContextMenuItem onSelect={removeRun}>
-                <Minus /> Remove from Run scripts
+                <Minus /> {t("fileTree.removeFromRun")}
               </ContextMenuItem>
             ) : (
               <ContextMenuItem onSelect={addRun}>
-                <Plus /> Add to Run scripts…
+                <Plus /> {t("fileTree.addToRun")}
               </ContextMenuItem>
             )}
           </>
         )}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => { setDraft(entry.name); setRenaming(true); }}>
-          <Pencil /> Rename
+          <Pencil /> {t("common:rename")}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem destructive onSelect={remove}>
-          <Trash2 /> Remove
+          <Trash2 /> {t("common:remove")}
         </ContextMenuItem>
       </ContextMenuContent>
       </ContextMenuRoot>
@@ -587,6 +590,7 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
 function DirReadFailed(
   { rel, depth, raw, retry }: { rel: string; depth: number; raw: string; retry: (rel: string) => void },
 ) {
+  const { t } = useTranslation("task");
   const { short, detail } = explainDirError(raw);
   return (
     <div
@@ -599,10 +603,10 @@ function DirReadFailed(
       onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); retry(rel); } }}
       className="cursor-pointer py-[2px] pr-2 text-left text-[12px] leading-[15px] text-[var(--color-err)]"
       style={{ paddingLeft: 6 + (depth + 1) * 12 + 22 }}
-      title={`${detail}\n\nClick to try again.`}
+      title={t("fileTree.retryTip", { detail })}
     >
       <span className="break-words">{short}.</span>{" "}
-      <span className="underline">Retry</span>
+      <span className="underline">{t("common:retry")}</span>
       {detail !== short && (
         <div className="line-clamp-2 break-all text-[11px] leading-[14px] text-[var(--color-fg-faint)]">{detail}</div>
       )}

@@ -22,6 +22,7 @@
 // JSON-RPC. See docs/ideas/usage-footer.md.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { CircleSlash, Copy, Check } from "lucide-react";
@@ -143,6 +144,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
    *  one would still spend a flex gap on a chip that rendered nothing. */
   className?: string;
 }) {
+  const { t } = useTranslation("task");
   const { account: liveAccount, view: accountsView, refresh: refreshAccounts } = accounts;
   // Per-agent opt-outs from Settings > Agents. Hiding usage also stops the
   // pull transports asking, so a hidden number costs no app-server spawns.
@@ -330,14 +332,14 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
           data-auto={sw.auto ? "on" : "off"}
           title={
             sw.offering
-              ? `${sw.shown.now} is nearly out of plan. Switch to ${sw.candidate}.`
+              ? t("agentChip.offeringTitle", { now: sw.shown.now, candidate: sw.candidate })
               : sw.shown.next
-                ? `${agentId} is running as ${sw.shown.now}. It switches to ${sw.shown.next} when it next starts.`
+                ? t("agentChip.nextTitle", { agent: agentId, now: sw.shown.now, next: sw.shown.next })
                 : hasAccounts
-                  ? `${agentDisplayName(agentId, agents)}, signed in as ${sw.shown.now}`
+                  ? t("agentChip.signedInTitle", { agent: agentDisplayName(agentId, agents), account: sw.shown.now })
                   : unknown
-                    ? `${agentDisplayName(agentId, agents)} usage is not known yet`
-                    : `${agentDisplayName(agentId, agents)} plan usage`
+                    ? t("agentChip.unknownTitle", { agent: agentDisplayName(agentId, agents) })
+                    : t("agentChip.planTitle", { agent: agentDisplayName(agentId, agents) })
           }
           data-usage-dismissed={quiet ? "1" : ""}
           className={cn(
@@ -410,7 +412,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
               of figures rather than two different widgets. */}
           {ctx && <ContextReadout entry={ctx} />}
           {unknown && !quiet && (
-            <span data-testid="usage-unknown" className="text-[var(--color-fg-faint)]">Usage unknown</span>
+            <span data-testid="usage-unknown" className="text-[var(--color-fg-faint)]">{t("agentChip.usageUnknown")}</span>
           )}
           {entry?.session && (
             <UsageWindowReadout
@@ -508,6 +510,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
    *  over the page it just opened. */
   onNavigate: () => void;
 }) {
+  const { t } = useTranslation("task");
   const agents = useApp(a => a.agents);
   const iconId = resolveIconId(agentId, agents);
   const age = entry ? Date.now() - entry.updatedAt : 0;
@@ -542,17 +545,17 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
           <>
             <UsageRow label={words.label} sub={words.sub} window={entry.session}
               driving={driver?.label === "5h"} level={level} source={entry.source} />
-            <UsageRow label="Weekly" sub="rolling 7 days" window={entry.weekly}
+            <UsageRow label={t("agentChip.weekly")} sub={t("agentChip.weeklySub")} window={entry.weekly}
               driving={driver?.label === "wk"} level={level} source={entry.source} />
           </>
         ) : entry.consumed ? (
           <div data-testid="usage-consumed-row" className="flex items-baseline justify-between">
             <span className="text-[var(--color-fg-dim)]">
-              {entry.consumed.unit}s this billing period
+              {t("agentChip.consumedLabel", { unit: entry.consumed.unit })}
               <span className="block text-[11px] text-[var(--color-fg-faint)]">
                 {formatPeriod(entry.consumed)
-                  ? `${formatPeriod(entry.consumed)}. No quota on this plan.`
-                  : "No quota on this plan."}
+                  ? t("agentChip.noQuotaPeriod", { period: formatPeriod(entry.consumed) })
+                  : t("agentChip.noQuota")}
               </span>
             </span>
             <span className="shrink-0 whitespace-nowrap tabular-nums font-medium text-[var(--color-fg)]">{formatConsumed(entry.consumed)}</span>
@@ -563,7 +566,7 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
           // Only once it is PROVED (`UsageEntry.noPlan`): a subscription looks
           // the same until its first turn reaches the API.
           <div className="text-[var(--color-fg-faint)]">
-            This account is billed per token, so it has no plan limits.
+            {t("agentChip.billedPerToken")}
           </div>
         ) : null}
         {/* `costChipVisible` as well as a positive figure: on an account
@@ -587,18 +590,18 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
                 did not happen, which is exactly how it read to the first
                 person who saw both on one panel. */}
             <span className="text-[var(--color-fg-dim)]">
-              {entry?.sawPlan ? "Would have cost" : entry?.noPlan ? "Spent since launch" : "Cost since launch"}
+              {entry?.sawPlan ? t("agentChip.wouldHaveCost") : entry?.noPlan ? t("agentChip.spentSinceLaunch") : t("agentChip.costSinceLaunch")}
               {/* The reset is said out loud either way, because the number
                   goes back to zero when termic does and someone comparing it
                   against a provider dashboard needs to know that first. */}
               <span className="block text-[11px] text-[var(--color-fg-faint)]">
                 {entry?.sawPlan
-                  ? "at API rates since launch. Your plan covers it."
+                  ? t("agentChip.coveredByPlan")
                   : entry?.noPlan
-                    ? "this agent, this account"
+                    ? t("agentChip.thisAgentAccount")
                     // Neither proved yet: the same figure is a charge on one
                     // kind of account and not on the other, so name neither.
-                    : "at API rates, this agent, this account"}
+                    : t("agentChip.atApiRates")}
               </span>
             </span>
             <span className="tabular-nums font-medium text-[var(--color-fg)]">{formatUsd(spend)}</span>
@@ -610,8 +613,10 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
       <div className="border-t border-[var(--color-border-soft)] px-3 py-2 text-[var(--color-fg-faint)]">
         {level !== "normal" && driver && (
           <div className={cn("mb-1", LEVEL_TEXT[level])}>
-            Over {level === "critical" ? USAGE_CRITICAL_PERCENT : USAGE_WARN_PERCENT}% of the{" "}
-            {driver.label === "5h" ? words.limit : "weekly"} limit.
+            {t("agentChip.overLimit", {
+              percent: level === "critical" ? USAGE_CRITICAL_PERCENT : USAGE_WARN_PERCENT,
+              window: driver.label === "5h" ? words.limit : "weekly",
+            })}
           </div>
         )}
         {/* Where it came from, and how old. Both matter: the claude feed only
@@ -619,9 +624,9 @@ function UsageDetail({ agentId, entry, level, driver, spend, unknown, ctx, sourc
             exactly like a fresh one. */}
         <div>
           {entry.source === "statusline"
-            ? "Reported by the agent as it works."
-            : `Read from ${display} in the background.`}
-          {stale ? ` Last updated ${describeAge(age)} ago.` : ""}
+            ? t("agentChip.reportedLive")
+            : t("agentChip.readBackground", { agent: display })}
+          {stale ? t("agentChip.lastUpdated", { age: describeAge(age) }) : ""}
         </div>
       </div>
       )}
@@ -665,6 +670,7 @@ function UsageUnknown({ agentId, sources, show, onNavigate }: {
 }) {
   const agents = useApp(a => a.agents);
   const display = agentDisplayName(agentId, agents);
+  const { t } = useTranslation("task");
   // From the store, not an IPC on open. Asking `agent_hooks_status` when the
   // panel opened rendered it empty first and then grew it, so it was placed
   // for the empty size and could land clipped at the bottom of the window.
@@ -680,28 +686,27 @@ function UsageUnknown({ agentId, sources, show, onNavigate }: {
   if (!footerNeedsHooks(sources, show)) {
     return (
       <div data-testid="usage-unknown-detail" data-usage-hooks="n/a" className="flex flex-col gap-1 text-[var(--color-fg-dim)]">
-        <p>Termic has not been able to read usage from {display} yet.</p>
-        <p className="text-[var(--color-fg-faint)]">It asks again every 2 minutes while this task is open.</p>
+        <p>{t("agentChip.usagePollNote", { agent: display })}</p>
+        <p className="text-[var(--color-fg-faint)]">{t("agentChip.usagePollRetry")}</p>
       </div>
     );
   }
   if (hooksActive) {
     return (
       <div data-testid="usage-unknown-detail" data-usage-hooks="active" className="flex flex-col gap-1 text-[var(--color-fg-dim)]">
-        <p>The usage appears after a first message is received from the agent.</p>
+        <p>{t("agentChip.usageAfterFirst")}</p>
         {/* claude reads its settings once, at start: hooks installed under a
             running session change nothing until that tab restarts. */}
-        <p className="text-[var(--color-fg-faint)]">If you just installed hooks, restart this agent's tab first.</p>
+        <p className="text-[var(--color-fg-faint)]">{t("agentChip.hooksRestartNote")}</p>
       </div>
     );
   }
   return (
     <div data-testid="usage-unknown-detail" data-usage-hooks="missing" className="flex flex-col gap-2 text-[var(--color-fg-dim)]">
       <p>
-        To see {[
-          show.usage && sources.usage === "hooks" ? "usage" : null,
-          show.context && sources.context === "hooks" ? "the context window" : null,
-        ].filter(Boolean).join(" and ")} you must have hooks enabled and a first response from the agent.
+        {show.usage && sources.usage === "hooks"
+          ? t(show.context && sources.context === "hooks" ? "agentChip.hooksNeededBoth" : "agentChip.hooksNeededUsage")
+          : t("agentChip.hooksNeededContext")}
       </p>
       {/* To Settings, not an install from here: the hooks block shows exactly
           which files it will write before it writes them, and a button in a
@@ -716,7 +721,7 @@ function UsageUnknown({ agentId, sources, show, onNavigate }: {
           }}
           className="rounded border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-bg-2)]"
         >
-          Install hooks
+          {t("agentChip.installHooks")}
         </button>
         {/* For someone who does not want hooks now: the footer label goes, a
             faint icon stays, and this panel is still one click away. */}
@@ -725,14 +730,14 @@ function UsageUnknown({ agentId, sources, show, onNavigate }: {
             type="button"
             data-testid="usage-dismiss"
             onClick={() => { setDismissed(agentId, true); onNavigate(); }}
-            title={`Dismiss for ${display}`}
+            title={t("agentChip.dismissFor", { agent: display })}
             // One line, truncated: the panel is a fixed 320px and an agent
             // name is typed by the user, so a long one without a break point
             // would otherwise run out of the panel. It wraps below "Install
             // hooks" first, and only then truncates.
             className="flex min-w-0 max-w-full rounded px-2 py-1 text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
           >
-            <span className="truncate">{`Dismiss for ${display}`}</span>
+            <span className="truncate">{t("agentChip.dismissFor", { agent: display })}</span>
           </button>
         )}
       </div>
@@ -770,6 +775,7 @@ function AccountRow({ agentId, view, refresh, onNavigate, uncapped }: {
    *  happen, so the nudge would be advice about nothing. */
   uncapped?: boolean;
 }) {
+  const { t } = useTranslation("task");
   // Only the nudge toward a SECOND set. Once one exists the switcher section
   // below is the credentials UI, and the auto-switch checkbox lives there:
   // this row used to carry its own copy, and toggling one left the other
@@ -789,7 +795,7 @@ function AccountRow({ agentId, view, refresh, onNavigate, uncapped }: {
       }}
       className="w-full border-t border-[var(--color-border-soft)] px-3 py-2 text-left text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg)]"
     >
-      Running low? Add a second account...
+      {t("agentChip.addCredentials")}
     </button>
   );
 }
@@ -807,6 +813,7 @@ function UsageRow({ label, sub, window: w, driving, level, source }: {
    *  the two meanings are not interchangeable. */
   source: UsageEntry["source"];
 }) {
+  const { t } = useTranslation("task");
   // A window that is not here. Said in WORDS, because an omitted row reads as
   // a rendering bug, and the wording has to match the REASON.
   //
@@ -823,7 +830,7 @@ function UsageRow({ label, sub, window: w, driving, level, source }: {
     return (
       <div className="flex items-baseline justify-between text-[var(--color-fg-faint)]">
         <span>{label}</span>
-        <span>{source === "rpc" ? "not reported on this plan" : "not in the last report"}</span>
+        <span>{source === "rpc" ? t("agentChip.notOnPlan") : t("agentChip.notInReport")}</span>
       </div>
     );
   }
@@ -844,7 +851,7 @@ function UsageRow({ label, sub, window: w, driving, level, source }: {
       </div>
       <div className="mt-1 flex items-baseline justify-between text-[var(--color-fg-faint)]">
         <span>{sub}</span>
-        <span>{formatReset(w) || "reset time not reported"}</span>
+        <span>{formatReset(w) || t("agentChip.resetUnknown")}</span>
       </div>
     </div>
   );
@@ -864,6 +871,7 @@ function UsageRow({ label, sub, window: w, driving, level, source }: {
  * blocking it is usually a status line the user wants more than this one.
  */
 function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?: string }) {
+  const { t } = useTranslation("task");
   const [copied, setCopied] = useState(false);
   return (
     <PopoverRoot>
@@ -872,7 +880,7 @@ function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?:
           type="button"
           data-testid="usage-blocked-chip"
           data-usage-owner={owner.owner}
-          title="Plan usage is not being reported"
+          title={t("agentChip.blockedTitle")}
           className={cn(
             "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5",
             "text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-2)] hover:text-[var(--color-fg-dim)]",
@@ -880,7 +888,7 @@ function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?:
           )}
         >
           <CircleSlash className="h-3.5 w-3.5" />
-          <span>usage n/a</span>
+          <span>{t("agentChip.usageNa")}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -892,7 +900,7 @@ function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?:
       >
         <div data-testid="usage-blocked-detail" className="text-[12.5px]">
           <div className="border-b border-[var(--color-border-soft)] px-3 py-2 font-medium text-[var(--color-fg)]">
-            Plan usage is not being reported
+            {t("agentChip.blockedTitle")}
           </div>
           <div className="flex flex-col gap-2 px-3 py-2.5 text-[var(--color-fg-dim)]">
             <p>{blockedReason(owner)}</p>
@@ -903,9 +911,7 @@ function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?:
               <code className="font-mono">{owner.path}</code>
             </p>
             <p>
-              Termic reads plan usage from Claude's status line, so it gets
-              nothing while another one is in place. Your own status line is
-              left exactly as it is.
+              {t("agentChip.blockedBody")}
             </p>
           </div>
           <div className="border-t border-[var(--color-border-soft)] px-3 py-2">
@@ -922,11 +928,10 @@ function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?:
               className="flex items-center gap-1.5 text-[12px] text-[var(--color-fg-dim)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg)]"
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              {copied ? "Copied" : "Copy a prompt to fix it"}
+              {copied ? t("common:copied") : t("agentChip.copyPrompt")}
             </button>
             <p className="mt-1 text-[12px] text-[var(--color-fg-faint)]">
-              Paste it into the agent that owns that status line. It adds the
-              reporting and changes nothing else.
+              {t("agentChip.copyPromptHint")}
             </p>
           </div>
         </div>
@@ -1079,6 +1084,7 @@ function UsageWindowReadout({ window: w, unit, stale, testid }: {
  *  stays one row of like things. Its own thresholds: a context filling up is a
  *  session's normal life, so it only colours near compaction. */
 function ContextReadout({ entry }: { entry: ContextEntry }) {
+  const { t } = useTranslation("task");
   const level = contextLevel(entry.usedPercent);
   const fill = Math.max(2, Math.round(entry.usedPercent));
   return (
@@ -1086,7 +1092,7 @@ function ContextReadout({ entry }: { entry: ContextEntry }) {
       data-usage-window="ctx"
       data-testid="context-gauge"
       data-usage-fill={fill}
-      title={`Context: ${formatTokens(entry.usedTokens)} of ${formatTokens(entry.windowTokens)} tokens`}
+      title={t("agentChip.contextChipTip", { used: formatTokens(entry.usedTokens), total: formatTokens(entry.windowTokens) })}
       className={cn("shrink-0 rounded px-1.5 py-px", LEVEL_INK[level])}
       style={{
         background:
@@ -1103,11 +1109,12 @@ function ContextReadout({ entry }: { entry: ContextEntry }) {
 
 /** The popover's context row: the token counts the chip leaves out. */
 function ContextRow({ entry }: { entry: ContextEntry }) {
+  const { t } = useTranslation("task");
   const level = contextLevel(entry.usedPercent);
   return (
     <div data-testid="context-row" className="border-b border-[var(--color-border-soft)] px-3 py-2.5">
       <div className="flex items-baseline justify-between">
-        <span className="text-[var(--color-fg)]">Context</span>
+        <span className="text-[var(--color-fg)]">{t("agentChip.context")}</span>
         <span className={cn("tabular-nums", LEVEL_TEXT[level] ?? "text-[var(--color-fg-dim)]")}>
           {Math.round(entry.usedPercent)}%
         </span>
@@ -1119,9 +1126,9 @@ function ContextRow({ entry }: { entry: ContextEntry }) {
         />
       </div>
       <div className="mt-1 flex items-baseline justify-between text-[var(--color-fg-faint)]">
-        <span>{level === "normal" ? "this conversation" : `over ${CONTEXT_WARN_PERCENT}%, compaction is near`}</span>
+        <span>{level === "normal" ? t("agentChip.contextThisConversation") : t("agentChip.contextNearCompaction", { percent: CONTEXT_WARN_PERCENT })}</span>
         <span className="tabular-nums">
-          {formatTokens(entry.usedTokens)} / {formatTokens(entry.windowTokens)} tokens
+          {t("agentChip.contextTokens", { used: formatTokens(entry.usedTokens), total: formatTokens(entry.windowTokens) })}
         </span>
       </div>
     </div>
@@ -1136,13 +1143,14 @@ function ContextRow({ entry }: { entry: ContextEntry }) {
  *  never appeared, with nothing saying that hooks are what bring it. */
 function ContextMissing({ agentId, onNavigate }: { agentId: string; onNavigate: () => void }) {
   const hooksActive = useApp(s => s.agentHooksInstalled[agentId] === true);
+  const { t } = useTranslation("task");
   return (
     <div data-testid="context-missing" data-context-hooks={hooksActive ? "active" : "missing"}
       className="flex items-center justify-between gap-3 border-b border-[var(--color-border-soft)] px-3 py-2.5">
       <span className="text-[var(--color-fg-dim)]">
-        Context
+        {t("agentChip.context")}
         <span className="block text-[11px] text-[var(--color-fg-faint)]">
-          {hooksActive ? "After the next reply. Restart the tab if you just installed hooks." : "Needs hooks."}
+          {hooksActive ? t("agentChip.contextMissingActive") : t("agentChip.contextMissingHooks")}
         </span>
       </span>
       {!hooksActive && (
@@ -1155,7 +1163,7 @@ function ContextMissing({ agentId, onNavigate }: { agentId: string; onNavigate: 
           }}
           className="shrink-0 rounded border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-bg-2)]"
         >
-          Install hooks
+          {t("agentChip.installHooks")}
         </button>
       )}
     </div>

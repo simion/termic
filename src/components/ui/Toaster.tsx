@@ -1,6 +1,7 @@
 // Bottom-right toast stack. One mount in <App/>; all transient
 // success/info/warning/error feedback goes through useUI().pushToast().
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { CheckCircle2, Info, AlertTriangle, XCircle, X } from "lucide-react";
 import { useUI, type Toast } from "@/store/ui";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,7 @@ export function Toaster() {
 }
 
 function ToastItem({ t }: { t: Toast }) {
+  const { t: tr } = useTranslation(); // defaultNS "common"
   const dismiss = useUI(s => s.dismissToast);
   useEffect(() => {
     if (t.sticky) return;
@@ -66,7 +68,7 @@ function ToastItem({ t }: { t: Toast }) {
         type="button"
         onClick={() => dismiss(t.id)}
         className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-        aria-label="Dismiss"
+        aria-label={tr("dismiss")}
       >
         <X className="h-3.5 w-3.5" />
       </button>

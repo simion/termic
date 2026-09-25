@@ -13,6 +13,7 @@
 // better default shipped in a future version reaches users who never touched it.
 
 import { create } from "zustand";
+import { i18n } from "@/lib/i18n";
 import { REVIEW_PROMPT } from "@/lib/review";
 import {
   WRITE_TESTS_PROMPT, SECURITY_REVIEW_PROMPT, EXPLAIN_CHANGES_PROMPT, COMMIT_PROMPT,
@@ -57,6 +58,48 @@ export const DEFAULT_PROMPTS: readonly BuiltinDef[] = [
   { id: "builtin:update-docs",     title: "Update the docs",      body: UPDATE_DOCS_PROMPT },
   { id: "builtin:research",        title: "Research first",       body: RESEARCH_PROMPT },
 ];
+
+// Display titles for built-ins resolve through backend:prompts at render, so
+// a language switch relabels the library without touching stored data (the
+// stored title stays the canonical English default; an override replaces it
+// outright). Customs always render what the user typed.
+const PROMPT_TITLE_KEYS: Record<string, string> = {
+  "builtin:review": "review",
+  "builtin:write-tests": "writeTests",
+  "builtin:security-review": "securityReview",
+  "builtin:explain-changes": "explainChanges",
+  "builtin:commit": "commit",
+  "builtin:commit-push": "commitPush",
+  "builtin:merge-conflict": "fixMergeConflict",
+  "builtin:verify": "verify",
+  "builtin:fix-bug": "fixBug",
+  "builtin:work-issue": "workIssue",
+  "builtin:simplify": "simplify",
+  "builtin:status": "status",
+  "builtin:continue": "continue",
+  "builtin:handoff": "handoff",
+  "builtin:update-docs": "updateDocs",
+  "builtin:research": "research",
+};
+
+/** What a prompt is CALLED on screen. Pass the calling component's `t` so a
+ *  useTranslation subscriber re-renders on a language switch (and include it
+ *  in any memo deps); without one it resolves through the global i18n. */
+export function promptTitle(
+  p: Pick<Prompt, "id" | "title" | "builtin" | "modified">,
+  t?: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (p.builtin && !p.modified) {
+    const key = PROMPT_TITLE_KEYS[p.id];
+    if (key) {
+      const resolved = t
+        ? t(`backend:prompts.${key}`)
+        : i18n.t(`backend:prompts.${key}`);
+      if (resolved) return resolved;
+    }
+  }
+  return p.title;
+}
 
 const LS_KEY = scoped("promptLibrary");
 
@@ -214,7 +257,9 @@ export const usePromptLibrary = create<PromptStore>((set) => {
       const order = computePrompts(p).map(x => x.id);
       const at = order.indexOf(id);
       if (at >= 0) order.splice(at + 1, 0, newId); else order.push(newId);
-      commit({ ...p, customs: [...p.customs, { id: newId, title: `${eff.title} (copy)`, body: eff.body }], order });
+      // The suffix is minted into storage at clone time, like a tab title:
+      // a clone is a user object, so it keeps the wording of the moment.
+      commit({ ...p, customs: [...p.customs, { id: newId, title: `${eff.title}${i18n.t("backend:copySuffix")}`, body: eff.body }], order });
       return newId;
     },
 

@@ -5,6 +5,7 @@
 // bindings live in the prefs store.
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { RotateCcw } from "lucide-react";
@@ -39,6 +40,7 @@ const HIDDEN_ON_MAC: Set<ShortcutId> = IS_MAC
   : new Set<ShortcutId>();
 
 export function ShortcutsSection() {
+  const { t } = useTranslation("settings");
   const shortcuts = usePrefs(s => s.shortcuts);
   // The code-navigation group is named after the feature, which is named
   // after what it is currently doing (lib/lsp/featureName.ts).
@@ -89,11 +91,11 @@ export function ShortcutsSection() {
       // Named before the generic check, which would otherwise tell someone who
       // pressed ⌃⇥ to add Ctrl to a combo that already has it.
       if (isReservedKey(b.key)) {
-        setRecordError("Tab belongs to the recently-used-tabs gesture.");
+        setRecordError(t("shortcuts.reservedTab"));
         return;
       }
       if (!isValidBinding(b)) {
-        setRecordError(`Add ${CMD_LABEL} or ${ALT_LABEL} to the combo.`);
+        setRecordError(t("shortcuts.needsMod", { cmd: CMD_LABEL, alt: ALT_LABEL }));
         return;
       }
       setShortcut(recordingId, b);
@@ -102,7 +104,7 @@ export function ShortcutsSection() {
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [recordingId, setShortcut]);
+  }, [recordingId, setShortcut, t]);
 
   const anyCustom = SHORTCUT_DEFS.some(d => !bindingsEqual(shortcuts[d.id], DEFAULT_BINDINGS[d.id]));
 
@@ -110,9 +112,9 @@ export function ShortcutsSection() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <h1 className="text-[20px] font-medium">Shortcuts</h1>
+          <h1 className="text-[20px] font-medium">{t("rail.shortcuts")}</h1>
           <p className="text-[12.5px] text-[var(--color-fg-faint)]">
-            Click a shortcut to rebind it. Press Esc while recording to cancel.
+            {t("shortcuts.sub")}
           </p>
         </div>
         <Button
@@ -122,7 +124,7 @@ export function ShortcutsSection() {
           onClick={() => { setRecordingId(null); resetAllShortcuts(); }}
         >
           <RotateCcw className="h-3.5 w-3.5" />
-          Reset all
+          {t("shortcuts.resetAll")}
         </Button>
       </div>
 
@@ -158,7 +160,7 @@ export function ShortcutsSection() {
                       )}
                       {isConflict && (
                         <span className="text-[11.5px] text-[var(--color-accent)]">
-                          Conflicts with another shortcut
+                          {t("shortcuts.conflict")}
                         </span>
                       )}
                       {isRecording && recordError && (
@@ -168,7 +170,7 @@ export function ShortcutsSection() {
                     <div className="flex shrink-0 items-center gap-2">
                       {isCustom && !isRecording && (
                         <button
-                          title="Reset to default"
+                          title={t("shortcuts.resetDefault")}
                           onClick={() => resetShortcut(def.id)}
                           className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                         >
@@ -187,7 +189,7 @@ export function ShortcutsSection() {
                         )}
                       >
                         {isRecording
-                          ? <span className="text-[12px]">Press keys…</span>
+                          ? <span className="text-[12px]">{t("shortcuts.pressKeys")}</span>
                           : bindingGlyphs(binding).map((g, idx) => <Key key={idx} glyph={g} />)}
                       </button>
                     </div>
@@ -237,7 +239,7 @@ export function ShortcutsSection() {
                     {f.control === "double-shift" && (
                       <select
                         data-testid="double-shift-mode"
-                        aria-label="When double-Shift opens Search everywhere"
+                        aria-label={t("shortcuts.doubleShiftAria")}
                         value={doubleShiftMode}
                         onChange={(e) => setDoubleShiftMode(e.target.value as DoubleShiftMode)}
                         className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 text-[12.5px] text-[var(--color-fg)]"
@@ -256,7 +258,7 @@ export function ShortcutsSection() {
                     {f.control === "ctrl-tab" && (
                       <select
                         data-testid="ctrl-tab-mode"
-                        aria-label="Whether Ctrl+Tab walks the recently used tabs"
+                        aria-label={t("shortcuts.ctrlTabAria")}
                         value={ctrlTabMode}
                         onChange={(e) => setCtrlTabMode(e.target.value as CtrlTabMode)}
                         className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 text-[12.5px] text-[var(--color-fg)]"

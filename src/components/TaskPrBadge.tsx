@@ -8,12 +8,14 @@
 // nothing at all.
 
 import { GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Tip } from "@/components/ui/Tooltip";
 import { usePr } from "@/store/pr";
 import { openPath } from "@/lib/ipc";
 import type { Task } from "@/lib/types";
 
 export function TaskPrBadge({ task }: { task: Task }) {
+  const { t } = useTranslation("chrome");
   const pr = usePr(s => s.byTask[task.id]?.lookup?.pr ?? null);
   const url = pr?.url ?? task.pr_url ?? null;
   if (!url) return null;
@@ -27,14 +29,17 @@ export function TaskPrBadge({ task }: { task: Task }) {
   // a healthy one at a glance. Merged/closed keep their own color; the PR
   // is already done, so CI at HEAD stops being the thing worth flagging.
   const failing = pr?.checks === "failing" && (state === "open" || state === "draft");
+  const failingSuffix = failing ? ` · ${t("taskPrBadge.checksFailing")}` : "";
   const { Icon, color, label } =
-    state === "merged" ? { Icon: GitMerge, color: "var(--color-pr-merged)", label: "merged" } :
-    state === "closed" ? { Icon: GitPullRequestClosed, color: "var(--color-err)", label: "closed" } :
-    state === "draft"  ? { Icon: GitPullRequestDraft, color: failing ? "var(--color-err)" : "var(--color-fg-faint)", label: failing ? "draft · checks failing" : "draft" } :
-    state === "open"   ? { Icon: GitPullRequest, color: failing ? "var(--color-err)" : "var(--color-pr-open)", label: failing ? "open · checks failing" : "open" } :
+    state === "merged" ? { Icon: GitMerge, color: "var(--color-pr-merged)", label: t("taskPrBadge.stateMerged") } :
+    state === "closed" ? { Icon: GitPullRequestClosed, color: "var(--color-err)", label: t("taskPrBadge.stateClosed") } :
+    state === "draft"  ? { Icon: GitPullRequestDraft, color: failing ? "var(--color-err)" : "var(--color-fg-faint)", label: t("taskPrBadge.stateDraft") + failingSuffix } :
+    state === "open"   ? { Icon: GitPullRequest, color: failing ? "var(--color-err)" : "var(--color-pr-open)", label: t("taskPrBadge.stateOpen") + failingSuffix } :
     { Icon: GitPullRequest, color: "var(--color-fg-faint)", label: "" };
+  const id = `${noun}${num ? ` ${noun === "MR" ? "!" : "#"}${num}` : ""}`;
+  const forge = noun === "MR" ? "GitLab" : "GitHub";
   return (
-    <Tip content={`${noun}${num ? ` ${noun === "MR" ? "!" : "#"}${num}` : ""}${label ? ` · ${label}` : ""}. Open on ${noun === "MR" ? "GitLab" : "GitHub"}`} delay={0}>
+    <Tip content={`${id}${label ? ` · ${label}` : ""}. ${t("taskPrBadge.openOn", { forge })}`} delay={0}>
       <button
         data-no-drag
         data-testid="task-pr-badge"

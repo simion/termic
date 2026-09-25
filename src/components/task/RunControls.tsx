@@ -10,6 +10,7 @@
 // says which mode the next run will use.
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { useShallow } from "zustand/react/shallow";
@@ -27,6 +28,7 @@ import { resolveCustomCommands, runCommandLabel, type ResolvedCommand } from "@/
 import { Play, Square, ChevronDown, Wrench, Globe, Settings, SlidersHorizontal } from "lucide-react";
 
 export function RunControls({ task }: { task: Task }) {
+  const { t } = useTranslation("panels");
   // ALL run tabs — multi-repo tasks have one per repo (host + members).
   // useShallow: filter() returns a fresh array each call.
   const runTabs = useApp(useShallow(s => (s.tabs[task.id] ?? []).filter(
@@ -46,16 +48,16 @@ export function RunControls({ task }: { task: Task }) {
   // the primary Run/Stop button below and get their own dropdown section.
   const [customCmds, setCustomCmds] = useState<ResolvedCommand[]>([]);
   const primaryRunTabs = runTabs.filter(t => !isCustomRunMember(t.runTab?.member));
-  const runLabel = isMultiRepo ? "Run all" : "Run";
-  const stopLabel = isMultiRepo ? "Stop all" : "Stop";
-  const stopTip = isMultiRepo ? "Stop all running scripts" : "Stop the running scripts";
+  const runLabel = isMultiRepo ? t("runControls.runAll") : t("runControls.run");
+  const stopLabel = isMultiRepo ? t("runControls.stopAll") : t("runControls.stop");
+  const stopTip = isMultiRepo ? t("runControls.stopAllTip") : t("runControls.stopTip");
   const runTip = isMultiRepo
-    ? "Run all configured run scripts"
+    ? t("runControls.runAllTip")
     : atRoot && isSpotlighted
-      ? "Run at the repository root (spotlight is active)"
+      ? t("runControls.runAtRootTip")
       : atRoot && !task.is_main_checkout
-        ? "Run in this worktree. Spotlighted tasks run at the repository root."
-        : "Run (opens the run terminal tabs)";
+        ? t("runControls.runWorktreeTip")
+        : t("runControls.runTip");
   // ptyId is cleared on process exit, so its presence ≈ "running". Only the
   // PRIMARY run tabs (host + composition members) drive the main button —
   // a running custom command must not flip Run into Stop.
@@ -96,10 +98,10 @@ export function RunControls({ task }: { task: Task }) {
           while running (the dev server is up) and a preview URL is set. The
           full URL still lives (with text) in the chevron dropdown below. */}
       {running && previewUrl && (
-        <Tip content={`Open preview (${previewUrl})`} side="bottom">
+        <Tip content={t("runControls.openPreviewTip", { url: previewUrl })} side="bottom">
           <Button
             size="sm" variant="ghost" className="px-1.5" data-no-drag
-            aria-label="Open preview in browser"
+            aria-label={t("runControls.openPreviewAria")}
             onClick={() => { void openWebUrlForProject(previewUrl, previewBrowser, project); }}
           >
             <Globe className="h-3.5 w-3.5" />
@@ -147,7 +149,7 @@ export function RunControls({ task }: { task: Task }) {
         <DropdownMenu align="end" className="[&_[role=menuitem]]:items-center [&_[role=menuitem]>svg]:mt-0 [&_[role=menuitem]>svg]:translate-y-[1px]">
           {isMultiRepo && targets.length > 0 && (
             <>
-              <DropdownLabel>Run scripts</DropdownLabel>
+              <DropdownLabel>{t("runControls.runScripts")}</DropdownLabel>
               {targets.map(target => {
                 const tab = runTabs.find(t =>
                   ((t.runTab?.kind ?? "run") === "run") &&
@@ -177,7 +179,7 @@ export function RunControls({ task }: { task: Task }) {
               `customRunMember`; independent of the primary Run button above. */}
           {customCmds.length > 0 && (
             <>
-              <DropdownLabel>Run commands</DropdownLabel>
+              <DropdownLabel>{t("runControls.runCommands")}</DropdownLabel>
               {customCmds.map((cmd, i) => {
                 const tab = runTabs.find(t => t.runTab?.member === customRunMember(cmd));
                 const runningCmd = !!tab?.ptyId;
@@ -205,22 +207,22 @@ export function RunControls({ task }: { task: Task }) {
           {hasSetup && (
             <DropdownItem onSelect={() => { launchSetupTab(task.id).catch(() => {}); }}>
               <Wrench className="h-4 w-4" />
-              <span>Run setup</span>
+              <span>{t("runControls.runSetup")}</span>
             </DropdownItem>
           )}
           {previewUrl && (
             <DropdownItem onSelect={() => { void openWebUrlForProject(previewUrl, previewBrowser, project); }}>
               <Globe className="h-4 w-4" />
-              <span>Open {previewUrl}</span>
+              <span>{t("runControls.openUrl", { url: previewUrl })}</span>
             </DropdownItem>
           )}
           <DropdownItem onSelect={() => useUI.getState().openRunCommands(task.project_id)}>
             <SlidersHorizontal className="h-4 w-4" />
-            <span>Run configuration…</span>
+            <span>{t("runControls.runConfig")}</span>
           </DropdownItem>
           <DropdownItem onSelect={() => useApp.getState().openSettings("repositories", task.project_id)}>
             <Settings className="h-4 w-4" />
-            <span>Repository settings…</span>
+            <span>{t("runControls.repoSettings")}</span>
           </DropdownItem>
         </DropdownMenu>
       </DropdownRoot>

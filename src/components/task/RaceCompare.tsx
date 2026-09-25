@@ -19,6 +19,7 @@
 // their per-racer headers.
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { useRace } from "@/store/race";
@@ -38,6 +39,7 @@ import type { Task, TerminalTab, TaskDiffSummary } from "@/lib/types";
 const MAX_DIFF_LINES = 2000;
 
 export function RaceCompare() {
+  const { t } = useTranslation("panels");
   const raceCompareId = useUI(s => s.raceCompareId);
   const close = useUI(s => s.closeRaceCompare);
   const races = useRace(s => s.races);
@@ -61,7 +63,7 @@ export function RaceCompare() {
     <AppDialog
       open={open}
       onOpenChange={(v) => { if (!v) close(); }}
-      title="Compare race"
+      title={t("raceCompare.title")}
       description={race?.prompt}
       className="max-w-[96vw] w-[96vw]"
     >
@@ -81,6 +83,7 @@ export function RaceCompare() {
 }
 
 function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boolean; raceId: string; cohortIds: string[] }) {
+  const { t } = useTranslation("panels");
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
   const agents = useApp(s => s.agents);
   const tabs = useApp(s => s.tabs);
@@ -126,16 +129,14 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
     // a picked race doesn't strand N-1 dead worktrees in the sidebar. Opt-in
     // (default off): archiving removes real worktrees, so never silently.
     const req = {
-      title: `Adopt "${taskLabel(task, useBranchAsTaskName)}"?`,
-      message:
-        `Applies this agent's changes (committed + staged + unstaged) and copies its untracked files into ${proj?.root_path ?? "the project's main checkout"}. ` +
-        `The main checkout must be clean. Commit or stash there first.`,
-      confirmLabel: "Adopt into main",
+      title: t("raceCompare.adoptTitle", { name: taskLabel(task, useBranchAsTaskName) }),
+      message: t("raceCompare.adoptMessage", { dest: proj?.root_path ?? t("raceCompare.mainCheckout") }),
+      confirmLabel: t("raceCompare.adoptConfirm"),
     };
     const res = otherIds.length
       ? await useUI.getState().askConfirm({
           ...req,
-          checkbox: { label: `Also archive the ${otherIds.length} other racer${otherIds.length === 1 ? "" : "s"}`, defaultValue: false },
+          checkbox: { label: otherIds.length === 1 ? t("raceCompare.archiveLosersOne") : t("raceCompare.archiveLosersMany", { count: otherIds.length }), defaultValue: false },
         })
       : await useUI.getState().askConfirm(req);
     const confirmed = typeof res === "boolean" ? res : res.confirmed;
@@ -145,9 +146,9 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
     try {
       const r = await taskSendDiffToMain(task.id);
       const parts: string[] = [];
-      if (r.tracked_files)   parts.push(`${r.tracked_files} tracked diff${r.tracked_files === 1 ? "" : "s"} applied`);
-      if (r.untracked_files) parts.push(`${r.untracked_files} untracked file${r.untracked_files === 1 ? "" : "s"} copied`);
-      const summ = parts.length ? parts.join(", ") : "no changes to send";
+      if (r.tracked_files)   parts.push(r.tracked_files === 1 ? t("raceCompare.trackedOne") : t("raceCompare.trackedMany", { count: r.tracked_files }));
+      if (r.untracked_files) parts.push(r.untracked_files === 1 ? t("raceCompare.untrackedOne") : t("raceCompare.untrackedMany", { count: r.untracked_files }));
+      const summ = parts.length ? parts.join(", ") : t("raceCompare.noChangesToSend");
       // Losers only get cleaned up AFTER the adopt succeeds - a failed apply
       // must leave every racer intact so the user can retry or pick another.
       let archived = 0;
@@ -158,14 +159,16 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
         if (raceId) useRace.getState().end(raceId);
         await useApp.getState().loadAll();
       }
-      const tail = archived ? ` - archived ${archived} other racer${archived === 1 ? "" : "s"}` : "";
-      useUI.getState().pushToast(`Adopted ${task.name} into main: ${summ}${tail}`, "success");
+      const tail = archived
+        ? (archived === 1 ? t("raceCompare.archivedTailOne") : t("raceCompare.archivedTailMany", { count: archived }))
+        : "";
+      useUI.getState().pushToast(t("raceCompare.adoptedToast", { name: task.name, summary: `${summ}${tail}` }), "success");
       closeCompare();
     } catch (e) {
       await useUI.getState().askConfirm({
-        title: "Adopt failed",
+        title: t("raceCompare.adoptFailed"),
         message: String(e),
-        confirmLabel: "OK",
+        confirmLabel: t("ok", { ns: "common" }),
         cancelLabel: "",
         destructive: true,
       });
@@ -187,7 +190,7 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
         </span>
         <button
           onClick={() => { setActiveTask(task.id); closeCompare(); }}
-          title="Jump to this agent's terminal"
+          title={t("raceCompare.jumpToTerminal")}
           className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)]"
         >
           {taskLabel(task, useBranchAsTaskName)}
@@ -198,9 +201,9 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
             onClick={adopt}
             disabled={!canAdopt}
             title={
-              adopting ? "Adopting..."
-              : summary && summary.files_changed === 0 ? "Nothing to adopt: this agent made no changes"
-              : "Adopt this agent's work into your main checkout"
+              adopting ? t("raceCompare.adoptingTip")
+              : summary && summary.files_changed === 0 ? t("raceCompare.nothingToAdopt")
+              : t("raceCompare.adoptTip")
             }
             className={cn(
               "flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-1 text-[11.5px] transition-colors",
@@ -212,18 +215,18 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
             {adopting
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
               : <ArrowUpToLine className="h-3.5 w-3.5" />}
-            Adopt
+            {t("raceCompare.adopt")}
           </button>
         )}
       </div>
 
       {summary && !loading && !err && (
         <div className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border-soft)] px-3 py-1.5 text-[11.5px] text-[var(--color-fg-dim)]">
-          <span>{summary.files_changed} {summary.files_changed === 1 ? "file" : "files"}</span>
+          <span>{summary.files_changed === 1 ? t("shared.fileOne") : t("shared.fileMany", { count: summary.files_changed })}</span>
           <span className="text-[var(--color-ok)]">+{summary.insertions}</span>
           <span className="text-[var(--color-err)]">-{summary.deletions}</span>
           {summary.untracked > 0 && (
-            <span className="text-[var(--color-fg-faint)]">{summary.untracked} new</span>
+            <span className="text-[var(--color-fg-faint)]">{t("raceCompare.newFiles", { count: summary.untracked })}</span>
           )}
         </div>
       )}
@@ -231,11 +234,11 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
       <div className="min-h-0 flex-1 overflow-auto">
         {loading && (
           <div className="flex items-center gap-2 p-4 text-[12px] text-[var(--color-fg-dim)]">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent)]" /> Loading diff...
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent)]" /> {t("raceCompare.loadingDiff")}
           </div>
         )}
         {err && !loading && (
-          <div className="p-4 font-mono text-[12px] text-[var(--color-err)]">Error: {err}</div>
+          <div className="p-4 font-mono text-[12px] text-[var(--color-err)]">{t("shared.errorWithMessage", { message: err })}</div>
         )}
         {!loading && !err && summary && <DiffBody text={summary.diff} />}
       </div>
@@ -247,6 +250,7 @@ function RaceColumn({ task, wide, raceId, cohortIds }: { task: Task; wide: boole
 // CodeMirror - this is a read-only glance surface, so plain colored lines are
 // far cheaper than N MergeView instances and read fine side by side.
 function DiffBody({ text }: { text: string }) {
+  const { t } = useTranslation("panels");
   const lines = useMemo(() => {
     if (!text.trim()) return null;
     const all = text.split("\n");
@@ -255,7 +259,7 @@ function DiffBody({ text }: { text: string }) {
   }, [text]);
 
   if (!lines) {
-    return <div className="p-4 text-[12px] text-[var(--color-fg-dim)]">No changes yet.</div>;
+    return <div className="p-4 text-[12px] text-[var(--color-fg-dim)]">{t("raceCompare.noChanges")}</div>;
   }
 
   return (
@@ -265,7 +269,7 @@ function DiffBody({ text }: { text: string }) {
       ))}
       {lines.truncated > 0 && (
         <div className="mt-1 py-1 text-[var(--color-fg-faint)]">
-          ... {lines.truncated} more lines (diff truncated for display)
+          {t("raceCompare.truncated", { count: lines.truncated })}
         </div>
       )}
     </pre>

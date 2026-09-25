@@ -4,6 +4,7 @@
 // files" in General. See docs/sandbox.md for what the cage actually does.
 
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { settingsSave, sandboxAvailable, dockerImageStatus, type DockerImageStatus } from "@/lib/ipc";
 import type { Settings } from "@/lib/types";
@@ -14,6 +15,7 @@ import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { cleanLines } from "@/lib/utils";
 
 export function SandboxSection() {
+  const { t } = useTranslation("settings");
   const { settings, store } = useBackendSettings();
   const [busy, setBusy] = useState(false);
   // Global sandbox defaults. Stored line-by-line as strings so the
@@ -69,7 +71,7 @@ export function SandboxSection() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionTitle title="Sandbox" />
+      <SectionTitle title={t("rail.sandbox")} />
 
       {/* Global sandbox default. The New task dialog's picker starts here
           whenever neither the user's own last-used habit nor the
@@ -78,11 +80,9 @@ export function SandboxSection() {
           Already-created tasks aren't affected: the pin is captured at
           creation. */}
       <Block first>
-        <div className="text-[14px] font-medium">Sandbox new tasks by default</div>
+        <div className="text-[14px] font-medium">{t("sandbox.defaultKind.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          The New task dialog's sandbox picker starts here for every project, unless the project sets its own
-          default or you've already picked something for a previous task (that habit wins). Individual projects
-          can still override (Settings → Repositories).
+          {t("sandbox.defaultKind.hint")}
         </div>
         <div className="mt-3">
           <SandboxPicker
@@ -91,7 +91,7 @@ export function SandboxSection() {
             onChange={setGlobalDefaultSandboxKind}
             seatbeltUnavailable={osSandboxOk === false}
             dockerOffered={dockerOffered}
-            dockerUnavailableReason="Enable Docker sandbox and build the image in Settings → Docker Sandbox first."
+            dockerUnavailableReason={t("sandbox.defaultKind.dockerUnavailable")}
           />
           {globalDefaultSandboxKind === "docker" && (
             <div className="mt-2">
@@ -110,14 +110,14 @@ export function SandboxSection() {
           flag. */}
       <Block id="default-yolo">
         <Toggle
-          label="Start new tasks in YOLO"
-          hint={<>
-            For a machine that is already the sandbox, like a dedicated Mac mini or a VM. New tasks start with
-            the agent's own permission prompts skipped, and for codex and muse that also turns off their
-            built-in sandbox. The New task dialog shows it before you create, and a project can override it
-            (Settings → Repositories). Agents creating tasks through the CLI still need{" "}
-            <code className="font-mono">--yolo</code>.
-          </>}
+          label={t("sandbox.yoloDefault.label")}
+          hint={
+            <Trans
+              t={t}
+              i18nKey="sandbox.yoloDefault.hint"
+              components={{ 1: <code className="font-mono" /> }}
+            />
+          }
           value={defaultYolo}
           onChange={setDefaultYolo}
         />
@@ -130,8 +130,8 @@ export function SandboxSection() {
           new PTY spawns; respawn (⌘R / new tab) to pick up a change. */}
       <Block>
         <Toggle
-          label="Bypass permissions in sandboxed tasks"
-          hint="When on, agents in a sandboxed task skip their own permission prompts. The macOS seatbelt is the real boundary. Turn off to make sandboxed agents still ask. Applies to newly spawned terminals."
+          label={t("sandbox.bypass.label")}
+          hint={t("sandbox.bypass.hint")}
           value={sandboxBypassPermissions}
           onChange={setSandboxBypassPermissions}
         />
@@ -143,18 +143,21 @@ export function SandboxSection() {
           enables the cage from scratch. Editing these only affects
           NEW tasks — existing ones froze a copy at creation. */}
       <Block>
-        <div className="text-[14px] font-medium">Global sandbox defaults</div>
+        <div className="text-[14px] font-medium">{t("sandbox.global.title")}</div>
         <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-          One per line. Wildcards (<code>*.example.com</code>) for hosts; <code>$HOME</code> + <code>~</code> expand for paths.
-          Merged with each project's own lists when a task is created.
+          <Trans
+            t={t}
+            i18nKey="sandbox.global.hint"
+            components={{ 1: <code />, 3: <code />, 5: <code /> }}
+          />
         </div>
         <div className="mt-3 flex flex-col gap-4">
-          <ListField label="Allowed paths" placeholder={"~/Documents/notes\n~/scratch"} value={sbRw} onChange={setSbRw} />
-          <ListField label="Allowed hosts" placeholder={"*.example.com\nbitbucket.org"} value={sbHosts} onChange={setSbHosts} />
+          <ListField label={t("sandbox.global.allowedPaths")} placeholder={"~/Documents/notes\n~/scratch"} value={sbRw} onChange={setSbRw} />
+          <ListField label={t("sandbox.global.allowedHosts")} placeholder={"*.example.com\nbitbucket.org"} value={sbHosts} onChange={setSbHosts} />
         </div>
         <div className="mt-3">
           <Button variant="primary" disabled={!sbDirty || busy} onClick={saveSb}>
-            {busy ? "Saving…" : "Save defaults"}
+            {busy ? t("common:saving") : t("sandbox.global.save")}
           </Button>
         </div>
       </Block>

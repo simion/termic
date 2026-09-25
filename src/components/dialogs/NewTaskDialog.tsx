@@ -2,6 +2,7 @@
 // branch-from. Calls task_create on submit.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -24,7 +25,7 @@ import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, Circ
 import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
 import { projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
-import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
+import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
@@ -66,6 +67,7 @@ function growPrompt(el: HTMLTextAreaElement | null) {
 }
 
 export function NewTaskDialog() {
+  const { t } = useTranslation("dialogs");
   const projectId = useUI(s => s.newTaskProjectId);
   // Subscribed, not read imperatively: this is what makes a re-open (a second
   // deep link) re-run the reset effect below. Scalar, so an unrelated store
@@ -327,13 +329,13 @@ export function NewTaskDialog() {
   // field in a long form, not a dialog whose whole subject is the override.
   const resumeOverrideField = resumeOpen ? (
     <Field
-      label="Resume args override (optional)"
-      hint={`Replaces ${agentLabel}'s default resume arguments. {WORKSPACE_NAME}, {WORKSPACE_SLUG} and {BRANCH} expand at launch. Editable later from the task menu.`}
+      label={t("newTask.resumeOverrideLabel")}
+      hint={t("newTask.resumeOverrideHint", { agent: agentLabel })}
     >
       <Input
         value={resumeOverride}
         onChange={e => setResumeOverride(e.target.value)}
-        placeholder="--resume {WORKSPACE_NAME}"
+        placeholder={t("newTask.resumeOverridePlaceholder")}
         className="font-mono"
         autoFocus
       />
@@ -346,7 +348,7 @@ export function NewTaskDialog() {
       className="-mb-1 inline-flex items-center gap-1.5 self-start text-[12.5px] text-[var(--color-fg-dim)] hover:text-[var(--color-accent)]"
     >
       <History className="h-3.5 w-3.5" />
-      Override resume args
+      {t("newTask.overrideResumeToggle")}
     </button>
   );
   // Existing local branch names in the project's repo, loaded on open so the
@@ -990,7 +992,13 @@ export function NewTaskDialog() {
       // (worktree/multi creates close the dialog immediately; see submit()).
       open={!!projectId}
       onOpenChange={(v) => { if (!v && !busy) close(); }}
-      title={isMulti ? (mode === "repo_root" ? "New multi-repo task in the main checkout" : "New multi-repo task") : importMode ? "Import existing worktree" : checkoutMode ? "Check out an existing branch" : mode === "repo_root" ? "New task in the main checkout" : "New task in a worktree"}
+      title={isMulti
+        ? (mode === "repo_root" ? t("newTask.titleMultiRoot") : t("newTask.titleMulti"))
+        : importMode
+          ? t("newTask.titleImport")
+          : checkoutMode
+            ? t("newTask.titleCheckout")
+            : mode === "repo_root" ? t("newTask.titleRoot") : t("newTask.titleWorktree")}
       description={undefined}
       // The four mode switches ride the title line rather than each taking a
       // `gap-4` form row. They are chrome - "make this a different KIND of
@@ -1006,7 +1014,7 @@ export function NewTaskDialog() {
           {canImport && !importMode && !checkoutMode && mode === "worktree" && importList.length > 0 && (
             <button type="button" onClick={enterImport} {...dialogTitleAction}>
               <FolderGit2 className="h-3.5 w-3.5" />
-              Import a worktree
+              {t("newTask.importAction")}
               <span className="text-[var(--color-fg-faint)]">({importList.length})</span>
             </button>
           )}
@@ -1034,16 +1042,16 @@ export function NewTaskDialog() {
           {canIssues && forgeProvider && !issueMode && !importMode && !checkoutMode && (
             <button type="button" onClick={enterIssues} {...dialogTitleAction}>
               <CircleDot className="h-3.5 w-3.5" />
-              From a {forgeProvider === "gitlab" ? "GitLab" : "GitHub"} issue
+              {t("newTask.fromIssue", { forge: forgeProvider === "gitlab" ? "GitLab" : "GitHub" })}
               {!forgeCliReady && (
-                <span className="text-[var(--color-fg-faint)]">(needs {forgeCli})</span>
+                <span className="text-[var(--color-fg-faint)]">{t("newTask.needsCli", { cli: forgeCli })}</span>
               )}
             </button>
           )}
           {canIssues && issueMode && (
             <button type="button" onClick={exitIssues} {...dialogTitleAction}>
               <Plus className="h-3.5 w-3.5" />
-              Blank task instead
+              {t("newTask.blankInstead")}
             </button>
           )}
           {canImport && importMode && (
@@ -1053,7 +1061,7 @@ export function NewTaskDialog() {
               {...dialogTitleAction}
             >
               <Plus className="h-3.5 w-3.5" />
-              New worktree instead
+              {t("newTask.newWorktreeInstead")}
             </button>
           )}
         </>
@@ -1088,14 +1096,14 @@ export function NewTaskDialog() {
         <>
           {err && <p className="mb-2 text-[13.5px] text-[var(--color-err)]">{err}</p>}
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" type="button" onClick={close}>Cancel</Button>
+            <Button variant="ghost" type="button" onClick={close}>{t("common:cancel")}</Button>
             <Button
               variant="primary"
               type="submit"
               form="new-task-form"
               disabled={busy || !effectiveName || (mode === "repo_root" ? false : importMode ? !importSelected : checkoutMode ? !checkoutBranch.trim() : !branch.trim())}
             >
-              {importMode ? "Import" : "Create"}
+              {importMode ? t("newTask.import") : t("common:create")}
             </Button>
           </div>
         </>
@@ -1124,15 +1132,14 @@ export function NewTaskDialog() {
             hint text. */}
         {/* Worktree picker — replaces the branch fields in import mode. */}
         {importMode && (
-          <Field label="Existing worktree" hint="Worktrees of this repo that aren't already open as tasks.">
+          <Field label={t("newTask.existingWorktreeLabel")} hint={t("newTask.existingWorktreeHint")}>
             {importLoading ? (
               <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> Scanning worktrees…
+                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.scanningWorktrees")}
               </div>
             ) : importList.length === 0 ? (
               <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-                No unopened worktrees found. Create one with{" "}
-                <code className="mono">git worktree add</code>, or switch back to make a new one.
+                <Trans i18nKey="newTask.noWorktrees" components={{ code: <code className="mono" /> }} />
               </div>
             ) : (
               <div className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
@@ -1150,7 +1157,7 @@ export function NewTaskDialog() {
                     <FolderGit2 className={cn("h-4 w-4 shrink-0", importSelected === wt.path ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)]")} />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[13px] text-[var(--color-fg)]">
-                        {wt.branch || <span className="italic text-[var(--color-fg-dim)]">detached {wt.head}</span>}
+                        {wt.branch || <span className="italic text-[var(--color-fg-dim)]">{t("newTask.detached", { head: wt.head })}</span>}
                       </div>
                       <div className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">{wt.path}</div>
                     </div>
@@ -1172,7 +1179,7 @@ export function NewTaskDialog() {
                 every other Field) — this is the field people re-adjust most
                 often, so it's the one worth the extra vertical inch back. */}
             <div className="flex items-center justify-between gap-3">
-              <label className="text-[13px] font-medium text-[var(--color-fg)]">Task type</label>
+              <label className="text-[13px] font-medium text-[var(--color-fg)]">{t("newTask.taskType")}</label>
               <div className="inline-flex shrink-0 items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
                 <button
                   type="button"
@@ -1185,7 +1192,7 @@ export function NewTaskDialog() {
                       : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                   )}
                 >
-                  <Link2 className="h-3.5 w-3.5" /> Main checkout
+                  <Link2 className="h-3.5 w-3.5" /> {t("newTask.mainCheckout")}
                 </button>
                 <button
                   type="button"
@@ -1199,18 +1206,18 @@ export function NewTaskDialog() {
                       : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                   )}
                 >
-                  <GitBranch className="h-3.5 w-3.5" /> Worktree
+                  <GitBranch className="h-3.5 w-3.5" /> {t("newTask.worktree")}
                 </button>
               </div>
             </div>
             <p className="text-[12px] text-[var(--color-fg-faint)]">
               {mode === "worktree"
                 ? (isMulti
-                    ? "Branch every member into its own working directory, run agents in parallel."
-                    : "Isolated branch in its own working directory. Run agents in parallel without touching your main checkout.")
+                    ? t("newTask.descWorktreeMulti")
+                    : t("newTask.descWorktreeSingle"))
                 : (isMulti
-                    ? "No worktrees, nothing copied. The agent runs in the host's live checkout with every member linked in. Edits land on your real files."
-                    : "No worktree. The agent runs in the repo's main checkout, on its current branch. Edits land on your real files.")}
+                    ? t("newTask.descRootMulti")
+                    : t("newTask.descRootSingle"))}
             </p>
           </div>
         )}
@@ -1221,7 +1228,7 @@ export function NewTaskDialog() {
             unrelated questions. Default CLI (a real question, unrelated to
             naming) follows as its own field, not folded into this group. */}
         <div className="flex flex-col gap-2">
-          <Field label="Name">
+          <Field label={t("newTask.nameLabel")}>
             {/* A checkout's name may stay blank: it defaults to the branch,
                 shown here as the placeholder, as `termic new --checkout`
                 does. */}
@@ -1229,7 +1236,7 @@ export function NewTaskDialog() {
               data-testid="new-task-name"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder={checkoutMode && checkoutName ? checkoutName : "fix login bug"}
+              placeholder={checkoutMode && checkoutName ? checkoutName : t("newTask.namePlaceholder")}
               autoFocus
               required={!checkoutMode}
             />
@@ -1240,18 +1247,18 @@ export function NewTaskDialog() {
           // The branch to check out: typed, or picked from the repo's own
           // refs. The typed text is the value (the rows only fill it in), so
           // a branch this repo has never fetched is still one keystroke away.
-          <Field label="Branch" hint="A local branch, or one on a remote. A remote branch gets a local branch that tracks it.">
+          <Field label={t("newTask.checkoutBranchLabel")} hint={t("newTask.checkoutBranchHint")}>
             <div className="flex flex-col gap-1.5">
               <Input
                 data-testid="checkout-branch-input"
                 value={checkoutBranch}
                 onChange={e => setCheckoutBranch(e.target.value)}
-                placeholder="origin/alice/fix-login"
+                placeholder={t("newTask.checkoutPlaceholder")}
                 autoFocus
               />
               {checkoutLoading ? (
                 <div className="flex items-center gap-2 px-1 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
-                  <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> Reading branches…
+                  <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.checkoutReading")}
                 </div>
               ) : checkoutView && checkoutView.choices.length > 0 ? (
                 <div data-testid="checkout-branch-list" className="max-h-[200px] overflow-auto rounded-md border border-[var(--color-border-soft)]">
@@ -1278,14 +1285,14 @@ export function NewTaskDialog() {
                   })}
                   {checkoutView.truncated && (
                     <div className="px-3 py-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
-                      Showing the first {BRANCH_CHOICES_MAX}. Type to narrow.
+                      {t("newTask.checkoutTruncated", { count: BRANCH_CHOICES_MAX })}
                     </div>
                   )}
                 </div>
               ) : null}
               {checkoutUnfetched && (
                 <p data-testid="checkout-branch-unfetched" className="text-[11.5px] text-[var(--color-fg-dim)]">
-                  Not fetched yet. Termic will look for it on the remote when you create the task.
+                  {t("newTask.checkoutUnfetched")}
                 </p>
               )}
             </div>
@@ -1295,12 +1302,12 @@ export function NewTaskDialog() {
               the name, then stops the moment you touch it, so pasting a
               branch from Linear (“username/my-feature”) is a true one-shot:
               select all, paste, done. No prefix control to fight (#15). */
-          <FieldInline label="Branch name" hint="Auto-fills from the name.">
+          <FieldInline label={t("newTask.branchName")} hint={t("newTask.branchNameHint")}>
             <div className="flex flex-col gap-1">
               <Input
                 value={branch}
                 onChange={e => { setBranch(e.target.value); setBranchEdited(true); }}
-                placeholder="feature/fix-login-bug"
+                placeholder={t("newTask.branchPlaceholder")}
                 required
               />
               {/* A name with nothing a branch can be made of. Create is already
@@ -1310,7 +1317,7 @@ export function NewTaskDialog() {
                   field that is actually empty. */}
               {nameSlugsAway && (
                 <p data-testid="name-unslugabble" className="text-[11.5px] text-[var(--color-warn)]">
-                  Task name must contain at least one letter or number. Branch names are a-z, 0-9, dash and underscore, so "{name.trim()}" leaves nothing to build one from. Type a branch name here to use it anyway.
+                  {t("newTask.nameSlugsAway", { name: name.trim() })}
                 </p>
               )}
             </div>
@@ -1324,11 +1331,11 @@ export function NewTaskDialog() {
             // A plain-folder host has no branches to cut from; the members
             // still do, and they carry their own defaults in the list below.
             hostNonGit ? null : (
-            <Field label="Host branch from" hint="Blank = host repo default. Members fall back to their own defaults below.">
+            <Field label={t("newTask.hostBranchFrom")} hint={t("newTask.hostBranchHint")}>
               <Input
                 value={base}
                 onChange={e => { setBase(e.target.value); setBaseUnknown(null); }}
-                placeholder="origin/master"
+                placeholder={t("newTask.basePlaceholder")}
               />
             </Field>
             )
@@ -1336,8 +1343,8 @@ export function NewTaskDialog() {
             // A checkout cuts nothing, so here the base only decides what the
             // diff pane compares the branch against.
             <FieldInline
-              label={checkoutMode ? "Compare against" : "Branch from"}
-              hint={checkoutMode ? "What the diff compares the branch to. Blank = repo default." : "Blank = repo default."}
+              label={checkoutMode ? t("newTask.compareAgainst") : t("newTask.branchFrom")}
+              hint={checkoutMode ? t("newTask.compareAgainstHint") : t("newTask.branchFromHint")}
             >
               <div className="flex flex-col gap-1">
                 <Input
@@ -1345,11 +1352,11 @@ export function NewTaskDialog() {
                   // Typing here is the user taking ownership of the field, so
                   // the link's warning stops applying.
                   onChange={e => { setBase(e.target.value); setBaseUnknown(null); }}
-                  placeholder="origin/master"
+                  placeholder={t("newTask.basePlaceholder")}
                 />
                 {baseUnknown && base === baseUnknown && (
                   <p data-testid="base-unknown" className="text-[11.5px] text-[var(--color-warn)]">
-                    This link asked to branch from "{baseUnknown}", which this repo has no ref for. Creating will only work if it exists on the remote.
+                    {t("newTask.baseUnknown", { base: baseUnknown })}
                   </p>
                 )}
               </div>
@@ -1358,7 +1365,7 @@ export function NewTaskDialog() {
           </>)}
         </div>
 
-        <Field label="Default CLI">
+        <Field label={t("newTask.defaultCli")}>
           {/* Pulled from the editable agent registry (Settings → Agent
               CLIs), not hard-coded — custom agents show up here. Disabled
               and not-installed agents are filtered out (see cliChoices).
@@ -1381,7 +1388,7 @@ export function NewTaskDialog() {
                     one row. The global display_name stays untouched
                     (used elsewhere in the app). */}
                 <CliIcon cli={a.icon_id} className="h-3.5 w-3.5" />
-                {a.id === "agy" ? "Agy" : a.display_name}
+                {a.id === "shell" ? t("newTask.terminal") : a.id === "agy" ? "Agy" : a.display_name}
               </button>
             ))}
           </div>
@@ -1391,7 +1398,7 @@ export function NewTaskDialog() {
               a different agent than the link asked for and never learns why. */}
           {agentUnknown && (
             <p data-testid="agent-unknown" className="mt-1 text-[11.5px] text-[var(--color-warn)]">
-              This link asked for "{agentUnknown}", which isn't available here. Using {cliChoices.find(a => a.id === cli)?.display_name ?? cli} instead.
+              {t("newTask.agentUnknown", { agent: agentUnknown, fallback: cliChoices.find(a => a.id === cli)?.display_name ?? cli })}
             </p>
           )}
         </Field>
@@ -1403,7 +1410,7 @@ export function NewTaskDialog() {
             "typed once ready, nothing sent until Create" isn't needed to
             justify the extra height; the placeholder carries that now. */}
         {canPrompt && (
-          <Field label={issueSelected ? "Initial prompt (from the issue)" : "Initial prompt"}>
+          <Field label={issueSelected ? t("newTask.initialPromptFromIssue") : t("newTask.initialPrompt")}>
             <div className="flex flex-col gap-1">
               <textarea
                 ref={attachPrompt}
@@ -1423,7 +1430,7 @@ export function NewTaskDialog() {
                 autoCapitalize="off"
                 autoComplete="off"
                 spellCheck={false}
-                placeholder={"Describe the task, paste a ticket, or leave empty to start the agent idle."}
+                placeholder={t("newTask.promptPlaceholder")}
                 className="max-h-[30vh] w-full resize-none overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] leading-relaxed text-[var(--color-fg)] outline-none focus:border-[var(--color-accent-soft)]"
               />
               {/* Counter appears only as the cap gets close, so the common
@@ -1460,15 +1467,14 @@ export function NewTaskDialog() {
             className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]"
           >
             <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-            All {members.length} members run live, linked into the host checkout. The agent
-            can directly modify every repo. No worktree isolation.
+            {t("newTask.membersLiveNote", { count: members.length })}
           </div>
         )}
         {isMulti && mode === "worktree" && (
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="text-[13px] font-medium text-[var(--color-fg)]">
-                Members ({members.length})
+                {t("newTask.membersLabel", { count: members.length })}
               </label>
               {members.length > 1 ? (
                 // Bulk flip, for compositions with many members. Same wording
@@ -1476,14 +1482,14 @@ export function NewTaskDialog() {
                 // Non-git members stay on repo_root: the constraint outranks
                 // the bulk ask, exactly like their disabled per-row button.
                 <div className="flex items-center gap-1 text-[11.5px]">
-                  <span className="text-[var(--color-fg-faint)]">Set all:</span>
+                  <span className="text-[var(--color-fg-faint)]">{t("newTask.setAll")}</span>
                   <button
                     type="button"
                     data-testid="members-all-main"
                     onClick={() => setAllMemberModes("repo_root")}
                     className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
                   >
-                    Main checkout
+                    {t("newTask.mainCheckout")}
                   </button>
                   <button
                     type="button"
@@ -1491,12 +1497,12 @@ export function NewTaskDialog() {
                     onClick={() => setAllMemberModes("worktree")}
                     className="rounded-[4px] border border-[var(--color-border)] px-2 py-[2px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
                   >
-                    Worktree
+                    {t("newTask.worktree")}
                   </button>
                 </div>
               ) : (
                 <span className="text-[11.5px] text-[var(--color-fg-faint)]">
-                  Per-repo mode + branch
+                  {t("newTask.perRepo")}
                 </span>
               )}
             </div>
@@ -1539,7 +1545,7 @@ export function NewTaskDialog() {
                               : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
                           )}
                         >
-                          <Link2 className="h-3 w-3" /> Main checkout
+                          <Link2 className="h-3 w-3" /> {t("newTask.mainCheckout")}
                         </button>
                         <button
                           type="button"
@@ -1547,7 +1553,7 @@ export function NewTaskDialog() {
                           // impossible; lock them to repo-root like a non-git
                           // single project.
                           disabled={m.non_git}
-                          title={m.non_git ? "Not a git repository, runs in the main checkout only" : undefined}
+                          title={m.non_git ? t("newTask.nonGitMemberTitle") : undefined}
                           onClick={() => chooseMemberMode("worktree")}
                           className={cn(
                             "flex h-6 items-center gap-1 rounded-[4px] px-2 transition-colors",
@@ -1557,7 +1563,7 @@ export function NewTaskDialog() {
                             m.non_git && "cursor-not-allowed opacity-40 hover:text-[var(--color-fg-dim)]",
                           )}
                         >
-                          <GitBranch className="h-3 w-3" /> Worktree
+                          <GitBranch className="h-3 w-3" /> {t("newTask.worktree")}
                         </button>
                       </div>
                     </div>
@@ -1566,17 +1572,17 @@ export function NewTaskDialog() {
                         <Input
                           value={m.branch}
                           onChange={e => update({ branch: e.target.value })}
-                          placeholder={branch || "(same as host branch)"}
+                          placeholder={branch || t("newTask.memberBranchPlaceholder")}
                         />
                         <Input
                           value={m.base_branch}
                           onChange={e => update({ base_branch: e.target.value })}
-                          placeholder={m.base_branch || "branch from…"}
+                          placeholder={m.base_branch || t("newTask.memberBasePlaceholder")}
                         />
                       </div>
                     ) : (
                       <div className="mt-2 text-[11.5px] text-[var(--color-warn)]">
-                        Live symlink. Agent edits land directly on your real checkout.
+                        {t("newTask.liveSymlinkWarn")}
                       </div>
                     )}
                   </div>
@@ -1586,8 +1592,7 @@ export function NewTaskDialog() {
             {members.some(m => m.mode === "repo_root") && (
               <div className="rounded-md border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-[12px] text-[var(--color-warn)]">
                 <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                One or more members are linked to live checkouts. The agent
-                can directly modify those repos. No worktree isolation.
+                {t("newTask.someLiveWarn")}
               </div>
             )}
           </div>
@@ -1602,7 +1607,7 @@ export function NewTaskDialog() {
             edited after (archive + recreate to change). */}
         {/* Offered in every shape (see canSandbox). */}
         {canSandbox && (
-        <Field label="Sandbox" hint="Cage the agent's filesystem + network access. Pinned at creation.">
+        <Field label={t("newTask.sandboxLabel")} hint={t("newTask.sandboxHint")}>
           <SandboxPicker
           onEnableDocker={() => { close(); useApp.getState().openSettings("docker"); }}
             value={selection}
@@ -1615,7 +1620,7 @@ export function NewTaskDialog() {
             <div className="mt-2 flex flex-col gap-2">
               <DockerEngineNote compact />
               <ListField
-                label="Extra mounts"
+                label={t("newTask.extraMounts")}
                 placeholder={"$HOME/mcp-data:/data/mcp"}
                 value={dockerMounts}
                 onChange={setDockerMounts}
@@ -1632,14 +1637,14 @@ export function NewTaskDialog() {
             disabled "auto" when the cage already turns it on. */}
         {yoloApplies && (
           <Field
-            label="YOLO"
+            label={t("newTask.yoloLabel")}
             hint={yoloCaged
-              ? "Auto-on: the sandbox is the boundary, so the agent's own prompts are skipped."
+              ? t("newTask.yoloHintAuto")
               : !yolo && yoloHeld
-                ? `Off for this task: the first message came from ${yoloHeld === "link" ? "a link" : "the issue"}, so someone else wrote it. Tick it if you trust the text.`
+                ? t(yoloHeld === "link" ? "newTask.yoloHintHeldLink" : "newTask.yoloHintHeldIssue")
                 : yolo
-                ? "Nothing cages the agent: it runs every command without asking. Change it later from the task menu."
-                : "The agent asks before running commands. The default is set in Settings → Sandbox."}
+                ? t("newTask.yoloHintOn")
+                : t("newTask.yoloHintOff")}
           >
             <label
               data-testid="new-task-yolo"
@@ -1661,7 +1666,7 @@ export function NewTaskDialog() {
                 className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-[var(--color-border)] bg-[var(--color-bg-2)] text-[var(--color-accent)] focus:ring-0 focus:ring-offset-0 disabled:cursor-default"
               />
               <Zap className="h-3.5 w-3.5 shrink-0" fill={yoloCaged || yolo ? "currentColor" : "none"} />
-              {yoloCaged ? "Auto-on inside the sandbox" : "Skip permission prompts"}
+              {yoloCaged ? t("newTask.yoloAutoCaged") : t("newTask.yoloSkipPrompts")}
             </label>
           </Field>
         )}
@@ -1684,34 +1689,31 @@ export function NewTaskDialog() {
           className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6"
         >
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-            Issue to start from
+            {t("newTask.issueColumnTitle")}
           </div>
           <p className="-mt-1 text-[12px] leading-snug text-[var(--color-fg-dim)]">
-            Open issues, most recently updated first. The agent starts with the
-            issue and reads the comments itself.
+            {t("newTask.issueColumnIntro")}
           </p>
           {issueLoading ? (
             <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-              <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> Loading issues…
+              <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingIssues")}
             </div>
           ) : issueLookup && issueLookup.status !== "ok" ? (
             <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
               {issueLookup.status === "cli-missing" ? (
                 <>
                   <div className="text-[var(--color-fg)]">
-                    Issues need the <span className="mono">{forgeCli}</span> CLI
+                    <Trans i18nKey="newTask.issuesNeedCli" values={{ cli: forgeCli }} components={{ mono: <span className="mono" /> }} />
                   </div>
                   <div className="mt-1">
-                    Install it with <code className="mono">brew install {forgeCli}</code>, then sign in
-                    with <code className="mono">{forgeCli} auth login</code>. It also powers the PR card and
-                    merge detection.
+                    <Trans i18nKey="newTask.issuesNeedCliBody" values={{ cli: forgeCli }} components={{ code: <code className="mono" /> }} />
                   </div>
                 </>
               ) : issueLookup.status === "cli-unauthed" ? (
                 <>
-                  <div className="text-[var(--color-fg)]">Sign in to load issues</div>
+                  <div className="text-[var(--color-fg)]">{t("newTask.signInTitle")}</div>
                   <div className="mt-1">
-                    Run <code className="mono">{forgeCli} auth login</code> in a terminal, then reopen this.
+                    <Trans i18nKey="newTask.signInBody" values={{ cli: forgeCli }} components={{ code: <code className="mono" /> }} />
                   </div>
                 </>
               ) : (
@@ -1720,14 +1722,14 @@ export function NewTaskDialog() {
             </div>
           ) : (issueLookup?.issues.length ?? 0) === 0 ? (
             <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-              No open issues on this repo.
+              {t("newTask.noOpenIssues")}
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
               <input
                 value={issueQuery}
                 onChange={e => setIssueQuery(e.target.value)}
-                placeholder="Filter by number, title or label"
+                placeholder={t("newTask.filterIssues")}
                 spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
                 className="mb-1.5 h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
               />
@@ -1755,7 +1757,7 @@ export function NewTaskDialog() {
                         {issue.author && <span className="truncate">{issue.author}</span>}
                         {issue.comments > 0 && (
                           <span className="shrink-0">
-                            {issue.comments} comment{issue.comments === 1 ? "" : "s"}
+                            {t(issue.comments === 1 ? "newTask.commentCountOne" : "newTask.commentCountMany", { count: issue.comments })}
                           </span>
                         )}
                         {issue.labels.slice(0, 3).map(l => (
@@ -1770,7 +1772,7 @@ export function NewTaskDialog() {
                 ))}
                 {visibleIssues.length === 0 && (
                   <div className="px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-                    Nothing matches that filter.
+                    {t("newTask.noFilterMatch")}
                   </div>
                 )}
               </div>
@@ -1781,8 +1783,7 @@ export function NewTaskDialog() {
               was chosen, rather than letting Create silently drop it. */}
           {issueSelected && !canPrompt && (
             <p className="text-[12px] leading-snug text-[var(--color-warn)]">
-              {agentLabel} has no prompt box, so the issue won't be handed over.
-              Pick an agent to send it.
+              {t("newTask.noPromptBoxWarn", { agent: agentLabel })}
             </p>
           )}
         </div>
@@ -1793,25 +1794,25 @@ export function NewTaskDialog() {
       {sandbox && (
         <div className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6">
           <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-            Sandbox config for this task
+            {t("newTask.sandboxConfigTitle")}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-[12px]">
-            <span className="text-[var(--color-fg-faint)]">Preset:</span>
+            <span className="text-[var(--color-fg-faint)]">{t("newTask.presetLabel")}</span>
             {SANDBOX_PRESETS.map(p => (
               <button
                 key={p.id} type="button"
-                title={p.hint}
+                title={presetHint(p)}
                 onClick={() => {
                   setSbRw(p.rwPaths.join("\n"));
                   setSbHosts(p.allowedHosts.join("\n"));
                 }}
                 className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
               >
-                {p.label}
+                {presetLabel(p)}
               </button>
             ))}
           </div>
-          <Field label="Allowed paths" hint="One per line. Task + agent state + caches + TMPDIR are always allowed. Add extras here.">
+          <Field label={t("newTask.allowedPathsLabel")} hint={t("newTask.allowedPathsHint")}>
             <textarea
               value={sbRw}
               onChange={e => setSbRw(e.target.value)}
@@ -1823,7 +1824,7 @@ export function NewTaskDialog() {
           {/* ENFORCING (FS) disables the network sandbox, so the host
               allow-list is irrelevant — hide it in that mode. */}
           {sandboxMode !== "enforce-fs" && (
-            <Field label="Allowed hosts" hint="One per line. Use * as a wildcard. Per-CLI vendor + github + npm/pypi/crates are always allowed; these are extras.">
+            <Field label={t("newTask.allowedHostsLabel")} hint={t("newTask.allowedHostsHint")}>
               <textarea
                 value={sbHosts}
                 onChange={e => setSbHosts(e.target.value)}
@@ -1835,8 +1836,7 @@ export function NewTaskDialog() {
           )}
           {sandboxMode === "enforce-fs" && (
             <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
-              Network is unrestricted in this mode (filesystem cage only). The
-              agent reaches any host directly, with no proxy or host allow-list.
+              {t("newTask.enforceFsNote")}
             </p>
           )}
         </div>

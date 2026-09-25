@@ -3,6 +3,7 @@
 // the writeText(...).then().catch() boilerplate.
 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { i18n } from "@/lib/i18n";
 import { useUI } from "@/store/ui";
 
 /** Copy arbitrary text, with a confirmation / failure toast. `label` is the
@@ -17,8 +18,8 @@ import { useUI } from "@/store/ui";
 export function copyToClipboard(text: string, label = "text") {
   return writeText(text)
     .catch(() => navigator.clipboard.writeText(text))
-    .then(() => useUI.getState().pushToast(`Copied ${label}`, "success"))
-    .catch(() => useUI.getState().pushToast("Couldn't copy to clipboard", "error"));
+    .then(() => useUI.getState().pushToast(i18n.t("backend:clipboard.copied", { label }), "success"))
+    .catch(() => useUI.getState().pushToast(i18n.t("backend:clipboard.failed"), "error"));
 }
 
 /** Join a task root with a task-relative path into an absolute

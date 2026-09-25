@@ -20,6 +20,7 @@
 //     1 Hz (docs/performance.md bear trap 8).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Activity, Cpu, Folder, MemoryStick, Layers,
   Bot, TerminalSquare, Play, Wrench, Skull, Pause, PlayCircle, Container,
@@ -50,6 +51,7 @@ const PERIOD_HIDDEN_MS = 5000;
 const META_EVERY = 10;
 
 export function ActivityWindow() {
+  const { t } = useTranslation("chrome");
   const [snap, setSnap] = useState<ProcSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -202,7 +204,7 @@ export function ActivityWindow() {
 
         {grouped.projects.length === 0 && grouped.orphans.length === 0 && (
           <div className="px-4 py-6 text-[12.5px] text-[var(--color-fg-faint)]">
-            No agents or terminals running.
+            {t("activity.empty")}
           </div>
         )}
 
@@ -237,7 +239,7 @@ export function ActivityWindow() {
           <section>
             <GroupHeader
               icon={<TerminalSquare className="h-3.5 w-3.5" />}
-              name="Not in a task"
+              name={t("activity.notInTask")}
               cpu={null}
               mem={grouped.orphans.reduce((a, r) => a + r.memBytes, 0)}
               level={0}
@@ -252,12 +254,12 @@ export function ActivityWindow() {
           <section>
             <GroupHeader
               icon={<Activity className="h-3.5 w-3.5" />}
-              name="Termic itself"
+              name={t("activity.termicItself")}
               // Honest about a gap rather than quietly reporting a smaller
               // number: a dev build launched from a terminal cannot prove
               // which WebContent process is its own (macOS assigns
               // responsibility to the terminal).
-              detail={snap?.webkitUnavailable ? "webview processes not attributable in this build" : undefined}
+              detail={snap?.webkitUnavailable ? t("activity.webkitGap") : undefined}
               cpu={grouped.selfCpuPct}
               mem={grouped.selfMemBytes}
               level={0}
@@ -277,6 +279,7 @@ export function ActivityWindow() {
 function Header({ cpu, mem, paused, onTogglePause }: {
   cpu: number | null; mem: number; paused: boolean; onTogglePause: () => void;
 }) {
+  const { t } = useTranslation("chrome");
   return (
     // No `data-tauri-drag-region` here: this window keeps its NATIVE title
     // bar (that is what you grab to move it), and the drag-region attribute
@@ -285,7 +288,7 @@ function Header({ cpu, mem, paused, onTogglePause }: {
     <div className="flex shrink-0 items-center gap-4 border-b border-[var(--color-border-soft)] px-3 py-2 select-none">
       <div className="flex items-center gap-2">
         <Activity className="h-4 w-4 text-[var(--color-accent)]" />
-        <span className="text-[13px] font-medium">Activity</span>
+        <span className="text-[13px] font-medium">{t("activity.windowTitle")}</span>
       </div>
       <div className="flex items-center gap-3 text-[12.5px] text-[var(--color-fg-dim)]">
         <span className="flex items-center gap-1.5">
@@ -303,7 +306,7 @@ function Header({ cpu, mem, paused, onTogglePause }: {
         className="ml-auto flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
       >
         {paused ? <PlayCircle className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-        {paused ? "Resume" : "Pause"}
+        {paused ? t("activity.resume") : t("activity.pause")}
       </button>
     </div>
   );
@@ -312,21 +315,22 @@ function Header({ cpu, mem, paused, onTogglePause }: {
 /** Column header. Kept in one place so the row grid and this cannot drift. */
 const GRID = "grid grid-cols-[minmax(0,1fr)_58px_74px_66px_58px_62px] items-center gap-2 px-3";
 
-const COLUMNS: { col: SortColumn; label: string; align: "left" | "right"; tip?: string }[] = [
-  { col: "name", label: "Process", align: "left" },
+const COLUMNS: { col: SortColumn; labelKey: string; align: "left" | "right"; tipKey?: string }[] = [
+  { col: "name", labelKey: "activity.colProcess", align: "left" },
   {
-    col: "cpu", label: "CPU", align: "right",
+    col: "cpu", labelKey: "activity.colCpu", align: "right",
     // Say it in the tooltip rather than let it look like a bug: the ORDER is
     // smoothed even though the number shown is instantaneous.
-    tip: "Sort by CPU (ordered on a short average, so near-equal rows hold still)",
+    tipKey: "activity.tipSortCpu",
   },
-  { col: "mem", label: "Memory", align: "right", tip: "Sort by memory footprint" },
-  { col: "out", label: "Output", align: "right", tip: "Sort by terminal output rate" },
-  { col: "uptime", label: "Uptime", align: "right", tip: "Sort by uptime" },
-  { col: "pid", label: "PID", align: "right", tip: "Sort by process id" },
+  { col: "mem", labelKey: "activity.colMemory", align: "right", tipKey: "activity.tipSortMemory" },
+  { col: "out", labelKey: "activity.colOutput", align: "right", tipKey: "activity.tipSortOutput" },
+  { col: "uptime", labelKey: "activity.colUptime", align: "right", tipKey: "activity.tipSortUptime" },
+  { col: "pid", labelKey: "activity.colPid", align: "right", tipKey: "activity.tipSortPid" },
 ];
 
 function Columns({ sort, onSort }: { sort: Sort; onSort: (col: SortColumn) => void }) {
+  const { t } = useTranslation("chrome");
   return (
     <div className={cn(
       GRID,
@@ -342,7 +346,7 @@ function Columns({ sort, onSort }: { sort: Sort; onSort: (col: SortColumn) => vo
           <button
             key={c.col}
             onClick={() => onSort(c.col)}
-            title={c.tip}
+            title={c.tipKey ? t(c.tipKey) : undefined}
             data-testid={`activity-sort-${c.col}`}
             data-active={active ? sort.dir : undefined}
             className={cn(
@@ -351,7 +355,7 @@ function Columns({ sort, onSort }: { sort: Sort; onSort: (col: SortColumn) => vo
               active && "text-[var(--color-fg)]",
             )}
           >
-            {c.label}
+            {t(c.labelKey)}
             {/* The caret is the only thing that says which column is active,
                 so it holds its 8px of width whether or not it is shown. */}
             <span className="w-2 text-[9px] leading-none">
@@ -404,6 +408,7 @@ function KindIcon({ kind }: { kind: string }) {
 }
 
 function Row({ row }: { row: ActivityRow }) {
+  const { t } = useTranslation("chrome");
   const canSignal = row.ptyId !== null;
   return (
     <>
@@ -423,28 +428,28 @@ function Row({ row }: { row: ActivityRow }) {
           {row.isDocker && (
             <span
               className="flex shrink-0 items-center gap-0.5 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10px] uppercase tracking-wider text-[var(--color-fg-faint)]"
-              title="Docker sandbox: CPU and memory come from `docker stats`, not the host process table"
+              title={t("activity.dockerTip")}
             >
               <Container className="h-2.5 w-2.5" />
               Docker
             </span>
           )}
           {!row.alive && (
-            <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">exited</span>
+            <span className="shrink-0 text-[11px] text-[var(--color-fg-faint)]">{t("activity.exited")}</span>
           )}
           <Spark history={row.cpuHistory} />
           {canSignal && (
             <span className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
               <SignalButton
-                pid={row.pid} signal="STOP" title="Pause this process (SIGSTOP)"
+                pid={row.pid} signal="STOP" title={t("activity.pauseProc")}
                 icon={<Pause className="h-3 w-3" />}
               />
               <SignalButton
-                pid={row.pid} signal="CONT" title="Resume this process (SIGCONT)"
+                pid={row.pid} signal="CONT" title={t("activity.resumeProc")}
                 icon={<PlayCircle className="h-3 w-3" />}
               />
               <SignalButton
-                pid={row.pid} signal="TERM" title="Stop this process (SIGTERM)"
+                pid={row.pid} signal="TERM" title={t("activity.stopProc")}
                 icon={<Skull className="h-3 w-3" />}
               />
             </span>
@@ -508,16 +513,17 @@ function Spark({ history }: { history: number[] }) {
 }
 
 function Footer({ snap, paused }: { snap: ProcSnapshot | null; paused: boolean }) {
+  const { t } = useTranslation("chrome");
   return (
     <div className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--color-border-soft)] px-3 py-1.5 text-[11px] text-[var(--color-fg-faint)]">
       <span data-testid="activity-status">
         {paused
-          ? "Paused, nothing is being sampled"
-          : `Sampling every ${PERIOD_MS / 1000}s`}
+          ? t("activity.pausedStatus")
+          : t("activity.sampling", { seconds: PERIOD_MS / 1000 })}
       </span>
       {/* Our own cost, stated rather than assumed. */}
       <span className="font-mono tabular-nums">
-        {snap ? `sample ${snap.sampleMs.toFixed(1)}ms · ${snap.rows.length} rows` : "starting…"}
+        {snap ? t("activity.sampleStats", { ms: snap.sampleMs.toFixed(1), count: snap.rows.length }) : t("activity.starting")}
       </span>
     </div>
   );

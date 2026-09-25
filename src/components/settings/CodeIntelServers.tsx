@@ -20,6 +20,7 @@
 //    deleting a directory rather than by another download.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { RefreshCw, Download } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useUI } from "@/store/ui";
@@ -72,6 +73,7 @@ export function CodeIntelServers({ project, onProjectChange }: {
   project?: Project;
   onProjectChange?: (patch: Partial<Project>) => void;
 } = {}) {
+  const { t } = useTranslation("settings");
   // The whole supported set, shown WITHOUT being asked for. The old panel
   // listed only the three termic can download, and only after you pressed a
   // button, so "which languages does this work for" had no answer on screen
@@ -171,7 +173,7 @@ export function CodeIntelServers({ project, onProjectChange }: {
       await invoke<string>("lsp_install_zuban");
       const fresh = await invoke<CatalogEntry[]>("lsp_catalog");
       setCatalog(fresh);
-      pushToast("zuban is installed. Python tasks pick it up when their server next starts.", "success");
+      pushToast(t("codeIntel.zubanToast"), "success");
     } catch (e) {
       pushToast(String(e), "error");
     } finally {
@@ -185,7 +187,7 @@ export function CodeIntelServers({ project, onProjectChange }: {
       const res = await invoke<LspUpdate>("lsp_update", { language });
       setRows(rs => (rs ?? []).map(r => (r.language === language ? res : r)));
       invoke<CatalogEntry[]>("lsp_catalog").then(setCatalog).catch(() => {});
-      pushToast(`${res.label} ${res.installed} is installed. Tasks pick it up when their server next starts.`, "success");
+      pushToast(t("codeIntel.updateToast", { label: res.label, version: res.installed }), "success");
     } catch (e) {
       pushToast(String(e), "error");
     } finally {
@@ -225,7 +227,7 @@ export function CodeIntelServers({ project, onProjectChange }: {
                       onChange={() => pick(entry.language, null)}
                       className="accent-[var(--color-accent)]"
                     />
-                    Automatic
+                    {t("codeIntel.automatic")}
                   </label>
                 )}
               </div>
@@ -266,10 +268,10 @@ export function CodeIntelServers({ project, onProjectChange }: {
                       sv.exe ? "text-[var(--color-ok)]" : "text-[var(--color-fg-faint)]",
                     )}>
                       {sv.exe
-                        ? "on this machine"
+                        ? t("codeIntel.onThisMachine")
                         : sv.source === "downloaded"
-                          ? `termic downloads it${sv.version ? ` (${sv.version})` : ""}`
-                          : "not installed"}
+                          ? `${t("codeIntel.downloads")}${sv.version ? ` (${sv.version})` : ""}`
+                          : t("codeIntel.notInstalled")}
                     </span>
                     {/* The update check writes INTO this row rather than
                         printing a second list underneath it. Two lists both
@@ -285,7 +287,7 @@ export function CodeIntelServers({ project, onProjectChange }: {
                         className="flex items-center gap-1.5 rounded bg-[var(--color-accent-deep)] px-2 py-0.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
                       >
                         <Download className="h-3 w-3" />
-                        {busy === "zuban" ? "Installing…" : "Install"}
+                        {busy === "zuban" ? t("codeIntel.installing") : t("codeIntel.install")}
                       </button>
                     )}
                     {(() => {
@@ -301,7 +303,7 @@ export function CodeIntelServers({ project, onProjectChange }: {
                           className="flex items-center gap-1.5 rounded bg-[var(--color-accent-deep)] px-2 py-0.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
                         >
                           <Download className="h-3 w-3" />
-                          {busy === entry.language ? "Downloading…" : `Update to ${upd.latest}`}
+                          {busy === entry.language ? t("codeIntel.downloading") : t("codeIntel.updateTo", { version: upd.latest })}
                         </button>
                       );
                     })()}
@@ -319,7 +321,7 @@ export function CodeIntelServers({ project, onProjectChange }: {
                   repo), and the reason the list above can stay a closed set.
                   It beats the radios, so it says so. */}
               <div className="grid grid-cols-[minmax(150px,auto)_1fr] items-baseline gap-x-3 border-t border-[var(--color-border-soft)] px-3 py-2">
-                <span className="text-[12.5px] text-[var(--color-fg-dim)]">Custom command</span>
+                <span className="text-[12.5px] text-[var(--color-fg-dim)]">{t("codeIntel.customCommand")}</span>
                 <div className="flex flex-col gap-1">
                   <input
                     type="text"
@@ -343,11 +345,13 @@ export function CodeIntelServers({ project, onProjectChange }: {
                   />
                   <span className="text-[11.5px] text-[var(--color-fg-faint)]">
                     {commands[entry.language]
-                      ? "Used instead of the servers above. Clear it to go back to them."
+                      ? t("codeIntel.customSet")
                       : project && (machineCommands[entry.language] || machinePicked[entry.language])
-                        ? `This machine: ${machineCommands[entry.language]
-                            ?? machinePicked[entry.language]}. Set one here to override it.`
-                        : "Runs it as typed, with no shell. Quotes group an argument that has spaces."}
+                        ? t("codeIntel.machineOverride", {
+                            value: machineCommands[entry.language]
+                              ?? machinePicked[entry.language],
+                          })
+                        : t("codeIntel.customHint")}
                   </span>
                 </div>
               </div>
@@ -367,16 +371,16 @@ export function CodeIntelServers({ project, onProjectChange }: {
           className="flex items-center gap-1.5 rounded px-2.5 py-1 text-[12.5px] bg-[var(--color-bg-3)] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-50"
         >
           <RefreshCw className={cn("h-3.5 w-3.5", busy === "check" && "animate-spin")} />
-          {busy === "check" ? "Checking…" : "Check for server updates"}
+          {busy === "check" ? t("codeIntel.checking") : t("codeIntel.check")}
         </button>
         <span className="text-[12px] text-[var(--color-fg-faint)]">
-          Only when you ask. Nothing checks in the background.
+          {t("codeIntel.checkNote")}
         </span>
       </div>
 
       {rows && rows.length === 0 && (
         <p className="text-[12.5px] text-[var(--color-fg-faint)]">
-          No servers can be installed on this platform.
+          {t("codeIntel.noneInstallable")}
         </p>
       )}
     </div>

@@ -14,6 +14,7 @@
 // it. The frequency selector is inline so changing your mind about how often
 // this should ask doesn't require a trip to Settings.
 
+import { useTranslation, Trans } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
@@ -23,6 +24,7 @@ import { describeLastBuildDate } from "@/lib/dockerDailyRebuild";
 import { Container, RotateCw, SkipForward, Clock } from "lucide-react";
 
 export function DockerRebuildPromptDialog() {
+  const { t } = useTranslation("dialogs");
   const prompt = useUI(s => s.dockerRebuildPrompt);
   const resolve = useUI(s => s.resolveDockerRebuildPrompt);
   // Own settings fetch (not the caller's): this dialog can outlive whatever
@@ -36,22 +38,26 @@ export function DockerRebuildPromptDialog() {
     <AppDialog
       open
       onOpenChange={(v) => { if (!v) resolve("skip"); }}
-      title="Rebuild the Docker sandbox image?"
+      title={t("dockerRebuild.title")}
       className="max-w-xl"
     >
       <div className="flex flex-col gap-4 pt-1 text-[13.5px] text-[var(--color-fg-dim)] leading-relaxed">
         <p className="flex items-start gap-2.5">
           <Container className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-accent)]" />
           <span>
-            <span className="font-medium text-[var(--color-fg)]">"{prompt.taskName}"</span> runs its agent
-            inside the Docker sandbox image. {describeLastBuildDate(prompt.lastBuiltDate)} Agent CLIs baked into it
-            update constantly, so an old image can quietly fall behind.
+            <Trans
+              t={t}
+              i18nKey="dockerRebuild.bodyRunsIn"
+              values={{ name: prompt.taskName }}
+              components={{ b: <span className="font-medium text-[var(--color-fg)]" /> }}
+            />{" "}
+            {describeLastBuildDate(prompt.lastBuiltDate)} {t("dockerRebuild.bodyBehind")}
           </span>
         </p>
 
         <div>
           <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-fg-faint)]">
-            Rebuild frequency
+            {t("dockerRebuild.frequency")}
           </div>
           <DockerRebuildFrequencyPicker value={frequency} onChange={v => patch({ docker_rebuild_frequency: v })} />
         </div>
@@ -68,7 +74,7 @@ export function DockerRebuildPromptDialog() {
           on its own. */}
       <div className="mt-5 flex items-center justify-end gap-2">
         <Button variant="ghost" type="button" onClick={() => resolve("skip")}>
-          <SkipForward className="h-3.5 w-3.5" /> Skip for now
+          <SkipForward className="h-3.5 w-3.5" /> {t("dockerRebuild.skipForNow")}
         </Button>
         {/* Hidden on "off": there is no schedule to defer to, so the button
             would promise something it cannot deliver. */}
@@ -80,17 +86,17 @@ export function DockerRebuildPromptDialog() {
             anyone seeing this dialog turned that off and the button is how
             they turn it back on. */}
         <Button variant="secondary" type="button" onClick={() => resolve("rebuild")}>
-          <RotateCw className="h-3.5 w-3.5" /> Rebuild now
+          <RotateCw className="h-3.5 w-3.5" /> {t("dockerRebuild.rebuildNow")}
         </Button>
         {frequency !== "off" && (
           <Button
             variant="primary"
             type="button"
             autoFocus
-            title="Stop asking. From now on the image rebuilds on this schedule in the background: agents launch immediately and pick up the new image next time. Reversible in Settings → Docker Sandbox."
+            title={t("dockerRebuild.alwaysTitle")}
             onClick={() => resolve("always")}
           >
-            <Clock className="h-3.5 w-3.5" /> Always, in background
+            <Clock className="h-3.5 w-3.5" /> {t("dockerRebuild.alwaysBackground")}
           </Button>
         )}
       </div>

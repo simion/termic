@@ -6,6 +6,7 @@
 // whole screen on open) — just a subtle dim + blur that fades in, ⇧⌘P only.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Search, Plus, FileText, Pencil, GitBranch, Archive, Zap, ShieldCheck,
@@ -17,6 +18,7 @@ import {
 import { useUI } from "@/store/ui";
 import { useProfiles } from "@/store/profiles";
 import { copyToClipboard } from "@/lib/clipboard";
+import { i18n } from "@/lib/i18n";
 import { copyAgentBriefing } from "@/lib/agentBriefing";
 import { useApp } from "@/store/app";
 import { jumpToNextWaiting } from "@/lib/waitingAgents";
@@ -46,6 +48,17 @@ type Section = (typeof SECTION_ORDER)[number];
  *  ordering live in lib/paletteRecent). Not in SECTION_ORDER: it is built from
  *  the other sections' commands rather than being a home for any of them. */
 const RECENT_SECTION = "Recent";
+
+// Displayed header for each section id. The ids above stay English (identity,
+// sorting, React keys, recents matching); only the rendered header translates.
+const SECTION_LABEL_KEY: Record<string, string> = {
+  Task: "commandPalette.sectionTask",
+  Agent: "commandPalette.sectionAgent",
+  View: "commandPalette.sectionView",
+  Application: "commandPalette.sectionApplication",
+  Settings: "commandPalette.sectionSettings",
+  [RECENT_SECTION]: "commandPalette.sectionRecent",
+};
 
 interface Cmd {
   id: string;
@@ -77,10 +90,10 @@ interface Cmd {
   run: () => void;
 }
 
-const THEME_LABELS: Record<BuiltinThemeMode, string> = {
-  auto: "System (auto)",
-  light: "Light",
-  dark: "Dark",
+// Theme display names. auto/light/dark are common words and translate
+// (commandPalette.themeAuto/themeLight/themeDark); the rest are proper-noun
+// theme names, the same in every language.
+const THEME_LABELS: Record<Exclude<BuiltinThemeMode, "auto" | "light" | "dark">, string> = {
   claude: "Claude",
   solarized: "Solarized",
   cobalt: "Cobalt",
@@ -90,6 +103,7 @@ const THEME_LABELS: Record<BuiltinThemeMode, string> = {
 const THEME_ORDER: BuiltinThemeMode[] = ["auto", "light", "dark", "claude", "solarized", "cobalt", "matrix", "rosepine"];
 
 export function CommandPalette() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.commandPaletteOpen);
   const close = useUI(s => s.closeCommandPalette);
   const activeTaskId = useApp(s => s.activeTaskId);
@@ -103,12 +117,20 @@ export function CommandPalette() {
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
 
   // Built-ins first, then the custom theme files — the submenu's order.
+  // `t` is a dep so a language switch recomputes the built-in labels.
   const themeEntries = useMemo<{ id: ThemeMode; label: string }[]>(
-    () => [
-      ...THEME_ORDER.map(m => ({ id: m as ThemeMode, label: THEME_LABELS[m] })),
-      ...customThemes.map(t => ({ id: t.id as ThemeMode, label: t.name })),
-    ],
-    [customThemes],
+    () => {
+      const builtinLabel = (m: BuiltinThemeMode) =>
+        m === "auto" ? t("commandPalette.themeAuto")
+        : m === "light" ? t("commandPalette.themeLight")
+        : m === "dark" ? t("commandPalette.themeDark")
+        : THEME_LABELS[m];
+      return [
+        ...THEME_ORDER.map(m => ({ id: m as ThemeMode, label: builtinLabel(m) })),
+        ...customThemes.map(th => ({ id: th.id as ThemeMode, label: th.name })),
+      ];
+    },
+    [customThemes, t],
   );
   const themeLabel = (m: ThemeMode) =>
     themeEntries.find(e => e.id === m)?.label ?? (isCustomId(m) ? m.slice("custom:".length) : m);
@@ -186,6 +208,7 @@ export function CommandPalette() {
 
   // Build the full command list. Task/agent rows only exist when a
   // task is active. Everything reads live store state at build time.
+  // `t` is a dep so a language switch rebuilds the labels.
   const commands = useMemo<Cmd[]>(() => {
     if (view === "theme") {
       return themeEntries.map<Cmd>(({ id: m, label }) => ({
@@ -204,7 +227,7 @@ export function CommandPalette() {
 
     // ── Task ──────────────────────────────────────────────────────
     cmds.push({
-      id: "new-task", section: "Task", label: "New task…",
+      id: "new-task", section: "Task", label: t("commandPalette.cmd.newTask"),
       icon: Plus, shortcutId: "new-task-quick", keywords: "create worktree project",
       run: act(() => useUI.getState().openProjectPicker()),
     });
@@ -215,18 +238,18 @@ export function CommandPalette() {
     // resolving every project's remote to decide whether to show a palette row
     // would be a lot of git for a row.
     cmds.push({
-      id: "new-task-issue", section: "Task", label: "New task from an issue…",
+      id: "new-task-issue", section: "Task", label: t("commandPalette.cmd.newTaskIssue"),
       icon: CircleDot, keywords: "github gitlab ticket bug create worktree",
       run: act(() => useUI.getState().openProjectPicker("issue")),
     });
     cmds.push({
-      id: "new-project", section: "Task", label: "Add project…",
+      id: "new-project", section: "Task", label: t("commandPalette.cmd.addProject"),
       icon: FolderPlus, keywords: "repository repo clone discover add new",
       run: act(() => useUI.getState().openNewProject()),
     });
     if (task) {
       cmds.push({
-        id: "file-picker", section: "Task", label: "File picker",
+        id: "file-picker", section: "Task", label: t("commandPalette.cmd.filePicker"),
         icon: FileText, shortcutId: "file-finder", keywords: "open goto fuzzy",
         run: act(() => useUI.getState().openFileFinder(task.id)),
       });
@@ -234,44 +257,44 @@ export function CommandPalette() {
         // Double-Shift is the gesture (JetBrains'), but a gesture nobody can
         // read about is a gesture nobody finds: the palette is where someone
         // learns this exists.
-        id: "search-everywhere", section: "Task", label: "Search everywhere",
+        id: "search-everywhere", section: "Task", label: t("commandPalette.cmd.searchEverywhere"),
         icon: Search, keywords: "symbol symbols class classes file goto double shift jetbrains",
         run: act(() => useUI.getState().openSearchEverywhere(task.id)),
       });
       cmds.push({
-        id: "find-in-files", section: "Task", label: "Find in files",
+        id: "find-in-files", section: "Task", label: t("commandPalette.cmd.findInFiles"),
         icon: Search, shortcutId: "find-in-files", keywords: "grep search ripgrep",
         run: act(() => useUI.getState().openFindInFiles(task.id)),
       });
       cmds.push({
-        id: "new-scratchpad", section: "Task", label: "New scratchpad",
+        id: "new-scratchpad", section: "Task", label: t("commandPalette.cmd.newScratchpad"),
         icon: NotepadText, shortcutId: "new-scratchpad",
         keywords: "note untitled buffer temporary todo jot draft",
         run: act(() => { void newScratchTab(task.id); }),
       });
       cmds.push({
-        id: "rename-task", section: "Task", label: "Rename task",
+        id: "rename-task", section: "Task", label: t("commandPalette.cmd.renameTask"),
         icon: Pencil, keywords: "name title",
         run: act(() => startRename(task.id, task.project_id)),
       });
       if (task.branch) {
         cmds.push({
-          id: "copy-branch", section: "Task", label: "Copy branch name",
+          id: "copy-branch", section: "Task", label: t("commandPalette.cmd.copyBranch"),
           suffix: task.branch, icon: GitBranch, keywords: "git clipboard",
           run: act(() => { void copyToClipboard(task.branch, `"${task.branch}"`); }),
         });
       }
       cmds.push({
         // The paste-into-another-agent briefing (see lib/agentBriefing).
-        id: "copy-agent-briefing", section: "Task", label: "Copy agent CLI briefing",
-        suffix: "Paste into another agent to let it drive this task",
+        id: "copy-agent-briefing", section: "Task", label: t("commandPalette.cmd.copyBriefing"),
+        suffix: t("commandPalette.cmd.copyBriefingSuffix"),
         icon: Waypoints, keywords: "cli orchestrate remote control clipboard termic agents talk",
         run: act(() => {
           void copyAgentBriefing(task, useApp.getState().projects.find(p => p.id === task.project_id)?.name);
         }),
       });
       cmds.push({
-        id: "resume-override", section: "Task", label: "Resume options…",
+        id: "resume-override", section: "Task", label: t("commandPalette.cmd.resumeOptions"),
         icon: History, keywords: "session continue previous conversation args",
         run: act(() => useUI.getState().openResumeOverride(task.id)),
       });
@@ -279,8 +302,9 @@ export function CommandPalette() {
         // Ends every PTY in the task but keeps the task itself (GH #119).
         // Also the only way to release a mounted task's terminals, which is
         // what the idle-cost work made concrete.
-        id: "stop-task", section: "Task", label: `Stop "${taskLabel(task, useBranchAsTaskName)}"`,
-        suffix: "Ends its agents, keeps the task",
+        id: "stop-task", section: "Task",
+        label: t("commandPalette.cmd.stopTask", { name: taskLabel(task, useBranchAsTaskName) }),
+        suffix: t("commandPalette.cmd.stopTaskSuffix"),
         icon: Square, keywords: "kill terminate close ptys unmount free memory",
         noRecent: true,
         run: act(() => useApp.getState().stopTask(task.id)),
@@ -290,7 +314,8 @@ export function CommandPalette() {
         // modal (with the delete-branch checkbox), so the red isn't needed.
         // Once the user has unticked "Show this every time" there, this entry archives
         // on Enter with no prompt; Settings › Tasks is the way back.
-        id: "archive-task", section: "Task", label: `Archive "${taskLabel(task, useBranchAsTaskName)}"`,
+        id: "archive-task", section: "Task",
+        label: t("commandPalette.cmd.archiveTask", { name: taskLabel(task, useBranchAsTaskName) }),
         icon: Archive, keywords: "delete remove close worktree",
         noRecent: true,
         run: act(() => { void confirmAndArchive(task); }),
@@ -298,7 +323,7 @@ export function CommandPalette() {
     }
     if (proj) {
       cmds.push({
-        id: "run-commands", section: "Task", label: "Run commands…",
+        id: "run-commands", section: "Task", label: t("commandPalette.cmd.runCommands"),
         suffix: proj.name, icon: Play, keywords: "script dev server build custom",
         run: act(() => useUI.getState().openRunCommands(proj.id)),
       });
@@ -306,32 +331,32 @@ export function CommandPalette() {
 
     // ── Agent ──────────────────────────────────────────────────────────
     cmds.push({
-      id: "prompt-palette", section: "Agent", label: "Prompt library…",
+      id: "prompt-palette", section: "Agent", label: t("commandPalette.cmd.promptLibrary"),
       icon: BookText, shortcutId: "prompt-palette", keywords: "prompts snippets send template",
       run: act(() => useUI.getState().openPromptPalette()),
     });
     cmds.push({
       // Store-driven (lib/waitingAgents), shared with the top-bar jump pill —
       // so it does the same thing from here as from the pill.
-      id: "jump-next-waiting", section: "Agent", label: "Jump to next waiting agent",
+      id: "jump-next-waiting", section: "Agent", label: t("commandPalette.cmd.jumpWaiting"),
       icon: Bell, shortcutId: "jump-next-waiting", keywords: "attention blocked done next cycle",
       run: act(() => { jumpToNextWaiting(); }),
     });
     if (proj) {
       cmds.push({
-        id: "race", section: "Agent", label: "Agent Race…",
+        id: "race", section: "Agent", label: t("commandPalette.cmd.agentRace"),
         suffix: proj.name, icon: Swords, keywords: "compare parallel multiple contest winner",
         run: act(() => useUI.getState().openRace(proj.id)),
       });
       cmds.push({
-        id: "broadcast-project", section: "Agent", label: "Broadcast to project…",
+        id: "broadcast-project", section: "Agent", label: t("commandPalette.cmd.broadcastProject"),
         suffix: proj.name, icon: Megaphone, keywords: "send all tasks message every agent",
         run: act(() => useUI.getState().openProjectBroadcast(proj.id)),
       });
     }
     if (task) {
       cmds.push({
-        id: "broadcast", section: "Agent", label: "Broadcast to agents…",
+        id: "broadcast", section: "Agent", label: t("commandPalette.cmd.broadcastAgents"),
         icon: Megaphone, shortcutId: "broadcast", keywords: "send message all tabs",
         run: act(() => useUI.getState().openBroadcast(task.id)),
       });
@@ -340,28 +365,35 @@ export function CommandPalette() {
       const enforced = isSandboxEnforced(effectiveSandboxMode(task));
       cmds.push({
         id: "toggle-yolo", section: "Agent",
-        label: enforced ? "YOLO is forced on (Enforcing)" : task.yolo ? "Disable YOLO" : "Enable YOLO",
-        suffix: "Dangerously skip permissions",
+        label: enforced ? t("commandPalette.cmd.yoloForced")
+          : task.yolo ? t("commandPalette.cmd.yoloDisable") : t("commandPalette.cmd.yoloEnable"),
+        suffix: t("commandPalette.cmd.yoloSuffix"),
         icon: Zap, keywords: "auto approve permissions dangerous",
         run: act(() => {
           if (enforced) return;
           const next = !task.yolo;
           useApp.getState().setTaskYolo(task.id, next);
           void taskSetYolo(task.id, next);
-          useUI.getState().pushToast(next ? "YOLO enabled" : "YOLO disabled");
+          // Handlers run outside render: resolve the toast at click time.
+          useUI.getState().pushToast(i18n.t(next
+            ? "dialogs:commandPalette.toastYoloEnabled"
+            : "dialogs:commandPalette.toastYoloDisabled"));
         }),
       });
       cmds.push({
-        id: "sandbox", section: "Agent", label: "Sandbox settings",
+        id: "sandbox", section: "Agent", label: t("commandPalette.cmd.sandboxSettings"),
         // Docker mode always stores sandbox_mode as off (the two cages are
         // mutually exclusive) - show it explicitly rather than the
         // misleading "off".
-        suffix: task.docker_sandbox_enabled ? "docker" : effectiveSandboxMode(task),
+        // Localized short flag; the mode ids stay the lookup, not the display.
+        suffix: task.docker_sandbox_enabled
+          ? t("commandPalette.sandboxSuffixDocker")
+          : t(`commandPalette.sandboxSuffix${{ off: "Off", monitor: "Monitor", enforce: "Enforce", "enforce-fs": "EnforceFs" }[effectiveSandboxMode(task)] ?? "Off"}`),
         icon: ShieldCheck, keywords: "cage security enable disable docker container",
         run: act(() => useUI.getState().openSandbox(task.id)),
       });
       cmds.push({
-        id: "create-pr", section: "Agent", label: "Create pull request",
+        id: "create-pr", section: "Agent", label: t("commandPalette.cmd.createPr"),
         icon: GitPullRequest, keywords: "pr mr merge request github gitlab",
         run: act(() => useUI.getState().openCreatePr(task.id)),
       });
@@ -369,18 +401,18 @@ export function CommandPalette() {
 
     // ── View ───────────────────────────────────────────────────────────
     cmds.push({
-      id: "toggle-left-sidebar", section: "View", label: "Toggle left sidebar",
+      id: "toggle-left-sidebar", section: "View", label: t("commandPalette.cmd.toggleLeftSidebar"),
       icon: PanelLeft, shortcutId: "toggle-left-sidebar", keywords: "projects collapse hide",
       run: act(() => useApp.getState().toggleCompactSidebar()),
     });
     cmds.push({
-      id: "toggle-right-sidebar", section: "View", label: "Toggle right sidebar",
+      id: "toggle-right-sidebar", section: "View", label: t("commandPalette.cmd.toggleRightSidebar"),
       icon: PanelRight, shortcutId: "toggle-right-sidebar", keywords: "panel diff changes hide",
       run: act(() => useApp.getState().toggleRightPanel()),
     });
     if (task) {
       cmds.push({
-        id: "toggle-terminal", section: "View", label: "Toggle terminal panel",
+        id: "toggle-terminal", section: "View", label: t("commandPalette.cmd.toggleTerminal"),
         icon: PanelBottom, shortcutId: "toggle-terminal", keywords: "bottom split shell console hide show",
         run: act(() => useApp.getState().toggleBottomTerminal(task.id)),
       });
@@ -390,12 +422,12 @@ export function CommandPalette() {
       // here: each reads document.activeElement to decide WHICH pane it acts
       // on, and from the palette that is the palette's own input.
       cmds.push({
-        id: "split-right", section: "View", label: "Split pane right",
+        id: "split-right", section: "View", label: t("commandPalette.cmd.splitRight"),
         icon: Columns2, shortcutId: "split-pane-right", keywords: "pane vertical divider new",
         run: act(() => { useApp.getState().splitPane(task.id, "v"); }),
       });
       cmds.push({
-        id: "split-down", section: "View", label: "Split pane down",
+        id: "split-down", section: "View", label: t("commandPalette.cmd.splitDown"),
         icon: Rows2, shortcutId: "split-pane-below", keywords: "pane horizontal divider new",
         run: act(() => { useApp.getState().splitPane(task.id, "h"); }),
       });
@@ -407,7 +439,7 @@ export function CommandPalette() {
       // sitting third, under View, behind rows about panels and splits.
       const pad = activeEditTab.type === "scratch";
       cmds.push({
-        id: "set-syntax", section: pad ? "Task" : "View", label: "Set syntax…",
+        id: "set-syntax", section: pad ? "Task" : "View", label: t("commandPalette.cmd.setSyntax"),
         priority: pad,
         suffix: languageLabel(effectiveLanguageId(activeEditTab)), icon: Code2,
         keywords: "language highlighting grammar mode colour color file type markdown json",
@@ -415,19 +447,19 @@ export function CommandPalette() {
       });
     }
     cmds.push({
-      id: "toggle-inline-blame", section: "View", label: "Toggle inline git blame",
-      suffix: inlineBlame ? "On" : "Off", icon: UserPen,
+      id: "toggle-inline-blame", section: "View", label: t("commandPalette.cmd.toggleInlineBlame"),
+      suffix: inlineBlame ? t("commandPalette.stateOn") : t("commandPalette.stateOff"), icon: UserPen,
       keywords: "annotation decoration author commit who changed line history",
       run: act(() => usePrefs.getState().toggleInlineBlame()),
     });
     cmds.push({
-      id: "toggle-word-wrap", section: "View", label: "Toggle word wrap",
-      suffix: editorWordWrap ? "On" : "Off", icon: WrapText,
+      id: "toggle-word-wrap", section: "View", label: t("commandPalette.cmd.toggleWordWrap"),
+      suffix: editorWordWrap ? t("commandPalette.stateOn") : t("commandPalette.stateOff"), icon: WrapText,
       keywords: "editor soft wrap long lines wordwrap horizontal scroll",
       run: act(() => usePrefs.getState().toggleEditorWordWrap()),
     });
     cmds.push({
-      id: "change-theme", section: "View", label: "Change theme…",
+      id: "change-theme", section: "View", label: t("commandPalette.cmd.changeTheme"),
       suffix: themeLabel(themeMode), icon: Palette, keywords: "appearance color dark light",
       run: () => {
         // Refresh the custom theme files so the submenu reflects the folder
@@ -440,7 +472,7 @@ export function CommandPalette() {
       },
     });
     cmds.push({
-      id: "shortcuts", section: "View", label: "Keyboard shortcuts",
+      id: "shortcuts", section: "View", label: t("commandPalette.cmd.keyboardShortcuts"),
       icon: Keyboard, keywords: "keys bindings cheat sheet",
       run: act(() => useUI.getState().openShortcutsHelp()),
     });
@@ -453,77 +485,81 @@ export function CommandPalette() {
     for (const p of useProfiles.getState().profiles) {
       cmds.push({
         id: `profile-open-${p.slug}`, section: "Application",
-        label: `Profile: ${p.name}`,
+        label: t("commandPalette.cmd.profileRow", { name: p.name }),
         icon: UsersRound, keywords: `profile switch window ${p.slug}`,
         run: act(() => { void profileOpen(p.slug).catch(() => {}); }),
       });
     }
     cmds.push({
-      id: "profile-new", section: "Application", label: "New profile...",
+      id: "profile-new", section: "Application", label: t("commandPalette.cmd.newProfile"),
       icon: UsersRound, keywords: "profile workspace identity account window",
       run: act(() => useUI.getState().openNewProfile()),
     });
     cmds.push({
-      id: "settings", section: "Application", label: "Settings",
+      id: "settings", section: "Application", label: t("commandPalette.cmd.openSettings"),
       icon: SettingsIcon, shortcutId: "open-settings", keywords: "preferences config",
       run: act(() => useApp.getState().openSettings()),
     });
     if (proj) {
       cmds.push({
-        id: "project-settings", section: "Application", label: "Project settings",
+        id: "project-settings", section: "Application", label: t("commandPalette.cmd.projectSettings"),
         suffix: proj.name, icon: FolderCog, keywords: "repository scripts setup run archive",
         run: act(() => useApp.getState().openSettings("repositories", proj.id)),
       });
     }
     cmds.push({
-      id: "activity-monitor", section: "Application", label: "Activity monitor",
+      id: "activity-monitor", section: "Application", label: t("commandPalette.cmd.activityMonitor"),
       icon: Activity,
       keywords: "cpu memory ram process task manager profiling performance slow hog",
       run: act(() => { void procmonOpenWindow(); }),
     });
     cmds.push({
-      id: "check-updates", section: "Application", label: "Check for updates",
+      id: "check-updates", section: "Application", label: t("commandPalette.cmd.checkUpdates"),
       icon: RefreshCw, keywords: "version upgrade",
       run: act(async () => {
         const r = await useUpdate.getState().checkNow();
+        // Handlers run outside render: resolve the toast at click time.
         useUI.getState().pushToast(
-          r === "available" ? "Update available" : r === "error" ? "Update check failed" : "You're up to date",
+          r === "available" ? i18n.t("dialogs:commandPalette.toastUpdateAvailable")
+            : r === "error" ? i18n.t("dialogs:commandPalette.toastUpdateFailed")
+            : i18n.t("dialogs:commandPalette.toastUpToDate"),
           r === "error" ? "error" : "success",
         );
       }),
     });
     cmds.push({
-      id: "changelog", section: "Application", label: "Open changelog",
+      id: "changelog", section: "Application", label: t("commandPalette.cmd.openChangelog"),
       icon: ScrollText, keywords: "release notes whats new version",
       run: act(() => useUI.getState().openChangelog()),
     });
     cmds.push({
-      id: "open-issue", section: "Application", label: "Open an issue",
+      id: "open-issue", section: "Application", label: t("commandPalette.cmd.openIssue"),
       icon: Bug, keywords: "github bug report feedback",
       run: act(() => { void openPath(ISSUE_URL); }),
     });
 
     // ── Settings (deep links) ───────────────────────────────────────────
+    // Second tuple slot is the locale key, resolved to a label below.
     const settingsLinks: Array<[string, string, LucideIcon]> = [
-      ["general", "General settings", SlidersHorizontal],
-      ["appearance", "Appearance settings", Palette],
-      ["agents", "Agent CLIs settings", Bot],
-      ["tasks", "Task settings", ListTodo],
-      ["notifications", "Notification settings", Bell],
-      ["prompts", "Prompt library", BookText],
-      ["shortcuts", "Keyboard shortcuts settings", Keyboard],
-      ["sandbox", "Sandbox settings", ShieldCheck],
-      ["cli", "CLI & MCP settings", SquareTerminal],
+      ["general", "commandPalette.cmd.linkGeneral", SlidersHorizontal],
+      ["appearance", "commandPalette.cmd.linkAppearance", Palette],
+      ["agents", "commandPalette.cmd.linkAgents", Bot],
+      ["tasks", "commandPalette.cmd.linkTasks", ListTodo],
+      ["notifications", "commandPalette.cmd.linkNotifications", Bell],
+      ["prompts", "commandPalette.cmd.linkPrompts", BookText],
+      ["shortcuts", "commandPalette.cmd.linkShortcuts", Keyboard],
+      ["sandbox", "commandPalette.cmd.linkSandbox", ShieldCheck],
+      ["cli", "commandPalette.cmd.linkCli", SquareTerminal],
     ];
-    for (const [tab, label, icon] of settingsLinks) {
+    for (const [tab, labelKey, icon] of settingsLinks) {
       cmds.push({
-        id: `settings:${tab}`, section: "Settings", label, icon, keywords: "settings preferences",
+        id: `settings:${tab}`, section: "Settings", label: t(labelKey), icon, keywords: "settings preferences",
         run: act(() => useApp.getState().openSettings(tab as any)),
       });
     }
 
     return cmds;
-  }, [view, task, proj, themeMode, themeEntries, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, task, proj, themeMode, themeEntries, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Recents, re-read on every open so an hour spent with the palette closed
   // expires them (the list is only ever consulted at build time). Empty query
@@ -690,15 +726,15 @@ export function CommandPalette() {
           className="termic-pop fixed left-1/2 top-[14vh] z-50 w-[min(620px,92vw)] -translate-x-1/2 overflow-hidden rounded-xl border border-[var(--color-border)] shadow-2xl outline-none backdrop-blur-lg"
           onKeyDown={onKeyDown}
         >
-          <Dialog.Title className="sr-only">Command palette</Dialog.Title>
-          <Dialog.Description className="sr-only">Search and run a command.</Dialog.Description>
+          <Dialog.Title className="sr-only">{t("commandPalette.srTitle")}</Dialog.Title>
+          <Dialog.Description className="sr-only">{t("commandPalette.srDesc")}</Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             {view === "theme" ? (
               <button
                 type="button"
                 onClick={cancelThemePreview}
                 className="shrink-0 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"
-                title="Back"
+                title={t("common:back")}
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
@@ -715,13 +751,13 @@ export function CommandPalette() {
               autoCorrect="off"
               autoCapitalize="off"
               autoComplete="off"
-              placeholder={view === "theme" ? "Pick a theme…" : "Type a command or search…"}
+              placeholder={view === "theme" ? t("commandPalette.placeholderTheme") : t("commandPalette.placeholderRoot")}
               className="w-full bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
             />
           </div>
           <div ref={listRef} className="no-scrollbar max-h-[min(60vh,440px)] overflow-y-auto py-1">
             {rows.length === 0 && (
-              <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">No matching commands</div>
+              <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">{t("commandPalette.noMatching")}</div>
             )}
             {filtered.groups.map(group => (
               <div
@@ -734,9 +770,9 @@ export function CommandPalette() {
               >
                 <div className="flex items-center gap-1.5 px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">
                   {group.section === RECENT_SECTION && <Clock className="h-3 w-3" />}
-                  {group.section}
+                  {t(SECTION_LABEL_KEY[group.section])}
                   {group.section === RECENT_SECTION && (
-                    <span className="normal-case tracking-normal opacity-70">· what you just ran</span>
+                    <span className="normal-case tracking-normal opacity-70">{t("commandPalette.recentHint")}</span>
                   )}
                 </div>
                 {group.items.map(({ cmd, labelMatches }) => {

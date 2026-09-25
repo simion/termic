@@ -5,6 +5,7 @@
 // both entry points now render from here so they cannot drift apart.
 
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { Agent } from "@/lib/types";
 import { useApp, type ClosedTabEntry } from "@/store/app";
 import {
@@ -26,9 +27,9 @@ const NO_CLOSED_TABS: ClosedTabEntry[] = [];
  *  tabs are always recent (session-only list), so minute/hour granularity
  *  is enough — no need for History's day/week/month buckets. Terse on
  *  purpose: it sits inline before the row's title, one row per line. */
-function relativeTime(iso: string): string {
+function relativeTime(iso: string, now: string): string {
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  if (mins < 1) return "now";
+  if (mins < 1) return now;
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h`;
@@ -41,6 +42,7 @@ function relativeTime(iso: string): string {
 function ResumeMenuItems({ entries, agents, onResume }: {
   entries: ClosedTabEntry[]; agents: Agent[]; onResume: (entryId: string) => void;
 }) {
+  const { t } = useTranslation("task");
   return (
     <>
       {entries.map(entry => {
@@ -51,7 +53,7 @@ function ResumeMenuItems({ entries, agents, onResume }: {
               <CliIcon cli={iconId} className="h-4 w-4" />
             </span>
             <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-fg-faint)]">
-              {relativeTime(entry.closedAt)}
+              {relativeTime(entry.closedAt, t("newTab.now"))}
             </span>
             <span className="min-w-0 flex-1 truncate">{entry.title}</span>
           </DropdownItem>
@@ -85,10 +87,11 @@ function CliMenuItems({ entries, onSpawn }: { entries: Agent[]; onSpawn: (cli: s
  *  into yourself made no sense (it just broke git/ssh + shell history). See
  *  issue #32. */
 function ShellTerminalItem({ onSelect }: { onSelect: () => void }) {
+  const { t } = useTranslation("task");
   return (
     <DropdownItem onSelect={onSelect}>
       <span className="shrink-0 text-[var(--color-fg-dim)]"><CliIcon cli="shell" className="h-4 w-4" /></span>
-      Terminal
+      {t("newTab.terminal")}
     </DropdownItem>
   );
 }
@@ -110,6 +113,7 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
   /** "More…" under Resume — jump to the full History view. */
   onMore: () => void;
 }) {
+  const { t } = useTranslation("task");
   const registry = useApp(s => s.agents);
   const detectedClis = useApp(s => s.detectedClis);
   const closedTabs = useApp(s => s.closedTabs[taskId] ?? NO_CLOSED_TABS);
@@ -122,16 +126,16 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
 
   return (
     <>
-      <DropdownLabel>New terminal</DropdownLabel>
+      <DropdownLabel>{t("newTab.newTerminal")}</DropdownLabel>
       <ShellTerminalItem onSelect={onSpawnShell} />
       <CliMenuItems entries={customTerminals} onSpawn={onSpawnCli} />
       <DropdownSeparator />
-      <DropdownLabel>New agent</DropdownLabel>
+      <DropdownLabel>{t("newTab.newAgent")}</DropdownLabel>
       <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={onSpawnCli} />
       <DropdownSeparator />
       <DropdownItem onSelect={onScratchpad} data-testid="new-scratchpad" className="items-center">
         <span className="shrink-0 text-[var(--color-fg-dim)]"><NotepadText className="h-4 w-4" /></span>
-        Scratchpad
+        {t("newTab.scratchpad")}
       </DropdownItem>
       {/* Resume is a NESTED submenu, not an inline section. It grows with
           every closed tab, and a flat list of five "Claude Code" rows pushed
@@ -146,13 +150,13 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
             <DropdownSubTrigger className="justify-between">
               <span className="flex items-center gap-2">
                 <History className="h-4 w-4 text-[var(--color-fg-dim)]" />
-                <span>Resume</span>
+                <span>{t("newTab.resume")}</span>
               </span>
               <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
             </DropdownSubTrigger>
             <DropdownSubContent>
               <ResumeMenuItems entries={closedTabs} agents={registry} onResume={onResume} />
-              <DropdownItem onSelect={onMore}>More…</DropdownItem>
+              <DropdownItem onSelect={onMore}>{t("newTab.more")}</DropdownItem>
             </DropdownSubContent>
           </DropdownSub>
         </>

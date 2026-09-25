@@ -592,6 +592,54 @@ describe("settings rail", () => {
     }
   });
 
+  // The language picker (i18n). Switching applies live through i18next, so
+  // the assertions are on what the pane renders and on <html lang>, not on
+  // the pref blob alone.
+  describe("language picker", () => {
+    after(async () => {
+      // Leave the profile on "system" for every spec that follows in the
+      // run: their markers ("Repos directory", rail labels) are English
+      // copy, and the fixture box resolves system to English.
+      await browser.execute(() => {
+        window.__termic!.usePrefs.getState().setLanguage("system");
+      });
+    });
+
+    it("switches the UI to Simplified Chinese and back, live", async () => {
+      await waitForAppShell();
+      await requireTermicApi();
+      await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
+      await waitVisible('[data-testid="language-select"]');
+
+      // Deterministic start: WKWebView localStorage outlives the throwaway
+      // profile (it lives in the app container), so a previous run's pick
+      // may still be there. "system" is the no-pick default and the state
+      // the after() hook restores.
+      await browser.execute(() => window.__termic!.usePrefs.getState().setLanguage("system"));
+      const initial = await browser.execute(() =>
+        (document.querySelector('[data-testid="language-select"]') as HTMLSelectElement).value);
+      expect(initial).toBe("system");
+
+      const pick = (v: string) =>
+        browser.execute((val) => {
+          const sel = document.querySelector('[data-testid="language-select"]') as HTMLSelectElement;
+          sel.value = val;
+          sel.dispatchEvent(new Event("change", { bubbles: true }));
+        }, v);
+
+      await pick("zh-CN");
+      // The picker's own block re-renders in Chinese, live, no reload.
+      await waitForText("语言");
+      expect(await browser.execute(() => document.documentElement.lang)).toBe("zh-CN");
+      expect(await browser.execute(() => window.__termic!.usePrefs.getState().language)).toBe("zh-CN");
+      await snap("settings-language-zh.png");
+
+      await pick("en");
+      await waitForText("Language");
+      expect(await browser.execute(() => document.documentElement.lang)).toBe("en");
+    });
+  });
+
   it("rehomes task expand behavior to Appearance and copy on select to Agents & Terminals", async () => {
     await clickRail("Appearance");
     await clickAppearanceTab("interface");

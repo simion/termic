@@ -5,6 +5,7 @@
 // the count and the jump come from `@/lib/waitingAgents` so they can't drift
 // from the keyboard shortcut.
 
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
@@ -13,6 +14,7 @@ import { bindingGlyphs } from "@/lib/shortcuts";
 import { waitingCount, jumpToNextWaiting } from "@/lib/waitingAgents";
 
 export function WaitingAgentsPill() {
+  const { t } = useTranslation("chrome");
   // Subscribe to the pref so toggling the work-done UI updates the pill live;
   // waitingCount also honors it, but the subscription is what re-renders us.
   const settled = usePrefs(s => s.settledHighlight);
@@ -24,7 +26,7 @@ export function WaitingAgentsPill() {
   if (!settled || count < 1) return null;
 
   const glyphs = bindingGlyphs(binding).join("");
-  const label = `Jump to next waiting agent${glyphs ? ` (${glyphs})` : ""}`;
+  const label = `${t("waitingPill.jump")}${glyphs ? ` (${glyphs})` : ""}`;
 
   return (
     <Tip content={label} side="bottom">

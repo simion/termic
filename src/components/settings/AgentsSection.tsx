@@ -8,6 +8,7 @@
 // Saves are debounced (500ms) so typing doesn't hammer the JSON file.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { settingsLoad, agentsSave, agentsDefaults, projectUpdate } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -24,13 +25,14 @@ import { AgentAccountsRow, AgentAccountsAction } from "@/components/settings/Age
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { SignalInspector } from "./SignalInspector";
 import { cn, slugify } from "@/lib/utils";
-import { isTerminalEntry, BUILTIN_TITLE_SIGNALS, builtinBaseId, YOLO_ARGS_NOTES } from "@/lib/agents";
+import { isTerminalEntry, BUILTIN_TITLE_SIGNALS, builtinBaseId, yoloArgsNote } from "@/lib/agents";
 import { SubSection } from "@/components/settings/SubSection";
 import { Toggle } from "@/components/settings/Controls";
 import { usePrefs } from "@/store/prefs";
 import { footerReports } from "@/lib/agentContext";
 
 export function AgentsSection() {
+  const { t } = useTranslation("settings");
   const terminalCopyOnSelect = usePrefs(s => s.terminalCopyOnSelect);
   const setTerminalCopyOnSelect = usePrefs(s => s.setTerminalCopyOnSelect);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -148,9 +150,9 @@ export function AgentsSection() {
    *  user added AND everything `carriedOver` names. */
   async function resetAllBuiltins() {
     const ok = await useUI.getState().askConfirm({
-      title: "Reset built-in agents to defaults?",
-      message: "Resets the built-in agents (claude, codex, Antigravity, gemini) to their ship-default commands. Custom agents, per-agent env blocks and your credential sets are kept.",
-      confirmLabel: "Reset built-ins",
+      title: t("agents.resetAllTitle"),
+      message: t("agents.resetAllMessage"),
+      confirmLabel: t("agents.resetBuiltins"),
     });
     if (!ok) return;
     const next = agents.map(a => {
@@ -254,7 +256,7 @@ export function AgentsSection() {
     while (agents.some(a => a.id === `custom-${n}`)) n++;
     const fresh: Agent = {
       id: `custom-${n}`,
-      display_name: `New agent ${n}`,
+      display_name: t("agents.newAgentName", { n }),
       command: "",
       args: [],
       icon_id: "lucide:terminal",
@@ -276,7 +278,7 @@ export function AgentsSection() {
     while (agents.some(a => a.id === `terminal-${n}`)) n++;
     const fresh: Agent = {
       id: `terminal-${n}`,
-      display_name: `New terminal ${n}`,
+      display_name: t("agents.newTerminalName", { n }),
       command: "",
       args: [],
       icon_id: "lucide:terminal",
@@ -372,31 +374,31 @@ export function AgentsSection() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-[20px] font-medium">Agents & Terminals</h1>
+        <h1 className="text-[20px] font-medium">{t("rail.agents")}</h1>
         <div className="flex items-center gap-3">
           <div className="text-[12px] text-[var(--color-fg-faint)] min-h-[1em]">
-            {status === "saving" && <span>Saving…</span>}
-            {status === "saved"  && <span className="flex items-center gap-1 text-[var(--color-ok)]"><Check className="h-3.5 w-3.5" /> Saved</span>}
-            {status === "error"  && <span className="text-[var(--color-err)]">Save failed</span>}
+            {status === "saving" && <span>{t("common:saving")}</span>}
+            {status === "saved"  && <span className="flex items-center gap-1 text-[var(--color-ok)]"><Check className="h-3.5 w-3.5" /> {t("shared.saved")}</span>}
+            {status === "error"  && <span className="text-[var(--color-err)]">{t("shared.saveFailed")}</span>}
           </div>
-          <Button variant="ghost" size="sm" onClick={resetAllBuiltins} title="Reset the built-in agents to ship defaults (custom agents kept)">
-            <RotateCcw className="h-3.5 w-3.5" /> Reset built-ins
+          <Button variant="ghost" size="sm" onClick={resetAllBuiltins} title={t("agents.resetBuiltinsTip")}>
+            <RotateCcw className="h-3.5 w-3.5" /> {t("agents.resetBuiltins")}
           </Button>
           <Button variant="secondary" size="sm" onClick={addAgent}>
-            <Plus className="h-3.5 w-3.5" /> Add agent CLI
+            <Plus className="h-3.5 w-3.5" /> {t("agents.addAgent")}
           </Button>
-          <Button variant="secondary" size="sm" onClick={addTerminal} title="Add a custom terminal: a command line (docker exec, ssh, ...) offered under New terminal in the + tab menu">
-            <Plus className="h-3.5 w-3.5" /> Add terminal
+          <Button variant="secondary" size="sm" onClick={addTerminal} title={t("agents.addTerminalTip")}>
+            <Plus className="h-3.5 w-3.5" /> {t("agents.addTerminal")}
           </Button>
         </div>
       </div>
 
       <p className="text-[13px] text-[var(--color-fg-dim)] -mt-2">
-        Customize the command and flags used to launch each agent. Useful when the CLI renames a flag
-        (e.g., a future <code className="font-mono">--yolo</code> rename) or you want to point at a
-        wrapper script. Built-in agents can be edited but not removed. Custom terminals appear under
-        "New terminal" in the + tab menu and run their command line through your login shell
-        (handy for devcontainers: <code className="font-mono">docker exec</code>, ssh boxes, REPLs).
+        <Trans
+          t={t}
+          i18nKey="agents.intro"
+          components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
+        />
       </p>
 
       {err && <div className="text-[13px] text-[var(--color-err)]">{err}</div>}
@@ -436,10 +438,10 @@ export function AgentsSection() {
           entry. "Copy on select" lived in General until the settings split;
           it is terminal behavior, so it belongs on this page. */}
       <div className="border-t border-[var(--color-border-soft)] pt-6">
-        <h2 className="mb-4 text-[15px] font-medium">All terminals</h2>
+        <h2 className="mb-4 text-[15px] font-medium">{t("agents.allTerminals")}</h2>
         <Toggle
-          label="Copy on select"
-          hint="iTerm-style: selecting text with the mouse in any terminal copies it to the clipboard automatically. Applies to every terminal (agents and scratch shells)."
+          label={t("agents.copyOnSelect.label")}
+          hint={t("agents.copyOnSelect.hint")}
           value={terminalCopyOnSelect}
           onChange={setTerminalCopyOnSelect}
         />
@@ -457,34 +459,58 @@ export function AgentsSection() {
           </span>
           <div className="min-w-0">
             <div className="text-[15px] font-semibold">
-              Remove {isTerminalEntry(pendingDelete ?? undefined) ? "terminal" : "agent"}?
+              {t(isTerminalEntry(pendingDelete ?? undefined) ? "agents.removeTerminalTitle" : "agents.removeAgentTitle")}
             </div>
             <p className="mt-1 text-[13px] text-[var(--color-fg-dim)]">
-              <span className="font-mono text-[var(--color-fg)]">{pendingDelete?.display_name}</span>{" "}
-              will be removed. Tasks that reference it will fall back to spawning the
-              literal command <span className="font-mono text-[var(--color-fg)]">{pendingDelete?.command || "(empty)"}</span>.
+              <Trans
+                t={t}
+                i18nKey="agents.removeBody"
+                values={{ name: pendingDelete?.display_name, command: pendingDelete?.command || "(empty)" }}
+                components={{
+                  1: <span className="font-mono text-[var(--color-fg)]" />,
+                  3: <span className="font-mono text-[var(--color-fg)]" />,
+                }}
+              />
             </p>
             {/* A project pinned to this agent has to land somewhere: say
                 where, here, rather than letting it silently default to
                 whatever the picker offers first. */}
             {pinnedProjects.length > 0 && (
               <p className="mt-1 text-[13px] text-[var(--color-fg-dim)]">
-                It is the default CLI for {pinnedProjects.length === 1
-                  ? <span className="font-mono text-[var(--color-fg)]">{pinnedProjects[0].name}</span>
-                  : `${pinnedProjects.length} projects`}, which will switch to{" "}
-                <span className="font-mono text-[var(--color-fg)]">
-                  {pendingDelete
-                    ? (agents.find(a => a.id === fallbackCli(pendingDelete.id))?.display_name ?? "Terminal")
-                    : ""}
-                </span>.
+                {pinnedProjects.length === 1
+                  ? <Trans
+                      t={t}
+                      i18nKey="agents.pinnedOne"
+                      values={{
+                        name: pinnedProjects[0].name,
+                        fallback: pendingDelete
+                          ? (agents.find(a => a.id === fallbackCli(pendingDelete.id))?.display_name ?? "Terminal")
+                          : "",
+                      }}
+                      components={{
+                        1: <span className="font-mono text-[var(--color-fg)]" />,
+                        3: <span className="font-mono text-[var(--color-fg)]" />,
+                      }}
+                    />
+                  : <Trans
+                      t={t}
+                      i18nKey="agents.pinnedMany"
+                      count={pinnedProjects.length}
+                      values={{
+                        fallback: pendingDelete
+                          ? (agents.find(a => a.id === fallbackCli(pendingDelete.id))?.display_name ?? "Terminal")
+                          : "",
+                      }}
+                      components={{ 1: <span className="font-mono text-[var(--color-fg)]" /> }}
+                    />}
               </p>
             )}
           </div>
         </div>
         <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setPendingDelete(null)}>Cancel</Button>
+          <Button variant="ghost" onClick={() => setPendingDelete(null)}>{t("common:cancel")}</Button>
           <Button variant="danger" onClick={confirmRemoveAgent}>
-            <Trash2 className="h-3.5 w-3.5" /> Remove
+            <Trash2 className="h-3.5 w-3.5" /> {t("common:remove")}
           </Button>
         </div>
       </AppDialog>
@@ -521,6 +547,7 @@ function AgentsTabs({
   reorderAgent: (id: string, toIndex: number) => void;
   onAutoFocusConsumed: () => void;
 }) {
+  const { t } = useTranslation("settings");
   // PATH-detection results (keyed by agent id) drive the install badge.
   const detectedClis = useApp(s => s.detectedClis);
   // Default to first agent; when the list churns (delete current,
@@ -676,7 +703,7 @@ function AgentsTabs({
       </span>
       <span className="truncate max-w-[140px]">{a.display_name || a.id}</span>
       {isModified(a) && (
-        <span title="Modified from ship defaults" className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
+        <span title={t("agents.card.modifiedTip")} className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
       )}
       {a.id === active.id && (
         <span className={cn(
@@ -700,7 +727,7 @@ function AgentsTabs({
         {agentEntries.map((a, idx) => pill(a, idx === 0))}
         {termEntries.length > 0 && (
           <span className="ml-4 mr-1 shrink-0 select-none text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-            Terminals
+            {t("agents.terminalsGroup")}
           </span>
         )}
         {termEntries.map(a => pill(a, false))}
@@ -722,7 +749,7 @@ function AgentsTabs({
           extendsName={active.extends ? (agents.find(a => a.id === active.extends)?.display_name ?? active.extends) : undefined}
           overrideCount={agentOverrides(agents, active.id).length}
           inherited={inherited}
-          yoloNote={YOLO_ARGS_NOTES[builtinBaseId(active.id, agents)]}
+          yoloNote={yoloArgsNote(builtinBaseId(active.id, agents))}
           resetOverrides={resetOverrides}
           autoFocus={autoFocusId === active.id}
           onAutoFocusConsumed={onAutoFocusConsumed}
@@ -771,6 +798,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   // Bumped when the header names the FIRST credential set, so the row below
   // (which fetches on mount) appears instead of staying empty until the card
   // is reopened.
+  const { t } = useTranslation("settings");
   const [accountsNonce, setAccountsNonce] = useState(0);
   // The header button opens the add form, which renders in the BODY row. Held
   // here because the two are siblings: an input in the header pushed the
@@ -841,21 +869,21 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           />
           <span className="shrink-0 whitespace-nowrap rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] font-mono">{agent.id}</span>
           {agent.builtin && (
-            <span className="shrink-0 whitespace-nowrap rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] uppercase tracking-wider">built-in</span>
+            <span className="shrink-0 whitespace-nowrap rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] uppercase tracking-wider">{t("agents.card.builtInBadge")}</span>
           )}
           {isTerminal && (
             <span
               className="shrink-0 whitespace-nowrap rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] uppercase tracking-wider"
-              title="Custom terminal: offered under New terminal in the + tab menu. Runs through your login shell; no agent features (resume, work-done, message queue)."
-            >terminal</span>
+              title={t("agents.card.terminalBadgeTip")}
+            >{t("agents.card.terminalBadge")}</span>
           )}
           {extendsName && (
             <span
               className="shrink-0 whitespace-nowrap rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[11px] text-[var(--color-fg-dim)] font-mono"
               title={overrideCount
-                ? `Inherits from ${extendsName}. ${overrideCount} field${overrideCount === 1 ? "" : "s"} overridden; everything else follows ${extendsName} as it changes.`
-                : `Inherits everything from ${extendsName}, live. Editing a field here overrides just that one.`}
-            >extends: {extendsName}</span>
+                ? t("agents.card.inheritsSomeTip", { name: extendsName, count: overrideCount })
+                : t("agents.card.inheritsAllTip", { name: extendsName })}
+            >{t("agents.card.extendsBadge", { name: extendsName })}</span>
           )}
           {/* The count is the honest summary of a clone: which of its fields
               are ITS OWN, and therefore frozen against the parent. Everything
@@ -867,14 +895,14 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               data-testid="reset-overrides"
               onClick={() => resetOverrides(agent.id)}
               className="shrink-0 whitespace-nowrap rounded bg-[var(--color-accent)]/15 px-1.5 py-0.5 text-[11px] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/25"
-              title={`Clear all ${overrideCount} override${overrideCount === 1 ? "" : "s"} and inherit everything from ${extendsName} again.`}
-            >{overrideCount} override{overrideCount === 1 ? "" : "s"} · reset</button>
+              title={t("agents.card.overridesResetTip", { count: overrideCount, name: extendsName })}
+            >{t("agents.card.overridesReset", { count: overrideCount })}</button>
           )}
           {modified && (
             <span
               className="shrink-0 whitespace-nowrap rounded bg-[var(--color-accent)]/15 px-1.5 py-0.5 text-[11px] text-[var(--color-accent)] uppercase tracking-wider"
-              title="Some fields differ from this agent's ship defaults. Use Reset to revert."
-            >modified</span>
+              title={t("agents.card.modifiedBadgeTip")}
+            >{t("agents.card.modifiedBadge")}</span>
           )}
           {/* Install status — from PATH detection (refreshClis). Skipped
               for terminals: their command is a free-form shell line that
@@ -888,9 +916,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                   : "bg-[var(--color-err)]/15 text-[var(--color-err)]",
               )}
               title={detected.found
-                ? `Found: ${detected.path || "on PATH"}${detected.version ? ` (${detected.version})` : ""}`
-                : "Not found on PATH. Hidden from the CLI pickers until it's installed (or point Command at an absolute path)."}
-            >{detected.found ? "installed" : "not found"}</span>
+                ? t("agents.card.foundTip", { path: `${detected.path || t("agents.card.onPath")}${detected.version ? ` (${detected.version})` : ""}` })
+                : t("agents.card.notFoundTip")}
+            >{detected.found ? t("agents.card.installedBadge") : t("agents.card.notFoundBadge")}</span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -911,10 +939,10 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             onClick={() => onPatch({ disabled: !agent.disabled })}
             className="text-[12.5px] text-[var(--color-fg-dim)] font-medium select-none cursor-pointer hover:text-[var(--color-fg)] transition-colors mr-0.5"
             title={agent.disabled
-              ? "Hidden from the CLI pickers. Click to show."
-              : "Shown in the CLI pickers. Click to hide."}
+              ? t("agents.card.hideTip")
+              : t("agents.card.showTip")}
           >
-            Enable
+            {t("common:enable")}
           </span>
           <button
             type="button"
@@ -926,8 +954,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
               !agent.disabled ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-3)]"
             )}
             title={agent.disabled
-              ? "Hidden from the CLI pickers. Click to show."
-              : "Shown in the CLI pickers. Click to hide."}
+              ? t("agents.card.hideTip")
+              : t("agents.card.showTip")}
           >
             <span
               className={cn(
@@ -941,15 +969,15 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           {modified && onReset && (
             <button
               onClick={() => {
-                if (confirm(`Reset ${agent.display_name} to ship defaults?\n\nThis overwrites Command, Default args, YOLO args, Runtime YOLO command, and Resume args.`)) {
+                if (confirm(t("agents.card.resetConfirm", { name: agent.display_name }))) {
                   onReset();
                 }
               }}
               className="flex items-center gap-1 rounded p-1.5 text-[12px] text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
-              title="Reset this agent to ship defaults"
-            ><RotateCcw className="h-3.5 w-3.5" /> Reset</button>
+              title={t("agents.card.resetTip")}
+            ><RotateCcw className="h-3.5 w-3.5" /> {t("common:reset")}</button>
           )}
-          <Tip content="Clone this agent: the copy INHERITS every setting and follows this agent as it changes. Fill a field on the copy to override just that one." side="top">
+          <Tip content={t("agents.card.cloneTip")} side="top">
             <button
               data-testid="clone-agent"
               onClick={onClone}
@@ -960,7 +988,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             <button
               onClick={onRemove}
               className="rounded p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-err)]"
-              title="Remove agent"
+              title={t("agents.card.removeTip")}
             ><Trash2 className="h-4 w-4" /></button>
           )}
         </div>
@@ -982,28 +1010,30 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           inherited, which is the opposite of what those blanks mean. */}
       {extendsName && (
         <div className="mt-3 mb-3 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-3)] px-3 py-2 text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
-          This agent inherits everything from <b>{extendsName}</b>. Every field
-          left empty uses {extendsName}&apos;s current value, shown greyed
-          below, and follows it as {extendsName} changes. Fill a field in only
-          to override that one.
+          <Trans
+            t={t}
+            i18nKey="agents.card.inheritBanner"
+            values={{ name: extendsName }}
+            components={{ 1: <b /> }}
+          />
           {overrideCount > 0 && (
-            <> You are overriding {overrideCount} field{overrideCount === 1 ? "" : "s"} right now.</>
+            <>{t("agents.card.inheritBannerCount", { count: overrideCount })}</>
           )}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-3">
         {!isTerminal && <FooterReadouts agentId={agent.id} />}
-        <Field label="Command" hint={isTerminal
-          ? "Run through your login shell (quoting, pipes, and rc-file PATH all work). The shell stays interactive after the command exits. Placeholders: {task_slug}, {task_name}, {task_path}, {branch}, {port}."
-          : "Single executable to spawn (PATH lookup or absolute path). No shell parsing - quoted/piped strings won't work, and shell-style `VAR=val cmd` prefixes won't either; use the Environment box below for env vars."}>
+        <Field label={t("agents.card.commandLabel")} hint={isTerminal
+          ? t("agents.card.commandHintTerminal")
+          : t("agents.card.commandHintAgent")}>
           <Input value={agent.command} onChange={e => onPatch({ command: e.target.value })} className="font-mono" placeholder={isTerminal ? "docker exec -it -w {task_path} mybox zsh" : "claude"} />
         </Field>
         <Field
-          label="Default args"
+          label={t("agents.card.defaultArgsLabel")}
           hint={isTerminal
-            ? "Appended to the command line above. Space-separated. Same placeholders, including {task_path} (differs between the main repo and each worktree)."
-            : "Always passed. Space-separated. Placeholders: {task_slug}, {task_name}, {task_id}, {task_path}, {branch}, {port}."}
+            ? t("agents.card.defaultArgsHintTerminal")
+            : t("agents.card.defaultArgsHintAgent")}
         >
           <ArgsInput value={agent.args || []}
             onChange={args => onPatch({ args })}
@@ -1011,53 +1041,53 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           />
         </Field>
         {!isTerminal && <>
-        <Field label="YOLO args" hint={"Appended when YOLO mode (⚡) is on. Empty = no flag added." + (yoloNote ? " " + yoloNote : "")}>
+        <Field label={t("agents.card.yoloLabel")} hint={t("agents.card.yoloHint") + (yoloNote ? " " + yoloNote : "")}>
           <ArgsInput value={agent.capabilities?.yolo_args || []}
             onChange={yolo_args => onPatchCaps({ yolo_args })}
             className="font-mono" placeholder={inheritedPlaceholder(inherited, a => a.capabilities?.yolo_args, "--dangerously-skip-permissions")}
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Runtime YOLO command" hint="Slash-command sent to the live agent to switch it into YOLO. Empty = the YOLO toggle needs a respawn.">
+          <Field label={t("agents.card.runtimeYoloLabel")} hint={t("agents.card.runtimeYoloHint")}>
             <Input value={agent.capabilities?.runtime_yolo_command || ""}
               onChange={e => onPatchCaps({ runtime_yolo_command: e.target.value })}
               className="font-mono"
             />
           </Field>
-          <Field label="Runtime default command" hint="Slash-command sent to switch the live agent back to default (YOLO off). Empty = needs a respawn.">
+          <Field label={t("agents.card.runtimeDefaultLabel")} hint={t("agents.card.runtimeDefaultHint")}>
             <Input value={agent.capabilities?.runtime_default_command || ""}
               onChange={e => onPatchCaps({ runtime_default_command: e.target.value })}
               className="font-mono"
             />
           </Field>
         </div>
-        <Field label="Resume last (worktrees)" hint="CWD-based resume. Used on every spawn after the first inside a worktree task (each worktree has its own dir, so the agent's most-recent CWD session IS this task's session). Not used in main-checkout tasks (the shared dir would lasso external sessions; the main checkout uses Session/Resume ID args instead).">
+        <Field label={t("agents.card.resumeLabel")} hint={t("agents.card.resumeHint")}>
           <ArgsInput value={agent.capabilities?.resume_args || []}
             onChange={resume_args => onPatchCaps({ resume_args })}
             className="font-mono" placeholder={inheritedPlaceholder(inherited, a => a.capabilities?.resume_args, "--continue")}
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Session ID args (main checkout)" hint="First spawn in a main-checkout task, mints a termic-owned uuid. Use {UUID}. Empty = no auto-resume in the main checkout for this agent.">
+          <Field label={t("agents.card.sessionIdLabel")} hint={t("agents.card.sessionIdHint")}>
             <ArgsInput value={agent.capabilities?.session_id_args || []}
               onChange={session_id_args => onPatchCaps({ session_id_args })}
               className="font-mono" placeholder={inheritedPlaceholder(inherited, a => a.capabilities?.session_id_args, "--session-id {UUID}")}
             />
           </Field>
-          <Field label="Resume ID args (main checkout)" hint="Every spawn after the first in a main-checkout task. Resumes the termic-owned uuid (isolates us from external sessions in the same cwd). Use {UUID}.">
+          <Field label={t("agents.card.resumeIdLabel")} hint={t("agents.card.resumeIdHint")}>
             <ArgsInput value={agent.capabilities?.resume_id_args || []}
               onChange={resume_id_args => onPatchCaps({ resume_id_args })}
               className="font-mono" placeholder={inheritedPlaceholder(inherited, a => a.capabilities?.resume_id_args, "--resume {UUID}")}
             />
           </Field>
         </div>
-        <Field label="Session picker args" hint="Opens the agent's own session picker when a stored session fails to resume, instead of starting a new session. The session you pick comes back through the agent hooks, so Termic resumes it next time. No {UUID}. Empty = start a new session, as before; a built-in agent gets its default back on the next start, like the other argument lists.">
+        <Field label={t("agents.card.resumePickerLabel")} hint={t("agents.card.resumePickerHint")}>
           <ArgsInput value={agent.capabilities?.resume_picker_args || []}
             onChange={resume_picker_args => onPatchCaps({ resume_picker_args })}
             className="font-mono" placeholder={inheritedPlaceholder(inherited, a => a.capabilities?.resume_picker_args, "--resume")}
           />
         </Field>
-        <Field label="Name args" hint="Applied on every spawn. Pins a display name for the session (claude shows it in /resume and the prompt box). Placeholders supported: {WORKSPACE_SLUG}, {WORKSPACE_NAME}, {BRANCH}.">
+        <Field label={t("agents.card.nameArgsLabel")} hint={t("agents.card.nameArgsHint")}>
           <ArgsInput value={agent.capabilities?.name_args || []}
             onChange={name_args => onPatchCaps({ name_args })}
             className="font-mono" placeholder={inheritedPlaceholder(inherited, a => a.capabilities?.name_args, "--name {WORKSPACE_SLUG}")}
@@ -1065,8 +1095,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
         </Field>
         </>}
         <Field
-          label="Environment"
-          hint="One KEY=VALUE per line, merged on top of the inherited parent env. `~/` expands to your home dir. `#` lines are ignored. Kept across Reset."
+          label={t("agents.card.envLabel")}
+          hint={t("agents.card.envHint")}
         >
           <EnvTextarea
             value={agent.env ?? {}}
@@ -1078,8 +1108,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             the field is read on the Docker spawn path and nowhere else. */}
         {dockerSandboxOn && (
           <Field
-            label="Environment (Docker)"
-            hint="A SEPARATE list, used instead of the one above when this agent runs in a container. Empty = the list above is used as-is. Worth filling in when a value names a path on your Mac, since that path does not exist inside the container."
+            label={t("agents.card.dockerEnvLabel")}
+            hint={t("agents.card.dockerEnvHint")}
           >
             <EnvTextarea
               value={agent.docker_env ?? {}}
@@ -1088,8 +1118,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           </Field>
         )}
         <Field
-          label="Sandbox allowed paths"
-          hint="One path per line. $HOME and ~ expand. Joined into every task sandbox that uses this agent; tasks cannot remove them. Reset to defaults restores the shipped list."
+          label={t("agents.card.sandboxPathsLabel")}
+          hint={t("agents.card.sandboxPathsHint")}
         >
           <PathsTextarea
             value={agent.sandbox_allowed_paths ?? []}
@@ -1098,8 +1128,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           />
         </Field>
         <Field
-          label="Sandbox allowed hosts"
-          hint="One host per line; * is a wildcard (e.g. *.mycompany.com). Joined into every task sandbox that uses this agent. This is where 'Allow · per agent' in the activity popover saves hosts."
+          label={t("agents.card.sandboxHostsLabel")}
+          hint={t("agents.card.sandboxHostsHint")}
         >
           <PathsTextarea
             value={agent.sandbox_allowed_hosts ?? []}
@@ -1114,8 +1144,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             rather than leaving dead fields for a machine that isn't running. */}
         {!isTerminal &&
           <SubSection
-            title="Work-done detection"
-            hint="When off, the done badge, bell, and OS notification are never shown for this agent. Turn it off for a custom CLI whose signals cause false positives."
+            title={t("agents.card.workDoneTitle")}
+            hint={t("agents.card.workDoneHint")}
           >
             <div className="flex items-center gap-2">
               <button
@@ -1139,7 +1169,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                 />
               </button>
               <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-                {agent.work_done !== false ? "On" : "Off"}
+                {agent.work_done !== false ? t("agents.card.on") : t("agents.card.off")}
               </span>
             </div>
             {agent.work_done !== false && <>
@@ -1147,34 +1177,34 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                 under it and vanish with it. Their shared explanation sits here
                 rather than on the legend, which speaks for the whole section. */}
             <div className="border-t border-[var(--color-border-soft)] pt-3 text-[12px] text-[var(--color-fg-dim)]">
-              {signalGroupHint(agent.id)}
+              {signalGroupHint(agent.id, t)}
             </div>
             {/* The rows below tune a GUESS, and the exact answer is now on
                 this same page, above the tabs. No signpost needed. */}
             <RegexListField
-              label="Done (title → done)"
-              hint="Marks the turn finished: blue badge, bell, notification."
+              label={t("agents.card.doneLabel")}
+              hint={t("agents.card.doneHint")}
               value={agent.capabilities?.signals?.idle ?? []}
               onChange={idle => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), idle } })}
               placeholder={signalPlaceholder(agent.id, "idle", "Ready\n✓ done\nawaiting input" /* allow-shortcut: example placeholder text, the check mark is illustrative sample content (Orel-approved) */, inherited)}
             />
             <RegexListField
-              label="Busy (title → working)"
-              hint="Marks the agent as working (spinner), and holds off the idle heuristics while it runs."
+              label={t("agents.card.busyLabel")}
+              hint={t("agents.card.busyHint")}
               value={agent.capabilities?.signals?.busy ?? []}
               onChange={busy => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), busy } })}
               placeholder={signalPlaceholder(agent.id, "busy", "Working\nThinking\nRunning", inherited)}
             />
             <RegexListField
-              label="Attention (title → needs you)"
-              hint="The agent is blocked on you: bell + attention dot. Wins over the other two."
+              label={t("agents.card.attentionLabel")}
+              hint={t("agents.card.attentionHint")}
               value={agent.capabilities?.signals?.attention ?? []}
               onChange={attention => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), attention } })}
               placeholder={signalPlaceholder(agent.id, "attention", "Action Required\nWaiting for approval", inherited)}
             />
             <RegexListField
-              label="Still working (screen → not done yet)"
-              hint="Matched against the BOTTOM of the screen, not the title. While one of these matches, the done badge is held back. For agents that background work and end their turn anyway, so the title says idle while the job runs."
+              label={t("agents.card.pendingLabel")}
+              hint={t("agents.card.pendingHint")}
               value={agent.capabilities?.signals?.pending ?? []}
               onChange={pending => onPatchCaps({ signals: { ...(agent.capabilities?.signals ?? {}), pending } })}
               placeholder={signalPlaceholder(agent.id, "pending", "Waiting for \\d+ jobs? to finish\n\\d+ tasks? still running", inherited)}
@@ -1200,10 +1230,10 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                 offering a switch that silently does nothing. */}
             <div className="border-t border-[var(--color-border-soft)] pt-3">
               <Field
-                label="Match the patterns above against output too"
+                label={t("agents.card.matchLabel")}
                 hint={hasSignals
-                  ? "The patterns are matched against the terminal title only. Turn this on for a CLI that prints its status to stdout and never sets a title, and every line of output gets tested as well. Costs a little on very chatty agents. Takes effect on the next terminal restart, not on open terminals."
-                  : "Nothing to match yet. This scans output for the patterns above, so it needs at least one of them filled in. The built-in title heuristics don't apply here, they describe a title, not a line of output."}
+                  ? t("agents.card.matchHintOn")
+                  : t("agents.card.matchHintOff")}
               >
                 <div className="flex items-center gap-2 pt-0.5">
                   <button
@@ -1228,9 +1258,9 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                     />
                   </button>
                   <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-                    {!hasSignals ? "No patterns to match"
-                      : agent.capabilities?.match_output ? "Title and output"
-                      : "Title only"}
+                    {!hasSignals ? t("agents.card.matchNone")
+                      : agent.capabilities?.match_output ? t("agents.card.matchBoth")
+                      : t("agents.card.matchTitle")}
                   </span>
                 </div>
               </Field>
@@ -1398,10 +1428,10 @@ function signalPlaceholder(
 /** Stated once for the whole group rather than three times, once per field.
  *  The two cases differ in what the greyed text means: live patterns for an
  *  agent that ships heuristics, examples for one that doesn't. */
-function signalGroupHint(cli: string): string {
+function signalGroupHint(cli: string, t: (key: string) => string): string {
   return BUILTIN_TITLE_SIGNALS[cli]
-    ? "How termic reads this agent's state from its terminal title. One regex per line. The greyed patterns are what it uses today. Filling in one field replaces only that field, the other two keep the patterns shown. To switch a field off entirely, give it a pattern that never matches, such as (?!). When several match, attention wins over busy, and busy over done."
-    : "How termic reads this agent's state from its terminal title. One regex per line. The greyed patterns are examples (this agent ships no title heuristics of its own). When several match, attention wins over busy, and busy over done.";
+    ? t("agents.card.signalHintBuiltin")
+    : t("agents.card.signalHintCustom");
 }
 
 /** One-regex-per-line editor for custom work-done signals (issue #68). Reuses
@@ -1412,6 +1442,7 @@ function RegexListField({ label, hint, value, onChange, placeholder }: {
   label: string; hint: string; value: string[];
   onChange: (v: string[]) => void; placeholder?: string;
 }) {
+  const { t } = useTranslation("settings");
   const invalid = value.filter(p => {
     try { new RegExp(p); return false; } catch { return true; }
   });
@@ -1420,7 +1451,7 @@ function RegexListField({ label, hint, value, onChange, placeholder }: {
       <PathsTextarea value={value} onChange={onChange} placeholder={placeholder} />
       {invalid.length > 0 && (
         <div className="mt-1 font-mono text-[11.5px] text-[var(--color-warn)]">
-          Ignored (invalid regex): {invalid.join("   ")}
+          {t("agents.card.invalidRegex")} {invalid.join("   ")}
         </div>
       )}
     </Field>
@@ -1480,6 +1511,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
  *  a missing switch reads as a missing feature, and a clone of a reporting
  *  agent inherits the source anyway. */
 function FooterReadouts({ agentId }: { agentId: string }) {
+  const { t } = useTranslation("settings");
   const agents = useApp(s => s.agents);
   const reports = footerReports(builtinBaseId(agentId, agents));
   const hidden = usePrefs(s => s.agentFooterHidden[agentId]);
@@ -1487,18 +1519,18 @@ function FooterReadouts({ agentId }: { agentId: string }) {
   return (
     <div data-testid={`agent-footer-${agentId}`} className="grid grid-cols-1 gap-3 rounded-md border border-[var(--color-border-soft)] px-3 py-2.5">
       <Toggle
-        label="Show plan usage in the footer"
+        label={t("agents.card.footerUsage")}
         hint={reports.usage
-          ? "How much of this account's rolling limits is spent (session and weekly), next to the account name."
-          : "This agent has no usage source yet, so there is nothing to show either way."}
+          ? t("agents.card.footerUsageHint")
+          : t("agents.card.footerUsageNone")}
         value={!hidden?.usage}
         onChange={v => setShown(agentId, "usage", v)}
       />
       <Toggle
-        label="Show context window in the footer"
+        label={t("agents.card.footerContext")}
         hint={reports.context
-          ? "How full the current conversation is, from the tab of this agent you used last. Click the chip for the token counts."
-          : "This agent does not report its context window, so there is nothing to show either way."}
+          ? t("agents.card.footerContextHint")
+          : t("agents.card.footerContextNone")}
         value={!hidden?.context}
         onChange={v => setShown(agentId, "context", v)}
       />

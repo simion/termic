@@ -20,17 +20,21 @@
 // notice (which offers the app that CAN open it) rather than on the
 // less useful "too large".
 
+import { i18n } from "@/lib/i18n";
+
 /** Copy for the binary case. Says "here", not "at all": the file is fine,
  *  this viewer is not, and the two buttons under it are the way out. */
-export const BINARY_NOTICE = "This looks like a binary file, so the editor can't show it.";
+export function binaryNotice(): string {
+  return i18n.t("backend:editorError.binary");
+}
 
 /** Copy for the too-large case, with the file's size when Rust reported one.
  *  The size is the whole reason to say anything beyond "too large": it tells
  *  the user whether they hit a 3 MB log or a 900 MB dump. */
 export function tooLargeNotice(bytes: number | null): string {
-  return bytes === null
-    ? "This file is too large for the editor to show."
-    : `This file is too large for the editor to show (${formatBytes(bytes)}).`;
+  return i18n.t("backend:editorError.tooLarge", {
+    size: bytes === null ? "" : i18n.t("backend:editorError.tooLargeSized", { mb: formatBytes(bytes) }),
+  });
 }
 
 /** Byte count as the size a file manager would show. One decimal past 1 MB,
@@ -59,7 +63,7 @@ export function isUnviewable(e: EditorLoadError): e is Extract<EditorLoadError, 
  *  falls through to `raw`, so a new Rust failure mode is still surfaced. */
 export function classifyEditorLoadError(e: unknown): EditorLoadError {
   const message = String(e);
-  if (/valid UTF-8/i.test(message)) return { kind: "binary", message: BINARY_NOTICE };
+  if (/valid UTF-8/i.test(message)) return { kind: "binary", message: binaryNotice() };
   if (/too large to preview/i.test(message)) {
     // "(1234 bytes)" when fstat gave a size, "(>2000000 bytes)" when the file
     // grew mid-read. Only the exact one is worth quoting back.

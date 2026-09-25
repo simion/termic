@@ -10,8 +10,9 @@
 // a limit.
 
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { browserCommandCheck } from "@/lib/ipc";
-import { browserPresets, type BrowserPreset } from "@/lib/previewBrowser";
+import { browserPresets, presetHint, presetLabel, type BrowserPreset } from "@/lib/previewBrowser";
 import { Input } from "@/components/ui/Input";
 
 /** Sentinel for the project-level "follow the app-wide setting" option, which
@@ -36,6 +37,7 @@ export function BrowserCommandField({
   globalCommand?: string;
   testId?: string;
 }) {
+  const { t } = useTranslation("settings");
   const presets = browserPresets();
   const [err, setErr] = useState<string | null>(null);
   // Which preset the dropdown shows. Derived from `value` on every render so
@@ -69,10 +71,10 @@ export function BrowserCommandField({
     onChange(v);
   }
 
-  const hint: BrowserPreset["hint"] = matched?.hint;
+  const hint = presetHint(matched);
   const inheritLabel = globalCommand.trim()
-    ? `Follow the app-wide setting (${globalCommand})`
-    : "Follow the app-wide setting (system default)";
+    ? t("browserCommand.inheritWith", { command: globalCommand })
+    : t("browserCommand.inheritDefault");
 
   return (
     <div className="flex flex-col gap-2">
@@ -82,11 +84,11 @@ export function BrowserCommandField({
           onChange={(e) => pick(e.target.value)}
           className={selectCls}
           data-testid={`${testId}-preset`}
-          aria-label="Browser preset"
+          aria-label={t("browserCommand.presetAria")}
         >
           {allowInherit && <option value={INHERIT}>{inheritLabel}</option>}
-          {presets.map(p => <option key={p.label} value={p.command}>{p.label}</option>)}
-          <option value={CUSTOM}>Custom command…</option>
+          {presets.map(p => <option key={p.label} value={p.command}>{presetLabel(p)}</option>)}
+          <option value={CUSTOM}>{t("browserCommand.custom")}</option>
         </select>
       </div>
 
@@ -97,11 +99,11 @@ export function BrowserCommandField({
           <Input
             value={value}
             onChange={(e) => { setForceCustom(true); onChange(e.target.value); }}
-            placeholder="Leave empty for your system default browser"
+            placeholder={t("browserCommand.placeholder")}
             className="font-mono"
             spellCheck={false}
             data-testid={`${testId}-input`}
-            aria-label="Browser command"
+            aria-label={t("browserCommand.commandAria")}
           />
           {err && (
             <div className="text-[12px] text-[var(--color-err)]" data-testid={`${testId}-error`}>
@@ -113,7 +115,12 @@ export function BrowserCommandField({
           )}
           {!err && !hint && (
             <div className="text-[12px] text-[var(--color-fg-dim)]">
-              The URL is added to the end of the command. Use <code className="font-mono">{"{url}"}</code> to put it somewhere else.
+              <Trans
+                t={t}
+                i18nKey="browserCommand.urlHint"
+                components={{ 1: <code className="font-mono" /> }}
+                values={{ url: "{url}" }}
+              />
             </div>
           )}
         </>

@@ -4,6 +4,7 @@
 // unifiedMergeView in a single read-only editor.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { DiffTab, Task, GitFile } from "@/lib/types";
 import { taskFileDiffSides, taskGitStatus, taskGitCompare, type DiffSides } from "@/lib/ipc";
 import { BinaryDiffBody } from "./BinaryDiffBody";
@@ -55,6 +56,9 @@ function writeMode(m: Mode) {
 }
 
 export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
+  // `t` is taken by the @lezer/highlight tags import above, so the
+  // translation function is `tr`.
+  const { t: tr } = useTranslation("panels");
   const [err, setErr] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>(() => readMode());
   // New or deleted file: one diff side is empty, so side-by-side would
@@ -449,7 +453,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
         >
           <CircleAlert className="h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
           <span className="min-w-0 flex-1 truncate">
-            This file changed since you opened it.
+            {tr("diff.staleNotice")}
           </span>
           <button
             type="button"
@@ -459,11 +463,11 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
             })}
             className="shrink-0 rounded bg-[var(--color-bg-3)] px-2 py-0.5 text-[11.5px] font-medium text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
           >
-            Refresh
+            {tr("refresh", { ns: "common" })}
           </button>
           <button
             type="button"
-            aria-label="Dismiss"
+            aria-label={tr("dismiss", { ns: "common" })}
             onClick={() => setStale(false)}
             className="shrink-0 rounded p-0.5 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"
           >
@@ -490,7 +494,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
         {commitSha && (
           <span
             data-testid="diff-commit-chip"
-            title={`Comparing ${commitSha} with its parent`}
+            title={tr("diff.comparingWithParent", { sha: commitSha })}
             className="ml-2 shrink-0 rounded bg-[var(--color-bg-3)] px-1.5 font-mono text-[11px] leading-[18px] text-[var(--color-fg-faint)]"
           >
             {commitSha.slice(0, 7)}
@@ -506,7 +510,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
           )}>
             <button
               type="button"
-              title="Unified (inline)"
+              title={tr("diff.unifiedTip")}
               onClick={() => setModeAndPersist("unified")}
               className={cn(
                 "h-6 rounded-[5px] px-1.5 text-[11.5px] transition-colors",
@@ -517,7 +521,7 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
             ><AlignJustify className="h-3.5 w-3.5" /></button>
             <button
               type="button"
-              title={oneSided ? "Side by side is unavailable: new or deleted file, nothing to compare" : "Side by side"}
+              title={oneSided ? tr("diff.sideBySideUnavailable") : tr("diff.sideBySideTip")}
               disabled={oneSided}
               onClick={() => setModeAndPersist("side")}
               className={cn(
@@ -532,31 +536,31 @@ export function DiffPane({ task, tab }: { task: Task; tab: DiffTab }) {
           {/* Whole-file comment. Targets the modified pane: the `b` editor in
               side-by-side, the single editor in unified. */}
           {commentable && (
-            <Button size="sm" variant="ghost" title="Leave a comment on this whole file" onClick={() => {
+            <Button size="sm" variant="ghost" title={tr("diff.commentFileTip")} onClick={() => {
               const v = mergeRef.current?.b ?? editorRef.current;
               if (v) { v.focus(); dispatchFileComment(v); }
-            }}><MessageSquarePlus className="h-4 w-4" /> Comment</Button>
+            }}><MessageSquarePlus className="h-4 w-4" /> {tr("diff.comment")}</Button>
           )}
-          <Button size="sm" variant="ghost" title="Open this file in the editor" onClick={() =>
+          <Button size="sm" variant="ghost" title={tr("diff.openFileTip")} onClick={() =>
             addTab(task.id, { id: crypto.randomUUID(), type: "edit", path: tab.path, title: tab.path.split("/").pop() || tab.path })
-          }><FolderOpen className="h-4 w-4" /> Open</Button>
+          }><FolderOpen className="h-4 w-4" /> {tr("open", { ns: "common" })}</Button>
           {/* Mark-as-viewed (GH #42): mirrors the Git panel row checkbox.
               Hidden for deletions (no working-tree file to fingerprint). */}
           {fp !== "" && !commitSha && (
             <Button
               size="sm"
               variant="ghost"
-              title={viewed ? "Mark as not viewed" : "Mark as viewed, then go to the next unviewed file"}
+              title={viewed ? tr("shared.markNotViewed") : tr("diff.markViewedAdvance")}
               onClick={markViewedAndAdvance}
               className={cn(viewed && "text-[var(--color-accent)]")}
             >
               <Eye className="h-4 w-4" />
-              {viewed ? "Viewed" : "Mark as viewed"}
+              {viewed ? tr("diff.viewed") : tr("shared.markViewed")}
             </Button>
           )}
         </div>
       </div>
-      {err && <div className="p-4 font-mono text-[12.5px] text-[var(--color-err)]">Error: {err}</div>}
+      {err && <div className="p-4 font-mono text-[12.5px] text-[var(--color-err)]">{tr("shared.errorWithMessage", { message: err })}</div>}
       {!err && binary && <BinaryDiffBody sides={binary} />}
       {/* Hidden rather than unmounted while `binary` renders: the effect bails
           on a null hostRef, so unmounting the CodeMirror parent here would

@@ -8,6 +8,7 @@
 // agent renders two. Specs must scope through `[data-dashboard-task-id]` or the
 // sidebar's `[data-sidebar-task-id]` rather than querying the testid globally.
 
+import { useTranslation } from "react-i18next";
 import { Bell } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { BackgroundRing } from "@/components/ui/BackgroundRing";
@@ -32,10 +33,11 @@ export function TaskWorkBadge(
     preview?: boolean;
   },
 ) {
+  const { t } = useTranslation("chrome");
   // Off means the intermediate mark is noise to this user. It falls back to
   // the ring below, never to done: the turn is not over.
   const showPartial = usePrefs(s => s.partialDoneIndicator) || preview;
-  const held = delegated ? delegatedTitle(delegated) : "";
+  const held = delegated ? delegatedTitle(delegated, t) : "";
   // PARTIALLY DONE: some of what the agent delegated has reported back and
   // the rest runs on. Outlined, not the solid done bullet, and it rings no
   // bell: a turn that is partly over is not over. Measured on three
@@ -68,8 +70,8 @@ export function TaskWorkBadge(
         data-work-state={reason === "working" ? "working" : "delegated"}
         data-delegated={delegated ? delegated.label : undefined}
         className="shrink-0 flex items-center justify-center text-[var(--color-fg-faint)]"
-        title={held || "Background work still running"}
-        aria-label={held || "Background work running"}
+        title={held || t("taskWorkBadge.delegated")}
+        aria-label={held || t("taskWorkBadge.delegatedAria")}
       >
         <BackgroundRing size={12} />
       </span>
@@ -81,8 +83,8 @@ export function TaskWorkBadge(
         data-testid="work-badge"
         data-work-state="working"
         className="shrink-0 flex items-center justify-center text-[var(--color-fg-faint)]"
-        title="Agent working"
-        aria-label="Working"
+        title={t("taskWorkBadge.working")}
+        aria-label={t("taskWorkBadge.workingAria")}
       >
         <Spinner size={12} />
       </span>
@@ -97,7 +99,7 @@ export function TaskWorkBadge(
         // text baseline, off the centre line the dot and rings sit on, which
         // shows the moment two marks share a row (a collapsed task group).
         className="shrink-0 flex items-center justify-center text-[var(--color-warn)]"
-        title="Agent needs your input"
+        title={t("taskWorkBadge.attention")}
       >
         <Bell className="h-3 w-3" strokeWidth={2.5} />
       </span>
@@ -111,8 +113,8 @@ export function TaskWorkBadge(
       data-work-state="done"
       data-delegated={delegated ? delegated.label : undefined}
       className="shrink-0 flex items-center justify-center"
-      title={held ? `Agent finished a turn, ${held}` : "Agent finished a turn"}
-      aria-label="Work done"
+      title={held ? t("taskWorkBadge.doneDelegated", { held }) : t("taskWorkBadge.done")}
+      aria-label={t("taskWorkBadge.doneAria")}
     >
       <span
         className="block h-2 w-2 rounded-full"

@@ -22,6 +22,7 @@
 
 import { openExternalUrl } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { useApp } from "@/store/app";
 import type { Project } from "@/lib/types";
 import { IS_MAC } from "@/lib/shortcuts";
@@ -38,6 +39,11 @@ export interface BrowserPreset {
   command: string;
   /** Shown under the field when this preset is picked. */
   hint?: string;
+  /** backend:previewBrowser key suffix for the localized label/hint,
+   *  resolved at render (see presetLabel/presetHint). The English text above
+   *  is the fallback, so every entry stays readable without the locale. */
+  labelKey?: string;
+  hintKey?: string;
 }
 
 /** macOS presets. `open` is the launcher for all of them: `-a` names the app,
@@ -49,7 +55,7 @@ export interface BrowserPreset {
  *  it is called `Default`, so `Profile 1` would fail for most users, which is
  *  the silent-dead-link failure this feature exists to avoid. */
 export const MAC_BROWSER_PRESETS: BrowserPreset[] = [
-  { label: "System default", command: "" },
+  { label: "System default", command: "", labelKey: "systemDefault" },
   { label: "Safari", command: "open -a Safari" },
   { label: "Google Chrome", command: 'open -a "Google Chrome"' },
   { label: "Brave Browser", command: 'open -a "Brave Browser"' },
@@ -58,24 +64,28 @@ export const MAC_BROWSER_PRESETS: BrowserPreset[] = [
   { label: "Arc", command: "open -a Arc" },
   {
     label: "Chrome, specific profile",
+    labelKey: "chromeProfile",
     command: 'open -na "Google Chrome" --args --profile-directory=Default',
     hint: "Find the profile name at chrome://version, under Profile Path. A fresh install has one, called Default.",
+    hintKey: "chromeProfileHint",
   },
   {
     label: "Edge, specific profile",
+    labelKey: "edgeProfile",
     command: 'open -na "Microsoft Edge" --args --profile-directory=Default',
     hint: "Find the profile name at edge://version, under Profile Path.",
+    hintKey: "edgeProfileHint",
   },
-  { label: "Chrome, incognito", command: 'open -na "Google Chrome" --args --incognito' },
-  { label: "Edge, InPrivate", command: 'open -na "Microsoft Edge" --args --inprivate' },
-  { label: "Firefox, private window", command: "open -na Firefox --args -private-window" },
+  { label: "Chrome, incognito", labelKey: "chromeIncognito", command: 'open -na "Google Chrome" --args --incognito' },
+  { label: "Edge, InPrivate", labelKey: "edgeInPrivate", command: 'open -na "Microsoft Edge" --args --inprivate' },
+  { label: "Firefox, private window", labelKey: "firefoxPrivate", command: "open -na Firefox --args -private-window" },
 ];
 
 /** Linux presets. The launcher is the browser binary itself, so the URL is
  *  simply appended. Chrome's deb installs `google-chrome-stable`; Flatpak
  *  builds run through `flatpak run <app-id>`. */
 export const LINUX_BROWSER_PRESETS: BrowserPreset[] = [
-  { label: "System default", command: "" },
+  { label: "System default", command: "", labelKey: "systemDefault" },
   { label: "Google Chrome", command: "google-chrome-stable" },
   { label: "Chromium", command: "chromium" },
   { label: "Firefox", command: "firefox" },
@@ -83,14 +93,28 @@ export const LINUX_BROWSER_PRESETS: BrowserPreset[] = [
   { label: "Microsoft Edge", command: "microsoft-edge-stable" },
   {
     label: "Chrome, specific profile",
+    labelKey: "chromeProfile",
     command: "google-chrome-stable --profile-directory=Default",
     hint: "Find the profile name at chrome://version, under Profile Path.",
+    hintKey: "chromeProfileHintShort",
   },
-  { label: "Firefox, named profile", command: "firefox -P work" },
-  { label: "Firefox, private window", command: "firefox --private-window" },
+  { label: "Firefox, named profile", labelKey: "firefoxNamed", command: "firefox -P work" },
+  { label: "Firefox, private window", labelKey: "firefoxPrivate", command: "firefox --private-window" },
   { label: "Chrome (Flatpak)", command: "flatpak run com.google.Chrome" },
   { label: "Firefox (Flatpak)", command: "flatpak run org.mozilla.firefox" },
 ];
+
+/** Localized view of a preset, resolved at render so a language switch
+ *  applies without a reload. Falls back to the preset's own English text. */
+export function presetLabel(p: BrowserPreset): string {
+  return p.labelKey ? i18n.t(`backend:previewBrowser.${p.labelKey}`) : p.label;
+}
+
+/** Localized hint for the picked preset, or undefined when it has none. */
+export function presetHint(p: BrowserPreset | undefined): string | undefined {
+  if (!p) return undefined;
+  return p.hintKey ? i18n.t(`backend:previewBrowser.${p.hintKey}`) : p.hint;
+}
 
 /** Presets for the platform the app is running on. Windows is not a shipped
  *  target, so it falls through to the Linux list, whose "system default" entry
@@ -125,12 +149,12 @@ export async function openWebUrl(url: string, browser: string): Promise<void> {
     const res = await openExternalUrl(url, browser);
     if (res.used === "fallback") {
       useUI.getState().pushToast(
-        `Could not open your configured browser (${res.reason ?? "unknown error"}). Used the system default instead.`,
+        i18n.t("backend:previewBrowser.fallbackFailed", { reason: res.reason ?? i18n.t("backend:previewBrowser.unknownError") }),
         "error",
       );
     }
   } catch (e) {
-    useUI.getState().pushToast(`Could not open ${url}: ${String(e)}`, "error");
+    useUI.getState().pushToast(i18n.t("backend:previewBrowser.openFailed", { url, error: String(e) }), "error");
   }
 }
 

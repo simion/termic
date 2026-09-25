@@ -23,6 +23,7 @@
 // Changing the script means bumping `agent_hooks::SCHEMA_VERSION`, or existing
 // installs keep the old one forever.
 
+import { i18n } from "@/lib/i18n";
 /** Prefix of the body that reports subscription usage. */
 export const USAGE_BODY_PREFIX = "usage ";
 
@@ -284,11 +285,11 @@ export function blocksUsageFeed(o: StatusLineOwner | null): boolean {
 export function blockedReason(o: StatusLineOwner): string {
   switch (o.owner) {
     case "project":
-      return "This project ships its own status line, which takes priority over Termic's.";
+      return i18n.t("backend:agentUsage.statusProject");
     case "project-local":
-      return "This project has a local status line, which takes priority over Termic's.";
+      return i18n.t("backend:agentUsage.statusProjectLocal");
     case "user":
-      return "You have your own status line, so Termic left it alone.";
+      return i18n.t("backend:agentUsage.statusUser");
     default:
       return "";
   }

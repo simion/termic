@@ -14,6 +14,7 @@
 
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import { sendMessageToPty } from "./agentSend";
 import { workDoneCapable, agentDisplayName, tabLabel } from "./agents";
 import type { Prompt } from "@/store/prompts";
@@ -35,7 +36,7 @@ function sendToAgent(taskId: string, prompt: Prompt, tabId: string) {
     (t): t is TerminalTab => t.id === tabId && t.type === "terminal",
   );
   if (!target?.ptyId) {
-    useUI.getState().pushToast("That agent is no longer running.", "error");
+    useUI.getState().pushToast(i18n.t("backend:runPrompt.notRunning"), "error");
     return;
   }
   const label = tabLabel(target);
@@ -50,7 +51,7 @@ function sendToAgent(taskId: string, prompt: Prompt, tabId: string) {
   }
   sendMessageToPty(target.ptyId, prompt.body);
   useApp.getState().patchTab(taskId, target.id, { lastInputAt: Date.now() });
-  useUI.getState().pushToast(`Sent "${prompt.title}" to ${label}.`, "success");
+  useUI.getState().pushToast(i18n.t("backend:runPrompt.sentTo", { title: prompt.title, label }), "success");
 }
 
 function spawnAgentWithPrompt(taskId: string, prompt: Prompt, explicitCli?: string) {
@@ -94,7 +95,7 @@ function spawnAgentWithPrompt(taskId: string, prompt: Prompt, explicitCli?: stri
     // PTY never came up — drop the overlay and tell the user.
     if ((useApp.getState().tabs[taskId] ?? []).some(t => t.id === newTabId)) {
       useApp.getState().patchTab(taskId, newTabId, { promptPendingTitle: null });
-      useUI.getState().pushToast(`Couldn't start the agent to run "${prompt.title}".`, "error");
+      useUI.getState().pushToast(i18n.t("backend:runPrompt.startFailed", { title: prompt.title }), "error");
     }
   };
   window.setTimeout(tick, 500);

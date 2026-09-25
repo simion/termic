@@ -6,6 +6,7 @@
 //   └────────┴──────────────────────────┴────────────────────┘
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { usePr, initCommentWatcher, initPrStatusPoller } from "@/store/pr";
@@ -38,6 +39,7 @@ import { focusMainTab } from "@/lib/tabFocus";
 import { recordFirstPaint } from "@/lib/perfMarks";
 
 export function App() {
+  const { t } = useTranslation("chrome");
   const loadAll = useApp(s => s.loadAll);
   const compact = useApp(s => s.compactSidebar);
   const hideRP  = useApp(s => s.rightPanelHidden);
@@ -249,7 +251,7 @@ export function App() {
           // eating this keystroke" checks look for.
           role="dialog"
           aria-modal="true"
-          aria-label="Settings"
+          aria-label={t("app.settingsOverlay")}
           className={`fixed inset-0 z-40 flex bg-black/50 ${isFullscreen ? "p-4" : "px-4 pb-4 pt-10"}`}
           onMouseDown={e => { if (e.target === e.currentTarget) useApp.getState().closeSettings(); }}
         >

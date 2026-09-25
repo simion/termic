@@ -6,6 +6,7 @@
 // every other dialog in components/dialogs/ — see Dialogs.tsx.
 
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useApp, useActiveTask } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { AppDialog } from "@/components/ui/Dialog";
@@ -13,11 +14,13 @@ import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { visibleCliIds, isTerminalEntry, tabLabel } from "@/lib/agents";
 import { findLeaf } from "@/lib/splitTree";
 import { runPrompt } from "@/lib/runPrompt";
+import { promptTitle } from "@/store/prompts";
 import type { TerminalTab } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Plus } from "lucide-react";
 
 export function PromptDestinationDialog() {
+  const { t } = useTranslation("dialogs");
   const promptFire = useUI(s => s.promptFire);
   const closePromptFire = useUI(s => s.closePromptFire);
   const setPromptFireBody = useUI(s => s.setPromptFireBody);
@@ -50,8 +53,8 @@ export function PromptDestinationDialog() {
     <AppDialog
       open
       onOpenChange={(v) => { if (!v) closePromptFire(); }}
-      title={`Run "${prompt.title}"`}
-      description="Tweak the prompt if needed, then pick where it runs."
+      title={t("promptDestination.title", { title: promptTitle(prompt, t) })}
+      description={t("promptDestination.description")}
       className="max-w-5xl"
     >
       <div className="mt-1 flex h-[58vh] gap-4">
@@ -71,7 +74,7 @@ export function PromptDestinationDialog() {
         <div className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto pr-0.5">
           {liveAgents.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              <div className="px-0.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">Send to a running agent</div>
+              <div className="px-0.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">{t("promptDestination.sendToRunning")}</div>
               {liveAgents.map(a => {
                 const current = a.id === focusedAgentId;
                 const busy = a.workState === "working";
@@ -95,9 +98,9 @@ export function PromptDestinationDialog() {
                       </span>
                       {(current || busy) && (
                         <span className="block text-[10.5px]">
-                          {current && <span className="text-[var(--color-accent)]">current</span>}
+                          {current && <span className="text-[var(--color-accent)]">{t("promptDestination.currentTag")}</span>}
                           {current && busy && <span className="text-[var(--color-fg-faint)]"> · </span>}
-                          {busy && <span className="text-[var(--color-fg-faint)]">busy</span>}
+                          {busy && <span className="text-[var(--color-fg-faint)]">{t("promptDestination.busyTag")}</span>}
                         </span>
                       )}
                     </span>
@@ -109,10 +112,10 @@ export function PromptDestinationDialog() {
 
           <div className="flex flex-col gap-0.5">
             <div className="mb-0.5 flex items-center gap-1 px-0.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">
-              <Plus className="h-3 w-3" /> Start a new agent
+              <Plus className="h-3 w-3" /> {t("promptDestination.startNew")}
             </div>
             {newAgentChoices.length === 0 ? (
-              <div className="px-0.5 py-1 text-[12.5px] text-[var(--color-fg-faint)]">No agents available.</div>
+              <div className="px-0.5 py-1 text-[12.5px] text-[var(--color-fg-faint)]">{t("promptDestination.noAgents")}</div>
             ) : newAgentChoices.map(a => (
               <button
                 key={a.id}

@@ -5,6 +5,7 @@
 // dialog. Persistence is the caller's job (via `onChange`) so the same editor
 // backs both the personal (projects.json) and committed (.termic.yaml) lists.
 
+import { useTranslation } from "react-i18next";
 import { runCommandLabel } from "@/lib/runCommands";
 import type { RunCommand } from "@/lib/types";
 import { Trash2, Plus } from "lucide-react";
@@ -13,6 +14,7 @@ export function RunCommandsEditor({ value, onChange }: {
   value: RunCommand[];
   onChange: (next: RunCommand[]) => void;
 }) {
+  const { t } = useTranslation("settings");
   function update(i: number, patch: Partial<RunCommand>) {
     onChange(value.map((c, j) => (j === i ? { ...c, ...patch } : c)));
   }
@@ -31,7 +33,7 @@ export function RunCommandsEditor({ value, onChange }: {
               <input
                 value={cmd.label}
                 onChange={(e) => update(i, { label: e.target.value })}
-                placeholder={cmd.command.trim() ? runCommandLabel(cmd) : "Label"}
+                placeholder={cmd.command.trim() ? runCommandLabel(cmd) : t("runCommands.labelPlaceholder")}
                 autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
                 className="w-40 shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
@@ -45,7 +47,7 @@ export function RunCommandsEditor({ value, onChange }: {
               <button
                 type="button"
                 onClick={() => remove(i)}
-                title="Remove"
+                title={t("common:remove")}
                 className="rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-err)]/10 hover:text-[var(--color-err)]"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -59,7 +61,7 @@ export function RunCommandsEditor({ value, onChange }: {
         onClick={add}
         className="inline-flex w-fit items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[13px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
       >
-        <Plus className="h-3.5 w-3.5" /> Add command
+        <Plus className="h-3.5 w-3.5" /> {t("runCommands.add")}
       </button>
     </div>
   );

@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useTranslation } from "react-i18next";
 import { Search, Layers, FolderGit2 } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
@@ -35,6 +36,7 @@ interface Scored {
 }
 
 export function ProjectPickerDialog() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.projectPickerOpen);
   const close = useUI(s => s.closeProjectPicker);
   const openNewTask = useUI(s => s.openNewTask);
@@ -116,8 +118,8 @@ export function ProjectPickerDialog() {
 
   const issueIntent = intent === "issue";
   const placeholder = issueIntent
-    ? "Search a project to pick an issue from"
-    : "Search a project to start a new task";
+    ? t("projectPicker.placeholderIssue")
+    : t("projectPicker.placeholderTask");
 
   return (
     <Dialog.Root open={open} onOpenChange={(v) => (v ? null : close())}>
@@ -131,7 +133,7 @@ export function ProjectPickerDialog() {
           className="termic-pop fixed left-1/2 top-12 z-50 w-[min(760px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-1)] shadow-2xl outline-none"
           onKeyDown={onKeyDown}
         >
-          <Dialog.Title className="sr-only">{issueIntent ? "New task from an issue" : "New task"}</Dialog.Title>
+          <Dialog.Title className="sr-only">{issueIntent ? t("projectPicker.srTitleIssue") : t("projectPicker.srTitleTask")}</Dialog.Title>
           <Dialog.Description className="sr-only">{placeholder}.</Dialog.Description>
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2.5">
             <Search className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
@@ -150,7 +152,7 @@ export function ProjectPickerDialog() {
           <div ref={listRef} className="max-h-[70vh] overflow-y-auto py-1">
             {results.length === 0 && (
               <div className="px-3 py-3 text-[13px] text-[var(--color-fg-faint)]">
-                {query ? "No matching projects" : "No projects"}
+                {query ? t("projectPicker.noMatching") : t("projectPicker.noProjects")}
               </div>
             )}
             {results.map((r, i) => {

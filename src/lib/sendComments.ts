@@ -13,6 +13,7 @@ import { focusTerminalTab } from "./tabFocus";
 import { composeCommentsMessage, type ReviewComment } from "@/store/reviewComments";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { i18n } from "@/lib/i18n";
 import type { TerminalTab } from "./types";
 
 /** Live agent terminals for a task: real agents only, never a plain shell, a
@@ -55,14 +56,14 @@ export async function sendCommentsToAgent(
   if (!comments.length) return false;
   const target = pickAgentTarget(taskId, opts.tabId);
   if (!target?.ptyId) {
-    useUI.getState().pushToast("No running agent in this task to send to.", "error");
+    useUI.getState().pushToast(i18n.t("backend:sendComments.noAgent"), "error");
     return false;
   }
   const name = tabLabel(target);
   try {
     await deliverMessage(target.ptyId, composeCommentsMessage(comments));
   } catch {
-    useUI.getState().pushToast(`Could not reach ${name}. Nothing was sent.`, "error");
+    useUI.getState().pushToast(i18n.t("backend:sendComments.unreachable", { name }), "error");
     return false;
   }
   // Arm work-done detection exactly as a keyboard Enter would: delivery writes
@@ -72,7 +73,7 @@ export async function sendCommentsToAgent(
   // steering immediately.
   useApp.getState().setActiveTabId(taskId, target.id);
   focusTerminalTab(target.id);
-  const what = opts.label ?? `${comments.length} comment${comments.length === 1 ? "" : "s"}`;
-  useUI.getState().pushToast(`Sent ${what} to ${name}`, "success");
+  const what = opts.label ?? i18n.t(comments.length === 1 ? "backend:sendComments.commentsOne" : "backend:sendComments.commentsOther", { count: comments.length });
+  useUI.getState().pushToast(i18n.t("backend:sendComments.sent", { what, name }), "success");
   return true;
 }

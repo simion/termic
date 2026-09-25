@@ -9,6 +9,7 @@
 // summaries from the JSON.
 
 import { lazy, Suspense, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useUI } from "@/store/ui";
 import { useUpdate } from "@/store/update";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -30,6 +31,7 @@ function stripHeader(md: string): string {
 }
 
 export function ChangelogDialog() {
+  const { t } = useTranslation("dialogs");
   const open = useUI(s => s.changelogOpen);
   const close = useUI(s => s.closeChangelog);
   const changelog = useUpdate(s => s.changelog);
@@ -51,25 +53,25 @@ export function ChangelogDialog() {
     <AppDialog
       open={open}
       onOpenChange={(v) => { if (!v) close(); }}
-      title="Changelog"
+      title={t("changelog.title")}
       className="max-w-4xl"
     >
       {!hasData && status === "loading" && (
         <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-[var(--color-fg-dim)]">
           <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" />
-          Loading changelog…
+          {t("changelog.loading")}
         </div>
       )}
 
       {!hasData && status === "error" && (
         <div className="py-10 text-center text-[13px] text-[var(--color-fg-dim)]">
-          <p>Couldn't load the changelog.</p>
+          <p>{t("changelog.loadError")}</p>
           <button
             type="button"
             onClick={() => void fetchChangelog()}
             className="mt-2 text-[var(--color-accent)] hover:underline"
           >
-            Retry
+            {t("common:retry")}
           </button>
         </div>
       )}
@@ -81,7 +83,7 @@ export function ChangelogDialog() {
           <Suspense fallback={
             <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-[var(--color-fg-dim)]">
               <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" />
-              Loading changelog…
+              {t("changelog.loading")}
             </div>
           }>
             {/* Mounted only while the dialog is open, so find is ours whenever
@@ -97,7 +99,7 @@ export function ChangelogDialog() {
           each version's one-line summary. */}
       {!markdown && changelog && changelog.length === 0 && (
         <p className="py-10 text-center text-[13px] text-[var(--color-fg-dim)]">
-          No changelog entries yet.
+          {t("changelog.empty")}
         </p>
       )}
       {!markdown && changelog && changelog.length > 0 && (
@@ -116,7 +118,7 @@ export function ChangelogDialog() {
                 )}
                 {e.version === currentVersion && (
                   <span className="rounded bg-[var(--color-bg-3)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-dim)]">
-                    Installed
+                    {t("changelog.installed")}
                   </span>
                 )}
               </div>

@@ -9,6 +9,7 @@
 // presentation.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUpdate } from "@/store/update";
 import { automationArmed } from "@/lib/ipc";
@@ -16,6 +17,7 @@ import { betaInfo, isBetaBuild } from "@/lib/build";
 import { ArrowDownToLine, RotateCw } from "lucide-react";
 
 export function UpdaterBanner() {
+  const { t } = useTranslation("chrome");
   const update = useUpdate(s => s.update);
   const installing = useUpdate(s => s.installing);
   const install = useUpdate(s => s.install);
@@ -53,11 +55,11 @@ export function UpdaterBanner() {
       {branch}
     </span>
   ) : null;
-  const branchTitle = branch ? ` Branch: ${branch}.` : "";
+  const branchTitle = branch ? t("updaterBanner.branchSuffix", { branch }) : "";
   if (import.meta.env.DEV && !update && !hideDevPill) {
     return isE2E ? (
       <span
-        title={`Driven by the e2e automation bridge (TERMIC_AUTOMATION=1).${branchTitle}`}
+        title={t("updaterBanner.e2eTitle", { branchSuffix: branchTitle })}
         className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-err)]/50 bg-[var(--color-err)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-err)]"
       >
         E2E
@@ -65,7 +67,7 @@ export function UpdaterBanner() {
       </span>
     ) : (
       <span
-        title={`Development build, not a released version.${branchTitle}`}
+        title={t("updaterBanner.devTitle", { branchSuffix: branchTitle })}
         className="flex select-none items-center gap-1.5 rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-warn)]"
       >
         DEV
@@ -85,8 +87,8 @@ export function UpdaterBanner() {
       <span
         title={
           info
-            ? `Termic Beta, built from ${info}. Shares the release app's data. Re-run make beta to move it forward.`
-            : "Termic Beta, a local build. Shares the release app's data."
+            ? t("updaterBanner.betaBuilt", { info })
+            : t("updaterBanner.betaLocal")
         }
         className="flex select-none items-center rounded-full border border-[var(--color-info)]/40 bg-[var(--color-info)]/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-info)]"
       >
@@ -104,25 +106,25 @@ export function UpdaterBanner() {
       type="button"
       onClick={() => void install()}
       disabled={installing !== null}
-      title={`Update to ${update.version} (current: ${update.currentVersion})`}
+      title={t("updaterBanner.updateTo", { version: update.version, current: update.currentVersion })}
       className="flex items-center gap-1.5 rounded-full border border-[var(--color-accent-deep)] bg-[var(--color-accent-deep)] px-2.5 py-0.5 text-[12px] font-medium text-white hover:bg-[#8a3a1c] disabled:opacity-70"
     >
       {installing === null && (
         <>
           <ArrowDownToLine className="h-3 w-3" />
-          <span>Download &amp; restart</span>
+          <span>{t("updaterBanner.downloadRestart")}</span>
         </>
       )}
       {installing === "downloading" && (
         <>
           <RotateCw className="h-3 w-3 animate-spin" />
-          <span>Downloading…</span>
+          <span>{t("update.downloading")}</span>
         </>
       )}
       {installing === "installing" && (
         <>
           <RotateCw className="h-3 w-3 animate-spin" />
-          <span>Restarting…</span>
+          <span>{t("update.restarting")}</span>
         </>
       )}
     </button>

@@ -22,6 +22,7 @@
 // so "profiles exist" and "there are several" are the same condition.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, Settings2, UsersRound } from "lucide-react";
 import { useProfiles } from "@/store/profiles";
 import { useApp } from "@/store/app";
@@ -33,6 +34,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { cn } from "@/lib/utils";
 
 export function ProfileChip() {
+  const { t } = useTranslation("chrome");
   const profiles = useProfiles(s => s.profiles);
   const current  = useProfiles(s => s.current);
   const refresh  = useProfiles(s => s.refresh);
@@ -48,7 +50,7 @@ export function ProfileChip() {
   // affordance in the place the identity no longer lives.
   if (profiles.length === 0) {
     return (
-      <Tip content="Profiles" side="bottom">
+      <Tip content={t("profileChip.profiles")} side="bottom">
         <Button
           size="icon"
           variant="icon"
@@ -81,7 +83,7 @@ export function ProfileChip() {
           type="button"
           data-testid="profile-chip"
           data-no-drag
-          title={`${name} - switch or manage profiles`}
+          title={t("profileChip.switchTitle", { name })}
           // No background of its own: the bar's accent wash is already behind
           // it, and a second tinted surface inside a tinted one reads as a
           // rendering fault. Hover is the only fill.
@@ -116,7 +118,7 @@ export function ProfileChip() {
           currentRowRef.current?.focus();
         }}
       >
-        <div className="px-2 pb-1.5 pt-1 text-[11px] uppercase tracking-wide opacity-50">Profiles</div>
+        <div className="px-2 pb-1.5 pt-1 text-[11px] uppercase tracking-wide opacity-50">{t("profileChip.profiles")}</div>
         {profiles.map(p => (
           <button
             key={p.slug}
@@ -151,7 +153,7 @@ export function ProfileChip() {
           onClick={() => { setOpen(false); openSettings("profiles"); }}
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-[var(--color-bg-2)]"
         >
-          <Settings2 className="h-4 w-4 opacity-60" /> Manage profiles
+          <Settings2 className="h-4 w-4 opacity-60" /> {t("profileChip.manageProfiles")}
         </button>
       </PopoverContent>
     </PopoverRoot>

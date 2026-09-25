@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { BINARY_NOTICE, classifyEditorLoadError, isUnviewable, tooLargeNotice } from "./editorError";
+import { binaryNotice, classifyEditorLoadError, isUnviewable, tooLargeNotice } from "./editorError";
 
 // The rule this pins: a wrong viewer (binary, or too big to load) is a calm
 // notice + OS actions, everything else is a real failure (raw message, red).
@@ -11,7 +11,7 @@ describe("classifyEditorLoadError", () => {
     // The exact string src-tauri/src/lib.rs returns from read_text_file_capped.
     const e = classifyEditorLoadError("file is not valid UTF-8");
     expect(e.kind).toBe("binary");
-    expect(e.message).toBe(BINARY_NOTICE);
+    expect(e.message).toBe(binaryNotice());
   });
 
   it("matches loosely enough to survive a reword on the Rust side", () => {

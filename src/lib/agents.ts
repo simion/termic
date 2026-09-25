@@ -4,6 +4,7 @@
 // if the registry hasn't loaded yet (very first render before loadAll
 // resolves) or if a user removed all agents.
 
+import { i18n } from "@/lib/i18n";
 import type { Agent, Task, CliInfo } from "@/lib/types";
 import { useApp } from "@/store/app";
 import { ptyWrite } from "@/lib/ipc";
@@ -560,13 +561,18 @@ const EXTENDS_MAX_DEPTH = 8;
  *  `extends`) so a clone of codex gets the same note.
  *
  *  No em dashes: this is user-visible copy (see CLAUDE.md ## Copy rules). */
+/** Values are backend:agentUsage KEYS, resolved by `yoloArgsNote` at render
+ *  so a language switch applies; the quoted CLI error and flags stay verbatim
+ *  in every language because they are what the user matches against. */
 export const YOLO_ARGS_NOTES: Record<string, string> = {
-  codex: "Codex refuses to START, rather than downgrade, when a managed policy "
-    + "(an org-managed requirements.toml, MDM, or a work ChatGPT account) disallows "
-    + "danger-full-access. If you see \"requirements do not allow sandbox_mode\", "
-    + "use -a never -s workspace-write here instead: still no approval prompts, "
-    + "Codex's own sandbox instead of none.",
+  codex: "yoloCodex",
 };
+
+/** The caveat text for a base CLI, localized. Undefined when it has none. */
+export function yoloArgsNote(cli: string): string | undefined {
+  const key = YOLO_ARGS_NOTES[cli];
+  return key ? i18n.t(`backend:agentUsage.${key}`) : undefined;
+}
 
 export function builtinBaseId(cli: string, agents: Agent[]): string {
   let id = cli;

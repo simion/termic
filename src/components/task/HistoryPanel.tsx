@@ -18,6 +18,7 @@
 //   4. Load more    — pages of PAGE_SIZE, appended.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { GitBranch, Tag, Loader2, Copy, Check, ChevronDown } from "lucide-react";
 import type { GitCommit, GitFile, GitRef, Task } from "@/lib/types";
 import { taskGitLog, taskGitRefs, taskGitCommitFiles, taskGitCommitOffset } from "@/lib/ipc";
@@ -171,6 +172,7 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff, repoDir: repoDirPr
    *  per keystroke. */
   search?: string;
 }) {
+  const { t } = useTranslation("panels");
   // `Project.non_git` describes the HOST folder. A multi-repo project's host
   // is routinely a plain folder holding real git repos, so it only answers for
   // this panel when the panel is standing alone and reading the task's own
@@ -319,7 +321,7 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff, repoDir: repoDirPr
       .catch(() => {
         // Not reachable from HEAD (another branch), or git said no. Say so once
         // and drop the request rather than leaving it to fire elsewhere.
-        useUI.getState().pushToast("That commit is not in this branch's history", "info");
+        useUI.getState().pushToast(t("history.notInHistory"), "info");
         useUI.getState().clearCommitReveal();
       })
       .finally(() => setPaging(false));
@@ -336,7 +338,7 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff, repoDir: repoDirPr
   }, [repoDir, onOpenDiff]);
 
   if (nonGit) {
-    return <Empty>This project is not a git repository, so it has no history.</Empty>;
+    return <Empty>{t("history.notGit")}</Empty>;
   }
 
   return (
@@ -369,8 +371,8 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff, repoDir: repoDirPr
       {!controlled && (
         <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-[var(--color-border-soft)] px-2 text-[11.5px]">
           <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
-          <span className="min-w-0 flex-1 truncate text-[var(--color-fg-dim)]" title={branch || "detached HEAD"}>
-            {branch || "detached HEAD"}
+          <span className="min-w-0 flex-1 truncate text-[var(--color-fg-dim)]" title={branch || t("shared.detachedHead")}>
+            {branch || t("shared.detachedHead")}
           </span>
           <ScopePicker
             taskId={task.id}
@@ -397,13 +399,13 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff, repoDir: repoDirPr
         {err && <Empty tone="err">{err}</Empty>}
         {!err && loading && commits.length === 0 && (
           <div className="flex items-center gap-2 px-3 py-3 text-[12px] text-[var(--color-fg-faint)]">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading history…
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("history.reading")}
           </div>
         )}
         {!err && !loading && commits.length === 0 && (
           grep
-            ? <Empty>No commit message in this scope matches "{grep}".</Empty>
-            : <Empty>No commits yet. Anything an agent commits shows up here.</Empty>
+            ? <Empty>{t("history.noMatch", { query: grep })}</Empty>
+            : <Empty>{t("history.empty")}</Empty>
         )}
 
         {rows.map((row, i) => (
@@ -430,7 +432,7 @@ export function HistoryPanel({ task, reloadToken, onOpenDiff, repoDir: repoDirPr
             className="flex w-full items-center justify-center gap-1.5 py-2 text-[12px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-50"
           >
             {(loading || paging) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Load more
+            {t("history.loadMore")}
           </button>
         )}
       </div>
@@ -478,6 +480,7 @@ export function ScopePicker({ taskId, repoDir, branch, allBranches, picked, firs
 }) {
   const [refs, setRefs] = useState<GitRef[] | null>(null);
   const [filter, setFilter] = useState("");
+  const { t } = useTranslation("panels");
 
   const load = useCallback(() => {
     taskGitRefs(taskId, repoDir).then(setRefs).catch(() => setRefs([]));
@@ -488,24 +491,24 @@ export function ScopePicker({ taskId, repoDir, branch, allBranches, picked, firs
     const match = (r: GitRef) => !q || r.name.toLowerCase().includes(q);
     const of = (kind: GitRef["kind"]) => (refs ?? []).filter(r => r.kind === kind && match(r));
     return [
-      { label: "branches", items: of("branch") },
-      { label: "remote branches", items: of("remote") },
-      { label: "tags", items: of("tag") },
+      { label: t("history.branches"), items: of("branch") },
+      { label: t("history.remoteBranches"), items: of("remote") },
+      { label: t("history.tags"), items: of("tag") },
     ].filter(g => g.items.length > 0);
-  }, [refs, filter]);
+  }, [refs, filter, t]);
 
   // The label is what is being SHOWN, not the name of a mode: the branch when
   // scope is Auto, "All", or the count when refs are picked.
   const label = allBranches
-    ? "All"
+    ? t("history.scopeAll")
     : picked.length === 0
-      ? (branch || "detached HEAD")
-      : picked.length === 1 ? picked[0] : `${picked.length} refs`;
+      ? (branch || t("shared.detachedHead"))
+      : picked.length === 1 ? picked[0] : t("history.refsCount", { count: picked.length });
   const title = allBranches
-    ? "Showing every ref in this repo"
+    ? t("history.titleAll")
     : picked.length === 0
-      ? `Showing ${branch || "detached HEAD"} and its history`
-      : `Showing ${picked.join(", ")}`;
+      ? t("history.titleAuto", { branch: branch || t("shared.detachedHead") })
+      : t("history.titlePicked", { refs: picked.join(", ") });
 
   const toggleRef = (name: string) => {
     const next = picked.includes(name) ? picked.filter(r => r !== name) : [...picked, name];
@@ -541,18 +544,18 @@ export function ScopePicker({ taskId, repoDir, branch, allBranches, picked, firs
             value={filter}
             onChange={e => setFilter(e.target.value)}
             onKeyDown={e => e.stopPropagation()}
-            placeholder="Filter refs"
+            placeholder={t("history.filterRefs")}
             spellCheck={false}
             className="h-6 w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 text-[11.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
           />
         </div>
         <ScopeRow
-          label="All" hint="every ref in this repo" closeOnSelect
+          label={t("history.scopeAll")} hint={t("history.hintAll")} closeOnSelect
           checked={allBranches}
           onSelect={() => onChange(!allBranches, [], firstParent)}
         />
         <ScopeRow
-          label="Auto" hint={branch || "detached HEAD"} closeOnSelect
+          label={t("history.scopeAuto")} hint={branch || t("shared.detachedHead")} closeOnSelect
           checked={!allBranches && picked.length === 0}
           onSelect={() => onChange(false, [], firstParent)}
         />
@@ -564,17 +567,17 @@ export function ScopePicker({ taskId, repoDir, branch, allBranches, picked, firs
             "why am I seeing other branches when I picked main". Meaningless
             under All, where seeing every tip is the point. */}
         <ScopeRow
-          label="First parent only"
-          hint={allBranches ? "not with All" : "merges stay one row"}
+          label={t("history.firstParent")}
+          hint={allBranches ? t("history.firstParentHintAll") : t("history.firstParentHintNoAll")}
           checked={firstParent && !allBranches}
           onSelect={() => { if (!allBranches) onChange(allBranches, picked, !firstParent); }}
         />
         {refs === null && (
-          <div className="px-2 py-1.5 text-[11.5px] text-[var(--color-fg-faint)]">Reading refs…</div>
+          <div className="px-2 py-1.5 text-[11.5px] text-[var(--color-fg-faint)]">{t("history.readingRefs")}</div>
         )}
         {refs !== null && groups.length === 0 && (
           <div className="px-2 py-1.5 text-[11.5px] text-[var(--color-fg-faint)]">
-            {filter.trim() ? "No ref matches that." : "This repo has no refs yet."}
+            {filter.trim() ? t("history.noRefMatch") : t("history.noRefs")}
           </div>
         )}
         {groups.map(g => (
@@ -693,6 +696,7 @@ function LaneGutter({ row, lanes, width }: { row: GraphRow; lanes: number; width
  *  Rendered inside the shared Provider the list mounts, which is what makes
  *  the first card wait and the rest instant. */
 function CommitCard({ commit }: { commit: GitCommit }) {
+  const { t } = useTranslation("panels");
   const { prose, coAuthors } = useMemo(() => splitTrailers(commit.body ?? ""), [commit.body]);
   const when = new Date(commit.timestamp * 1000);
   return (
@@ -706,7 +710,7 @@ function CommitCard({ commit }: { commit: GitCommit }) {
       {coAuthors.length > 0 && (
         <div className="text-[11.5px] text-[var(--color-fg-dim)]">
           {coAuthors.join(", ")} <span className="text-[var(--color-fg-faint)]">
-            {coAuthors.length === 1 ? "(co-author)" : "(co-authors)"}
+            {coAuthors.length === 1 ? t("shared.coAuthor") : t("shared.coAuthors")}
           </span>
         </div>
       )}
@@ -742,6 +746,7 @@ const CommitRow = memo(function CommitRow({
   repoDir: string;
   onOpenDiff: (sha: string, f: GitFile) => void;
 }) {
+  const { t } = useTranslation("panels");
   const chips = useMemo(() => parseRefs(commit.refs), [commit.refs]);
   return (
     <div data-testid="history-commit" data-sha={commit.sha}>
@@ -805,7 +810,7 @@ const CommitRow = memo(function CommitRow({
                 Hidden entirely when the branch has no upstream, where
                 "unpushed" would describe every commit and mean nothing. */}
             {showUnpushed && commit.unpushed && (
-              <Tip content="Not pushed yet" side="left">
+              <Tip content={t("history.notPushed")} side="left">
                 <span
                   data-testid="history-unpushed"
                   className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-info)]"
@@ -836,16 +841,16 @@ const CommitRow = memo(function CommitRow({
           <ContextMenuLabel>{commit.short}</ContextMenuLabel>
           <ContextMenuItem onSelect={() => copyToClipboard(commit.sha, "commit SHA")}>
             <Copy className="h-4 w-4" />
-            Copy SHA
+            {t("history.copySha")}
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => copyToClipboard(commit.short, "short SHA")}>
             <Copy className="h-4 w-4" />
-            Copy short SHA
+            {t("history.copyShortSha")}
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => copyToClipboard(commit.subject, "commit message")}>
             <Copy className="h-4 w-4" />
-            Copy message
+            {t("history.copyMessage")}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenuRoot>
@@ -898,6 +903,7 @@ function CommitDetail({ commit, taskId, repoDir, indent, onOpenDiff }: {
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | null>(null);
+  const { t } = useTranslation("panels");
 
   useEffect(() => {
     let alive = true;
@@ -925,7 +931,7 @@ function CommitDetail({ commit, taskId, repoDir, indent, onOpenDiff }: {
             copiedTimer.current = window.setTimeout(() => setCopied(false), 1200);
           }}
           className="flex shrink-0 items-center gap-1 rounded px-1 font-mono hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-          title="Copy the full SHA"
+          title={t("history.copyFullSha")}
         >
           {copied ? <Check className="h-3 w-3 text-[var(--color-ok)]" /> : <Copy className="h-3 w-3" />}
           {commit.short}
@@ -939,11 +945,11 @@ function CommitDetail({ commit, taskId, repoDir, indent, onOpenDiff }: {
       {err && <div className="px-1 py-1 text-[11px] text-[var(--color-err)]">{err}</div>}
       {!err && files === null && (
         <div className="flex items-center gap-1.5 px-1 py-1 text-[11px] text-[var(--color-fg-faint)]">
-          <Loader2 className="h-3 w-3 animate-spin" /> Reading changes…
+          <Loader2 className="h-3 w-3 animate-spin" /> {t("history.readingChanges")}
         </div>
       )}
       {files?.length === 0 && (
-        <div className="px-1 py-1 text-[11px] text-[var(--color-fg-faint)]">No file changes in this commit.</div>
+        <div className="px-1 py-1 text-[11px] text-[var(--color-fg-faint)]">{t("history.noFiles")}</div>
       )}
       {files?.map(f => (
         <button

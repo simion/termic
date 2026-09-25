@@ -24,6 +24,7 @@
 // opening (the host stays unprefixed).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import {
   ChevronRight, ChevronDown, ArrowDown, ArrowUp, List, ListTree, Rows3, Check, Eye, Search, Trash2, MessageSquare, Loader2, GitBranch, GitMerge, RotateCw, FileText,
 } from "lucide-react";
@@ -71,10 +72,11 @@ const LS_VIEWTAB = "gitPanelView";
  *  one you ACT in (stage, discard, commit, push); the other two are read-only
  *  views of what the branch has already done. */
 export type GitView = "commit" | "compare" | "history";
-const GIT_VIEWS: { id: GitView; label: string; title: string }[] = [
-  { id: "commit",  label: "Commit",  title: "What you can stage right now" },
-  { id: "compare", label: "Compare", title: "Everything this branch differs by against another ref, committed or not" },
-  { id: "history", label: "History", title: "The commit graph for this repo" },
+// Labels/titles are i18n keys into the gitPanel subtree, resolved at render.
+const GIT_VIEWS: { id: GitView; labelKey: string; titleKey: string }[] = [
+  { id: "commit",  labelKey: "gitPanel.viewCommit",  titleKey: "gitPanel.viewCommitTitle" },
+  { id: "compare", labelKey: "gitPanel.viewCompare", titleKey: "gitPanel.viewCompareTitle" },
+  { id: "history", labelKey: "gitPanel.viewHistory", titleKey: "gitPanel.viewHistoryTitle" },
 ];
 function readGitView(): GitView {
   try {
@@ -131,6 +133,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
   /** Same refresh signals the status poll rides, forwarded to the Graph. */
   reloadToken?: number;
 }) {
+  const { t } = useTranslation("panels");
   const pushToast = useUI(s => s.pushToast);
   const nonGit = useApp(s => s.projects.find(p => p.id === task.project_id)?.non_git);
   // Resolved (user-overridable) bindings for the contextual Git shortcuts.
@@ -342,11 +345,11 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
   // (folder) discards just drop the preview diff.
   const doDiscard = useCallback((paths: string[], opts?: { pane?: "unstaged" | "staged"; label?: string }) => {
     if (paths.length === 0) return;
-    const label = opts?.label ?? (paths.length === 1 ? paths[0] : `${paths.length} files`);
+    const label = opts?.label ?? (paths.length === 1 ? paths[0] : t("shared.fileMany", { count: paths.length }));
     useUI.getState().askConfirm({
-      title: "Discard changes",
-      message: `Discard all changes to ${label}? This cannot be undone.`,
-      confirmLabel: "Discard",
+      title: t("gitPanel.discardTitle"),
+      message: t("gitPanel.discardMessage", { label }),
+      confirmLabel: t("gitPanel.discardConfirm"),
       destructive: true,
     }).then(ok => {
       if (!ok) return;
@@ -364,7 +367,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
         })
         .catch(err => pushToast(String(err), "error"));
     });
-  }, [task.id, dir, focusNext, closePreviewDiff, pushToast]);
+  }, [task.id, dir, focusNext, closePreviewDiff, pushToast, t]);
 
   const doCommit = (push: boolean) => {
     if (!subject.trim() || committing) return;
@@ -379,7 +382,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
         // The committed files no longer have changes — drop the now-stale
         // preview diff tab (same as clearing the last staged/unstaged file).
         closePreviewDiff();
-        pushToast(push ? "Committed and pushed" : "Committed", "success");
+        pushToast(push ? t("gitPanel.committedPushed") : t("gitPanel.committed"), "success");
         refresh();
         // A push is the moment PR state likely changes (new commits on an
         // open PR, or the user is about to create one) - poll right away.
@@ -399,7 +402,9 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
     setPinnedRepoDir(dir);
     taskGitPush(task.id, dir)
       .then(() => {
-        pushToast(ahead > 0 ? `Pushed ${ahead} commit${ahead === 1 ? "" : "s"}` : "Pushed", "success");
+        pushToast(ahead > 0
+          ? (ahead === 1 ? t("gitPanel.pushedOne") : t("gitPanel.pushedMany", { count: ahead }))
+          : t("gitPanel.pushed"), "success");
         refresh();
         usePr.getState().refresh(task.id, true);
       })
@@ -462,7 +467,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
   }, [selected, dir, task.id, refresh, pushToast, stageBinding, discardBinding, focusNext, doDiscard]);
 
   if (!status) {
-    return <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">Loading…</div>;
+    return <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">{t("shared.loading")}</div>;
   }
   // A repo termic could not read at all (or a plain folder) has nothing to
   // show and no graph to draw, so it keeps the bare message.
@@ -473,8 +478,8 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
         {!nonGit && <BranchBar task={task} branch={status.repos[0]?.branch ?? task.branch} dir="" />}
         <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
           {nonGit
-            ? "Not a git repository. Changes aren't tracked here."
-            : "No changes. Working tree is clean."}
+            ? t("gitPanel.notGit")
+            : t("gitPanel.clean")}
         </div>
       </div>
     );
@@ -490,9 +495,10 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
   // that's a single repo. Unchanged repos are noise here; the "All files"
   // tab is where you browse repos that aren't currently dirty.
   const showSubTabs = repos.length > 1 && visibleRepos.length > 0;
-  const fileWord = stagedCount === 1 ? "File" : "Files";
   const commitDisabled = committing || !subject.trim() || stagedCount === 0;
-  const commitLabel = `Commit ${stagedCount} ${fileWord}${pushDefault ? " and Push" : ""}`;
+  const commitLabel = pushDefault
+    ? (stagedCount === 1 ? t("gitPanel.commitFileAndPush", { count: stagedCount }) : t("gitPanel.commitFilesAndPush", { count: stagedCount }))
+    : (stagedCount === 1 ? t("gitPanel.commitFile", { count: stagedCount }) : t("gitPanel.commitFiles", { count: stagedCount }));
   // Commits the upstream does not have. 0 covers both "in sync" and "no
   // upstream": in the second case the button still works and creates one,
   // which is why it is not disabled on a 0 count.
@@ -592,8 +598,8 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder={view === "history" ? "Search messages" : "Filter"}
-              title="Filters files in Commit and Compare. In History it searches commit messages across the whole branch, not just the rows on screen."
+              placeholder={view === "history" ? t("gitPanel.searchMessages") : t("gitPanel.filterPlaceholder")}
+              title={t("gitPanel.filterTip")}
               spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
               className="h-6 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] pl-7 pr-2 text-[12px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
             />
@@ -614,7 +620,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
               data-testid={`git-view-${v.id}`}
               data-active={view === v.id ? "true" : "false"}
               onClick={() => changeView(v.id)}
-              title={v.title}
+              title={t(v.titleKey)}
               className={cn(
                 "flex h-6 items-center rounded-md px-1.5 text-[11.5px] leading-none transition-colors",
                 view === v.id
@@ -622,7 +628,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
                   : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
               )}
             >
-              {v.label}
+              {t(v.labelKey)}
             </button>
           ))}
         </div>
@@ -642,18 +648,18 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           <DropdownRoot>
             <DropdownTrigger asChild>
               <button
-                title="View options"
+                title={t("gitPanel.viewOptions")}
                 className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
               >
                 {viewMode === "tree" ? <ListTree className="h-4 w-4" /> : viewMode === "combined" ? <Rows3 className="h-4 w-4" /> : <List className="h-4 w-4" />}
               </button>
             </DropdownTrigger>
             <DropdownMenu align="end">
-              <ViewItem label="View as Tree"          active={viewMode === "tree"}     onSelect={() => changeViewMode("tree")} />
-              <ViewItem label="View as Combined List" active={viewMode === "combined"} onSelect={() => changeViewMode("combined")} />
-              <ViewItem label="View as List"          active={viewMode === "list"}     onSelect={() => changeViewMode("list")} />
+              <ViewItem label={t("gitPanel.viewTree")}          active={viewMode === "tree"}     onSelect={() => changeViewMode("tree")} />
+              <ViewItem label={t("gitPanel.viewCombined")} active={viewMode === "combined"} onSelect={() => changeViewMode("combined")} />
+              <ViewItem label={t("gitPanel.viewList")}          active={viewMode === "list"}     onSelect={() => changeViewMode("list")} />
               <DropdownSeparator />
-              <ViewItem label="Hide untracked files" active={hideUntracked} onSelect={toggleHide} />
+              <ViewItem label={t("gitPanel.hideUntracked")} active={hideUntracked} onSelect={toggleHide} />
             </DropdownMenu>
           </DropdownRoot>
         )}
@@ -668,7 +674,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
       <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
         {clean && view === "commit" ? (
           <div className="px-3 py-3 text-[13.5px] text-[var(--color-fg-faint)]">
-            No changes. Working tree is clean.
+            {t("gitPanel.clean")}
           </div>
         ) : view === "history" ? (
           <HistoryPanel
@@ -691,12 +697,12 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           />
         ) : (<>
         <Pane
-          title="Unstaged" files={unstaged} pane="unstaged" viewMode={viewMode}
+          title={t("gitPanel.unstaged")} files={unstaged} pane="unstaged" viewMode={viewMode}
           collapsed={collapsed} setCollapsed={setCollapsed}
           paneCollapsed={unstagedCollapsed} onTogglePane={toggleUnstagedCollapsed}
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
           taskId={task.id} viewedCount={countViewed(unstaged)}
-          headerAction={unstaged.length > 0 ? { label: "Stage all", onClick: () => doStage(unstaged.map(f => f.path)) } : undefined}
+          headerAction={unstaged.length > 0 ? { label: t("gitPanel.stageAll"), onClick: () => doStage(unstaged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("unstaged", p)}
           onRowOpenFile={(p) => openWholeFile("unstaged", p)}
           onToggle={doStage}
@@ -712,12 +718,12 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           )}
         </div>
         <Pane
-          title="Staged" files={staged} pane="staged" viewMode={viewMode}
+          title={t("gitPanel.staged")} files={staged} pane="staged" viewMode={viewMode}
           collapsed={collapsed} setCollapsed={setCollapsed}
           paneCollapsed={stagedCollapsed} onTogglePane={toggleStagedCollapsed}
           clickable={clickable} selectedKey={selected} stageGlyph={stageGlyph}
           taskId={task.id} viewedCount={countViewed(staged)}
-          headerAction={staged.length > 0 ? { label: "Unstage all", onClick: () => doUnstage(staged.map(f => f.path)) } : undefined}
+          headerAction={staged.length > 0 ? { label: t("gitPanel.unstageAll"), onClick: () => doUnstage(staged.map(f => f.path)) } : undefined}
           onRowClick={(p) => activate("staged", p)}
           onRowOpenFile={(p) => openWholeFile("staged", p)}
           onToggle={doUnstage}
@@ -738,7 +744,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           value={subject}
           onChange={e => setSubject(e.target.value)}
           onKeyDown={onCommitKey}
-          placeholder="Commit subject"
+          placeholder={t("gitPanel.commitSubject")}
           spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
           className="h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[13px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
         />
@@ -746,7 +752,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
           value={body}
           onChange={e => setBody(e.target.value)}
           onKeyDown={onCommitKey}
-          placeholder="Description"
+          placeholder={t("gitPanel.description")}
           rows={2}
           spellCheck={false} autoCorrect="off" autoCapitalize="off" autoComplete="off"
           className="w-full resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] leading-snug text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)] focus:border-[var(--color-accent)]"
@@ -762,8 +768,8 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
             disabled={pushDisabled}
             onClick={doPush}
             title={ahead > 0
-              ? `Push ${ahead} commit${ahead === 1 ? "" : "s"} to the remote`
-              : "Push this branch to the remote"}
+              ? (ahead === 1 ? t("gitPanel.pushTipOne") : t("gitPanel.pushTipMany", { count: ahead }))
+              : t("gitPanel.pushTipNew")}
             className={cn(
               FOOTER_BTN,
               "mr-auto shrink-0 gap-1.5 rounded-md border border-[var(--color-border)] px-2.5",
@@ -773,7 +779,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
             )}
           >
             {pushing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
-            {pushing ? "Pushing…" : "Push"}
+            {pushing ? t("gitPanel.pushing") : t("gitPanel.push")}
             {/* Sized as a pill, not as a text box: `h-4` + centering keeps it
                 on the button's optical centre line (a bare span inherits the
                 button's `leading-none`, so its height was whatever the digits
@@ -801,13 +807,13 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
               commitDisabled ? "cursor-not-allowed opacity-40" : "hover:brightness-110",
             )}
           >
-            {committing ? "Committing…" : commitLabel}
+            {committing ? t("gitPanel.committing") : commitLabel}
           </button>
           <DropdownRoot>
             <DropdownTrigger asChild>
               <button
                 disabled={commitDisabled}
-                title="Commit options"
+                title={t("gitPanel.commitOptions")}
                 className={cn(
                   FOOTER_BTN,
                   "w-6 shrink-0 justify-center rounded-r-md border-l border-black/15 bg-[var(--color-accent)] text-[var(--color-accent-fg)]",
@@ -820,11 +826,11 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
             <DropdownMenu align="end">
               <DropdownItem onSelect={() => setPush(false)}>
                 <Check className={cn("h-3.5 w-3.5", pushDefault && "opacity-0")} />
-                <span>Commit</span>
+                <span>{t("gitPanel.commitItem")}</span>
               </DropdownItem>
               <DropdownItem onSelect={() => setPush(true)}>
                 <Check className={cn("h-3.5 w-3.5", !pushDefault && "opacity-0")} />
-                <span>Commit and Push</span>
+                <span>{t("gitPanel.commitAndPush")}</span>
               </DropdownItem>
             </DropdownMenu>
           </DropdownRoot>
@@ -854,6 +860,7 @@ function BranchBar({ task, branch, dir, right }: {
    *  spending a row of its own in a panel that drags down to 220px. */
   right?: React.ReactNode;
 }) {
+  const { t } = useTranslation("panels");
   const pushToast = useUI(s => s.pushToast);
   const [branches, setBranches] = useState<string[] | null>(null);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
@@ -889,28 +896,26 @@ function BranchBar({ task, branch, dir, right }: {
         // Merge/rebase rewrote the working tree — refresh the file tree and
         // open editors too, not just git status (same reasoning as discard).
         useApp.getState().bumpFsRevision(task.id);
-        const verb = mode === "rebase" ? "Rebase" : "Merge";
         if (r.conflicted) {
-          const finish = mode === "rebase"
-            ? "then run git rebase --continue."
-            : "then commit the result.";
           pushToast(
-            `${verb} of ${r.branch} from ${r.target} hit conflicts. Resolve them in the terminal, ${finish}`,
+            mode === "rebase"
+              ? t("gitPanel.rebaseConflict", { branch: r.branch, target: r.target })
+              : t("gitPanel.mergeConflict", { branch: r.branch, target: r.target }),
             "error",
             { ttlMs: 8000 },
           );
         } else if (r.stash_conflicted) {
           pushToast(
-            `Updated ${r.branch} from ${r.target}, but re-applying your local changes hit conflicts. Resolve them in the terminal; a copy is kept in git stash list.`,
+            t("gitPanel.stashConflict", { branch: r.branch, target: r.target }),
             "error",
             { ttlMs: 8000 },
           );
         } else if (r.up_to_date) {
-          pushToast(`${r.branch} is already up to date with ${r.target}.`);
+          pushToast(t("gitPanel.upToDate", { branch: r.branch, target: r.target }));
         } else if (r.stashed) {
-          pushToast(`Updated ${r.branch} from ${r.target}. Local changes were auto-stashed and restored.`);
+          pushToast(t("gitPanel.updatedStashed", { branch: r.branch, target: r.target }));
         } else {
-          pushToast(`Updated ${r.branch} from ${r.target}.`);
+          pushToast(t("gitPanel.updated", { branch: r.branch, target: r.target }));
         }
       })
       .catch(e => pushToast(String(e), "error"))
@@ -926,11 +931,11 @@ function BranchBar({ task, branch, dir, right }: {
         // Checkout rewrote the working tree — full fan-out, not just status.
         useApp.getState().bumpFsRevision(task.id);
         if (r.conflicted) {
-          pushToast(`Switched to ${r.branch}. Your stashed changes conflicted on re-apply; resolve them.`, "error", { ttlMs: 8000 });
+          pushToast(t("gitPanel.switchedConflict", { branch: r.branch }), "error", { ttlMs: 8000 });
         } else if (r.stashed) {
-          pushToast(`Switched to ${r.branch}. Local changes stashed and re-applied.`);
+          pushToast(t("gitPanel.switchedStashed", { branch: r.branch }));
         } else {
-          pushToast(`Switched to ${r.branch}.`);
+          pushToast(t("gitPanel.switched", { branch: r.branch }));
         }
       })
       .catch(e => pushToast(String(e), "error"))
@@ -950,7 +955,7 @@ function BranchBar({ task, branch, dir, right }: {
           <button
             disabled={switching || updating}
             data-testid="branch-chip"
-            title="Switch branch or update from the base (stashes and re-applies local changes)"
+            title={t("gitPanel.branchChipTip")}
             className={cn(
               "flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12px] transition-colors hover:border-[var(--color-accent-soft)] disabled:opacity-50",
               // Only when it SHARES the row. The chip is sized to its content
@@ -967,14 +972,14 @@ function BranchBar({ task, branch, dir, right }: {
             {switching || updating
               ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--color-fg-faint)]" />
               : <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
-            <span className="truncate font-mono text-[var(--color-fg)]">{branch || "detached HEAD"}</span>
+            <span className="truncate font-mono text-[var(--color-fg)]">{branch || t("shared.detachedHead")}</span>
             <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-fg-faint)]" />
           </button>
         </DropdownTrigger>
         <DropdownMenu align="start">
           {loading ? (
             <div className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading branches…
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("gitPanel.loadingBranches")}
             </div>
           ) : (
             <>
@@ -988,12 +993,12 @@ function BranchBar({ task, branch, dir, right }: {
                 if (!canPull && !canBase) return null;
                 return (
                   <>
-                    <DropdownLabel>Update</DropdownLabel>
+                    <DropdownLabel>{t("gitPanel.update")}</DropdownLabel>
                     {canPull && (
                       <DropdownItem onSelect={() => runUpdate("pull")} className="items-center">
                         <ArrowDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
                         <span className="truncate text-[12px]">
-                          Pull from <span className="font-mono">{info!.upstream}</span>
+                          <Trans i18nKey="gitPanel.pullFrom" values={{ upstream: info!.upstream }} components={{ mono: <span className="font-mono" /> }} />
                         </span>
                       </DropdownItem>
                     )}
@@ -1002,13 +1007,13 @@ function BranchBar({ task, branch, dir, right }: {
                         <DropdownItem onSelect={() => runUpdate("merge")} className="items-center">
                           <GitMerge className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
                           <span className="truncate text-[12px]">
-                            Merge <span className="font-mono">{info!.base}</span> into this branch
+                            <Trans i18nKey="gitPanel.mergeInto" values={{ base: info!.base }} components={{ mono: <span className="font-mono" /> }} />
                           </span>
                         </DropdownItem>
                         <DropdownItem onSelect={() => runUpdate("rebase")} className="items-center">
                           <RotateCw className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-dim)]" />
                           <span className="truncate text-[12px]">
-                            Rebase onto <span className="font-mono">{info!.base}</span>
+                            <Trans i18nKey="gitPanel.rebaseOnto" values={{ base: info!.base }} components={{ mono: <span className="font-mono" /> }} />
                           </span>
                         </DropdownItem>
                       </>
@@ -1018,7 +1023,7 @@ function BranchBar({ task, branch, dir, right }: {
                 );
               })()}
               {!branches || branches.length === 0 ? (
-                <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">No local branches.</div>
+                <div className="px-2 py-1.5 text-[12px] text-[var(--color-fg-faint)]">{t("gitPanel.noBranches")}</div>
               ) : (
                 branches.map(b => (
                   <DropdownItem key={b} onSelect={() => switchTo(b)} className="items-center">
@@ -1092,6 +1097,7 @@ function Pane({
   title, files, pane, viewMode, collapsed, setCollapsed, paneCollapsed, onTogglePane, clickable, selectedKey, stageGlyph,
   taskId, viewedCount = 0, headerAction, onRowClick, onRowOpenFile, onToggle, onDiscard, rowActionIcon, root, repoDir, truncated, className, style,
 }: PaneProps) {
+  const { t } = useTranslation("panels");
   return (
     <div className={cn("flex flex-col overflow-hidden", className)} style={style}>
       <div className="group flex h-7 shrink-0 items-center border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] hover:bg-[var(--color-hover)]">
@@ -1127,14 +1133,14 @@ function Pane({
       </div>
       {!paneCollapsed && truncated && (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-2)] px-2.5 py-1 text-[11px] text-[var(--color-fg-faint)]">
-          File list capped at 5 000 entries. Add large dirs to .gitignore.
+          {t("gitPanel.truncated")}
         </div>
       )}
       {!paneCollapsed && (
         <div className="min-h-0 flex-1 overflow-hidden">
           {files.length === 0 ? (
             <div className="px-3 py-1.5 text-[12px] text-[var(--color-fg-faint)]">
-              {pane === "unstaged" ? "Nothing to stage" : "Nothing staged"}
+              {pane === "unstaged" ? t("gitPanel.nothingToStage") : t("gitPanel.nothingStaged")}
             </div>
           ) : (
             <FileList
@@ -1318,9 +1324,10 @@ function DirRow({ row, pane, setCollapsed, onToggle, onDiscard, rowActionIcon, s
   root: string;
   repoDir: string;
 }) {
+  const { t } = useTranslation("panels");
   const { name, dirPath, depth, leaves, isCollapsed } = row;
   const DirActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
-  const dirLabel = rowActionIcon === "down" ? "Stage folder" : "Unstage folder";
+  const dirLabel = rowActionIcon === "down" ? t("gitPanel.stageFolder") : t("gitPanel.unstageFolder");
   const toggle = useCallback(() => {
     const key = `${pane}\0${dirPath}`;
     setCollapsed(prev => {
@@ -1361,11 +1368,11 @@ function DirRow({ row, pane, setCollapsed, onToggle, onDiscard, rowActionIcon, s
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onToggle(leaves)}>
           <DirActionIcon />
-          {rowActionIcon === "down" ? "Stage" : "Unstage"} <span className="font-medium">"{name}"</span>
+          {rowActionIcon === "down" ? t("gitPanel.stageNamed", { name }) : t("gitPanel.unstageNamed", { name })}
         </ContextMenuItem>
         <ContextMenuItem destructive onSelect={() => onDiscard(leaves)}>
           <Trash2 />
-          Discard <span className="font-medium">"{name}"</span>
+          {t("gitPanel.discardNamed", { name })}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <CopyPathItems rel={repoDir ? `${repoDir}/${dirPath}` : dirPath} root={root} isDir />
@@ -1433,6 +1440,7 @@ function buildTree(files: GitFile[]): TreeNode {
 }
 
 function TreeView(props: FileListProps) {
+  const { t } = useTranslation("panels");
   const { files, pane, collapsed, setCollapsed, onToggle, onDiscard, rowActionIcon, stageGlyph, root, repoDir } = props;
   const tree = useMemo(() => buildTree(files), [files]);
   const DirActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
@@ -1457,7 +1465,7 @@ function TreeView(props: FileListProps) {
       if (k.children.size > 0) {
         const key = `${pane}\0${k.path}`;
         const isCollapsed = collapsed.has(key);
-        const dirLabel = rowActionIcon === "down" ? "Stage folder" : "Unstage folder";
+        const dirLabel = rowActionIcon === "down" ? t("gitPanel.stageFolder") : t("gitPanel.unstageFolder");
         const leaves = collectLeafPaths(k);
         out.push(
           <ContextMenuRoot key={`d:${k.path}`}>
@@ -1492,11 +1500,11 @@ function TreeView(props: FileListProps) {
               {/* Git actions first (stage + discard), then path/finder items. */}
               <ContextMenuItem onSelect={() => onToggle(leaves)}>
                 <DirActionIcon />
-                {rowActionIcon === "down" ? "Stage" : "Unstage"} <span className="font-medium">"{k.name}"</span>
+                {rowActionIcon === "down" ? t("gitPanel.stageNamed", { name: k.name }) : t("gitPanel.unstageNamed", { name: k.name })}
               </ContextMenuItem>
               <ContextMenuItem destructive onSelect={() => onDiscard(leaves)}>
                 <Trash2 />
-                Discard <span className="font-medium">"{k.name}"</span>
+                {t("gitPanel.discardNamed", { name: k.name })}
               </ContextMenuItem>
               <ContextMenuSeparator />
               <CopyPathItems rel={repoDir ? `${repoDir}/${k.path}` : k.path} root={root} isDir />
@@ -1539,9 +1547,10 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
   root: string;
   repoDir: string;
 }) {
+  const { t } = useTranslation("panels");
   const key = file.status;
   const ActionIcon = rowActionIcon === "down" ? ArrowDown : ArrowUp;
-  const actionLabel = rowActionIcon === "down" ? "Stage" : "Unstage";
+  const actionLabel = rowActionIcon === "down" ? t("gitPanel.stage") : t("gitPanel.unstage");
   const selected = selectedKey === `${pane} ${file.path}`;
   // Task-relative path: how viewed marks + review comments key a file
   // (matches the diff tab's path, prefixed for member repos).
@@ -1615,7 +1624,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
           thing, and mono is wider, so long paths truncated sooner. */}
       <span className={cn("truncate flex-1 font-medium", viewed && !selected && "text-[var(--color-fg-faint)] line-through decoration-[var(--color-fg-faint)]/40")}>{label}</span>
       {commentCount > 0 && (
-        <Tip side="left" content={`${commentCount} inline ${commentCount === 1 ? "comment" : "comments"}`}>
+        <Tip side="left" content={commentCount === 1 ? t("shared.inlineCommentOne") : t("shared.inlineCommentMany", { count: commentCount })}>
           <span className="flex shrink-0 items-center gap-0.5 rounded bg-[var(--color-bg-3)] px-1 text-[10.5px] tabular-nums text-[var(--color-fg-dim)]">
             <MessageSquare className="h-2.5 w-2.5" />
             {commentCount}
@@ -1623,7 +1632,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
         </Tip>
       )}
       {canOpenFile && (
-        <Tip side="left" content="Open the file (⌥-click the row)">
+        <Tip side="left" content={t("shared.openFileTip")}>
           <button
             onClick={(e) => { e.stopPropagation(); onOpenFile(file.path); }}
             // The row's dblclick STAGES, and a button that stops only
@@ -1631,7 +1640,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
             // read-only action would quietly mutate the index. Reading a
             // file must never stage it, however fast you click.
             onDoubleClick={(e) => e.stopPropagation()}
-            aria-label="Open file"
+            aria-label={t("shared.openFile")}
             // Left of the eye: this navigates, the eye records a judgement,
             // the arrow acts on the index. Same quiet-until-hover treatment
             // as the eye, so a third control does not make the resting row
@@ -1647,7 +1656,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
         </Tip>
       )}
       {canView && (
-        <Tip side="left" content={viewed ? "Mark as not viewed" : "Mark as viewed"}>
+        <Tip side="left" content={viewed ? t("shared.markNotViewed") : t("shared.markViewed")}>
           <button
             onClick={toggleViewed}
             // Same hole as the Open file button above, and it predates it:
@@ -1677,7 +1686,7 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
         side="left"
         content={
           <span className="flex items-center gap-1.5">
-            {rowActionIcon === "down" ? "Stage" : "Unstage"}
+            {rowActionIcon === "down" ? t("gitPanel.stage") : t("gitPanel.unstage")}
             <kbd className="rounded bg-[var(--color-bg-3)] px-1 text-[10.5px] text-[var(--color-fg-faint)]">{stageGlyph}</kbd>
           </span>
         }
@@ -1704,18 +1713,18 @@ function FileRow({ file, label, depth = 0, pane, selectedKey, stageGlyph, taskId
         </ContextMenuItem>
         <ContextMenuItem destructive onSelect={() => onDiscard([file.path])}>
           <Trash2 />
-          Discard changes
+          {t("gitPanel.discardChanges")}
         </ContextMenuItem>
         {canOpenFile && (
           <ContextMenuItem onSelect={() => onOpenFile(file.path)}>
             <FileText />
-            Open file
+            {t("shared.openFile")}
           </ContextMenuItem>
         )}
         {canView && (
           <ContextMenuItem onSelect={() => useFileViewed.getState().toggle(taskId, fullPath, file.fp)}>
             <Check />
-            {viewed ? "Mark as not viewed" : "Mark as viewed"}
+            {viewed ? t("shared.markNotViewed") : t("shared.markViewed")}
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
