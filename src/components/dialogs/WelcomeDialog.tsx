@@ -641,6 +641,9 @@ function StepHooks({ clis }: { clis: CliInfo[] }) {
       let on = false;
       try { on = await agentHooksAutoGet(); } catch { /* treated as off */ }
       if (!on) {
+        // Checked at once, like a click on the box: the call below returns
+        // only after installing every agent's hook, which can take seconds.
+        setAutoState(true);
         try { await agentHooksAutoSet(true); on = true; } catch { /* falls back below */ }
       }
       setAutoState(on);
