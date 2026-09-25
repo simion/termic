@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "1.9.0",
+      "version": "1.9.1",
       "date": "2026-09-25",
       "summary": "Termic now runs on Windows, and tasks show which agent started them."
     },
