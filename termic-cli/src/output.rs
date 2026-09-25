@@ -563,6 +563,16 @@ pub fn prompts_text(prompts: &[PromptEntry]) -> String {
 /// One line naming the tab and, crucially, its id: that id is the stable
 /// selector, so printing it is what lets a script address the tab it just
 /// made instead of racing an index or an agent-authored title.
+/// `tab --tab X --title Y`: what the tab is called now. `reset` is the
+/// `--title ""` form, where the title printed is the automatic one.
+pub fn tab_rename_text(t: &TabData, reset: bool) -> String {
+    if reset {
+        format!("Tab {} in {} is back to its automatic title ({}).", t.tab_id, t.task_id, t.title)
+    } else {
+        format!("Renamed tab {} in {} to \"{}\".", t.tab_id, t.task_id, t.title)
+    }
+}
+
 pub fn tab_text(t: &TabData) -> String {
     // `title` is what the tab shows in the GUI, and it is the only useful
     // label when it differs from the cli id: a custom-command task's tab is

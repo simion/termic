@@ -234,6 +234,153 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
 // one side and the PTY manager on the other, so a broken `close_tab`
 // handler registration, a `notify_tab_detach` wired to the wrong role
 // field, or a stop that misses the tab's PTY all pass there and fail here.
+// GH #331: a title set through the CLI is a selector. Opened with
+// `tab --title`, the tab answers to that name on every tab verb, keeps it
+// while the agent retitles itself (fake-agent drives its OSC title the
+// moment it starts), and `tab --tab X --title Y` renames an open tab, or
+// with "" gives it back its automatic title.
+describe("termic tab --title: a title you set is a selector (GH #331)", () => {
+  const TASK = "cli-titles";
+  let taskId: string;
+  let alpha: string;
+  let beta: string;
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask(TASK);
+    await waitForClisDetected();
+  });
+
+  const storeTab = (tab: string) =>
+    browser.execute(
+      (tid, id) => {
+        const t = (window.__termic!.useApp.getState().tabs[tid] ?? []).find((x: any) => x.id === id);
+        return t ? { title: t.title, customTitle: !!t.customTitle, liveTitle: t.liveTitle ?? null } : null;
+      },
+      taskId,
+      tab,
+    );
+  /** What the tab strip pill actually shows. */
+  const pillText = (tab: string) =>
+    browser.execute(
+      (tid, id) => document.querySelector(`[data-task-id="${tid}"] [data-tab-id="${id}"]`)?.textContent ?? null,
+      taskId,
+      tab,
+    );
+  const tabCount = () =>
+    browser.execute((tid) => (window.__termic!.useApp.getState().tabs[tid] ?? []).length, taskId);
+
+  it("opens two agent tabs by name and addresses each by it", async () => {
+    const a = await rpc({ cmd: "tab", task: TASK, kind: { tab: "agent", id: "fakeagent" }, title: "alpha-worker" });
+    expect(a.ok).toBe(true);
+    expect(a.data.title).toBe("alpha-worker");
+    alpha = a.data.tab_id;
+    const b = await rpc({ cmd: "tab", task: TASK, kind: { tab: "agent", id: "fakeagent" }, title: " beta-worker " });
+    expect(b.ok).toBe(true);
+    expect(b.data.title).toBe("beta-worker");
+    beta = b.data.tab_id;
+    await waitForTabPty(taskId, alpha, TASK);
+    await waitForTabPty(taskId, beta, TASK);
+
+    // Two tabs of the SAME agent: without titles `--tab fakeagent` is
+    // ambiguous and neither is reachable by name.
+    for (const sel of ["alpha-worker", "BETA-WORKER"]) {
+      const r = await rpc({ cmd: "logs", task: TASK, tab: sel });
+      expect(r.ok).toBe(true);
+      expect(r.data.source).toBe("agent");
+    }
+    expect((await rpc({ cmd: "logs", task: TASK, tab: "fakeagent" })).ok).toBe(false);
+    // And each name belongs to the tab it was given to: `status` lists the
+    // strip as the resolver sees it (the webview's report can trail a beat).
+    await browser.waitUntil(
+      async () => {
+        const st = await rpc({ cmd: "status", task: TASK });
+        const byId = new Map((st.data?.task?.tabs ?? []).map((t: any) => [t.id, t.title]));
+        return byId.get(alpha) === "alpha-worker" && byId.get(beta) === "beta-worker";
+      },
+      { timeout: 10_000, timeoutMsg: "status never listed the titles against their tabs" },
+    );
+  });
+
+  it("keeps the name while the agent retitles itself", async () => {
+    // A locked tab drops the agent's OSC title outright (setTabLiveTitle
+    // bails on customTitle), so the named tab itself can never show that
+    // the agent DID retitle. An untitled control tab of the same agent can:
+    // once its live title lands, fake-agent has emitted, and the named tabs
+    // opened before it have been through the same start.
+    const control = await rpc({ cmd: "tab", task: TASK, kind: { tab: "agent", id: "fakeagent" } });
+    expect(control.ok).toBe(true);
+    await browser.waitUntil(async () => !!(await storeTab(control.data.tab_id))?.liveTitle, {
+      timeout: 20_000,
+      timeoutMsg: "fake-agent never set its OSC title on the untitled control tab",
+    });
+    for (const [id, name] of [[alpha, "alpha-worker"], [beta, "beta-worker"]]) {
+      expect(await storeTab(id)).toMatchObject({ title: name, customTitle: true, liveTitle: null });
+      expect(await pillText(id)).toContain(name);
+    }
+  });
+
+  it("refuses a title already in use, or one --tab would read as a position", async () => {
+    const before = await tabCount();
+    const dup = await rpc({ cmd: "tab", task: TASK, kind: { tab: "shell" }, title: "Alpha-Worker" });
+    expect(dup.ok).toBe(false);
+    expect(dup.error.code).toBe("conflict");
+    const num = await rpc({ cmd: "tab", task: TASK, kind: { tab: "shell" }, title: "2" });
+    expect(num.ok).toBe(false);
+    expect(num.error.code).toBe("bad_request");
+    expect(await tabCount()).toBe(before);
+  });
+
+  it("renames an open tab through the real CLI, and the old name stops resolving", async () => {
+    const stdout = runCli(
+      ["--no-launch", "tab", TASK, "--tab", "alpha-worker", "--title", "reviewer"],
+      { TERMIC_DATA_DIR: dataDir },
+    );
+    expect(stdout).toContain('Renamed tab');
+    expect(stdout).toContain('"reviewer"');
+    expect(await storeTab(alpha)).toMatchObject({ title: "reviewer", customTitle: true });
+    await browser.waitUntil(async () => (await rpc({ cmd: "logs", task: TASK, tab: "reviewer" })).ok === true, {
+      timeout: 10_000,
+      timeoutMsg: "the new title never resolved",
+    });
+    expect((await rpc({ cmd: "logs", task: TASK, tab: "alpha-worker" })).ok).toBe(false);
+    expect(await pillText(alpha)).toContain("reviewer");
+  });
+
+  it("renames by position too, and refuses another tab's name", async () => {
+    const clash = await rpc({ cmd: "tab_rename", task: TASK, tab: beta, title: "reviewer" });
+    expect(clash.ok).toBe(false);
+    expect(clash.error.code).toBe("conflict");
+    const status = await rpc({ cmd: "status", task: TASK });
+    const idx = status.data.task.tabs.find((t: any) => t.id === beta).index;
+    const r = await rpc({ cmd: "tab_rename", task: TASK, tab: String(idx), title: "tester" });
+    expect(r.ok).toBe(true);
+    expect(r.data).toMatchObject({ tab_id: beta, title: "tester" });
+  });
+
+  it("\"\" gives the tab back its automatic title", async () => {
+    const r = await rpc({ cmd: "tab_rename", task: TASK, tab: "reviewer", title: "" });
+    expect(r.ok).toBe(true);
+    expect(r.data.title).not.toBe("reviewer");
+    const t = await storeTab(alpha);
+    expect(t).toMatchObject({ customTitle: false, title: r.data.title });
+    // The pill follows the agent's own title again.
+    await browser.waitUntil(async () => !(await pillText(alpha))?.includes("reviewer"), {
+      timeout: 5_000,
+      timeoutMsg: "the pill still shows the cleared name",
+    });
+    await browser.waitUntil(async () => (await rpc({ cmd: "logs", task: TASK, tab: "reviewer" })).ok === false, {
+      timeout: 10_000,
+      timeoutMsg: "the cleared name still resolves",
+    });
+  });
+});
+
 describe("termic tab close: one tab, not the task (GH #185)", () => {
   let taskId: string;
   let secondTabId: string;

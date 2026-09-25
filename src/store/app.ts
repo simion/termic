@@ -686,6 +686,19 @@ export function isUserWatching(taskId: string, tabId?: string): boolean {
   return isUserWatchingIn(useApp.getState(), taskId, tabId);
 }
 
+/** The title a terminal tab carries when nobody renamed it: the rules the
+ *  restore path and `termic tab` title tabs by, so resetting a rename lands
+ *  on what a relaunch would show. */
+function automaticTabTitle(t: TerminalTab, task: Task | undefined, agents: AppState["agents"]): string {
+  if (t.runTab) {
+    if (t.runTab.kind === "setup") return "Setup";
+    return t.runTab.member ? `Run · ${t.runTab.member}` : "Run";
+  }
+  if (t.cli === "shell") return "Terminal";
+  if (t.cli === "custom") return task?.name || "Command";
+  return agentDisplayName(t.cli, agents);
+}
+
 export const useApp = create<AppState>((set, get) => ({
   projects: [],
   tasks: [],
@@ -2689,7 +2702,16 @@ export const useApp = create<AppState>((set, get) => ({
   clearTabCustomTitle: (taskId, tabId) => {
     set(s => {
       const list = s.tabs[taskId] || [];
-      const next = list.map(t => t.id !== tabId ? t : { ...t, customTitle: false } as Tab);
+      const task = s.tasks.find(t => t.id === taskId);
+      // Put the AUTOMATIC title back, not just drop the lock. Leaving the
+      // custom string in `title` kept it as the tab's selector (`--tab`
+      // matches `title`, GH #331) and on screen for any tab with no live
+      // OSC title yet, e.g. a shell, until a relaunch re-derived it.
+      const next = list.map(t => t.id !== tabId ? t : {
+        ...t,
+        customTitle: false,
+        ...(t.type === "terminal" ? { title: automaticTabTitle(t as TerminalTab, task, s.agents) } : {}),
+      } as Tab);
       return { tabs: { ...s.tabs, [taskId]: next } };
     });
     get().syncDurableTabs(taskId);

@@ -76,7 +76,12 @@ use std::io::{self, BufRead, Read, Write};
 /// v15: `new` carries `parent_task`, so a task an agent creates joins the
 /// agent's sidebar task group; the `group` verb shows or renames/recolours
 /// it; task summaries carry `group` (and, additively, `spawned_by`).
-pub const PROTOCOL_VERSION: u32 = 15;
+///
+/// v16 (GH #331): `tab` gains `title`, and the `tab_rename` verb sets or
+/// clears the title of a tab that is already open. A v15 server would
+/// drop the unknown `title` field and open an untitled tab, so a script
+/// that then addresses `--tab <title>` would fail far from the cause.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The argv `new` pins to a task's agent: the generic `--arg` values, then
 /// `--model <m>` LAST, so an explicit model wins when the agent parses
@@ -89,6 +94,30 @@ pub fn compose_task_agent_args(args: &[String], model: Option<&str>) -> Vec<Stri
         out.push(model.into());
     }
     out
+}
+
+/// Why `title` cannot be a tab title, or None when it can (GH #331).
+/// Shared by the CLI (pre-socket), the server and the MCP tool, so the
+/// three cannot disagree. Exactly "" is valid: it means "the automatic
+/// title" (no rename on open, clear the rename on `tab_rename`).
+/// Uniqueness is NOT checked here; it needs the live strip, which only
+/// the webview has.
+pub fn tab_title_problem(title: &str) -> Option<&'static str> {
+    if title.is_empty() {
+        return None;
+    }
+    let t = title.trim();
+    if t.is_empty() {
+        return Some("the title is blank; pass \"\" for the automatic title");
+    }
+    // `--tab <n>` resolves a number as a 1-based strip position before it
+    // tries titles, so a tab titled "2" could never be reached by title.
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        return Some(
+            "a title cannot be a number: --tab <n> selects by position, so that tab could never be reached by its title",
+        );
+    }
+    None
 }
 
 /// serde default for `QuitData::running`.
@@ -395,6 +424,31 @@ pub enum Command {
         /// only; the agent must declare `resume_id_args`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume: Option<String>,
+        /// v16 (GH #331): the new tab's title, set as a user rename so the
+        /// agent's OSC title cannot replace it and it survives a relaunch.
+        /// Absent or "" = the automatic title. Unique among the task's
+        /// tabs, since its point is being an unambiguous `--tab` selector.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// v16 (GH #331): set or clear the title of a tab that is already
+    /// open: the tab strip's double-click rename as a verb. Replies with
+    /// `ReplyData::Tab` (no prompt). Reaches every strip tab, like
+    /// `tab_close`: renaming is not driving.
+    TabRename {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// Tab selector (id, 1-based strip index, or title/cli), resolved
+        /// by the same rules `send`/`wait`/`tab_close` use.
+        tab: String,
+        /// The new title. "" clears the rename, and the tab goes back to
+        /// its automatic, agent-driven title.
+        title: String,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -1800,17 +1854,33 @@ mod tests {
                 wait: true,
                 timeout_ms: Some(60_000),
                 resume: Some("018f2c1e-aaaa-bbbb-cccc-1234567890ab".into()),
+                title: Some("reviewer".into()),
                 cwd: None,
             },
             Command::Tab {
                 task: None, project: None, kind: TabKind::Shell,
                 prompt: None, prompt_ref: None, wait: false, timeout_ms: None,
-                resume: None, cwd: None,
+                resume: None, title: None, cwd: None,
             },
             Command::Tab {
                 task: None, project: None, kind: TabKind::Default,
                 prompt: None, prompt_ref: None, wait: false, timeout_ms: None,
-                resume: None, cwd: None,
+                resume: None, title: None, cwd: None,
+            },
+            // v16 (GH #331): rename a tab, and clear a rename with "".
+            Command::TabRename {
+                task: Some("fix-auth".into()),
+                project: Some("web".into()),
+                tab: "2".into(),
+                title: "implementer".into(),
+                cwd: None,
+            },
+            Command::TabRename {
+                task: None,
+                project: None,
+                tab: "implementer".into(),
+                title: String::new(),
+                cwd: Some("/tasks/web/x".into()),
             },
             // v10 (GH #185): close one tab, by every selector shape.
             Command::TabClose {
@@ -2406,6 +2476,17 @@ mod tests {
         // Older server: the stale running app must restart.
         let msg = check_protocol(PROTOCOL_VERSION - 1).unwrap_err();
         assert_eq!(msg, VERSION_STALE_APP_MESSAGE);
+    }
+
+    #[test]
+    fn tab_titles_refuse_what_a_selector_could_never_reach() {
+        assert_eq!(tab_title_problem(""), None, "\"\" is the automatic title");
+        assert_eq!(tab_title_problem("reviewer"), None);
+        assert_eq!(tab_title_problem(" reviewer "), None, "trimmed, not refused");
+        assert_eq!(tab_title_problem("agent 2"), None, "digits inside a title are fine");
+        assert!(tab_title_problem("   ").unwrap().contains("blank"));
+        assert!(tab_title_problem("2").unwrap().contains("number"));
+        assert!(tab_title_problem(" 12 ").unwrap().contains("number"));
     }
 
     #[test]

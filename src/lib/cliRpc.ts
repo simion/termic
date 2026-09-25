@@ -956,6 +956,37 @@ interface NewTabParams {
   /** Externally-started session id the new tab's agent resumes (GH #169,
    *  `tab --resume`). Agent kind only. */
   resume?: string;
+  /** `tab --title` (GH #331): set as a user rename. Already trimmed and
+   *  vetted for shape by the server; uniqueness is checked here. */
+  title?: string | null;
+}
+
+/** Typed tab-title failures (GH #331), same sentinel scheme as
+ *  `closeTabErr` (decoded by cli_server.rs `parse_tab_title_error`). */
+function tabTitleErr(code: string, msg: string): Error {
+  return new Error(`cli_tab_title:${code}: ${msg}`);
+}
+
+/** Refuse a title that another strip tab of the task already answers to
+ *  as a `--tab` selector. Mirrors cli_server.rs `resolve_tab_selector_with`
+ *  exactly: strip = terminal tabs outside split panes, each matched by its
+ *  title (`title || cli`, as computeTabState reports it) OR its cli id,
+ *  case-insensitive. A looser check here would let a title through that
+ *  the selector then calls ambiguous. */
+function assertTabTitleFree(taskId: string, title: string, selfId?: string): void {
+  const needle = title.toLowerCase();
+  const strip = (useApp.getState().tabs[taskId] ?? [])
+    .filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
+  const clash = strip.findIndex(t =>
+    t.id !== selfId
+    && ((t.title || t.cli).toLowerCase() === needle || t.cli.toLowerCase() === needle));
+  if (clash >= 0) {
+    const t = strip[clash];
+    throw tabTitleErr(
+      "conflict",
+      `tab [${clash + 1}] (${t.title || t.cli}, ${t.cli}) already answers to "${title}" as a --tab selector; pick another title`,
+    );
+  }
 }
 
 /**
@@ -1074,9 +1105,11 @@ export async function newTabHandler(raw: unknown): Promise<{
   // A custom-command task's tab is titled with the TASK NAME, matching the
   // store's own restore and seed paths (app.ts); agentDisplayName("custom")
   // would render the generic "Command" instead and drift from the GUI.
-  const title = cli === "shell" ? "Terminal"
+  const auto = cli === "shell" ? "Terminal"
     : cli === "custom" ? (task.name || "Command")
     : agentDisplayName(cli, registry);
+  const wanted = typeof p.title === "string" ? p.title.trim() : "";
+  const title = wanted || auto;
   const tabId = crypto.randomUUID();
   const s = useApp.getState();
   // Mounting a STOPPED task (GH #119 evicts it from mountedTasks but keeps
@@ -1115,14 +1148,64 @@ export async function newTabHandler(raw: unknown): Promise<{
   // TaskView's mount effect then early-returns because a main tab exists.
   s.ensureDefaultTab(p.taskId, task.cli);
   s.mountTasks([p.taskId]);
+  // Checked AFTER the restore: before it, a task not yet opened this
+  // session has an empty strip and every title would look free.
+  if (wanted) assertTabTitleFree(p.taskId, wanted);
   // A --resume seed rides in as the tab's own sessionId: TerminalPane's
   // spawn then composes the agent's `resume_id_args` around it exactly as
   // it would for a uuid termic minted itself (agent kind only; the server
   // rejects the other kinds before the RPC).
   const seed = p.kind === "agent" && typeof p.resume === "string" && p.resume
     ? { sessionId: p.resume } : {};
-  s.addTab(p.taskId, { id: tabId, type: "terminal", title, cli, ...seed, ...extra }, { focus: false });
+  // A --title lands exactly as a double-click rename does: customTitle
+  // locks it against the agent's OSC title and persists it (custom_title).
+  const named = wanted ? { customTitle: true } : {};
+  s.addTab(
+    p.taskId,
+    { id: tabId, type: "terminal", title, cli, ...named, ...seed, ...extra },
+    { focus: false },
+  );
   return { taskId: p.taskId, tabId, cli, title };
+}
+
+/** `termic tab --tab X --title Y` (GH #331): the tab strip's rename as an
+ *  RPC. "" clears the rename and the tab follows its agent's title again.
+ *  Same stopped-task and pane guards as `close_tab`, for the same reasons. */
+export async function renameTabHandler(params: unknown): Promise<{ title: string }> {
+  const p = params as { taskId?: unknown; tabId?: unknown; title?: unknown };
+  if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("rename_tab requires a taskId");
+  if (typeof p?.tabId !== "string" || !p.tabId) throw new Error("rename_tab requires a tabId");
+  if (typeof p?.title !== "string") throw new Error("rename_tab requires a title");
+  const app = useApp.getState();
+  if (!app.tasks.some(t => t.id === p.taskId)) await app.loadAll();
+  const s = useApp.getState();
+  const task = s.tasks.find(t => t.id === p.taskId);
+  if (!task) throw new Error("no such task");
+  if (!s.mountedTasks.has(p.taskId)) {
+    throw tabTitleErr(
+      "task_stopped",
+      `task ${task.name} is not open in Termic, so it has no tabs to rename (open it with \`termic open\`)`,
+    );
+  }
+  const tab = (s.tabs[p.taskId] ?? []).find(t => t.id === p.tabId);
+  if (!tab || tab.type !== "terminal") {
+    throw tabTitleErr("unknown_tab", "that tab no longer exists; see `termic status` for the open tabs");
+  }
+  if ((tab as TerminalTab).paneId) {
+    throw tabTitleErr("not_renamable", "that tab lives in a split pane; rename it in the window");
+  }
+  const title = p.title.trim();
+  if (!title) {
+    if ((tab as TerminalTab).customTitle) s.clearTabCustomTitle(p.taskId, p.tabId);
+  } else {
+    assertTabTitleFree(p.taskId, title, p.tabId);
+    // Renaming to what it is already called changes nothing, and writing
+    // it anyway would re-sync the durable set for no reason.
+    const t = tab as TerminalTab;
+    if (!(t.customTitle && t.title === title)) s.renameTab(p.taskId, p.tabId, title);
+  }
+  const after = (useApp.getState().tabs[p.taskId] ?? []).find(t => t.id === p.tabId);
+  return { title: after?.title ?? title };
 }
 
 /** Typed domain failures for `tab close`, same sentinel scheme as
@@ -1206,6 +1289,7 @@ const handlers: Record<string, Handler> = {
   new_task: newTaskHandler,
   new_tab: newTabHandler,
   close_tab: closeTabHandler,
+  rename_tab: renameTabHandler,
   list_agents: listAgentsHandler,
   list_prompts: listPromptsHandler,
   send_prompt: sendPromptHandler,

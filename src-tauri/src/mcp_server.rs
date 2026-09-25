@@ -1340,24 +1340,45 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_tab",
         cli_verb: "tab",
-        description: "Open a tab inside a running task (the app's \"+\" menu as a tool), optionally delivering a first prompt to it. Returns the new tab's id, which is the stable selector other tools take.",
+        description: "Open a tab inside a running task (the app's \"+\" menu as a tool), optionally delivering a first prompt to it. Returns the new tab's id, which is the stable selector other tools take. With `tab`, renames an open tab instead.",
         params: &[
             P_TASK_SELF,
             P_PROJECT,
             // The kind is explicit rather than free text because the
             // kinds differ in sandbox, resume and YOLO behaviour, and a
             // typo must not land the caller in the wrong semantics.
-            ParamDef { name: "kind", json_type: "string", required: true, description: "\"agent\" (needs agentId), \"terminal\" (needs agentId naming a terminal entry), \"shell\" for a plain login shell, or \"default\" for another tab of whatever the task already runs.", cli_flag: None },
+            ParamDef { name: "kind", json_type: "string", required: false, description: "When opening: \"agent\" (needs agentId), \"terminal\" (needs agentId naming a terminal entry), \"shell\" for a plain login shell, or \"default\" for another tab of whatever the task already runs.", cli_flag: None },
             ParamDef { name: "agentId", json_type: "string", required: false, description: "Registry id for the agent and terminal kinds; see task_agents. Ignored by the other kinds.", cli_flag: Some("--agent") },
             ParamDef { name: "prompt", json_type: "string", required: false, description: "Deliver this prompt into the tab just opened (agent kinds only).", cli_flag: Some("--prompt") },
             P_LIBRARY,
             ParamDef { name: "resume", json_type: "string", required: false, description: "Session id the new agent tab resumes (agents with id-resume support only).", cli_flag: Some("--resume") },
             P_WAIT,
             P_TIMEOUT,
+            ParamDef { name: "title", json_type: "string", required: false, description: "The tab's title; the agent retitling itself does not replace it, so it works as a selector. Unique in the task, not a bare number. \"\" = the automatic title.", cli_flag: Some("--title") },
+            ParamDef { name: "tab", json_type: "string", required: false, description: "Rename this open tab (id, 1-based index or title) to `title` instead of opening one.", cli_flag: Some("--tab") },
         ],
         destructive: false,
         read_only: false,
         build: |a| {
+            // Rename mode (GH #331): a tab selector turns the call into the
+            // tab strip's rename, which opens nothing.
+            if let Some(tab) = arg_str(a, "tab")? {
+                for open_only in ["kind", "agentId", "prompt", "library", "resume", "wait", "timeoutMs"] {
+                    if a.get(open_only).is_some_and(|v| !v.is_null()) {
+                        return Err(format!(
+                            "\"{open_only}\" applies to opening a tab; with \"tab\" the call renames an open one"
+                        ));
+                    }
+                }
+                return Ok(Command::TabRename {
+                    task: Some(need_str(a, "task")?),
+                    project: arg_str(a, "project")?,
+                    tab,
+                    title: arg_str(a, "title")?
+                        .ok_or("\"title\" is required with \"tab\" (\"\" for the automatic title)")?,
+                    cwd: None,
+                });
+            }
             let kind = need_str(a, "kind")?;
             let agent_id = arg_str(a, "agentId")?;
             let need_id = |k: &str| -> Result<String, String> {
@@ -1383,6 +1404,8 @@ const TOOLS: &[ToolDef] = &[
                 wait: arg_bool(a, "wait")?,
                 timeout_ms: arg_u64(a, "timeoutMs")?,
                 resume: arg_str(a, "resume")?,
+                // "" is "no title" on open; the wire carries only a real one.
+                title: arg_str(a, "title")?.filter(|t| !t.is_empty()),
                 cwd: None,
             })
         },
@@ -3133,7 +3156,11 @@ mod tests {
         // keeps it that way.
         // 17100: the two lines above meeting in one tree (parity plus
         // `checkout`, which landed in parallel).
-        const RECORDED: usize = 17100;
+        // 17500: task_tab's `title` and `tab` (GH #331), parity with
+        // `termic tab --title` / `--tab`: name a tab so it is a selector
+        // that survives the agent retitling itself, and rename an open one
+        // without a sixth tab tool. Descriptions cut to one clause each.
+        const RECORDED: usize = 17500;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -3263,6 +3290,42 @@ mod tests {
     }
 
     #[test]
+    fn task_tab_titles_a_new_tab_or_renames_an_open_one() {
+        let tab = TOOLS.iter().find(|t| t.name == "task_tab").unwrap();
+        let build = |v: serde_json::Value| (tab.build)(v.as_object().unwrap());
+        // Open mode: the title rides the open; "" is no title on the wire.
+        let c = build(serde_json::json!({ "task": "t", "kind": "shell", "title": "logs" })).unwrap();
+        assert!(matches!(&c, Command::Tab { title: Some(t), .. } if t == "logs"));
+        let c = build(serde_json::json!({ "task": "t", "kind": "shell", "title": "" })).unwrap();
+        assert!(matches!(c, Command::Tab { title: None, .. }));
+        // Opening still needs a kind.
+        assert!(build(serde_json::json!({ "task": "t", "title": "x" })).unwrap_err().contains("kind"));
+
+        // Rename mode: `tab` + `title`, and "" survives as the reset.
+        let c = build(serde_json::json!({ "task": "t", "tab": "2", "title": "impl" })).unwrap();
+        assert!(matches!(&c, Command::TabRename { tab, title, .. } if tab == "2" && title == "impl"));
+        let c = build(serde_json::json!({ "task": "t", "tab": "impl", "title": "" })).unwrap();
+        assert!(matches!(&c, Command::TabRename { title, .. } if title.is_empty()));
+        // A rename needs a title to rename to.
+        assert!(build(serde_json::json!({ "task": "t", "tab": "2" })).unwrap_err().contains("title"));
+        // And opens nothing: every open-only param is refused beside `tab`.
+        for (k, v) in [
+            ("kind", serde_json::json!("agent")),
+            ("agentId", serde_json::json!("claude")),
+            ("prompt", serde_json::json!("go")),
+            ("library", serde_json::json!("builtin:review")),
+            ("resume", serde_json::json!("abc")),
+            ("wait", serde_json::json!(true)),
+            ("timeoutMs", serde_json::json!(1000)),
+        ] {
+            let mut args = serde_json::json!({ "task": "t", "tab": "2", "title": "x" });
+            args[k] = v;
+            let err = build(args).unwrap_err();
+            assert!(err.contains(k), "{k}: {err}");
+        }
+    }
+
+    #[test]
     fn closing_a_tab_needs_an_explicit_target_and_guards_the_default_one() {
         let close = TOOLS.iter().find(|t| t.name == "task_tab_close").unwrap();
         let build = |v: serde_json::Value| (close.build)(v.as_object().unwrap());
@@ -3335,6 +3398,7 @@ mod tests {
             wait,
             timeout_ms: ms,
             resume: None,
+            title: None,
             cwd: None,
         };
         let mut c = tab_cmd(true, None);

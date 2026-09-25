@@ -839,6 +839,15 @@ pub(crate) fn dispatch_authenticated(
         Command::Agents => handle_agents(req, host),
         Command::Prompts { .. } => handle_prompts(req, host),
         Command::Tab { .. } => handle_tab(req, host, sink),
+        Command::TabRename { task, project, tab, title, cwd } => handle_tab_rename(
+            &req.id,
+            host,
+            task.as_deref(),
+            project.as_deref(),
+            tab,
+            title,
+            cwd.as_deref(),
+        ),
         Command::TabClose { task, project, tab, yes, cwd } => handle_tab_close(
             &req.id,
             host,
@@ -2651,8 +2660,9 @@ fn handle_prompts(req: &Request, host: &dyn CliHost) -> Reply {
 /// the spawn-pending rule, i.e. exactly what `send` to a respawned agent
 /// does, so delivery stays confirmed (docs/plans/cli.md, Phase 1).
 fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
-    let Command::Tab { task, project, kind, prompt, prompt_ref, wait, timeout_ms, resume, cwd } =
-        &req.cmd
+    let Command::Tab {
+        task, project, kind, prompt, prompt_ref, wait, timeout_ms, resume, title, cwd,
+    } = &req.cmd
     else {
         unreachable!("handle_tab called with a non-tab command")
     };
@@ -2712,6 +2722,12 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
     if *wait && !has_prompt {
         return Reply::err(id, ErrorCode::BadRequest, "--wait needs a prompt to wait on");
     }
+    // A title a selector could never reach (GH #331). Uniqueness is the
+    // webview's check: it needs the live strip.
+    if let Some(why) = title.as_deref().and_then(proto::tab_title_problem) {
+        return Reply::err(id, ErrorCode::BadRequest, why);
+    }
+    let title = title.as_deref().map(str::trim).filter(|t| !t.is_empty());
     let (projects, tasks) = host.projects_tasks();
     let t = match resolve_task_arg(
         &projects,
@@ -2755,10 +2771,18 @@ fn handle_tab(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Re
 
     let value = match host.rpc(
         "new_tab",
-        serde_json::json!({ "taskId": t.id, "kind": kind_str, "id": agent_id, "resume": resume }),
+        serde_json::json!({
+            "taskId": t.id, "kind": kind_str, "id": agent_id, "resume": resume, "title": title,
+        }),
         OPEN_TIMEOUT,
     ) {
         Ok(v) => v,
+        // A title already in use on this task is a Conflict, the task-name
+        // rule, so a script can tell it from an unusable agent id.
+        Err(e) if e.starts_with(TAB_TITLE_ERR) => {
+            let (code, msg) = parse_tab_title_error(&e);
+            return Reply::err(id, code, msg);
+        }
         // The webview owns the "which agents are usable" answer, so its
         // message is the useful one; pass it through rather than flattening
         // it into a generic failure.
@@ -2925,6 +2949,76 @@ fn parse_tab_close_error(e: &str) -> (ErrorCode, String) {
 /// Unlike archive this is scoped to one tab, which is the entire point:
 /// an orchestrator cleaning up the tabs it opened must not take down the
 /// session it is driving from.
+/// Sentinel prefix for the webview's typed tab-title failures (GH #331),
+/// the `cli_tab_close:` scheme: `cli_tab_title:<code>: <message>`.
+const TAB_TITLE_ERR: &str = "cli_tab_title:";
+
+fn parse_tab_title_error(e: &str) -> (ErrorCode, String) {
+    let Some(rest) = e.strip_prefix(TAB_TITLE_ERR) else {
+        return (ErrorCode::Internal, format!("could not set the tab title ({e})"));
+    };
+    let (code, msg) = rest.split_once(':').unwrap_or(("", rest));
+    let code = match code {
+        // Another tab of the task already answers to that title.
+        "conflict" => ErrorCode::Conflict,
+        "invalid" => ErrorCode::BadRequest,
+        // The resolver's cache trailed a tab that closed underneath us.
+        "unknown_tab" => ErrorCode::NotFound,
+        "task_stopped" | "not_renamable" => ErrorCode::Unsupported,
+        _ => ErrorCode::Internal,
+    };
+    (code, msg.trim().to_string())
+}
+
+/// `termic tab --tab X --title Y` (GH #331): set or clear an open tab's
+/// title, the tab strip's double-click rename as a verb. Reaches every
+/// strip tab (renaming is not driving, the `tab close` reach). The
+/// webview owns the uniqueness check, since only it has the live strip.
+fn handle_tab_rename(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    tab: &str,
+    title: &str,
+    cwd: Option<&str>,
+) -> Reply {
+    if let Some(why) = proto::tab_title_problem(title) {
+        return Reply::err(id, ErrorCode::BadRequest, why);
+    }
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let rt = match resolve_tab_selector_with(host, &t, tab, TabReach::AnyStripTab) {
+        Ok(rt) => rt,
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    let value = match host.rpc(
+        "rename_tab",
+        serde_json::json!({ "taskId": t.id, "tabId": rt.id, "title": title.trim() }),
+        OPEN_TIMEOUT,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let (code, msg) = parse_tab_title_error(&e);
+            return Reply::err(id, code, msg);
+        }
+    };
+    // The webview reports the title the tab ends up with, which after a
+    // reset is the automatic one the resolver's snapshot cannot know yet.
+    let title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| title.trim().to_string());
+    Reply::ok(
+        id,
+        ReplyData::Tab(proto::TabData { task_id: t.id, tab_id: rt.id, cli: rt.cli, title, prompt: None }),
+    )
+}
+
 fn handle_tab_close(
     id: &str,
     host: &dyn CliHost,
@@ -6412,6 +6506,7 @@ mod tests {
             wait: false,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         }
     }
@@ -7964,6 +8059,164 @@ mod tests {
         host.tasks.iter().find(|t| t.id == "w3").unwrap().clone()
     }
 
+    // ── tab titles (GH #331) ─────────────────────────────────────────
+
+    fn titled_tab_cmd(title: Option<&str>) -> Command {
+        Command::Tab {
+            task: Some("w3".into()),
+            project: None,
+            kind: proto::TabKind::Agent { id: "claude".into() },
+            prompt: None,
+            prompt_ref: None,
+            wait: false,
+            timeout_ms: None,
+            resume: None,
+            title: title.map(str::to_string),
+            cwd: None,
+        }
+    }
+
+    fn rename_req(tab: &str, title: &str) -> Request {
+        req(
+            Command::TabRename {
+                task: Some("w3".into()),
+                project: None,
+                tab: tab.into(),
+                title: title.into(),
+                cwd: None,
+            },
+            Some("tok"),
+        )
+    }
+
+    fn rpc_params(host: &StubHost, method: &str) -> serde_json::Value {
+        let calls = host.rpc_calls.lock().unwrap();
+        calls.iter().find(|(m, _)| m == method).map(|(_, p)| p.clone())
+            .unwrap_or_else(|| panic!("{method} was not called"))
+    }
+
+    #[test]
+    fn tab_title_rides_new_tab_trimmed_and_only_when_real() {
+        for (given, sent) in [
+            (Some("  reviewer "), serde_json::json!("reviewer")),
+            (Some(""), serde_json::Value::Null),
+            (None, serde_json::Value::Null),
+        ] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc(
+                "new_tab",
+                Ok(serde_json::json!({ "tabId": "tab-new", "cli": "claude", "title": "reviewer" })),
+            );
+            let reply = handle(&req(titled_tab_cmd(given), Some("tok")), &host);
+            assert!(reply.ok, "{given:?}: {:?}", reply.error);
+            assert_eq!(rpc_params(&host, "new_tab")["title"], sent, "{given:?}");
+            let Some(ReplyData::Tab(t)) = reply.data else { panic!("expected tab") };
+            // The reply carries what the webview says the tab is called.
+            assert_eq!(t.title, "reviewer");
+        }
+    }
+
+    #[test]
+    fn tab_titles_a_selector_could_not_reach_are_refused_before_any_rpc() {
+        for bad in ["   ", "2"] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            let err = handle(&req(titled_tab_cmd(Some(bad)), Some("tok")), &host)
+                .error
+                .expect("refused");
+            assert_eq!(err.code, ErrorCode::BadRequest, "{bad:?}");
+            assert!(host.rpc_calls.lock().unwrap().is_empty(), "{bad:?} reached the webview");
+
+            let err = handle(&rename_req("1", bad), &host).error.expect("refused");
+            assert_eq!(err.code, ErrorCode::BadRequest, "rename {bad:?}");
+            assert!(host.rpc_calls.lock().unwrap().is_empty(), "rename {bad:?} reached the webview");
+        }
+    }
+
+    #[test]
+    fn tab_title_in_use_is_a_conflict_not_a_bad_agent() {
+        // Same code as a duplicate task name, so a script can tell "pick
+        // another title" from "that agent is not usable".
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.script_rpc(
+            "new_tab",
+            Err("cli_tab_title:conflict: tab [2] is already called \"fixing tests\"".into()),
+        );
+        let err = handle(&req(titled_tab_cmd(Some("Fixing Tests")), Some("tok")), &host)
+            .error
+            .expect("conflict");
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert!(err.message.contains("fixing tests"), "{}", err.message);
+        // Any other webview failure keeps the pre-title mapping.
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.script_rpc("new_tab", Err("unknown agent: nope".into()));
+        let err = handle(&req(titled_tab_cmd(Some("x")), Some("tok")), &host).error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    #[test]
+    fn tab_rename_resolves_every_selector_and_reaches_every_tab() {
+        // The tab-close reach: renaming is not driving, so the shell tab
+        // (write-only for send/attach) is renamable too.
+        for (sel, want) in [("2", "tab-b"), ("tab-b", "tab-b"), ("fixing tests", "tab-b"), ("3", "tab-c")] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc("rename_tab", Ok(serde_json::json!({ "title": "implementer" })));
+            let reply = handle(&rename_req(sel, " implementer "), &host);
+            assert!(reply.ok, "{sel:?}: {:?}", reply.error);
+            let p = rpc_params(&host, "rename_tab");
+            assert_eq!(p["taskId"], "w3");
+            assert_eq!(p["tabId"], want, "{sel:?}");
+            assert_eq!(p["title"], "implementer", "trimmed");
+            let Some(ReplyData::Tab(t)) = reply.data else { panic!("expected tab") };
+            assert_eq!(t.tab_id, want);
+            assert_eq!(t.title, "implementer");
+            assert!(t.prompt.is_none());
+            // A rename opens nothing.
+            assert!(host.rpc_calls.lock().unwrap().iter().all(|(m, _)| m == "rename_tab"));
+        }
+    }
+
+    #[test]
+    fn tab_rename_to_empty_is_the_reset_and_reports_the_automatic_title() {
+        let host = StubHost::default();
+        seed_strip(&host);
+        // The webview answers with the title the tab went back to, which
+        // the resolver's snapshot (still the custom one) cannot know.
+        host.script_rpc("rename_tab", Ok(serde_json::json!({ "title": "Codex" })));
+        let reply = handle(&rename_req("fixing tests", ""), &host);
+        assert!(reply.ok, "{:?}", reply.error);
+        assert_eq!(rpc_params(&host, "rename_tab")["title"], "");
+        let Some(ReplyData::Tab(t)) = reply.data else { panic!("expected tab") };
+        assert_eq!(t.title, "Codex");
+    }
+
+    #[test]
+    fn tab_rename_maps_the_webviews_typed_failures() {
+        for (webview, code) in [
+            ("cli_tab_title:conflict: already called that", ErrorCode::Conflict),
+            ("cli_tab_title:unknown_tab: that tab no longer exists", ErrorCode::NotFound),
+            ("cli_tab_title:task_stopped: not open", ErrorCode::Unsupported),
+            ("cli_tab_title:not_renamable: split pane", ErrorCode::Unsupported),
+            ("webview gone", ErrorCode::Internal),
+        ] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc("rename_tab", Err(webview.into()));
+            let err = handle(&rename_req("2", "x"), &host).error.expect("error");
+            assert_eq!(err.code, code, "{webview}");
+            assert!(!err.message.starts_with("cli_tab_title"), "sentinel leaked: {}", err.message);
+        }
+        // An unknown selector never reaches the webview.
+        let host = StubHost::default();
+        seed_strip(&host);
+        assert!(handle(&rename_req("9", "x"), &host).error.is_some());
+        assert!(host.rpc_calls.lock().unwrap().is_empty());
+    }
+
     // ── tab close (GH #185) ──────────────────────────────────────────
 
     fn close_req(tab: &str, yes: bool) -> Request {
@@ -8755,6 +9008,7 @@ mod tests {
             wait: false,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         };
         let reply = handle(&req(cmd, Some("tok")), &host);
@@ -8789,6 +9043,7 @@ mod tests {
             wait,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         };
         for cmd in [
@@ -8879,6 +9134,7 @@ mod tests {
             wait: false,
             timeout_ms: None,
             resume: None,
+            title: None,
             cwd: None,
         };
         let err = handle(&req(cmd, Some("tok")), &host).error.expect("error");

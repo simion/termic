@@ -1116,6 +1116,31 @@ describe("durable persistence on tab mutations (issue #23)", () => {
     expect(entry.title).toBe("My Tab");
   });
 
+  it("clearTabCustomTitle puts the automatic title back, not just the lock (GH #331)", () => {
+    useApp.setState({ tasks: [makeTask()] });
+    useApp.getState().addTab("ws1", makeTermTab({ id: "a", cli: "shell", title: "Terminal" }));
+    useApp.getState().renameTab("ws1", "a", "logs");
+
+    useApp.getState().clearTabCustomTitle("ws1", "a");
+
+    const tab = useApp.getState().tabs["ws1"].find(t => t.id === "a")!;
+    // The old name must stop being the tab's title: `--tab logs` would
+    // still resolve to it, and a shell with no OSC title yet shows `title`.
+    expect(tab.title).toBe("Terminal");
+    expect((tab as { customTitle?: boolean }).customTitle).toBe(false);
+
+    // An agent tab (shells are never persisted): the reset reaches disk
+    // too, so a relaunch does not bring the old name back.
+    useApp.getState().addTab("ws1", makeTermTab({ id: "b", cli: "claude" }));
+    useApp.getState().renameTab("ws1", "b", "reviewer");
+    useApp.getState().clearTabCustomTitle("ws1", "b");
+    const b = useApp.getState().tabs["ws1"].find(t => t.id === "b")!;
+    expect(b.title).not.toBe("reviewer");
+    const entry = lastSetTabsPayload().find(t => t.id === "b")!;
+    expect(entry.custom_title).toBe(false);
+    expect(entry.title).toBeNull();
+  });
+
   it("reorderTab persists the new order", () => {
     useApp.setState({ tasks: [makeTask()] });
     useApp.getState().addTab("ws1", makeTermTab({ id: "a", cli: "claude" }));
