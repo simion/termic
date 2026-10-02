@@ -4,12 +4,14 @@ import {
   BOARD_STATE_COLUMNS,
   boardCellGroups,
   boardColumnCanHide,
+  boardColumnFromFacts,
   boardDropCommand,
   boardLanes,
   mergeReorderedGroup,
   parseBoardPinnedColumns,
   recentArchived,
   resolveBoardArchiveLimit,
+  boardTaskFacts,
   taskBoardColumn,
   taskHasClearableWork,
 } from "./taskBoardState";
@@ -124,6 +126,48 @@ describe("taskBoardColumn", () => {
     // Attention gated off and no other evidence: the untouched task shows as
     // backlog, the one state that never depends on prefs.
     expect(taskBoardColumn(plain, [tab({ unread: { reason: "attention" } })], null, prefsOff)).toBe("backlog");
+  });
+});
+
+describe("boardColumnFromFacts", () => {
+  // The sidebar's status section caches the facts and calls the core
+  // directly; the board goes through taskBoardColumn. If the two ever
+  // disagree, the sidebar and the board show the same task in two columns.
+  const tabSets: Tab[][] = [
+    [],
+    [tab({})],
+    [tab({ lastInputAt: 1 })],
+    [tab({ workState: "done" })],
+    [tab({ workState: "working" })],
+    [tab({ unread: { reason: "attention" } })],
+    [tab({ unread: { reason: "attention" } }), tab({ id: "tab2", workState: "working" })],
+    [{ id: "e1", type: "editor", title: "a.ts", path: "/tmp/x/a.ts" } as unknown as Tab],
+  ];
+  const tasks = [
+    task(),
+    task({ archived: true }),
+    task({ pr_url: "https://github.com/acme/x/pull/1" }),
+    task({ pr_number: 7, is_main_checkout: true }),
+  ];
+  const prs = [null, { pr: null }, { pr: { state: "open" } }, { pr: { state: "draft" } }, { pr: { state: "merged" } }];
+  const prefSets: WorkStatePrefs[] = [
+    prefsOn,
+    prefsOff,
+    { settledHighlight: true },
+    { settledHighlight: true, workingIndicator: true, attentionIndicator: false },
+  ];
+
+  it("agrees with taskBoardColumn over every tab, task, PR and pref shape", () => {
+    for (const tabs of tabSets) for (const w of tasks) for (const pr of prs) for (const p of prefSets) {
+      expect(boardColumnFromFacts(w, boardTaskFacts(tabs), pr, p)).toBe(taskBoardColumn(w, tabs, pr, p));
+    }
+  });
+
+  it("the facts are raw: no pref can hide a signal from the cache", () => {
+    const facts = boardTaskFacts([tab({ unread: { reason: "attention" } }), tab({ id: "tab2", workState: "working" })]);
+    expect(facts).toEqual({ attention: true, working: true, untouched: false });
+    expect(boardTaskFacts([tab({ lastInputAt: 5 })]).untouched).toBe(false);
+    expect(boardTaskFacts([]).untouched).toBe(true);
   });
 });
 

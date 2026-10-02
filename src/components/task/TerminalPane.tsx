@@ -2365,9 +2365,16 @@ const captureArmedRef = useRef(false);
         if (origin === "hook") {
           delegatedSeenRef.current = null;
           delegatedSeenAtRef.current = 0;
-          const held = (useApp.getState().tabs[task.id]
-            ?.find(t => t.id === tab.id) as TerminalTab | undefined)?.delegatedWork;
-          if (held) patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
+          const live = useApp.getState().tabs[task.id]
+            ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+          if (live?.delegatedWork) patchTab(task.id, tab.id, { delegatedWork: null, delegatedSince: 0 });
+          // The agent's own report that the turn is over, so nothing in it is
+          // still waiting on the user: a question answered from somewhere
+          // else (claude's remote control), or one the agent gave up on.
+          // ONLY the done hook: a working heartbeat is not this, since
+          // parallel subagents keep firing tool hooks while one of them sits
+          // on a permission prompt.
+          if (live?.unread?.reason === "attention") useApp.getState().clearAttention(task.id, tab.id);
         }
         // 133;D is a hard "command ended" — no need to wait SETTLE_MS.
         goIdle(`${origin} D`, 0, true);
@@ -3286,6 +3293,18 @@ const captureArmedRef = useRef(false);
           // payload keeps those out. Alt-chords arrive as `\x1b` PLUS the
           // character in one call, so they are excluded too.
           trackDraft(data);
+          // An agent blocked on the user stays blocked while you read it, so
+          // its bell ends when you ANSWER, not when you look
+          // (`unreadClearsOnSight`). Answering is any key you type here, not
+          // only Enter: claude's permission prompt takes a bare digit. The
+          // automated replies above all begin with ESC, which keeps them out,
+          // and a bare ESC (or Ctrl-C) is the cancel. Arrow keys begin with
+          // ESC too and are moving through the choices, not making one. A
+          // store read per keystroke, and a write only when a bell is there.
+          if (data === "\x1b" || data === "\x03" || !data.startsWith("\x1b")) {
+            const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id);
+            if (cur?.unread?.reason === "attention") useApp.getState().clearAttention(task.id, tab.id);
+          }
           if (data === "\x1b" || data === "\x03") {
             escAtRef.current = Date.now();
             wdlog(`${data === "\x03" ? "Ctrl-C" : "ESC"} pressed; the title or a quiet terminal may end this turn briefly`);

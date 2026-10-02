@@ -49,6 +49,7 @@ import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
 import { ProjectFilterBar, ProjectFilterToggle } from "./ProjectTaskFilter";
 import { filterTasks, isFilterActive } from "@/lib/taskFilter";
 import { TaskGroupBlock } from "./TaskGroupBlock";
+import { StatusSection } from "./StatusSection";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
@@ -170,6 +171,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
   const hideInactiveProjects = usePrefs(s => s.hideInactiveProjects);
   const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
+  const showStatusSection = usePrefs(s => s.showStatusSection);
+  const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
   // Temporary, non-persisted reveal of the hidden inactive projects. Reset
   // whenever the hide pref flips off so the "Show N inactive" row starts
   // collapsed next time the user re-enables hiding.
@@ -1153,6 +1156,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         {/* Lines to the hovered task's parent and the tasks it spawned. The
             icon rail has no room for them. */}
         {!compact && <SpawnLinksOverlay containerRef={projectsScrollRef} />}
+        {/* STATUS above PROJECTS, in the same scroller (docs/ui.md "The
+            sidebar's status section"). Not on the icon rail: the hover
+            overlay is a full sidebar and shows it there instead. */}
+        {!compact && showStatusSection && <StatusSection />}
         <div className={cn(
           "flex items-center justify-between text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]",
           compact ? "flex-col gap-1.5 py-1" : "px-2 py-1",
@@ -1168,7 +1175,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             <DropdownRoot>
               <Tip content={t("listOptionsTip")}>
                 <DropdownTrigger asChild>
-                  <Button size="icon" variant="icon">
+                  <Button size="icon" variant="icon" data-testid="sidebar-list-options">
                     <ChevronsUpDown className={iconSize(compact)} />
                   </Button>
                 </DropdownTrigger>
@@ -1229,6 +1236,23 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <span className={hideInactiveProjects ? "text-[var(--color-accent)] font-medium" : undefined}>{t("collapseInactive")}</span>
                     <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">{t("collapseInactiveHint")}</span>
+                  </div>
+                </DropdownItem>
+                {/* Same check-row shape. Mirrored in Settings > Appearance >
+                    Sidebar, which writes the same pref. */}
+                <DropdownItem
+                  data-testid="sidebar-toggle-status-section"
+                  onSelect={() => setShowStatusSection(!showStatusSection)}
+                  className={showStatusSection
+                    ? "bg-[var(--color-sel)] data-[highlighted]:bg-[var(--color-sel)]"
+                    : undefined}
+                >
+                  {showStatusSection
+                    ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
+                    : <span className="h-5 w-5 shrink-0" />}
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span className={showStatusSection ? "text-[var(--color-accent)] font-medium" : undefined}>{t("showStatusSection")}</span>
+                    <span className="text-[11px] leading-snug text-[var(--color-fg-dim)]">{t("showStatusSectionHint")}</span>
                   </div>
                 </DropdownItem>
               </DropdownMenu>

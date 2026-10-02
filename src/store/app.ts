@@ -24,6 +24,7 @@ import { hydrateScheduled, scheduledOf } from "@/lib/scheduledQueue";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName, STICKY_DONE_MS } from "@/lib/agents";
 import { visitMayClearWorking } from "@/lib/taskBoardState";
+import { unreadClearsOnSight } from "@/lib/taskWorkState";
 import { scoped } from "@/lib/profileScope";
 import { pruneMemberSets } from "@/components/dialogs/memberModes";
 
@@ -1034,7 +1035,9 @@ export const useApp = create<AppState>((set, get) => ({
       // only cleared the active tab's unread, but `isUnread(taskId)` in the
       // sidebar checks ANY tab — so the task icon stayed in its
       // unread color until the user manually visited each other tab.
-      // Clicking the task = "I've seen this" → clear all.
+      // Clicking the task = "I've seen this" → clear all, except an agent
+      // blocked on the user: seeing a question is not answering it
+      // (`unreadClearsOnSight`).
       const tabs = get().tabs[id] || [];
       const activeId = get().activeTab[id];
       const now = Date.now();
@@ -1048,7 +1051,7 @@ export const useApp = create<AppState>((set, get) => ({
         const next = list.map(t => {
           if (t.type !== "terminal") return t;
           let nt = t;
-          if (t.unread) {
+          if (unreadClearsOnSight(t.unread)) {
             nt = { ...nt, unread: null };
           }
           const clearable = t.workState === "done"
@@ -2393,7 +2396,8 @@ export const useApp = create<AppState>((set, get) => ({
       // patch. Edit/diff tabs only have `unread` to clear.
       if (t.type === "terminal") {
         const patch: Partial<TerminalTab> = {};
-        if (t.unread) patch.unread = null;
+        // Not an attention bell: the agent is still waiting on an answer.
+        if (unreadClearsOnSight(t.unread)) patch.unread = null;
         // "Some of the delegated work came back" is news, and looking at the
         // tab is reading it: drop the partial mark and keep the plain
         // delegated ring, which still says the rest is running.

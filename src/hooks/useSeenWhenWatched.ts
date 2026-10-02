@@ -17,9 +17,15 @@
 // behind someone's browser still counts as watched there. That is right for
 // deciding whether to BADGE (you were away, you should be told) and wrong for
 // deciding whether you have SEEN it, which is what this asks.
+//
+// One mark is exempt: ATTENTION. An agent blocked on a question is still
+// blocked while you read it, so seeing it is not answering it, and its bell
+// stays until you do (`unreadClearsOnSight`). A done dot on the same tab still
+// clears on sight.
 
 import { useEffect } from "react";
 import { isTabOnScreenIn, useApp } from "@/store/app";
+import { unreadClearsOnSight } from "@/lib/taskWorkState";
 import { useUI } from "@/store/ui";
 import type { AppState } from "@/store/app";
 
@@ -33,9 +39,10 @@ export function watchedBadgedTab(s: AppState): string {
   const tabs = s.tabs[taskId] || [];
   // `unread` OR a done work state: they are separate fields feeding separate
   // badges, and a tab can hold either without the other (a keystroke clears
-  // unread and leaves the dot).
+  // unread and leaves the dot). An attention bell alone is not a target: sight
+  // does not clear it, and naming it would park the target on that tab.
   const t = tabs.find(t =>
-    (t.unread || (t.type === "terminal" && (t.workState === "done" || !!t.delegatedWork?.partial))
+    (unreadClearsOnSight(t.unread) || (t.type === "terminal" && (t.workState === "done" || !!t.delegatedWork?.partial))
       || (t.type === "scratch" && t.unseen))
     && isTabOnScreenIn(s, taskId, t.id));
   return t ? `${taskId}:${t.id}` : "";
@@ -72,8 +79,8 @@ export function useSeenWhenWatched() {
     // TabBar's showBell vs showDone). Clearing only `unread` left a finished
     // agent's dot up after the user came back, with clicking the sidebar item
     // (the one path that also writes the work state) the only way to shift it.
-    app.clearAttention(taskId, tabId);
     const tab = (app.tabs[taskId] ?? []).find(t => t.id === tabId);
+    if (unreadClearsOnSight(tab?.unread)) app.clearAttention(taskId, tabId);
     if (tab?.type === "terminal" && tab.workState === "done") {
       app.setWorkState(taskId, tabId, "idle", "seen: on screen in a focused window");
     }

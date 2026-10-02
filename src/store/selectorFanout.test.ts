@@ -43,6 +43,8 @@ import { useApp, selectTaskTabs, selectActiveTabId, EMPTY_TABS } from "@/store/a
 import { useAgentUsage, usageKey } from "@/store/agentUsage";
 import {
   createSidebarFactsSelector, createRowTabsSelector, tabRenderEqual, tabListRenderEqual,
+  createStatusFactsSelector, selectStatusRowBadge, selectStatusRowDelegated,
+  selectStatusRowTabCount, selectStatusRowActiveChild, selectStatusGroupMarks,
 } from "@/store/sidebarTabs";
 import { selectBoardColumnKey } from "@/lib/boardColumnKey";
 import type { AppState } from "@/store/app";
@@ -565,5 +567,126 @@ describe("tab render equality (sidebar rows)", () => {
     expect(tabListRenderEqual([a, b], [a, b])).toBe(true);
     expect(tabListRenderEqual([a, b], [b, a])).toBe(false);
     expect(tabListRenderEqual([a, b], [a])).toBe(false);
+  });
+});
+
+// ── The status section while agents stream ─────────────────────────────
+//
+// The section lists tasks by board column, and one of the facts behind a
+// column (`untouched`) reads `lastInputAt`, a field the tree's rows hold back.
+// So it keeps a facts record of its own, and these counts pin what that buys:
+// timestamps and titles reach nothing, a real column change reaches the
+// section, and the Sidebar BODY never pays for the section's facts.
+
+describe("status section under streaming output (bear traps 5, 8)", () => {
+  const TASKS = 16;
+  const ids = Array.from({ length: TASKS }, (_, i) => `st-${i}`);
+  const main = (id: string) => `${id}-main`;
+  const PREFS = { settledHighlight: true, workingIndicator: true, attentionIndicator: true };
+  const OWNER = 5;
+  const owner = ids[OWNER];
+
+  beforeEach(() => {
+    useApp.setState({
+      tabs: Object.fromEntries(ids.map(id => [id, [
+        { ...tab(main(id)), is_default: true, ptyId: `pty-${id}` } as Tab,
+        tab(`${id}-shell`),
+      ]])),
+    });
+  });
+
+  /** The mounted section, rows collapsed: one facts selector, and per row
+   *  its badge, its delegated-work report, its tab count and whether a child
+   *  carries the selection. perSub[0] is the facts record. */
+  const mountSection = () => [
+    createStatusFactsSelector(),
+    ...ids.map(id => selectStatusRowBadge(id, PREFS)),
+    ...ids.map(id => selectStatusRowDelegated(id, PREFS)),
+    ...ids.map(id => selectStatusRowTabCount(id)),
+    ...ids.map(id => selectStatusRowActiveChild(id)),
+    // A folded group of four of them: its caption's marks.
+    selectStatusGroupMarks(ids.slice(4, 8), PREFS, true),
+  ];
+
+  const stamp = (i: number) => {
+    const id = ids[i % TASKS];
+    useApp.getState().patchTab(id, main(id), { lastOutputAt: 1_000 + i });
+  };
+
+  it("an output stamp invalidates neither the section nor any row", () => {
+    const subs = mountSection();
+    const r = measureFanout(subs, WRITES, stamp);
+    expect(r.invalidations).toBe(0);
+    expect(r.selectorRuns).toBe(subs.length * WRITES);
+    expect(r.msPerWrite).toBeLessThan(MAX_MS_PER_WRITE);
+  });
+
+  it("a live title, which the tree's row DOES draw, reaches nothing here", () => {
+    const r = measureFanout(mountSection(), 100, i =>
+      useApp.getState().setTabLiveTitle(owner, main(owner), `thinking ${i}`));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("a sidebar drag invalidates nothing", () => {
+    const r = measureFanout(mountSection(), WRITES, i =>
+      useApp.getState().setSidebarWidth(200 + (i % 120)));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("a task's FIRST input moves it out of Not started, and only the first", () => {
+    // The fact useRowTabs cannot see: lastInputAt is in ROW_HIDDEN_TAB_FIELDS.
+    const subs = mountSection();
+    const first = measureFanout(subs, 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { lastInputAt: 2_000 }));
+    expect(first.perSub[0]).toBe(1);
+    expect(first.invalidations).toBe(1);
+    const again = measureFanout(subs, 50, i =>
+      useApp.getState().patchTab(owner, main(owner), { lastInputAt: 3_000 + i }));
+    expect(again.invalidations).toBe(0);
+  });
+
+  it("an agent starting a turn reaches the section and its own badge, once", () => {
+    const r = measureFanout(mountSection(), 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { workState: "working" }));
+    expect(r.perSub[0]).toBe(1);
+    // Its badge (index 1 + OWNER) and nobody else's.
+    expect(r.perSub.slice(1, 1 + TASKS)).toEqual(ids.map((_, i) => (i === OWNER ? 1 : 0)));
+    // ...and the folded group it is a member of: the caption gains a mark.
+    expect(r.perSub[r.perSub.length - 1]).toBe(1);
+    expect(r.invalidations).toBe(3);
+  });
+
+  it("an agent starting a turn does NOT reach the Sidebar body", () => {
+    // Why the section's facts are a record of their own: as fields on
+    // SidebarTaskFacts, every idle -> working flip would re-render the whole
+    // body, section on or off.
+    const r = measureFanout([createSidebarFactsSelector()], 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { workState: "working" }));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("an agent blocked on the user reaches the section and its badge", () => {
+    const r = measureFanout(mountSection(), 1, () =>
+      useApp.getState().markAttention(owner, main(owner), "attention"));
+    expect(r.perSub[0]).toBe(1);
+    expect(r.perSub[1 + OWNER]).toBe(1);
+  });
+
+  it("StatusSection.tsx does not select the tabs map", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(resolve(here, "../components/sidebar/StatusSection.tsx"), "utf8");
+    expect(src).not.toMatch(/=>\s*s\.tabs\s*\)/);
+    expect(src).not.toMatch(/selectTaskTabs/);
+    // A row's tabs are held only by an EXPANDED row's children, which draw
+    // the titles; a collapsed row selects values.
+    expect(src.match(/useRowTabs\(/g)?.length).toBe(1);
+    const children = src.slice(src.indexOf("function StatusTaskTabs("));
+    expect(children).toMatch(/useRowTabs\(taskId\)/);
+    expect(src).toMatch(/useStatusTabFacts\(\)/);
+    expect(src).toMatch(/selectStatusRowBadge\(/);
+    // Mounted only with the pref on and never on the icon rail, so the off
+    // state costs no subscription at all.
+    const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
+    expect(sidebar).toMatch(/!compact && showStatusSection && <StatusSection \/>/);
   });
 });

@@ -7,6 +7,8 @@
 // always mounted and the dashboard is an overlay over it, so a task with a live
 // agent renders two. Specs must scope through `[data-dashboard-task-id]` or the
 // sidebar's `[data-sidebar-task-id]` rather than querying the testid globally.
+// The sidebar's status section draws a third copy, under its own testid
+// (`status-work-badge`), so it never adds to that count.
 
 import { useTranslation } from "react-i18next";
 import { Bell } from "lucide-react";
@@ -21,7 +23,7 @@ import type { WorkBadgeReason } from "@/lib/taskWorkState";
  *  qualifies two of the three reasons rather than being a fourth. See
  *  `lib/delegatedWork.ts`. */
 export function TaskWorkBadge(
-  { reason, delegated, preview }: {
+  { reason, delegated, preview, testId = "work-badge" }: {
     /** `"delegated"` is not a work state: it is an IDLE tab that still has
      *  something running, and it draws only because nothing outranks it. See
      *  the chain in `TabBar` and docs/ui.md. */
@@ -31,6 +33,10 @@ export function TaskWorkBadge(
      *  The legend explaining a mark has to keep explaining it, and the one
      *  in the welcome wizard runs before the user has any prefs at all. */
     preview?: boolean;
+    /** The sidebar's status section passes its own, so a task listed there
+     *  does not add a copy of `work-badge` above the tree's (see the note at
+     *  the top of this file). */
+    testId?: string;
   },
 ) {
   const { t } = useTranslation("chrome");
@@ -46,7 +52,7 @@ export function TaskWorkBadge(
   if (delegated?.partial && showPartial && reason !== "attention") {
     return (
       <span
-        data-testid="work-badge"
+        data-testid={testId}
         data-work-state="partial"
         data-delegated={delegated.label}
         className="shrink-0 flex items-center justify-center"
@@ -66,7 +72,7 @@ export function TaskWorkBadge(
   if (reason === "delegated" || (reason === "working" && delegated)) {
     return (
       <span
-        data-testid="work-badge"
+        data-testid={testId}
         data-work-state={reason === "working" ? "working" : "delegated"}
         data-delegated={delegated ? delegated.label : undefined}
         className="shrink-0 flex items-center justify-center text-[var(--color-fg-faint)]"
@@ -80,7 +86,7 @@ export function TaskWorkBadge(
   if (reason === "working") {
     return (
       <span
-        data-testid="work-badge"
+        data-testid={testId}
         data-work-state="working"
         className="shrink-0 flex items-center justify-center text-[var(--color-fg-faint)]"
         title={t("taskWorkBadge.working")}
@@ -93,7 +99,7 @@ export function TaskWorkBadge(
   if (reason === "attention") {
     return (
       <span
-        data-testid="work-badge"
+        data-testid={testId}
         data-work-state="attention"
         // Flex like every other mark: an inline span leaves the icon on the
         // text baseline, off the centre line the dot and rings sit on, which
@@ -109,7 +115,7 @@ export function TaskWorkBadge(
   // @theme; themes can override). h-3.5 visually matches the bell + spinner.
   return (
     <span
-      data-testid="work-badge"
+      data-testid={testId}
       data-work-state="done"
       data-delegated={delegated ? delegated.label : undefined}
       className="shrink-0 flex items-center justify-center"

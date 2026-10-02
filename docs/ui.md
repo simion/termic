@@ -447,6 +447,148 @@ badge always shows the full count, and History still lists everything.
 [src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts) is the one sort +
 cap; the badge reads the uncapped filter.
 
+## The sidebar's status section
+
+A STATUS section above PROJECTS, in the same scroller, that lists the tasks
+needing you or in flight, grouped by the Kanban board's columns. It is the
+board's attention half, compressed and always on screen: the board answers
+"what stage is everything at", but it is a main-area overlay, and opening it
+deselects the open task (`setView` sets `activeTaskId: null`), so it is never
+on screen while you work (#298).
+
+**Off by default** (`prefs.showStatusSection`): with two tasks it is clutter,
+with twenty it is the point. Two switches write the one pref: a check row in
+the Project list options menu next to "Collapse inactive projects", and
+Settings > Appearance > Interface > Sidebar. The STATUS header is a label
+exactly like PROJECTS and does not fold: the switch is how the section goes
+away, and a chevron on it made it the odd one out next to PROJECTS. Each
+bucket folds, and those folds are a pref (`statusBucketCollapsed`, a scoped
+localStorage key, with a setter that bails on an unchanged value).
+
+**It is a copy, and the tree does not change.** Every task keeps its one home
+in the project tree; the section lists a subset again. Copying rather than
+moving is what keeps spatial memory intact (Gajos et al., AVI 2006, on split
+interfaces; Linear's Favorites above Your Teams is the same shape). It copies
+the ACTIONABLE subset only: a full second tree of every task is the case that
+research found adds a second place to look, and the full grouping already
+lives on the board.
+
+### Buckets are board columns
+
+Every task's bucket is `boardColumnFromFacts` in
+[src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts), the same
+precedence the board uses (`taskBoardColumn` delegates to it). Nothing is
+stored, and there is no sidebar-only rule: if a bucket looks wrong, the fix
+goes in `taskBoardState.ts` and the board moves with it. The layout
+(`statusBuckets` in [src/lib/sidebarStatus.ts](../src/lib/sidebarStatus.ts))
+is the board's columns without Archived, attention first:
+
+| Bucket | Default | Why |
+| --- | --- | --- |
+| Needs attention | listed | the reason the section exists |
+| Working | listed | what is in flight |
+| In review | listed | a PR is waiting on someone |
+| Settled | count only | the largest bucket, and the least urgent |
+| Not started | count only | session-scoped: after a relaunch every unopened task is here |
+
+An empty bucket is hidden; the header stays even when every bucket is, so the
+section cannot silently vanish. The labels are `chrome:board.col*`, so a
+bucket and its column cannot be called two different things. The work prefs
+gate it as they gate the board: `attentionIndicator` off empties Needs
+attention, `workingIndicator` off empties Working.
+
+### Rows
+
+A lighter row than the tree's: chevron, label, project name in the faint
+colour, the tree's `(n)` from two terminals up, PR chip, work badge. No drag,
+no rename, no run controls, no menu. Clicking it is `setActiveTask`, which
+reveals the task in the tree (expands its project, folder and group) the way
+every other way of opening a task does. The active task is marked in both
+places (`data-active` here).
+
+It expands the tree's way: one child row per main-pane terminal tab, each with
+its own agent, title and badge, and a click on a child opens that tab. The
+task's row carries no agent glyph of its own. It used to show the one from
+`task.cli`, the agent the task was created with, so a task running claude and
+codex read as claude alone; the board solves the same problem with extra
+icons on the card, the tree with child rows, and the section follows the
+tree. Expanded rows are their own pref (`statusTaskExpanded`, pruned of dead
+ids on write), NOT the tree's task collapse, so opening a row here never
+opens the tree's. Expanded, the children carry the badges and the selection,
+as in the tree.
+
+Opening a task does not answer it. A row under Needs attention stays there,
+open task or not, until you answer in that terminal or the agent's turn ends
+(docs/agent-states.md "A question is not answered by looking at it"); then it
+moves to whatever bucket its other evidence gives it. The board reads the same
+field, so it agrees; the section has no rule of its own.
+
+Rows keep TREE order: `visualProjectOrder`, then each project's rows as the
+tree lays them out (`layoutTaskList`, so a task group is one block at its
+first member's position). The section walks projects rather than tasks, so a
+task whose project left the profile is skipped exactly as the tree skips it,
+and a row never shuffles inside its bucket; it moves only when its bucket
+changes. The per-project task filter (#324) does not apply here.
+
+**Task groups** draw the way the tree draws them: a caption in the group's
+colour (with the project name, which its members then drop) and the members
+behind a rail of the same colour. A group stays ONE unit, in the bucket of its
+most urgent member, in bucket order, so a settled lead sits under Needs
+attention while one of its workers asks something; every member keeps its own
+badge, so the row that put the group there says so. This is a layout rule over
+the board's buckets, not a state: each task's own bucket is still
+`boardColumnFromFacts`. A bucket's count is task rows, members included. The
+caption folds the tree's way (chevron, member count, the members' marks on
+the caption while folded, the active task's row kept in view), from its own
+pref (`statusGroupCollapsed`), so folding it never folds the tree's. It does
+not rename or open a menu. It is its own component, not the tree's
+TaskGroupBlock, because that one carries the tree's drag, rename and menu,
+and its `data-task-group-id` is what the task drag hit-tests: a second one per
+group would be a second drop target. This one carries `data-status-group-id`.
+A legacy cross-project group draws as plain rows, as in the tree.
+
+`TaskRow` is not reused: its rename and auto-expand effects would run twice
+per task, and every auto-expand would be a second whole-state write.
+
+**Identity.** A status row carries `data-status-task-id` and NONE of
+`data-sidebar-task-id`, `data-sidebar-task-project-id` or
+`data-sidebar-task-row`. The task drag's hit tests, `SpawnLinksOverlay` and
+the e2e helpers all assume one `[data-sidebar-task-id]` per task. Its badges
+render under their own testids (`status-work-badge`, `status-pr-badge`), so a
+bare `task-pr-badge` query still returns the tree's, first in the document.
+
+**Keyboard.** ⌥↑/↓ and ⌘[ / ⌘] keep walking the tree's project order; the
+section adds no stops to them. The rows themselves take focus and Enter.
+
+**The icon rail does not carry it.** The hover-reveal overlay is a full
+sidebar and shows it there.
+
+### Rendering
+
+The section's facts are a record of their own (`useStatusTabFacts` in
+[src/store/sidebarTabs.ts](../src/store/sidebarTabs.ts)): three raw booleans
+per task (`attention`, `working`, `untouched`), cached per task the way the
+body's facts are. Not more fields on `SidebarTaskFacts`: every idle -> working
+flip of every agent would then re-render the whole Sidebar body, section on
+or off. Not derived per row from `useRowTabs`: `untouched` reads
+`lastInputAt`, which the row selector holds back on purpose. The PR snapshot
+is read non-reactively, with a `usePr` re-render trigger like `BoardView`'s.
+A collapsed row selects values only (its badge, its tab count, whether a
+child holds the selection), so a working agent's once-a-second title rewrite
+re-renders no status row. Only an EXPANDED row's children hold the tabs
+(`useRowTabs`, timestamps held back), since they draw the titles. `selectorFanout.test.ts` pins all of it.
+
+### Not built
+
+Batches ACROSS projects (a spawn tree via `spawned_by`, drawn as one unit in
+the bucket of its most urgent member: the task-group rule one level up), a
+count on the compact rail, and drops
+as commands (`boardDropCommand` is reusable once there is a vertical hit
+test). Still open: whether a finished turn you have not looked at belongs in
+Needs attention (the title-bar pill says yes, the board says Settled), and
+whether `taskBoardColumn` should grow a Merged column so "finished and can
+go" has an answer on both surfaces.
+
 ## What a task is called (name vs branch)
 
 A task's label is decided in ONE place, `taskLabel()` in
@@ -1291,6 +1433,9 @@ with a live agent renders the badge TWICE. A bare
 `[data-testid="work-badge"]` query returns the sidebar's, in document order.
 Every assertion must scope: `dashboardBadge()` goes through
 `[data-dashboard-task-id]`, `sidebarBadge()` through `[data-sidebar-task-row]`.
+The sidebar's status section is a third surface, and it does NOT add a copy:
+its badges render as `status-work-badge` and `status-pr-badge`, scoped through
+`[data-status-task-id]`.
 
 ### Recent is a way back in, not a second History
 

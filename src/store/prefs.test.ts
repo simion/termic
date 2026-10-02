@@ -683,3 +683,73 @@ describe("prefs: attentionIndicator", () => {
     expect(localStorage.getItem(KEY)).toBe("1");
   });
 });
+
+describe("prefs: status section", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("ships off, with no bucket overrides (count-only buckets folded)", async () => {
+    const { usePrefs } = await import("./prefs");
+    const s = usePrefs.getState();
+    expect(s.showStatusSection).toBe(false);
+    expect(s.statusBucketCollapsed).toEqual({});
+  });
+
+  it("reads both back from localStorage, dropping junk bucket entries", async () => {
+    localStorage.setItem("showStatusSection", "1");
+    localStorage.setItem("statusBucketCollapsed", '{"settled":false,"archived":true}');
+    const { usePrefs } = await import("./prefs");
+    const s = usePrefs.getState();
+    expect(s.showStatusSection).toBe(true);
+    expect(s.statusBucketCollapsed).toEqual({ settled: false });
+  });
+
+  it("the setters persist", async () => {
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setShowStatusSection(true);
+    usePrefs.getState().setStatusBucketCollapsed("settled", false);
+    expect(localStorage.getItem("showStatusSection")).toBe("1");
+    expect(JSON.parse(localStorage.getItem("statusBucketCollapsed")!)).toEqual({ settled: false });
+  });
+
+  it("an unchanged value notifies nobody (bear trap 8)", async () => {
+    const { usePrefs } = await import("./prefs");
+    let notified = 0;
+    const unsub = usePrefs.subscribe(() => { notified++; });
+    usePrefs.getState().setShowStatusSection(false);
+    // Already the default for both, so there is no override to write.
+    usePrefs.getState().setStatusBucketCollapsed("attention", false);
+    usePrefs.getState().setStatusBucketCollapsed("backlog", true);
+    expect(notified).toBe(0);
+    expect(localStorage.getItem("statusBucketCollapsed")).toBeNull();
+    usePrefs.getState().setStatusBucketCollapsed("backlog", false);
+    usePrefs.getState().setStatusBucketCollapsed("backlog", false);
+    expect(notified).toBe(1);
+    unsub();
+  });
+
+  it("remembers expanded rows, prunes dead ones, and bails on no change", async () => {
+    localStorage.setItem("statusTaskExpanded", '{"old":true}');
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().statusTaskExpanded).toEqual({ old: true });
+    let notified = 0;
+    const unsub = usePrefs.subscribe(() => { notified++; });
+    usePrefs.getState().setStatusTaskExpanded("t1", true, ["t1"]);
+    expect(usePrefs.getState().statusTaskExpanded).toEqual({ t1: true });
+    expect(JSON.parse(localStorage.getItem("statusTaskExpanded")!)).toEqual({ t1: true });
+    usePrefs.getState().setStatusTaskExpanded("t1", true, ["t1"]);
+    expect(notified).toBe(1);
+    unsub();
+  });
+
+  it("remembers folded group captions apart from the tree's, pruned the same way", async () => {
+    localStorage.setItem("statusGroupCollapsed", '{"dissolved":true}');
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setStatusGroupCollapsed("g1", true, ["g1"]);
+    expect(usePrefs.getState().statusGroupCollapsed).toEqual({ g1: true });
+    expect(JSON.parse(localStorage.getItem("statusGroupCollapsed")!)).toEqual({ g1: true });
+  });
+});

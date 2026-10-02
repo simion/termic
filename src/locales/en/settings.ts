@@ -378,6 +378,10 @@ export default {
       label: "Hover to reveal the collapsed sidebar",
       hint: "Slides the full sidebar out over the icon rail on hover.",
     },
+    statusSection: {
+      label: "Status section",
+      hint: "A section above Projects listing the tasks that need you, are working or are in review, in the Kanban board's columns. Settled and Not started show a count until opened.",
+    },
     panesHeading: "Panes",
     dim: {
       label: "Dim inactive split panes",

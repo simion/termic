@@ -439,6 +439,8 @@ function SidebarSection() {
   const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
   const sidebarHoverReveal = usePrefs(s => s.sidebarHoverReveal);
   const setSidebarHoverReveal = usePrefs(s => s.setSidebarHoverReveal);
+  const showStatusSection = usePrefs(s => s.showStatusSection);
+  const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
 
   return (
     <div className="flex flex-col gap-6">
@@ -476,6 +478,14 @@ function SidebarSection() {
         hint={t("appearance.hoverReveal.hint")}
         value={sidebarHoverReveal}
         onChange={setSidebarHoverReveal}
+      />
+      {/* Also a check row in the sidebar's Project list options menu; both
+          write the same pref. */}
+      <Toggle
+        label={t("appearance.statusSection.label")}
+        hint={t("appearance.statusSection.hint")}
+        value={showStatusSection}
+        onChange={setShowStatusSection}
       />
     </div>
   );

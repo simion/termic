@@ -42,6 +42,19 @@ export interface WorkStatePrefs {
   attentionIndicator?: boolean;
 }
 
+/** Does LOOKING at a tab answer its `unread` mark? Every mark but one.
+ *
+ *  An agent blocked on the user (a permission prompt, a question) is still
+ *  blocked while you read it, so its bell ends when you ANSWER: a key you type
+ *  in that terminal, Escape or Ctrl-C, or the agent's own hook ending the turn
+ *  (docs/agent-states.md, state 7). Clearing it on sight, as the other marks
+ *  are, made a question you had glanced at and left unanswered read as a
+ *  finished turn: off the bell, and filed under Settled on the board and in the
+ *  sidebar's status section, while the agent sat waiting. */
+export function unreadClearsOnSight(unread: { reason: string } | null | undefined): boolean {
+  return !!unread && unread.reason !== "attention";
+}
+
 /** The agent is explicitly blocked on the user (Gemini "Action Required",
  *  Codex "Waiting", OSC 1337 RequestAttention). */
 export const taskNeedsAttention = (tabs: Tab[], p: WorkStatePrefs): boolean =>

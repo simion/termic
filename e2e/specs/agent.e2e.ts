@@ -2200,7 +2200,13 @@ describe("agent notifications", () => {
   // case stuck: the tab you are already on earns a badge while you are in
   // another app, you come back, and because the tab never CHANGED nothing
   // cleared it. Clicking away and back was the only way out.
-  it("clears a badge on the tab you are looking at, once you are back", async () => {
+  //
+  // Every badge but the BELL. An agent blocked on the user is still blocked
+  // while you read its question, so seeing it is not answering it: the bell
+  // stays until a key in that terminal (`unreadClearsOnSight`). Clearing it on
+  // sight filed a question you had glanced at under Settled, on the board and
+  // in the sidebar's status section, while the agent sat waiting.
+  it("clears a done dot on the tab you are looking at, and keeps a bell until you answer", async () => {
     await ensureActiveTask(taskId!);
     await setWindowPresence(false);
     await browser.execute((id) => {
@@ -2208,23 +2214,41 @@ describe("agent notifications", () => {
       s.clearAttention(id, s.tabs[id][0].id);
     }, taskId);
 
+    // A turn that finished while you were away: the dot.
+    await submitToAgent(taskId!, "do something");
+    await waitForWorkBadge(taskId!, "done", {
+      timeout: 20_000,
+      message: "a turn finished while away never left the done dot",
+    });
+    await setWindowPresence(true);
+    await waitForWorkBadgeGone(taskId!, "done", {
+      timeout: 20_000,
+      message: "returning to a focused window never cleared the dot on the visible tab",
+    });
+
+    // A question that arrived while you were away: the bell.
+    await setWindowPresence(false);
     await submitToAgent(taskId!, "#osc9 FakeAgent needs your permission");
     await waitForWorkBadge(taskId!, "attention", {
       timeout: 20_000,
       message: "the badge never appeared while the user was away",
     });
-
-    // Still away, and still badged. Without this the test would also pass on a
-    // bug that simply drops every attention, since the assertion below is that
-    // a badge went away.
-    expect(await taskViewBadge(taskId!)).toBe("attention");
-
-    // Back at the keyboard, on that very tab.
     await setWindowPresence(true);
+    // Back on that very tab, for longer than the instant clear the dot got
+    // above: still asked, because nobody answered.
+    await waitPtyQuiet(taskId!, 1_000);
+    expect(await taskViewBadge(taskId!)).toBe("attention");
+    expect(await sidebarBadge(taskId!)).toBe("attention");
+
+    // Answering is a key in that terminal, not only Enter: claude's
+    // permission prompt takes a bare digit.
+    await typeIntoAgent(taskId!, "1");
     await waitForWorkBadgeGone(taskId!, "attention", {
-      timeout: 20_000,
-      message: "returning to a focused window never cleared the badge on the visible tab",
+      timeout: 10_000,
+      message: "a keystroke in the terminal never cleared the bell",
     });
+    // Leave the fake agent's input line as it was for the cases after this.
+    await typeIntoAgent(taskId!, "\x7f");
   });
   // Once an agent reports its own state, the terminal TITLE stops being
   // allowed to end a turn for it. This is the case the whole design turns on:

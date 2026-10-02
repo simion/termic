@@ -45,6 +45,16 @@ import {
   type BoardArchiveLimitMode,
   type BoardStateColumn,
 } from "@/lib/taskBoardState";
+import {
+  isStatusBucketCollapsed,
+  nextIdFlags,
+  parseIdFlags,
+  parseStatusBucketCollapsed,
+  type StatusBucket,
+  type StatusBucketCollapsed,
+  type StatusGroupCollapsed,
+  type StatusTaskExpanded,
+} from "@/lib/sidebarStatus";
 
 /** The two readouts an agent's footer chip can carry. */
 export const AGENT_FOOTER_PARTS = ["usage", "context"] as const;
@@ -93,6 +103,10 @@ const LS_HIDE_INACTIVE_PROJECTS = scoped("hideInactiveProjects");
 const LS_BOARD_ARCHIVE_LIMIT_MODE = scoped("boardArchiveLimitMode");
 const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
 const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
+const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
+const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
+const LS_STATUS_TASK_EXPANDED = scoped("statusTaskExpanded");
+const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
 const LS_BRANCH_AS_TASK_NAME = "useBranchAsTaskName";
 const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
 const LS_CTRL_TAB_MODE = "ctrlTabMode";
@@ -786,6 +800,19 @@ interface PrefsState {
    *  this-visit toggle: it used to be BoardView state and did not survive the
    *  view unmounting, which read as the column randomly disappearing. */
   boardPinnedColumns: BoardStateColumn[];
+  /** The sidebar's STATUS section above PROJECTS (docs/ui.md "The sidebar's
+   *  status section"). Off by default: it pays off with many parallel tasks
+   *  and is clutter with two. */
+  showStatusSection: boolean;
+  /** Per-bucket overrides of the default fold (count-only buckets start
+   *  closed). Only buckets the user toggled are stored. */
+  statusBucketCollapsed: StatusBucketCollapsed;
+  /** Status rows expanded to their agent tabs. Separate from the tree's
+   *  task collapse, so opening one here never opens the tree's. */
+  statusTaskExpanded: StatusTaskExpanded;
+  /** Group captions folded in the status section. Separate from the tree's
+   *  task-group collapse, so folding one here never folds the tree's. */
+  statusGroupCollapsed: StatusGroupCollapsed;
   /** When true (GH #260), a WORKTREE task is labelled by its branch
    *  everywhere it is named in the UI, instead of by the title typed at
    *  creation. A week-old task's typed name goes stale; the branch is what
@@ -946,6 +973,12 @@ interface PrefsState {
   setBoardArchiveLimitMode: (m: BoardArchiveLimitMode) => void;
   setBoardArchiveLimit: (n: number) => void;
   setBoardPinnedColumns: (cols: readonly BoardStateColumn[]) => void;
+  setShowStatusSection: (v: boolean) => void;
+  setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
+  /** `liveIds`: the tasks that still exist, so dead ids are pruned on write. */
+  setStatusTaskExpanded: (taskId: string, expanded: boolean, liveIds: readonly string[]) => void;
+  /** `liveGroupIds`: the groups that still exist, pruned on write the same way. */
+  setStatusGroupCollapsed: (groupId: string, collapsed: boolean, liveGroupIds: readonly string[]) => void;
   setUseBranchAsTaskName: (v: boolean) => void;
   setDoubleShiftMode: (v: DoubleShiftMode) => void;
   setCtrlTabMode: (v: CtrlTabMode) => void;
@@ -1170,6 +1203,10 @@ const initialBoardArchiveLimit = (() => {
   return Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
 })();
 const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
+const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
+const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
+const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
+const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
 const initialUseBranchAsTaskName = lsGet(LS_BRANCH_AS_TASK_NAME, "") === "1";
 // Absent means never set, and the gesture ships on, left-Shift only.
 const initialDoubleShiftMode: DoubleShiftMode = (() => {
@@ -1258,6 +1295,10 @@ export const usePrefs = create<PrefsState>(set => ({
   boardArchiveLimitMode: initialBoardArchiveLimitMode,
   boardArchiveLimit: initialBoardArchiveLimit,
   boardPinnedColumns: initialBoardPinnedColumns,
+  showStatusSection: initialShowStatusSection,
+  statusBucketCollapsed: initialStatusBucketCollapsed,
+  statusTaskExpanded: initialStatusTaskExpanded,
+  statusGroupCollapsed: initialStatusGroupCollapsed,
   useBranchAsTaskName: initialUseBranchAsTaskName,
   doubleShiftMode: initialDoubleShiftMode,
   ctrlTabMode: initialCtrlTabMode,
@@ -1597,6 +1638,34 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_BOARD_PINNED_COLUMNS, JSON.stringify(v)); } catch {}
     set({ boardPinnedColumns: v });
   },
+  // The status-section setters bail on an unchanged value (returning `s` is
+  // a no-op notify): a fold click re-renders the section, and a repeated one
+  // should not.
+  setShowStatusSection: (v) => set(s => {
+    if (s.showStatusSection === v) return s;
+    try { localStorage.setItem(LS_SHOW_STATUS_SECTION, v ? "1" : "0"); } catch {}
+    return { showStatusSection: v };
+  }),
+  setStatusBucketCollapsed: (bucket, collapsed) => set(s => {
+    // Effective state, not the stored override: an absent override already
+    // means the default, so writing the default would change nothing.
+    if (isStatusBucketCollapsed(bucket, s.statusBucketCollapsed) === collapsed) return s;
+    const next = { ...s.statusBucketCollapsed, [bucket]: collapsed };
+    try { localStorage.setItem(LS_STATUS_BUCKET_COLLAPSED, JSON.stringify(next)); } catch {}
+    return { statusBucketCollapsed: next };
+  }),
+  setStatusTaskExpanded: (taskId, expanded, liveIds) => set(s => {
+    const next = nextIdFlags(s.statusTaskExpanded, taskId, expanded, liveIds);
+    if (next === s.statusTaskExpanded) return s;
+    try { localStorage.setItem(LS_STATUS_TASK_EXPANDED, JSON.stringify(next)); } catch {}
+    return { statusTaskExpanded: next };
+  }),
+  setStatusGroupCollapsed: (groupId, collapsed, liveGroupIds) => set(s => {
+    const next = nextIdFlags(s.statusGroupCollapsed, groupId, collapsed, liveGroupIds);
+    if (next === s.statusGroupCollapsed) return s;
+    try { localStorage.setItem(LS_STATUS_GROUP_COLLAPSED, JSON.stringify(next)); } catch {}
+    return { statusGroupCollapsed: next };
+  }),
   setUseBranchAsTaskName: (v) => {
     try { localStorage.setItem(LS_BRANCH_AS_TASK_NAME, v ? "1" : "0"); } catch {}
     set({ useBranchAsTaskName: v });

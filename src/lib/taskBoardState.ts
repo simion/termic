@@ -47,6 +47,28 @@ export function taskUntouched(tabs: Tab[]): boolean {
   return !tabs.some(t => t.type === "terminal" && (t.workState != null || t.lastInputAt != null));
 }
 
+/** What the column derivation reads from a task's tabs, RAW: no pref applied.
+ *  Split out so a caller that must not hold `tabs` (the sidebar's status
+ *  section, which would otherwise re-render on every timestamp) can cache
+ *  three booleans per task and still go through the one precedence below. */
+export interface BoardTaskFacts {
+  readonly attention: boolean;
+  readonly working: boolean;
+  readonly untouched: boolean;
+}
+
+// Both helpers apply their prefs; these make them report the raw fact. The
+// gates are re-applied in boardColumnFromFacts, against the caller's prefs.
+const RAW_PREFS: WorkStatePrefs = { settledHighlight: true, workingIndicator: true, attentionIndicator: true };
+
+export function boardTaskFacts(tabs: Tab[]): BoardTaskFacts {
+  return {
+    attention: taskNeedsAttention(tabs, RAW_PREFS),
+    working: taskWorking(tabs, RAW_PREFS),
+    untouched: taskUntouched(tabs),
+  };
+}
+
 /** Which column a task belongs in. Precedence, top wins:
  *
  *    archived          -> archived        (overrides everything)
@@ -68,9 +90,22 @@ export function taskBoardColumn(
   pr: BoardPrInfo | null | undefined,
   prefs: WorkStatePrefs,
 ): BoardColumn {
+  return boardColumnFromFacts(task, boardTaskFacts(tabs), pr, prefs);
+}
+
+/** The precedence itself, over pre-computed facts. The board reaches it
+ *  through taskBoardColumn and the sidebar's status section directly; there
+ *  is no second copy. The pref gates match taskNeedsAttention (attention
+ *  absent = on) and taskWorking (working absent = off). */
+export function boardColumnFromFacts(
+  task: Task,
+  facts: BoardTaskFacts,
+  pr: BoardPrInfo | null | undefined,
+  prefs: WorkStatePrefs,
+): BoardColumn {
   if (task.archived) return "archived";
-  if (taskNeedsAttention(tabs, prefs)) return "attention";
-  if (taskWorking(tabs, prefs)) return "working";
+  if ((prefs.attentionIndicator ?? true) && facts.attention) return "attention";
+  if (!!prefs.workingIndicator && facts.working) return "working";
   // Same gate as `pollableTasks` in store/pr.ts: identity persisted on the
   // task, and never for a main checkout (nothing polls those, so a stale
   // pr_url there would pin the card in review forever).
@@ -78,7 +113,7 @@ export function taskBoardColumn(
     const state = pr?.pr?.state ?? null;
     if (state === null || state === "open" || state === "draft") return "review";
   }
-  if (taskUntouched(tabs)) return "backlog";
+  if (facts.untouched) return "backlog";
   return "settled";
 }
 

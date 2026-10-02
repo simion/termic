@@ -32,7 +32,7 @@ that distinction.
 | 4 | `working` + delegated `partial` | Some of that work came back; the rest runs on | outlined blue dot, or the ring when `partialDoneIndicator` is off | no | the remaining work, or the grace |
 | 5 | `done` | The turn ended | solid blue dot | YES | focusing the tab, or the next submit |
 | 6 | `done` / `idle` + delegated | The turn ended and left something running | blue dot, then the dashed ring once acknowledged | yes, once | the leftovers finishing, or the next turn |
-| 7 | attention (`unread.reason`) | The agent is blocked ON YOU: a permission prompt, a question | bell | YES | answering it |
+| 7 | attention (`unread.reason`) | The agent is blocked ON YOU: a permission prompt, a question | bell | YES | answering it (a key in that terminal, Escape, Ctrl-C) or the agent's done hook; NOT looking at it |
 | 8 | interrupted | You pressed Escape or Ctrl-C | nothing | no | (already over) |
 | 9 | failed | A run or setup script exited non-zero | red triangle | no | a re-run |
 | 10 | ceiling | termic gave up waiting after 20 minutes | nothing (clears to `idle`) | NO | the next heartbeat re-arms working |
@@ -128,6 +128,25 @@ that news: `partial` drops to false and the tab shows the plain delegated
 ring, because the rest is still running. The next piece of work to report
 back sets it again, and the last one ends the turn with the usual done.
 Nothing but the badges reads the flag, so clearing it changes the mark only.
+
+### A question is not answered by looking at it
+
+Every other mark clears when the tab is in front of you (`setActiveTask`,
+`setActiveTabId`, `useSeenWhenWatched`). Attention does not
+(`unreadClearsOnSight` in `lib/taskWorkState.ts`): the agent is still
+blocked while you read its question. It clears on an answer, meaning any key
+you type in that terminal (claude's permission prompt takes a bare digit, no
+Enter), a bare Escape or Ctrl-C, or the agent's own done hook (the turn is
+over, so nothing in it is waiting: a question answered through claude's
+remote control, or one it gave up on). xterm's automated replies begin with
+ESC and arrow keys do too, so neither counts. A working heartbeat does not
+count either: parallel subagents fire tool hooks while one of them sits on a
+permission prompt. The board's "mark settled" drop still clears it, as an
+explicit command.
+
+It used to clear on sight like the rest. A question you had glanced at and
+left read as a finished turn: off the bell, and under Settled on the board and
+in the sidebar's status section, while the agent sat waiting.
 
 ### Agent messages while delegated
 

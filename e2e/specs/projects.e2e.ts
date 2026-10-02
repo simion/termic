@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setWindowPresence, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible  } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, cliRpc, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, requireWorkBadges, keysIn, rmTree, setWindowPresence, snap, submitToAgent, typeIntoAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitForWorkBadge, waitGone, waitVisible  } from "../helpers";
 
 // Seatbelt is macOS only: elsewhere a Seatbelt default reads as Off and the
 // picker's cages aren't offered, so tests that need the fields skip.
@@ -3283,14 +3283,22 @@ describe("sidebar task filter", () => {
     await snap("task-filter-bell.png");
   });
 
-  it("keeps the active task visible after opening it clears its notification", async () => {
-    const before = Number(await browser.execute((s) => document.querySelector(s)?.textContent ?? "0", COUNT()));
+  it("keeps the active task visible after answering clears its notification", async () => {
+    const count = async () =>
+      Number(await browser.execute((s) => document.querySelector(s)?.textContent ?? "0", COUNT()));
+    const before = await count();
     await ensureActiveTask(alpha);
-    await browser.waitUntil(
-      async () => Number(await browser.execute((s) => document.querySelector(s)?.textContent ?? "0", COUNT())) === before - 1,
-      { timeout: 8_000, timeoutMsg: "opening the task did not clear its notification" },
-    );
-    // Its notification is gone, but it is the row the user just clicked.
+    // Opening is not answering: an agent's question keeps its bell, and the
+    // count with it, until it is answered (docs/agent-states.md, "A question
+    // is not answered by looking at it").
+    await setWindowPresence(true);
+    expect(await count()).toBe(before);
+    // Answering is a key in that terminal: a bare digit, no Enter.
+    await typeIntoAgent(alpha, "1");
+    await browser.waitUntil(async () => (await count()) === before - 1,
+      { timeout: 8_000, timeoutMsg: "answering the task did not clear its notification" });
+    await typeIntoAgent(alpha, "\x7f");
+    // Its notification is gone, but it is the row the user is on.
     await expectRows({ [alpha]: true }, "active task exemption");
     await ensureActiveTask(home);
     await expectRows({ [alpha]: false }, "leaving the task drops it from the filtered list");

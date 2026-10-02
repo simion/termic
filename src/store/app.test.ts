@@ -1225,6 +1225,56 @@ describe("visiting a task does not stop a hook-driven agent looking busy", () =>
   });
 });
 
+describe("looking at a question is not answering it", () => {
+  // The agent is blocked on the user until they answer, so the "seen" paths
+  // that clear every other mark leave an attention bell alone (state 7 in
+  // docs/agent-states.md). Clearing it on sight filed a question you had
+  // glanced at under Settled, on the board and in the sidebar's status section.
+  const seed = (reason: string) => {
+    useUI.getState().setWindowless(false);
+    useUI.getState().setWindowFocused(true);
+    useApp.setState({
+      tasks: [{ id: "t1", project_id: "p", name: "t1", path: "/tmp/t1" }],
+      activeTaskId: null,
+      activeTab: { t1: "a" },
+      splitTree: {}, activePaneId: {},
+      tabs: { t1: [
+        { id: "a", type: "terminal", cli: "claude", title: "a", unread: { reason } },
+        { id: "b", type: "terminal", cli: "claude", title: "b", unread: { reason } },
+      ] },
+    } as never);
+  };
+  const reasons = () =>
+    useApp.getState().tabs.t1.map(t => (t as { unread?: { reason: string } | null }).unread?.reason ?? null);
+
+  it("opening the task keeps an attention bell on every tab", () => {
+    seed("attention");
+    useApp.getState().setActiveTask("t1");
+    expect(reasons()).toEqual(["attention", "attention"]);
+  });
+
+  it("opening the task still clears every other mark (control)", () => {
+    seed("bell");
+    useApp.getState().setActiveTask("t1");
+    expect(reasons()).toEqual([null, null]);
+  });
+
+  it("switching to the tab keeps the bell, and clears a plain one", () => {
+    seed("attention");
+    useApp.getState().setActiveTabId("t1", "b");
+    expect(reasons()).toEqual(["attention", "attention"]);
+    seed("exit");
+    useApp.getState().setActiveTabId("t1", "b");
+    expect(reasons()).toEqual(["exit", null]);
+  });
+
+  it("an explicit clear still ends it: the board's settle command", () => {
+    seed("attention");
+    useApp.getState().clearTaskWorkState("t1");
+    expect(reasons()).toEqual([null, null]);
+  });
+});
+
 describe("isUserWatching and window focus", () => {
   beforeEach(() => {
     useUI.getState().setWindowless(false);

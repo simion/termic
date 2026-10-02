@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  taskNeedsAttention, taskWorkDone, taskWorking, taskWorkBadge, taskDelegated,
+  taskNeedsAttention, taskWorkDone, taskWorking, taskWorkBadge, taskDelegated, unreadClearsOnSight,
 } from "@/lib/taskWorkState";
 import type { Tab } from "@/lib/types";
 import type { DelegatedWork } from "@/lib/delegatedWork";
@@ -150,5 +150,19 @@ describe("taskWorkBadge precedence", () => {
       term({ id: "b", workState: "working" }),
     ], { settledHighlight: false, workingIndicator: true, attentionIndicator: false }))
       .toBe("working");
+  });
+});
+
+describe("unreadClearsOnSight", () => {
+  it("every mark clears on sight except an agent blocked on the user", () => {
+    for (const reason of ["bell", "idle", "exit", "done"]) {
+      expect(unreadClearsOnSight({ reason })).toBe(true);
+    }
+    expect(unreadClearsOnSight({ reason: "attention" })).toBe(false);
+  });
+
+  it("nothing to clear is not a mark", () => {
+    expect(unreadClearsOnSight(null)).toBe(false);
+    expect(unreadClearsOnSight(undefined)).toBe(false);
   });
 });

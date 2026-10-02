@@ -19,7 +19,7 @@ describe("watchedBadgedTab", () => {
     useApp.setState({
       tasks: [task("t1"), task("t2")],
       activeTaskId: "t1",
-      tabs: { t1: [tab("a", { reason: "attention" })], t2: [tab("b", { reason: "done" })] },
+      tabs: { t1: [tab("a", { reason: "bell" })], t2: [tab("b", { reason: "done" })] },
       activeTab: { t1: "a", t2: "b" },
       splitTree: {}, activePaneId: {},
     } as never);
@@ -64,6 +64,24 @@ describe("watchedBadgedTab", () => {
     // when `useUI` changes, so a target that baked in focus would stay stale
     // at "" after the user came back and the badge would never clear.
     useUI.setState({ windowless: true, windowFocused: false } as never);
+    expect(watchedBadgedTab(useApp.getState())).toBe("t1:a");
+  });
+
+  it("does not name a tab whose only mark is an attention bell", () => {
+    // Seeing a question is not answering it, so sight never clears the bell,
+    // and a target parked on that tab would only hide the next clearable
+    // mark behind it.
+    useApp.setState({
+      tabs: { ...useApp.getState().tabs, t1: [tab("a", { reason: "attention" } as Tab["unread"])] },
+    } as never);
+    expect(watchedBadgedTab(useApp.getState())).toBe("");
+  });
+
+  it("still names a bell's tab once it ALSO holds the done dot, to clear the dot", () => {
+    useApp.setState({
+      tabs: { ...useApp.getState().tabs,
+        t1: [{ id: "a", type: "terminal", cli: "claude", title: "a", unread: { reason: "attention" }, workState: "done" }] },
+    } as never);
     expect(watchedBadgedTab(useApp.getState())).toBe("t1:a");
   });
 
