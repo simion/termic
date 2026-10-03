@@ -145,7 +145,7 @@ fn probe_authed_hosts() -> HashMap<String, &'static str> {
     out
 }
 
-fn auth_text(o: &std::process::Output) -> String {
+fn auth_text(o: &CmdOut) -> String {
     format!(
         "{}\n{}",
         String::from_utf8_lossy(&o.stdout),
@@ -223,7 +223,19 @@ fn reprobe_bin(name: &str) -> Option<String> {
     resolved
 }
 
-fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::process::Output> {
+/// `std::process::Output` cannot be constructed outside `Command::output()`,
+/// and `output()` has no deadline — a forge CLI parked on a credential
+/// prompt or a dead socket would pin its spawn_blocking thread (and, for
+/// delivery commands running under the process-global lock, every other
+/// delivery call) forever. Same spawn contract, same field names, one change:
+/// a hard wall-clock ceiling.
+pub struct CmdOut {
+    pub status: std::process::ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<CmdOut> {
     let mut cmd = crate::proc_ctl::command(bin);
     cmd.args(args)
         // Login-shell PATH so the CLI can find its own helpers (git,
@@ -244,7 +256,65 @@ fn run(bin: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::pro
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    cmd.output()
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
+    // Both pipes drain on their own threads: a chatty CLI (progress bars,
+    // verbose proxy rejections) otherwise fills a pipe buffer and stalls
+    // mid-write until the deadline, losing the real error text.
+    let stdout = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let join = |h: Option<std::thread::JoinHandle<Vec<u8>>>| {
+        h.and_then(|h| h.join().ok()).unwrap_or_default()
+    };
+    // REST calls land in seconds; the ceiling only fires on a genuinely
+    // wedged child (dead host, ignored prompt-disable env, hung helper).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Ok(CmdOut {
+                    status,
+                    stdout: join(stdout),
+                    stderr: join(stderr),
+                });
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // Do NOT join the readers: a grandchild that inherited
+                    // the pipes (credential helper, pager, daemon) keeps
+                    // them open after the kill, so read_to_end never ends
+                    // and the "deadline" would hang forever. The detached
+                    // threads exit on their own once the fds close.
+                    drop(stdout);
+                    drop(stderr);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("{bin} did not exit within 120s"),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 // ───────────────────────── detection (Settings / hints) ─────────────────────────
@@ -601,13 +671,26 @@ pub enum ForgeError {
     Other(String),
 }
 
-fn stderr_of(o: &std::process::Output) -> String {
-    String::from_utf8_lossy(&o.stderr).trim().to_string()
+fn stderr_of(o: &CmdOut) -> String {
+    // CLI stderr can echo a PAT-bearing remote URL; strip userinfo before
+    // it reaches persisted errors or toasts.
+    crate::scrub_url_userinfo(&String::from_utf8_lossy(&o.stderr))
+        .trim()
+        .to_string()
 }
 
 /// Classify a failed CLI invocation: auth problems get their own arm so
 /// the UI can say "run gh auth login" instead of dumping stderr.
-fn classify_failure(provider: &str, o: &std::process::Output) -> ForgeError {
+impl std::fmt::Display for ForgeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CliMissing(cli) => write!(f, "The {cli} CLI is not installed"),
+            Self::Auth(message) | Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+fn classify_failure(provider: &str, o: &CmdOut) -> ForgeError {
     classify_stderr(provider, &stderr_of(o))
 }
 
@@ -2944,3 +3027,6 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(out[0].created_at, "2026-06-12T09:00:00Z");
     }
 }
+
+#[path = "forge_delivery.rs"]
+pub mod delivery;

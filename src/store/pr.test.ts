@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mocks must be declared before the modules under test are imported.
 vi.mock("@/lib/ipc", () => ({
   detectForges: vi.fn().mockResolvedValue([]),
+  taskDeliveryArchiveReady: vi.fn().mockResolvedValue(false),
   taskPrStatus: vi.fn(),
   taskMemberPrStatus: vi.fn().mockResolvedValue([]),
   taskPrComments: vi.fn().mockResolvedValue([]),
@@ -994,5 +995,38 @@ describe("merge bookkeeping survives the key gaining a provider segment", () => 
 
   it("says nothing is handled when nothing is stored", () => {
     expect(mergeAlreadyHandled("t1", "github", 7)).toBe(false);
+  });
+});
+
+describe("multi-repository merge completion", () => {
+  it("keeps the task open until every repository is accounted for", async () => {
+    const ready = vi.fn().mockResolvedValue(false);
+    vi.spyOn(ipc, "taskDeliveryArchiveReady").mockImplementation(ready);
+    seedApp("auto", { id: "multi-delivery", pr_number: 7, pr_provider: "github", composition: [{ dir_name: "api" } as never] });
+    usePr.setState({ byTask: {} });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
+    await usePr.getState().refresh("multi-delivery", true);
+    await vi.waitFor(() => expect(ready).toHaveBeenCalled());
+    expect(archiveAndRefresh).not.toHaveBeenCalled();
+    // The archive_ready recheck is skipped while the member signature is
+    // unchanged; it re-runs when a member's PR state actually moves.
+    ready.mockResolvedValue(true);
+    await usePr.getState().refresh("multi-delivery", true);
+    await Promise.resolve();
+    expect(archiveAndRefresh).not.toHaveBeenCalled();
+    vi.mocked(ipc.taskMemberPrStatus).mockResolvedValue([
+      { dir_name: "api", branch: "b", status: "ok", message: "", pr: { provider: "github", number: 3, state: "merged" } } as never,
+    ]);
+    await usePr.getState().refresh("multi-delivery", true);
+    await vi.waitFor(() => expect(archiveAndRefresh).toHaveBeenCalledWith("multi-delivery", false));
+  });
+});
+
+describe("member-only PR polling", () => {
+  it("polls known member PRs when the shared host has no PR", () => {
+    seedApp(undefined, { id: "member-poll", is_main_checkout: true, pr_url: undefined, pr_number: undefined,
+      composition: [{ dir_name: "api", pr_number: 7, pr_provider: "github" } as never] });
+    usePr.setState({ byTask: {} });
+    expect(pollableTasks().some(task => task.id === "member-poll")).toBe(true);
   });
 });

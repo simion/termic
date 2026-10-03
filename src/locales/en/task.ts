@@ -178,6 +178,7 @@ export default {
   },
 
   rightPanel: {
+    delivery: "Delivery",
     allFiles: "All files",
     git: "Git",
     refreshTip: "Refresh files and git status",

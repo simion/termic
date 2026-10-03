@@ -1,3 +1,5 @@
+import { ChecksChip, ReviewChip } from "@/components/task/PrCard";
+import { deliveryBlockers } from "@/lib/delivery";
 // Kanban view (docs/ui.md "Kanban view", issue #318): a global kanban over
 // every task, columns DERIVED from live state (see src/lib/taskBoardState.ts
 // for the precedence). The terminal is the ground truth, so nothing here is a
@@ -219,7 +221,9 @@ export function BoardView() {
     (w: Task) => projectById.has(w.project_id),
     [projectById],
   );
-  const liveTasks = useMemo(() => tasks.filter(w => !w.archived && known(w)), [tasks, known]);
+  const [needsAction, setNeedsAction] = useState(() => localStorage.getItem("boardNeedsAction") === "true");
+  const deliveryKey = usePr(s => needsAction ? tasks.map(task => task.id + ":" + deliveryBlockers(task, s.byTask[task.id]).join(",")).join("|") : "");
+  const liveTasks = useMemo(() => tasks.filter(w => !w.archived && known(w) && (!needsAction || deliveryBlockers(w, usePr.getState().byTask[w.id]).length > 0)), [tasks, known, needsAction, deliveryKey]);
   // Lanes are about VISIBLE cards, so boardLanes gets liveTasks, not tasks:
   // a lane kept alive only by a task whose project left the profile (the
   // filter above, the same invisibility every other surface applies) once
@@ -484,10 +488,13 @@ export function BoardView() {
 
   return (
     <div className="flex h-full flex-col" data-testid="board-view">
+      <div className="flex items-center gap-2 border-b border-[var(--color-border-soft)] px-3 py-2">
+        <button data-testid="board-needs-action" aria-pressed={needsAction} className={cn("rounded border border-[var(--color-border-soft)] px-2 py-1 text-xs", needsAction && "bg-[var(--color-hover)]")} onClick={() => { setNeedsAction(!needsAction); try { localStorage.setItem("boardNeedsAction", String(!needsAction)); } catch {} }}>{t("board.needsAction")}</button>
+      </div>
       {boardEmpty ? (
         <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-          <div className="text-[14px] font-semibold">{t("board.emptyTitle")}</div>
-          <div className="text-[12.5px] text-[var(--color-fg-dim)]">{t("board.emptyBody")}</div>
+          <div className="text-[14px] font-semibold">{t(needsAction ? "board.noAction" : "board.emptyTitle")}</div>
+          <div className="text-[12.5px] text-[var(--color-fg-dim)]">{!needsAction && t("board.emptyBody")}</div>
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-x-auto">
@@ -915,7 +922,7 @@ const BoardCard = memo(function BoardCard({ task: w, ctx, column, lane, isDragSo
       onPointerDown={e => onCardPointerDown(e, w, lane, column)}
       onClick={() => onCardClick(w)}
       onKeyDown={ev => {
-        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onCardClick(w); }
+        if (ev.target === ev.currentTarget && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); onCardClick(w); }
       }}
       style={{ borderLeftColor: edge }}
       className={cn(
@@ -977,6 +984,7 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
   // Per-card subscriptions, deliberately: BoardView's own pr subscription
   // folds only `state` into its key, and widening that would re-render every
   // column whenever any task's check count moved.
+  const blockers = usePr(s => deliveryBlockers(w, s.byTask[w.id]).join(", "));
   const pr = usePr(s => s.byTask[w.id]?.lookup?.pr ?? null);
   const members = usePr(s => s.byTask[w.id]?.members);
   const stat = useDiffStat(s => s.byTask[w.id]?.stat ?? null);
@@ -997,25 +1005,20 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
   const url = pr?.url ?? w.pr_url ?? "";
   const num = pr?.number ?? w.pr_number ?? 0;
   const changed = (stat?.files_changed ?? 0) > 0;
-  // Same "forge-backed only" rule as MemberPrRows in the Git tab: a member
-  // whose remote resolved to nothing termic can query has no PR story to
-  // tell, and an error/cli-missing row would read as "no PR".
-  const memberRows = members?.filter(m => m.status === "ok") ?? [];
-  if (!url && !changed && !memberRows.length) return null;
+  // Keep unavailable members visible so a failed lookup never reads as "no PR".
+  const memberRows = members ?? [];
+  if (!url && !changed && !memberRows.length && !blockers) return null;
 
   const { color } = prBadgeAppearance(pr?.state ?? null, pr?.checks ?? null);
   const noun = pr?.provider === "gitlab" ? "MR" : "PR";
   const id = num ? `${noun === "MR" ? "!" : "#"}${num}` : noun;
-  const forge = noun === "MR" ? "GitLab" : "GitHub";
+  const forge = pr?.provider === "azure" ? "Azure DevOps" : noun === "MR" ? "GitLab" : "GitHub";
   const PrIcon =
     pr?.state === "merged" ? GitMerge
     : pr?.state === "closed" ? GitPullRequestClosed
     : pr?.state === "draft" ? GitPullRequestDraft
     : GitPullRequest;
-  const checkNote =
-    pr?.checks === "failing" ? t("board.prChecksFailing")
-    : pr?.checks === "pending" ? t("board.prChecksPending")
-    : "";
+
 
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
@@ -1042,7 +1045,6 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
             >
               <PrIcon className="h-3 w-3 shrink-0" />
               <span className="shrink-0 tabular-nums">{id}</span>
-              {checkNote && <span className="truncate">· {checkNote}</span>}
             </button>
           )}
           {changed && <BoardChurn task={w} stat={stat!} />}
@@ -1052,7 +1054,14 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
           rows): member repo + branch on the left, its own PR chip on the
           right. Capped like the member list itself - the "+N more" line is
           the hint that the task fans out further than the card can say. */}
-      {memberRows.slice(0, 3).map(m => <BoardMemberRow key={m.dir_name} m={m} />)}
+      {((pr && (pr.checks !== "none" || pr.review !== "none")) || blockers) && <button
+        data-testid="board-card-delivery" title={t("board.delivery")} data-no-drag
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded py-1 text-left hover:bg-[var(--color-hover)]"
+        onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); useApp.getState().setActiveTask(w.id); if (useApp.getState().rightPanelHidden) useApp.getState().toggleRightPanel(); useUI.getState().revealDelivery(w.id); }}>
+        {pr && <><ChecksChip checks={pr.checks} /><ReviewChip review={pr.review} /></>}
+        {blockers && (!pr || (pr.checks !== "failing" && pr.review !== "changes_requested")) && <span className="text-[10.5px] text-[var(--color-warn)]">{t("board.needsAction")}</span>}
+      </button>}
+      {memberRows.slice(0, 3).map(m => <BoardMemberRow key={m.dir_name} m={m} taskId={w.id} />)}
       {memberRows.length > 3 && (
         <span className="text-[10.5px] text-[var(--color-fg-faint)]">
           {t("board.memberMore", { count: memberRows.length - 3 })}
@@ -1066,7 +1075,7 @@ const BoardCardFooter = memo(function BoardCardFooter({ task: w }: { task: Task 
  *  member's own PR chip (state colour + check note) when a lookup resolved
  *  one. A member whose forge answered "no PR" keeps the bare row - on a
  *  multi-repo task that IS the answer, not missing data. */
-function BoardMemberRow({ m }: { m: MemberPrLookup }) {
+function BoardMemberRow({ m, taskId }: { m: MemberPrLookup; taskId: string }) {
   const { t } = useTranslation("chrome");
   const pr = m.pr;
   const { color } = prBadgeAppearance(pr?.state ?? null, pr?.checks ?? null);
@@ -1077,10 +1086,6 @@ function BoardMemberRow({ m }: { m: MemberPrLookup }) {
     : pr?.state === "closed" ? GitPullRequestClosed
     : pr?.state === "draft" ? GitPullRequestDraft
     : GitPullRequest;
-  const checkNote =
-    pr?.checks === "failing" ? t("board.prChecksFailing")
-    : pr?.checks === "pending" ? t("board.prChecksPending")
-    : "";
   return (
     <div className="flex min-w-0 items-center gap-1.5" data-testid="board-member-row">
       <span className="min-w-0 flex-1 truncate text-[10.5px] text-[var(--color-fg-dim)]">
@@ -1099,9 +1104,13 @@ function BoardMemberRow({ m }: { m: MemberPrLookup }) {
         >
           <PrIcon className="h-3 w-3 shrink-0" />
           <span className="shrink-0 tabular-nums">{id}</span>
-          {checkNote && <span className="truncate">· {checkNote}</span>}
         </button>
       )}
+      {((pr && (pr.checks !== "none" || pr.review !== "none")) || !["ok","no-remote","unsupported-remote"].includes(m.status)) && <button data-no-drag title={m.message || t("board.delivery")}
+        className="flex min-w-0 items-center gap-1.5 rounded py-1 hover:bg-[var(--color-hover)]"
+        onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); useApp.getState().setActiveTask(taskId); if (useApp.getState().rightPanelHidden) useApp.getState().toggleRightPanel(); useUI.getState().revealDelivery(taskId); }}>
+        {pr ? <><ChecksChip checks={pr.checks} /><ReviewChip review={pr.review} /></> : <span className="text-[10px] text-[var(--color-warn)]">{t("board.unavailable")}</span>}
+      </button>}
     </div>
   );
 }

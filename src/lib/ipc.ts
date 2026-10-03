@@ -1434,3 +1434,21 @@ export const agentHooksSync = () => invoke<string[]>("agent_hooks_sync");
  *  every later sync (boot, the Agents page) keeps new agents covered. */
 export const agentHooksAutoGet = () => invoke<boolean>("agent_hooks_auto_get");
 export const agentHooksAutoSet = (on: boolean) => invoke<string[]>("agent_hooks_auto_set", { on });
+
+// Delivery operations resolve task-owned repository selectors in Rust.
+export const taskDeliveryRepos = (id: string) => invoke<import("./types").DeliveryRepo[]>("task_delivery_repos", { id });
+export const taskDeliveryDetails = (id: string, expected: import("./types").DeliveryIdentity) => invoke<import("./types").DeliveryDetails>("task_delivery_details", { id, expected });
+export const taskDeliveryValidate = (id: string, expected: import("./types").DeliveryIdentity[]) => invoke<void>("task_delivery_validate", { id, expected });
+export const taskDeliveryLog = (id: string, expected: import("./types").DeliveryIdentity, logId: string) => invoke<string>("task_delivery_log", { id, expected, logId });
+export const taskDeliveryRequests = (id: string) => invoke<import("./types").DeliveryRequest[]>("task_delivery_requests", { id });
+export const taskDeliveryRequest = (id: string, expected: import("./types").DeliveryIdentity[], drafts: import("./types").DeliveryDraft[], kind: string, scope?: string, evidenceKeys: string[] = []) => invoke<import("./types").DeliveryRequest>("task_delivery_request", { id, expected, drafts, kind, scope: scope ?? null, evidenceKeys });
+export const taskDeliveryRequestCheck = (id: string, requestId: string) => invoke<void>("task_delivery_request_check", { id, requestId });
+export const taskDeliveryRequestAmend = (id: string, requestId: string, drafts: import("./types").DeliveryDraft[], evidenceKeys: string[], scope?: string) => invoke<import("./types").DeliveryRequest>("task_delivery_request_amend", { id, requestId, drafts, evidenceKeys, scope: scope ?? null });
+export const taskDeliveryRequestStatus = (id: string, requestId: string, status: string, error: string | null = null, agent: string | null = null) => invoke<string>("task_delivery_request_status", { id, requestId, status, error, agent });
+export const taskDeliveryDraftSave = (id: string, requestId: string, key: string, body: string) => invoke<void>("task_delivery_draft_save", { id, requestId, key, body });
+export const taskDeliveryReplyPost = (id: string, requestId: string, key: string, expected: import("./types").DeliveryIdentity) => invoke<void>("task_delivery_reply_post", { id, requestId, key, expected });
+export const taskDeliveryPrCreate = (id: string, inputs: import("./types").DeliveryPrInput[]) => invoke<import("./types").DeliveryResult[]>("task_delivery_pr_create", { id, inputs });
+export const taskDeliveryUpdate = (id: string, expected: import("./types").DeliveryIdentity[], mode: UpdateMode) => invoke<import("./types").DeliveryResult[]>("task_delivery_update", { id, expected, mode });
+
+export const taskDeliveryArchiveReady = (id: string) => invoke<boolean>("task_delivery_archive_ready", { id });
+export const taskDeliveryResults = (id: string) => invoke<import("./types").DeliveryResult[]>("task_delivery_results", { id });

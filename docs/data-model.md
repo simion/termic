@@ -64,3 +64,14 @@ Only the durable default tab can inherit legacy task-level resume history.
 A new secondary tab starts a fresh session even if it is the first tab of a
 different profile. Explicit `tab --resume SESSION_ID` and restoration of a
 tab's own captured session continue to resume that specific session.
+## Delivery metadata
+
+Composition members optionally persist `pr_url`, `pr_number`, and `pr_provider`,
+matching the host task's identity fields. Older records default them to absent;
+live provider state remains in the PR store.
+
+Profile-scoped `scratch/<task-id>/delivery.json` owns reviewed requests, saved
+reply drafts, imported PR descriptions, and per-repository bulk results. Agents
+write `.termic-delivery/<request-id>.json` reports in the task checkout, excluded
+through Git's common `info/exclude` for both repositories and linked worktrees.
+Reports are size-bounded and checked against the reviewed request scope.

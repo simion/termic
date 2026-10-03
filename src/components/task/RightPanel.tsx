@@ -32,6 +32,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { AuxTerminal } from "./AuxTerminal";
 import { FileTree } from "./FileTree";
+import { DeliveryPanel } from "./DeliveryPanel";
 import { GitPanel } from "./GitPanel";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useScriptRuns, useRunState } from "@/store/scriptRuns";
@@ -64,9 +65,17 @@ export function RightPanel() {
   const addTab = useApp(s => s.addTab);
   const split = useApp(s => !!s.terminalSplit[task?.id ?? ""]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
-  const [view, setView] = useState<"files" | "changes">("files");
+  const [view, setView] = useState<"files" | "changes" | "delivery">("files");
   // A reveal-in-tree request (editor breadcrumb / locate button) forces the
   // "All files" view so the tree is on screen for FileTree to expand/scroll.
+  const deliveryReveal = useUI(s => s.deliveryReveal);
+  useEffect(() => {
+    if (task && deliveryReveal === task.id) {
+      setView("delivery");
+      useUI.setState({ deliveryReveal: null });
+      if (useApp.getState().rightPanelHidden) useApp.getState().toggleRightPanel();
+    }
+  }, [deliveryReveal, task]);
   const revealFile = useApp(s => s.revealFile);
   // "Show this commit in History" from the editor's blame popup. Same shape as
   // revealFile above: force the tab that can honour it, and un-hide the panel,
@@ -518,6 +527,7 @@ export function RightPanel() {
         <RTab label={t("rightPanel.git")} active={view === "changes"} onClick={() => setView("changes")}
           badge={(gitStatus?.total_changed ?? 0) > 0 ? gitStatus!.total_changed : undefined}
           repoBadge={(gitStatus?.repos_changed ?? 0) > 1 ? gitStatus!.repos_changed : undefined} />
+        <RTab label={t("rightPanel.delivery")} active={view === "delivery"} onClick={() => setView("delivery")} />
         <div className="flex shrink-0 items-center px-1.5">
           <Tip content={t("rightPanel.refreshTip")} side="bottom">
             <button
@@ -542,7 +552,7 @@ export function RightPanel() {
         <div className="min-h-0 flex-1 overflow-auto py-1">
           <FileTree taskId={task.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision + focusReload} refreshToken={fileTreeReload} />
         </div>
-      ) : (
+      ) : view === "delivery" ? <DeliveryPanel key={task.id} task={task} /> : (
         <div className="min-h-0 flex-1">
           <GitPanel
             task={task}

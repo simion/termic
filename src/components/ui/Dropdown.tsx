@@ -1,9 +1,19 @@
 import * as DM from "@radix-ui/react-dropdown-menu";
-import { type ReactNode } from "react";
+import { isValidElement, type ComponentProps, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export const DropdownRoot   = DM.Root;
-export const DropdownTrigger = DM.Trigger;
+
+/** Callers write `<DropdownTrigger asChild><button disabled={…}>` — the
+ *  `disabled` lands on the DOM button but never reaches Radix's open handler,
+ *  which only checks the Trigger's own prop. Chrome suppresses pointer events
+ *  on disabled buttons so it limps along there; WKWebView fires pointerdown
+ *  anyway, so a disabled-looking trigger still opens the menu. Mirror the
+ *  child's disabled flag onto the Trigger so the guard actually runs. */
+export function DropdownTrigger({ children, disabled, ...props }: ComponentProps<typeof DM.Trigger>) {
+  const childDisabled = isValidElement(children) ? (children.props as { disabled?: boolean }).disabled : undefined;
+  return <DM.Trigger disabled={disabled ?? childDisabled} {...props}>{children}</DM.Trigger>;
+}
 
 interface MenuProps {
   children: ReactNode;

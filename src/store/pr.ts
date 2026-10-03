@@ -53,6 +53,8 @@ import { i18n } from "@/lib/i18n";
 import { taskLabel } from "@/lib/taskLabel";
 
 export interface PrEntry {
+  error?: string | null;
+  lastSuccessAt?: number;
   lookup: PrLookup | null;
   /** True while a refresh is in flight (initial load shows a spinner;
    *  background refreshes keep rendering the stale snapshot). */
@@ -130,7 +132,7 @@ export const usePr = create<PrStore>((set, get) => ({
       const task = useApp.getState().tasks.find(t => t.id === taskId);
       // Independent calls, awaited together: each lands on its own
       // spawn_blocking, so serializing them would double the latency.
-      // By-branch only for members: a member carries no persisted identity.
+      // Members use branch lookup first with persisted identity as fallback.
       // A member call that fails keeps the previous list rather than
       // blanking the rows for the rest of the cadence window.
       const hasMembers = (task?.composition?.length ?? 0) > 0;
@@ -159,7 +161,7 @@ export const usePr = create<PrStore>((set, get) => ({
         // Keep the stale lookup; record the attempt so a broken setup does
         // not retry in a tight loop. Member results still land.
         set(s => ({
-          byTask: { ...s.byTask, [taskId]: { ...(s.byTask[taskId] ?? EMPTY), members: membersOut, loading: false, fetchedAt: Date.now() } },
+          byTask: { ...s.byTask, [taskId]: { ...(s.byTask[taskId] ?? EMPTY), members: membersOut, loading: false, fetchedAt: Date.now(), error: String(hostRes.reason) } },
         }));
         return;
       }
@@ -172,7 +174,7 @@ export const usePr = create<PrStore>((set, get) => ({
       set(s => ({
         byTask: { ...s.byTask, [taskId]: {
           lookup: raced && s.byTask[taskId] ? s.byTask[taskId].lookup : lookup,
-          members: membersOut, loading: false, fetchedAt: Date.now() } },
+          members: membersOut, loading: false, fetchedAt: Date.now(), lastSuccessAt: Date.now(), error: memberRes.status === "rejected" ? String(memberRes.reason) : null } },
       }));
       // `lookup` is the previous (possibly null) snapshot on the
       // main-checkout path - no host poll ran, so the handlers below
@@ -212,7 +214,7 @@ export const usePr = create<PrStore>((set, get) => ({
       // a tight loop on a broken setup.
       console.error("task_pr_status failed:", err);
       set(s => ({
-        byTask: { ...s.byTask, [taskId]: { ...(s.byTask[taskId] ?? EMPTY), loading: false, fetchedAt: Date.now() } },
+        byTask: { ...s.byTask, [taskId]: { ...(s.byTask[taskId] ?? EMPTY), loading: false, fetchedAt: Date.now(), error: String(err) } },
       }));
     }
   },
@@ -320,13 +322,14 @@ export function pollableTasks(): Task[] {
   const staleness = (id: string) => now - (byTask[id]?.fetchedAt ?? 0);
   return useApp.getState().tasks
     .filter(w => {
-      if (w.archived || w.is_main_checkout) return false;
+      if (w.archived || (w.is_main_checkout && !w.composition?.length)) return false;
       // Exactly the set the sidebar draws a badge for (TaskPrBadge keys on
       // the url), so no row can render a badge nothing polls. Either half of
       // the identity is enough: the lookup resolves by BRANCH first and only
       // falls back to the stored number, so a record whose url parsed but
       // whose number did not is still perfectly pollable.
-      if (!w.pr_url && !w.pr_number) return false;
+      const hasMemberPr = w.composition?.some(m => m.pr_url || m.pr_number) || byTask[w.id]?.members?.some(m => m.pr);
+      if (!w.pr_url && !w.pr_number && !hasMemberPr) return false;
       const entry = byTask[w.id];
       if (entry?.loading) return false;
       return staleness(w.id) >= STATUS_STALE_MS;
@@ -741,8 +744,39 @@ function rememberMergeHandled(taskId: string, provider: ForgeProvider | null, nu
  *  task previously knew it had a PR, so ancient merged branches
  *  don't toast on every launch.
  */
+const multiMergeInFlight = new Set<string>();
+/** taskId -> member-PR signature + when archive_ready last ran. While the
+ *  host PR stays merged and members stay unmerged, every poll would
+ *  otherwise re-run repos() + a forge lookup per member forever. The
+ *  signature re-checks exactly when an answer could have changed; the TTL
+ *  floor covers worktree-only changes (dirty/clean flips) that the member
+ *  lookups cannot see. */
+const multiMergeChecked = new Map<string, { sig: string; at: number }>();
+const MULTI_MERGE_RECHECK_MS = 300_000;
 function maybeHandleMerged(taskId: string, prev: PrLookup | null | undefined, next: PrLookup) {
   if (next.status !== "ok" || next.pr?.state !== "merged") return;
+  const multiTask = useApp.getState().tasks.find(task => task.id === taskId);
+  const multiProject = useApp.getState().projects.find(p => p.id === multiTask?.project_id);
+  if (multiTask?.is_main_checkout) return;
+  if (multiTask && !multiTask.archived && multiTask.composition?.length && multiProject?.on_pr_merge === "auto") {
+    if (mergeAlreadyHandled(taskId, next.pr.provider, next.pr.number) || multiMergeInFlight.has(taskId)) return;
+    if (!multiTask.pr_number && !prev?.pr) return;
+    const sig = (usePr.getState().byTask[taskId]?.members ?? [])
+      .map(m => `${m.dir_name}:${m.status}:${m.pr?.state ?? "-"}`).join("|");
+    const last = multiMergeChecked.get(taskId);
+    if (last && last.sig === sig && Date.now() - last.at < MULTI_MERGE_RECHECK_MS) return;
+    multiMergeChecked.set(taskId, { sig, at: Date.now() });
+    multiMergeInFlight.add(taskId);
+    void import("@/lib/ipc").then(async ipc => {
+      if (await ipc.taskDeliveryArchiveReady(taskId)) {
+        rememberMergeHandled(taskId, next.pr!.provider, next.pr!.number);
+        await archiveAndRefresh(taskId, false);
+      } else if (prev?.pr?.state !== "merged") {
+        useUI.getState().pushToast(i18n.t("panels:delivery.mergeIncomplete"), "warning");
+      }
+    }).catch(e => useUI.getState().pushToast(String(e), "error")).finally(() => multiMergeInFlight.delete(taskId));
+    return;
+  }
   if (mergeAlreadyHandled(taskId, next.pr.provider, next.pr.number)) return;
   const app = useApp.getState();
   const task = app.tasks.find(w => w.id === taskId);

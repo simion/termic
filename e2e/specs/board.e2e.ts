@@ -455,6 +455,31 @@ describe("board view", () => {
       await snap("board-card-pr.png");
     });
 
+    it("opens Delivery from the actionable CI status without a generic Delivery row", async () => {
+      await browser.execute(id => {
+        const store = window.__termic!.usePr;
+        store.setState({ byTask: { ...store.getState().byTask, [id]: {
+          lookup: { status: "ok", provider: "github", pr: { provider: "github", number: 42,
+            url: "https://example.test/pull/42", state: "open", checks: "failing", review: "changes_requested",
+            title: "Review fixture", base: "main", head: "topic" } },
+          loading: false, fetchedAt: Date.now(),
+        } } });
+        const app = window.__termic!.useApp.getState();
+        if (!app.rightPanelHidden) app.toggleRightPanel();
+      }, t2);
+      const selector = CARD(t2) + ' [data-testid="board-card-delivery"]';
+      await waitVisible(selector);
+      const text = await browser.execute(sel => document.querySelector(sel)?.textContent ?? "", selector);
+      expect(text).toContain("CI");
+      expect(text).not.toContain("Delivery");
+      await browser.execute(sel => (document.querySelector(sel) as HTMLElement).click(), selector);
+      await waitVisible('[data-testid="delivery-panel"]');
+      // Put the suite back on its Board and keep later editor suites on Files.
+      await browser.execute(() => (document.querySelector('[data-testid="right-tab"][data-tab="All files"]') as HTMLElement).click());
+      await clickByText("Kanban");
+      await waitVisible('[data-testid="board-view"]');
+    });
+
     it("a wide PR chip and churn never make the column scroll sideways", async () => {
       // Shipped broken in 1.11.2: the chip and the churn were both shrink-0 on
       // one line, so "#18495 - checks failing" next to "+356 -21 12 files"

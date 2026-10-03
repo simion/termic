@@ -3369,6 +3369,8 @@ describe("agent hooks", () => {
   "theme_mode": "dark"
 }
 `;
+    // A failed prior run can retain its original-config backup.
+    rmTree(devinDir, { bestEffort: true });
     mkdirSync(devinDir, { recursive: true });
     writeFileSync(devinConfig, userDevinConfig);
 

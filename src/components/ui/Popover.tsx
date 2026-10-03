@@ -3,11 +3,19 @@
 // anchored forms like the message queue.
 
 import * as P from "@radix-ui/react-popover";
-import { type ReactNode } from "react";
+import { isValidElement, type ComponentProps, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export const PopoverRoot = P.Root;
-export const PopoverTrigger = P.Trigger;
+
+/** Same WKWebView gap as DropdownTrigger: `asChild` callers put `disabled` on
+ *  the inner button, where Radix's pointerdown handler never sees it — and
+ *  WebKit still fires pointerdown on disabled buttons, so a disabled-looking
+ *  trigger opens the popover. Mirror the child's flag onto the Trigger. */
+export function PopoverTrigger({ children, disabled, ...props }: ComponentProps<typeof P.Trigger>) {
+  const childDisabled = isValidElement(children) ? (children.props as { disabled?: boolean }).disabled : undefined;
+  return <P.Trigger disabled={disabled ?? childDisabled} {...props}>{children}</P.Trigger>;
+}
 export const PopoverAnchor = P.Anchor;
 
 interface ContentProps {

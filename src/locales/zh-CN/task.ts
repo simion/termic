@@ -174,6 +174,7 @@ export default {
   },
 
   rightPanel: {
+    delivery: "交付",
     allFiles: "所有文件",
     git: "Git",
     refreshTip: "刷新文件和 Git 状态",

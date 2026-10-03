@@ -272,6 +272,9 @@ export interface TaskMember {
    *  Empty = the member repo's own `.termic.yaml` list is resolved on
    *  restore instead. */
   files_to_copy?: string[];
+  pr_url?: string;
+  pr_number?: number;
+  pr_provider?: ForgeProvider;
 }
 
 /** One frozen extra named port (GH #196): configured env var name +
@@ -1393,6 +1396,10 @@ export interface TerminalTab extends BaseTab {
     failed?: boolean;
   };
   ptyId?: string;
+  /** Set when the PTY spawn itself threw — the pane paints the error and
+   *  clears it on the next successful spawn. Lets async waiters (delivery
+   *  handoff) fail fast instead of polling a PTY that will never exist. */
+  spawnError?: string | null;
   /** Wall-clock timestamps used for the idle heuristic. */
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
@@ -1553,6 +1560,7 @@ export interface QueueItem {
    *  drain reports delivered/failed to `cli_prompt_report` on the FIRST
    *  send, then clears this so repeats never re-report. */
   promptId?: string;
+  delivery?: { requestId: string; identities: DeliveryIdentity[]; ptyId: string };
 }
 
 export interface DiffTab extends BaseTab {
@@ -1906,4 +1914,96 @@ export interface AgentAccountsView {
    *  account, and the footer needs it to say so instead of falling back to
    *  whatever is merely configured. */
   adoptedAccount: string | null;
+}
+
+// Task delivery: selectors resolve against recorded host/member checkouts.
+export interface DeliveryIdentity {
+  dir_name: string;
+  path: string;
+  branch: string;
+  head: string;
+  remote: string;
+  worktree: string;
+  pr_number?: number | null;
+  pr_revision?: string | null;
+}
+export interface DeliveryRepo {
+  dir_name: string;
+  name: string;
+  mode: string;
+  base: string;
+  dirty: boolean;
+  changed: boolean | null;
+  identity: DeliveryIdentity | null;
+  error: string | null;
+}
+export interface CiNode {
+  id: string;
+  parent: string | null;
+  name: string;
+  kind: string;
+  status: string;
+  duration: number | null;
+  url: string;
+  log_id: string | null;
+}
+export interface ReviewThread {
+  id: string;
+  reply_id: string;
+  path: string | null;
+  line: number | null;
+  resolved: boolean | null;
+  url: string;
+  comments: { id: string; author: string; body: string }[];
+}
+export interface DeliveryDetails {
+  identity: DeliveryIdentity;
+  pr: PrStatus;
+  revision: string;
+  ci: CiNode[];
+  ci_error: string | null;
+  threads: ReviewThread[];
+  threads_error: string | null;
+}
+export interface DeliveryDraft {
+  key: string;
+  dir_name: string;
+  pr_number: number;
+  thread_id: string;
+  reply_id: string;
+  body: string;
+  status: "draft" | "posting" | "posted" | "uncertain" | "retry_ready";
+  error: string | null;
+}
+export interface DeliveryRequest {
+  kind: string;
+  id: string;
+  identities: DeliveryIdentity[];
+  report: string;
+  status: string;
+  error: string | null;
+  /** Display-only summary of what the request covers ("repo: lint, src/x.ts:12"). */
+  scope: string;
+  /** Evidence item key → canonical JSON captured at prepare; re-verified at send. */
+  evidence: Record<string, string>;
+  /** Terminal tab the prompt was queued to / sent in — the card's jump target. */
+  agent?: string | null;
+  drafts: DeliveryDraft[];
+  prs: { dir_name: string; title: string; body: string }[];
+}
+export interface DeliveryResult {
+  dir_name: string;
+  name: string;
+  /** "pr" | "update"; absent on rows persisted before the tag existed. */
+  action?: string;
+  url: string | null;
+  result: UpdateResult | null;
+  error: string | null;
+}
+export interface DeliveryPrInput {
+  identity: DeliveryIdentity;
+  title: string;
+  body: string;
+  base: string;
+  draft: boolean;
 }

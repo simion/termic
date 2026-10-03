@@ -215,6 +215,10 @@ export default {
     confirmMessageManyProject: "This permanently deletes {{count}} archived tasks in {{project}}. It cannot be undone.",
   },
   board: {
+    unavailable: "Unavailable",
+    noAction: "No tasks need action",
+    delivery: "Delivery",
+    needsAction: "Needs action",
     colBacklog: "Not started",
     colAttention: "Needs attention",
     colWorking: "Working",
@@ -240,8 +244,6 @@ export default {
     churnTip: "+{{added}} / -{{removed}} across {{files}}, against {{base}}",
     churnTipUntracked: "{{count}} of them new (line counts estimated)",
     prOpenOn: "Open {{id}} on {{forge}}",
-    prChecksFailing: "checks failing",
-    prChecksPending: "checks running",
     memberMore: "+{{count}} more",
   },
   activity: {

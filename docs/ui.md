@@ -1519,3 +1519,24 @@ reports this" and "not supported yet" only mean something next to each other,
 and it is a decision made once, not a per-agent preference. And the link out of
 Notifications does not gate on which agents are supported; the table is the
 authority on that.
+## Delivery workflow
+
+The right panel's Delivery tab lists every recorded checkout and separates PR,
+CI, and review state from agent activity. Provider details and failed-job log
+excerpts load on demand. Select repositories and evidence, then review the exact
+agent, checkout paths, branches, and revisions before sending or queuing. A
+changed destination stops the handoff. Evidence is untrusted data; the prompt
+does not authorize commits, pushes, posting replies, or merging.
+
+Reply drafts require Save locally or Post this reply. Saved drafts survive
+restarts; unsaved edits survive tab navigation within the session. Uncertain
+posting outcomes use readback rather than automatic retries. A missing reply
+requires a separate explicit retry, with fresh readback before posting again. Drafting PR text
+does not create PRs. Bulk creation defaults to draft PRs, reuses open PRs, and
+shows each repository's result. Branch updates show autostash behavior and retain
+conflict results for manual or reviewed agent resolution.
+
+The Board's persistent Needs action toggle filters delivery blockers without
+moving cards between agent-activity columns. Compact links open Delivery.
+Multi-repository auto-archive accounts for every checkout rather than relying
+on the host PR merge alone. The existing opt-in comment watcher stays separate.

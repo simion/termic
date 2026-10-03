@@ -1183,6 +1183,9 @@ describe("pending work defers done", () => {
     await waitForAppShell();
     await requireTermicApi();
     await requireWorkBadges();
+    // A previously interrupted ceiling test can leave its 8s override behind.
+    // This case exercises the normal hold, so establish the default before spawn.
+    await browser.execute(() => localStorage.removeItem("workDoneCeilingMs"));
     taskId = await openTask("e2e-pending-work");
     await waitForAgentReady(taskId);
 

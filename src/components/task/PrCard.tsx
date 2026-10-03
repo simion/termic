@@ -38,14 +38,14 @@ const PROBE_MS = 5 * 60_000;
 // exact purples/greens are intentional one-offs - PR state colors are a
 // cross-tool convention users already know, not theme accents. Labels are
 // i18n keys (pr subtree), resolved at render.
-const STATE: Record<PrStatus["state"], { labelKey: string; color: string; Icon: typeof GitPullRequest }> = {
+export const PR_STATE: Record<PrStatus["state"], { labelKey: string; color: string; Icon: typeof GitPullRequest }> = {
   open:   { labelKey: "pr.stateOpen",   color: "#3fb950", Icon: GitPullRequest },
   draft:  { labelKey: "pr.stateDraft",  color: "var(--color-fg-faint)", Icon: GitPullRequestDraft },
   merged: { labelKey: "pr.stateMerged", color: "#a371f7", Icon: GitMerge },
   closed: { labelKey: "pr.stateClosed", color: "var(--color-err)", Icon: GitPullRequestClosed },
 };
 
-function ChecksChip({ checks }: { checks: PrStatus["checks"] }) {
+export function ChecksChip({ checks }: { checks: PrStatus["checks"] }) {
   const { t } = useTranslation("panels");
   if (checks === "none") return null;
   // "pending" gets ui/Spinner, not a rotated CircleCheck-shaped icon - see
@@ -83,7 +83,7 @@ function ChecksChip({ checks }: { checks: PrStatus["checks"] }) {
   );
 }
 
-function ReviewChip({ review }: { review: PrStatus["review"] }) {
+export function ReviewChip({ review }: { review: PrStatus["review"] }) {
   const { t } = useTranslation("panels");
   if (review === "none") return null;
   const map = {
@@ -243,7 +243,7 @@ export function PrCard({ task }: { task: Task }) {
 
   // ── the PR card proper ──
   const pr = lookup.pr;
-  const { labelKey, color, Icon } = STATE[pr.state];
+  const { labelKey, color, Icon } = PR_STATE[pr.state];
   const label = t(labelKey);
   const numberLabel = prRef(pr.provider, pr.number);
   // Two rows on purpose. The right panel is narrow, and one row of
@@ -407,7 +407,7 @@ export function MemberPrRows({ task }: { task: Task }) {
 function MemberPrRow({ m }: { m: MemberPrLookup }) {
   const { t } = useTranslation("panels");
   const pr = m.pr;
-  const st = pr ? STATE[pr.state] : null;
+  const st = pr ? PR_STATE[pr.state] : null;
   return (
     <div className="flex items-center gap-2 py-0.5" data-testid="member-pr-row">
       <span className="min-w-0 flex-1 truncate text-[12px] leading-none text-[var(--color-fg-dim)]">

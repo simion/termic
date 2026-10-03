@@ -327,6 +327,8 @@ interface UIState {
    *  twice must reveal it twice, and a plain `{taskId, sha}` compares equal the
    *  second time and does nothing. Deliberately not named `open*`: it is not a
    *  dialog, and CommandPalette.coverage.test.ts polices that prefix. */
+  deliveryReveal: string | null;
+  revealDelivery: (taskId: string) => void;
   commitReveal: { taskId: string; sha: string; at: number } | null;
   revealCommitInHistory: (taskId: string, sha: string) => void;
   /** Consume the request. MUST be called once it has been honoured: a reveal
@@ -557,6 +559,8 @@ export const useUI = create<UIState>(set => ({
   openRaceCompare:   (raceId) => set({ raceCompareId: raceId }),
   closeRaceCompare:  () => set({ raceCompareId: null }),
   openSandbox:       (taskId) => set({ sandboxForTaskId: taskId }),
+  deliveryReveal: null,
+  revealDelivery: taskId => set({ deliveryReveal: taskId }),
   commitReveal: null,
   revealCommitInHistory: (taskId, sha) =>
     // Un-hiding the right panel is RightPanel's job, not this store's: app.ts

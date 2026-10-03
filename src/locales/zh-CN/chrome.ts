@@ -215,6 +215,10 @@ export default {
     confirmMessageManyProject: "将永久删除 {{project}} 中 {{count}} 个已归档任务，且无法撤销。",
   },
   board: {
+    unavailable: "不可用",
+    noAction: "没有需要处理的任务",
+    delivery: "交付",
+    needsAction: "需要处理",
     colBacklog: "未开始",
     colAttention: "需要注意",
     colWorking: "进行中",
@@ -240,8 +244,6 @@ export default {
     churnTip: "相对 {{base}}：+{{added}} / -{{removed}}，共 {{files}}",
     churnTipUntracked: "其中 {{count}} 个是新文件（行数为估算）",
     prOpenOn: "在 {{forge}} 上打开 {{id}}",
-    prChecksFailing: "检查失败",
-    prChecksPending: "检查进行中",
     memberMore: "+{{count}} 个",
   },
   activity: {

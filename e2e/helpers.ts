@@ -71,6 +71,7 @@ export interface TermicApi {
   useRace: { getState: () => any };
   /** PR/MR store (src/store/pr.ts). Specs seed `byTask` directly to render
    *  card states without a real forge/network. */
+  useDelivery: { getState: () => any; setState: (p: any) => void };
   usePr: { getState: () => any; setState: (p: any) => void };
   /** Per-task change summaries (src/store/diffStat.ts). Demand-driven with a
    *  staleness floor, so a spec that changes a worktree calls `invalidate`
@@ -303,7 +304,7 @@ export async function waitForAppShell(timeout = 30_000): Promise<void> {
  * clickable element with text: Git" whenever an earlier spec left a file
  * behind, and passed when git.e2e ran alone.
  */
-export async function openRightTab(label: "All files" | "Git"): Promise<void> {
+export async function openRightTab(label: "All files" | "Git" | "Delivery"): Promise<void> {
   await browser.execute((l) => {
     const el = document.querySelector(
       `[data-testid="right-tab"][data-tab="${l}"]`,
