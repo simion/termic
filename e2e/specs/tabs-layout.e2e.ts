@@ -1354,6 +1354,117 @@ describe("tab context menu", () => {
   });
 });
 
+// Middle-click closes a tab, the way VS Code and every browser do (#369).
+// Dispatched rather than gestured, like the context menu above: the events go
+// through the real pill, so the handler itself is what gets exercised.
+describe("tab middle-click", () => {
+  let taskId!: string;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  const strip = () =>
+    browser.execute(
+      (id) =>
+        (window.__termic!.useApp.getState().tabs[id] ?? [])
+          .filter((t: any) => !t.paneId)
+          .map((t: any) => t.id as string),
+      taskId,
+    );
+
+  // Shell tabs so a close is silent: an agent tab would raise a confirm.
+  const addShell = (tabId: string) =>
+    browser.execute(
+      (id, t) => {
+        window.__termic!.useApp.getState().addTab(id, { id: t, type: "terminal", cli: "shell", title: t } as any);
+      },
+      taskId, tabId,
+    );
+
+  /** Fire the mousedown → mouseup → auxclick sequence a real non-primary
+   *  click produces. Returns whether the mousedown's default was prevented. */
+  const auxClick = (tabId: string, button: number) =>
+    browser.execute((id, b) => {
+      const el = document.querySelector(`[data-tab-id="${id}"]`) as HTMLElement;
+      if (!el) throw new Error(`no tab pill ${id}`);
+      const r = el.getBoundingClientRect();
+      const opts = {
+        bubbles: true, cancelable: true, button: b, buttons: b === 1 ? 4 : 2,
+        clientX: r.left + 10, clientY: r.top + 10,
+      };
+      const down = new MouseEvent("mousedown", opts);
+      el.dispatchEvent(down);
+      el.dispatchEvent(new MouseEvent("mouseup", { ...opts, buttons: 0 }));
+      el.dispatchEvent(new MouseEvent("auxclick", { ...opts, buttons: 0 }));
+      return down.defaultPrevented;
+    }, tabId, button);
+
+  it("closes an unpinned tab and swallows the middle mousedown", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-midclick");
+    await browser.waitUntil(async () => (await strip()).length === 1, {
+      timeout: 20_000, timeoutMsg: "agent tab never appeared",
+    });
+    await ensureActiveTask(taskId);
+    await dismissOverlays();
+
+    const [agent] = await strip();
+    await addShell("e2e-mid-a");
+    await addShell("e2e-mid-b");
+    await browser.waitUntil(async () => (await strip()).length === 3, {
+      timeout: 8_000, timeoutMsg: "shell tabs never rendered",
+    });
+
+    // The default is prevented so Linux does not paste PRIMARY and
+    // autoscroll never arms.
+    expect(await auxClick("e2e-mid-a", 1)).toBe(true);
+    await browser.waitUntil(async () => (await strip()).length === 2, {
+      timeout: 8_000, timeoutMsg: "middle-click never closed the tab",
+    });
+    expect(await strip()).toEqual([agent, "e2e-mid-b"]);
+  });
+
+  it("closes an inactive tab without selecting it first", async () => {
+    const [agent, shell] = await strip();
+    await browser.execute((id, t) => window.__termic!.useApp.getState().setActiveTabId(id, t), taskId, agent);
+    await auxClick(shell, 1);
+    await browser.waitUntil(async () => (await strip()).length === 1, {
+      timeout: 8_000, timeoutMsg: "middle-click never closed the inactive tab",
+    });
+    const active = await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId);
+    expect(active).toBe(agent);
+  });
+
+  it("leaves a pinned tab alone", async () => {
+    await addShell("e2e-mid-pin");
+    await browser.waitUntil(async () => (await strip()).length === 2, {
+      timeout: 8_000, timeoutMsg: "shell tab never rendered",
+    });
+    await browser.execute((id) => window.__termic!.useApp.getState().pinTab(id, "e2e-mid-pin"), taskId);
+    await browser.waitUntil(
+      () => browser.execute(() => !!document.querySelector('[data-tab-id="e2e-mid-pin"][data-pinned]')),
+      { timeout: 5_000, timeoutMsg: "the tab never pinned" },
+    );
+    await auxClick("e2e-mid-pin", 1);
+    // Nothing to wait FOR on a no-op, so give a close every chance to land.
+    await browser.pause(500);
+    expect(await strip()).toContain("e2e-mid-pin");
+  });
+
+  it("ignores a right-button auxclick", async () => {
+    await browser.execute((id) => window.__termic!.useApp.getState().unpinTab(id, "e2e-mid-pin"), taskId);
+    await browser.waitUntil(
+      () => browser.execute(() => !document.querySelector('[data-tab-id="e2e-mid-pin"][data-pinned]')),
+      { timeout: 5_000, timeoutMsg: "the tab never unpinned" },
+    );
+    expect(await auxClick("e2e-mid-pin", 2)).toBe(false);
+    await browser.keys(["Escape"]); // the right mousedown may open the context menu
+    await browser.pause(500);
+    expect(await strip()).toContain("e2e-mid-pin");
+  });
+});
+
 // The reason pinning exists (GH #183): a pinned tab must stay in reach when the
 // strip overflows. Reordering it to the head is not enough on its own — it has
 // to sit OUTSIDE the scroller, so this drives the strip to a real overflow and

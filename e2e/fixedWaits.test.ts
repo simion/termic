@@ -52,9 +52,10 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "the page, so the next case has to start past it",
   },
   "tabs-layout.e2e.ts": {
-    count: 2,
+    count: 4,
     why: "Ctrl-Tab is asynchronous, so 'the task did not switch' has to be asserted "
-      + "after a settle or it passes against the bug too",
+      + "after a settle or it passes against the bug too; likewise the two "
+      + "middle-click negatives (pinned tab, right button) that must NOT close",
   },
   "task.e2e.ts": {
     count: 1,

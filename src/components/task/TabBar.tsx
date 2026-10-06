@@ -430,6 +430,17 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
       // inline input handles text selection / caret normally).
       onPointerDown={(e) => { if (!isRenaming) onStartDrag(e); }}
       onClick={() => { if (!isRenaming) onSelect(); }}
+      // Middle-click closes, like VS Code and browsers (issue #369). The
+      // mousedown default is swallowed so Linux does not paste the PRIMARY
+      // selection into whatever has focus and autoscroll never arms. A
+      // pinned tab ignores it for the same reason it has no close ×.
+      onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+      onAuxClick={(e) => {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!isRenaming && !tab.pinned) onClose();
+      }}
       onDoubleClick={(e) => {
         e.stopPropagation();
         if (tab.preview) {
