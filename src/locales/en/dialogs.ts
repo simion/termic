@@ -96,6 +96,8 @@ export default {
       splitDown: "Split pane down",
       setSyntax: "Set syntax…",
       toggleInlineBlame: "Toggle inline git blame",
+      filterSidebar: "Filter sidebar tasks",
+      clearSidebarFilter: "Clear sidebar filter",
       toggleWordWrap: "Toggle word wrap",
       changeTheme: "Change theme…",
       keyboardShortcuts: "Keyboard shortcuts",

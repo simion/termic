@@ -40,18 +40,9 @@ import { useDiffStat } from "@/store/diffStat";
 import { prBadgeAppearance } from "@/lib/prBadgeAppearance";
 import { openPath } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
-import { createBoardFilterFactsSelector, EMPTY_BOARD_FILTER_FACTS, type BoardFilterFacts } from "@/store/sidebarTabs";
-import { BoardFilterBar, type FilterFacetOption, type FilterFacetSection } from "@/components/views/BoardFilterBar";
-import {
-  boardQueryUses,
-  boardTaskMatches,
-  isBoardQueryActive,
-  parseBoardQuery,
-  setBoardClause,
-  toggleBoardClause,
-  type BoardMatchCtx,
-  type BoardQualifier,
-} from "@/lib/boardFilter";
+import { BoardFilterBar } from "@/components/views/BoardFilterBar";
+import { COL_ACCENT, COL_LABEL, useBoardColumnMap, useTaskQuery } from "@/hooks/useTaskQuery";
+import { toggleBoardClause, type BoardQualifier } from "@/lib/boardFilter";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
@@ -67,14 +58,10 @@ import {
   mergeReorderedGroup,
   recentArchived,
   resolveBoardArchiveLimit,
-  taskBoardColumn,
   type BoardColumn,
   type BoardStateColumn,
 } from "@/lib/taskBoardState";
-import { selectBoardColumnKey } from "@/lib/boardColumnKey";
 import { agentDisplayName, isTerminalCli } from "@/lib/agents";
-import { groupOf } from "@/lib/projectGroups";
-import { accentCss } from "@/lib/accents";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import { taskReorder } from "@/lib/ipc";
 import { forgeName } from "@/lib/forge";
@@ -146,41 +133,6 @@ const REORDER_TARGET: DragTarget = { kind: "reorder" };
  *  title would otherwise widen its own column past the rest. */
 const COLUMN_SIZE = "min-w-[280px] max-w-[520px] flex-[1_0_280px] [contain:inline-size]";
 
-const COL_LABEL: Record<BoardStateColumn, string> = {
-  backlog: "board.colBacklog",
-  attention: "board.colAttention",
-  working: "board.colWorking",
-  review: "board.colReview",
-  settled: "board.colSettled",
-};
-
-/** The dot / card-edge colour each column wears, all @theme tokens: warn is
- *  the attention bell's colour, accent marks the actively-working agent,
- *  pr-open is the green PR glyph, info is the settled bullet, and backlog is
- *  deliberately neutral (nothing has happened there yet). A card's left edge
- *  repeats its column's colour so the stack scans without reading the
- *  headers. */
-const COL_ACCENT: Record<BoardStateColumn, string> = {
-  backlog: "var(--color-fg-faint)",
-  attention: "var(--color-warn)",
-  working: "var(--color-accent)",
-  review: "var(--color-pr-open)",
-  settled: "var(--color-info)",
-};
-
-/** How often a `has:changes` query asks for its hidden tasks' diffstats.
- *  Each tick measures up to MAX_PER_FLUSH stale ones (DIFF_STALE_MS), so a
- *  big board cycles through in a few ticks and then idles on no-ops. */
-const CHANGES_POLL_MS = 2_000;
-
-/** The facts selector a query without free text holds instead: a constant,
- *  so an unfiltered board subscribes to nothing new. */
-const selectNoFilterFacts = (): BoardFilterFacts => EMPTY_BOARD_FILTER_FACTS;
-
-/** The menu's sections while it is closed: a constant, so the memoized bar
- *  sees no new prop while the board re-renders under a drag. */
-const NO_SECTIONS: FilterFacetSection[] = [];
-
 /** Click-to-filter callback: toggles `key:value` in the query text. */
 type OnFilter = (key: BoardQualifier, value: string) => void;
 
@@ -197,7 +149,6 @@ export function BoardView() {
   const tasks       = useApp(s => s.tasks);
   const projects    = useApp(s => s.projects);
   const agents      = useApp(s => s.agents);
-  const groupColors = useApp(s => s.groupColors);
   const setView     = useApp(s => s.setView);
   const settledHighlight  = usePrefs(s => s.settledHighlight);
   const workingIndicator  = usePrefs(s => s.workingIndicator);
@@ -216,61 +167,24 @@ export function BoardView() {
     [settledHighlight, workingIndicator, attentionIndicator],
   );
 
-  // The filter bar (docs/ui.md "Kanban view" > Filtering). Parsed once per
-  // query change; everything below that reads it is a no-op while inactive.
+  // The filter bar (docs/ui.md "Kanban view" > Filtering). The query
+  // engine is useTaskQuery, shared with the sidebar's bar; it is called
+  // below, once the task lists it matches over exist.
   const boardQuery = useUI(s => s.boardQuery);
-  const query = useMemo(() => parseBoardQuery(boardQuery), [boardQuery]);
-  const filtering = isBoardQueryActive(query);
-  // The funnel menu counts every facet, `checks:` and `has:changes`
-  // included, so while it is open the board holds the same subscriptions a
-  // query using them would. Closed, it costs nothing.
+  const setBoardQuery = useUI(s => s.setBoardQuery);
   const [menuOpen, setMenuOpen] = useState(false);
-  const usesChecks = menuOpen || boardQueryUses(query, "checks");
-  const usesChanges = menuOpen || boardQueryUses(query, "has", "changes") || boardQueryUses(query, "no", "changes");
 
-  // Re-render trigger for PR polls. The pr store lives outside useApp
-  // precisely so its 60s tick re-renders nobody by default; the board opts
-  // back in because an open -> merged transition moves a card.
-  // selectBoardColumnKey reads the snapshot, and useSyncExternalStore
-  // re-reads it during the render this triggers. The value itself is only a
-  // memo dep for the filter's non-reactive pr read. `checks:` folds the check
-  // state in, and only while the query reads it: otherwise every check tick
-  // of every PR would re-render the whole board for nothing it draws.
-  const prKey = usePr(s => Object.values(s.byTask)
-    .map(e => `${e.lookup?.pr?.state ?? "?"}${usesChecks ? e.lookup?.pr?.checks ?? "" : ""}`)
-    .join("|"));
-  // Same trick for `has:changes`: a re-render trigger keyed on "has changes"
-  // per task, read from the diffStat store, held only while the query asks.
-  const changesKey = useDiffStat(s => usesChanges
-    ? Object.entries(s.byTask).map(([id, e]) => `${id}:${e.stat ? e.stat.files_changed > 0 : "?"}`).join("|")
-    : "");
-  // Free text reads tab titles and property values; the facts record keeps
-  // its identity while agents stream (bear trap 5). A query with no free
-  // text holds a constant instead, so it subscribes to nothing.
-  const [selectFilterFacts] = useState(createBoardFilterFactsSelector);
-  const filterFacts = useApp(query.terms.length > 0 ? selectFilterFacts : selectNoFilterFacts);
+  // Re-render trigger for PR polls, nothing more. The pr store lives outside
+  // useApp precisely so its 60s tick re-renders nobody by default; the board
+  // opts back in because an open -> merged transition moves a card. The
+  // value itself is unused: selectBoardColumnKey reads the snapshot, and
+  // useSyncExternalStore re-reads it during the render this triggers.
+  usePr(s => Object.values(s.byTask).map(e => e.lookup?.pr?.state ?? "?").join("|"));
 
-  const columnKey = useApp(selectBoardColumnKey(workPrefs));
-  const columnOf = useMemo(() => {
-    const pr = usePr.getState().byTask;
-    const tabs = useApp.getState().tabs;
-    const map = new Map<string, BoardColumn>();
-    for (const w of tasks) {
-      map.set(w.id, taskBoardColumn(w, tabs[w.id] ?? EMPTY_TABS, pr[w.id]?.lookup ?? null, workPrefs));
-    }
-    return map;
-    // columnKey folds in every tab/PR/archive change that can move a card;
-    // `tasks` identity covers adds, removes and reorders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, columnKey, settledHighlight, workingIndicator, attentionIndicator]);
+  const columnOf = useBoardColumnMap(tasks, workPrefs, true);
 
   const projectOrder = useMemo(() => projects.map(p => p.id), [projects]);
   const projectById = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
-  const projectAccent = useCallback((p: Project | undefined): string | undefined => {
-    const g = p ? groupOf(p) : null;
-    return g ? accentCss(groupColors[g]) : undefined;
-  }, [groupColors]);
-
   // A task whose project is not in this profile's list is skipped, exactly as
   // every other surface skips it: the sidebar renders tasks BY WALKING
   // PROJECTS, so such a task is invisible there, while the board enumerates
@@ -292,46 +206,15 @@ export function BoardView() {
   // never reflows the board and a lane divider survives its own filter.
   // Archived filters too, BEFORE the cap, so a search can surface an old
   // archived task the cap would otherwise hide.
-  const matchCtx = useCallback((w: Task): BoardMatchCtx => {
-    const stat = useDiffStat.getState().byTask[w.id]?.stat;
-    return {
-      project: projectById.get(w.project_id),
-      column: columnOf.get(w.id),
-      pr: usePr.getState().byTask[w.id]?.lookup ?? null,
-      changed: stat ? stat.files_changed > 0 : null,
-      facts: filterFacts[w.id],
-      agents,
-    };
-    // prKey / changesKey are the re-run triggers for the non-reactive pr and
-    // diffStat reads above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectById, columnOf, filterFacts, agents, prKey, changesKey]);
-  const matchesQuery = useCallback(
-    (w: Task): boolean => boardTaskMatches(w, matchCtx(w), query),
-    [matchCtx, query],
-  );
+  const { query, filtering, matches: matchesQuery, sections: filterSections, valuesFor, projectAccent } = useTaskQuery({
+    text: boardQuery, menuOpen, live: allLiveTasks, archived: allArchived, columnOf,
+  });
   // useSameItems: a keystroke that matches the same cards keeps the same
   // array, so the memoized columns below skip the render.
   const liveTasks = useSameItems(useMemo(
     () => (filtering ? allLiveTasks.filter(matchesQuery) : allLiveTasks),
     [filtering, allLiveTasks, matchesQuery],
   ));
-  // `has:changes` on a card the board never drew: cards ask for their own
-  // diffstat when they mount, so a task filtered out from the start would
-  // stay unmeasured (or, measured once, go stale) and never match. Ask for
-  // all of them while the query (or the menu's count) reads it, on a tick:
-  // `requestMany` measures at most MAX_PER_FLUSH stale tasks per call, oldest
-  // first, so one call on mount left everything past the first batch
-  // unmeasured. A fresh task is a no-op, and the timer only exists while
-  // a `has:`/`no:changes` clause or the menu does.
-  useEffect(() => {
-    if (!usesChanges) return;
-    const ids = allLiveTasks.map(w => w.id);
-    const ask = () => useDiffStat.getState().requestMany(ids);
-    ask();
-    const timer = setInterval(ask, CHANGES_POLL_MS);
-    return () => clearInterval(timer);
-  }, [usesChanges, allLiveTasks]);
   // Lanes come from the profile's live tasks, not `tasks`: a lane kept alive
   // only by a task whose project left the profile (the `known` filter, the
   // same invisibility every other surface applies) once forced agent
@@ -393,112 +276,6 @@ export function BoardView() {
     },
     [],
   );
-  // Autocomplete values for the keys with open-ended values, from what is
-  // on the board right now (a project with no tasks is not a useful pick).
-  const valuesFor = useCallback((key: BoardQualifier): readonly string[] => {
-    const known = [...allLiveTasks, ...allArchived];
-    switch (key) {
-      case "project": return [...new Set(known.flatMap(w => [
-        projectById.get(w.project_id)?.name ?? "",
-        ...(w.composition ?? []).map(m => m.dir_name),
-      ]).filter(Boolean))];
-      case "group": return [...new Set(known.map(w => {
-        const p = projectById.get(w.project_id);
-        return p ? groupOf(p) : "";
-      }).filter(Boolean))];
-      case "agent": return [...new Set(known.map(w => w.cli))];
-      case "branch": return [...new Set(allLiveTasks.map(w => w.branch).filter(Boolean))];
-      case "base": return [...new Set(known.map(w => w.base_branch).filter(Boolean))];
-      default: return [];
-    }
-  }, [allLiveTasks, allArchived, projectById]);
-
-  // The filter menu's chips, built only while the menu is open. Each count
-  // is the current query with that chip INCLUDED (`setBoardClause`, the
-  // edit the click makes), run through the real matcher, so an off chip
-  // reads exactly what clicking it leaves and an included one reads what
-  // the board shows. O(chips x cards), never while closed.
-  const filterSections = useMemo((): FilterFacetSection[] => {
-    if (!menuOpen) return NO_SECTIONS;
-    const all = [...allLiveTasks, ...allArchived];
-    const ctxs = new Map(all.map(w => [w.id, matchCtx(w)]));
-    const count = (key: BoardQualifier, value: string) => {
-      const q = parseBoardQuery(setBoardClause(boardQuery, key, value, "include"));
-      let n = 0;
-      for (const w of all) if (boardTaskMatches(w, ctxs.get(w.id)!, q)) n++;
-      return n;
-    };
-    const opt = (key: BoardQualifier, value: string, label: string, extra: Partial<FilterFacetOption> = {}): FilterFacetOption =>
-      ({ key, value, label, count: count(key, value), ...extra });
-
-    const projectByName = new Map<string, Project>();
-    for (const p of projects) if (!projectByName.has(p.name)) projectByName.set(p.name, p);
-    const statusCols = [...BOARD_STATE_COLUMNS, "archived"] as const;
-    const projectNames = valuesFor("project");
-    const groups = valuesFor("group");
-    const prStates = ["open", "draft", "merged", "closed"] as const;
-    return [
-      {
-        id: "status",
-        title: t("board.filterSecStatus"),
-        options: statusCols.map(c => opt("status", c, t(c === "archived" ? "board.colArchived" : COL_LABEL[c]), {
-          swatch: c === "archived" ? "var(--color-fg-faint)" : COL_ACCENT[c],
-        })),
-      },
-      {
-        id: "project",
-        title: t("board.filterSecProject"),
-        options: projectNames.map(name => {
-          // First project of that name: `project:` is name-based, so two
-          // same-named projects are one chip (docs/ui.md).
-          const p = projectByName.get(name);
-          return opt("project", name, name, { swatch: projectAccent(p) ?? "var(--color-fg-faint)" });
-        }),
-      },
-      { id: "group", title: t("board.filterSecGroup"), options: groups.map(g => opt("group", g, g)) },
-      {
-        id: "agent",
-        title: t("board.filterSecAgent"),
-        options: valuesFor("agent").map(cli => opt("agent", cli, agentDisplayName(cli, agents), {
-          icon: (
-            <span className={cn(CLI_BRAND_COLOR[resolveIconId(cli, agents)] || "text-[var(--color-fg-faint)]")}>
-              <CliIcon cli={resolveIconId(cli, agents)} className="h-3 w-3" />
-            </span>
-          ),
-        })),
-      },
-      {
-        id: "pr",
-        title: t("board.filterSecPr"),
-        options: [
-          ...prStates.map(st => opt("pr", st, t(`board.filterPr_${st}`), { swatch: prBadgeAppearance(st, null).color })),
-          opt("pr", "none", t("board.filterPr_none")),
-        ],
-      },
-      {
-        id: "checks",
-        title: t("board.filterSecChecks"),
-        options: [
-          opt("checks", "passing", t("board.filterChecks_passing"), { swatch: "var(--color-ok)" }),
-          opt("checks", "failing", t("board.filterChecks_failing"), { swatch: "var(--color-err)" }),
-          opt("checks", "pending", t("board.filterChecks_pending"), { swatch: "var(--color-warn)" }),
-        ],
-      },
-      {
-        id: "flags",
-        title: t("board.filterSecFlags"),
-        options: [
-          opt("has", "changes", t("board.filterFlag_changes")),
-          opt("is", "worktree", t("board.filterFlag_worktree")),
-          opt("is", "main", t("board.filterFlag_main")),
-          opt("is", "multi", t("board.filterFlag_multi")),
-          opt("is", "sandboxed", t("board.filterFlag_sandboxed")),
-          opt("is", "docker", t("board.filterFlag_docker")),
-          opt("is", "yolo", t("board.filterFlag_yolo")),
-        ],
-      },
-    ];
-  }, [menuOpen, boardQuery, allLiveTasks, allArchived, matchCtx, valuesFor, projects, projectAccent, agents, t]);
 
   // ── Drag: reorder within a same-project group, or drop-to-archive ─────
   //
@@ -735,6 +512,8 @@ export function BoardView() {
       ) : (
         <>
         <BoardFilterBar
+          text={boardQuery}
+          onTextChange={setBoardQuery}
           shown={liveTasks.length + archivedAll.length}
           total={allLiveTasks.length + allArchived.length}
           unknownKeys={query.unknownKeys}

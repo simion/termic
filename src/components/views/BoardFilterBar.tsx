@@ -1,7 +1,9 @@
-// The Kanban filter bar (docs/ui.md "Kanban view" > Filtering): one input
+// The task filter bar (docs/ui.md "Kanban view" > Filtering): one input
 // holding a GitHub Projects style query, parsed and matched in
-// src/lib/boardFilter.ts. The text lives in the ui store so it survives the
-// board unmounting; this component only edits it and offers completions.
+// src/lib/boardFilter.ts. Two surfaces draw it, the board and the top of
+// the sidebar (`variant`), each with its own query text in the ui store; this
+// component only edits that text and offers completions. One component, so
+// the two bars cannot come to look or behave differently.
 //
 // The funnel icon opens the filter MENU: every facet the query language
 // knows, as chips with counts. A chip click edits the query text
@@ -11,8 +13,8 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ListFilter, Minus, X } from "lucide-react";
-import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { bindingMatches, type Binding } from "@/lib/shortcuts";
 import { PopoverContent, PopoverRoot, PopoverTrigger } from "@/components/ui/Popover";
@@ -56,10 +58,15 @@ export interface FilterFacetSection {
 /** Memoized: BoardView re-renders per pointermove during a drag, and every
  *  prop here is identity-stable across one (`sections` is a constant while
  *  the menu is closed). */
-export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unknownKeys, valuesFor, sections, menuOpen, onMenuOpenChange }: {
-  /** Cards the query lets through, Archived included. */
+export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange: setText, variant = "board", shown, total, unknownKeys, valuesFor, sections, menuOpen, onMenuOpenChange }: {
+  text: string;
+  onTextChange: (q: string) => void;
+  /** The sidebar's bar stacks its count under the input, opens the menu to
+   *  the right, and takes no `/` or ⌘F: those stay the board's. */
+  variant?: "board" | "sidebar";
+  /** Tasks the query lets through (the board counts Archived). */
   shown: number;
-  /** Cards on the board with no query. */
+  /** Tasks listed with no query. */
   total: number;
   unknownKeys: readonly string[];
   /** Live values for the free-valued keys (project names, agents, ...). */
@@ -71,9 +78,17 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
   onMenuOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation("chrome");
-  const text = useUI(s => s.boardQuery);
-  const setText = useUI(s => s.setBoardQuery);
+  const sidebar = variant === "sidebar";
+  const tid = sidebar ? "sidebar-filter" : "board-filter";
   const inputRef = useRef<HTMLInputElement>(null);
+  // The palette's "Filter sidebar tasks" (useUI.focusSidebarFilter).
+  const focusPending = useUI(s => sidebar && s.sidebarFilterFocusPending);
+  useEffect(() => {
+    if (!focusPending) return;
+    useUI.getState().consumeSidebarFilterFocus();
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [focusPending]);
   // Completions show while typing; Esc or a pick closes them until the next
   // keystroke reopens them.
   const [suggestOpen, setSuggestOpen] = useState(false);
@@ -95,6 +110,8 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
   // capture-phase stopPropagation below would otherwise swallow it before
   // useShortcuts' bubble listener ever ran.
   useEffect(() => {
+    // Both bars are mounted while the board is up; only the board's binds keys.
+    if (sidebar) return;
     const onKey = (e: KeyboardEvent) => {
       const slash = e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey;
       const find = bindingMatches(e, FIND_BINDING)
@@ -110,7 +127,7 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, []);
+  }, [sidebar]);
 
   const pick = (next: string) => {
     setText(next);
@@ -125,9 +142,18 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
   // should not claim otherwise.
   const active = useMemo(() => isBoardQueryActive(parseBoardQuery(text)), [text]);
   return (
-    <div className="flex shrink-0 items-center gap-2 px-3 pt-3" data-testid="board-filter">
+    <div
+      className={sidebar ? "flex shrink-0 flex-col gap-0.5 px-2 pt-2" : "flex shrink-0 items-center gap-2 px-3 pt-3"}
+      data-testid={tid}
+      data-no-drag
+    >
       <div className="relative flex min-w-0 flex-1 items-center">
         <BoardFilterMenu
+          text={text}
+          setText={setText}
+          tid={tid}
+          side={sidebar ? "right" : "bottom"}
+          focusHint={!sidebar}
           sections={sections}
           open={menuOpen}
           onOpenChange={onMenuOpenChange}
@@ -138,14 +164,14 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
           // (the sidebar filter) leaves focus where that click put it.
           onClosed={() => {
             const el = document.activeElement;
-            if (!el || el === document.body || el.closest('[data-testid="board-filter"]')) inputRef.current?.focus();
+            if (!el || el === document.body || el.closest(`[data-testid="${tid}"]`)) inputRef.current?.focus();
           }}
         />
         <input
           ref={inputRef}
           value={text}
-          placeholder={t("board.filterPlaceholder")}
-          data-testid="board-filter-input"
+          placeholder={t(sidebar ? "sidebar:filterBar.placeholder" : "board.filterPlaceholder")}
+          data-testid={`${tid}-input`}
           onChange={e => { setText(e.target.value); setSel(0); setSuggestOpen(true); }}
           onBlur={() => setSuggestOpen(false)}
           onKeyDown={e => {
@@ -188,7 +214,7 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
           <button
             type="button"
             aria-label={t("board.filterClear")}
-            data-testid="board-filter-clear"
+            data-testid={`${tid}-clear`}
             onMouseDown={e => e.preventDefault()}
             onClick={() => setText("")}
             className="absolute right-1 rounded p-0.5 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"
@@ -197,8 +223,10 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
         {suggestions.length > 0 && (
           <div
             role="listbox"
-            data-testid="board-filter-suggestions"
-            className="absolute left-0 top-full z-40 mt-1 w-[260px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] py-1 shadow-lg"
+            data-testid={`${tid}-suggestions`}
+            // The sidebar clips at its edge, so its list is the input's width.
+            className={cn("absolute left-0 top-full z-40 mt-1 overflow-hidden", sidebar ? "w-full" : "w-[260px]",
+              "rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] py-1 shadow-lg")}
           >
             {suggestions.map((s, i) => (
               <div
@@ -220,22 +248,47 @@ export const BoardFilterBar = memo(function BoardFilterBar({ shown, total, unkno
           </div>
         )}
       </div>
-      {active && (
-        <span data-testid="board-filter-count" className="shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
-          {t("board.filterCount", { shown, total })}
-        </span>
-      )}
-      {unknownKeys.length > 0 && (
-        <span data-testid="board-filter-unknown" className="min-w-0 truncate text-[11.5px] text-[var(--color-warn)]">
-          {t("board.filterUnknown", { keys: unknownKeys.map(k => `${k}:`).join(", ") })}
-        </span>
+      {sidebar ? (
+        (active || unknownKeys.length > 0) && (
+          <div className="flex min-w-0 items-center gap-2 px-1">
+            {active && (
+              <span data-testid={`${tid}-count`} className="shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
+                {t("sidebar:filterBar.count", { shown, total })}
+              </span>
+            )}
+            {unknownKeys.length > 0 && (
+              <span data-testid={`${tid}-unknown`} className="min-w-0 truncate text-[11.5px] text-[var(--color-warn)]">
+                {t("board.filterUnknown", { keys: unknownKeys.map(k => `${k}:`).join(", ") })}
+              </span>
+            )}
+          </div>
+        )
+      ) : (
+        <>
+          {active && (
+            <span data-testid={`${tid}-count`} className="shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
+              {t("board.filterCount", { shown, total })}
+            </span>
+          )}
+          {unknownKeys.length > 0 && (
+            <span data-testid={`${tid}-unknown`} className="min-w-0 truncate text-[11.5px] text-[var(--color-warn)]">
+              {t("board.filterUnknown", { keys: unknownKeys.map(k => `${k}:`).join(", ") })}
+            </span>
+          )}
+        </>
       )}
     </div>
   );
 });
 
 /** The funnel button and its menu. */
-function BoardFilterMenu({ sections, open, onOpenChange, active, onClosed }: {
+function BoardFilterMenu({ text, setText, tid, side, focusHint, sections, open, onOpenChange, active, onClosed }: {
+  text: string;
+  setText: (q: string) => void;
+  tid: string;
+  side: "bottom" | "right";
+  /** The `/` hint: only the board's bar answers it. */
+  focusHint: boolean;
   sections: FilterFacetSection[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -243,8 +296,6 @@ function BoardFilterMenu({ sections, open, onOpenChange, active, onClosed }: {
   onClosed: () => void;
 }) {
   const { t } = useTranslation("chrome");
-  const text = useUI(s => s.boardQuery);
-  const setText = useUI(s => s.setBoardQuery);
   const query = useMemo(() => parseBoardQuery(text), [text]);
 
   return (
@@ -253,7 +304,7 @@ function BoardFilterMenu({ sections, open, onOpenChange, active, onClosed }: {
         <button
           type="button"
           aria-label={t("board.filterMenuOpen")}
-          data-testid="board-filter-menu-trigger"
+          data-testid={`${tid}-menu-trigger`}
           className={cn(
             "absolute left-1 z-10 flex rounded p-1 hover:bg-[var(--color-bg-3)]",
             "data-[state=open]:bg-[var(--color-bg-3)]",
@@ -264,19 +315,19 @@ function BoardFilterMenu({ sections, open, onOpenChange, active, onClosed }: {
         </button>
       </PopoverTrigger>
       <PopoverContent
-        side="bottom"
+        side={side}
         align="start"
         className="flex max-h-[min(70vh,560px)] w-[460px] max-w-[calc(100vw-32px)] flex-col gap-0 p-0"
         onCloseAutoFocus={e => { e.preventDefault(); onClosed(); }}
       >
-        <div data-testid="board-filter-menu" className="flex min-h-0 flex-col">
+        <div data-testid={`${tid}-menu`} className="flex min-h-0 flex-col">
           <header className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border-soft)] px-3 py-2">
             <ListFilter className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
             <span className="text-[12.5px] font-semibold">{t("board.filterMenuTitle")}</span>
             {active && (
               <button
                 type="button"
-                data-testid="board-filter-menu-clear"
+                data-testid={`${tid}-menu-clear`}
                 onClick={() => setText("")}
                 className="ml-auto rounded px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]"
               >
@@ -297,7 +348,7 @@ function BoardFilterMenu({ sections, open, onOpenChange, active, onClosed }: {
                       key={`${o.key}:${o.value}`}
                       option={o}
                       state={boardClauseState(query, o.key, o.value)}
-                      onClick={() => setText(cycleBoardClause(useUI.getState().boardQuery, o.key, o.value))}
+                      onClick={() => setText(cycleBoardClause(text, o.key, o.value))}
                     />
                   ))}
                 </div>
@@ -311,7 +362,7 @@ function BoardFilterMenu({ sections, open, onOpenChange, active, onClosed }: {
               <Syntax code="-agent:x" label={t("board.filterSynExclude")} />
               <Syntax code="agent:a,b" label={t("board.filterSynAny")} />
               <Syntax code={'project:"a b"'} label={t("board.filterSynQuote")} />
-              <Syntax code="/" label={t("board.filterSynFocus")} />
+              {focusHint && <Syntax code="/" label={t("board.filterSynFocus")} />}
             </span>
           </footer>
         </div>

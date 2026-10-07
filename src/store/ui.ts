@@ -296,6 +296,17 @@ interface UIState {
    *  persisted: a filter you forgot about would hide cards on launch. */
   boardQuery: string;
   setBoardQuery: (q: string) => void;
+  /** The sidebar's filter bar (docs/ui.md "The sidebar's filter bar"): the
+   *  board's query language over the sidebar's tasks. Its own text, not the
+   *  board's, and session-only for the same reason. */
+  sidebarQuery: string;
+  setSidebarQuery: (q: string) => void;
+  /** A request for the sidebar's filter bar to take focus (the command
+   *  palette's "Filter sidebar tasks"). A flag the bar consumes, not a
+   *  counter: a counter would refocus the bar every time it remounts. */
+  sidebarFilterFocusPending: boolean;
+  focusSidebarFilter: () => void;
+  consumeSidebarFilterFocus: () => void;
   /** Transient bottom-right toasts. Auto-dismiss handled in <Toaster/>. */
   toasts: Toast[];
   /** Bumped to force the "All files" tree to re-read from disk — e.g. after
@@ -534,6 +545,11 @@ export const useUI = create<UIState>((set, get) => ({
     patchTaskFilter(s.taskFilters, projectId, { bell: !s.taskFilters[projectId]?.bell })),
   boardQuery: "",
   setBoardQuery: (q) => { if (get().boardQuery !== q) set({ boardQuery: q }); },
+  sidebarQuery: "",
+  setSidebarQuery: (q) => { if (get().sidebarQuery !== q) set({ sidebarQuery: q }); },
+  sidebarFilterFocusPending: false,
+  focusSidebarFilter: () => set({ sidebarFilterFocusPending: true }),
+  consumeSidebarFilterFocus: () => { if (get().sidebarFilterFocusPending) set({ sidebarFilterFocusPending: false }); },
   toasts: [],
 
   openNewProject:    () => set({ newProjectOpen: true }),

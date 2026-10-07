@@ -52,6 +52,9 @@ import { filterTasks, isFilterActive } from "@/lib/taskFilter";
 import { collectTaskProps, collectedText } from "@/lib/tabProps";
 import { TaskGroupBlock } from "./TaskGroupBlock";
 import { StatusSection } from "./StatusSection";
+import { BoardFilterBar } from "@/components/views/BoardFilterBar";
+import { useBoardColumnMap, useTaskQuery } from "@/hooks/useTaskQuery";
+import { boardQueryUses, parseBoardQuery } from "@/lib/boardFilter";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
@@ -194,6 +197,51 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // whenever the hide pref flips off so the "Show N inactive" row starts
   // collapsed next time the user re-enables hiding.
   const [showInactive, setShowInactive] = useState(false);
+
+  // The sidebar's filter bar (docs/ui.md "The sidebar's filter bar"): the
+  // board's bar and query engine over every task the sidebar lists, STATUS
+  // and PROJECTS alike. Absent on the icon rail, so a query typed in the
+  // full sidebar filters nothing there. With no query every subscription
+  // below holds a constant (useTaskQuery), so this costs the body nothing.
+  const sidebarQuery = useUI(s => s.sidebarQuery);
+  const setSidebarQuery = useUI(s => s.setSidebarQuery);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const queryText = compact ? "" : sidebarQuery;
+  const filterWorkingIndicator = usePrefs(s => s.workingIndicator);
+  const filterAttentionIndicator = usePrefs(s => s.attentionIndicator);
+  const filterWorkPrefs = useMemo(
+    () => ({ settledHighlight, workingIndicator: filterWorkingIndicator, attentionIndicator: filterAttentionIndicator }),
+    [settledHighlight, filterWorkingIndicator, filterAttentionIndicator],
+  );
+  // What the tree can list: unarchived, in a project of this profile.
+  const queryLiveTasks = useMemo(() => {
+    const ids = new Set(projects.map(p => p.id));
+    return tasks.filter(w => !w.archived && ids.has(w.project_id));
+  }, [tasks, projects]);
+  // Columns cost a selector over every tab, so they are only computed while
+  // `status:` or the menu's counts read them.
+  const needColumns = useMemo(
+    () => filterMenuOpen || boardQueryUses(parseBoardQuery(queryText), "status"),
+    [filterMenuOpen, queryText],
+  );
+  const queryColumns = useBoardColumnMap(queryLiveTasks, filterWorkPrefs, needColumns);
+  const taskQuery = useTaskQuery({
+    text: queryText, menuOpen: filterMenuOpen, live: queryLiveTasks, columnOf: queryColumns, facts: tabFacts,
+  });
+  /** Ids the query lets through, or null while nothing is filtering. */
+  const queryMatchIds = useMemo(
+    () => (taskQuery.filtering ? new Set(queryLiveTasks.filter(taskQuery.matches).map(w => w.id)) : null),
+    [taskQuery.filtering, taskQuery.matches, queryLiveTasks],
+  );
+  const queryOn = queryMatchIds !== null;
+  // While filtering, matching projects and folders render open whatever
+  // their stored fold says: results behind a chevron read as "nothing
+  // matched". The chevron still works, through this throwaway map (project
+  // ids, `group:<name>`), so a filter never rewrites the user's layout and
+  // clearing it puts every fold back as it was.
+  const [queryFolds, setQueryFolds] = useState<Record<string, boolean>>({});
+  if (!queryOn && Object.keys(queryFolds).length > 0) setQueryFolds({});
+  const setQueryFold = (key: string, folded: boolean) => setQueryFolds(prev => ({ ...prev, [key]: folded }));
 
   /** Build a mailto: URL with prefilled subject + body and hand it to
    *  the OS's default mail handler via `open_path` (the same Rust
@@ -1132,7 +1180,19 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>
     !hideInactiveProjects || projectIsActive(p.id) || !!groupOf(p);
-  const activeProjects = projects.filter(shownInline);
+  // While filtering: a project shows when a task of its matches (the open
+  // task counts, the tree keeps it listed), or when `project:` names it, so
+  // an empty project can still be found to start a task in. The inactive
+  // fold is not drawn: the filter already removed the clutter it hides.
+  const queryProjectIds = queryMatchIds && new Set(
+    queryLiveTasks.filter(w => queryMatchIds.has(w.id) || w.id === activeTask).map(w => w.project_id),
+  );
+  const queryNamed = queryOn
+    ? new Set(taskQuery.query.clauses.filter(c => c.key === "project" && !c.negated).flatMap(c => c.values))
+    : null;
+  const activeProjects = queryProjectIds
+    ? projects.filter(p => queryProjectIds.has(p.id) || !!queryNamed?.has(p.name.toLowerCase()))
+    : projects.filter(shownInline);
   const inactiveProjects = projects.filter(p => !shownInline(p));
   const inactiveCount = inactiveProjects.length;
   // If hiding is disabled (or nothing is hidden), keep the reveal latch off so
@@ -1177,6 +1237,23 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         )}
       </nav>
 
+      {/* The filter bar: above STATUS and PROJECTS, outside their scroller,
+          because it scopes both and must not scroll away from them. */}
+      {!compact && (
+        <BoardFilterBar
+          variant="sidebar"
+          text={sidebarQuery}
+          onTextChange={setSidebarQuery}
+          shown={queryMatchIds?.size ?? queryLiveTasks.length}
+          total={queryLiveTasks.length}
+          unknownKeys={taskQuery.query.unknownKeys}
+          valuesFor={taskQuery.valuesFor}
+          sections={taskQuery.sections}
+          menuOpen={filterMenuOpen}
+          onMenuOpenChange={setFilterMenuOpen}
+        />
+      )}
+
       {/* Projects section */}
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -1189,7 +1266,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         {/* STATUS above PROJECTS, in the same scroller (docs/ui.md "The
             sidebar's status section"). Not on the icon rail: the hover
             overlay is a full sidebar and shows it there instead. */}
-        {!compact && showStatusSection && <StatusSection />}
+        {!compact && showStatusSection && <StatusSection matchIds={queryMatchIds} />}
         <div className={cn(
           "flex items-center justify-between text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]",
           compact ? "flex-col gap-1.5 py-1" : "px-2 py-1",
@@ -1310,11 +1387,16 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // chevron would stop working while a filter is up.
             const filter = taskFilters[p.id];
             const filterOn = !compact && isFilterActive(filter);
-            const visibleTasks = filterOn ? filterTasks(taskList, filter, tabFacts, agents, activeTask) : taskList;
+            // The sidebar query first (keeping the open task, as #324 does),
+            // then this project's own filter on top: both AND.
+            const queryTasks = queryMatchIds
+              ? taskList.filter(w => queryMatchIds.has(w.id) || w.id === activeTask)
+              : taskList;
+            const visibleTasks = filterOn ? filterTasks(queryTasks, filter, tabFacts, agents, activeTask) : queryTasks;
             // "No matching tasks" only when the filter left the list EMPTY. The
             // active task is kept on screen even when it does not match, and a
             // hint saying nothing matched under a visible row contradicts it.
-            const noMatches = filterOn && taskList.length > 0 && visibleTasks.length === 0;
+            const noMatches = (filterOn || queryOn) && taskList.length > 0 && visibleTasks.length === 0;
             const notifCount = compact ? 0 : taskList.filter(w => tabFacts[w.id]?.notification).length;
             // An active filter keeps its bar on screen on its own; otherwise
             // the bar is open only while the user put it there.
@@ -1332,7 +1414,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // "picking the project up"; persisted collapse state is
             // untouched, so the rows return on drop exactly as they were.
             const collapsed = dragProjectId === p.id
-              || (explicit !== undefined ? explicit : taskList.length === 0 && pendingForProject.length === 0);
+              || (queryOn ? queryFolds[p.id] === true
+                : explicit !== undefined ? explicit : taskList.length === 0 && pendingForProject.length === 0);
             // Compact + collapsed: surface aggregated activity on the
             // project monogram so a collapsed project still signals that
             // something underneath wants attention (attention > done).
@@ -1406,7 +1489,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           // real click would behave.
                           const header = (ev.target as HTMLElement).closest('[data-project-id]') as HTMLElement | null;
                           if (header?.dataset.projectId === p.id) {
-                            setProjectCollapsed(p.id, !collapsed);
+                            if (queryOn) setQueryFold(p.id, !collapsed);
+                            else setProjectCollapsed(p.id, !collapsed);
                           }
                         }
                       };
@@ -1856,6 +1940,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     <button
                       className="shrink-0 rounded px-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                       onClick={() => {
+                        // The project's own filter is the nearer cause when
+                        // both are on; clear that first.
+                        if (!filterOn) { setSidebarQuery(""); return; }
                         setTaskFilterText(p.id, "");
                         if (filter?.bell) toggleTaskFilterBell(p.id);
                         closeFilterBar();
@@ -1952,9 +2039,13 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // Object.hasOwn: the record round-trips through JSON.parse, so a
             // group named "toString"/"constructor" would otherwise read an
             // inherited function off the prototype and render collapsed.
-            const collapsed = Object.hasOwn(collapsedGroups, name)
-              ? collapsedGroups[name] === true
-              : false;
+            const collapsed = queryOn
+              ? queryFolds[`group:${name}`] === true
+              : Object.hasOwn(collapsedGroups, name) ? collapsedGroups[name] === true : false;
+            const toggleGroup = () => {
+              if (queryOn) setQueryFold(`group:${name}`, !collapsed);
+              else setGroupCollapsed(name, !collapsed);
+            };
             // Count ALL members (hidden inactive ones included) — the header
             // count is also what Rename/Ungroup operate on, so it must not
             // understate the group while "Hide inactive projects" is on.
@@ -2057,12 +2148,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       }}
                       onClick={() => {
                         if (suppressGroupToggle.current) { suppressGroupToggle.current = false; return; }
-                        setGroupCollapsed(name, !collapsed);
+                        toggleGroup();
                       }}
                       onKeyDown={(ev) => {
                         if (ev.key === "Enter" || ev.key === " ") {
                           ev.preventDefault();
-                          setGroupCollapsed(name, !collapsed);
+                          toggleGroup();
                         }
                       }}
                       // Accent yields to the drag/drop states below — their
@@ -2170,7 +2261,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   the PROJECTS header above. Clicking it toggles the fold; the
                   inactive group renders BELOW it so revealing never reshuffles
                   the active rows. */}
-              {hideInactiveProjects && inactiveCount > 0 && (
+              {!queryOn && hideInactiveProjects && inactiveCount > 0 && (
                 <button
                   key="inactive-header"
                   type="button"
@@ -2204,9 +2295,28 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               {/* data-inactive-fold marks this as a separate drag domain:
                   rows here are ungrouped inactive projects, so drags across
                   the fold reorder only and never touch group labels. */}
-              {hideInactiveProjects && showInactive && (
+              {!queryOn && hideInactiveProjects && showInactive && (
                 <div data-inactive-fold className="flex flex-col gap-0.5">
                   {inactiveProjects.map(renderProject)}
+                </div>
+              )}
+              {/* What the filter took away, said once at the bottom instead
+                  of as a row of empty project headers. */}
+              {queryOn && activeProjects.length === 0 && (
+                <div
+                  data-testid="sidebar-filter-empty"
+                  className="flex h-[var(--task-row-h)] items-center justify-center gap-1.5 px-2 text-[13px] text-[var(--color-fg-faint)]"
+                >
+                  <span className="truncate">{t("filterBar.noMatches")}</span>
+                  <button
+                    className="shrink-0 rounded px-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                    onClick={() => setSidebarQuery("")}
+                  >{t("filterBar.clear")}</button>
+                </div>
+              )}
+              {queryOn && activeProjects.length > 0 && projects.length > activeProjects.length && (
+                <div data-testid="sidebar-filter-hidden" className="px-2 pt-1.5 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
+                  {t("filterBar.hidden", { count: projects.length - activeProjects.length })}
                 </div>
               )}
             </>

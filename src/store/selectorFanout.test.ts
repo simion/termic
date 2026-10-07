@@ -735,6 +735,26 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
     // Mounted only with the pref on and never on the icon rail, so the off
     // state costs no subscription at all.
     const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
-    expect(sidebar).toMatch(/!compact && showStatusSection && <StatusSection \/>/);
+    expect(sidebar).toMatch(/!compact && showStatusSection && <StatusSection[ />]/);
+  });
+});
+
+describe("sidebar filter bar with no query (bear trap 5)", () => {
+  // The Sidebar body calls useTaskQuery on every render, query or not. Each
+  // subscription it adds must select a constant until the query (or the
+  // open menu) reads it, or an empty bar would re-render the body on every
+  // PR poll, diffstat and tab write.
+  it("holds constants until the query or the menu reads a fact", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const hook = readFileSync(resolve(here, "../hooks/useTaskQuery.tsx"), "utf8");
+    expect(hook).toMatch(/usePr\(s => watching\s*\?/);
+    expect(hook).toMatch(/useDiffStat\(s => usesChanges\s*\?/);
+    expect(hook).toMatch(/useApp\(enabled \? selectBoardColumnKey\(workPrefs\) : selectNoColumns\)/);
+    expect(hook).toMatch(/useApp\(!facts && query\.terms\.length > 0 \? selectFilterFacts : selectNoFilterFacts\)/);
+    const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
+    // columns only while `status:` or the menu needs them, and the tab facts
+    // the body already holds instead of a second facts selector
+    expect(sidebar).toMatch(/useBoardColumnMap\(queryLiveTasks, filterWorkPrefs, needColumns\)/);
+    expect(sidebar).toMatch(/facts: tabFacts/);
   });
 });

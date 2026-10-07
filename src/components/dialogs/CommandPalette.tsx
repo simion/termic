@@ -14,7 +14,7 @@ import {
   FolderCog, RefreshCw, ScrollText, CalendarClock, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, ListTodo, Bell, SquareTerminal, FolderPlus, History, Square,
   Play, Swords, Megaphone, Columns2, Rows2, Clock, UserPen, GitPullRequest, Activity, Code2,
-  NotepadText, Waypoints, CircleDot, UsersRound, WrapText, type LucideIcon } from "lucide-react";
+  NotepadText, Waypoints, CircleDot, UsersRound, WrapText, ListFilter, ListX, type LucideIcon } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useProfiles } from "@/store/profiles";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -115,6 +115,8 @@ export function CommandPalette() {
   const inlineBlame = usePrefs(s => s.inlineBlame);
   const editorWordWrap = usePrefs(s => s.editorWordWrap);
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
+  // Only whether there is one: the Clear row comes and goes with it.
+  const sidebarFiltered = useUI(s => s.sidebarQuery.trim() !== "");
 
   // Built-ins first, then the custom theme files — the submenu's order.
   // `t` is a dep so a language switch recomputes the built-in labels.
@@ -405,6 +407,25 @@ export function CommandPalette() {
       icon: PanelLeft, shortcutId: "toggle-left-sidebar", keywords: "projects collapse hide",
       run: act(() => useApp.getState().toggleCompactSidebar()),
     });
+    // The sidebar's filter bar has no key of its own (`/` and ⌘F are the
+    // board's, and focus is usually in a terminal), so this is its way in.
+    cmds.push({
+      id: "filter-sidebar", section: "View", label: t("commandPalette.cmd.filterSidebar"),
+      icon: ListFilter, keywords: "search find tasks query narrow sidebar projects status",
+      run: act(() => {
+        // the icon rail carries no bar, so bring the full sidebar back first
+        const app = useApp.getState();
+        if (app.compactSidebar) app.toggleCompactSidebar();
+        useUI.getState().focusSidebarFilter();
+      }),
+    });
+    if (sidebarFiltered) {
+      cmds.push({
+        id: "clear-sidebar-filter", section: "View", label: t("commandPalette.cmd.clearSidebarFilter"),
+        icon: ListX, keywords: "search reset query show all tasks sidebar",
+        run: act(() => useUI.getState().setSidebarQuery("")),
+      });
+    }
     cmds.push({
       id: "toggle-right-sidebar", section: "View", label: t("commandPalette.cmd.toggleRightSidebar"),
       icon: PanelRight, shortcutId: "toggle-right-sidebar", keywords: "panel diff changes hide",
@@ -564,7 +585,7 @@ export function CommandPalette() {
     }
 
     return cmds;
-  }, [view, task, proj, themeMode, themeEntries, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab, t]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, task, proj, themeMode, themeEntries, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab, sidebarFiltered, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Recents, re-read on every open so an hour spent with the palette closed
   // expires them (the list is only ever consulted at build time). Empty query

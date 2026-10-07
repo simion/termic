@@ -171,6 +171,57 @@ CLI rename or a notification arriving moves a row with no extra wiring.
 - Escape in the input and its clear button both empty it. The feature
   is absent in compact mode.
 
+## The sidebar's filter bar
+
+The top of the sidebar, under the nav and above STATUS and PROJECTS,
+carries the Kanban board's filter bar: the same component
+(`BoardFilterBar` with `variant="sidebar"`), the same query language
+(`lib/boardFilter.ts`), and the same funnel menu, built by the same code
+(`hooks/useTaskQuery.tsx`, which the board calls too). Two bars that look
+alike but were built twice drift apart, so there is one of each piece.
+
+- **It scopes both sections.** STATUS and PROJECTS are two groupings of
+  the same tasks, so a query hides a task from both or from neither. It
+  sits above both, outside their scroller, for the same reason: a control
+  under PROJECTS that also filtered STATUS above it read backwards, and it
+  scrolled away with the tree.
+- **The sidebar's own query** (`useUI.sidebarQuery`), not the board's.
+  The two answer different questions (where am I working, what stage is
+  everything at), and the board is often open next to the sidebar.
+  Session-only, like the board's.
+- **Structure does change here**, unlike the board. A project with no
+  matching task hides (one line at the bottom counts them); a narrow
+  column full of empty headers is noise. A project named by `project:`
+  stays, so an empty one can be found to start a task in. The inactive
+  fold is not drawn while filtering. STATUS buckets hide when emptied,
+  as they already do.
+- **The open task stays listed** in the tree, the #324 rule. STATUS does
+  not keep it: the section is a copy and the tree already shows it.
+- **Matching projects and folders render open while filtering,** without
+  writing the stored fold: a throwaway map in Sidebar holds chevron clicks
+  made while filtering and is dropped with the query, so clearing it puts
+  every fold back. Writing the real fold for every matching project would
+  trash the user's layout.
+- **Differences from the board's bar:** the count sits on its own line
+  under the input, the menu opens to the right over the main area (it is a
+  portal, so it keeps the board's width), there is no Archived chip (the
+  sidebar lists no archived tasks), and neither `/` nor ⌘F focuses it.
+  Focus is almost always in a terminal, where ⌘F is find, and while the
+  board is up both bars are mounted and `/` is the board's.
+- **The command palette is its way in:** "Filter sidebar tasks" leaves
+  the icon rail if needed and focuses the bar (a pending flag in the ui
+  store the bar consumes, so a remount never steals focus), and "Clear
+  sidebar filter" shows only while a query is set.
+- **It sits nearer what it filters:** more space above the bar (from the
+  nav) than below it (to the STATUS or PROJECTS header).
+- **The per-project filter (#324) stays** and ANDs with it.
+- **Absent on the icon rail;** a query typed in the full sidebar filters
+  nothing there.
+- **Cost with no query is nil:** every subscription `useTaskQuery` adds
+  selects a constant until the query or the open menu reads it, columns
+  are only computed for `status:` or the menu, and free text reuses the
+  tab facts the body already holds. `selectorFanout.test.ts` pins this.
+
 ## Run state in the sidebar
 
 A run tab's controls live in its tab pill (restart + a red Stop while the PTY
@@ -658,7 +709,8 @@ tree lays them out (`layoutTaskList`, so a task group is one block at its
 first member's position). The section walks projects rather than tasks, so a
 task whose project left the profile is skipped exactly as the tree skips it,
 and a row never shuffles inside its bucket; it moves only when its bucket
-changes. The per-project task filter (#324) does not apply here.
+changes. The per-project task filter (#324) does not apply here; the
+sidebar's filter bar does (see "The sidebar's filter bar").
 
 **Task groups** draw the way the tree draws them: a caption in the group's
 colour (with the project name, which its members then drop) and the members
