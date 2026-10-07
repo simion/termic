@@ -200,11 +200,14 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
       </ContextMenuRoot>
       {/* The rail is this wrapper's left border, at 24px: under the centre of
           the caption's icon (12 margin + 4 padding + 2 + half of 14 = 25).
-          The inner stack is pulled back 6px so the members land 18px right
-          of the loose rows (measured in the e2e spec), the step a project
-          folder gives its members; their tab rows move with them. */}
-      <div data-task-group-rail className="ml-6 border-l-2" style={{ borderColor: color }}>
-        <div className="-ml-1.5">{children}</div>
+          1px, the same weight as a project folder's guide line, so the
+          sidebar has one nesting style (docs/ui.md "One glyph per meaning");
+          the group's colour is what tells the two apart. The inner stack is
+          pulled back 5px so the members land 18px right of the loose rows
+          (measured in the e2e spec), the step a project folder gives its
+          members; their tab rows move with them. */}
+      <div data-task-group-rail className="ml-6 border-l" style={{ borderColor: color }}>
+        <div className="-ml-[5px]">{children}</div>
       </div>
     </div>
   );

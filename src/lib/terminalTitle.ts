@@ -1,23 +1,28 @@
 /**
- * Remove Claude Code's leading status glyphs from a live terminal title.
+ * Remove Claude Code's leading glyphs from a live terminal title, so each
+ * thing the row says, it says once (docs/ui.md "One glyph per meaning").
  *
- * Claude prefixes idle titles with ✳ and working titles with one or more
- * Braille spinner glyphs. We only hide those prefixes when Termic is already
- * showing its own working indicator, so users with the indicator disabled
- * still retain Claude's built-in state signal.
+ * Claude prefixes an idle title with ✳ and a working one with Braille
+ * spinner glyphs. The ✳ only says "this is claude", which the brand icon
+ * beside every title already says, so it always goes. The spinner says
+ * "working", so it goes only while Termic draws its own working badge
+ * (`termicShowsWork`, the workingIndicator pref): with that off it is the
+ * user's only working signal. Its removal does not depend on the tab's
+ * current state, so a tab needing attention whose title still spins does not
+ * show both.
+ *
+ * `iconId` is the RESOLVED icon (`resolveIconId`), so a cloned agent such
+ * as `claude-dpf` is treated as the claude it draws as.
  */
 export function formatTerminalTitle(
   title: string,
-  cli: string,
-  hideClaudeStatusGlyph: boolean,
+  iconId: string,
+  termicShowsWork: boolean,
 ): string {
-  if (cli !== "claude" || !hideClaudeStatusGlyph) {
-    return title;
-  }
-
-  return title
-    .replace(/^\s*✳\s*/, "")
-    .replace(/^\s*[\u2800-\u28ff](?:\s+[\u2800-\u28ff])*\s*/, "");
+  if (iconId !== "claude") return title;
+  const noBrand = title.replace(/^\s*✳\s*/, "");
+  if (!termicShowsWork) return noBrand;
+  return noBrand.replace(/^\s*[\u2800-\u28ff](?:\s+[\u2800-\u28ff])*\s*/, "");
 }
 
 /**

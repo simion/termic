@@ -1229,7 +1229,7 @@ describe("looking at a question is not answering it", () => {
   // The agent is blocked on the user until they answer, so the "seen" paths
   // that clear every other mark leave an attention bell alone (state 7 in
   // docs/agent-states.md). Clearing it on sight filed a question you had
-  // glanced at under Settled, on the board and in the sidebar's status section.
+  // glanced at under Settled, on the board and in the sidebar.
   const seed = (reason: string) => {
     useUI.getState().setWindowless(false);
     useUI.getState().setWindowFocused(true);

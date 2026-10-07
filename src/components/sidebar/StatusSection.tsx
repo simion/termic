@@ -407,10 +407,11 @@ function StatusTaskTabs({ taskId, agents, workPrefs }: {
       {terminalTabs.map(tab => {
         const hot = isActive && tab.id === activeTabId;
         const reason = taskWorkBadge([tab], workPrefs);
-        const working = reason === "working";
         const raw = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
-        const title = tab.customTitle ? raw : formatTerminalTitle(raw, tab.cli, working);
         const icon = resolveIconId(tab.cli, agents);
+        // The tree's rule: the brand glyph always goes, the spinner whenever
+        // Termic draws its own working badge.
+        const title = tab.customTitle ? raw : formatTerminalTitle(raw, icon, !!workPrefs.workingIndicator);
         return (
           <div
             key={tab.id}

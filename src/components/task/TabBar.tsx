@@ -391,7 +391,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
   const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
   const visibleTitle =
     tab.type === "terminal" && !tab.customTitle
-      ? formatTerminalTitle(rawTitle, tab.cli, showWorking)
+      ? formatTerminalTitle(rawTitle, iconId, workingIndicator)
       : rawTitle;
 
   // Reveal the pill when it becomes active — keyboard tab switches (⇧⌘[/],

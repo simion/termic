@@ -1,6 +1,9 @@
-// Project-row filter controls (GH #324). The header's hover bar carries ONE
-// filter icon, left of the settings cog, lit while any filter is on. It opens
-// a bar on its own line under the header: the text input, with the
+// Project-row filter controls (GH #324). The bar is opened from the
+// project's menu ("Filter tasks"); while it is open, the header carries ONE
+// filter icon, lit while any filter is on, which is what says rows are
+// hidden and what closes an idle bar. Hover reveals nothing (docs/ui.md "One
+// glyph per meaning"): the header's hover shows only the menu and `+`. The
+// bar sits on its own line under the header: the text input, with the
 // notifications bell to its right. Its own line so a long project name keeps
 // its room. The matching itself is in lib/taskFilter.ts; these only edit the
 // per-project filter in the ui store. Whether the bar is open is the
@@ -16,12 +19,14 @@ import { cn } from "@/lib/utils";
 const iconBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]";
 const litBtn = "bg-[var(--color-bg-3)] text-[var(--color-accent)] hover:text-[var(--color-accent)]";
 
-/** The header's filter icon. Lit while a filter is active (bell or text),
- *  which is what tells the user rows are hidden. */
+/** The header's filter icon, drawn only while the bar is open. Lit while a
+ *  filter is active (bell or text), which is what tells the user rows are
+ *  hidden. Kept in the DOM (`hidden`) when closed, so the bar's open and
+ *  close have one element to go through. */
 export function ProjectFilterToggle({ projectId, active, revealed, onToggle }: {
   projectId: string;
   active: boolean;
-  /** Keep the header's controls visible without hover. */
+  /** The bar is open (or a filter holds it open): draw the icon. */
   revealed: boolean;
   onToggle: () => void;
 }) {
@@ -37,8 +42,8 @@ export function ProjectFilterToggle({ projectId, active, revealed, onToggle }: {
         // pointer happens to be.
         data-pinned={revealed}
         className={cn(
-          iconBtn, "transition-opacity",
-          revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          iconBtn,
+          !revealed && "hidden",
           active && litBtn,
         )}
         // Keep focus in an open input: its blur would fold the bar away

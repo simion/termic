@@ -228,6 +228,23 @@ describe("sidebar status section", () => {
     await snap("sidebar-status-attention.png");
   });
 
+  it("takes the status chips' place: never both, and turning it off brings them back", async () => {
+    const CHIPS = '[data-testid="status-chips"]';
+    // On, with a task needing you: the section lists it and no chip counts it.
+    await waitVisible(ROW_IN("attention", blocked));
+    expect(await present(CHIPS)).toBe(false);
+
+    await openListOptions();
+    await click(TOGGLE_ROW);
+    await waitVisible(`${CHIPS} [data-status-chip="attention"]`);
+    expect(await present(SECTION)).toBe(false);
+
+    await openListOptions();
+    await click(TOGGLE_ROW);
+    await waitVisible(SECTION);
+    expect(await present(CHIPS)).toBe(false);
+  });
+
   it("a click opens the task and reveals it in the tree; the row leaves Needs attention only when you answer", async () => {
     // Fold the project first, so the reveal is something the click has to do.
     await browser.execute(pid => window.__termic!.useApp.getState().setProjectCollapsed(pid, true), projectId);

@@ -16,9 +16,9 @@ import { openPath } from "@/lib/ipc";
 import { forgeName, prNounShort, prRef } from "@/lib/forge";
 import type { Task } from "@/lib/types";
 
-/** `testId`: the sidebar's status section passes its own, so the tree's
- *  `task-pr-badge` stays the first one in document order. */
-export function TaskPrBadge({ task, testId = "task-pr-badge" }: { task: Task; testId?: string }) {
+/** `showNumber`: the sidebar draws the number beside the glyph (`#367`),
+ *  so the badge reads as a link to a specific PR rather than one more icon. */
+export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false }: { task: Task; testId?: string; showNumber?: boolean }) {
   const { t } = useTranslation("chrome");
   const pr = usePr(s => s.byTask[task.id]?.lookup?.pr ?? null);
   const url = pr?.url ?? task.pr_url ?? null;
@@ -53,9 +53,11 @@ export function TaskPrBadge({ task, testId = "task-pr-badge" }: { task: Task; te
         data-testid={testId}
         data-pr-state={state ?? "unknown"}
         onClick={(e) => { e.stopPropagation(); openPath(url).catch(() => {}); }}
-        className="shrink-0 rounded p-px hover:bg-[var(--color-bg-3)]"
+        className="flex shrink-0 items-center gap-0.5 rounded p-px hover:bg-[var(--color-bg-3)]"
+        style={showNumber ? { color } : undefined}
       >
         <Icon className="h-3 w-3" style={{ color }} />
+        {showNumber && num ? <span className="text-[11px] tabular-nums leading-none">{prRef(provider, num)}</span> : null}
       </button>
     </Tip>
   );

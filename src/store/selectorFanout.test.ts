@@ -739,6 +739,103 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
   });
 });
 
+// ── The status chips while agents stream ───────────────────────────────
+//
+// The chips count tasks by board column, and one of the facts behind a
+// column (`untouched`) reads `lastInputAt`, a field the tree's rows hold back.
+// So they keep a facts record of their own, and these counts pin what that
+// buys: timestamps and titles reach nothing, a real column change reaches the
+// chips, and the Sidebar BODY never pays for their facts.
+
+describe("status chips under streaming output (bear traps 5, 8)", () => {
+  const TASKS = 16;
+  const ids = Array.from({ length: TASKS }, (_, i) => `st-${i}`);
+  const main = (id: string) => `${id}-main`;
+  const OWNER = 5;
+  const owner = ids[OWNER];
+
+  beforeEach(() => {
+    useApp.setState({
+      tabs: Object.fromEntries(ids.map(id => [id, [
+        { ...tab(main(id)), is_default: true, ptyId: `pty-${id}` } as Tab,
+        tab(`${id}-shell`),
+      ]])),
+    });
+  });
+
+  /** The mounted chips: one facts selector, and nothing per task. */
+  const mountChips = () => [createStatusFactsSelector()];
+
+  const stamp = (i: number) => {
+    const id = ids[i % TASKS];
+    useApp.getState().patchTab(id, main(id), { lastOutputAt: 1_000 + i });
+  };
+
+  it("an output stamp invalidates nothing", () => {
+    const subs = mountChips();
+    const r = measureFanout(subs, WRITES, stamp);
+    expect(r.invalidations).toBe(0);
+    expect(r.msPerWrite).toBeLessThan(MAX_MS_PER_WRITE);
+  });
+
+  it("a live title reaches nothing", () => {
+    const r = measureFanout(mountChips(), 100, i =>
+      useApp.getState().setTabLiveTitle(owner, main(owner), `thinking ${i}`));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("a sidebar drag invalidates nothing", () => {
+    const r = measureFanout(mountChips(), WRITES, i =>
+      useApp.getState().setSidebarWidth(200 + (i % 120)));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("a task's FIRST input moves its column, and only the first", () => {
+    // The fact useRowTabs cannot see: lastInputAt is in ROW_HIDDEN_TAB_FIELDS.
+    const subs = mountChips();
+    const first = measureFanout(subs, 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { lastInputAt: 2_000 }));
+    expect(first.invalidations).toBe(1);
+    const again = measureFanout(subs, 50, i =>
+      useApp.getState().patchTab(owner, main(owner), { lastInputAt: 3_000 + i }));
+    expect(again.invalidations).toBe(0);
+  });
+
+  it("an agent starting a turn reaches the chips once", () => {
+    const r = measureFanout(mountChips(), 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { workState: "working" }));
+    expect(r.invalidations).toBe(1);
+  });
+
+  it("an agent starting a turn does NOT reach the Sidebar body", () => {
+    // Why the chips' facts are a record of their own: as fields on
+    // SidebarTaskFacts, every idle -> working flip would re-render the body.
+    const r = measureFanout([createSidebarFactsSelector()], 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { workState: "working" }));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("an agent blocked on the user reaches the chips", () => {
+    const r = measureFanout(mountChips(), 1, () =>
+      useApp.getState().markAttention(owner, main(owner), "attention"));
+    expect(r.invalidations).toBe(1);
+  });
+
+  it("StatusChips.tsx holds its own facts and never the tabs map", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(resolve(here, "../components/sidebar/StatusChips.tsx"), "utf8");
+    expect(src).not.toMatch(/=>\s*s\.tabs\s*\)/);
+    expect(src).not.toMatch(/selectTaskTabs|useRowTabs/);
+    expect(src).toMatch(/useStatusTabFacts\(\)/);
+    // Its own memoized component, so a count moving re-renders the chips and
+    // not the Sidebar body; never on the icon rail.
+    expect(src).toMatch(/export const StatusChips = memo\(/);
+    const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
+    // Never alongside the section, which lists the same buckets.
+    expect(sidebar).toMatch(/!compact && !showStatusSection && <StatusChips \/>/);
+  });
+});
+
 describe("sidebar filter bar with no query (bear trap 5)", () => {
   // The Sidebar body calls useTaskQuery on every render, query or not. Each
   // subscription it adds must select a constant until the query (or the

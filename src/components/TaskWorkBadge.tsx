@@ -7,8 +7,6 @@
 // always mounted and the dashboard is an overlay over it, so a task with a live
 // agent renders two. Specs must scope through `[data-dashboard-task-id]` or the
 // sidebar's `[data-sidebar-task-id]` rather than querying the testid globally.
-// The sidebar's status section draws a third copy, under its own testid
-// (`status-work-badge`), so it never adds to that count.
 
 import { useTranslation } from "react-i18next";
 import { Bell } from "lucide-react";
@@ -33,9 +31,9 @@ export function TaskWorkBadge(
      *  The legend explaining a mark has to keep explaining it, and the one
      *  in the welcome wizard runs before the user has any prefs at all. */
     preview?: boolean;
-    /** The sidebar's status section passes its own, so a task listed there
-     *  does not add a copy of `work-badge` above the tree's (see the note at
-     *  the top of this file). */
+    /** A surface that draws a second copy of a task's badge passes its own,
+     *  so it does not add to the `work-badge` count (see the note at the top
+     *  of this file). */
     testId?: string;
   },
 ) {

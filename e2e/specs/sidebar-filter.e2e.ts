@@ -1,8 +1,10 @@
-// The sidebar's filter bar (docs/ui.md "The sidebar's filter bar"): the
-// board's bar and query language at the top of the sidebar, filtering the
-// STATUS section and the project tree together. Covers where it sits, what
-// it hides and keeps, the shared funnel menu, the folds it opens without
-// writing, that its query is its own and not the board's, and the icon rail.
+// The top of the sidebar (docs/ui.md "The sidebar's filter bar", "The
+// sidebar's status chips", "One glyph per meaning"): the board's filter bar
+// and query language over the project tree, the status chips that write
+// `status:` into it, and the row rules that give each mark one meaning.
+// Covers where the bar sits, what it hides and keeps, the shared funnel menu,
+// the folds it opens without writing, that its query is its own and not the
+// board's, the chips, the location and slot rules, and the icon rail.
 //
 // Relative assertions only: earlier spec files leave tasks in the shared
 // profile, so a case asserts on this file's tasks being in or out, never on
@@ -12,9 +14,12 @@ import {
   archiveTask,
   clickByText,
   clickWhenVisible,
+  createWorktreeTask,
   dismissOverlays,
+  ensureActiveTask,
   openTask,
   requireTermicApi,
+  waitForAgentReady,
   setInputValue,
   snap,
   waitForAppShell,
@@ -44,6 +49,7 @@ describe("sidebar filter bar", () => {
   let a = "";
   let b = "";
   let c = "";
+  let wt = "";
 
   before(async () => {
     await waitForAppShell();
@@ -65,26 +71,32 @@ describe("sidebar filter bar", () => {
       t.usePrefs.getState().setShowStatusSection(false);
       if (t.useApp.getState().compactSidebar) t.useApp.getState().toggleCompactSidebar();
     });
-    for (const id of [a, b, c]) if (id) await archiveTask(id);
+    for (const id of [a, b, c, wt]) if (id) await archiveTask(id);
   });
 
-  it("sits at the top of the sidebar, above STATUS and PROJECTS", async () => {
-    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(true));
+  it("sits at the top of the sidebar, under the nav strip and above the tree", async () => {
     await waitVisible(INPUT);
-    await waitVisible('[data-testid="status-section"]');
-    // DOCUMENT_POSITION_FOLLOWING (4): the section and the tree come after
-    // the bar, so it scopes both from above.
+    // DOCUMENT_POSITION_FOLLOWING (4): the tree comes after the bar, the nav
+    // before it.
     const order = await browser.execute(bar => {
       const el = document.querySelector(bar)!;
       return {
-        status: el.compareDocumentPosition(document.querySelector('[data-testid="status-section"]')!) & 4,
         tree: el.compareDocumentPosition(document.querySelector("[data-sidebar-task-id]")!) & 4,
+        nav: el.compareDocumentPosition(document.querySelector("nav")!) & 2,
       };
     }, BAR);
-    expect(order.status).toBe(4);
     expect(order.tree).toBe(4);
+    expect(order.nav).toBe(2);
     // The board's funnel glyph, in the same place inside the input.
     await waitVisible('[data-testid="sidebar-filter-menu-trigger"]');
+    // The nav is one row of icons: its entries share a line, and keep their
+    // names for screen readers (and for clickByText).
+    const nav = await browser.execute(() => {
+      const btns = [...document.querySelectorAll<HTMLElement>("nav button")];
+      return { tops: [...new Set(btns.map(b => Math.round(b.getBoundingClientRect().top)))].length, names: btns.map(b => b.getAttribute("aria-label")) };
+    });
+    expect(nav.tops).toBe(1);
+    expect(nav.names).toContain("Kanban");
     await snap("sidebar-filter-idle.png");
   });
 
@@ -97,7 +109,14 @@ describe("sidebar filter bar", () => {
     await snap("sidebar-filter-text.png");
   });
 
-  it("filters the STATUS section by the same query", async () => {
+  it("sits above STATUS too, and filters it by the same query", async () => {
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(true));
+    await waitVisible('[data-testid="status-section"]');
+    // DOCUMENT_POSITION_FOLLOWING (4): the section comes after the bar, so
+    // the bar scopes it from above, as it does the tree.
+    const below = await browser.execute(bar =>
+      document.querySelector(bar)!.compareDocumentPosition(document.querySelector('[data-testid="status-section"]')!) & 4, BAR);
+    expect(below).toBe(4);
     // b and c were never opened, so both sit in Not started.
     const notStarted = () => browser.execute(() =>
       document.querySelector('[data-status-bucket="backlog"] [data-testid="status-bucket-count"]')?.textContent ?? null);
@@ -107,6 +126,37 @@ describe("sidebar filter bar", () => {
     await setQuery("sfilter-nothing-matches-this");
     await browser.waitUntil(async () => (await notStarted()) === null,
       { timeout: 5_000, timeoutMsg: "an emptied bucket still showed" });
+    await setQuery("");
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(false));
+  });
+
+  it("marks location on the exception: the main checkout has a glyph, a worktree none", async () => {
+    // openTask opens the repo root, so a, b and c are main checkouts.
+    wt = await createWorktreeTask("sfilter-worktree", "sfilter-worktree", false);
+    await waitVisible(TREE_ROW(wt));
+    const glyphs = await browser.execute((main, worktree) => ({
+      main: !!document.querySelector(`[data-sidebar-task-row="${main}"] [aria-label="main checkout"]`),
+      worktree: document.querySelector(`[data-sidebar-task-row="${worktree}"]`)!
+        .querySelectorAll('[aria-label="main checkout"], [aria-label="worktree"]').length,
+    }), b, wt);
+    expect(glyphs).toEqual({ main: true, worktree: 0 });
+  });
+
+  it("gives the row's trailing slots one meaning each: the menu is hover-only and never holds state", async () => {
+    // The state slot is always there and rightmost; the menu trigger sits in
+    // its own slot, hidden at rest, and holds no badge.
+    const anatomy = await browser.execute(id => {
+      const row = document.querySelector(`[data-sidebar-task-row="${id}"]`)!;
+      const state = row.querySelector('[data-testid="task-state-slot"]') as HTMLElement | null;
+      const menu = row.querySelector('[data-testid="task-menu-trigger"]') as HTMLElement | null;
+      // The wrapper also holds expanded tab rows; the slots live in its header.
+      return {
+        stateIsLast: !!state && state.parentElement!.lastElementChild === state,
+        menuOpacity: menu ? getComputedStyle(menu).opacity : null,
+        badgeInMenu: !!menu?.querySelector('[data-testid="work-badge"], [data-testid="task-yolo-badge"]'),
+      };
+    }, b);
+    expect(anatomy).toEqual({ stateIsLast: true, menuOpacity: "0", badgeInMenu: false });
   });
 
   it("a project with no matches hides, and the empty state clears the query", async () => {
@@ -156,6 +206,41 @@ describe("sidebar filter bar", () => {
     await browser.keys(["Escape"]);
     await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "Esc did not clear" });
     await waitTree([a, b, c], s => s.length === 3, "clearing did not restore the tree");
+  });
+
+  it("a status chip counts what needs you, and filters the tree to it", async () => {
+    // A task has tabs only once something mounts it; visit it, let the fake
+    // agent settle, then step away so the seed lands on a task the user is
+    // not looking at.
+    await ensureActiveTask(a);
+    await waitForAgentReady(a);
+    await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
+    // SETUP, not the assertion: the tab state the detector would write.
+    await browser.execute(id => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+      app.markAttention(id, tab.id, "attention", "needs you");
+    }, a);
+    const CHIP = '[data-status-chip="attention"]';
+    await waitVisible(CHIP);
+    // The tree's own bell sits in the row's state slot.
+    await waitVisible(`[data-sidebar-task-row="${a}"] [data-testid="task-state-slot"] [data-work-state="attention"]`);
+    const count = Number(await browser.execute(sel =>
+      document.querySelector(`${sel} [data-testid="status-chip-count"]`)?.textContent ?? "0", CHIP));
+    expect(count).toBeGreaterThanOrEqual(1);
+    await snap("sidebar-status-chips.png");
+
+    await clickWhenVisible(CHIP);
+    await browser.waitUntil(async () => (await query()) === "status:attention", { timeout: 5_000, timeoutMsg: "the chip did not write status:attention" });
+    expect(await browser.execute(sel => document.querySelector(sel)?.getAttribute("aria-pressed"), CHIP)).toBe("true");
+    // b and c were never opened, so they are not waiting on anyone.
+    await waitTree([a, b, c], s => s.includes(a) && !s.includes(b) && !s.includes(c), "the chip did not narrow the tree");
+    // The count is what clicking left: every attention task, and only those.
+    const rows = await browser.execute(() => document.querySelectorAll("[data-sidebar-task-row]").length);
+    expect(rows).toBe(count);
+
+    await clickWhenVisible(CHIP);
+    await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "a second click did not take the clause back out" });
   });
 
   it("keeps its own query: the board is not filtered by it", async () => {

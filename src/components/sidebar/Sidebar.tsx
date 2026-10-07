@@ -12,7 +12,7 @@ import { usePrefs, scheduledNavVisible } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, ListFilter, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -51,6 +51,7 @@ import { ProjectFilterBar, ProjectFilterToggle } from "./ProjectTaskFilter";
 import { filterTasks, isFilterActive } from "@/lib/taskFilter";
 import { collectTaskProps, collectedText } from "@/lib/tabProps";
 import { TaskGroupBlock } from "./TaskGroupBlock";
+import { StatusChips } from "./StatusChips";
 import { StatusSection } from "./StatusSection";
 import { BoardFilterBar } from "@/components/views/BoardFilterBar";
 import { useBoardColumnMap, useTaskQuery } from "@/hooks/useTaskQuery";
@@ -1213,8 +1214,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       style={sidebarWash ? { backgroundImage: sidebarWash } : undefined}
       className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]"
     >
-      {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
-      <nav className={cn("flex flex-col gap-0.5", compact ? "p-1.5 pt-2" : "p-2 pt-3")}>
+      {/* Primary nav: Dashboard / History / Kanban / Scheduled. One strip of
+          icons in the full sidebar (docs/ui.md "One glyph per meaning"): four
+          full-width rows took the top of the sidebar before anything about
+          your work showed. The rail keeps its column. */}
+      <nav className={cn("flex gap-0.5", compact ? "flex-col p-1.5 pt-2" : "p-2 pt-3")}>
         <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label={t("navDashboard")}
           active={currentView === "dashboard" && !activeTask} compact={compact}
           onClick={() => setView("dashboard")}
@@ -1253,6 +1257,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           onMenuOpenChange={setFilterMenuOpen}
         />
       )}
+      {/* The chips stand in for the STATUS section while it is off. With it
+          on they would count the same buckets the section lists. */}
+      {!compact && !showStatusSection && <StatusChips />}
 
       {/* Projects section */}
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -1500,7 +1507,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       document.addEventListener("pointercancel", onUp);
                     }}
                     className={cn(
-                      "group flex items-center justify-between rounded-md text-[12px] font-semibold uppercase tracking-[0.06em] cursor-pointer transition-colors",
+                      // Sentence case, so a project never reads as the same
+                      // level as the PROJECTS section label above it.
+                      "group flex items-center justify-between rounded-md text-[13px] font-semibold cursor-pointer transition-colors",
                       // Full mode highlights the whole row on hover; compact
                       // mode hovers the centered monogram tile instead.
                       !compact && "hover:bg-[var(--color-hover)]",
@@ -1564,14 +1573,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             </Tip>
                           )}
                         </div>
-                        {/* Trio of project-row actions revealed on hover.
-                            Settings + Open-repo-as-task are hover-only
-                            so the row stays clean; New-task stays
+                        {/* Hover shows the menu and `+` only (docs/ui.md "One
+                            glyph per meaning"). Settings and the project's
+                            own filter live in the menu; the filter icon is
+                            drawn only while its bar is open. `+` stays
                             visible because it's the headline action. */}
                         <div className="flex items-center gap-0.5">
-                          {/* Filter controls (GH #324), left of the cog. An
-                              active filter pins the whole bar so the user
-                              can see why rows are missing. */}
                           <ProjectFilterToggle
                             projectId={p.id}
                             active={filterOn}
@@ -1583,20 +1590,26 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                               else setFilterInputs(prev => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
                             }}
                           />
-                          <Tip content={t("projectSettingsTip")}>
+                          <Tip content={t("projectMenuTip")}>
                             <button
+                              data-testid={`project-menu-${p.id}`}
                               className={cn(
                                 "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] transition-opacity",
-                                // Stay visible while the `+` dropdown is
-                                // open (otherwise the gear vanishes the
-                                // moment the user opens the menu), and
-                                // while the filter bar is open.
-                                menuOpenProjectId === p.id || filterBarOpen
-                                  ? "opacity-100"
-                                  : "opacity-0 group-hover:opacity-100",
+                                // Stays while the `+` dropdown is open, or it
+                                // vanishes the moment the user opens it.
+                                menuOpenProjectId === p.id ? "opacity-100" : "opacity-0 group-hover:opacity-100",
                               )}
-                              onClick={(e) => { e.stopPropagation(); useApp.getState().openSettings("repositories", p.id); }}
-                            ><Cog className="h-4 w-4" /></button>
+                              // The row's right-click menu IS the project
+                              // menu; open that one at the button rather
+                              // than keeping a second copy of its items.
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const r = e.currentTarget.getBoundingClientRect();
+                                e.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
+                                  bubbles: true, cancelable: true, clientX: r.left, clientY: r.bottom,
+                                }));
+                              }}
+                            ><MoreHorizontal className="h-4 w-4" /></button>
                           </Tip>
                           {/* Single `+` trigger → instant dropdown with the
                               two project-level actions. Replaces the two
@@ -1720,6 +1733,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     );
                   })()}
                   <ContextMenuSeparator />
+                  {!compact && (
+                    <ContextMenuItem
+                      data-testid={`project-ctx-filter-${p.id}`}
+                      onSelect={() => setFilterInputs(prev => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }))}
+                    >
+                      <ListFilter />
+                      {t("ctxFilterTasks")}
+                    </ContextMenuItem>
+                  )}
                   <ContextMenuItem onSelect={() => openSettings("repositories", p.id)}>
                     <Cog />
                     {t("ctxSettings")}
@@ -3068,7 +3090,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               >
                 {label}
               </span>
-              <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />
+              {/* Location is marked on the exception (docs/ui.md "One glyph
+                  per meaning"): a worktree, the common case, draws nothing,
+                  and the main checkout keeps its link glyph. */}
+              {w.is_main_checkout && <TaskLocationIcon isMainCheckout size="h-3.5 w-3.5" />}
               {w.spawned_by && <SpawnedFromMark task={w} />}
               {/* The task's tab properties, collected (GH #358): after the
                   name on the LEFT, never in the trailing badge/kebab slot.
@@ -3086,12 +3111,6 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               )}
             </>
           )}
-          {/* PR/MR state: tiny pull-request glyph colored by live state
-              (green open / purple merged / red closed / gray draft or
-              unknown-yet). Falls back to the persisted pr_url for
-              tasks not visited this session - state unknown, but
-              the link out (issue #21) still works. Click opens the PR. */}
-          {!taskRenaming && <TaskPrBadge task={w} />}
           {/* Spotlight active indicator: just the animated wave icon.
               No branch text — avoids any truncation of the task name. */}
           {!taskRenaming && isSpotlighted ? (
@@ -3127,114 +3146,52 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           ))}
         </div>
 
-        {/* Trailing slot: status badge by default, single kebab (⋮)
-            menu dropdown on hover. Replaces the prior archive + shield
-            pair — a single icon hosts Sandbox + Archive in a Radix
-            DropdownMenu. Instant hover swap (no 2s delay): the kebab is
-            unobtrusive enough that revealing it immediately doesn't
-            crowd the row. The badge only renders when collapsed
-            (expanded rows put per-tab badges on their children). */}
+        {/* PR/MR state, right-aligned and carrying its number so it reads
+            as a link and not one more icon. Falls back to the persisted
+            pr_url for tasks not visited this session. Click opens the PR. */}
+        {!taskRenaming && <TaskPrBadge task={w} showNumber />}
+
+        {/* Three fixed slots, each with ONE meaning, never swapped on hover
+            (docs/ui.md "One glyph per meaning"): mode (sandbox, docker,
+            dangerous YOLO; absent when there is none), the task menu (hover
+            only, its width reserved so nothing shifts), and work state (the
+            badge while collapsed; expanded rows put it on their children).
+            The state slot is always rightmost, so it lines up down the tree. */}
+        {(() => {
+          const wMode = effectiveSandboxMode(w);
+          const isLaunched = terminalTabs.length > 0;
+          // A LIVE pty, not merely "this task has tabs": a tab outlives its
+          // process, and the YOLO mark must not warn about an agent that is
+          // gone. The board's badge uses the same signal.
+          const hasLivePty = terminalTabs.some(t => t.ptyId);
+          // Docker stores sandbox_mode as off (the cages are exclusive), so
+          // it is checked first or a Docker task would show no mark.
+          const mark = w.docker_sandbox_enabled
+            ? <DockerSandboxIcon active={isLaunched} className="h-3.5 w-3.5" />
+            : !!w.yolo && !isSandboxEnforced(wMode) && hasLivePty
+              ? <Zap data-testid="task-yolo-badge" className="h-3.5 w-3.5 text-[var(--color-err)]" fill="none" />
+              : wMode !== "off" ? <SandboxIcon mode={wMode} active={isLaunched} className="h-3.5 w-3.5" /> : null;
+          return mark && (
+            <span data-testid="task-mode-slot" className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">{mark}</span>
+          );
+        })()}
         <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-          {collapsed && (hasAttention || hasDone || hasWorking || hasDelegated) && (
-            // `translate3d(0,0,0)` pins it to its own compositing layer for
-            // good. Without it the layer exists only WHILE the opacity
-            // transition runs, and WebKit pixel-snaps a layer: the badge
-            // sits at a fractional offset (a `py-[3px]` row and a truncating
-            // flex name both land on half pixels), so it jumped up and to
-            // the right on hover and back on leave. Same reason Dialog pins
-            // its content box.
-            <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0 [transform:translate3d(0,0,0)]">
-              {hasAttention ? <TaskWorkBadge reason="attention" />
-                : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
-                : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
-                : <TaskWorkBadge reason="delegated" delegated={rowDelegated} />}
-            </span>
-          )}
           <DropdownRoot open={menuOpen} onOpenChange={setMenuOpen}>
             <Tip content={t("taskMenu")}>
             <DropdownTrigger asChild>
               <button
                 data-no-drag
+                data-testid="task-menu-trigger"
                 onClick={(e) => e.stopPropagation()}
                 className={cn(
                   "absolute inset-0 flex items-center justify-center rounded hover:bg-[var(--color-bg-3)]",
-                  // A persistent badge (sandbox on OR dangerous YOLO) keeps
-                  // the button visible; unless the collapsed attention/done
-                  // badge is active — it lives in the same slot and the
-                  // status icon would cover it.
-                  (w.sandbox_enabled || w.docker_sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && !(collapsed && (hasAttention || hasDone || hasWorking))
-                    ? "opacity-100 pointer-events-auto"
+                  menuOpen
+                    ? "opacity-100"
                     : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
                   taskRenaming !== null && "pointer-events-none",
                 )}
               >
-                {/* Idle badge, hidden on row hover so the cog shows through.
-                    Precedence: dangerous YOLO (red, no cage) → sandbox mode.
-                    Running state is shown via COLOR (gray when idle, the
-                    mode's real color once an agent is running) - a same-
-                    color-just-dimmer badge read as "caged" even for a task
-                    that wasn't actually running anything. The icon's FILL
-                    still encodes the MODE regardless of state - full
-                    enforce = filled shield, FS-only / monitor = outline -
-                    so the two enforce modes stay distinguishable even gray. */}
-                {(() => {
-                  const wMode = effectiveSandboxMode(w);
-                  const isLaunched = terminalTabs.length > 0;
-                  // A LIVE pty, not merely "this task has tabs". A tab
-                  // outlives the process it spawned, so `isLaunched` stays
-                  // true after the agent is gone and the YOLO mark below
-                  // would warn about an agent that no longer exists. The
-                  // board's badge already uses this signal; the two have to
-                  // agree or one task reads dangerous in one surface and
-                  // quiet in the other.
-                  const hasLivePty = terminalTabs.some(t => t.ptyId);
-                  // Docker mode always stores sandbox_mode as off (the two
-                  // cages are mutually exclusive), so it has to be checked
-                  // FIRST or a Docker-sandboxed task would show no badge at
-                  // all - "off" reads as "no cage" everywhere else, but here
-                  // it can mean "caged a different way".
-                  if (w.docker_sandbox_enabled) {
-                    return (
-                      <DockerSandboxIcon
-                        active={isLaunched}
-                        className="absolute h-3.5 w-3.5 transition-opacity group-hover/wsrow:opacity-0"
-                      />
-                    );
-                  }
-                  // Only while the task is actually RUNNING, and outline
-                  // rather than filled. See the board's TaskSandboxBadge for
-                  // both reasons; the two surfaces have to agree or the same
-                  // task reads as dangerous in one and quiet in the other.
-                  if (!!w.yolo && !isSandboxEnforced(wMode) && hasLivePty) {
-                    return (
-                      <Zap
-                        data-testid="task-yolo-badge"
-                        className="absolute h-3.5 w-3.5 text-[var(--color-err)] transition-opacity group-hover/wsrow:opacity-0"
-                        fill="none"
-                      />
-                    );
-                  }
-                  if (wMode !== "off") {
-                    return (
-                      <SandboxIcon
-                        mode={wMode}
-                        active={isLaunched}
-                        className="absolute h-3.5 w-3.5 transition-opacity group-hover/wsrow:opacity-0"
-                      />
-                    );
-                  }
-                  return null;
-                })()}
-                {/* Kebab: always visible on hover (badge or not). A
-                    "⋮" menu affordance, distinct from the project-level
-                    Settings cog above so the two don't read as the same
-                    action. */}
-                <MoreVertical
-                  className={cn(
-                    "h-3.5 w-3.5 text-[var(--color-fg-faint)] transition-opacity",
-                    (w.sandbox_enabled || w.docker_sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && "opacity-0 group-hover/wsrow:opacity-100",
-                  )}
-                />
+                <MoreVertical className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
               </button>
             </DropdownTrigger>
             </Tip>
@@ -3593,6 +3550,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             </DropdownMenu>
           </DropdownRoot>
         </span>
+        <span data-testid="task-state-slot" className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+          {collapsed && (hasAttention ? <TaskWorkBadge reason="attention" />
+            : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
+            : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
+            : hasDelegated ? <TaskWorkBadge reason="delegated" delegated={rowDelegated} />
+            : null)}
+        </span>
       </div>
 
       {/* Tab children — terminal tabs only; edit/diff are transient file views */}
@@ -3609,7 +3573,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
         const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const title = tab.customTitle
           ? rawTitle
-          : formatTerminalTitle(rawTitle, tab.cli, showWorking);
+          : formatTerminalTitle(rawTitle, resolveIconId(tab.cli, agents), workingIndicator);
         const isTabRenaming = tabRenaming?.id === tab.id;
 
         return (
@@ -3734,23 +3698,24 @@ function NavItem({ icon, label, active, compact, onClick, testId }: {
   // it left of the project/task icons below it.
   // font-medium (500) gives the sidebar labels enough weight to read crisp
   // against the bg without looking shouty.
+  // Icon-only in both modes; the label is the tooltip, and stays in the DOM
+  // for screen readers (and for anything that finds the entry by its name).
   const btn = (
     <button
       onClick={onClick}
       data-testid={testId}
+      aria-label={label}
       className={cn(
-        "flex items-center rounded-md text-[13px] font-medium",
-        compact
-          ? "mx-auto h-9 w-9 justify-center"
-          : "gap-2 px-2.5 py-1.5",
-        active ? "bg-[var(--color-sel)] text-[var(--color-fg)]" : "text-[var(--color-fg)] hover:bg-[var(--color-hover)]",
+        "flex items-center justify-center rounded-md",
+        compact ? "mx-auto h-9 w-9" : "h-[30px] flex-1",
+        active ? "bg-[var(--color-sel)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       {icon}
-      {!compact && <span>{label}</span>}
+      <span className="sr-only">{label}</span>
     </button>
   );
-  return compact ? <Tip content={label}>{btn}</Tip> : btn;
+  return <Tip content={label} side={compact ? "right" : "bottom"}>{btn}</Tip>;
 }
 
 /** Inline name-prompt row rendered above the task list while the
@@ -3860,17 +3825,17 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
 function CompactTaskTip({ name, tabs }: { name: string; tabs: TerminalTab[] }) {
   const { t } = useTranslation("sidebar");
   const agents = useApp(s => s.agents);
+  const workingIndicator = usePrefs(s => s.workingIndicator);
   return (
     <div data-testid="compact-task-tip" className="flex max-w-[320px] flex-col gap-1">
       <div className="truncate font-medium">{name}</div>
       {tabs.map(tab => {
         const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
-        const working = tab.workState === "working";
-        const title = tab.customTitle ? rawTitle : formatTerminalTitle(rawTitle, tab.cli, working);
+        const title = tab.customTitle ? rawTitle : formatTerminalTitle(rawTitle, resolveIconId(tab.cli, agents), workingIndicator);
         // A KEY, not the rendered word: the colour logic below compares it.
         const stateKey = tab.unread?.reason === "attention" ? "compactNeedsYou"
           : tab.workState === "done" ? "compactDone"
-          : working ? "compactWorking"
+          : tab.workState === "working" ? "compactWorking"
           : "";
         return (
           <div key={tab.id} data-testid="compact-task-tip-tab" className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">

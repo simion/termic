@@ -104,7 +104,7 @@ export function hasPrIdentity(task: Task): boolean {
 }
 
 /** The precedence itself, over pre-computed facts. The board reaches it
- *  through taskBoardColumn and the sidebar's status section directly; there
+ *  through taskBoardColumn and the sidebar's status chips directly; there
  *  is no second copy. The pref gates match taskNeedsAttention (attention
  *  absent = on) and taskWorking (working absent = off). */
 export function boardColumnFromFacts(

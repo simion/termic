@@ -50,7 +50,7 @@ export interface WorkStatePrefs {
  *  (docs/agent-states.md, state 7). Clearing it on sight, as the other marks
  *  are, made a question you had glanced at and left unanswered read as a
  *  finished turn: off the bell, and filed under Settled on the board and in the
- *  sidebar's status section, while the agent sat waiting. */
+ *  sidebar, while the agent sat waiting. */
 export function unreadClearsOnSight(unread: { reason: string } | null | undefined): boolean {
   return !!unread && unread.reason !== "attention";
 }

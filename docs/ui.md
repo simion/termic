@@ -134,8 +134,8 @@ instead of by display name.
 
 ## The project row's task filter
 
-The project header's hover bar carries a filter icon, left of the
-settings cog (`sidebar/ProjectTaskFilter.tsx`, GH #324). It opens a bar
+The project's menu (⋯ on the header's hover, or a right-click) carries
+"Filter tasks" (`sidebar/ProjectTaskFilter.tsx`, GH #324). It opens a bar
 on its OWN line under the header, full width: a text input and a bell.
 Inline in the header, the input left a long project name almost no room.
 The bell keeps only tasks with a notification and shows how many there
@@ -162,14 +162,52 @@ CLI rename or a notification arriving moves a row with no extra wiring.
   collapse state: a filter whose results sit behind a chevron reads as
   "nothing matched". Once, not for as long as it is on: forcing it open
   at render made the chevron dead while a filter was up.
-- **The header holds one filter icon**, lit while any filter (text or
-  bell) is on. It opens a bar under the header: the input, then the bell
+- **The header holds one filter icon while the bar is open**, lit while
+  any filter (text or bell) is on; hover does not reveal it. It sits next to
+  the bar it belongs to: the input, then the bell
   with its count. An active filter keeps its bar and pins the header's
   controls; an empty, abandoned bar folds away. A filter whose results sit behind a chevron reads as
   "nothing matched", and the stored collapse is left untouched so
   clearing the filter folds it back.
 - Escape in the input and its clear button both empty it. The feature
   is absent in compact mode.
+
+## One glyph per meaning
+
+The sidebar grew one feature at a time and each brought its own mark, until
+it said some things twice and swapped what a slot meant on hover. The rules
+it keeps now (the "Lens" concept of the sidebar rethink):
+
+- **The agent's own title glyph never repeats the icon beside it.**
+  `formatTerminalTitle` always strips claude's `✳` (the brand icon says
+  "claude"), and strips its Braille spinner whenever Termic draws its own
+  working badge (the `workingIndicator` pref), whatever the tab's state. It
+  takes the RESOLVED icon id, so a cloned agent (`claude-dpf`) is treated
+  as the claude it draws as. With the pref off the spinner stays: it is then
+  the only working signal.
+- **A task row's trailing slots each mean one thing, and never swap:** the
+  PR (right-aligned, with its number, `#367`), the mode (sandbox, docker,
+  or a dangerous YOLO; absent when there is none), the task menu (hover
+  only, its width reserved so nothing shifts), then work state (the badge
+  while collapsed), always rightmost so it lines up down the tree. The menu
+  used to share the state slot, with the mode badge underneath, each fading
+  into the other on hover.
+- **Location is marked on the exception.** A worktree, the common case,
+  draws no glyph; the main checkout keeps its link glyph, now the only
+  location mark in the tree. Other surfaces (board cards, the dashboard,
+  the breadcrumb) still show both.
+- **Projects are sentence case**, semibold, so a project never reads as the
+  same level as the PROJECTS label. Folder names stay all caps (that is
+  `groupOf`'s rule), which makes a folder read as the level above a project.
+- **The project header's hover shows only ⋯ and `+`.** ⋯ opens the
+  project's own right-click menu at the button, which is where Settings and
+  "Filter tasks" (#324) live now.
+- **One nesting style:** a 1px guide line. A project folder's is neutral (or
+  its accent, tinted); a task group's is its colour. Different colour, same
+  weight, same meaning: these belong together.
+- **The nav is one strip of icons,** each with its name as a tooltip and as
+  screen-reader text. Four full-width rows took the top of the sidebar
+  before anything about your work showed.
 
 ## The sidebar's filter bar
 
@@ -180,11 +218,13 @@ carries the Kanban board's filter bar: the same component
 (`hooks/useTaskQuery.tsx`, which the board calls too). Two bars that look
 alike but were built twice drift apart, so there is one of each piece.
 
-- **It scopes both sections.** STATUS and PROJECTS are two groupings of
-  the same tasks, so a query hides a task from both or from neither. It
-  sits above both, outside their scroller, for the same reason: a control
-  under PROJECTS that also filtered STATUS above it read backwards, and it
-  scrolled away with the tree.
+- **It scopes both sections.** STATUS (when it is on) and PROJECTS are two
+  groupings of the same tasks, so a query hides a task from both or from
+  neither. It sits above both, outside their scroller, for the same reason:
+  a control under PROJECTS that also filtered STATUS above it read
+  backwards, and it scrolled away with the tree. The status chips under it,
+  drawn while STATUS is off, write into the same query (see "The sidebar's
+  status chips").
 - **The sidebar's own query** (`useUI.sidebarQuery`), not the board's.
   The two answer different questions (where am I working, what stage is
   everything at), and the board is often open next to the sidebar.
@@ -213,7 +253,7 @@ alike but were built twice drift apart, so there is one of each piece.
   store the bar consumes, so a remount never steals focus), and "Clear
   sidebar filter" shows only while a query is set.
 - **It sits nearer what it filters:** more space above the bar (from the
-  nav) than below it (to the STATUS or PROJECTS header).
+  nav) than below it (to the chips, STATUS or PROJECTS header).
 - **The per-project filter (#324) stays** and ANDs with it.
 - **Absent on the icon rail;** a query typed in the full sidebar filters
   nothing there.
@@ -283,7 +323,8 @@ sidebar is unreadable and "these belong to one job" is the question.
 
 Drawing (`src/lib/taskGroups.ts`, `TaskGroupBlock.tsx`): a group is one
 contiguous block at its FIRST member's position, a caption row in the
-group's accent (name, member count) above a 2px rail of the same colour.
+group's accent (name, member count) above a 1px rail of the same colour,
+the same weight as a project folder's guide line.
 The caption copies a task row's box model, so its icon sits in the loose
 rows' chevron column and its label in their name column; the rail is the
 members wrapper's left border, under the icon's centre, and members sit
@@ -770,6 +811,44 @@ test). Still open: whether a finished turn you have not looked at belongs in
 Needs attention (the title-bar pill says yes, the board says Settled), and
 whether `taskBoardColumn` should grow a Merged column so "finished and can
 go" has an answer on both surfaces.
+
+
+## The sidebar's status chips
+
+Under the filter bar, a row of chips counts the tasks that need you, are
+working, and are in review (`sidebar/StatusChips.tsx`). A chip toggles
+`status:<column>` in the sidebar's query, so clicking one narrows the tree
+to those tasks and the bar shows the clause it wrote: the board's lane-click
+idea, applied to the sidebar.
+
+They are drawn only while the STATUS section (above) is off, which is the
+default. The section lists the same buckets with their tasks, so with it on
+the chips would say the same thing twice; turning it on swaps the chips for
+it, and nothing else about the filter bar changes. For most people the
+section's real job, saying that something needs you without scrolling, is
+the count, and the list is one click away in the tree.
+
+- **A chip IS a board column.** Every task's column is
+  `boardColumnFromFacts` ([src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts)),
+  the board's own precedence, and `status:` matches on the same column. So a
+  count is exactly what clicking its chip leaves in the tree. If one looks
+  wrong, the fix goes in `taskBoardState.ts` and the board moves with it.
+- **Counted per task** ([src/lib/sidebarStatus.ts](../src/lib/sidebarStatus.ts)).
+  The section placed a whole task group in its most urgent member's bucket,
+  and a filter cannot reproduce that, so a count and its click would have
+  disagreed.
+- **Three chips, not five.** Settled and Not started are the largest and
+  least urgent buckets; the board and the query have them.
+- **An empty chip is hidden**, unless the query holds its clause: it is how
+  that clause comes back out. With no chip to show the row is not drawn.
+- **The work prefs gate it as they gate the board:** `attentionIndicator`
+  off empties Needs you, `workingIndicator` off empties Working.
+- **Rendering:** its own memoized component reading `useStatusTabFacts`, a
+  facts record of three booleans per task, never `tabs`, with the PR snapshot
+  read non-reactively behind a small `usePr` trigger. An output stamp or a
+  live title re-renders nothing, and a count moving does not re-render the
+  Sidebar body. `selectorFanout.test.ts` pins it.
+- Not on the icon rail.
 
 ## What a task is called (name vs branch)
 

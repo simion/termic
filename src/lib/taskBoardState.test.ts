@@ -130,7 +130,7 @@ describe("taskBoardColumn", () => {
 });
 
 describe("boardColumnFromFacts", () => {
-  // The sidebar's status section caches the facts and calls the core
+  // The sidebar's status chips cache the facts and call the core
   // directly; the board goes through taskBoardColumn. If the two ever
   // disagree, the sidebar and the board show the same task in two columns.
   const tabSets: Tab[][] = [

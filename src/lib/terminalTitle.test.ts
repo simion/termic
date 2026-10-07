@@ -21,10 +21,14 @@ describe("formatTerminalTitle", () => {
     );
   });
 
-  it("keeps the raw Claude title when hiding is disabled", () => {
+  it("keeps Claude's spinner when Termic draws no working badge", () => {
     expect(formatTerminalTitle("⠋ Task name", "claude", false)).toBe(
       "⠋ Task name",
     );
+  });
+
+  it("always removes the brand glyph: the icon beside the title says it", () => {
+    expect(formatTerminalTitle("✳ Task name", "claude", false)).toBe("Task name");
   });
 
   it("does not modify other CLI titles", () => {

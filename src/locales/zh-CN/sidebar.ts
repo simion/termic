@@ -20,6 +20,13 @@ export default {
   collapseInactiveHint: "将没有智能体的未分组项目折叠到底部的一行中。已分组的项目仍留在其文件夹中。",
   showStatusSection: "显示状态分区",
   showStatusSectionHint: "在项目上方列出需要你处理、进行中或审查中的任务，按看板的列分组。",
+  statusChips: {
+    attention: "需要你",
+    working: "进行中",
+    review: "审查中",
+    tip: "筛选 status:{{status}}",
+    tipActive: "移除 status:{{status}}",
+  },
   filterBar: {
     placeholder: "筛选任务",
     count: "{{shown}} / {{total}} 个任务",
@@ -34,6 +41,8 @@ export default {
   addProjectTip: "添加项目（仓库）",
   multiRepoTip: "多仓库项目",
   projectSettingsTip: "项目设置",
+  projectMenuTip: "项目菜单",
+  ctxFilterTasks: "筛选任务",
   newTaskForProjectTip: "为此项目新建任务",
   ctxNewTask: "新建任务",
   broadcast: "广播消息（{{count}}）",

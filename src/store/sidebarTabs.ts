@@ -17,8 +17,9 @@
 //   EXCLUSION list on purpose: a field missing from it costs an extra render,
 //   never a stale one.
 //
-// - The STATUS SECTION gets the board column's three raw facts per task, in a
-//   record of its own (see StatusTabFacts for why it is not more body facts).
+// - The STATUS SECTION, or the status chips while it is off, get the board
+//   column's three raw facts per task, in a record of their own (see
+//   StatusTabFacts for why it is not more body facts).
 //
 // Selector bodies are exported so `selectorFanout.test.ts` measures these,
 // not a copy.
@@ -157,10 +158,10 @@ export function createBoardFilterFactsSelector(): (s: AppState) => BoardFilterFa
 // ─── Status section: the board column's facts ──────────────────────────
 
 /** A record of its own, NOT more fields on SidebarTaskFacts: the body would
- *  then re-render on every idle -> working flip of every agent, section on
- *  or off. Mounted only with the section, so it costs nothing when the
- *  section is off. `untouched` reads `lastInputAt`, which is why this cannot
- *  be derived per row from useRowTabs (it holds that field back). */
+ *  then re-render on every idle -> working flip of every agent. Held by
+ *  whichever of the section and the chips is mounted (never both).
+ *  `untouched` reads `lastInputAt`, which is why this cannot be derived per
+ *  row from useRowTabs (it holds that field back). */
 export type StatusTabFacts = Readonly<Record<string, BoardTaskFacts>>;
 
 export const EMPTY_STATUS_FACTS: StatusTabFacts = Object.freeze({});

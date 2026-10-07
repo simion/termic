@@ -20,6 +20,13 @@ export default {
   collapseInactiveHint: "Fold ungrouped projects with no agents into a row at the bottom. Grouped projects stay in their folder.",
   showStatusSection: "Show status section",
   showStatusSectionHint: "List the tasks that need you, are working or are in review above Projects, sorted the way the Kanban board sorts them.",
+  statusChips: {
+    attention: "Needs you",
+    working: "Working",
+    review: "In review",
+    tip: "Filter to status:{{status}}",
+    tipActive: "Remove status:{{status}}",
+  },
   filterBar: {
     placeholder: "Filter tasks",
     count: "{{shown}} of {{total}} tasks",
@@ -34,6 +41,8 @@ export default {
   addProjectTip: "Add project (repo)",
   multiRepoTip: "Multi-repo project",
   projectSettingsTip: "Project settings",
+  projectMenuTip: "Project menu",
+  ctxFilterTasks: "Filter tasks",
   newTaskForProjectTip: "New task for this project",
   ctxNewTask: "New task",
   broadcast: "Broadcast message ({{count}})",
