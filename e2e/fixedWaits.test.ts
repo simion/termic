@@ -51,6 +51,11 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
     why: "AgentsSection writes its copy 500ms after an edit and the timer outlives "
       + "the page, so the next case has to start past it",
   },
+  "sidebar-filter.e2e.ts": {
+    count: 2,
+    why: "two negatives: the paused project filter's slashed icon must NOT open "
+      + "the bar, and a bar a query closed must NOT reopen when the query clears",
+  },
   "tabs-layout.e2e.ts": {
     count: 2,
     why: "Ctrl-Tab is asynchronous, so 'the task did not switch' has to be asserted "

@@ -277,6 +277,7 @@ describe("sidebar filter bar", () => {
       await waitGone(input);
       expect(await present(`${toggle}[data-paused]`)).toBe(false);
       await setQuery("");
+      // a negative: the closed bar must NOT reopen, and nothing fires for that
       await browser.pause(150);
       expect(await present(input)).toBe(false);
     } finally {
