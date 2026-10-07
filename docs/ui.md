@@ -860,6 +860,10 @@ the count, and the list is one click away in the tree.
 - **A chip is its glyph and its count,** on one line at any sidebar width.
   Its name is in the tooltip and the accessible label: with the words the
   row wrapped to two lines in a narrow sidebar.
+- **In review is the PR glyph in the text colour,** not green. The column
+  means "has an open or draft PR, agent idle", and green on a row's PR
+  badge is a PR state, so a green chip read as "checks passed". An eye was
+  tried and dropped: the PR glyph is what the board's review column uses.
 - **Three chips, not five.** Settled and Not started are the largest and
   least urgent buckets; the board and the query have them.
 - **An empty chip is hidden**, unless the query holds its clause: it is how

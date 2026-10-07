@@ -835,8 +835,9 @@ describe("status chips under streaming output (bear traps 5, 8)", () => {
     // not the Sidebar body; never on the icon rail.
     expect(src).toMatch(/export const StatusChips = memo\(/);
     const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
-    // Never alongside the section, which lists the same buckets.
-    expect(sidebar).toMatch(/!compact && !showStatusSection && <StatusChips \/>/);
+    // Never alongside the section, which lists the same buckets, and inside
+    // the row that is itself gated off the icon rail.
+    expect(sidebar).toMatch(/\{!compact && \(\s*<div[^>]*>\s*\{!showStatusSection && <StatusChips \/>\}/);
   });
 });
 

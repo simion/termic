@@ -49,7 +49,9 @@ function chipLabel(chip: StatusChip, t: (k: string) => string): string {
 const ICON: Record<StatusChip, React.ReactNode> = {
   attention: <Bell className="h-3 w-3 text-[var(--color-warn)]" strokeWidth={2.5} />,
   working: <span className="text-[var(--color-fg-faint)]"><Spinner size={10} /></span>,
-  review: <GitPullRequest className="h-3 w-3 text-[var(--color-pr-open)]" />,
+  // the PR glyph in the theme's fg, not a PR-state colour: the column means
+  // "has a PR", and green read as "checks passed"
+  review: <GitPullRequest className="h-3 w-3 text-[var(--color-fg)]" />,
 };
 
 export const StatusChips = memo(function StatusChips() {
@@ -90,7 +92,7 @@ export const StatusChips = memo(function StatusChips() {
   return (
     // One line at any sidebar width: a chip is its glyph and count, and its
     // name lives in the tooltip and the accessible label.
-    <div data-testid="status-chips" className="flex shrink-0 flex-nowrap gap-1 overflow-hidden px-2 pt-1.5">
+    <div data-testid="status-chips" className="flex min-w-0 flex-nowrap gap-1 overflow-hidden">
       {shown.map(c => {
         const on = boardClauseState(query, "status", c) === "include";
         return (

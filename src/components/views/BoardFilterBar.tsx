@@ -249,13 +249,10 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
         )}
       </div>
       {sidebar ? (
-        (active || unknownKeys.length > 0) && (
+        // the sidebar draws its count beside the status chips (Sidebar.tsx),
+        // so a filter turning on never moves the chips under the pointer
+        unknownKeys.length > 0 && (
           <div className="flex min-w-0 items-center gap-2 px-1">
-            {active && (
-              <span data-testid={`${tid}-count`} className="shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
-                {t("sidebar:filterBar.count", { shown, total })}
-              </span>
-            )}
             {unknownKeys.length > 0 && (
               <span data-testid={`${tid}-unknown`} className="min-w-0 truncate text-[11.5px] text-[var(--color-warn)]">
                 {t("board.filterUnknown", { keys: unknownKeys.map(k => `${k}:`).join(", ") })}

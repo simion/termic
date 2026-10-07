@@ -1258,9 +1258,22 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           onMenuOpenChange={setFilterMenuOpen}
         />
       )}
-      {/* The chips stand in for the STATUS section while it is off. With it
-          on they would count the same buckets the section lists. */}
-      {!compact && !showStatusSection && <StatusChips />}
+      {/* One row under the bar: the status chips, then the filter's count at
+          the far end. The count shares their line so turning a filter on
+          never pushes the chips out from under the pointer. The chips stand
+          in for the STATUS section while it is off; with it on they would
+          count the same buckets the section lists. `empty:hidden` drops the
+          row when neither has anything to say. */}
+      {!compact && (
+        <div className="flex shrink-0 items-center gap-2 px-2 pt-1.5 empty:hidden">
+          {!showStatusSection && <StatusChips />}
+          {queryOn && (
+            <span data-testid="sidebar-filter-count" className="ml-auto shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
+              {t("filterBar.count", { shown: queryMatchIds?.size ?? 0, total: queryLiveTasks.length })}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Projects section */}
       <div className="relative flex min-h-0 flex-1 flex-col">
