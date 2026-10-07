@@ -197,10 +197,12 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   while collapsed), always rightmost so it lines up down the tree. The menu
   used to share the state slot, with the mode badge underneath, each fading
   into the other on hover.
-- **Location is marked on the exception.** A worktree, the common case,
-  draws no glyph; the main checkout keeps its link glyph, now the only
-  location mark in the tree. Other surfaces (board cards, the dashboard,
-  the breadcrumb) still show both.
+- **Location glyphs are a choice.** The tree draws a link for the main
+  checkout and a branch for a worktree by default; the `taskLocationIcon`
+  pref (Settings > Appearance > Sidebar, and a submenu in the Projects
+  list options) narrows that to main checkout only, worktree only, or
+  none, since whichever one you mostly use is noise. Other surfaces (board
+  cards, the dashboard, the breadcrumb) always show both.
 - **Project names stay all caps**, like folder names. A project groups its
   tasks the way a folder groups projects, and the caps are what set a
   project's header apart from the task rows under it.

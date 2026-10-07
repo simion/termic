@@ -737,6 +737,24 @@ describe("prefs: status section", () => {
     expect(second.usePrefs.getState().scheduledNav).toBe("auto");
   });
 
+  it("the task git icon: both by default, and each mode shows its own rows", async () => {
+    const first = await import("./prefs");
+    expect(first.usePrefs.getState().taskLocationIcon).toBe("both");
+    expect(first.parseTaskLocationIcon("junk")).toBe("both");
+    expect(first.taskLocationIconShown("both", true)).toBe(true);
+    expect(first.taskLocationIconShown("both", false)).toBe(true);
+    expect(first.taskLocationIconShown("main", true)).toBe(true);
+    expect(first.taskLocationIconShown("main", false)).toBe(false);
+    expect(first.taskLocationIconShown("worktree", true)).toBe(false);
+    expect(first.taskLocationIconShown("worktree", false)).toBe(true);
+    expect(first.taskLocationIconShown("none", true)).toBe(false);
+    first.usePrefs.getState().setTaskLocationIcon("main");
+    expect(localStorage.getItem("taskLocationIcon")).toBe("main");
+    vi.resetModules();
+    const second = await import("./prefs");
+    expect(second.usePrefs.getState().taskLocationIcon).toBe("main");
+  });
+
   it("the profile colour stays off the sidebar until asked for", async () => {
     const first = await import("./prefs");
     expect(first.usePrefs.getState().profileSidebarWash).toBe(false);

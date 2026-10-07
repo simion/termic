@@ -143,6 +143,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "showStatusSection", scoped: true, class: "sync" },
   { key: "showBoard", scoped: true, class: "sync" },
   { key: "scheduledNav", scoped: true, class: "sync" },
+  { key: "taskLocationIcon", scoped: true, class: "sync" },
   { key: "hideInactiveProjects", scoped: true, class: "local", reason: "sidebar filter toggled in place, over this machine's tasks" },
   { key: "compactSidebar", scoped: false, class: "local", reason: "collapse state" },
   { key: "collapsedProjects", scoped: true, class: "local", reason: "collapse state" },

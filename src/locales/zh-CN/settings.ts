@@ -401,6 +401,14 @@ export default {
       label: "看板",
       hint: "在侧边栏导航中显示看板。如果你从不使用看板，可以关闭。",
     },
+    taskGitIcon: {
+      label: "任务 git 图标",
+      hint: "侧边栏中哪些任务行显示任务的运行位置：链接表示主检出，分支表示工作树。",
+      both: "两者",
+      main: "主检出",
+      worktree: "工作树",
+      none: "无",
+    },
     scheduledNav: {
       label: "定时任务",
       hint: "在侧边栏导航中显示定时任务。",

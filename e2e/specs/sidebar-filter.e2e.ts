@@ -13,6 +13,7 @@
 import {
   archiveTask,
   clickByText,
+  clickMenuItemUntilReady,
   clickWhenVisible,
   createWorktreeTask,
   dismissOverlays,
@@ -142,16 +143,46 @@ describe("sidebar filter bar", () => {
     await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(false));
   });
 
-  it("marks location on the exception: the main checkout has a glyph, a worktree none", async () => {
+  it("location glyphs: both by default, and the list options submenu narrows them", async () => {
     // openTask opens the repo root, so a, b and c are main checkouts.
     wt = await createWorktreeTask("sfilter-worktree", "sfilter-worktree", false);
     await waitVisible(TREE_ROW(wt));
-    const glyphs = await browser.execute((main, worktree) => ({
-      main: !!document.querySelector(`[data-sidebar-task-row="${main}"] [aria-label="main checkout"]`),
-      worktree: document.querySelector(`[data-sidebar-task-row="${worktree}"]`)!
-        .querySelectorAll('[aria-label="main checkout"], [aria-label="worktree"]').length,
-    }), b, wt);
-    expect(glyphs).toEqual({ main: true, worktree: 0 });
+    const glyphs = () => browser.execute((main, worktree) => {
+      const has = (id: string, label: string) =>
+        !!document.querySelector(`[data-sidebar-task-row="${id}"] [aria-label="${label}"]`);
+      return { main: has(main, "main checkout"), worktree: has(worktree, "worktree") };
+    }, b, wt);
+    const setMode = (m: string) => browser.execute(v => window.__termic!.usePrefs.getState().setTaskLocationIcon(v as any), m);
+    try {
+      expect(await glyphs()).toEqual({ main: true, worktree: true });
+      for (const [mode, want] of [
+        ["worktree", { main: false, worktree: true }],
+        ["none", { main: false, worktree: false }],
+        ["both", { main: true, worktree: true }],
+      ] as const) {
+        await setMode(mode);
+        await browser.waitUntil(async () => { const g = await glyphs(); return g.main === want.main && g.worktree === want.worktree; },
+          { timeout: 5_000, timeoutMsg: `${mode}: glyphs were ${JSON.stringify(await glyphs())}` });
+      }
+      // the menu alias writes the same pref
+      await waitVisible('[data-testid="sidebar-list-options"]');
+      await browser.execute(() => {
+        const el = document.querySelector('[data-testid="sidebar-list-options"]') as HTMLElement;
+        const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        el.click();
+      });
+      await waitVisible('[data-testid="sidebar-task-git-icon"]');
+      await clickMenuItemUntilReady("Show task git icon", () => present('[role="menuitem"][data-value="main"]') as Promise<boolean>);
+      await snap("sidebar-task-git-icon-menu.png");
+      await clickWhenVisible('[role="menuitem"][data-value="main"]');
+      await browser.waitUntil(async () => { const g = await glyphs(); return g.main && !g.worktree; },
+        { timeout: 5_000, timeoutMsg: "the submenu's Main checkout only did not hide the worktree glyph" });
+    } finally {
+      await setMode("both");
+      await dismissOverlays();
+    }
   });
 
   it("gives the row's trailing slots one meaning each: the menu is hover-only and never holds state", async () => {

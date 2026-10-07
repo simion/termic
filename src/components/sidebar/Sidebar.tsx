@@ -8,7 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
 import { useApp, useActiveTabId } from "@/store/app";
 import { useRowTabs, useSidebarTabFacts } from "@/store/sidebarTabs";
-import { usePrefs, scheduledNavVisible } from "@/store/prefs";
+import { usePrefs, scheduledNavVisible, taskLocationIconShown } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
@@ -175,6 +175,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const hideInactiveProjects = usePrefs(s => s.hideInactiveProjects);
   const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
   const showStatusSection = usePrefs(s => s.showStatusSection);
+  const taskLocationIcon = usePrefs(s => s.taskLocationIcon);
+  const setTaskLocationIcon = usePrefs(s => s.setTaskLocationIcon);
   const showBoard = usePrefs(s => s.showBoard);
   const scheduledNav = usePrefs(s => s.scheduledNav);
   // A boolean out of the selector, so a task write that leaves the answer
@@ -1336,6 +1338,30 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     </DropdownItem>
                   );
                 })}
+                {/* Mirrored in Settings > Appearance > Sidebar, which writes
+                    the same pref. */}
+                <DropdownSub>
+                  <DropdownSubTrigger data-testid="sidebar-task-git-icon" className="justify-between">
+                    <span className="flex items-center gap-2">
+                      <span className="h-5 w-5 shrink-0" />
+                      {t("taskGitIcon")}
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                  </DropdownSubTrigger>
+                  <DropdownSubContent>
+                    {([
+                      ["both",     "taskGitIconBoth"],
+                      ["main",     "taskGitIconMain"],
+                      ["worktree", "taskGitIconWorktree"],
+                      ["none",     "taskGitIconNone"],
+                    ] as const).map(([id, labelKey]) => (
+                      <DropdownItem key={id} data-value={id} onSelect={() => setTaskLocationIcon(id)}>
+                        <Check className={cn("h-4 w-4 shrink-0 text-[var(--color-accent)]", taskLocationIcon === id ? "opacity-100" : "opacity-0")} />
+                        <span className={taskLocationIcon === id ? "text-[var(--color-accent)] font-medium" : undefined}>{t(labelKey)}</span>
+                      </DropdownItem>
+                    ))}
+                  </DropdownSubContent>
+                </DropdownSub>
                 <DropdownSeparator />
                 <DropdownItem
                   onSelect={() => setHideInactiveProjects(!hideInactiveProjects)}
@@ -2718,6 +2744,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // rewrites and no row draws (ROW_HIDDEN_TAB_FIELDS).
   const tabs = useRowTabs(w.id);
   const activeTabId = useActiveTabId(w.id);
+  // a boolean out of the selector, so flipping the pref re-renders only the
+  // rows whose glyph comes or goes
+  const showLocation = usePrefs(s => taskLocationIconShown(s.taskLocationIcon, w.is_main_checkout));
   const activeTaskId = useApp(s => s.activeTaskId);
   const setActive = useApp(s => s.setActiveTask);
   const setActiveTabId = useApp(s => s.setActiveTabId);
@@ -3086,10 +3115,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               >
                 {label}
               </span>
-              {/* Location is marked on the exception (docs/ui.md "One glyph
-                  per meaning"): a worktree, the common case, draws nothing,
-                  and the main checkout keeps its link glyph. */}
-              {w.is_main_checkout && <TaskLocationIcon isMainCheckout size="h-3.5 w-3.5" />}
+              {/* Which locations get a glyph is the taskLocationIcon pref
+                  (docs/ui.md "One glyph per meaning"). */}
+              {showLocation && <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />}
               {w.spawned_by && <SpawnedFromMark task={w} />}
               {/* The task's tab properties, collected (GH #358): after the
                   name on the LEFT, never in the trailing badge/kebab slot.

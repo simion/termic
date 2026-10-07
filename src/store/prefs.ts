@@ -106,6 +106,7 @@ const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
 const LS_SHOW_BOARD = scoped("showBoard");
 const LS_SCHEDULED_NAV = scoped("scheduledNav");
+const LS_TASK_LOCATION_ICON = scoped("taskLocationIcon");
 const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
 const LS_STATUS_TASK_EXPANDED = scoped("statusTaskExpanded");
 const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
@@ -819,6 +820,9 @@ interface PrefsState {
    *  this profile has a schedule ("auto"), or always. Always by default, the
    *  shape it shipped in. */
   scheduledNav: ScheduledNavMode;
+  /** Which task rows in the sidebar tree draw their location glyph (link =
+   *  main checkout, branch = worktree). Both by default. */
+  taskLocationIcon: TaskLocationIconMode;
   /** Per-bucket overrides of the default fold (count-only buckets start
    *  closed). Only buckets the user toggled are stored. */
   statusBucketCollapsed: StatusBucketCollapsed;
@@ -992,6 +996,7 @@ interface PrefsState {
   setShowStatusSection: (v: boolean) => void;
   setShowBoard: (v: boolean) => void;
   setScheduledNav: (m: ScheduledNavMode) => void;
+  setTaskLocationIcon: (m: TaskLocationIconMode) => void;
   setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
   /** `liveIds`: the tasks that still exist, so dead ids are pruned on write. */
   setStatusTaskExpanded: (taskId: string, expanded: boolean, liveIds: readonly string[]) => void;
@@ -1028,6 +1033,14 @@ export type ScheduledNavMode = "off" | "auto" | "always";
  *  never hides the entry. */
 export function parseScheduledNav(raw: string): ScheduledNavMode {
   return raw === "off" || raw === "auto" ? raw : "always";
+}
+export type TaskLocationIconMode = "both" | "main" | "worktree" | "none";
+export function parseTaskLocationIcon(raw: string): TaskLocationIconMode {
+  return raw === "main" || raw === "worktree" || raw === "none" ? raw : "both";
+}
+/** Whether a task row in the tree draws its location glyph under `mode`. */
+export function taskLocationIconShown(mode: TaskLocationIconMode, isMainCheckout: boolean | undefined): boolean {
+  return mode === "both" || mode === (isMainCheckout ? "main" : "worktree");
 }
 /** Whether the Scheduled nav entry shows. "auto" counts ANY schedule on a
  *  live task, paused ones included: the view is where a paused schedule is
@@ -1242,6 +1255,7 @@ function readStoredPrefs() {
   const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
   const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
   const initialScheduledNav = parseScheduledNav(lsGet(LS_SCHEDULED_NAV, ""));
+  const initialTaskLocationIcon = parseTaskLocationIcon(lsGet(LS_TASK_LOCATION_ICON, ""));
   const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
   const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
   const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
@@ -1333,6 +1347,7 @@ function readStoredPrefs() {
     showStatusSection: initialShowStatusSection,
     showBoard: initialShowBoard,
     scheduledNav: initialScheduledNav,
+    taskLocationIcon: initialTaskLocationIcon,
     statusBucketCollapsed: initialStatusBucketCollapsed,
     statusTaskExpanded: initialStatusTaskExpanded,
     statusGroupCollapsed: initialStatusGroupCollapsed,
@@ -1711,6 +1726,11 @@ export const usePrefs = create<PrefsState>(set => ({
     if (s.scheduledNav === m) return s;
     try { localStorage.setItem(LS_SCHEDULED_NAV, m); } catch {}
     return { scheduledNav: m };
+  }),
+  setTaskLocationIcon: (m) => set(s => {
+    if (s.taskLocationIcon === m) return s;
+    try { localStorage.setItem(LS_TASK_LOCATION_ICON, m); } catch {}
+    return { taskLocationIcon: m };
   }),
   setStatusBucketCollapsed: (bucket, collapsed) => set(s => {
     // Effective state, not the stored override: an absent override already

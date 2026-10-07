@@ -438,6 +438,8 @@ function SidebarSection() {
   const { t } = useTranslation("settings");
   const taskExpandMode = usePrefs(s => s.taskExpandMode);
   const setTaskExpandMode = usePrefs(s => s.setTaskExpandMode);
+  const taskLocationIcon = usePrefs(s => s.taskLocationIcon);
+  const setTaskLocationIcon = usePrefs(s => s.setTaskLocationIcon);
   const sidebarHoverReveal = usePrefs(s => s.sidebarHoverReveal);
   const setSidebarHoverReveal = usePrefs(s => s.setSidebarHoverReveal);
   const showStatusSection = usePrefs(s => s.showStatusSection);
@@ -475,6 +477,38 @@ function SidebarSection() {
                 )}
               >{label}</button>
             </Tip>
+          ))}
+        </div>
+      </div>
+      {/* Also a submenu in the sidebar's Project list options menu; both
+          write the same pref. */}
+      <div className="flex items-start justify-between gap-6" data-testid="task-git-icon-setting">
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-medium">{t("appearance.taskGitIcon.label")}</div>
+          <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+            {t("appearance.taskGitIcon.hint")}
+          </div>
+        </div>
+        <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+          {([
+            ["both",     t("appearance.taskGitIcon.both")],
+            ["main",     t("appearance.taskGitIcon.main")],
+            ["worktree", t("appearance.taskGitIcon.worktree")],
+            ["none",     t("appearance.taskGitIcon.none")],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              data-value={id}
+              aria-pressed={taskLocationIcon === id}
+              onClick={() => setTaskLocationIcon(id)}
+              className={cn(
+                "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
+                taskLocationIcon === id
+                  ? "bg-[var(--color-accent-deep)] text-white"
+                  : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+              )}
+            >{label}</button>
           ))}
         </div>
       </div>

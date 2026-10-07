@@ -20,6 +20,11 @@ export default {
   collapseInactiveHint: "Fold ungrouped projects with no agents into a row at the bottom. Grouped projects stay in their folder.",
   showStatusSection: "Show status section",
   showStatusSectionHint: "List the tasks that need you, are working or are in review above Projects, sorted the way the Kanban board sorts them.",
+  taskGitIcon: "Show task git icon",
+  taskGitIconBoth: "Both",
+  taskGitIconMain: "Main checkout only",
+  taskGitIconWorktree: "Worktree only",
+  taskGitIconNone: "None",
   statusChips: {
     attention: "Needs you",
     working: "Working",

@@ -394,6 +394,14 @@ export default {
       always: "Auto open",
       alwaysHint: "Start expanded. The chevron still collapses, and that sticks.",
     },
+    taskGitIcon: {
+      label: "Task git icon",
+      hint: "Which task rows in the sidebar show where the task runs: a link for the main checkout, a branch for a worktree.",
+      both: "Both",
+      main: "Main checkout",
+      worktree: "Worktree",
+      none: "None",
+    },
     hoverReveal: {
       label: "Hover to reveal the collapsed sidebar",
       hint: "Slides the full sidebar out over the icon rail on hover.",

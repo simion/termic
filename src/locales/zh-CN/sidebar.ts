@@ -20,6 +20,11 @@ export default {
   collapseInactiveHint: "将没有智能体的未分组项目折叠到底部的一行中。已分组的项目仍留在其文件夹中。",
   showStatusSection: "显示状态分区",
   showStatusSectionHint: "在项目上方列出需要你处理、进行中或审查中的任务，按看板的列分组。",
+  taskGitIcon: "显示任务 git 图标",
+  taskGitIconBoth: "两者",
+  taskGitIconMain: "仅主检出",
+  taskGitIconWorktree: "仅工作树",
+  taskGitIconNone: "无",
   statusChips: {
     attention: "需要你",
     working: "进行中",
