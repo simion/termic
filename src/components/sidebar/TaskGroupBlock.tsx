@@ -203,11 +203,13 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
           1px, the same weight as a project folder's guide line, so the
           sidebar has one nesting style (docs/ui.md "One glyph per meaning");
           the group's colour is what tells the two apart. The inner stack is
-          pulled back 5px so the members land 18px right of the loose rows
-          (measured in the e2e spec), the step a project folder gives its
-          members; their tab rows move with them. */}
+          pulled back 1.5 spacing steps less the border so the members land
+          18px right of the loose rows (measured in the e2e spec), the step a
+          project folder gives its members; their tab rows move with them.
+          Spacing is rem-based and the root is 14px, so a hardcoded px here
+          drifts off the scale (5px landed them at 17). */}
       <div data-task-group-rail className="ml-6 border-l" style={{ borderColor: color }}>
-        <div className="-ml-[5px]">{children}</div>
+        <div className="-ml-[calc(var(--spacing)*1.5-1px)]">{children}</div>
       </div>
     </div>
   );
