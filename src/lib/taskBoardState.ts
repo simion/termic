@@ -48,14 +48,18 @@ export function taskUntouched(tabs: Tab[]): boolean {
 }
 
 /** What the column derivation reads from a task's tabs, RAW: no pref applied.
- *  Split out so a caller that must not hold `tabs` (the sidebar's status
- *  section, which would otherwise re-render on every timestamp) can cache
- *  three booleans per task and still go through the one precedence below. */
+ *  Split out so a caller that must not hold `tabs` (useTaskQuery, which
+ *  would otherwise re-render on every timestamp) can cache three booleans
+ *  per task and still go through the one precedence below. */
 export interface BoardTaskFacts {
   readonly attention: boolean;
   readonly working: boolean;
   readonly untouched: boolean;
 }
+
+/** A task whose tabs never loaded this session: no evidence of anything,
+ *  the same reading `boardTaskFacts(EMPTY_TABS)` gives. */
+export const NO_TAB_FACTS: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true });
 
 // Both helpers apply their prefs; these make them report the raw fact. The
 // gates are re-applied in boardColumnFromFacts, against the caller's prefs.
@@ -103,8 +107,8 @@ export function hasPrIdentity(task: Task): boolean {
   return !task.is_main_checkout && (!!task.pr_url || task.pr_number != null);
 }
 
-/** The precedence itself, over pre-computed facts. The board reaches it
- *  through taskBoardColumn and the sidebar's status chips directly; there
+/** The precedence itself, over pre-computed facts. The board and the
+ *  sidebar reach it through useTaskQuery's column map; there
  *  is no second copy. The pref gates match taskNeedsAttention (attention
  *  absent = on) and taskWorking (working absent = off). */
 export function boardColumnFromFacts(

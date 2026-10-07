@@ -36,6 +36,7 @@ import { effectiveLanguageId, languageLabel } from "@/lib/languages";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { taskLabel } from "@/lib/taskLabel";
+import { setTreeFold } from "@/lib/treeFold";
 
 // New-issue page for the project repo. Opened via the OS browser (open_path).
 const ISSUE_URL = "https://github.com/simion/termic/issues/new";
@@ -863,7 +864,9 @@ export function CommandPalette() {
   // expand + select first, then fire the rename signal the row watches.
   function startRename(taskId: string, projectId: string) {
     const app = useApp.getState();
-    app.setProjectCollapsed(projectId, false);
+    // compact=false: the rename leaves the rail, so open the fold the full
+    // sidebar draws (the throwaway one while its query filters).
+    setTreeFold("project", projectId, false, false);
     if (app.compactSidebar) app.toggleCompactSidebar(); // full-width row needed to show the input
     app.setActiveTask(taskId);
     useUI.getState().requestTaskRename(taskId);

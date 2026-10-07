@@ -182,10 +182,11 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   `formatTerminalTitle` always strips claude's `✳` (the brand icon says
   "claude"), and strips its spinner frame whenever Termic draws its own
   working badge (the `workingIndicator` pref), whatever the tab's state.
-  A frame is any leading symbol that is not a letter, a number or ASCII
-  punctuation, the same catch-all the busy detector uses, because claude
-  has shipped Braille, circle (`◐◑◒◓`) and star (`✢✶✻✽`) frames. Matching
-  only Braille left `◑` beside the spinner badge. It
+  A frame is one leading symbol that is not a letter, a number or ASCII
+  punctuation, followed by a space, because claude has shipped Braille,
+  circle (`◐◑◒◓`) and star (`✢✶✻✽`) frames. Matching only Braille left
+  `◑` beside the spinner badge; matching any symbol without the space ate
+  a title's own `「`, `¿` or `“`. A title that is only glyphs keeps them. It
   takes the RESOLVED icon id, so a cloned agent (`claude-dpf`) is treated
   as the claude it draws as. With the pref off the spinner stays: it is then
   the only working signal.
@@ -241,11 +242,18 @@ alike but were built twice drift apart, so there is one of each piece.
   as they already do.
 - **The open task stays listed** in the tree, the #324 rule. STATUS does
   not keep it: the section is a copy and the tree already shows it.
-- **Matching projects and folders render open while filtering,** without
-  writing the stored fold: a throwaway map in Sidebar holds chevron clicks
-  made while filtering and is dropped with the query, so clearing it puts
-  every fold back. Writing the real fold for every matching project would
-  trash the user's layout.
+- **Matching projects, folders and task groups render open while
+  filtering,** without writing the stored fold. Every fold in the tree goes
+  through one call, `setTreeFold` in `src/lib/treeFold.ts`: while the query filters it
+  writes a throwaway map in the ui store (`sidebarQueryFolds`), which is
+  what the tree draws then, and otherwise the stored fold. Any edit to the
+  query drops the throwaway folds, and clearing it puts every stored fold
+  back. Chevrons, Expand/Collapse all, the `+` menu, the palette's rename
+  and the drops that open their target all go through it. Task rows have no
+  throwaway fold, so Expand/Collapse all leaves them alone while filtering.
+  A write that went around it either
+  rewrote the layout from inside a filter or folded something the tree was
+  not drawing.
 - **Differences from the board's bar:** the count sits on its own line
   under the input, the menu opens to the right over the main area (it is a
   portal, so it keeps the board's width), there is no Archived chip (the
@@ -262,9 +270,11 @@ alike but were built twice drift apart, so there is one of each piece.
 - **Absent on the icon rail;** a query typed in the full sidebar filters
   nothing there.
 - **Cost with no query is nil:** every subscription `useTaskQuery` adds
-  selects a constant until the query or the open menu reads it, columns
-  are only computed for `status:` or the menu, and free text reuses the
-  tab facts the body already holds. `selectorFanout.test.ts` pins this.
+  goes through `taskQueryNeeds` and selects a constant until the query or
+  the open menu reads it, columns are only computed for `status:` or the
+  menu, and free text reuses the tab facts the body already holds.
+  `selectorFanout.test.ts` pins the gate. A menu left open when ⌘B folds
+  the bar away counts as closed.
 
 ## Run state in the sidebar
 
@@ -540,11 +550,12 @@ a stored status. There is no `status` field on Task and there must not be
 one: the terminal is the ground truth, and a stored status a card could
 carry would drift from the PTY with no reconciliation path.
 
-Rendering discipline: the whole board's column assignment is ONE string-keyed
-selector (`src/lib/boardColumnKey.ts`, kept out of the pure module because it
-reads both stores), so the view re-renders when a card changes column and only
-then; each card subscribes to its own `selectTaskTabs` slice for its badge.
-`selectorFanout.test.ts` pins all three counts.
+Rendering discipline: the whole board's column assignment is `useTaskQuery`'s
+column map (the board passes `alwaysColumns`), built over per-task status
+facts (`createStatusFactsSelector`) that keep their identity through output
+stamps and live titles, and handed back unchanged unless a card moved; each
+card subscribes to its own `selectTaskTabs` slice for its badge.
+`selectorFanout.test.ts` pins the facts' counts.
 
 Drags mean something or they do not happen. Hand-rolled pointer events, the
 sidebar's pattern; no dnd-kit. Four drags are wired: reorder within a
@@ -834,21 +845,30 @@ the count, and the list is one click away in the tree.
 
 - **A chip IS a board column.** Every task's column is
   `boardColumnFromFacts` ([src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts)),
-  the board's own precedence, and `status:` matches on the same column. So a
-  count is exactly what clicking its chip leaves in the tree. If one looks
-  wrong, the fix goes in `taskBoardState.ts` and the board moves with it.
-- **Counted per task** ([src/lib/sidebarStatus.ts](../src/lib/sidebarStatus.ts)).
-  The section placed a whole task group in its most urgent member's bucket,
-  and a filter cannot reproduce that, so a count and its click would have
-  disagreed.
+  the board's own precedence, through `useTaskQuery`'s column map, and
+  `status:` matches on the same map. If one looks wrong, the fix goes in
+  `taskBoardState.ts` and the board moves with it.
+- **A count is under the rest of the query:** the tasks in that column the
+  bar lets through with its `status:` clauses dropped (`dropBoardClauses`),
+  so it is what clicking the chip leaves in the tree, plus the open task the
+  tree always keeps, and turning one chip on does not zero the others.
+- **Counted per task.** The section placed a whole task group in its most
+  urgent member's bucket, and a filter cannot reproduce that, so a count
+  and its click would have disagreed.
+- **A chip is its glyph and its count,** on one line at any sidebar width.
+  Its name is in the tooltip and the accessible label: with the words the
+  row wrapped to two lines in a narrow sidebar.
 - **Three chips, not five.** Settled and Not started are the largest and
   least urgent buckets; the board and the query have them.
 - **An empty chip is hidden**, unless the query holds its clause: it is how
-  that clause comes back out. With no chip to show the row is not drawn.
+  that clause comes back out. "Empty" means its unfiltered column, so typing
+  in the bar never makes a chip come and go; under a query one can read 0.
+  With no chip to show the row is not drawn.
 - **The work prefs gate it as they gate the board:** `attentionIndicator`
   off empties Needs you, `workingIndicator` off empties Working.
-- **Rendering:** its own memoized component reading `useStatusTabFacts`, a
-  facts record of three booleans per task, never `tabs`, with the PR snapshot
+- **Rendering:** its own memoized component calling `useTaskQuery` with
+  `alwaysColumns`, whose columns come from a facts record of three booleans
+  per task (`createStatusFactsSelector`), never `tabs`, with the PR snapshot
   read non-reactively behind a small `usePr` trigger. An output stamp or a
   live title re-renders nothing, and a count moving does not re-render the
   Sidebar body. `selectorFanout.test.ts` pins it.

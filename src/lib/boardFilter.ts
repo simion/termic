@@ -247,6 +247,13 @@ export function boardTaskMatches(task: Task, ctx: BoardMatchCtx, q: BoardQuery):
   return true;
 }
 
+/** `q` without its clauses on `key`. The status chips count their column
+ *  under the REST of the query, so turning one chip on does not zero the
+ *  others. */
+export function dropBoardClauses(q: BoardQuery, key: BoardQualifier): BoardQuery {
+  return { ...q, clauses: q.clauses.filter(c => c.key !== key) };
+}
+
 // ── Query text editing ──────────────────────────────────────────────────
 
 const quote = (v: string) => (/[\s,"]/.test(v) ? `"${v.replace(/"/g, "")}"` : v);

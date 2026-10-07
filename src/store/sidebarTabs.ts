@@ -159,9 +159,11 @@ export function createBoardFilterFactsSelector(): (s: AppState) => BoardFilterFa
 
 /** A record of its own, NOT more fields on SidebarTaskFacts: the body would
  *  then re-render on every idle -> working flip of every agent. Held by
- *  whichever of the section and the chips is mounted (never both).
- *  `untouched` reads `lastInputAt`, which is why this cannot be derived per
- *  row from useRowTabs (it holds that field back). */
+ *  useTaskQuery (the board's columns and the status chips) and by the
+ *  STATUS section through useStatusTabFacts; the chips and the section are
+ *  never mounted together. `untouched` reads `lastInputAt`, which is why
+ *  this cannot be derived per row from useRowTabs (it holds that field
+ *  back). */
 export type StatusTabFacts = Readonly<Record<string, BoardTaskFacts>>;
 
 export const EMPTY_STATUS_FACTS: StatusTabFacts = Object.freeze({});

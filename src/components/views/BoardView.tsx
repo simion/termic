@@ -12,9 +12,10 @@
 // sub-headers on single-project columns.
 //
 // Rendering discipline (bear traps 5 and 8): the column assignment comes from
-// ONE string-keyed selector (`selectBoardColumnKey`), so the view re-renders
-// when a card changes column and only then; each card then subscribes to its
-// own coarse tab slice (`selectTaskTabs`), the way Dashboard cards do. The
+// useTaskQuery's column map, built over per-task status facts that keep their
+// identity through output stamps and live titles, and handed back unchanged
+// unless a card moved; each card then subscribes to its own coarse tab slice
+// (`selectTaskTabs`), the way Dashboard cards do. The
 // view unmounts with the overlay, so idle cost is zero by construction.
 //
 // Drag discipline: hand-rolled pointer events, the same pattern as the
@@ -41,7 +42,7 @@ import { prBadgeAppearance } from "@/lib/prBadgeAppearance";
 import { openPath } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { BoardFilterBar } from "@/components/views/BoardFilterBar";
-import { COL_ACCENT, COL_LABEL, useBoardColumnMap, useTaskQuery } from "@/hooks/useTaskQuery";
+import { COL_ACCENT, COL_LABEL, useTaskQuery } from "@/hooks/useTaskQuery";
 import { toggleBoardClause, type BoardQualifier } from "@/lib/boardFilter";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
@@ -174,15 +175,6 @@ export function BoardView() {
   const setBoardQuery = useUI(s => s.setBoardQuery);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // Re-render trigger for PR polls, nothing more. The pr store lives outside
-  // useApp precisely so its 60s tick re-renders nobody by default; the board
-  // opts back in because an open -> merged transition moves a card. The
-  // value itself is unused: selectBoardColumnKey reads the snapshot, and
-  // useSyncExternalStore re-reads it during the render this triggers.
-  usePr(s => Object.values(s.byTask).map(e => e.lookup?.pr?.state ?? "?").join("|"));
-
-  const columnOf = useBoardColumnMap(tasks, workPrefs, true);
-
   const projectOrder = useMemo(() => projects.map(p => p.id), [projects]);
   const projectById = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
   // A task whose project is not in this profile's list is skipped, exactly as
@@ -206,8 +198,11 @@ export function BoardView() {
   // never reflows the board and a lane divider survives its own filter.
   // Archived filters too, BEFORE the cap, so a search can surface an old
   // archived task the cap would otherwise hide.
-  const { query, filtering, matches: matchesQuery, sections: filterSections, valuesFor, projectAccent } = useTaskQuery({
-    text: boardQuery, menuOpen, live: allLiveTasks, archived: allArchived, columnOf,
+  // The board lays cards out by column, so it always holds them
+  // (`alwaysColumns`), and with them the PR trigger an open -> merged
+  // transition needs to move a card.
+  const { query, filtering, matches: matchesQuery, sections: filterSections, valuesFor, columnOf, projectAccent } = useTaskQuery({
+    text: boardQuery, menuOpen, live: allLiveTasks, archived: allArchived, workPrefs, alwaysColumns: true,
   });
   // useSameItems: a keystroke that matches the same cards keeps the same
   // array, so the memoized columns below skip the render.

@@ -54,8 +54,8 @@ import { TaskGroupBlock } from "./TaskGroupBlock";
 import { StatusChips } from "./StatusChips";
 import { StatusSection } from "./StatusSection";
 import { BoardFilterBar } from "@/components/views/BoardFilterBar";
-import { useBoardColumnMap, useTaskQuery } from "@/hooks/useTaskQuery";
-import { boardQueryUses, parseBoardQuery } from "@/lib/boardFilter";
+import { useTaskQuery } from "@/hooks/useTaskQuery";
+import { setTreeFold, treeFoldKey, type TreeFold } from "@/lib/treeFold";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
@@ -150,11 +150,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const openNewProject = useUI(s => s.openNewProject);
   const openNewTask = useUI(s => s.openNewTask);
   const collapsedProjects = useApp(s => s.collapsedProjects);
-  const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
   const collapsedGroups = useApp(s => s.collapsedGroups);
-  const setGroupCollapsed = useApp(s => s.setGroupCollapsed);
   const collapsedTaskGroups = useApp(s => s.collapsedTaskGroups);
-  const setTaskGroupCollapsed = useApp(s => s.setTaskGroupCollapsed);
   const groupColors = useApp(s => s.groupColors);
   const setGroupColor = useApp(s => s.setGroupColor);
   const setAllTasksCollapsed = useApp(s => s.setAllTasksCollapsed);
@@ -200,10 +197,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const [showInactive, setShowInactive] = useState(false);
 
   // The sidebar's filter bar (docs/ui.md "The sidebar's filter bar"): the
-  // board's bar and query engine over every task the sidebar lists, STATUS
-  // and PROJECTS alike. Absent on the icon rail, so a query typed in the
-  // full sidebar filters nothing there. With no query every subscription
-  // below holds a constant (useTaskQuery), so this costs the body nothing.
+  // board's bar and query engine over every task the tree lists. Absent on
+  // the icon rail, so a query typed in the full sidebar filters nothing
+  // there, and neither does a menu left open when ⌘B folded the bar away.
+  // With no query every subscription below holds a constant (useTaskQuery),
+  // so this costs the body nothing.
   const sidebarQuery = useUI(s => s.sidebarQuery);
   const setSidebarQuery = useUI(s => s.setSidebarQuery);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
@@ -219,15 +217,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     const ids = new Set(projects.map(p => p.id));
     return tasks.filter(w => !w.archived && ids.has(w.project_id));
   }, [tasks, projects]);
-  // Columns cost a selector over every tab, so they are only computed while
-  // `status:` or the menu's counts read them.
-  const needColumns = useMemo(
-    () => filterMenuOpen || boardQueryUses(parseBoardQuery(queryText), "status"),
-    [filterMenuOpen, queryText],
-  );
-  const queryColumns = useBoardColumnMap(queryLiveTasks, filterWorkPrefs, needColumns);
   const taskQuery = useTaskQuery({
-    text: queryText, menuOpen: filterMenuOpen, live: queryLiveTasks, columnOf: queryColumns, facts: tabFacts,
+    text: queryText, menuOpen: !compact && filterMenuOpen, live: queryLiveTasks, workPrefs: filterWorkPrefs, facts: tabFacts,
   });
   /** Ids the query lets through, or null while nothing is filtering. */
   const queryMatchIds = useMemo(
@@ -235,14 +226,22 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     [taskQuery.filtering, taskQuery.matches, queryLiveTasks],
   );
   const queryOn = queryMatchIds !== null;
-  // While filtering, matching projects and folders render open whatever
-  // their stored fold says: results behind a chevron read as "nothing
-  // matched". The chevron still works, through this throwaway map (project
-  // ids, `group:<name>`), so a filter never rewrites the user's layout and
-  // clearing it puts every fold back as it was.
-  const [queryFolds, setQueryFolds] = useState<Record<string, boolean>>({});
-  if (!queryOn && Object.keys(queryFolds).length > 0) setQueryFolds({});
-  const setQueryFold = (key: string, folded: boolean) => setQueryFolds(prev => ({ ...prev, [key]: folded }));
+  // While filtering, matching projects, folders and task groups render open
+  // whatever their stored fold says: results behind a chevron read as
+  // "nothing matched". Their chevrons still work, through the throwaway
+  // folds every write reaches via setTreeFold, so a filter never rewrites
+  // the user's layout and clearing it puts every fold back as it was.
+  const queryFolds = useUI(s => s.sidebarQueryFolds);
+  /** A fold as the tree draws it: the throwaway one while the query filters
+   *  (open unless folded during this query), else `stored`. */
+  const foldOf = (kind: TreeFold, id: string, stored: boolean) =>
+    queryOn ? queryFolds[treeFoldKey(kind, id)] === true : stored;
+  // Expand / collapse all: folders go through setTreeFold like every other
+  // fold, so under a query they fold the throwaway way too.
+  const setAllFolders = (folded: boolean) => {
+    if (!queryOn) { setAllGroupsCollapsed(folded); return; }
+    for (const g of new Set(projects.map(groupOf))) if (g) setTreeFold("folder", g, folded, compact);
+  };
 
   /** Build a mailto: URL with prefilled subject + body and hand it to
    *  the OS's default mail handler via `open_path` (the same Rust
@@ -481,7 +480,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         const via = target && all.find(t => t.group?.id === target.id && t.id !== armed.id && !t.archived && t.project_id === armed.projectId)?.id;
         // Dropped into a collapsed group: open it, or the task you just
         // placed disappears from view the moment you let go.
-        if (target) useApp.getState().setTaskGroupCollapsed(target.id, false);
+        if (target) setTreeFold("taskGroup", target.id, false, compact);
         // AFTER the reorder, not beside it: task_reorder re-saves every task
         // whose order moved, the dropped one included, from a list it loaded
         // before the join landed, so a concurrent join could be written and
@@ -780,7 +779,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         // folder to the end of the list.
         list.splice(firstIdx === -1 ? idx : firstIdx, 0, dragged);
         useApp.setState({ projects: list });
-        setGroupCollapsed(hoverGroup, false);
+        setTreeFold("folder", hoverGroup, false, compact);
       }
       // Group changed during the drag (live adoption between rows, or the
       // header drop above) → persist it before the reorder. projectSetGroup
@@ -1123,7 +1122,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       if (reorderIds) await projectReorder(reorderIds);
       // Expand the destination so the project doesn't silently vanish
       // into a collapsed folder.
-      if (group) setGroupCollapsed(group, false);
+      if (group) setTreeFold("folder", group, false, compact);
       await loadAll();
       return true;
     } catch (e) {
@@ -1300,12 +1299,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               <DropdownMenu side="right" align="start" sideOffset={4} className="w-[280px]" onCloseAutoFocus={(e) => e.preventDefault()}>
                 {/* Both actions cover group folders too — expanding agents
                     under a still-collapsed folder would look like a no-op,
-                    and "collapse all" means the whole tree tidies up. */}
-                <DropdownItem onSelect={() => { setAllTasksCollapsed(false); setAllGroupsCollapsed(false); }}>
+                    and "collapse all" means the whole tree tidies up. Task rows
+                    have no throwaway fold, so while the query filters they are
+                    left alone rather than rewriting the stored layout. */}
+                <DropdownItem onSelect={() => { if (!queryOn) setAllTasksCollapsed(false); setAllFolders(false); }}>
                   <ChevronsUpDown className="h-5 w-5 text-[var(--color-fg-dim)]" />
                   <span>{t("expandAll")}</span>
                 </DropdownItem>
-                <DropdownItem onSelect={() => { setAllTasksCollapsed(true); setAllGroupsCollapsed(true); }}>
+                <DropdownItem onSelect={() => { if (!queryOn) setAllTasksCollapsed(true); setAllFolders(true); }}>
                   <ChevronsDownUp className="h-5 w-5 text-[var(--color-fg-dim)]" />
                   <span>{t("collapseAll")}</span>
                 </DropdownItem>
@@ -1421,8 +1422,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // "picking the project up"; persisted collapse state is
             // untouched, so the rows return on drop exactly as they were.
             const collapsed = dragProjectId === p.id
-              || (queryOn ? queryFolds[p.id] === true
-                : explicit !== undefined ? explicit : taskList.length === 0 && pendingForProject.length === 0);
+              || foldOf("project", p.id, explicit !== undefined ? explicit : taskList.length === 0 && pendingForProject.length === 0);
             // Compact + collapsed: surface aggregated activity on the
             // project monogram so a collapsed project still signals that
             // something underneath wants attention (attention > done).
@@ -1451,7 +1451,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     // Compact mode has no drag-to-reorder (the pointer
                     // handler below bails), so a plain click handles the
                     // collapse toggle the monogram represents.
-                    onClick={compact ? () => setProjectCollapsed(p.id, !collapsed) : undefined}
+                    onClick={compact ? () => setTreeFold("project", p.id, !collapsed, compact) : undefined}
                     // Project header is the drag handle. Pointer-down
                     // arms it (doesn't commit to "we're dragging" yet);
                     // a pointer-move past the threshold flips into
@@ -1496,8 +1496,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           // real click would behave.
                           const header = (ev.target as HTMLElement).closest('[data-project-id]') as HTMLElement | null;
                           if (header?.dataset.projectId === p.id) {
-                            if (queryOn) setQueryFold(p.id, !collapsed);
-                            else setProjectCollapsed(p.id, !collapsed);
+                            setTreeFold("project", p.id, !collapsed, compact);
                           }
                         }
                       };
@@ -1665,7 +1664,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                   // The inline name prompt only renders under an
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
-                                  setProjectCollapsed(p.id, false);
+                                  setTreeFold("project", p.id, false, compact);
                                   const value = defaultTaskName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
@@ -1748,7 +1747,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   </ContextMenuItem>
                   {!compact && (
                     <ContextMenuItem onSelect={() => {
-                      setProjectCollapsed(p.id, false);
+                      setTreeFold("project", p.id, false, compact);
                       setRenaming({ kind: "proj", id: p.id, value: p.name });
                     }}>
                       <Pencil />
@@ -1835,7 +1834,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     notifCount={notifCount}
                     focusKey={filterInputs[p.id] ?? 0}
                     onClose={closeFilterBar}
-                    onActivate={() => { if (collapsed) setProjectCollapsed(p.id, false); }}
+                    onActivate={() => { if (collapsed) setTreeFold("project", p.id, false, compact); }}
                   />
                 )}
 
@@ -1869,7 +1868,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                   // The inline name prompt only renders under an
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
-                                  setProjectCollapsed(p.id, false);
+                                  setTreeFold("project", p.id, false, compact);
                                   const value = defaultTaskName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
@@ -1915,15 +1914,18 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   // otherwise searching for a task that sits in one would
                   // leave the match hidden behind the caption. (The layout
                   // already runs over the FILTERED rows, so a group with no
-                  // matches is not drawn at all.)
+                  // matches is not drawn at all.) The sidebar query does it
+                  // the way it opens projects, through foldOf: the group
+                  // draws open unless folded during this query.
                   //
-                  // Two facts, kept apart: `groupCollapsed` is the STORED state,
-                  // which the chevron always shows and toggles; `rowsHidden` is
-                  // whether this render hides members. Folding the filter into
+                  // Two facts, kept apart: `groupCollapsed` is the fold the
+                  // chevron shows and toggles (stored, or the query's);
+                  // `rowsHidden` is whether this render hides members. For
+                  // the per-project filter they differ. Folding the filter into
                   // the first made the chevron point "expanded" while filtering,
                   // so a click collapsed the group invisibly and it snapped shut
                   // the moment the filter cleared, looking like lost tasks.
-                  const groupCollapsed = !compact && !!collapsedTaskGroups[seg.group.id];
+                  const groupCollapsed = !compact && foldOf("taskGroup", seg.group.id, !!collapsedTaskGroups[seg.group.id]);
                   const rowsHidden = groupCollapsed && !filterOn;
                   // (And the row being dragged: it must not vanish from under
                   // the cursor while it hovers a collapsed group.)
@@ -1943,7 +1945,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       summarized={rowsHidden}
                       onToggleCollapsed={() => {
                         if (blockClickSuppressed.current) { blockClickSuppressed.current = false; return; }
-                        setTaskGroupCollapsed(seg.group.id, !useApp.getState().collapsedTaskGroups[seg.group.id]);
+                        const id = seg.group.id;
+                        setTreeFold("taskGroup", id, !foldOf("taskGroup", id, !!useApp.getState().collapsedTaskGroups[id]), compact);
                       }}
                       dragging={dragBlockId === seg.group.id && blockDragArmed.current?.projectId === p.id}
                       dragTy={dragBlockTy}
@@ -2061,13 +2064,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // Object.hasOwn: the record round-trips through JSON.parse, so a
             // group named "toString"/"constructor" would otherwise read an
             // inherited function off the prototype and render collapsed.
-            const collapsed = queryOn
-              ? queryFolds[`group:${name}`] === true
-              : Object.hasOwn(collapsedGroups, name) ? collapsedGroups[name] === true : false;
-            const toggleGroup = () => {
-              if (queryOn) setQueryFold(`group:${name}`, !collapsed);
-              else setGroupCollapsed(name, !collapsed);
-            };
+            const collapsed = foldOf("folder", name, Object.hasOwn(collapsedGroups, name) && collapsedGroups[name] === true);
+            const toggleGroup = () => setTreeFold("folder", name, !collapsed, compact);
             // Count ALL members (hidden inactive ones included) — the header
             // count is also what Rename/Ungroup operate on, so it must not
             // understate the group while "Hide inactive projects" is on.
@@ -2096,7 +2094,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     <button
                       type="button"
                       aria-expanded={!collapsed}
-                      onClick={() => setGroupCollapsed(name, !collapsed)}
+                      onClick={() => setTreeFold("folder", name, !collapsed, compact)}
                       // Inline color deliberately beats the hover class — a
                       // colored folder stays its color under the cursor.
                       style={accent ? { color: accent } : undefined}
@@ -3447,7 +3445,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                             onSelect={() => {
                               if (current || !via) return;
                               // Open it so the moved task stays in view.
-                              useApp.getState().setTaskGroupCollapsed(g.id, false);
+                              setTreeFold("taskGroup", g.id, false, compact);
                               run(taskGroupJoin(w.id, via));
                             }}
                           >

@@ -4,20 +4,36 @@
 // sidebar each own their query TEXT (ui store) and their menu state; this
 // owns everything they would otherwise copy, so the two menus cannot drift.
 //
-// Subscriptions follow the board's rule: nothing is held that the query (or
-// the open menu) does not read. A sidebar with an empty query pays for none
-// of this.
+// It also owns the board COLUMN of every task it matches over, because
+// `status:`, the menu's counts, the board's layout and the sidebar's status
+// chips all read the same column, and a caller handing one in could hand in
+// the wrong one. Columns come from the per-task status facts
+// (`createStatusFactsSelector`), which keep their identity through output stamps and
+// live titles, so holding them costs a re-render only when a task's
+// attention, working or untouched fact flips.
+//
+// Subscriptions follow the board's rule: nothing is held that the query, the
+// open menu or the caller's own column reads (`taskQueryNeeds`) do not read.
+// A sidebar with an empty query pays for none of this.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { EMPTY_TABS, useApp } from "@/store/app";
+import { useApp } from "@/store/app";
 import { usePr } from "@/store/pr";
 import { useDiffStat } from "@/store/diffStat";
-import { createBoardFilterFactsSelector, EMPTY_BOARD_FILTER_FACTS, type BoardFilterFacts } from "@/store/sidebarTabs";
+import {
+  createBoardFilterFactsSelector,
+  createStatusFactsSelector,
+  EMPTY_BOARD_FILTER_FACTS,
+  EMPTY_STATUS_FACTS,
+  type BoardFilterFacts,
+  type StatusTabFacts,
+} from "@/store/sidebarTabs";
 import type { FilterFacetOption, FilterFacetSection } from "@/components/views/BoardFilterBar";
 import {
   boardQueryUses,
   boardTaskMatches,
+  dropBoardClauses,
   isBoardQueryActive,
   parseBoardQuery,
   setBoardClause,
@@ -25,8 +41,13 @@ import {
   type BoardQualifier,
   type BoardQuery,
 } from "@/lib/boardFilter";
-import { BOARD_STATE_COLUMNS, taskBoardColumn, type BoardColumn, type BoardStateColumn } from "@/lib/taskBoardState";
-import { selectBoardColumnKey } from "@/lib/boardColumnKey";
+import {
+  BOARD_STATE_COLUMNS,
+  boardColumnFromFacts,
+  NO_TAB_FACTS,
+  type BoardColumn,
+  type BoardStateColumn,
+} from "@/lib/taskBoardState";
 import { prBadgeAppearance } from "@/lib/prBadgeAppearance";
 import { agentDisplayName } from "@/lib/agents";
 import { groupOf } from "@/lib/projectGroups";
@@ -66,31 +87,40 @@ const CHANGES_POLL_MS = 2_000;
 /** The facts selector a query without free text holds instead: a constant,
  *  so an unfiltered surface subscribes to nothing new. */
 const selectNoFilterFacts = (): BoardFilterFacts => EMPTY_BOARD_FILTER_FACTS;
-const selectNoColumns = (): string => "";
+const selectNoStatusFacts = (): StatusTabFacts => EMPTY_STATUS_FACTS;
 
 /** The menu's sections while it is closed: a constant, so the memoized bar
  *  sees no new prop while its surface re-renders. */
 const NO_SECTIONS: FilterFacetSection[] = [];
 const NO_COLUMNS: ReadonlyMap<string, BoardColumn> = new Map();
 
-/** Every task's board column, recomputed when `selectBoardColumnKey` says a
- *  card moved. `enabled: false` holds a constant and returns an empty map:
- *  the sidebar only needs columns while `status:` or the menu reads them. */
-export function useBoardColumnMap(tasks: Task[], workPrefs: WorkStatePrefs, enabled: boolean): ReadonlyMap<string, BoardColumn> {
-  const columnKey = useApp(enabled ? selectBoardColumnKey(workPrefs) : selectNoColumns);
-  return useMemo(() => {
-    if (!enabled) return NO_COLUMNS;
-    const pr = usePr.getState().byTask;
-    const tabs = useApp.getState().tabs;
-    const map = new Map<string, BoardColumn>();
-    for (const w of tasks) {
-      map.set(w.id, taskBoardColumn(w, tabs[w.id] ?? EMPTY_TABS, pr[w.id]?.lookup ?? null, workPrefs));
-    }
-    return map;
-    // columnKey folds in every tab/PR/archive change that can move a card;
-    // `tasks` identity covers adds, removes and reorders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, tasks, columnKey, workPrefs]);
+/** What a query holds subscriptions for. Pure, so selectorFanout.test.ts can
+ *  pin that an empty, closed bar holds none of them. */
+export function taskQueryNeeds(query: BoardQuery, menuOpen: boolean, alwaysColumns: boolean) {
+  const filtering = isBoardQueryActive(query);
+  // The funnel menu counts every facet, `checks:` and `has:changes`
+  // included, so while it is open this holds the same subscriptions a query
+  // using them would.
+  const watching = filtering || menuOpen;
+  const columns = alwaysColumns || menuOpen || boardQueryUses(query, "status");
+  return {
+    filtering,
+    watching,
+    columns,
+    /** PR state moves both `pr:` matches and the review column. */
+    pr: watching || columns,
+    checks: menuOpen || boardQueryUses(query, "checks"),
+    changes: menuOpen || boardQueryUses(query, "has", "changes") || boardQueryUses(query, "no", "changes"),
+    freeText: query.terms.length > 0,
+  };
+}
+
+/** Same entries as `prev`: hand `prev` back, so a facts flip that moves no
+ *  card keeps every memo downstream of the map. */
+function sameColumns(prev: ReadonlyMap<string, BoardColumn>, next: ReadonlyMap<string, BoardColumn>): boolean {
+  if (prev.size !== next.size) return false;
+  for (const [id, c] of next) if (prev.get(id) !== c) return false;
+  return true;
 }
 
 export interface TaskQuery {
@@ -101,11 +131,18 @@ export interface TaskQuery {
   /** The funnel menu's chips; a constant while the menu is closed. */
   sections: FilterFacetSection[];
   valuesFor: (key: BoardQualifier) => readonly string[];
+  /** Every matched-over task's board column; empty unless something reads
+   *  columns (`status:`, the open menu, or `alwaysColumns`). */
+  columnOf: ReadonlyMap<string, BoardColumn>;
+  /** Live tasks in `column` that the rest of the query lets through: its
+   *  `status:` clauses are dropped, so each status chip answers for its own
+   *  column whichever chip is on. Needs columns. */
+  columnCount: (column: BoardColumn) => number;
   /** A project's folder accent, for chips and the board's headers. */
   projectAccent: (p: Project | undefined) => string | undefined;
 }
 
-export function useTaskQuery({ text, menuOpen, live, archived, columnOf, facts }: {
+export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, alwaysColumns = false, facts }: {
   text: string;
   menuOpen: boolean;
   /** Tasks the surface lists, unarchived, in a project of this profile. */
@@ -113,30 +150,30 @@ export function useTaskQuery({ text, menuOpen, live, archived, columnOf, facts }
   /** Archived tasks the surface can show; undefined where it shows none,
    *  which also drops the Archived chip. */
   archived?: Task[];
-  columnOf: ReadonlyMap<string, BoardColumn>;
+  workPrefs: WorkStatePrefs;
+  /** The caller reads `columnOf` itself (the board's layout, the status
+   *  chips' counts), so columns are derived whatever the query says. */
+  alwaysColumns?: boolean;
   /** Free-text facts the caller already holds (the sidebar's tab facts are
    *  a superset). Undefined: hold the board's own, only while there is free
    *  text. */
-  facts?: Readonly<Record<string, BoardFilterFacts[string] | undefined>>;
+  facts?: BoardFilterFacts;
 }): TaskQuery {
   const { t } = useTranslation("chrome");
   const projects = useApp(s => s.projects);
   const agents = useApp(s => s.agents);
   const groupColors = useApp(s => s.groupColors);
   const query = useMemo(() => parseBoardQuery(text), [text]);
-  const filtering = isBoardQueryActive(query);
-  // The funnel menu counts every facet, `checks:` and `has:changes`
-  // included, so while it is open this holds the same subscriptions a query
-  // using them would. Closed and empty, it costs nothing.
-  const watching = filtering || menuOpen;
-  const usesChecks = menuOpen || boardQueryUses(query, "checks");
-  const usesChanges = menuOpen || boardQueryUses(query, "has", "changes") || boardQueryUses(query, "no", "changes");
+  const needs = taskQueryNeeds(query, menuOpen, alwaysColumns);
+  const { filtering } = needs;
+  const usesChanges = needs.changes;
 
-  // Re-run triggers for the non-reactive pr and diffStat reads in matchCtx.
-  // `checks:` folds the check state in only while the query reads it:
-  // otherwise every check tick of every PR would re-render the surface.
-  const prKey = usePr(s => watching
-    ? Object.values(s.byTask).map(e => `${e.lookup?.pr?.state ?? "?"}${usesChecks ? e.lookup?.pr?.checks ?? "" : ""}`).join("|")
+  // Re-run triggers for the non-reactive pr and diffStat reads in matchCtx
+  // and the column map. `checks:` folds the check state in only while the
+  // query reads it: otherwise every check tick of every PR would re-render
+  // the surface.
+  const prKey = usePr(s => needs.pr
+    ? Object.values(s.byTask).map(e => `${e.lookup?.pr?.state ?? "?"}${needs.checks ? e.lookup?.pr?.checks ?? "" : ""}`).join("|")
     : "");
   const changesKey = useDiffStat(s => usesChanges
     ? Object.entries(s.byTask).map(([id, e]) => `${id}:${e.stat ? e.stat.files_changed > 0 : "?"}`).join("|")
@@ -144,8 +181,25 @@ export function useTaskQuery({ text, menuOpen, live, archived, columnOf, facts }
   // Free text reads tab titles and property values; the facts record keeps
   // its identity while agents stream (bear trap 5).
   const [selectFilterFacts] = useState(createBoardFilterFactsSelector);
-  const ownFacts = useApp(!facts && query.terms.length > 0 ? selectFilterFacts : selectNoFilterFacts);
+  const ownFacts = useApp(!facts && needs.freeText ? selectFilterFacts : selectNoFilterFacts);
   const filterFacts = facts ?? ownFacts;
+
+  // Columns from the board's own precedence over three facts per task.
+  const [selectStatusFacts] = useState(createStatusFactsSelector);
+  const statusFacts = useApp(needs.columns ? selectStatusFacts : selectNoStatusFacts);
+  const lastColumns = useRef<ReadonlyMap<string, BoardColumn>>(NO_COLUMNS);
+  const columnOf = useMemo(() => {
+    if (!needs.columns) return NO_COLUMNS;
+    const pr = usePr.getState().byTask;
+    const map = new Map<string, BoardColumn>();
+    for (const w of live) map.set(w.id, boardColumnFromFacts(w, statusFacts[w.id] ?? NO_TAB_FACTS, pr[w.id]?.lookup ?? null, workPrefs));
+    for (const w of archived ?? []) map.set(w.id, "archived");
+    if (sameColumns(lastColumns.current, map)) return lastColumns.current;
+    lastColumns.current = map;
+    return map;
+    // prKey is the re-run trigger for the non-reactive pr read above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needs.columns, live, archived, statusFacts, workPrefs, prKey]);
 
   const projectById = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
   const projectAccent = useCallback((p: Project | undefined): string | undefined => {
@@ -171,6 +225,12 @@ export function useTaskQuery({ text, menuOpen, live, archived, columnOf, facts }
     (w: Task): boolean => boardTaskMatches(w, matchCtx(w), query),
     [matchCtx, query],
   );
+  const columnCount = useCallback((column: BoardColumn): number => {
+    const rest = dropBoardClauses(query, "status");
+    let n = 0;
+    for (const w of live) if (columnOf.get(w.id) === column && boardTaskMatches(w, matchCtx(w), rest)) n++;
+    return n;
+  }, [query, live, columnOf, matchCtx]);
 
   // `has:changes` on a task nothing drew: cards and rows ask for their own
   // diffstat when they mount, so a task filtered out from the start would
@@ -297,5 +357,5 @@ export function useTaskQuery({ text, menuOpen, live, archived, columnOf, facts }
     ];
   }, [menuOpen, text, live, archived, matchCtx, valuesFor, projects, projectAccent, agents, t]);
 
-  return { query, filtering, matches, sections, valuesFor, projectAccent };
+  return { query, filtering, matches, sections, valuesFor, columnOf, columnCount, projectAccent };
 }

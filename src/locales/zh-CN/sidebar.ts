@@ -24,8 +24,8 @@ export default {
     attention: "需要你",
     working: "进行中",
     review: "审查中",
-    tip: "筛选 status:{{status}}",
-    tipActive: "移除 status:{{status}}",
+    tip: "{{label}}：筛选 status:{{status}}",
+    tipActive: "{{label}}：移除 status:{{status}}",
   },
   filterBar: {
     placeholder: "筛选任务",

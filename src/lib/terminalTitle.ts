@@ -1,11 +1,13 @@
-/** A leading run of spinner frames: any symbol that is not a letter, a
- *  number, whitespace or ASCII punctuation. The same catch-all the busy
- *  detector uses for claude (`BUILTIN_TITLE_SIGNALS` in lib/agents.ts),
- *  because the alphabet is not stable: Braille (U+2800..U+28FF), the circle
- *  family (◐◑◒◓) and the star family (✢✶✻✽, ·) have all shipped. Letters in
- *  any script survive, so a title in Chinese is never eaten, and so does
- *  ASCII punctuation (`#12 fix`, `[wip]`). */
-const SPINNER_RUN = /^\s*(?:[^\p{L}\p{N}\s\x21-\x7e]\s*)+/u;
+/** A leading run of spinner frames. A frame is ONE symbol that is not a
+ *  letter, a number or ASCII punctuation, followed by whitespace: that is
+ *  the shape claude writes, and the alphabet is not stable (Braille
+ *  U+2800..U+28FF, the circle family ◐◑◒◓ and the star family ✢✶✻✽, ·
+ *  have all shipped). Requiring the space is what keeps a title's own
+ *  leading `「`, `¿`, `“` or `…`, which sit against the word they open.
+ *  Letters in any script survive, and so does ASCII punctuation (`#12 fix`,
+ *  `[wip]`). ponytail: an emoji followed by a space reads as a frame;
+ *  exclude `\p{Extended_Pictographic}` if claude titles start carrying them. */
+const SPINNER_RUN = /^\s*(?:[^\p{L}\p{N}\s\x21-\x7e]\s+)+/u;
 
 /**
  * Remove Claude Code's leading glyphs from a live terminal title, so each
@@ -30,8 +32,9 @@ export function formatTerminalTitle(
 ): string {
   if (iconId !== "claude") return title;
   const noBrand = title.replace(/^\s*✳\s*/, "");
-  if (!termicShowsWork) return noBrand;
-  return noBrand.replace(SPINNER_RUN, "");
+  const out = termicShowsWork ? noBrand.replace(SPINNER_RUN, "") : noBrand;
+  // a title that was nothing but glyphs keeps them rather than going blank
+  return out || title;
 }
 
 /**

@@ -301,6 +301,13 @@ interface UIState {
    *  board's, and session-only for the same reason. */
   sidebarQuery: string;
   setSidebarQuery: (q: string) => void;
+  /** Folds made while the sidebar's query filters, keyed by project id,
+   *  `folder:<name>` or `taskGroup:<id>` (`setTreeFold` in lib/treeFold.ts). A
+   *  filter opens what it matches without writing the stored folds, so
+   *  these are throwaway: any edit to the query drops them, and clearing it
+   *  puts every stored fold back. */
+  sidebarQueryFolds: Readonly<Record<string, boolean>>;
+  setSidebarQueryFold: (key: string, folded: boolean) => void;
   /** A request for the sidebar's filter bar to take focus (the command
    *  palette's "Filter sidebar tasks"). A flag the bar consumes, not a
    *  counter: a counter would refocus the bar every time it remounts. */
@@ -492,6 +499,8 @@ function confirmAnswer(
   return { confirmed, checked, dontAskAgain };
 }
 
+const NO_QUERY_FOLDS: Readonly<Record<string, boolean>> = Object.freeze({});
+
 export const useUI = create<UIState>((set, get) => ({
   newProjectOpen: false,
   newTaskProjectId: null,
@@ -546,7 +555,12 @@ export const useUI = create<UIState>((set, get) => ({
   boardQuery: "",
   setBoardQuery: (q) => { if (get().boardQuery !== q) set({ boardQuery: q }); },
   sidebarQuery: "",
-  setSidebarQuery: (q) => { if (get().sidebarQuery !== q) set({ sidebarQuery: q }); },
+  setSidebarQuery: (q) => { if (get().sidebarQuery !== q) set({ sidebarQuery: q, sidebarQueryFolds: NO_QUERY_FOLDS }); },
+  sidebarQueryFolds: NO_QUERY_FOLDS,
+  setSidebarQueryFold: (key, folded) => {
+    const folds = get().sidebarQueryFolds;
+    if (folds[key] !== folded) set({ sidebarQueryFolds: { ...folds, [key]: folded } });
+  },
   sidebarFilterFocusPending: false,
   focusSidebarFilter: () => set({ sidebarFilterFocusPending: true }),
   consumeSidebarFilterFocus: () => { if (get().sidebarFilterFocusPending) set({ sidebarFilterFocusPending: false }); },

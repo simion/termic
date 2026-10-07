@@ -24,8 +24,8 @@ export default {
     attention: "Needs you",
     working: "Working",
     review: "In review",
-    tip: "Filter to status:{{status}}",
-    tipActive: "Remove status:{{status}}",
+    tip: "{{label}}: filter to status:{{status}}",
+    tipActive: "{{label}}: remove status:{{status}}",
   },
   filterBar: {
     placeholder: "Filter tasks",

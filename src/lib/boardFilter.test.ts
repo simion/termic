@@ -22,6 +22,7 @@ import {
   boardClauseState,
   boardQueryUses,
   cycleBoardClause,
+  dropBoardClauses,
   setBoardClause,
   boardSuggestions,
   boardTaskMatches,
@@ -346,5 +347,34 @@ describe("boardSuggestions", () => {
   it("nothing after a space or for an unknown key", () => {
     expect(boardSuggestions("project:acme ", values)).toEqual([]);
     expect(boardSuggestions("foo:b", values)).toEqual([]);
+  });
+});
+
+describe("dropBoardClauses (the status chips' counts)", () => {
+  // Four tasks, two projects; the chips count a column under the REST of the
+  // query, which must equal what `<rest> status:<column>` lists.
+  const cols: Record<string, BoardMatchCtx["column"]> = { a: "attention", w: "working", w2: "working", r: "review" };
+  const tasks = Object.keys(cols).map(id => task({ id, project_id: id === "w2" ? "p2" : "p1" }));
+  const ctxOf = (t: Task) => ctx({ column: cols[t.id], project: project({ id: t.project_id, name: t.project_id }) });
+  const list = (q: string) => tasks.filter(t => boardTaskMatches(t, ctxOf(t), parseBoardQuery(q))).map(t => t.id);
+
+  it.each([
+    ["", ""],
+    ["project:p1", "project:p1"],
+    ["status:attention", ""],
+    ["project:p1 status:review,working", "project:p1"],
+    ["-status:working w", "w"],
+  ])("under %j a chip counts what `<rest> status:<column>` lists", (text, restText) => {
+    const rest = dropBoardClauses(parseBoardQuery(text), "status");
+    for (const c of ["attention", "working", "review"] as const) {
+      const counted = tasks.filter(t => ctxOf(t).column === c && boardTaskMatches(t, ctxOf(t), rest)).map(t => t.id);
+      expect(counted).toEqual(list(`${restText} status:${c}`.trim()));
+    }
+  });
+
+  it("keeps every other clause and the free text", () => {
+    const q = dropBoardClauses(parseBoardQuery("login project:p1 -status:working"), "status");
+    expect(q.clauses.map(c => c.key)).toEqual(["project"]);
+    expect(q.terms.map(t => t.text)).toEqual(["login"]);
   });
 });

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { formatTerminalTitle, isConsoleHostTitle } from "./terminalTitle";
 
 describe("formatTerminalTitle", () => {
-  it("removes Claude's idle brand glyph when hiding is enabled", () => {
+  it("removes Claude's idle brand glyph while Termic shows work", () => {
     expect(formatTerminalTitle("✳ Task name", "claude", true)).toBe(
       "Task name",
     );
@@ -33,6 +33,19 @@ describe("formatTerminalTitle", () => {
     expect(formatTerminalTitle("◑ 修复登录", "claude", true)).toBe("修复登录");
     expect(formatTerminalTitle("#12 fix", "claude", true)).toBe("#12 fix");
     expect(formatTerminalTitle("[wip] login", "claude", true)).toBe("[wip] login");
+  });
+
+  it("keeps a title's own leading non-ASCII punctuation", () => {
+    expect(formatTerminalTitle("✳ 「修复」登录", "claude", true)).toBe("「修复」登录");
+    expect(formatTerminalTitle("✳ ¿Qué falla?", "claude", true)).toBe("¿Qué falla?");
+    expect(formatTerminalTitle("⠋ “Quote” fix", "claude", true)).toBe("“Quote” fix");
+    expect(formatTerminalTitle("✳ …loading", "claude", true)).toBe("…loading");
+  });
+
+  it("falls back to the raw title when nothing but glyphs is left", () => {
+    expect(formatTerminalTitle("⠋", "claude", true)).toBe("⠋");
+    expect(formatTerminalTitle("✳", "claude", true)).toBe("✳");
+    expect(formatTerminalTitle("✳ ", "claude", false)).toBe("✳ ");
   });
 
   it("keeps Claude's spinner when Termic draws no working badge", () => {

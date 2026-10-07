@@ -1,7 +1,5 @@
 // The sidebar's status section: which tasks it lists, under which bucket, in
-// which order (docs/ui.md "The sidebar's status section"). And the status
-// chips that stand in for it while it is off: how many tasks sit in each
-// column they name (docs/ui.md "The sidebar's status chips").
+// which order (docs/ui.md "The sidebar's status section").
 //
 // A bucket IS a board column. Every task's bucket comes from
 // boardColumnFromFacts, the precedence the Kanban board uses, so the two
@@ -183,32 +181,4 @@ export function statusBuckets(
 /** Every task an item draws, in order. */
 export function statusItemTasks(item: StatusItem): Task[] {
   return item.kind === "task" ? [item.task] : item.tasks;
-}
-
-/** The columns that get a chip, in display order: what needs you first, then
- *  what is in flight. Settled and Not started are the largest and least
- *  urgent; the board and the filter have them. */
-export const STATUS_CHIPS = ["attention", "working", "review"] as const satisfies readonly BoardStateColumn[];
-export type StatusChip = (typeof STATUS_CHIPS)[number];
-
-/** Live tasks per chip column. Counted per TASK, unlike the section, which
- *  places a whole task group in its most urgent member's bucket: a chip
- *  writes `status:<column>`, and a filter matches tasks one by one. Walks
- *  the profile's projects, so a task whose project is not in this profile is
- *  skipped exactly as the tree skips it. */
-export function statusCounts(
-  projects: Project[],
-  tasks: Task[],
-  facts: Readonly<Record<string, BoardTaskFacts>>,
-  prByTask: Readonly<Record<string, { lookup: BoardPrInfo | null } | undefined>>,
-  prefs: WorkStatePrefs,
-): Record<StatusChip, number> {
-  const known = new Set(projects.map(p => p.id));
-  const counts: Record<StatusChip, number> = { attention: 0, working: 0, review: 0 };
-  for (const w of tasks) {
-    if (w.archived || !known.has(w.project_id)) continue;
-    const column = boardColumnFromFacts(w, facts[w.id] ?? UNLOADED, prByTask[w.id]?.lookup ?? null, prefs);
-    if (column in counts) counts[column as StatusChip]++;
-  }
-  return counts;
 }

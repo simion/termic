@@ -41,6 +41,18 @@ const fixtureId = () => browser.execute(() =>
 const treeShows = (ids: string[]) =>
   browser.execute(list => list.filter(id => !!document.querySelector(`[data-sidebar-task-id="${id}"]`)), ids);
 
+/** A plain click on a project header: its fold toggles on pointerup over
+ *  the same header (the header is also a drag handle, so it has no onClick). */
+const clickProjectHeader = (pid: string) => browser.execute(id => {
+  const el = document.querySelector(`[data-project-id="${id}"] span.truncate`) as HTMLElement;
+  const r = el.getBoundingClientRect();
+  const init = { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX: r.left + 4, clientY: r.top + 4 };
+  el.dispatchEvent(new PointerEvent("pointerdown", init));
+  el.dispatchEvent(new PointerEvent("pointerup", init));
+}, pid);
+const storedFold = (pid: string) => browser.execute(id => window.__termic!.useApp.getState().collapsedProjects[id] ?? null, pid);
+const queryFolds = () => browser.execute(() => ({ ...window.__termic!.useUI.getState().sidebarQueryFolds })) as Promise<Record<string, boolean>>;
+
 async function waitTree(ids: string[], want: (shown: string[]) => boolean, msg: string): Promise<void> {
   await browser.waitUntil(async () => want(await treeShows(ids)), { timeout: 5_000, timeoutMsg: msg });
 }
@@ -184,6 +196,55 @@ describe("sidebar filter bar", () => {
     await waitVisible(TREE_ROW(b));
   });
 
+  it("a fold made while filtering is the query's: the stored fold never moves, and an edit drops it", async () => {
+    const pid = await fixtureId();
+    const before = await storedFold(pid);
+    await setQuery("sfilter-bravo");
+    await waitVisible(TREE_ROW(b));
+    await clickProjectHeader(pid);
+    await waitGone(TREE_ROW(b));
+    expect(await queryFolds()).toEqual({ [pid]: true });
+    expect(await storedFold(pid)).toBe(before);
+    // Any edit to the query starts from open again.
+    await setQuery("sfilter-brav");
+    await waitVisible(TREE_ROW(b));
+    expect(await queryFolds()).toEqual({});
+    // Folded again, then cleared: the stored layout is back as it was.
+    await clickProjectHeader(pid);
+    await waitGone(TREE_ROW(b));
+    await setQuery("");
+    await waitVisible(TREE_ROW(b));
+    expect(await storedFold(pid)).toBe(before);
+  });
+
+  it("a match inside a collapsed task group shows while filtering, and the group's stored fold stays", async () => {
+    // c joins a group led by b (the group id is the lead's task id), then the
+    // group is folded the stored way.
+    await browser.execute(async (member, lead) => {
+      const t = window.__termic!;
+      await t.ipc.taskGroupJoin(member, lead);
+      await t.useApp.getState().loadAll();
+    }, c, b);
+    await waitVisible(`[data-task-group-id="${b}"] ${TREE_ROW(c)}`);
+    await browser.execute(g => window.__termic!.useApp.getState().setTaskGroupCollapsed(g, true), b);
+    await waitGone(TREE_ROW(c));
+    await setQuery("sfilter-charlie");
+    await waitVisible(TREE_ROW(c));
+    expect(await browser.execute(g => window.__termic!.useApp.getState().collapsedTaskGroups[g], b)).toBe(true);
+    // Its chevron folds it for this query only.
+    await clickWhenVisible(`[data-testid="task-group-toggle-${b}"]`);
+    await waitGone(TREE_ROW(c));
+    expect(await queryFolds()).toEqual({ [`taskGroup:${b}`]: true });
+    await setQuery("");
+    await browser.execute(async (member, g) => {
+      const t = window.__termic!;
+      t.useApp.getState().setTaskGroupCollapsed(g, false);
+      await t.ipc.taskGroupLeave(member);
+      await t.useApp.getState().loadAll();
+    }, c, b);
+    await waitVisible(TREE_ROW(c));
+  });
+
   it("the funnel opens the board's menu, and its chips write this bar's query", async () => {
     await clickWhenVisible('[data-testid="sidebar-filter-menu-trigger"]');
     await waitVisible('[data-testid="sidebar-filter-menu"]');
@@ -241,6 +302,19 @@ describe("sidebar filter bar", () => {
 
     await clickWhenVisible(CHIP);
     await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "a second click did not take the clause back out" });
+
+    // Under another clause a chip counts within it, and stays drawn at 0 so
+    // typing never makes the row come and go. b was never opened.
+    const chipCount = () => browser.execute(sel =>
+      document.querySelector(`${sel} [data-testid="status-chip-count"]`)?.textContent ?? null, CHIP);
+    await setQuery("sfilter-bravo");
+    await browser.waitUntil(async () => (await chipCount()) === "0", { timeout: 5_000, timeoutMsg: "the chip did not count under the query" });
+    // Its click leaves exactly that: no attention task, only the open one
+    // the tree always keeps (none here, the dashboard is up).
+    await clickWhenVisible(CHIP);
+    await browser.waitUntil(async () => (await query()) === "sfilter-bravo status:attention", { timeout: 5_000, timeoutMsg: "the chip did not AND into the query" });
+    await waitTree([a, b, c], s => s.length === 0, "the chip under a clause left rows its count did not");
+    await setQuery("");
   });
 
   it("keeps its own query: the board is not filtered by it", async () => {

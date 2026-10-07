@@ -7,7 +7,6 @@ import {
   parseIdFlags,
   statusBucketCollapsedByDefault,
   statusBuckets,
-  statusCounts,
   statusItemTasks,
 } from "./sidebarStatus";
 import type { BoardTaskFacts } from "./taskBoardState";
@@ -198,45 +197,5 @@ describe("the section's own fold state (rows expanded, groups folded)", () => {
     const cur = { gone: true, a: true } as const;
     // Even a no-op toggle writes, once, to prune the dead id.
     expect(nextIdFlags(cur, "a", true, ["a"])).toEqual({ a: true });
-  });
-});
-
-describe("statusCounts", () => {
-  it("counts each task under its board column; settled and not started get no chip", () => {
-    const tasks = [
-      task("fresh", "web"), task("done", "web"), task("busy", "web"), task("busy2", "web"),
-      task("blocked", "web"), task("pr", "web", { pr_url: "https://github.com/acme/web/pull/1" }),
-    ];
-    const facts = { fresh: F.untouched, done: F.settled, busy: F.working, busy2: F.working, blocked: F.attention, pr: F.settled };
-    expect(statusCounts([project("web")], tasks, facts, { pr: { lookup: { pr: { state: "open" } } } }, prefsOn))
-      .toEqual({ attention: 1, working: 2, review: 1 });
-  });
-
-  it("counts group members one by one, so a chip matches what its filter shows", () => {
-    const g = { id: "g1", lead: "lead" } as Task["group"];
-    const tasks = [task("lead", "web", { group: g }), task("member", "web", { group: g })];
-    const facts = { lead: F.settled, member: F.attention };
-    expect(statusCounts([project("web")], tasks, facts, {}, prefsOn)).toEqual({ attention: 1, working: 0, review: 0 });
-  });
-
-  it("skips archived tasks and tasks whose project is not in the list", () => {
-    const tasks = [task("live", "web"), task("gone", "web", { archived: true }), task("orphan", "elsewhere")];
-    const facts = { live: F.attention, gone: F.attention, orphan: F.attention };
-    expect(statusCounts([project("web")], tasks, facts, {}, prefsOn).attention).toBe(1);
-  });
-
-  it("follows the PR: unfetched and draft are review, merged falls through", () => {
-    const pr = { pr_url: "https://github.com/acme/web/pull/1" };
-    const tasks = [task("unfetched", "web", pr), task("draft", "web", pr), task("merged", "web", pr)];
-    const facts = { unfetched: F.settled, draft: F.settled, merged: F.settled };
-    const prByTask = { draft: { lookup: { pr: { state: "draft" } } }, merged: { lookup: { pr: { state: "merged" } } } };
-    expect(statusCounts([project("web")], tasks, facts, prByTask, prefsOn).review).toBe(2);
-  });
-
-  it("is gated by the same prefs as the board", () => {
-    const tasks = [task("busy", "web"), task("blocked", "web")];
-    const facts = { busy: F.working, blocked: F.attention };
-    const off: WorkStatePrefs = { settledHighlight: true, workingIndicator: false, attentionIndicator: false };
-    expect(statusCounts([project("web")], tasks, facts, {}, off)).toEqual({ attention: 0, working: 0, review: 0 });
   });
 });
