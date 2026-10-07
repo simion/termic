@@ -134,8 +134,8 @@ instead of by display name.
 
 ## The project row's task filter
 
-The project's menu (⋯ on the header's hover, or a right-click) carries
-"Filter tasks" (`sidebar/ProjectTaskFilter.tsx`, GH #324). It opens a bar
+The project header's hover carries a filter icon, left of ⋯
+(`sidebar/ProjectTaskFilter.tsx`, GH #324). It opens a bar
 on its OWN line under the header, full width: a text input and a bell.
 Inline in the header, the input left a long project name almost no room.
 The bell keeps only tasks with a notification and shows how many there
@@ -206,9 +206,9 @@ it keeps now (the "Lens" concept of the sidebar rethink):
 - **Project names stay all caps**, like folder names. A project groups its
   tasks the way a folder groups projects, and the caps are what set a
   project's header apart from the task rows under it.
-- **The project header's hover shows only ⋯ and `+`.** ⋯ opens the
-  project's own right-click menu at the button, which is where Settings and
-  "Filter tasks" (#324) live now.
+- **The project header's hover shows the filter, ⋯ and `+`.** ⋯ opens the
+  project's own right-click menu at the button, which is where Settings
+  lives now; the filter (#324) keeps its own icon, pinned while it filters.
 - **One nesting style:** a 1px guide line. A project folder's is neutral (or
   its accent, tinted); a task group's is its colour. Different colour, same
   weight, same meaning: these belong together.
@@ -268,7 +268,14 @@ alike but were built twice drift apart, so there is one of each piece.
   sidebar filter" shows only while a query is set.
 - **It sits nearer what it filters:** more space above the bar (from the
   nav) than below it (to the chips, STATUS or PROJECTS header).
-- **The per-project filter (#324) stays** and ANDs with it.
+- **It takes over from the per-project filters (#324).** While a query is
+  set, every project filter is kept but not applied: its bar is hidden
+  (no extra lines while you search) and its header icon stays pinned with
+  a slash through it, inert, with "Paused while the sidebar filter is on"
+  as its tooltip. Bar and icon come back as they were when the query
+  clears. An open bar with nothing in it just closes. Two scopes
+  ANDed made a project filter silently hide what the global query was
+  looking for.
 - **Absent on the icon rail;** a query typed in the full sidebar filters
   nothing there.
 - **Cost with no query is nil:** every subscription `useTaskQuery` adds

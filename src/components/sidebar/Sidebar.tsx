@@ -12,7 +12,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown } from "@/store/pr
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, ListFilter, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -318,6 +318,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // Projects whose filter bar the user opened (GH #324), valued by a counter
   // that bumps on every open so the bar's input re-takes focus.
   const [filterInputs, setFilterInputs] = useState<Record<string, number>>({});
+  // a sidebar query closes every open bar: one holding a filter comes back on
+  // its own when the query clears (it is still set), an empty one has nothing
+  // to come back for
+  useEffect(() => {
+    if (queryOn) setFilterInputs(prev => Object.keys(prev).length === 0 ? prev : {});
+  }, [queryOn]);
   // Inline name-prompt state for repo-root task creation. When the
   // user picks an agent from the project's `+` menu, we stash the choice
   // here and render a focused input row under the project — Enter creates
@@ -1433,9 +1439,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // as "nothing matched". Once, not for as long as it is on, or the
             // chevron would stop working while a filter is up.
             const filter = taskFilters[p.id];
-            const filterOn = !compact && isFilterActive(filter);
-            // The sidebar query first (keeping the open task, as #324 does),
-            // then this project's own filter on top: both AND.
+            // A non-empty sidebar query takes over: the project's own filter
+            // is kept but not applied, its bar hidden and its icon slashed,
+            // and comes back as it was when the query clears.
+            const filterSet = !compact && isFilterActive(filter);
+            const filterOn = filterSet && !queryOn;
+            const filterPaused = filterSet && queryOn;
             const queryTasks = queryMatchIds
               ? taskList.filter(w => queryMatchIds.has(w.id) || w.id === activeTask)
               : taskList;
@@ -1447,7 +1456,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             const notifCount = compact ? 0 : taskList.filter(w => tabFacts[w.id]?.notification).length;
             // An active filter keeps its bar on screen on its own; otherwise
             // the bar is open only while the user put it there.
-            const filterBarOpen = !compact && (filterOn || filterInputs[p.id] !== undefined);
+            const filterBarOpen = !compact && !queryOn && (filterSet || filterInputs[p.id] !== undefined);
             const closeFilterBar = () => setFilterInputs(prev => {
               if (prev[p.id] === undefined) return prev;
               const next = { ...prev };
@@ -1609,16 +1618,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             </Tip>
                           )}
                         </div>
-                        {/* Hover shows the menu and `+` only (docs/ui.md "One
-                            glyph per meaning"). Settings and the project's
-                            own filter live in the menu; the filter icon is
-                            drawn only while its bar is open. `+` stays
-                            visible because it's the headline action. */}
+                        {/* Hover shows the filter (GH #324), the menu and
+                            `+` (docs/ui.md "One glyph per meaning"). An
+                            active filter pins its icon so the user can see
+                            why rows are missing. `+` stays visible because
+                            it's the headline action. */}
                         <div className="flex items-center gap-0.5">
                           <ProjectFilterToggle
                             projectId={p.id}
                             active={filterOn}
-                            revealed={menuOpenProjectId === p.id || filterBarOpen}
+                            paused={filterPaused}
+                            revealed={menuOpenProjectId === p.id || filterBarOpen || filterPaused}
                             // Open (or re-focus) the bar; an open bar with
                             // nothing filtering closes instead.
                             onToggle={() => {
@@ -1769,15 +1779,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     );
                   })()}
                   <ContextMenuSeparator />
-                  {!compact && (
-                    <ContextMenuItem
-                      data-testid={`project-ctx-filter-${p.id}`}
-                      onSelect={() => setFilterInputs(prev => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }))}
-                    >
-                      <ListFilter />
-                      {t("ctxFilterTasks")}
-                    </ContextMenuItem>
-                  )}
                   <ContextMenuItem onSelect={() => openSettings("repositories", p.id)}>
                     <Cog />
                     {t("ctxSettings")}

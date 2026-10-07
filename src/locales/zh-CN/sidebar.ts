@@ -47,7 +47,6 @@ export default {
   multiRepoTip: "多仓库项目",
   projectSettingsTip: "项目设置",
   projectMenuTip: "项目菜单",
-  ctxFilterTasks: "筛选任务",
   newTaskForProjectTip: "为此项目新建任务",
   ctxNewTask: "新建任务",
   broadcast: "广播消息（{{count}}）",
@@ -148,6 +147,7 @@ export default {
     clear: "清除筛选",
     bellTip: "只显示有通知的任务",
     bellTipActive: "显示全部任务",
+    paused: "侧边栏筛选开启时暂停",
     noMatches: "没有匹配的任务",
   },
   projectActions: {

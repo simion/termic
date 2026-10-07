@@ -54,6 +54,14 @@ const clickProjectHeader = (pid: string) => browser.execute(id => {
 const storedFold = (pid: string) => browser.execute(id => window.__termic!.useApp.getState().collapsedProjects[id] ?? null, pid);
 const queryFolds = () => browser.execute(() => ({ ...window.__termic!.useUI.getState().sidebarQueryFolds })) as Promise<Record<string, boolean>>;
 
+const activeTaskId = () => browser.execute(() => window.__termic!.useApp.getState().activeTaskId) as Promise<string | null>;
+/** Put back the task that was open before a case changed it: later cases
+ *  assume it, since the tree always keeps the open task listed. */
+async function restoreActive(id: string | null): Promise<void> {
+  if (id) await ensureActiveTask(id);
+  else await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+}
+
 async function waitTree(ids: string[], want: (shown: string[]) => boolean, msg: string): Promise<void> {
   await browser.waitUntil(async () => want(await treeShows(ids)), { timeout: 5_000, timeoutMsg: msg });
 }
@@ -203,13 +211,79 @@ describe("sidebar filter bar", () => {
   });
 
   it("a project with no matches hides, and the empty state clears the query", async () => {
-    await setQuery("project:no-such-project");
     const pid = await fixtureId();
+    const prev = await activeTaskId();
+    const open = c;
+    await ensureActiveTask(open);
+    await setQuery("project:no-such-project");
+    // the open task is always kept, so its project stays with just that row
+    await waitTree([a, b, c], s => s.length === 1 && s[0] === open, "the open task's project did not keep only the open task");
+    expect(await present(`[data-project-id="${pid}"]`)).toBe(true);
+    // with nothing open, nothing holds the project up
+    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
     await browser.waitUntil(async () => !(await present(`[data-project-id="${pid}"]`)),
       { timeout: 5_000, timeoutMsg: "an unmatched project still showed its header" });
     await clickWhenVisible('[data-testid="sidebar-filter-empty"] button');
     await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "the empty state's clear did not clear" });
     await waitVisible(`[data-project-id="${pid}"]`);
+    await restoreActive(prev);
+  });
+
+  it("a sidebar query pauses the project's own filter: bar hidden, icon slashed, both back when it clears", async () => {
+    const pid = await fixtureId();
+    const toggle = `[data-testid="project-filter-toggle-${pid}"]`;
+    const input = `[data-testid="project-filter-input-${pid}"]`;
+    const icon = () => browser.execute(sel => {
+      const el = document.querySelector(sel);
+      return el && {
+        paused: el.getAttribute("data-paused"),
+        pinned: el.getAttribute("data-pinned"),
+        pressed: el.getAttribute("aria-pressed"),
+        slashed: !!el.querySelector('svg path[d="m2 2 20 20"]'),
+      };
+    }, toggle);
+    const prev = await activeTaskId();
+    await ensureActiveTask(c);
+    try {
+      // the project filter alone: only alpha (and the open task) are left
+      await browser.execute(id => window.__termic!.useUI.getState().setTaskFilterText(id, "sfilter-alpha"), pid);
+      await waitTree([a, b], s => s.length === 1 && s[0] === a, "the project filter did not narrow to alpha");
+      await waitVisible(input);
+      expect(await icon()).toEqual({ paused: null, pinned: "true", pressed: "true", slashed: false });
+      // a sidebar query takes over: bravo shows though the project filter
+      // would hide it, the bar goes, and the icon stays pinned with a slash
+      await setQuery("sfilter-bravo");
+      await waitTree([a, b], s => s.length === 1 && s[0] === b, "the sidebar query did not take over from the project filter");
+      await waitGone(input);
+      expect(await icon()).toEqual({ paused: "true", pinned: "true", pressed: "false", slashed: true });
+      await snap("sidebar-filter-project-paused.png");
+      // the slashed icon is inert: no bar, and the query is untouched
+      await browser.execute(sel => (document.querySelector(sel) as HTMLElement).click(), toggle);
+      await browser.pause(150);
+      expect(await present(input)).toBe(false);
+      expect(await query()).toBe("sfilter-bravo");
+      // clearing the query brings the project filter back untouched
+      await setQuery("");
+      await waitTree([a, b], s => s.length === 1 && s[0] === a, "the project filter did not resume after the query cleared");
+      await waitVisible(input);
+      expect(await browser.execute(sel => (document.querySelector(sel) as HTMLInputElement).value, input)).toBe("sfilter-alpha");
+      expect(await icon()).toEqual({ paused: null, pinned: "true", pressed: "true", slashed: false });
+
+      // an empty open bar has nothing to pause: a query closes it for good
+      await browser.execute(id => window.__termic!.useUI.getState().setTaskFilterText(id, ""), pid);
+      await browser.execute(sel => (document.querySelector(sel) as HTMLElement).click(), toggle);
+      await waitVisible(input);
+      await setQuery("sfilter-bravo");
+      await waitGone(input);
+      expect(await present(`${toggle}[data-paused]`)).toBe(false);
+      await setQuery("");
+      await browser.pause(150);
+      expect(await present(input)).toBe(false);
+    } finally {
+      await setQuery("");
+      await browser.execute(id => window.__termic!.useUI.getState().setTaskFilterText(id, ""), pid);
+      await restoreActive(prev);
+    }
   });
 
   it("opens a folded project while filtering without touching its stored fold", async () => {

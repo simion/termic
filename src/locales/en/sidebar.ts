@@ -47,7 +47,6 @@ export default {
   multiRepoTip: "Multi-repo project",
   projectSettingsTip: "Project settings",
   projectMenuTip: "Project menu",
-  ctxFilterTasks: "Filter tasks",
   newTaskForProjectTip: "New task for this project",
   ctxNewTask: "New task",
   broadcast: "Broadcast message ({{count}})",
@@ -148,6 +147,7 @@ export default {
     clear: "Clear filter",
     bellTip: "Show only tasks with notifications",
     bellTipActive: "Show all tasks",
+    paused: "Paused while the sidebar filter is on",
     noMatches: "No matching tasks",
   },
   projectActions: {
