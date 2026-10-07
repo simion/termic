@@ -201,9 +201,9 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   draws no glyph; the main checkout keeps its link glyph, now the only
   location mark in the tree. Other surfaces (board cards, the dashboard,
   the breadcrumb) still show both.
-- **Projects are sentence case**, semibold, so a project never reads as the
-  same level as the PROJECTS label. Folder names stay all caps (that is
-  `groupOf`'s rule), which makes a folder read as the level above a project.
+- **Project names stay all caps**, like folder names. A project groups its
+  tasks the way a folder groups projects, and the caps are what set a
+  project's header apart from the task rows under it.
 - **The project header's hover shows only ⋯ and `+`.** ⋯ opens the
   project's own right-click menu at the button, which is where Settings and
   "Filter tasks" (#324) live now.

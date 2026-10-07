@@ -1506,9 +1506,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       document.addEventListener("pointercancel", onUp);
                     }}
                     className={cn(
-                      // Sentence case, so a project never reads as the same
-                      // level as the PROJECTS section label above it.
-                      "group flex items-center justify-between rounded-md text-[13px] font-semibold cursor-pointer transition-colors",
+                      "group flex items-center justify-between rounded-md text-[12px] font-semibold uppercase tracking-[0.06em] cursor-pointer transition-colors",
                       // Full mode highlights the whole row on hover; compact
                       // mode hovers the centered monogram tile instead.
                       !compact && "hover:bg-[var(--color-hover)]",
