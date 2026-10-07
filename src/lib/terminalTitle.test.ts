@@ -21,6 +21,20 @@ describe("formatTerminalTitle", () => {
     );
   });
 
+  it("removes the circle and star spinner families, not only Braille", () => {
+    expect(formatTerminalTitle("◑ Task name", "claude", true)).toBe("Task name");
+    expect(formatTerminalTitle("◐ Task name", "claude", true)).toBe("Task name");
+    expect(formatTerminalTitle("✻ Task name", "claude", true)).toBe("Task name");
+    expect(formatTerminalTitle("· Task name", "claude", true)).toBe("Task name");
+  });
+
+  it("never eats a title's own letters or ASCII punctuation", () => {
+    expect(formatTerminalTitle("修复登录", "claude", true)).toBe("修复登录");
+    expect(formatTerminalTitle("◑ 修复登录", "claude", true)).toBe("修复登录");
+    expect(formatTerminalTitle("#12 fix", "claude", true)).toBe("#12 fix");
+    expect(formatTerminalTitle("[wip] login", "claude", true)).toBe("[wip] login");
+  });
+
   it("keeps Claude's spinner when Termic draws no working badge", () => {
     expect(formatTerminalTitle("⠋ Task name", "claude", false)).toBe(
       "⠋ Task name",

@@ -180,8 +180,12 @@ it keeps now (the "Lens" concept of the sidebar rethink):
 
 - **The agent's own title glyph never repeats the icon beside it.**
   `formatTerminalTitle` always strips claude's `✳` (the brand icon says
-  "claude"), and strips its Braille spinner whenever Termic draws its own
-  working badge (the `workingIndicator` pref), whatever the tab's state. It
+  "claude"), and strips its spinner frame whenever Termic draws its own
+  working badge (the `workingIndicator` pref), whatever the tab's state.
+  A frame is any leading symbol that is not a letter, a number or ASCII
+  punctuation, the same catch-all the busy detector uses, because claude
+  has shipped Braille, circle (`◐◑◒◓`) and star (`✢✶✻✽`) frames. Matching
+  only Braille left `◑` beside the spinner badge. It
   takes the RESOLVED icon id, so a cloned agent (`claude-dpf`) is treated
   as the claude it draws as. With the pref off the spinner stays: it is then
   the only working signal.
