@@ -175,6 +175,9 @@ export default {
     removeFromRun: "从运行脚本中移除",
     addToRun: "添加到运行脚本…",
     retryTip: "{{detail}}\n\n点击重试。",
+    pinFolder: "标记文件夹",
+    unpinFolder: "取消标记",
+    pinnedSectionLabel: "已标记",
   },
 
   scratchpad: {

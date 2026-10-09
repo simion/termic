@@ -1094,3 +1094,397 @@ describe("open a file in its default app", () => {
     expect(opened()).toEqual([]);
   });
 });
+
+// P1: pin folders in the tree for quick access. The row context menu and the
+// row's hover pin mark a folder; a collapsible Pinned section over the tree
+// same reveal an editor breadcrumb uses: expand ancestors, scroll, ring
+// highlight). Pins live on the PROJECT as task-relative paths, so every task
+// jumps to it (the rows are inside the tree). Pins are per project, so every
+// task
+// of fixture-repo sees the same rows. Cases: menu-pin + section-row jump; the row
+// pin toggles without expanding; unpin from the chip's own menu; a rename
+// follows the pin; a delete keeps it on purpose; pins are shared across the
+// project's tasks in pin order.
+describe("pin folders for quick access", () => {
+  let taskId!: string;
+  let task2Id!: string;
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    if (task2Id) await archiveTask(task2Id);
+    // Pins survive the tasks (they are project state), so the next describe
+    // would inherit this one's pins. Clear both the store and the stored
+    // JSON — the store only writes through on an action, and the next app
+    // launch reads the JSON back.
+    await browser.execute(() => {
+      window.__termic!.usePinnedFolders.setState({ byProject: {} });
+      const doomed = Object.keys(localStorage).filter((k) => k.endsWith("pinnedFolders"));
+      for (const k of doomed) localStorage.removeItem(k);
+    });
+    rmTree(path.join(fixture, "e2e-pins"), { bestEffort: true });
+    for (const d of ["e2e-pin-rowdir", "e2e-pin-renameme", "e2e-pin-renamed-ok", "e2e-pin-doomed", "e2e-pin-alpha", "e2e-pin-beta"]) {
+      rmSync(path.join(fixture, d), { force: true, recursive: true });
+    }
+    execSync(`git -C "${fixture}" clean -fd`);
+  });
+
+  const rowExists = (p: string) =>
+    browser.execute((sel) => !!document.querySelector(sel), `[data-path="${p}"]`);
+  const clickRow = (p: string) =>
+    browser.execute(
+      (sel) => (document.querySelector(sel) as HTMLElement).click(),
+      `[data-path="${p}"]`,
+    );
+  const pinRowSel = (rel: string) => `[data-testid="pinned-row"][data-pin-path="${rel}"]`;
+  const pinRowExists = (rel: string) =>
+    browser.execute((sel) => !!document.querySelector(sel), pinRowSel(rel));
+  const clickPinRow = (rel: string) =>
+    browser.execute(
+      (sel) => (document.querySelector(sel) as HTMLElement).click(),
+      pinRowSel(rel),
+    );
+
+  // Pin setup through the store, NOT the menu: the menu path is case 1's
+  // subject; everything after only needs the pin to exist.
+  const pinViaStore = (rel: string) =>
+    browser.execute((r) => {
+      const proj = window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
+      window.__termic!.usePinnedFolders.getState().pin(proj.id, r);
+    }, rel);
+
+  // Same dispatched right-click the default-app describe uses (a WebDriver
+  // right-click never reaches Radix's onContextMenu in this WKWebView). The
+  // row menu is found by its Copy path items, the pinned-row menu by its unpin item
+  // — menus are scoped by content, never a bare [role="menu"] (they stack,
+  // and a closing one lingers).
+  const openContextMenu = async (sel: string, marker: string) => {
+    await browser.execute(
+      (s) => {
+        const el = document.querySelector(s) as HTMLElement;
+        if (!el) throw new Error(`no element ${s}`);
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true, cancelable: true, button: 2,
+            clientX: r.left + 10, clientY: r.top + 10,
+          }),
+        );
+      },
+      sel,
+    );
+    await browser.waitUntil(
+      () =>
+        browser.execute((mk) => {
+          const menu = [...document.querySelectorAll('[role="menu"]')].find((m) =>
+            (m as HTMLElement).innerText.includes(mk),
+          );
+          return !!menu;
+        }, marker),
+      { timeout: 8_000, timeoutMsg: `the context menu (${marker}) never opened for ${sel}` },
+    );
+  };
+
+  const clickMenuItem = (marker: string, label: string) =>
+    browser.execute((mk, text) => {
+      const menu = [...document.querySelectorAll('[role="menu"]')].find((m) =>
+        (m as HTMLElement).innerText.includes(mk),
+      ) as HTMLElement | undefined;
+      if (!menu) throw new Error(`the ${mk} menu is not open`);
+      const item = [...menu.querySelectorAll("*")]
+        .reverse()
+        .find((i) => (i as HTMLElement).innerText?.trim() === text) as HTMLElement | undefined;
+      if (!item) throw new Error(`no menu item "${text}" in the ${mk} menu`);
+      item.click();
+    }, marker, label);
+
+  const openRowMenu = (rel: string) => openContextMenu(`[data-path="${rel}"]`, "Copy path");
+
+  it("pins a folder from the context menu and the section row jumps back to it", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-pins");
+    await dismissOverlays();
+    await ensureActiveTask(taskId);
+
+    // A nested folder three levels down, so the jump has real ancestors to
+    // re-expand (a root-level pin proves nothing about expansion).
+    mkdirSync(path.join(fixture, "e2e-pins", "outer", "inner"), { recursive: true });
+    writeFileSync(path.join(fixture, "e2e-pins", "outer", "inner", "note.txt"), "hi\n");
+    await browser.execute(
+      (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
+      taskId,
+    );
+
+    // Walk down to the target: expand e2e-pins, then outer.
+    await browser.waitUntil(() => rowExists("e2e-pins"), {
+      timeout: 10_000, timeoutMsg: "the e2e-pins folder never appeared in the tree",
+    });
+    await clickRow("e2e-pins");
+    await browser.waitUntil(() => rowExists("e2e-pins/outer"), {
+      timeout: 8_000, timeoutMsg: "expanding e2e-pins never revealed outer",
+    });
+    await clickRow("e2e-pins/outer");
+    await browser.waitUntil(() => rowExists("e2e-pins/outer/inner"), {
+      timeout: 8_000, timeoutMsg: "expanding outer never revealed inner",
+    });
+
+    await openRowMenu("e2e-pins/outer/inner");
+    await clickMenuItem("Copy path", "Pin folder");
+    await browser.waitUntil(() => pinRowExists("e2e-pins/outer/inner"), {
+      timeout: 8_000, timeoutMsg: "pinning never produced a section row",
+    });
+    await snap("pinned-section.png");
+
+    // Collapse both ancestors, then jump: the section row must re-expand
+    // the whole path and highlight the folder, or it is not quick access.
+    await clickRow("e2e-pins/outer");
+    await clickRow("e2e-pins");
+    await browser.waitUntil(
+      async () => (await rowExists("e2e-pins/outer")) === false,
+      { timeout: 8_000, timeoutMsg: "collapsing the ancestors never hid inner" },
+    );
+    await clickPinRow("e2e-pins/outer/inner");
+    await browser.waitUntil(() => rowExists("e2e-pins/outer/inner"), {
+      timeout: 8_000, timeoutMsg: "clicking the section row never re-expanded the path",
+    });
+    // The reveal ring is the visible "you are here": box-shadow, while it
+    // lasts (1.6s), so poll rather than assert once.
+    await browser.waitUntil(
+      () =>
+        browser.execute((sel) => {
+          const el = document.querySelector(sel) as HTMLElement | null;
+          return !!el && getComputedStyle(el).boxShadow !== "none";
+        }, `[data-path="e2e-pins/outer/inner"]`),
+      { timeout: 8_000, timeoutMsg: "the revealed folder never got the reveal highlight" },
+    );
+    await snap("pinned-reveal.png");
+  });
+
+  it("the row's pin toggle marks without expanding", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-pins"));
+    await ensureActiveTask(taskId);
+
+    // At the fixture ROOT, so the row renders no matter what an earlier case
+    // left expanded: this case is about the toggle, not about tree state.
+    mkdirSync(path.join(fixture, "e2e-pin-rowdir"), { recursive: true });
+    writeFileSync(path.join(fixture, "e2e-pin-rowdir", "kid.txt"), "k\n");
+    await browser.execute(
+      (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
+      taskId,
+    );
+    await browser.waitUntil(
+      () =>
+        browser.execute(
+          () => !!document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]'),
+        ),
+      { timeout: 10_000, timeoutMsg: "the folder row (with its pin toggle) never appeared" },
+    );
+
+    const pinToggle = () =>
+      browser.execute(
+        () => (document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]') as HTMLElement).click(),
+      );
+    await pinToggle();
+    await browser.waitUntil(() => pinRowExists("e2e-pin-rowdir"), {
+      timeout: 8_000, timeoutMsg: "the pin toggle never produced a section row",
+    });
+    const pinned = await browser.execute(
+      () =>
+        document.querySelector('[data-testid="pin-folder"][data-path="e2e-pin-rowdir"]')
+          ?.getAttribute("data-pinned"),
+    );
+    expect(pinned).toBe("true");
+    // The toggle is not an expand: the folder must stay collapsed. Its child
+    // is on disk, so an accidental toggle() would have revealed it.
+    expect(await rowExists("e2e-pin-rowdir/kid.txt")).toBe(false);
+
+    await pinToggle();
+    await browser.waitUntil(
+      async () => (await pinRowExists("e2e-pin-rowdir")) === false,
+      { timeout: 8_000, timeoutMsg: "toggling again never removed the section row" },
+    );
+  });
+
+  it("a pinned row's context menu unpins", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-pins"));
+    await pinViaStore("e2e-pin-menudir");
+    await browser.waitUntil(() => pinRowExists("e2e-pin-menudir"), {
+      timeout: 8_000, timeoutMsg: "the seeded pin never produced a section row",
+    });
+
+    await openContextMenu(pinRowSel("e2e-pin-menudir"), "Unpin folder");
+    await clickMenuItem("Unpin folder", "Unpin folder");
+    await browser.waitUntil(
+      async () => (await pinRowExists("e2e-pin-menudir")) === false,
+      { timeout: 8_000, timeoutMsg: "the pinned row menu's unpin never removed the row" },
+    );
+  });
+
+  it("the section folds to its header and back", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-pins"));
+    await pinViaStore("e2e-pin-fold");
+    await browser.waitUntil(() => pinRowExists("e2e-pin-fold"), {
+      timeout: 8_000, timeoutMsg: "the seeded pin never produced a section row",
+    });
+
+    const header = () =>
+      browser.execute(() => {
+        const el = document.querySelector('[data-testid="pinned-section-header"]') as HTMLElement | null;
+        return el ? el.getAttribute("data-collapsed") : null;
+      });
+    const rowCount = () =>
+      browser.execute(() => document.querySelectorAll('[data-testid="pinned-row"]').length);
+
+    // Pins from earlier cases in this describe are still in the record (only
+    // the last case clears the slate), so assert on THIS pin's row, never on
+    // an exact section size.
+    await browser.execute(() =>
+      (document.querySelector('[data-testid="pinned-section-header"]') as HTMLElement).click(),
+    );
+    await browser.waitUntil(
+      async () => (await header()) === "true" && (await rowCount()) === 0,
+      { timeout: 8_000, timeoutMsg: "folding the section never hid its rows" },
+    );
+
+    await browser.execute(() =>
+      (document.querySelector('[data-testid="pinned-section-header"]') as HTMLElement).click(),
+    );
+    await browser.waitUntil(
+      async () => (await header()) === "false" && (await pinRowExists("e2e-pin-fold")),
+      { timeout: 8_000, timeoutMsg: "unfolding the section never brought its rows back" },
+    );
+  });
+
+  it("renaming the folder follows the pin", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-pins"));
+    await ensureActiveTask(taskId);
+    // The folder must EXIST for its row to render (the pin alone only makes a
+    // section row, and this case drives the tree row's context menu).
+    mkdirSync(path.join(fixture, "e2e-pin-renameme"), { recursive: true });
+    await browser.execute(
+      (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
+      taskId,
+    );
+    await browser.waitUntil(() => rowExists("e2e-pin-renameme"), {
+      timeout: 10_000, timeoutMsg: "the renameme folder never appeared in the tree",
+    });
+    await pinViaStore("e2e-pin-renameme");
+    await browser.waitUntil(() => pinRowExists("e2e-pin-renameme"), {
+      timeout: 8_000, timeoutMsg: "the seeded pin never produced a section row",
+    });
+
+    await openRowMenu("e2e-pin-renameme");
+    await clickMenuItem("Copy path", "Rename");
+    // The row swaps to an inline input that the component focuses; address it
+    // by focus, since it carries no test id. The draft starts at the CURRENT
+    // folder name — the full `e2e-pin-renameme`, not its last segment.
+    await browser.waitUntil(
+      () =>
+        browser.execute(() => {
+          const ae = document.activeElement;
+          return !!ae && ae.tagName === "INPUT" && (ae as HTMLInputElement).value === "e2e-pin-renameme";
+        }),
+      { timeout: 8_000, timeoutMsg: "the rename input never took focus" },
+    );
+    await browser.execute(() => {
+      const input = document.activeElement as HTMLInputElement;
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      set.call(input, "e2e-pin-renamed-ok");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await browser.waitUntil(() => pinRowExists("e2e-pin-renamed-ok"), {
+      timeout: 8_000, timeoutMsg: "the pinned row never followed the rename",
+    });
+    expect(await pinRowExists("e2e-pin-renameme")).toBe(false);
+    expect(await pinRowExists("e2e-pin-renamed-ok")).toBe(true);
+  });
+
+  it("deleting the folder keeps the pin", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-pins"));
+    await ensureActiveTask(taskId);
+    mkdirSync(path.join(fixture, "e2e-pin-doomed"), { recursive: true });
+    await browser.execute(
+      (id) => window.__termic!.useApp.getState().bumpFsRevision(id),
+      taskId,
+    );
+    await browser.waitUntil(() => rowExists("e2e-pin-doomed"), {
+      timeout: 10_000, timeoutMsg: "the doomed folder never appeared in the tree",
+    });
+    await pinViaStore("e2e-pin-doomed");
+
+    await openRowMenu("e2e-pin-doomed");
+    await clickMenuItem("Copy path", "Remove");
+    // The confirm dialog, scoped by its title (dialogs stack; a closing one
+    // lingers in the DOM).
+    await browser.waitUntil(
+      () =>
+        browser.execute(() =>
+          [...document.querySelectorAll('[role="dialog"]')].some((d) =>
+            (d as HTMLElement).innerText.includes("Delete e2e-pin-doomed?"),
+          ),
+        ),
+      { timeout: 8_000, timeoutMsg: "the delete confirm never opened" },
+    );
+    await browser.execute(() => {
+      const dialog = [...document.querySelectorAll('[role="dialog"]')].find((d) =>
+        (d as HTMLElement).innerText.includes("Delete e2e-pin-doomed?"),
+      ) as HTMLElement;
+      const btn = [...dialog.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Delete");
+      if (!btn) throw new Error("no Delete button in the confirm dialog");
+      (btn as HTMLElement).click();
+    });
+    await browser.waitUntil(
+      async () => (await rowExists("e2e-pin-doomed")) === false,
+      { timeout: 8_000, timeoutMsg: "the folder was never deleted" },
+    );
+    // The pin is kept ON PURPOSE: build dirs come straight back, and a row
+    // for a missing folder reveal-no-ops silently.
+    expect(await pinRowExists("e2e-pin-doomed")).toBe(true);
+    // Clicking it must be a quiet no-op, not a crash: the tree is still there.
+    await clickPinRow("e2e-pin-doomed");
+    expect(await rowExists("e2e-pins")).toBe(true);
+    await snap("pinned-deleted-kept.png");
+  });
+
+  it("pins are shared across the project's tasks, in pin order", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = taskId ?? (await openTask("e2e-pins"));
+    await ensureActiveTask(taskId);
+    // Leftovers from the cases above would sit ahead of these in insertion
+    // order; clear the slate so the exact order is assertable.
+    await browser.execute(() => window.__termic!.usePinnedFolders.setState({ byProject: {} }));
+    await pinViaStore("e2e-pin-alpha");
+    await pinViaStore("e2e-pin-beta");
+    const pinOrder = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll('[data-testid="pinned-row"]')].map((c) =>
+          c.getAttribute("data-pin-path"),
+        ),
+      );
+    await browser.waitUntil(async () => (await pinOrder()).length === 2, {
+      timeout: 8_000, timeoutMsg: "the slate was never cleared to exactly two rows",
+    });
+    expect(await pinOrder()).toEqual(["e2e-pin-alpha", "e2e-pin-beta"]);
+
+    // A second task of the SAME project must show the same pins: that is
+    // the entire point of project-scoped pins.
+    task2Id = await openTask("e2e-pins-2");
+    await ensureActiveTask(task2Id);
+    await browser.waitUntil(async () => (await pinOrder()).length === 2, {
+      timeout: 8_000, timeoutMsg: "the second task never showed the project's pins",
+    });
+    expect(await pinOrder()).toEqual(["e2e-pin-alpha", "e2e-pin-beta"]);
+  });
+});

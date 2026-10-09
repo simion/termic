@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, pinnedFolders, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -66,6 +66,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/lib/previewBrowser"),
         import("@/store/pendingTasks"),
         import("@/store/archivingTasks"),
+        import("@/store/pinnedFolders"),
         import("@codemirror/language"),
         import("@codemirror/autocomplete"),
         import("@/store/codeIntel"),
@@ -86,6 +87,10 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       useRace: race.useRace,
       usePr: pr.usePr,
       useDiffStat: diffStat.useDiffStat,
+      // File-tree pins (right panel). Exposed so a spec can clear a project's
+      // pins in teardown even when the body threw half way, which driving one
+      // context menu per chip cannot guarantee.
+      usePinnedFolders: pinnedFolders.usePinnedFolders,
       // One pass of the BACKGROUND status poller (GH #281). Exposed because
       // its real cadence is minutes and the badge it drives lives on rows
       // whose PR card is not mounted - there is nothing on screen to click

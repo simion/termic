@@ -16,6 +16,7 @@ import * as ipc from "@/lib/ipc";
 import { groupOf } from "@/lib/projectGroups";
 import { useRace } from "@/store/race";
 import { useFileViewed } from "@/store/fileViewed";
+import { usePinnedFolders } from "@/store/pinnedFolders";
 import { useCodeIntel } from "@/store/codeIntel";
 import { useNavHistory } from "@/store/navHistory";
 import { useRecentPlaces } from "@/store/recentPlaces";
@@ -851,6 +852,10 @@ export const useApp = create<AppState>((set, get) => ({
     // of it may prune paths. Archived tasks keep their marks until the task is
     // gone for good, matching the race prune above.
     useFileViewed.getState().prune(new Set(tasks.map(t => t.id)));
+    // File-tree pins are keyed by PROJECT (tasks are worktrees of one project,
+    // and the pin is a task-relative path), so they die with the project: once
+    // its last task is archived/deleted the project never comes back.
+    usePinnedFolders.getState().prune(new Set(projects.map(p => p.id)));
     // Code-navigation grants are refcounted against the tasks that armed them
     // and are deliberately not sticky (GH #174): when a checkout's last task
     // is archived or deleted, the grant lapses and the server is reaped with

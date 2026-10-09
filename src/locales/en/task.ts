@@ -179,6 +179,9 @@ export default {
     removeFromRun: "Remove from Run scripts",
     addToRun: "Add to Run scripts…",
     retryTip: "{{detail}}\n\nClick to try again.",
+    pinFolder: "Pin folder",
+    unpinFolder: "Unpin folder",
+    pinnedSectionLabel: "Pinned folders",
   },
 
   scratchpad: {

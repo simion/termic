@@ -76,6 +76,9 @@ export interface TermicApi {
    *  staleness floor, so a spec that changes a worktree calls `invalidate`
    *  rather than waiting the floor out. */
   useDiffStat: { getState: () => any; setState: (p: any) => void };
+  /** File-tree pins (src/store/pinnedFolders.ts). Specs seed pins for setup
+   *  and clear them in teardown; the chip bar is what the spec asserts on. */
+  usePinnedFolders: { getState: () => any; setState: (p: any) => void };
   /** One pass of the background PR status poller (GH #281): the real one
    *  ticks on a multi-minute cadence and has no on-screen trigger. */
   prStatusPassNow: () => Promise<void>;

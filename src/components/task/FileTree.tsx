@@ -4,13 +4,14 @@
 // - Clicking a file opens/selects an edit tab in the task.
 // - Indentation reflects depth; chevrons rotate to indicate expansion state.
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, Pencil, Trash2, Play, Plus, Minus } from "lucide-react";
+import { ChevronRight, ChevronDown, Pencil, Trash2, Play, Plus, Minus, Pin, PinOff } from "lucide-react";
 import type { FileEntry } from "@/lib/types";
 import { taskDirList, taskPathRename, taskPathDelete } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
+import { usePinnedFolders, EMPTY_PINS } from "@/store/pinnedFolders";
 import { cn } from "@/lib/utils";
 import { fileIconUrl, folderIconUrl } from "@/lib/explorer/iconResolver";
 import { ROOT, sameChildren, mergeReload, dirsNeedingLoad, without, withoutKey } from "@/lib/explorer/dirCache";
@@ -110,6 +111,15 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
   const [revealedRel, setRevealedRel] = useState<string | null>(null);
   const revealFile = useApp(s => s.revealFile);
   const clearReveal = useApp(s => s.clearReveal);
+
+  // Folders pinned for this task's project. The record slice is ref-stable
+  // (EMPTY_PINS for a project with no pins), so the memo — and every row —
+  // only sees a new Set when a pin actually changes.
+  const pinRecord = usePinnedFolders(s => s.byProject[projectId] ?? EMPTY_PINS);
+  const togglePin = usePinnedFolders(s => s.toggle);
+  const pins = useMemo(() => new Set(pinRecord), [pinRecord]);
+  const sectionCollapsed = usePinnedFolders(s => s.sectionCollapsed);
+  const setSectionCollapsed = usePinnedFolders(s => s.setSectionCollapsed);
 
   // Load root on mount / taskId change. Restore this task's previously
   // expanded folders (empty on first visit) and re-fetch them so they show
@@ -299,14 +309,90 @@ export function FileTree({ taskId, reloadToken = 0, refreshToken = 0 }: Props) {
 
   return (
     <div ref={treeRef} className="flex flex-col select-none">
+      {pinRecord.length > 0 && (
+        <PinnedSection
+          taskId={taskId} projectId={projectId} pins={pinRecord}
+          collapsed={sectionCollapsed}
+          onToggleCollapsed={() => setSectionCollapsed(!sectionCollapsed)}
+        />
+      )}
       {rootEntries.map(e => (
         <TreeNode
           key={e.name} taskId={taskId} entry={e} depth={0} rel={e.name} root={root}
           expanded={expanded} children_={children} toggle={toggle} revealed={revealedRel} refetch={refetchDir}
           loading={loading} failed={failed} retry={ensureLoaded}
-          projectId={projectId} savedCmds={savedCmds} reloadCmds={reloadCmds}
+          projectId={projectId} pins={pins} togglePin={togglePin} savedCmds={savedCmds} reloadCmds={reloadCmds}
         />
       ))}
+    </div>
+  );
+}
+
+// The tree's Pinned section: a GitPanel-style collapsible header, then one
+// plain tree row per pin. Rows are JUMP links, not tree nodes: a click asks
+// the reveal mechanism to expand the path, scroll to the real row and ring
+// it, so the section adds no navigation state of its own beyond the fold,
+// and carries `data-pin-path` (never `data-path`) so the reveal's row lookup
+// cannot land here instead of in the tree.
+function PinnedSection({ taskId, projectId, pins, collapsed, onToggleCollapsed }: {
+  taskId: string;
+  projectId: string;
+  pins: readonly string[];
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  const { t } = useTranslation("task");
+  const unpin = usePinnedFolders(s => s.unpin);
+  return (
+    <div
+      className="mb-1 shrink-0 border-b border-[var(--color-border-soft)]"
+      data-testid="pinned-section"
+    >
+      <button
+        type="button"
+        onClick={onToggleCollapsed}
+        aria-expanded={!collapsed}
+        data-testid="pinned-section-header"
+        data-collapsed={collapsed}
+        // The band treatment is the section's whole case for "I am not part
+        // of the tree below": GitPanel's pane-header tint + the container's
+        // closing border and gap enclose the rows instead of letting them
+        // read as the first tree entries.
+        className="flex h-7 w-full items-center gap-1.5 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] pl-2.5 pr-1 text-left text-[11.5px] font-medium uppercase tracking-[0.06em] text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]"
+      >
+        {collapsed
+          ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+          : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+        {t("fileTree.pinnedSectionLabel")}
+        <span className="tabular-nums text-[var(--color-fg-faint)]">{pins.length}</span>
+      </button>
+      {!collapsed && pins.map(rel => {
+        const iconUrl = folderIconUrl(rel.split("/").pop() ?? rel, false);
+        return (
+          <ContextMenuRoot key={rel}>
+            <ContextMenuTrigger asChild>
+              <button
+                type="button"
+                data-testid="pinned-row"
+                data-pin-path={rel}
+                title={rel}
+                onClick={() => useApp.getState().revealInTree(taskId, rel, true)}
+                className="group flex h-[26px] w-full min-w-0 items-center gap-2 rounded-sm px-2 text-left text-[13px] text-[var(--color-fg)]/85 hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                style={{ paddingLeft: 6 + 12 }}
+              >
+                {iconUrl ? <img src={iconUrl} alt="" className="h-4 w-4 shrink-0 file-icon" /> : <span className="h-4 w-4 shrink-0" />}
+                <span className="min-w-0 flex-1 truncate">{rel}</span>
+                <Pin className="h-3 w-3 shrink-0 text-[var(--color-accent)] opacity-60 group-hover:opacity-100" />
+              </button>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem onSelect={() => unpin(projectId, rel)}>
+                <PinOff /> {t("fileTree.unpinFolder")}
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenuRoot>
+        );
+      })}
     </div>
   );
 }
@@ -332,13 +418,17 @@ interface NodeProps {
   retry: (rel: string) => void;
   /** Project id, for the "Add to Run scripts" actions (GH #124). */
   projectId: string;
+  /** Rel paths pinned for this project; drives the folder pin affordance. */
+  pins: Set<string>;
+  /** Flip one pin (zustand action, ref-stable). */
+  togglePin: (projectId: string, rel: string) => void;
   /** Commands already saved to the repo's Run-scripts list. */
   savedCmds: Set<string>;
   /** Refresh `savedCmds` after an add/remove. */
   reloadCmds: () => void;
 }
 
-function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch, loading, failed, retry, projectId, savedCmds, reloadCmds }: NodeProps) {
+function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle, revealed, refetch, loading, failed, retry, projectId, pins, togglePin, savedCmds, reloadCmds }: NodeProps) {
   const { t } = useTranslation("task");
   const openPreviewTab = useApp(s => s.openPreviewTab);
   const persistTab = useApp(s => s.persistTab);
@@ -352,6 +442,10 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(entry.name);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  // Mirrors `renaming` for the menu's onCloseAutoFocus handler, whose closure
+  // was captured on the last render BEFORE the rename flipped the flag.
+  const renamingRef = useRef(false);
+  useEffect(() => { renamingRef.current = renaming; }, [renaming]);
   useEffect(() => {
     if (!renaming) return;
     const el = renameInputRef.current;
@@ -388,6 +482,11 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
     try {
       await taskPathRename(taskId, rel, name);
       closeStaleTabs(rel);
+      // A pinned folder follows its rename (pin + every pin beneath it), so
+      // the chip keeps pointing at the folder the user marked.
+      if (entry.is_dir && projectId) {
+        usePinnedFolders.getState().remap(projectId, rel, parentRel ? `${parentRel}/${name}` : name);
+      }
       refetch(parentRel);
       // The tree just refetched itself; git status still shows the old
       // path until the Git tab hears about it.
@@ -411,6 +510,9 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
     try {
       await taskPathDelete(taskId, rel);
       closeStaleTabs(rel);
+      // Any pin on a deleted folder is kept on purpose: the common delete is
+      // a build output dir that comes straight back, and a chip pointing at a
+      // missing folder reveal-no-ops silently. See store/pinnedFolders.ts.
       refetch(parentRel);
       // Same as rename: tree is fresh, tell the Git tab.
       useApp.getState().bumpGitRevision(taskId);
@@ -528,9 +630,44 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
         )
       }
         <span className="truncate flex-1 min-w-0 font-medium">{entry.name}</span>
+        {entry.is_dir && projectId && (
+          // Pin affordance, not a <button>: nested buttons are invalid HTML,
+          // and the row's own handlers own keyboard focus anyway (the context
+          // menu is the keyboard path to pinning). Every handler stops
+          // propagation: onPointerDown especially, or the row's drag-to-type
+          // (startPathDrag) fires before click ever does.
+          <span
+            role="button"
+            tabIndex={-1}
+            aria-label={pins.has(rel) ? t("fileTree.unpinFolder") : t("fileTree.pinFolder")}
+            data-testid="pin-folder"
+            data-path={rel}
+            data-pinned={pins.has(rel)}
+            title={pins.has(rel) ? t("fileTree.unpinFolder") : t("fileTree.pinFolder")}
+            onPointerDown={e => e.stopPropagation()}
+            onDoubleClick={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); togglePin(projectId, rel); }}
+            className={cn(
+              "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-[var(--color-accent)] transition-opacity duration-150 hover:bg-[var(--color-hover)]",
+              // Pinned: always visible (the passive indicator). Unpinned:
+              // hover-only invitation, same pattern as the sidebar's row
+              // affordances.
+              pins.has(rel) ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover:opacity-70",
+            )}
+          >
+            <Pin className="h-3 w-3" />
+          </span>
+        )}
       </button>
       </ContextMenuTrigger>
-      <ContextMenuContent>
+      <ContextMenuContent
+        // Renaming from the menu mounts the inline input in the same tick the
+        // menu unmounts, and Radix's close-time focus restore would then land
+        // on the pre-menu element (the terminal, usually) — blurring the
+        // input, whose onBlur cancels the rename outright. While the flag is
+        // up, keep focus in the input instead.
+        onCloseAutoFocus={(e) => { if (renamingRef.current) e.preventDefault(); }}
+      >
         <CopyPathItems rel={rel} root={root} isDir={entry.is_dir} />
         {!entry.is_dir && (
           <>
@@ -549,6 +686,14 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
             )}
           </>
         )}
+        {entry.is_dir && projectId && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => togglePin(projectId, rel)}>
+              {pins.has(rel) ? <PinOff /> : <Pin />} {pins.has(rel) ? t("fileTree.unpinFolder") : t("fileTree.pinFolder")}
+            </ContextMenuItem>
+          </>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => { setDraft(entry.name); setRenaming(true); }}>
           <Pencil /> {t("common:rename")}
@@ -565,7 +710,7 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
           key={c.name} taskId={taskId} entry={c} depth={depth + 1} rel={`${rel}/${c.name}`} root={root}
           expanded={expanded} children_={children_} toggle={toggle} revealed={revealed} refetch={refetch}
           loading={loading} failed={failed} retry={retry}
-          projectId={projectId} savedCmds={savedCmds} reloadCmds={reloadCmds}
+          projectId={projectId} pins={pins} togglePin={togglePin} savedCmds={savedCmds} reloadCmds={reloadCmds}
         />
       ))}
       {entry.is_dir && isOpen && !kids && (

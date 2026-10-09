@@ -169,6 +169,8 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "terminalSplitHeight", scoped: false, class: "local", reason: "split size, keyed by task id" },
   { key: "terminalSplitCollapsed", scoped: false, class: "local", reason: "collapse state, keyed by task id" },
   { key: "fileViewed", scoped: false, class: "local", reason: "review progress, keyed by task id" },
+  { key: "pinnedFolders", scoped: true, class: "local", reason: "file-tree pins, keyed by project id, which a profile owns" },
+  { key: "pinnedSectionCollapsed", scoped: false, class: "local", reason: "collapse state" },
   { key: "diffMode", scoped: false, class: "local", reason: "last-used toggle in the diff pane" },
 
   // ── Git panel ──

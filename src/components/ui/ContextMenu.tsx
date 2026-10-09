@@ -19,11 +19,18 @@ export function ContextMenuTrigger({ children, className, asChild, disabled }: {
   );
 }
 
-export function ContextMenuContent({ children, className }: { children: ReactNode; className?: string }) {
+export function ContextMenuContent({ children, className, onCloseAutoFocus }: {
+  children: ReactNode; className?: string;
+  /** Radix fires this when the menu closes and is about to hand focus back
+   *  to the pre-menu element. preventDefault() to keep focus where the
+   *  onSelect left it (e.g. an inline input the item just mounted). */
+  onCloseAutoFocus?: (e: Event) => void;
+}) {
   return (
     <CM.Portal>
       <CM.Content
         collisionPadding={8}
+        onCloseAutoFocus={onCloseAutoFocus}
         // Same bubbling guard as Dropdown: a click on an item must not leak
         // through the React portal tree to the clickable row underneath.
         onClick={(e) => e.stopPropagation()}

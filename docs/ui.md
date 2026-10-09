@@ -1587,6 +1587,35 @@ vertical space and was getting whatever two file lists left over, so it became
 a sub-tab and the collapse flag, the ratio, the divider and their localStorage
 keys went with it.
 
+## Pinned folders in the file tree
+
+When the task's project has pinned folders, the All files tree opens with a
+collapsible "Pinned" section over the root listing — a GitPanel-section band
+(tinted header: chevron, label, count) whose rows sit enclosed above a closing
+border and gap, so they never read as the first tree entries — one plain tree
+row per pin showing the task-relative path. A row click is a REVEAL, not a navigation: the ancestors
+expand, the view scrolls to the folder and the row ring-highlights for a
+moment, exactly the reveal an editor breadcrumb asks for — one mechanism, two
+callers. The section folds to its header row (`pinnedSectionCollapsed`,
+machine-level like every collapse flag) and renders nothing at all when the
+project has no pins. Marking has two entries, both on folder rows only: the
+context menu's "Pin folder" / "Unpin folder", and a pin glyph at the row's
+right edge that appears on hover (stays faintly visible on a pinned row, where
+it is the passive indicator). Clicking the glyph toggles the pin without
+expanding the folder; every handler on it stops propagation, `pointerdown`
+included, or the row's drag-to-type eats the click before it happens.
+
+Pins are PROJECT state, not task state (`src/store/pinnedFolders.ts`, one
+localStorage key, profile-scoped like every project-id-keyed record): tasks
+are worktrees of one project, and the task-relative path of the folder you
+care about is stable across them, so a pin made in any task serves all of
+them. Renaming a folder remaps its pin (and every pin beneath it) in place;
+deleting one KEEPS the pin on purpose, because the common delete is a build
+output dir that comes straight back, and a pinned row for a missing folder
+reveal-no-ops quietly, the same as revealing a deleted file from a breadcrumb.
+Pins die only with their project, in the same `loadAll` housekeeping pass that
+prunes fileViewed by task liveness.
+
 ## Right-panel footer (Setup / Run / Terminal)
 
 Three tabs. Setup + Run stream via `useScriptRuns`. Terminal is opt-in: click `+` → `useApp.enableFooterTerm(wsId)` → AuxTerminal mounts. RunToolbar: Open (expands `project.preview_url` with `$TERMIC_PORT`/`$CONDUCTOR_PORT`/`$PORT`/`$TERMIC_WORKSPACE_NAME` + any frozen extra named port, GH #196) + Run/Stop (SIGTERMs process group). Default: tab=Run, expanded.
