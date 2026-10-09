@@ -57,7 +57,20 @@ describe("pin / unpin / toggle", () => {
     usePinnedFolders.getState().toggle(PROJECT, "dist");
     expect(pins(PROJECT)).toEqual(["dist"]);
     usePinnedFolders.getState().toggle(PROJECT, "dist");
-    expect(pins(PROJECT)).toEqual([]);
+    expect(pins(PROJECT)).toBeUndefined();
+  });
+
+  it("drops the project entry when its last pin goes away", () => {
+    // Review nit on #389: unpinning the last folder used to leave an empty
+    // array in the record and in localStorage, one dead key per project.
+    usePinnedFolders.getState().pin(PROJECT, "dist");
+    usePinnedFolders.getState().unpin(PROJECT, "dist");
+    expect(usePinnedFolders.getState().byProject[PROJECT]).toBeUndefined();
+    expect(stored()).toEqual({});
+    usePinnedFolders.getState().toggle(OTHER, "src");
+    usePinnedFolders.getState().toggle(OTHER, "src");
+    expect(usePinnedFolders.getState().byProject[OTHER]).toBeUndefined();
+    expect(stored()).toEqual({});
   });
 
   it("keeps projects independent", () => {

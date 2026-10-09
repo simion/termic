@@ -96,7 +96,13 @@ export const usePinnedFolders = create<PinnedFoldersState>((set) => ({
     set((s) => {
       const cur = s.byProject[projectId];
       if (!cur?.includes(rel)) return s;
-      const byProject = { ...s.byProject, [projectId]: cur.filter(p => p !== rel) };
+      // Removing a project's LAST pin drops its entry outright: an empty
+      // array in the record (and in localStorage) is a leak that would grow
+      // one key per project the user ever pinned anything in.
+      const next = cur.filter(p => p !== rel);
+      const byProject = { ...s.byProject };
+      if (next.length) byProject[projectId] = next;
+      else delete byProject[projectId];
       save(byProject);
       return { byProject };
     }),
@@ -105,7 +111,9 @@ export const usePinnedFolders = create<PinnedFoldersState>((set) => ({
     set((s) => {
       const cur = s.byProject[projectId] ?? [];
       const next = cur.includes(rel) ? cur.filter(p => p !== rel) : [...cur, rel];
-      const byProject = { ...s.byProject, [projectId]: next };
+      const byProject = { ...s.byProject };
+      if (next.length) byProject[projectId] = next;
+      else delete byProject[projectId];
       save(byProject);
       return { byProject };
     }),
