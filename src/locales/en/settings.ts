@@ -493,6 +493,160 @@ export default {
     resetDefault: "Reset to default",
     doubleShiftAria: "When double-Shift opens Search everywhere",
     ctrlTabAria: "Whether Ctrl+Tab walks the recently used tabs",
+
+    // The rows themselves, keyed by shortcut id through lib/shortcutCopy.ts:
+    // the settings page and the ⌘/ sheet both draw them, so the copy lives in
+    // one place and neither surface can drift from the other. A row with
+    // nothing to explain omits `hint`, which is how shortcutHint() knows not
+    // to print a line under it.
+    //
+    // {{cmd}}, {{cmdS}}, {{cmdK}}, {{shiftCmdD}} and {{shiftCmdP}} are the
+    // platform's own spelling of a chord (⌘S here, Ctrl+S on Linux/Windows),
+    // filled in by shortcutCopy.ts.
+    groups: {
+      navigation: "Navigation",
+      tabs: "Tabs",
+      terminal: "Terminal",
+      git: "Git",
+      general: "General",
+    },
+    modes: {
+      off: "Off",
+      doubleLeftShift: "Double left Shift",
+      doubleNotInTerminal: "Double Shift, not in a terminal",
+      doubleShift: "Double Shift",
+      holdCtrlTab: "Hold Ctrl, tap Tab",
+    },
+    fixed: {
+      searchEverywhere: {
+        label: "Search everywhere",
+        // Says nothing about WHICH Shift: that is the setting's to say, and a
+        // hint hardcoding "left" is wrong the moment somebody picks either.
+        hint: "Files always; classes and functions too, once a checkout has code navigation on.",
+        // Shown where the recorder would be, on a row that carries no select.
+        reason: "Double tap",
+      },
+      recentTabs: {
+        label: "Recently used tabs",
+        hint: "Hold Ctrl and tap Tab to step back through what you were looking at; add Shift to go the other way.",
+        reason: "Hold and tap",
+      },
+    },
+    defs: {
+      sidebarPrev: { label: "Previous sidebar row", hint: "Task or expanded tab above" },
+      sidebarNext: { label: "Next sidebar row", hint: "Task or expanded tab below" },
+      navBack: {
+        label: "Back",
+        hint: "Where you came from: the previous symbol you jumped from, or the folder you were just in.",
+      },
+      goToDefinition: {
+        label: "Go to definition",
+        hint: "In the editor. Lands on the source, not a stub; {{cmd}}-click does the same.",
+      },
+      findUsages: {
+        label: "Find usages",
+        hint: "In the editor. {{cmd}}-clicking a definition asks the same question.",
+      },
+      goToImplementation: {
+        label: "Go to implementation",
+        hint: "From an interface or an abstract method to what implements it.",
+      },
+      goToTypeDefinition: { label: "Go to type definition", hint: "From a value to the type it has." },
+      fileStructure: {
+        label: "File structure",
+        hint: "What is in this file, filterable, without scrolling it.",
+      },
+      navForward: { label: "Forward", hint: "Retrace a Back." },
+      taskPrevArrow: {
+        label: "Pane up / previous task",
+        hint: "With a horizontal split: focus the pane above. Otherwise: go to the previous task.",
+      },
+      taskNextArrow: {
+        label: "Pane down / next task",
+        hint: "With a horizontal split: focus the pane below. Otherwise: go to the next task.",
+      },
+      jumpNextWaiting: {
+        label: "Jump to next waiting agent",
+        hint: "Cycle to the next task whose agent is waiting on you (finished a turn or blocked on input). Visiting clears the signal, so repeated presses walk your whole queue.",
+      },
+      tabPrev: { label: "Previous tab" },
+      tabNext: { label: "Next tab" },
+      tabPrevArrow: {
+        label: "Pane left",
+        hint: "With a vertical split: focus the pane to the left. No-op otherwise.",
+      },
+      tabNextArrow: {
+        label: "Pane right",
+        hint: "With a vertical split: focus the pane to the right. No-op otherwise.",
+      },
+      jumpToTab: { label: "Jump to tab 1…9", hint: "Modifier + a number key" },
+      newTab: { label: "New tab" },
+      newScratchpad: {
+        label: "New scratchpad",
+        hint: "An untitled buffer in this task. It survives a relaunch; {{cmdS}} saves it into the project.",
+      },
+      closeTab: { label: "Close active tab" },
+      focusTerminal: {
+        label: "Focus main agent",
+        hint: "Jump focus to the main pane (its agent terminal or the open editor) from anywhere",
+      },
+      clearTerminal: {
+        label: "Clear focused terminal",
+        hint: "Clears the focused terminal's scrollback, the standard {{cmdK}} every terminal uses.",
+      },
+      splitPaneRight: {
+        label: "Split pane right",
+        hint: "Open a new pane to the right of the focused pane (vertical divider).",
+      },
+      splitPaneBelow: {
+        label: "Split pane below",
+        hint: "Open a new pane below the focused pane (horizontal divider). Also: {{shiftCmdD}} by default.",
+      },
+      toggleTerminal: {
+        label: "Toggle terminal panel",
+        hint: "Show + focus the bottom split, or hide it and return to the agent",
+      },
+      terminalCopy: {
+        label: "Copy selection",
+        hint: "Linux/Windows only. macOS uses Cmd+C natively.",
+      },
+      terminalPaste: {
+        label: "Paste into terminal",
+        hint: "Linux/Windows only. macOS uses Cmd+V natively.",
+      },
+      commandPalette: {
+        label: "Command palette",
+        hint: "Search every command and action (the {{shiftCmdP}} convention from VS Code / Sublime)",
+      },
+      newTaskQuick: { label: "New task…", hint: "Search a project and start a new task" },
+      openSettings: { label: "Open settings" },
+      fileFinder: { label: "Open file finder" },
+      taskFinder: { label: "Open task finder", hint: "Quick search and switch tasks across projects" },
+      findInFiles: { label: "Find in files" },
+      toggleLeftSidebar: { label: "Toggle left sidebar", hint: "Collapse / expand the projects sidebar" },
+      toggleRightSidebar: { label: "Toggle right sidebar", hint: "Show / hide the right panel" },
+      broadcast: { label: "Broadcast to agents" },
+      promptPalette: {
+        label: "Prompt palette",
+        hint: "Search prompts by title; digits 1-9 fire the top rows, Enter runs the highlighted one",
+      },
+      zoomIn: { label: "Zoom in", hint: "Scale the whole app up (like browser zoom)" },
+      zoomOut: { label: "Zoom out", hint: "Scale the whole app down" },
+      zoomReset: { label: "Reset zoom", hint: "Return the app to 100%" },
+      addSelectionToAgent: {
+        label: "Add selection to agent",
+        hint: "Opens a comment on the selected lines. Comments queue up and go to the agent as one batch, so you can mark several places before sending.",
+      },
+      createPr: { label: "Create pull request", hint: "Opens the Create PR / MR dialog for the active task" },
+      stageFile: {
+        label: "Stage / unstage selected file",
+        hint: "Toggles the Git panel's selected file in or out of staging",
+      },
+      discardFile: {
+        label: "Discard selected file",
+        hint: "Restores the selected file to HEAD after a confirm",
+      },
+    },
   },
 
   profiles: {

@@ -18,6 +18,8 @@ vi.mock("@/lib/tabFocus", () => ({
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { DEFAULT_BINDINGS, SHORTCUT_DEFS } from "@/lib/shortcuts";
+import { shortcutLabel } from "@/lib/shortcutCopy";
+import { i18n } from "@/lib/i18n";
 import { fuzzyMatch } from "@/lib/fuzzy";
 import { resolveStatusQualifier, STATUS_QUALIFIER_RE } from "./TaskFinderDialog";
 import type { Task, Project } from "@/lib/types";
@@ -30,7 +32,10 @@ describe("TaskFinder shortcut and state", () => {
   it("has a task-finder shortcut registered with Cmd+O / Ctrl+O", () => {
     const def = SHORTCUT_DEFS.find(d => d.id === "task-finder");
     expect(def).toBeDefined();
-    expect(def?.label).toBe("Open task finder");
+    // The row's name is a locale entry (lib/shortcutCopy.ts): this reads the
+    // one the Settings page and the ⌘/ sheet draw, not a copy kept beside the
+    // binding.
+    expect(shortcutLabel("task-finder", i18n.getFixedT("en"))).toBe("Open task finder");
     expect(def?.group).toBe("General");
     expect(def?.defaultBinding.key).toBe("o");
     expect(def?.defaultBinding.cmd).toBe(true);
