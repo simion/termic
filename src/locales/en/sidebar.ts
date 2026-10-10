@@ -31,12 +31,16 @@ export default {
   taskPrBadgeNumber: "Number only",
   taskPrBadgeNone: "None",
   statusChips: {
+    action: "Tasks in action",
     attention: "Needs you",
     done: "Done, unread",
     working: "Working",
     review: "In review",
+    settled: "Settled",
     tip: "{{label}}: filter to status:{{status}}",
     tipActive: "{{label}}: remove status:{{status}}",
+    tipAction: "{{label}}: filter to tasks in action (-status:backlog)",
+    tipActiveAction: "{{label}}: remove -status:backlog",
     tipEmpty: "{{label}}: no tasks",
   },
   filterBar: {

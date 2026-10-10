@@ -328,6 +328,21 @@ export function cycleBoardClause(input: string, key: BoardQualifier, value: stri
   return setBoardClause(input, key, value, state === null ? "include" : state === "include" ? "exclude" : null);
 }
 
+/** Strip all clauses on `key` from the query text, leaving other keys and free text. */
+export function stripBoardKey(input: string, key: BoardQualifier): string {
+  const kept: string[] = [];
+  const toks = tokenize(input);
+  if (toks.length && !/\s$/.test(input) && pendingNegation(toks[toks.length - 1])) toks.pop();
+  for (const tok of toks) {
+    const neg = tok.length > 1 && tok.startsWith("-");
+    const m = KEY_RE.exec(neg ? tok.slice(1) : tok);
+    const k = m ? resolveKey(m[1]) : undefined;
+    if (m && k === key) continue;
+    kept.push(tok);
+  }
+  return kept.join(" ");
+}
+
 // ── Autocomplete ────────────────────────────────────────────────────────
 
 export interface BoardSuggestion {

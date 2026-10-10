@@ -929,12 +929,11 @@ go" has an answer on both surfaces.
 
 ## The sidebar's status chips
 
-Under the filter bar, a row of chips counts the tasks that are working, need
-you, have finished unread, and are in review, in the order a task moves
-through them (`sidebar/StatusChips.tsx`). A chip toggles
-`status:<column>` in the sidebar's query, so clicking one narrows the tree
-to those tasks and the bar shows the clause it wrote: the board's lane-click
-idea, applied to the sidebar.
+Under the filter bar, a row of chips counts the tasks in action, working,
+needing you, finished unread, in review, and settled (`sidebar/StatusChips.tsx`).
+A chip toggles its status clause in the sidebar's query, so clicking one
+narrows the tree to those tasks and the bar shows the clause it wrote: the
+board's lane-click idea, applied to the sidebar.
 
 They are drawn only while the STATUS section (above) is off, which is the
 default. The section lists the same buckets with their tasks, so with it on
@@ -962,8 +961,17 @@ the count, and the list is one click away in the tree.
   means "has an open or draft PR, agent idle", and green on a row's PR
   badge is a PR state, so a green chip read as "checks passed". An eye was
   tried and dropped: the PR glyph is what the board's review column uses.
-- **Four chips, not six.** Settled and Not started are the largest and
-  least urgent buckets; the board and the query have them.
+- **Six chips across the full active lifecycle:** Tasks in action (`action`),
+  Working (`working`), Needs you (`attention`), Done (`done`), In review (`review`),
+  and Settled (`settled`). Not started (backlog) remains available via the query
+  language and filter menu.
+- **Tasks in action is the umbrella chip:** it counts all non-backlog tasks and
+  toggles `-status:backlog` into the query. Clicking it clears granular status
+  clauses so all tasks in action (working, attention, review, settled) appear in the
+  tree at once. Clicking a granular chip while Tasks in action is on replaces
+  `-status:backlog` with that specific status filter.
+- **Settled completes the lifecycle:** it writes `status:settled` and wears a check
+  mark in the settled colour (`STATUS_MARK_COLOR.settled`, `var(--color-info)`).
 - **Done is the one chip that is not a column.** It counts the rows showing
   the blue dot: a turn finished and nobody has looked. The board files those
   under Settled with everything that finished last week (or under In review

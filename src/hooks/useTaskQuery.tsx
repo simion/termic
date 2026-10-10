@@ -139,6 +139,7 @@ export interface TaskQuery {
    *  column whichever chip is on. Needs columns. */
   columnCount: (column: BoardColumn) => number;
   doneCount: () => { shown: number; total: number };
+  actionCount: () => { shown: number; total: number };
   /** A project's folder accent, for chips and the board's headers. */
   projectAccent: (p: Project | undefined) => string | undefined;
 }
@@ -252,6 +253,18 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
     }
     return { shown, total };
   }, [query, live, matchCtx]);
+
+  // The Action chip's numbers: all non-backlog tasks (attention, working, review, settled).
+  const actionCount = useCallback((): { shown: number; total: number } => {
+    const rest = dropBoardClauses(query, "status");
+    let shown = 0, total = 0;
+    for (const w of live) {
+      if (columnOf.get(w.id) === "backlog") continue;
+      total++;
+      if (boardTaskMatches(w, matchCtx(w), rest)) shown++;
+    }
+    return { shown, total };
+  }, [query, live, columnOf, matchCtx]);
 
   // `has:changes` on a task nothing drew: cards and rows ask for their own
   // diffstat when they mount, so a task filtered out from the start would
@@ -378,5 +391,5 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
     ];
   }, [menuOpen, text, live, archived, matchCtx, valuesFor, projects, projectAccent, agents, t]);
 
-  return { query, filtering, matches, sections, valuesFor, columnOf, columnCount, doneCount, projectAccent };
+  return { query, filtering, matches, sections, valuesFor, columnOf, columnCount, doneCount, actionCount, projectAccent };
 }

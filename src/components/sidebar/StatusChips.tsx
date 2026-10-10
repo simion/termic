@@ -19,45 +19,40 @@
 
 import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Bell, GitPullRequest } from "lucide-react";
+import { Activity, Bell, Check, GitPullRequest } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
 import { useTaskQuery } from "@/hooks/useTaskQuery";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tip } from "@/components/ui/Tooltip";
-import { boardClauseState, toggleBoardClause } from "@/lib/boardFilter";
+import { boardClauseState, parseBoardQuery, setBoardClause, stripBoardKey, toggleBoardClause } from "@/lib/boardFilter";
 import { STATUS_MARK_COLOR } from "@/lib/sidebarStatus";
 import type { BoardStateColumn } from "@/lib/taskBoardState";
 import type { WorkStatePrefs } from "@/lib/taskWorkState";
 import { cn } from "@/lib/utils";
 
-/** The chips, in the order a task moves through them: the agent works, it
- *  stops to ask you something, it finishes, the result goes to review.
- *  Urgency-first (the bell leading) was tried and read as an arbitrary list;
- *  every chip is always drawn in a fixed slot, so position does the work
- *  that sorting by urgency was for. Settled and Not started are the largest
- *  and least urgent; the board and the filter have them.
- *
- *  Three are board columns. `done` is not: it is the row's blue dot, a turn
- *  that finished and nobody has looked at, which the board files under
- *  Settled along with everything that finished last week. That made the
- *  second most actionable state the one with no count anywhere. It is an
- *  overlay (`status:done` cuts across columns), so a task in review with an
- *  unread turn counts under both. */
-const COLUMN_CHIPS = ["attention", "working", "review"] as const satisfies readonly BoardStateColumn[];
+/** The chips, in the order a task moves through them:
+ *  - Tasks in action: umbrella filter for all non-backlog tasks (-status:backlog)
+ *  - Lifecycle phases: the agent works, it stops to ask you something,
+ *    it finishes (done dot), the result goes to review, or is settled.
+ *  Every chip is always drawn in a fixed slot, so position does the work
+ *  that sorting by urgency was for. */
+const COLUMN_CHIPS = ["attention", "working", "review", "settled"] as const satisfies readonly BoardStateColumn[];
 type ColumnChip = (typeof COLUMN_CHIPS)[number];
-const STATUS_CHIPS = ["working", "attention", "done", "review"] as const;
+const STATUS_CHIPS = ["action", "working", "attention", "done", "review", "settled"] as const;
 type StatusChip = (typeof STATUS_CHIPS)[number];
 const isColumnChip = (c: StatusChip): c is ColumnChip => (COLUMN_CHIPS as readonly string[]).includes(c);
 
 /** Literal keys, so usedKeys.test.ts can see them. */
 function chipLabel(chip: StatusChip, t: (k: string) => string): string {
   switch (chip) {
+    case "action": return t("statusChips.action");
     case "attention": return t("statusChips.attention");
     case "done": return t("statusChips.done");
     case "working": return t("statusChips.working");
     case "review": return t("statusChips.review");
+    case "settled": return t("statusChips.settled");
   }
 }
 
@@ -76,12 +71,18 @@ function chipLabel(chip: StatusChip, t: (k: string) => string): string {
 function chipIcon(chip: StatusChip, empty: boolean, count: number): React.ReactNode {
   // The done dot is the board's settled colour: it is the same dot the row
   // draws, and a row with it IS in that column unless it has a PR.
-  const color = empty ? undefined : STATUS_MARK_COLOR[chip === "done" ? "settled" : chip];
+  const color = empty
+    ? undefined
+    : chip === "action"
+      ? "var(--color-accent)"
+      : STATUS_MARK_COLOR[chip === "done" ? "settled" : chip];
   switch (chip) {
+    case "action": return <Activity className="h-3 w-3" style={{ color }} strokeWidth={2.2} />;
     case "attention": return <Bell className="h-3 w-3" style={{ color }} strokeWidth={2.5} />;
     case "done": return <span className="h-2 w-2 rounded-full bg-current" style={{ color }} />;
     case "working": return <span style={{ color }}><Spinner size={10} still={empty || count === 0} /></span>;
     case "review": return <GitPullRequest className="h-3 w-3" style={{ color }} />;
+    case "settled": return <Check className="h-3 w-3" style={{ color }} strokeWidth={2.5} />;
   }
 }
 
@@ -103,11 +104,19 @@ export const StatusChips = memo(function StatusChips() {
     const ids = new Set(projects.map(p => p.id));
     return tasks.filter(w => !w.archived && ids.has(w.project_id));
   }, [tasks, projects]);
-  const { query, columnOf, columnCount, doneCount } = useTaskQuery({ text, menuOpen: false, live, workPrefs, alwaysColumns: true });
+  const { query, columnOf, columnCount, doneCount, actionCount } = useTaskQuery({ text, menuOpen: false, live, workPrefs, alwaysColumns: true });
   const done = useMemo(() => doneCount(), [doneCount]);
+  const action = useMemo(() => actionCount(), [actionCount]);
   const counts = useMemo(
-    () => Object.fromEntries(STATUS_CHIPS.map(c => [c, isColumnChip(c) ? columnCount(c) : done.shown])) as Record<StatusChip, number>,
-    [columnCount, done],
+    () => Object.fromEntries(STATUS_CHIPS.map(c => [
+      c,
+      isColumnChip(c)
+        ? columnCount(c)
+        : c === "action"
+          ? action.shown
+          : done.shown,
+    ])) as Record<StatusChip, number>,
+    [columnCount, done, action],
   );
   // Whether a chip is EMPTY goes by the UNFILTERED column, so typing in the
   // bar never disables a chip: under a query a live one can read 0.
@@ -115,8 +124,9 @@ export const StatusChips = memo(function StatusChips() {
     const n: Record<string, number> = {};
     for (const c of columnOf.values()) n[c] = (n[c] ?? 0) + 1;
     n.done = done.total;
+    n.action = action.total;
     return n;
-  }, [columnOf, done]);
+  }, [columnOf, done, action]);
 
   // Every chip is ALWAYS drawn. They used to come and go with their
   // counts, so the row appeared when the first agent started working and
@@ -127,14 +137,17 @@ export const StatusChips = memo(function StatusChips() {
   return (
     // One line at any sidebar width: a chip is its glyph and count, and its
     // name lives in the tooltip and the accessible label.
-    <div data-testid="status-chips" className="flex min-w-0 flex-nowrap gap-1 overflow-hidden">
+    <div data-testid="status-chips" className="no-scrollbar flex min-w-0 flex-nowrap gap-1 overflow-x-auto">
       {STATUS_CHIPS.map(c => {
-        const clause = boardClauseState(query, "status", c);
-        const on = clause === "include";
+        const isAction = c === "action";
+        const clause = boardClauseState(query, "status", isAction ? "backlog" : c);
+        const on = isAction ? clause === "exclude" : clause === "include";
         const empty = (totals[c] ?? 0) === 0 && clause === null;
         const tip = empty
           ? t("statusChips.tipEmpty", { label: chipLabel(c, t) })
-          : t(on ? "statusChips.tipActive" : "statusChips.tip", { status: c, label: chipLabel(c, t) });
+          : isAction
+            ? t(on ? "statusChips.tipActiveAction" : "statusChips.tipAction", { label: chipLabel(c, t) })
+            : t(on ? "statusChips.tipActive" : "statusChips.tip", { status: c, label: chipLabel(c, t) });
         return (
           <Tip key={c} content={tip} side="bottom">
             <button
@@ -149,7 +162,19 @@ export const StatusChips = memo(function StatusChips() {
               aria-label={`${chipLabel(c, t)} ${counts[c]}`}
               onClick={() => {
                 if (empty) return;
-                setText(toggleBoardClause(useUI.getState().sidebarQuery, "status", c));
+                const curText = useUI.getState().sidebarQuery;
+                if (isAction) {
+                  if (on) {
+                    setText(setBoardClause(curText, "status", "backlog", null));
+                  } else {
+                    setText(setBoardClause(stripBoardKey(curText, "status"), "status", "backlog", "exclude"));
+                  }
+                } else {
+                  const baseText = boardClauseState(parseBoardQuery(curText), "status", "backlog") === "exclude"
+                    ? setBoardClause(curText, "status", "backlog", null)
+                    : curText;
+                  setText(toggleBoardClause(baseText, "status", c));
+                }
               }}
               className={cn(
                 "flex h-[22px] shrink-0 items-center gap-1.5 rounded-full border px-2 text-[11.5px] tabular-nums transition-colors",

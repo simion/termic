@@ -24,6 +24,7 @@ import {
   cycleBoardClause,
   dropBoardClauses,
   setBoardClause,
+  stripBoardKey,
   boardSuggestions,
   boardTaskMatches,
   isBoardQueryActive,
@@ -394,5 +395,22 @@ describe("dropBoardClauses (the status chips' counts)", () => {
     const q = dropBoardClauses(parseBoardQuery("login project:p1 -status:working"), "status");
     expect(q.clauses.map(c => c.key)).toEqual(["project"]);
     expect(q.terms.map(t => t.text)).toEqual(["login"]);
+  });
+});
+
+describe("stripBoardKey", () => {
+  it("removes all clauses of the given key, preserving other keys and terms", () => {
+    expect(stripBoardKey("project:p1 status:working,review -status:backlog bug", "status"))
+      .toBe("project:p1 bug");
+  });
+
+  it("handles empty or query with no matching key", () => {
+    expect(stripBoardKey("", "status")).toBe("");
+    expect(stripBoardKey("project:p1 login", "status")).toBe("project:p1 login");
+  });
+
+  it("removes when the only clause is that key", () => {
+    expect(stripBoardKey("status:working", "status")).toBe("");
+    expect(stripBoardKey("-status:backlog", "status")).toBe("");
   });
 });

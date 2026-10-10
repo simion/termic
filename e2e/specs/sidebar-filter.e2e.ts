@@ -731,7 +731,7 @@ describe("sidebar filter bar", () => {
         count: el.querySelector('[data-testid="status-chip-count"]')?.textContent ?? null,
       })));
     const all = await chips();
-    expect(all.map(c => c.chip)).toEqual(["working", "attention", "done", "review"]);
+    expect(all.map(c => c.chip)).toEqual(["action", "working", "attention", "done", "review", "settled"]);
     // The fixture has no PR, so In review is the chip that is certainly empty.
     const review = all.find(c => c.chip === "review")!;
     expect(review).toEqual({ chip: "review", empty: true, disabled: "true", count: "0" });

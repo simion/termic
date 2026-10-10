@@ -31,12 +31,16 @@ export default {
   taskPrBadgeNumber: "仅编号",
   taskPrBadgeNone: "无",
   statusChips: {
+    action: "活动中任务",
     attention: "需要你",
     done: "已完成，未读",
     working: "进行中",
     review: "审查中",
+    settled: "已完成",
     tip: "{{label}}：筛选 status:{{status}}",
     tipActive: "{{label}}：移除 status:{{status}}",
+    tipAction: "{{label}}：筛选活动中任务（-status:backlog）",
+    tipActiveAction: "{{label}}：移除 -status:backlog",
     tipEmpty: "{{label}}：没有任务",
   },
   filterBar: {
