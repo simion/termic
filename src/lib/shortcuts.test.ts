@@ -134,12 +134,12 @@ describe("shortcuts that cannot be rebound", () => {
     for (const f of FIXED_SHORTCUTS) expect(ids.has(f.id), f.id).toBe(false);
   });
 
-  it("gives each one keys to print and a reason it has no recorder", () => {
-    // A row with no glyphs teaches nothing, and one with no reason reads as a
-    // broken row next to every other row's button.
+  it("gives each one keys to print, in a group the sheet renders", () => {
+    // A row with no glyphs teaches nothing. Its label, hint and reason are
+    // locale entries now (lib/shortcutCopy.ts); shortcutCopy.test.ts is what
+    // pins those in both languages.
     for (const f of FIXED_SHORTCUTS) {
       expect(f.glyphs.length, f.id).toBeGreaterThan(0);
-      expect(f.fixedReason, f.id).toBeTruthy();
       expect(GROUP_ORDER, f.id).toContain(f.group);
     }
   });

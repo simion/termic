@@ -1,7 +1,10 @@
 // Single source of truth for the app's rebindable keyboard shortcuts.
 //
-// Each command has a stable `id`, a human label + group (for the Shortcuts
-// settings page), and a `defaultBinding`. The live handler in
+// Each command has a stable `id`, a `group` (for the Shortcuts settings page)
+// and a `defaultBinding`. Its user-visible wording is NOT here: it lives in
+// the locale files, keyed by id, and `lib/shortcutCopy.ts` is the map (both
+// the settings page and the ⌘/ sheet read it, so they cannot drift). The live
+// handler in
 // `src/hooks/useShortcuts.ts` matches incoming KeyboardEvents against the
 // RESOLVED bindings (defaults merged with the user's overrides, persisted in
 // the prefs store) — so adding a command here + a case there is all it takes
@@ -12,7 +15,7 @@
 // their own flags. `key` is a normalized token: a lowercase letter ("l"),
 // punctuation ("[", "]", ","), an arrow ("ArrowUp"…), or the sentinel "1-9"
 // for the "jump to tab N" range (matches any digit 1-9 with the modifiers).
-import { IS_LINUX, IS_MAC, kbd } from "./platform";
+import { IS_LINUX, IS_MAC } from "./platform";
 
 export type Binding = {
   cmd: boolean;
@@ -73,11 +76,8 @@ export type ShortcutGroup =
 
 export interface ShortcutDef {
   id: ShortcutId;
-  label: string;
   group: ShortcutGroup;
   defaultBinding: Binding;
-  /** Help text shown under the label in the settings list. */
-  hint?: string;
 }
 
 const B = (key: string, mods: Partial<Omit<Binding, "key">> = {}): Binding => ({
@@ -90,10 +90,10 @@ const B = (key: string, mods: Partial<Omit<Binding, "key">> = {}): Binding => ({
 // Order here = display order in the settings page (grouped by `group`).
 export const SHORTCUT_DEFS: ShortcutDef[] = [
   // Navigation
-  { id: "sidebar-prev", group: "Navigation", label: "Previous sidebar row",
-    hint: "Task or expanded tab above", defaultBinding: B("ArrowUp", { alt: true }) },
-  { id: "sidebar-next", group: "Navigation", label: "Next sidebar row",
-    hint: "Task or expanded tab below", defaultBinding: B("ArrowDown", { alt: true }) },
+  { id: "sidebar-prev", group: "Navigation",
+    defaultBinding: B("ArrowUp", { alt: true }) },
+  { id: "sidebar-next", group: "Navigation",
+    defaultBinding: B("ArrowDown", { alt: true }) },
   // ⌘[ / ⌘] mean BACK and FORWARD, and nothing else.
   //
   // They used to switch tasks as well, with the folder listing and then the
@@ -101,85 +101,67 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // chord, decided by where the focus happened to be. Switching tasks was the
   // redundant one: ⌥⌘↑ / ⌥⌘↓ already do it (and do it in a split too), and
   // tabs have ⇧⌘[ / ⇧⌘]. One key, one idea: go back to where I just was.
-  { id: "nav-back", group: "Navigation", label: "Back",
-    hint: "Where you came from: the previous symbol you jumped from, or the folder you were just in.",
+  { id: "nav-back", group: "Navigation",
     defaultBinding: B("[", { cmd: true }) },
   // Code navigation (GH #174). These fire only while an editor has focus, and
   // only on a checkout the reader has switched it on for; they are listed here
   // like any other key, because a shortcut nobody can find is a feature nobody
   // has. The defaults are IntelliJ's, which is where most of this app's users
   // learned them.
-  { id: "go-to-definition", group: "Code navigation", label: "Go to definition",
-    hint: `In the editor. Lands on the source, not a stub; ${kbd("⌘")}-click does the same.`,
+  { id: "go-to-definition", group: "Code navigation",
     defaultBinding: B("F12") },
-  { id: "find-usages", group: "Code navigation", label: "Find usages",
-    hint: `In the editor. ${kbd("⌘")}-clicking a definition asks the same question.`,
+  { id: "find-usages", group: "Code navigation",
     defaultBinding: B("F12", { shift: true }) },
   // NOT IntelliJ's ⌥⌘B and ⌃⇧B. ⌥⌘B already toggles the right sidebar here,
   // and the editor's copy of it fired on top of that (this table's own
   // duplicate-chord test is what surfaced it). ⌃⇧B cannot be expressed at all:
   // a Binding folds Ctrl into Cmd, so on a Mac it would read as ⌘⇧B.
-  { id: "go-to-implementation", group: "Code navigation", label: "Go to implementation",
-    hint: "From an interface or an abstract method to what implements it.",
+  { id: "go-to-implementation", group: "Code navigation",
     defaultBinding: B("b", { alt: true, shift: true }) },
-  { id: "go-to-type-definition", group: "Code navigation", label: "Go to type definition",
-    hint: "From a value to the type it has.",
+  { id: "go-to-type-definition", group: "Code navigation",
     defaultBinding: B("t", { alt: true, shift: true }) },
-  { id: "file-structure", group: "Code navigation", label: "File structure",
-    hint: "What is in this file, filterable, without scrolling it.",
+  { id: "file-structure", group: "Code navigation",
     defaultBinding: B("F12", { cmd: true }) },
-  { id: "nav-forward", group: "Navigation", label: "Forward",
-    hint: "Retrace a Back.",
+  { id: "nav-forward", group: "Navigation",
     defaultBinding: B("]", { cmd: true }) },
-  { id: "task-prev-arrow", group: "Navigation", label: "Pane up / previous task",
-    hint: "With a horizontal split: focus the pane above. Otherwise: go to the previous task.",
+  { id: "task-prev-arrow", group: "Navigation",
     defaultBinding: B("ArrowUp", { cmd: true, alt: true }) },
-  { id: "task-next-arrow", group: "Navigation", label: "Pane down / next task",
-    hint: "With a horizontal split: focus the pane below. Otherwise: go to the next task.",
+  { id: "task-next-arrow", group: "Navigation",
     defaultBinding: B("ArrowDown", { cmd: true, alt: true }) },
-  { id: "jump-next-waiting", group: "Navigation", label: "Jump to next waiting agent",
-    hint: "Cycle to the next task whose agent is waiting on you (finished a turn or blocked on input). Visiting clears the signal, so repeated presses walk your whole queue.",
+  { id: "jump-next-waiting", group: "Navigation",
     defaultBinding: B("a", { cmd: true, shift: true }) },
 
   // Tabs
-  { id: "tab-prev", group: "Tabs", label: "Previous tab",
+  { id: "tab-prev", group: "Tabs",
     defaultBinding: B("[", { cmd: true, shift: true }) },
-  { id: "tab-next", group: "Tabs", label: "Next tab",
+  { id: "tab-next", group: "Tabs",
     defaultBinding: B("]", { cmd: true, shift: true }) },
-  { id: "tab-prev-arrow", group: "Tabs", label: "Pane left",
-    hint: "With a vertical split: focus the pane to the left. No-op otherwise.",
+  { id: "tab-prev-arrow", group: "Tabs",
     defaultBinding: B("ArrowLeft", { cmd: true, alt: true }) },
-  { id: "tab-next-arrow", group: "Tabs", label: "Pane right",
-    hint: "With a vertical split: focus the pane to the right. No-op otherwise.",
+  { id: "tab-next-arrow", group: "Tabs",
     defaultBinding: B("ArrowRight", { cmd: true, alt: true }) },
-  { id: "jump-to-tab", group: "Tabs", label: "Jump to tab 1…9",
-    hint: "Modifier + a number key", defaultBinding: B("1-9", { cmd: true }) },
-  { id: "new-tab", group: "Tabs", label: "New tab",
+  { id: "jump-to-tab", group: "Tabs",
+    defaultBinding: B("1-9", { cmd: true }) },
+  { id: "new-tab", group: "Tabs",
     defaultBinding: B("t", { cmd: true }) },
-  { id: "new-scratchpad", group: "Tabs", label: "New scratchpad",
+  { id: "new-scratchpad", group: "Tabs",
     // NOT ⌘N — that is already "New task…" and stealing it would cost the
     // app's most-used create. ⌥⌘N is free (⌥⌘B and ⌥⌘P are the other two
     // Option-Cmd bindings) and rebindable like everything else.
-    hint: `An untitled buffer in this task. It survives a relaunch; ${kbd("⌘S")} saves it into the project.`,
     defaultBinding: B("n", { cmd: true, alt: true }) },
-  { id: "close-tab", group: "Tabs", label: "Close active tab",
+  { id: "close-tab", group: "Tabs",
     defaultBinding: B("w", { cmd: true }) },
 
   // Terminal
-  { id: "focus-terminal", group: "Terminal", label: "Focus main agent",
-    hint: "Jump focus to the main pane (its agent terminal or the open editor) from anywhere",
+  { id: "focus-terminal", group: "Terminal",
     defaultBinding: B("l", { cmd: true }) },
-  { id: "clear-terminal", group: "Terminal", label: "Clear focused terminal",
-    hint: `Clears the focused terminal's scrollback, the standard ${kbd("⌘K")} every terminal uses.`,
+  { id: "clear-terminal", group: "Terminal",
     defaultBinding: B("k", { cmd: true }) },
-  { id: "split-pane-right", group: "Terminal", label: "Split pane right",
-    hint: "Open a new pane to the right of the focused pane (vertical divider).",
+  { id: "split-pane-right", group: "Terminal",
     defaultBinding: B("d", { cmd: true }) },
-  { id: "split-pane-below", group: "Terminal", label: "Split pane below",
-    hint: `Open a new pane below the focused pane (horizontal divider). Also: ${kbd("⇧⌘D")} by default.`,
+  { id: "split-pane-below", group: "Terminal",
     defaultBinding: B("d", { cmd: true, shift: true }) },
-  { id: "toggle-terminal", group: "Terminal", label: "Toggle terminal panel",
-    hint: "Show + focus the bottom split, or hide it and return to the agent",
+  { id: "toggle-terminal", group: "Terminal",
     defaultBinding: B("j", { cmd: true }) },
   // Copy / paste are LINUX/WINDOWS ONLY and handled locally in the terminal
   // panes (TerminalPane / AuxTerminal `attachCustomKeyEventHandler`), gated to
@@ -187,55 +169,48 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // they have no `switch` case there). macOS keeps native ⌘C / ⌘V untouched, so
   // these rows are hidden from the Shortcuts settings on macOS. The Shift in the
   // defaults is load-bearing: plain Ctrl+C must stay SIGINT for the shell.
-  { id: "terminal-copy", group: "Terminal", label: "Copy selection",
-    hint: "Linux/Windows only. macOS uses Cmd+C natively.",
+  { id: "terminal-copy", group: "Terminal",
     defaultBinding: B("c", { cmd: true, shift: true }) },
-  { id: "terminal-paste", group: "Terminal", label: "Paste into terminal",
-    hint: "Linux/Windows only. macOS uses Cmd+V natively.",
+  { id: "terminal-paste", group: "Terminal",
     defaultBinding: B("v", { cmd: true, shift: true }) },
 
   // General
-  { id: "command-palette", group: "General", label: "Command palette",
-    hint: `Search every command and action (the ${kbd("⇧⌘P")} convention from VS Code / Sublime)`,
+  { id: "command-palette", group: "General",
     defaultBinding: B("p", { cmd: true, shift: true }) },
-  { id: "new-task-quick", group: "General", label: "New task…",
-    hint: "Search a project and start a new task", defaultBinding: B("n", { cmd: true }) },
-  { id: "open-settings", group: "General", label: "Open settings",
+  { id: "new-task-quick", group: "General",
+    defaultBinding: B("n", { cmd: true }) },
+  { id: "open-settings", group: "General",
     defaultBinding: B(",", { cmd: true }) },
-{ id: "file-finder", group: "General", label: "Open file finder",
+  { id: "file-finder", group: "General",
     defaultBinding: B("p", { cmd: true }) },
-  { id: "task-finder", group: "General", label: "Open task finder",
-    hint: "Quick search and switch tasks across projects",
+  { id: "task-finder", group: "General",
     defaultBinding: B("o", { cmd: true }) },
-  { id: "find-in-files", group: "General", label: "Find in files",
+  { id: "find-in-files", group: "General",
     defaultBinding: B("f", { cmd: true, shift: true }) },
-  { id: "toggle-left-sidebar", group: "General", label: "Toggle left sidebar",
-    hint: "Collapse / expand the projects sidebar", defaultBinding: B("b", { cmd: true }) },
-  { id: "toggle-right-sidebar", group: "General", label: "Toggle right sidebar",
-    hint: "Show / hide the right panel", defaultBinding: B("b", { cmd: true, alt: true }) },
-  { id: "broadcast", group: "General", label: "Broadcast to agents",
+  { id: "toggle-left-sidebar", group: "General",
+    defaultBinding: B("b", { cmd: true }) },
+  { id: "toggle-right-sidebar", group: "General",
+    defaultBinding: B("b", { cmd: true, alt: true }) },
+  { id: "broadcast", group: "General",
     defaultBinding: B("b", { cmd: true, shift: true }) },
-  { id: "prompt-palette", group: "General", label: "Prompt palette",
-    hint: "Search prompts by title; digits 1-9 fire the top rows, Enter runs the highlighted one",
+  { id: "prompt-palette", group: "General",
     defaultBinding: B("p", { cmd: true, alt: true }) },
-  { id: "zoom-in", group: "General", label: "Zoom in",
-    hint: "Scale the whole app up (like browser zoom)", defaultBinding: B("=", { cmd: true }) },
-  { id: "zoom-out", group: "General", label: "Zoom out",
-    hint: "Scale the whole app down", defaultBinding: B("-", { cmd: true }) },
-  { id: "zoom-reset", group: "General", label: "Reset zoom",
-    hint: "Return the app to 100%", defaultBinding: B("0", { cmd: true }) },
+  { id: "zoom-in", group: "General",
+    defaultBinding: B("=", { cmd: true }) },
+  { id: "zoom-out", group: "General",
+    defaultBinding: B("-", { cmd: true }) },
+  { id: "zoom-reset", group: "General",
+    defaultBinding: B("0", { cmd: true }) },
   // Contextual (editor): handled in EditorPane, not the global switch, and
   // only when that editor holds focus AND has a non-empty selection. Any
   // other time the key falls through untouched. ⇧⌘L is the convention every
   // agent-first editor landed on for this (Cursor's "Add selection to Chat",
   // VS Code Copilot's "Add Selection to Chat"), and it sits next to termic's
   // own ⌘L "focus main agent".
-  { id: "add-selection-to-agent", group: "General", label: "Add selection to agent",
-    hint: "Opens a comment on the selected lines. Comments queue up and go to the agent as one batch, so you can mark several places before sending.",
+  { id: "add-selection-to-agent", group: "General",
     defaultBinding: B("l", { cmd: true, shift: true }) },
 
-  { id: "create-pr", group: "Git", label: "Create pull request",
-    hint: "Opens the Create PR / MR dialog for the active task",
+  { id: "create-pr", group: "Git",
     defaultBinding: B("r", { cmd: true, alt: true }) },
 
   // Git — contextual: these act on the file selected in the Git panel and
@@ -243,11 +218,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // binding deliberately shares ⇧⌘D with the bottom-split terminal; the
   // Git panel only claims it while a file is selected, so the settings
   // "conflict" note is expected.
-  { id: "stage-file", group: "Git", label: "Stage / unstage selected file",
-    hint: "Toggles the Git panel's selected file in or out of staging",
+  { id: "stage-file", group: "Git",
     defaultBinding: B("s", { cmd: true }) },
-  { id: "discard-file", group: "Git", label: "Discard selected file",
-    hint: "Restores the selected file to HEAD after a confirm",
+  { id: "discard-file", group: "Git",
     defaultBinding: B("d", { cmd: true, shift: true }) },
 ];
 
@@ -266,15 +239,13 @@ export const GROUP_ORDER: ShortcutGroup[] =
  * Settings, with its keys spelled out rather than derived. Discoverability is
  * the point; a gesture nobody can find is a feature nobody has.
  */
+export type FixedShortcutId = "search-everywhere" | "recent-tabs";
+
 export interface FixedShortcut {
-  id: string;
+  id: FixedShortcutId;
   group: ShortcutGroup;
-  label: string;
-  hint: string;
   /** Exactly what is printed, in order. Not derived from a Binding. */
   glyphs: string[];
-  /** Why it cannot be changed, shown where the recorder would be. */
-  fixedReason: string;
   /** Which mode select this row carries in Settings, if any. The rendering was
    *  `f.id === "search-everywhere"` in five places across two files while there
    *  was only one such row; a second one made that a copy-paste bug waiting to
@@ -286,21 +257,13 @@ export const FIXED_SHORTCUTS: FixedShortcut[] = [
   {
     id: "search-everywhere",
     group: "Code navigation",
-    label: "Search everywhere",
-    // Says nothing about WHICH Shift: that is the setting's to say, and a
-    // hint hardcoding "left" is wrong the moment somebody picks either.
-    hint: "Files always; classes and functions too, once a checkout has code navigation on.",
     glyphs: ["⇧", "⇧"],
-    fixedReason: "Double tap",
     control: "double-shift",
   },
   {
     id: "recent-tabs",
     group: "Navigation",
-    label: "Recently used tabs",
-    hint: "Hold Ctrl and tap Tab to step back through what you were looking at; add Shift to go the other way.",
     glyphs: ["⌃", "⇥"],
-    fixedReason: "Hold and tap",
     control: "ctrl-tab",
   },
 ];
@@ -320,26 +283,14 @@ export type DoubleShiftMode = "off" | "left" | "outside-terminal" | "any";
 
 /** When double-Shift opens Search everywhere, as the user picks it.
  *
- *  Each label names the WHOLE gesture, because it is the only thing that
- *  does: the row used to print "Double tap, left" beside a select reading
- *  "Left Shift only", so the same gesture was named twice in two different
- *  vocabularies and neither half made sense alone. Off is off, and every
- *  other option says which keys, in the words the reader would use.
- *
  *  Ordered off-to-most-permissive, so the list reads as a dial. Shared by the
  *  Shortcuts page (the select) and the command sheet (which prints the
- *  current one where a recorder would be), so those two cannot disagree. */
-export const DOUBLE_SHIFT_MODES: { id: DoubleShiftMode; label: string }[] = [
-  { id: "off",              label: "Off" },
-  { id: "left",             label: "Double left Shift" },
-  { id: "outside-terminal", label: "Double Shift, not in a terminal" },
-  { id: "any",              label: "Double Shift" },
-];
-
-/** The label for one mode, for a surface that has only the value. */
-export function doubleShiftLabel(mode: DoubleShiftMode): string {
-  return DOUBLE_SHIFT_MODES.find(m => m.id === mode)?.label ?? mode;
-}
+ *  current one where a recorder would be), so those two cannot disagree: both
+ *  name a mode through `doubleShiftModeLabel` in lib/shortcutCopy.ts, and the
+ *  wording rule (every label names the WHOLE gesture, because the row prints
+ *  nothing else beside the select) is stated there. */
+export const DOUBLE_SHIFT_MODES: DoubleShiftMode[] =
+  ["off", "left", "outside-terminal", "any"];
 
 /** Whether ⌃⇥ walks the recently-used tabs.
  *
@@ -353,18 +304,9 @@ export function doubleShiftLabel(mode: DoubleShiftMode): string {
  *  tell ⌃⇥ from ⇥ anyway (see the note on the gesture in useShortcuts). */
 export type CtrlTabMode = "off" | "on";
 
-/** Each label names the WHOLE gesture, the same rule DOUBLE_SHIFT_MODES follows:
- *  the row prints nothing else beside the select, so "On" alone would leave the
- *  reader to guess what it is on for. */
-export const CTRL_TAB_MODES: { id: CtrlTabMode; label: string }[] = [
-  { id: "off", label: "Off" },
-  { id: "on",  label: "Hold Ctrl, tap Tab" },
-];
-
-/** The label for one mode, for a surface that has only the value. */
-export function ctrlTabLabel(mode: CtrlTabMode): string {
-  return CTRL_TAB_MODES.find(m => m.id === mode)?.label ?? mode;
-}
+/** Each label names the WHOLE gesture, the same rule DOUBLE_SHIFT_MODES follows
+ *  (see lib/shortcutCopy.ts: `ctrlTabModeLabel`). */
+export const CTRL_TAB_MODES: CtrlTabMode[] = ["off", "on"];
 
 /** Groups of rebindable commands that intentionally share a binding and can
  *  NEVER fire at the same time, so the Shortcuts settings page must not flag

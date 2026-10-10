@@ -2,7 +2,18 @@
 
 ## Architecture
 
-`src/lib/shortcuts.ts` is the single source of truth: `ShortcutId` union + `SHORTCUT_DEFS` (each: `id`, `label`, `group`, optional `hint`, `defaultBinding`). A `Binding` is `{ cmd, shift, alt, key }` where `cmd` folds Cmd=Ctrl, `key` is a normalized token or `"1-9"` sentinel.
+`src/lib/shortcuts.ts` is the single source of truth: `ShortcutId` union + `SHORTCUT_DEFS` (each: `id`, `group`, `defaultBinding`). A `Binding` is `{ cmd, shift, alt, key }` where `cmd` folds Cmd=Ctrl, `key` is a normalized token or `"1-9"` sentinel.
+
+The rows' **wording is not in that file**: labels, hints and the mode select's
+options are locale entries (`settings:shortcuts.defs.*`), reached by id through
+`src/lib/shortcutCopy.ts`. The Shortcuts page and the ⌘/ sheet both draw the
+same rows, so one copy is the only way they cannot disagree, and a new
+`ShortcutId` is a compile error until it has a key there. A dynamic key like
+that is invisible to `usedKeys.test.ts` (it reads literals) and to
+`parity.test.ts` (it only compares en against zh-CN), so
+`shortcutCopy.test.ts` is what pins it: every id resolves to a label in both
+languages, the hint set matches across them, and no copy is left behind for a
+row that no longer exists.
 
 **Adding a shortcut** = new `ShortcutId` + `SHORTCUT_DEFS` entry + `case` in `useShortcuts` (for global ones). Help modal and settings editor are data-driven from `SHORTCUT_DEFS`.
 
@@ -119,8 +130,9 @@ would read as ⌘⇧B on a Mac.
 function key types nothing, so it cannot swallow input.
 
 They live in their own **Code navigation** group, named after the feature and
-therefore after the type-checking switch (`groupLabel` in
-`ShortcutsHelpDialog`). Back / Forward stay in Navigation: they walk a folder
+therefore after the type-checking switch (`shortcutGroupLabel` in
+`lib/shortcutCopy.ts`, the one group heading that is not a locale entry). Back
+/ Forward stay in Navigation: they walk a folder
 listing's trail as well as the symbol trail, so filing them here would describe
 half of what they do.
 

@@ -14,12 +14,19 @@ import {
   FIXED_SHORTCUTS,
   GROUP_ORDER,
   bindingGlyphs,
-  doubleShiftLabel,
-  ctrlTabLabel,
   IS_MAC,
   type ShortcutGroup,
   type ShortcutId, displayGlyph } from "@/lib/shortcuts";
-import { codeIntelName } from "@/lib/lsp/featureName";
+import {
+  ctrlTabModeLabel,
+  doubleShiftModeLabel,
+  fixedShortcutHint,
+  fixedShortcutLabel,
+  fixedShortcutReason,
+  shortcutGroupLabel,
+  shortcutHint,
+  shortcutLabel,
+} from "@/lib/shortcutCopy";
 import { dragRegion, appRegionStyle } from "@/lib/platform";
 
 /** One printed line: a label, the keys, and (for the fixed ones) why there is
@@ -29,12 +36,6 @@ interface Row {
   label: string;
   glyphs: string[];
   fixed: string | null;
-}
-
-/** The "Code navigation" group is named after the feature, which is itself
- *  named after what it is currently doing (lib/lsp/featureName.ts). */
-export function groupLabel(group: ShortcutGroup, typeChecking: boolean): string {
-  return group === "Code navigation" ? codeIntelName(typeChecking) : group;
 }
 
 // Terminal copy/paste are native (⌘C / ⌘V) on macOS and only wired on
@@ -64,6 +65,10 @@ export function ShortcutsHelpDialog() {
   // be expressed as a chord (double-Shift). Both are things a reader is here
   // to FIND, so the search has to reach both; only the rebindable half has a
   // binding to print, so each row carries its own glyphs.
+  //
+  // The copy comes from lib/shortcutCopy.ts, in whatever language is active,
+  // so `t` is a dep: a language switch rebuilds every row's name and re-runs
+  // the filter against it.
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
     const matches = (label: string, hint?: string) =>
@@ -72,9 +77,13 @@ export function ShortcutsHelpDialog() {
     for (const group of GROUP_ORDER) {
       const rows: Row[] = [
         ...SHORTCUT_DEFS
-          .filter(d => d.group === group && !HIDDEN_ON_MAC.has(d.id) && matches(d.label, d.hint))
+          .filter(d => d.group === group && !HIDDEN_ON_MAC.has(d.id)
+            && matches(shortcutLabel(d.id, t), shortcutHint(d.id, t)))
           .map(d => ({
-            id: d.id, label: d.label, glyphs: bindingGlyphs(shortcuts[d.id]), fixed: null,
+            id: d.id,
+            label: shortcutLabel(d.id, t),
+            glyphs: bindingGlyphs(shortcuts[d.id]),
+            fixed: null,
           })),
         // A gesture switched off in Settings is not a shortcut this window
         // has: printing it would be an instruction that does nothing. It is
@@ -82,7 +91,7 @@ export function ShortcutsHelpDialog() {
         // "what can I press", and the Shortcuts page is where its state and
         // the way back on both live.
         ...FIXED_SHORTCUTS
-          .filter(f => f.group === group && matches(f.label, f.hint))
+          .filter(f => f.group === group && matches(fixedShortcutLabel(f.id, t), fixedShortcutHint(f.id, t)))
           .filter(f => (f.control === "double-shift" ? doubleShiftMode !== "off" : true))
           .filter(f => (f.control === "ctrl-tab" ? ctrlTabMode !== "off" : true))
           // The row says WHICH double tap, because the answer is a setting:
@@ -90,20 +99,20 @@ export function ShortcutsHelpDialog() {
           // describes a restriction they turned off.
           .map(f => ({
             id: f.id,
-            label: f.label,
+            label: fixedShortcutLabel(f.id, t),
             glyphs: f.glyphs,
             // The chosen mode's own label, which is the same string the
             // Shortcuts page offers: this sheet cannot be rebound from, so it
             // prints what the gesture currently IS.
-            fixed: f.control === "double-shift" ? doubleShiftLabel(doubleShiftMode)
-              : f.control === "ctrl-tab" ? ctrlTabLabel(ctrlTabMode)
-              : f.fixedReason,
+            fixed: f.control === "double-shift" ? doubleShiftModeLabel(doubleShiftMode, t)
+              : f.control === "ctrl-tab" ? ctrlTabModeLabel(ctrlTabMode, t)
+              : fixedShortcutReason(f.id, t),
           })),
       ];
       if (rows.length) out.push({ group, rows });
     }
     return out;
-  }, [query, shortcuts, doubleShiftMode, ctrlTabMode]);
+  }, [query, shortcuts, doubleShiftMode, ctrlTabMode, t]);
 
   function edit() {
     close();
@@ -170,7 +179,7 @@ export function ShortcutsHelpDialog() {
         ) : groups.map(({ group, rows }) => (
           <div key={group} className="flex flex-col">
             <div className="mb-1 px-1 text-[12px] text-[var(--color-fg-dim)]">
-              {groupLabel(group, typeChecking)}
+              {shortcutGroupLabel(group, typeChecking, t)}
             </div>
             {rows.map(row => (
               <div

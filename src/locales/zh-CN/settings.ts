@@ -489,8 +489,157 @@ export default {
     needsMod: "请在组合键中加入 {{cmd}} 或 {{alt}}。",
     pressKeys: "请按键…",
     resetDefault: "重置为默认",
-    doubleShiftAria: "双击 Shift 打开「随处搜索」的时机",
+    doubleShiftAria: "双击 Shift 打开「全局搜索」的时机",
     ctrlTabAria: "Ctrl+Tab 是否遍历最近使用的标签页",
+
+    // 各行文案，按快捷键 id 通过 lib/shortcutCopy.ts 取用：设置页和 ⌘/ 面板
+    // 用的是同一份，两边不会各说各话。没有可解释内容的行不写 hint，
+    // shortcutHint() 据此判断不打印第二行。
+    //
+    // {{cmd}}、{{cmdS}}、{{cmdK}}、{{shiftCmdD}}、{{shiftCmdP}} 是组合键在本平台
+    // 的写法（这里是 ⌘S，Linux/Windows 上是 Ctrl+S），由 shortcutCopy.ts 填入。
+    groups: {
+      navigation: "导航",
+      tabs: "标签页",
+      terminal: "终端",
+      git: "Git",
+      general: "通用",
+    },
+    modes: {
+      off: "关闭",
+      doubleLeftShift: "双击左 Shift",
+      doubleNotInTerminal: "双击 Shift（终端内除外）",
+      doubleShift: "双击 Shift",
+      holdCtrlTab: "按住 Ctrl，点按 Tab",
+    },
+    fixed: {
+      searchEverywhere: {
+        label: "全局搜索",
+        // 不说清是哪个 Shift：那是设置的职责，写死「左」在用户选了任一侧之后就是错的。
+        hint: "文件始终可搜；某个检出开启代码导航后，类和函数也能搜到。",
+        reason: "双击",
+      },
+      recentTabs: {
+        label: "最近使用的标签页",
+        hint: "按住 Ctrl 点按 Tab，可以按顺序回看你刚看过的内容；加上 Shift 则反向。",
+        reason: "按住并点按",
+      },
+    },
+    defs: {
+      sidebarPrev: { label: "上一个侧边栏条目", hint: "上方的任务或已展开的标签页" },
+      sidebarNext: { label: "下一个侧边栏条目", hint: "下方的任务或已展开的标签页" },
+      navBack: {
+        label: "后退",
+        hint: "回到你上一处所在：上一次跳转前的符号，或刚才所在的文件夹。",
+      },
+      goToDefinition: {
+        label: "跳转到定义",
+        hint: "在编辑器中。落到源码上，而不是存根；{{cmd}}+点击效果相同。",
+      },
+      findUsages: {
+        label: "查找引用",
+        hint: "在编辑器中。用 {{cmd}}+点击一个定义，问的是同一件事。",
+      },
+      goToImplementation: {
+        label: "跳转到实现",
+        hint: "从接口或抽象方法跳到实现它的地方。",
+      },
+      goToTypeDefinition: { label: "跳转到类型定义", hint: "从这个值跳到它所属的类型。" },
+      fileStructure: {
+        label: "文件大纲",
+        hint: "这个文件里有什么，可以筛选，不必滚动全文。",
+      },
+      navForward: { label: "前进", hint: "重走一次「后退」。" },
+      taskPrevArrow: {
+        label: "窗格上移 / 上一个任务",
+        hint: "有水平分屏时：聚焦上面的窗格。否则：切换到上一个任务。",
+      },
+      taskNextArrow: {
+        label: "窗格下移 / 下一个任务",
+        hint: "有水平分屏时：聚焦下面的窗格。否则：切换到下一个任务。",
+      },
+      jumpNextWaiting: {
+        label: "跳到下一个等待中的智能体",
+        hint: "依次跳到下一个智能体在等你的任务（刚结束一轮，或卡在输入上）。看过之后信号就清除，所以连续按可以走完整个队列。",
+      },
+      tabPrev: { label: "上一个标签页" },
+      tabNext: { label: "下一个标签页" },
+      tabPrevArrow: {
+        label: "左侧窗格",
+        hint: "有垂直分屏时：聚焦左边的窗格。否则不做任何事。",
+      },
+      tabNextArrow: {
+        label: "右侧窗格",
+        hint: "有垂直分屏时：聚焦右边的窗格。否则不做任何事。",
+      },
+      jumpToTab: { label: "跳到标签页 1…9", hint: "修饰键 + 数字键" },
+      newTab: { label: "新建标签页" },
+      newScratchpad: {
+        label: "新建草稿页",
+        hint: "此任务里的一个无标题缓冲区。重新启动后仍然保留；{{cmdS}} 可把它保存进项目。",
+      },
+      closeTab: { label: "关闭当前标签页" },
+      focusTerminal: {
+        label: "聚焦主智能体",
+        hint: "从任何地方把焦点跳到主窗格（它的智能体终端，或已打开的编辑器）",
+      },
+      clearTerminal: {
+        label: "清空当前终端",
+        hint: "清空当前终端的回滚缓冲区，也就是每个终端都有的标准 {{cmdK}}。",
+      },
+      splitPaneRight: {
+        label: "向右分屏",
+        hint: "在当前窗格右侧打开一个新窗格（垂直分隔线）。",
+      },
+      splitPaneBelow: {
+        label: "向下分屏",
+        hint: "在当前窗格下方打开一个新窗格（水平分隔线）。默认还绑定了：{{shiftCmdD}}。",
+      },
+      toggleTerminal: {
+        label: "切换终端面板",
+        hint: "显示并聚焦底部分屏，或隐藏它并回到智能体",
+      },
+      terminalCopy: {
+        label: "复制选中内容",
+        hint: "仅 Linux/Windows。macOS 使用原生的 Cmd+C。",
+      },
+      terminalPaste: {
+        label: "粘贴到终端",
+        hint: "仅 Linux/Windows。macOS 使用原生的 Cmd+V。",
+      },
+      commandPalette: {
+        label: "命令面板",
+        hint: "搜索所有命令和操作（沿用 VS Code / Sublime 的 {{shiftCmdP}} 习惯）",
+      },
+      newTaskQuick: { label: "新建任务…", hint: "搜索项目并开始一个新任务" },
+      openSettings: { label: "打开设置" },
+      fileFinder: { label: "打开文件选择器" },
+      taskFinder: { label: "打开任务搜索", hint: "跨项目快速搜索并切换任务" },
+      findInFiles: { label: "在文件中查找" },
+      toggleLeftSidebar: { label: "切换左侧边栏", hint: "收起 / 展开项目侧边栏" },
+      toggleRightSidebar: { label: "切换右侧边栏", hint: "显示 / 隐藏右侧面板" },
+      broadcast: { label: "广播到智能体" },
+      promptPalette: {
+        label: "提示词面板",
+        hint: "按标题搜索提示词；数字 1-9 直接运行前几项，回车运行高亮的那一项",
+      },
+      zoomIn: { label: "放大", hint: "放大整个应用（像浏览器缩放）" },
+      zoomOut: { label: "缩小", hint: "缩小整个应用" },
+      zoomReset: { label: "重置缩放", hint: "把应用恢复到 100%" },
+      addSelectionToAgent: {
+        label: "把选中内容加入智能体",
+        hint: "在选中的行上开一条评论。评论会排队，一次性作为一批发给智能体，所以你可以先标记好几处再发送。",
+      },
+      createPr: { label: "创建拉取请求", hint: "为当前任务打开「创建拉取请求 / 合并请求」对话框" },
+      stageFile: {
+        label: "暂存 / 取消暂存所选文件",
+        hint: "把 Git 面板中选中的文件加入或移出暂存区",
+      },
+      discardFile: {
+        label: "丢弃所选文件的改动",
+        hint: "确认后把所选文件恢复到 HEAD",
+      },
+    },
   },
 
   profiles: {

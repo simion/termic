@@ -140,4 +140,59 @@ describe("no untranslated keys on screen", () => {
       { timeout: 10_000, timeoutMsg: "the UI never switched back to English" },
     );
   });
+
+  it("draws the shortcut rows themselves in Chinese", async () => {
+    // The rows are the surface this file used to miss: their labels and hints
+    // are keyed by shortcut id (lib/shortcutCopy.ts, `settings:shortcuts.defs.*`)
+    // and built at render time rather than written where they print, so a row
+    // without an entry draws its key and no English assertion can see it. The
+    // page's own chrome was already covered by the pass above.
+    //
+    // Both the row labels and the mode select's options, since those two come
+    // from different tables in that module.
+    const shortcutsPage = async () => {
+      await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
+      // The two fixed rows carry the page's own testids, and they exist in
+      // either language: the Reset all button's label does not.
+      await waitVisible('[data-testid="fixed-shortcut-row"]');
+      return await browser.execute(() =>
+        (document.querySelector('[data-testid="settings-pane"]') as HTMLElement)?.innerText ?? "") as string;
+    };
+
+    const english = await shortcutsPage();
+    expect(english).toContain("Previous sidebar row");
+    await snap("settings-shortcuts-en.png");
+
+    await browser.execute(() => window.__termic!.usePrefs.getState().setLanguage("zh-CN"));
+    await browser.waitUntil(
+      async () => (await browser.execute(() => document.documentElement.lang)) === "zh-CN",
+      { timeout: 10_000, timeoutMsg: "the UI never switched to Chinese" },
+    );
+
+    const text = await shortcutsPage();
+    // One row from each end of the table: the first group's first row, and a
+    // Git row, which is the group a filter or a missing entry would drop last.
+    expect(text).toContain("上一个侧边栏条目");
+    expect(text).toContain("丢弃所选文件的改动");
+    // And not the English it would fall back to: a zh-CN gap resolves to the
+    // en string (lib/i18n.ts, fallbackLng), which is exactly what a passing
+    // "no raw keys" assertion would let through.
+    expect(text).not.toContain("Discard selected file");
+    await expectClean("settings-shortcuts-zh");
+    await snap("settings-shortcuts-zh.png");
+
+    // The gesture with no chord carries a select instead of a recorder, and
+    // its options are the other half of the module's copy.
+    const modes = await browser.execute(() =>
+      [...(document.querySelector('[data-testid="double-shift-mode"]') as HTMLSelectElement).options]
+        .map(o => o.textContent ?? ""));
+    expect(modes).toEqual(["关闭", "双击左 Shift", "双击 Shift（终端内除外）", "双击 Shift"]);
+
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await browser.execute(() => window.__termic!.usePrefs.getState().setLanguage("en"));
+    await browser.waitUntil(
+      async () => (await browser.execute(() => document.documentElement.lang)) === "en",
+      { timeout: 10_000, timeoutMsg: "the UI never switched back to English" },
+    );
+  });
 });

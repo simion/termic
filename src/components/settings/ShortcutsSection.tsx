@@ -30,7 +30,16 @@ import {
   IS_MAC,
   type ShortcutId,
 } from "@/lib/shortcuts";
-import { groupLabel } from "@/components/dialogs/ShortcutsHelpDialog";
+import {
+  ctrlTabModeLabel,
+  doubleShiftModeLabel,
+  fixedShortcutHint,
+  fixedShortcutLabel,
+  fixedShortcutReason,
+  shortcutGroupLabel,
+  shortcutHint,
+  shortcutLabel,
+} from "@/lib/shortcutCopy";
 import type { CtrlTabMode, DoubleShiftMode } from "@/store/prefs";
 import { IS_LINUX } from "@/lib/platform";
 
@@ -148,7 +157,7 @@ export function ShortcutsSection() {
         return (
           <div key={group} className="flex flex-col gap-2">
             <div className="px-1 text-[11.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
-              {groupLabel(group, typeChecking)}
+              {shortcutGroupLabel(group, typeChecking, t)}
             </div>
             <div className="rounded-lg border border-[var(--color-border-soft)] overflow-hidden">
               {defs.map((def, i) => {
@@ -156,6 +165,7 @@ export function ShortcutsSection() {
                 const isRecording = recordingId === def.id;
                 const isConflict = conflicts.has(def.id);
                 const isCustom = !bindingsEqual(binding, DEFAULT_BINDINGS[def.id]);
+                const hint = shortcutHint(def.id, t);
                 return (
                   <div
                     key={def.id}
@@ -163,9 +173,9 @@ export function ShortcutsSection() {
                     style={{ borderTop: i === 0 ? undefined : "1px solid var(--color-border-soft)" }}
                   >
                     <div className="flex min-w-0 flex-col">
-                      <span className="truncate">{def.label}</span>
-                      {def.hint && (
-                        <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">{def.hint}</span>
+                      <span className="truncate">{shortcutLabel(def.id, t)}</span>
+                      {hint && (
+                        <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">{hint}</span>
                       )}
                       {isConflict && (
                         <span className="text-[11.5px] text-[var(--color-accent)]">
@@ -217,8 +227,10 @@ export function ShortcutsSection() {
                   }}
                 >
                   <div className="flex min-w-0 flex-col">
-                    <span className="truncate">{f.label}</span>
-                    <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">{f.hint}</span>
+                    <span className="truncate">{fixedShortcutLabel(f.id, t)}</span>
+                    <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">
+                      {fixedShortcutHint(f.id, t)}
+                    </span>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     {/* No recorder, and a word saying why. An empty slot where
@@ -228,7 +240,9 @@ export function ShortcutsSection() {
                         "Double left Shift" said the same thing twice, in two
                         different vocabularies. */}
                     {!f.control && (
-                      <span className="text-[11.5px] text-[var(--color-fg-faint)]">{f.fixedReason}</span>
+                      <span className="text-[11.5px] text-[var(--color-fg-faint)]">
+                        {fixedShortcutReason(f.id, t)}
+                      </span>
                     )}
                     <div className={cn(
                       "flex min-h-[28px] min-w-[80px] items-center justify-center gap-1 px-2 py-1",
@@ -253,8 +267,8 @@ export function ShortcutsSection() {
                         onChange={(e) => setDoubleShiftMode(e.target.value as DoubleShiftMode)}
                         className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 text-[12.5px] text-[var(--color-fg)]"
                       >
-                        {DOUBLE_SHIFT_MODES.map(o => (
-                          <option key={o.id} value={o.id}>{o.label}</option>
+                        {DOUBLE_SHIFT_MODES.map(mode => (
+                          <option key={mode} value={mode}>{doubleShiftModeLabel(mode, t)}</option>
                         ))}
                       </select>
                     )}
@@ -272,8 +286,8 @@ export function ShortcutsSection() {
                         onChange={(e) => setCtrlTabMode(e.target.value as CtrlTabMode)}
                         className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 text-[12.5px] text-[var(--color-fg)]"
                       >
-                        {CTRL_TAB_MODES.map(o => (
-                          <option key={o.id} value={o.id}>{o.label}</option>
+                        {CTRL_TAB_MODES.map(mode => (
+                          <option key={mode} value={mode}>{ctrlTabModeLabel(mode, t)}</option>
                         ))}
                       </select>
                     )}
