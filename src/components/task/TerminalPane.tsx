@@ -56,7 +56,7 @@ import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptRe
 import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
 import type { TerminalTab, Task, SandboxMode } from "@/lib/types";
-import { effectiveSandboxMode, isTaskCaged } from "@/lib/types";
+import { effectiveSandboxMode, isTaskCaged, keychainBlocked } from "@/lib/types";
 import { SandboxIcon, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
@@ -4008,7 +4008,7 @@ const captureArmedRef = useRef(false);
 }
 
 export function FooterBar({ task, sandboxWarning }: {
-  task: { id: string; cli?: string; path?: string; sandbox_enabled?: boolean; sandbox_mode?: SandboxMode; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[]; docker_sandbox_enabled?: boolean };
+  task: { id: string; cli?: string; path?: string; sandbox_enabled?: boolean; sandbox_mode?: SandboxMode; sandbox_allowed_hosts?: string[]; sandbox_rw_paths?: string[]; sandbox_block_keychain?: boolean; docker_sandbox_enabled?: boolean };
   sandboxWarning: string | null;
 }) {
   const { t } = useTranslation("task");
@@ -4047,14 +4047,19 @@ export function FooterBar({ task, sandboxWarning }: {
   // MONITORING polls the access counter ("N accesses"). Cheap (one
   // mutex lookup); 2s cadence.
   const [total, setTotal] = useState(0);
+  // Rides the same poll: how many live agent PTYs can still reach the
+  // Keychain, so a block saved without a restart reads as pending. `null`
+  // until a poll answers: "blocked" is a claim, so it is never the default.
+  const [kcOpen, setKcOpen] = useState<number | null>(null);
   useEffect(() => {
+    setKcOpen(null);
     if (mode === "off") { setTotal(0); return; }
     let cancelled = false;
     const fetchCounts = mode === "monitor" ? ipc.sandboxAccessCounts : ipc.sandboxDenyCounts;
     const tick = () => {
       fetchCounts(task.id)
-        .then(c => { if (!cancelled) setTotal(c.network + c.path); })
-        .catch(() => {});
+        .then(c => { if (!cancelled) { setTotal(c.network + c.path); setKcOpen(c.keychain_open); } })
+        .catch(() => { if (!cancelled) setKcOpen(null); });
     };
     tick();
     const id = window.setInterval(tick, 2000);
@@ -4084,6 +4089,11 @@ export function FooterBar({ task, sandboxWarning }: {
           : mode === "enforce-fs" ? t("footer.sandboxEnforceFs")
           : mode === "monitor" ? t("footer.sandboxMonitor")
           : t("footer.sandboxEnforce")}
+        {keychainBlocked(task) && kcOpen !== null && (
+          <span data-testid="footer-keychain" data-keychain-state={kcOpen > 0 ? "pending" : "blocked"}>
+            {t(kcOpen > 0 ? "footer.keychainPendingSuffix" : "footer.keychainBlockedSuffix")}
+          </span>
+        )}
       </span>
     </>
   );
@@ -4230,6 +4240,10 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
   // .find() returns a stable reference (no snapshot churn) unless the
   // task object is replaced; compute the dir list from it directly.
   const taskObj = useApp(s => s.tasks.find(w => w.id === taskId));
+  // A Keychain deny in a blocked task is the block working: its deny is
+  // rendered after every allow, so the row offers no Allow (Rust refuses
+  // it too, see task_sandbox_add_allowed_path).
+  const kcBlocked = keychainBlocked(taskObj);
   const taskDirs = taskObj ? [taskObj.path, ...(taskObj.composition ?? []).map(m => m.path)].filter(Boolean) : [];
   const [excludeTask, setExcludeTask] = useState(true);
   // "Only would-block" collapses the log to just the actionable rows
@@ -4528,11 +4542,18 @@ function DeniedHostsPopover({ taskId, cli, count, mode }: { taskId: string; cli:
                         that segment. Lets the user pick a parent dir
                         (e.g. `$HOME/.agents/skills`) instead of being
                         forced to allow each leaf separately. */}
-                    <PathSegments
-                      display={shortenPath(p.path)}
-                      pending={allowing === p.path || !scopeChosen}
-                      onAllow={(prefix) => allowPath(prefix)}
-                    />
+                    {kcBlocked && underKeychains(shortenPath(p.path)) ? (
+                      <span className="flex min-w-0 flex-wrap items-center gap-2" data-testid="denied-path-keychain-blocked">
+                        <span className="font-mono text-[12px] text-[var(--color-fg-dim)]">{shortenPath(p.path)}</span>
+                        <span className="text-[11px] text-[var(--color-fg-faint)]">{t("denied.keychainBlockedPath")}</span>
+                      </span>
+                    ) : (
+                      <PathSegments
+                        display={shortenPath(p.path)}
+                        pending={allowing === p.path || !scopeChosen}
+                        onAllow={(prefix) => allowPath(prefix)}
+                      />
+                    )}
                     <CopyButton value={p.path} title={t("denied.copyFullPathTip")} className="ml-auto" />
                     <span
                       className="shrink-0 text-[11px] text-[var(--color-fg-faint)]"
@@ -4864,6 +4885,11 @@ function CopyButton({ value, title, className }: { value: string; title: string;
       {copied ? <Check size={12} className="text-[var(--color-ok)]" /> : <Copy size={12} />}
     </button>
   );
+}
+
+/** `$HOME/Library/Keychains` or anything under it, in shortenPath's form. */
+function underKeychains(display: string): boolean {
+  return display === "$HOME/Library/Keychains" || display.startsWith("$HOME/Library/Keychains/");
 }
 
 function PathSegments({ display, onAllow, pending }: {

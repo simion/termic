@@ -322,7 +322,9 @@ The cage:
 - **Writes restricted** to the worktree, agent config dirs (`~/.claude`,
   `~/.codex`), package caches (`~/.npm`, `~/.cache`,
   `~/.cargo/registry`), and TMPDIR. Always-denied: `~/.ssh`, `~/.aws`,
-  `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, Keychains.
+  `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`. The macOS
+  Keychain stays reachable unless the task turns on "Block Keychain
+  access".
 - **Network restricted** via an in-process CONNECT proxy with a regex
   hostname allowlist. Per-CLI vendor APIs (anthropic / google / openai)
   + GitHub + npmjs + PyPI + crates.io baked in. Add custom hosts per

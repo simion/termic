@@ -30,6 +30,18 @@ export function effectiveSandboxMode(
   return task.sandbox_enabled ? "enforce" : "off";
 }
 
+/** Whether the Keychain block actually applies to the next spawn. The flag
+ *  is kept across mode changes (Monitor / Off / Docker do not clear it), so
+ *  every surface that shows it goes through this rather than reading
+ *  `sandbox_block_keychain` raw. */
+export function keychainBlocked(
+  task: { sandbox_mode?: SandboxMode; sandbox_enabled?: boolean; sandbox_block_keychain?: boolean; docker_sandbox_enabled?: boolean } | null | undefined,
+): boolean {
+  if (!task?.sandbox_block_keychain || task.docker_sandbox_enabled) return false;
+  const m = effectiveSandboxMode(task);
+  return m === "enforce" || m === "enforce-fs";
+}
+
 /** True when the seatbelt FILESYSTEM cage is active (deny-by-default reads
  *  outside the allow-list). Covers both `enforce` and `enforce-fs` — they
  *  share the exact FS profile, so anything keyed off "the cage is the real
@@ -360,6 +372,8 @@ export interface Task {
    *  original immutability promise, the mode IS editable post-create via
    *  the Sandbox dialog (a forced PTY restart applies it). */
   sandbox_mode?: SandboxMode;
+  /** Seatbelt cage cannot reach the macOS Keychain (Enforce / Enforce FS). */
+  sandbox_block_keychain?: boolean;
   /** Per-task YOLO (auto-approve) flag, applied to every agent
    *  launched here. Only meaningful when NOT enforce-sandboxed (Enforcing
    *  auto-enables YOLO since the cage is the boundary). Replaces the old
@@ -569,6 +583,8 @@ export interface CreateMultiArgs {
   sandbox_mode?: SandboxMode;
   sandbox_rw_paths?: string[];
   sandbox_allowed_hosts?: string[];
+  /** Start with the Keychain blocked (`Task.sandbox_block_keychain`). */
+  sandbox_block_keychain?: boolean;
   /** Run this task's agent in Docker instead of Seatbelt. Mutually
    *  exclusive with sandbox_mode/sandbox_enabled - when true, Rust stores
    *  those as off regardless of what else was sent. */
@@ -613,6 +629,8 @@ export interface CreateTaskArgs {
    *  Rust falls back to the project's defaults verbatim. */
   sandbox_rw_paths?: string[];
   sandbox_allowed_hosts?: string[];
+  /** Start with the Keychain blocked (`Task.sandbox_block_keychain`). */
+  sandbox_block_keychain?: boolean;
   /** Run this task's agent in Docker instead of Seatbelt. Mutually
    *  exclusive with sandbox_mode/sandbox_enabled - when true, Rust stores
    *  those as off regardless of what else was sent. */

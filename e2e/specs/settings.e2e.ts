@@ -1405,6 +1405,232 @@ describe("task sandbox", () => {
   });
 });
 
+// Keychain block: a per-task opt-in shown by New Task, the task Sandbox
+// dialog and Edit task. Drives the real dialogs and reads the result back
+// off the reopened dialog and the task footer. What the profile renders is
+// covered by the Rust tests in sandbox.rs; this covers that the choice is
+// offered only in the enforcing modes, survives saves that do not carry it,
+// and that the footer only calls it blocked once the live agent was spawned
+// under it. macOS only: without Seatbelt every mode reads as off and the row
+// never renders.
+(process.platform !== "darwin" ? describe.skip : describe)("task sandbox keychain block", () => {
+  let taskId!: string;
+  const box = '[data-testid="sandbox-block-keychain"]';
+  // fakeagent is a script in the repo's scripts/, outside every cage
+  // allow-list, so a caged spawn dies on exec unless this task allows it.
+  const rw = [path.resolve("scripts")];
+
+  const setMode = (mode: string, blockKeychain?: boolean) =>
+    browser.execute(async (id, m, rw, b) => {
+      await window.__termic!.ipc.taskSetSandbox(id, m as any, rw, [], false, b ?? undefined);
+      await window.__termic!.useApp.getState().loadAll();
+    }, taskId, mode, rw, blockKeychain ?? null);
+  const openDialog = () =>
+    browser.execute((id) => window.__termic!.useUI.getState().openSandbox(id), taskId);
+  const closeDialog = async () => {
+    await browser.execute(() => window.__termic!.useUI.getState().closeSandbox());
+    await waitGone(box);
+  };
+  const openEdit = () =>
+    browser.execute((id) => window.__termic!.useUI.getState().openEditTask(id), taskId);
+  const saveEdit = async () => {
+    await clickWhenVisible('button[form="edit-task-form"]');
+    await browser.waitUntil(
+      async () => (await browser.execute(() => window.__termic!.useUI.getState().editTaskId)) === null,
+      { timeout: 8_000, timeoutMsg: "edit dialog never closed after save" },
+    );
+  };
+  const checked = () => browser.execute((sel) => document.querySelector(sel)?.getAttribute("aria-checked"), box);
+  const present = () => browser.execute((sel) => !!document.querySelector(sel), box);
+  const stored = () => browser.execute(
+    (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.sandbox_block_keychain,
+    taskId,
+  );
+  // The footer suffix's state, or null when it is absent. A suffix that is
+  // in the DOM but not displayed (the narrow-footer collapse) reads as null,
+  // so a CSS-hidden claim cannot pass for a visible one.
+  const footerKeychain = (want: "blocked" | "pending" | null) => browser.waitUntil(
+    async () => (await browser.execute(() => {
+      const el = document.querySelector('[data-testid="task-footer"] [data-testid="footer-keychain"]') as HTMLElement | null;
+      return el && el.getClientRects().length > 0 ? el.dataset.keychainState ?? null : null;
+    })) === want,
+    { timeout: 10_000, timeoutMsg: `footer keychain state never became ${want}` },
+  );
+  // Live caged PTYs of this task spawned with the Keychain reachable.
+  const keychainOpen = () => browser.execute(
+    async (id) => (await window.__termic!.ipc.sandboxDenyCounts(id)).keychain_open,
+    taskId,
+  );
+  // Save the mode and kill the live agent, which the pane respawns under
+  // the new profile (the same pending-restart path "Save & restart" uses).
+  const restartUnder = (mode: string) =>
+    browser.execute(async (id, m, rw) => {
+      window.__termic!.useUI.getState().markPendingPtyRestart(id);
+      await window.__termic!.ipc.taskSetSandbox(id, m as any, rw, [], true);
+      await window.__termic!.useApp.getState().loadAll();
+    }, taskId, mode, rw);
+
+  after(async () => {
+    if (!taskId) return;
+    await browser.execute(() => {
+      window.__termic!.useUI.getState().closeSandbox();
+      window.__termic!.useUI.getState().closeEditTask();
+    });
+    await setMode("off", false);
+    await archiveTask(taskId);
+  });
+
+  it("is not offered in monitor mode", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-keychain");
+    await setMode("monitor");
+    await openDialog();
+    // the dialog is up (its allowed-paths field renders in monitor) but the
+    // keychain row is not.
+    await waitForText("Allowed paths");
+    expect(await present()).toBe(false);
+    await closeDialog();
+  });
+
+  it("is not offered when the sandbox is off", async () => {
+    await setMode("off");
+    await openDialog();
+    // the off picker is up, the keychain row is not.
+    await waitVisible('[data-sandbox-option="off"]');
+    expect(await present()).toBe(false);
+    await closeDialog();
+  });
+
+  it("is offered unchecked in enforce mode", async () => {
+    await setMode("enforce");
+    await openDialog();
+    await waitVisible(box);
+    expect(await checked()).toBe("false");
+    await footerKeychain(null);
+    await closeDialog();
+  });
+
+  it("reads as pending while the live agent was spawned open, then blocked after a restart", async () => {
+    await restartUnder("enforce");
+    // positive control: a caged agent spawned with the Keychain reachable.
+    await browser.waitUntil(async () => (await keychainOpen()) > 0,
+      { timeout: 15_000, timeoutMsg: "no caged agent ever spawned open" });
+    await openDialog();
+    await clickWhenVisible(box);
+    expect(await checked()).toBe("true");
+    await clickWhenVisible('[data-testid="sandbox-save-no-restart"]');
+    await clickWhenVisible('[data-testid="confirm-ok"]');
+    await waitGone(box);
+    expect(await stored()).toBe(true);
+    // saved, but the running agent still holds the open profile.
+    await footerKeychain("pending");
+    await restartUnder("enforce");
+    await browser.waitUntil(async () => (await keychainOpen()) === 0,
+      { timeout: 15_000, timeoutMsg: "the open agent never went away" });
+    await footerKeychain("blocked");
+    await openDialog();
+    await waitVisible(box);
+    expect(await checked()).toBe("true");
+    await snap("sandbox-keychain-block.png");
+    await closeDialog();
+  });
+
+  it("survives a taskSetSandbox call that omits the flag", async () => {
+    // the IPC contract every caller without the row relies on: omitted
+    // means keep, not clear.
+    await setMode("enforce-fs");
+    expect(await stored()).toBe(true);
+    await footerKeychain("blocked");
+  });
+
+  it("Edit task hides it in monitor and keeps the stored flag", async () => {
+    await openEdit();
+    await waitVisible(box);
+    expect(await checked()).toBe("true");
+    await clickWhenVisible('[data-sandbox-option="monitor"]');
+    await waitGone(box);
+    await saveEdit();
+    // stored but not in effect: monitor never blocks, and the footer
+    // must not claim otherwise.
+    expect(await stored()).toBe(true);
+    await footerKeychain(null);
+  });
+
+  it("Edit task shows it again on the way back to enforce, and clears it", async () => {
+    await openEdit();
+    await clickWhenVisible('[data-sandbox-option="enforce"]');
+    await waitVisible(box);
+    // the hidden flag comes back on screen, never silently.
+    expect(await checked()).toBe("true");
+    await clickWhenVisible(box);
+    await saveEdit();
+    expect(await stored()).toBe(false);
+    await footerKeychain(null);
+    await openDialog();
+    await waitVisible(box);
+    expect(await checked()).toBe("false");
+    await closeDialog();
+  });
+
+  it("New Task offers it in the enforcing modes and creates the task blocked", async () => {
+    const dialog = '[role="dialog"]:has(input[placeholder="fix login bug"])';
+    const clickButton = (text: string) => browser.waitUntil(
+      () => browser.execute((sel, t) => {
+        const b = [...(document.querySelector(sel)?.querySelectorAll("button") ?? [])]
+          .find(x => x.textContent?.trim() === t) as HTMLButtonElement | undefined;
+        b?.click();
+        return !!b;
+      }, dialog, text),
+      { timeout: 8_000, timeoutMsg: `New Task button never appeared: ${text}` },
+    );
+    // the dialog remembers the last sandbox pick; put it back afterwards so
+    // "enforce" does not leak into later specs' creates.
+    const lastPick = await browser.execute(() => JSON.stringify(
+      Object.entries(localStorage).filter(([k]) => k.endsWith("newTaskLastSandboxMode"))));
+    await browser.execute(() => {
+      const proj = window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo");
+      window.__termic!.useUI.getState().openNewTask(proj.id);
+    });
+    await waitVisible(dialog);
+    await clickButton("Main checkout");
+    await browser.execute((sel) => {
+      const input = document.querySelector(`${sel} input[placeholder="fix login bug"]`) as HTMLInputElement;
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, "e2e-keychain-new");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, dialog);
+    await clickButton("Terminal");
+
+    await clickWhenVisible(`${dialog} [data-sandbox-option="monitor"]`);
+    await waitGone(box);
+    await clickWhenVisible(`${dialog} [data-sandbox-option="enforce"]`);
+    await waitVisible(box);
+    expect(await checked()).toBe("false");
+    await clickWhenVisible(box);
+    expect(await checked()).toBe("true");
+    await clickButton("Create");
+
+    const created = await browser.waitUntil(
+      () => browser.execute(() => window.__termic!.useApp.getState().tasks
+        .find((t: any) => t.name === "e2e-keychain-new" && !t.archived) ?? false),
+      { timeout: 15_000, timeoutMsg: "New Task never created e2e-keychain-new" },
+    ) as { id: string; sandbox_mode?: string; sandbox_block_keychain?: boolean };
+    try {
+      expect(created.sandbox_mode).toBe("enforce");
+      expect(created.sandbox_block_keychain).toBe(true);
+    } finally {
+      await browser.execute(async (id, prev) => {
+        await window.__termic!.ipc.taskSetSandbox(id, "off", [], [], false, false);
+        for (const k of Object.keys(localStorage)) {
+          if (k.endsWith("newTaskLastSandboxMode")) localStorage.removeItem(k);
+        }
+        for (const [k, v] of JSON.parse(prev) as [string, string][]) localStorage.setItem(k, v);
+      }, created.id, lastPick);
+      await archiveTask(created.id);
+    }
+  });
+});
+
 // P1: the signal inspector (Settings → Agents & Terminals). Editing an agent's
 // work-done patterns used to be guesswork — the strings you must match are OSC
 // titles, termic consumes them, and nothing ever showed them to you. These

@@ -29,7 +29,7 @@ Four states, set per-task at create + editable later. `Enforce` is the full cage
 
 ## Layered model
 
-1. `sandbox-exec -f <profile.sb>` — kernel seatbelt. Profile rendered to `$TMPDIR/termic-sandbox-<wsId>.sb`. Allows broad `file-read*`, narrow `file-write*` on task + agent dirs + caches. Secrets (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, `~/.config/gh/hosts.yml`, Keychains) ALWAYS denied. `(deny network*)` except loopback to the proxy — UNLESS `EnforceFs`, which emits `(allow network*)` instead.
+1. `sandbox-exec -f <profile.sb>` — kernel seatbelt. Profile rendered to `$TMPDIR/termic-sandbox-<wsId>.sb`. A pure allow-list under `(deny default)`: reads and writes only where the profile carves them out (task + agent dirs, caches, system roots, runtime paths). Secrets (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, `~/.config/gh/hosts.yml`) are denied by never being on that list, so an entry that covers one (`$HOME`, say) re-exposes it. The Keychain IS on the list (`~/Library/Keychains`, and every `mach-lookup` is allowed) unless the task blocks it: see "Keychain" below. `(deny network*)` except loopback to the proxy — UNLESS `EnforceFs`, which emits `(allow network*)` instead.
 2. Per-task **in-process CONNECT proxy** on an OS-assigned port (Rust thread inside Tauri binary). Regex hostname allowlist per CLI: claude→anthropic, gemini→google, codex→openai, muse→meta (`api.meta.ai` for both the Model API and the release channel, `auth.meta.com` + `accountscenter.meta.com` for the device-code login, `lookaside.facebook.com` for the launcher's binary download, so a blocked self-update reads as a stale version), devin→devin.ai + codeium (`api.devin.ai` for the API, `cli.devin.ai` for installs/updates, `app.devin.ai` for the web UI, plus the Codeium-lineage telemetry hosts the binary still dials: `server.codeium.com`, `unleash.codeium.com`, `*.sentry.io`, `openrouter.ai`) + baseline (github, gitlab, azure devops + its Entra token endpoint + the ARM host `az login` finishes through, npmjs, pypi, crates.io, CA OCSP) + task extras. Non-matching → HTTP 403. Stopped via `SandboxBundle::Drop` on PTY teardown. **Not started in `EnforceFs`** (no network sandbox).
 
 ## Key behaviors
@@ -162,6 +162,141 @@ the reason `connect-src` must not be widened (see the CSP rule in
 CLAUDE.md). The bounds above are pinned by `external_read_*` tests in
 `src-tauri/src/lib.rs`.
 
+## Keychain: open by default, blockable per task
+
+**Default (open).** The header allows all `mach-lookup`, which includes
+the Keychain services, and `~/Library/Keychains` is on
+`builtin_runtime_paths` (read+write). Per-item ACLs do not protect much:
+gh stores its token via go-keyring, which shells out to
+`/usr/bin/security`, and git's osxkeychain helper is Apple signed, so
+those items trust Apple tools, and securityd checks the binary that asks,
+not its parent. A caged agent reads gh's token and git's HTTPS
+credentials with no prompt, and can delete, replace or copy out
+`login.keychain-db`.
+
+**The block.** `Task.sandbox_block_keychain`, one checkbox
+(`KeychainBlockField`) in `NewTaskDialog`, `ScheduleDialog` (new
+parent), `TaskSandboxDialog` and `EditTaskDialog`, shown for Enforce and
+Enforce FS only. At create it rides on every create path
+(`CreateTaskArgs`, `CreateMultiArgs`, `task_import_worktree`,
+`task_open_repo`), so the first spawn is already blocked; the CLI's `termic new` has no flag for it yet and creates it
+off. Afterwards it is saved through `task_set_sandbox(block_keychain)`
+and applied on the next spawn like any profile change. Scheduled runs
+copy their parent's (`runSpecFromParent` -> `task_open_repo`), so a run
+is never looser than the task it came from.
+
+The flag survives a trip through Monitor, Off or Docker: a save whose
+row is hidden sends `None`, which keeps the stored value. Leaving Docker
+saves without showing the row, so its confirm names the block when it
+is about to apply again. Anything that shows it reads
+`keychainBlocked(task)` (flag AND an enforcing mode), never the raw
+field.
+
+The footer does not trust the stored flag alone. Every task agent PTY
+that can reach the Keychain holds a `KeychainHold` for its lifetime,
+counted in `KEYCHAIN_OPEN`: a caged one whose profile left it open
+(`provision`), and an uncaged one, Off or a failed provision
+(`pty_spawn`, which knows there is no bundle). `sandbox_deny_counts`
+reports that count (`keychain_open`) on the poll the footer already
+makes. Nonzero reads "Keychain block applies on restart"; zero reads
+"Keychain blocked"; before the first answer, or after a failed poll, the
+suffix is not shown at all, since "blocked" is a claim and never a
+default. Whether the profile blocks comes from one function,
+`blocks_keychain`, which both the renderer and `provision` call.
+
+When set, `render_profile_with` emits `KEYCHAIN_MACH_DENY` and a
+read+write deny on `~/Library/Keychains`. The Mach list is every
+Keychain service `launchctl print gui/$UID` / `system` shows on macOS
+26: SecurityServer, every `com.apple.securityd*` endpoint (secd: the
+data-protection keychain, the system keychain, CKKS / SOS sync), the
+keychain agents and sync helpers, and every `com.apple.ctkd*`
+(CryptoTokenKit, smart-card and token identities). The dir deny is
+emitted for the literal path and, when it differs, its resolved form,
+mirroring the runtime allow loop; otherwise a symlinked home keeps its
+resolved allow. Both come after every file allow, the control plane's
+login-store re-allow included, so last-match-wins makes them final. An "allow this path" from the deny UI
+would be emitted earlier and lose, so for a blocked task the popover
+shows Keychain denials without an Allow, and
+`task_sandbox_add_allowed_path` refuses paths under
+`~/Library/Keychains` (either form, compared through symlinks) rather than clear the row and lift a dead entry
+into the project defaults. Monitor ignores the flag (observe, never
+block). Docker needs nothing: the container never sees the host
+Keychain.
+
+Measured 2026-10-09 on macOS 26.5 with fake items, the task's real
+EnforceFs profile run through `sandbox-exec` from an uncaged shell:
+
+| Probe | Open | Blocked |
+|---|---|---|
+| `security find-generic-password -w` | leaked | exit 44 |
+| `git credential-osxkeychain get` | leaked | -50 |
+| python ctypes `SecKeychainFindGenericPassword` | leaked, no prompt | -50 |
+| write in / read `~/Library/Keychains` | allowed | denied |
+| curl, python urllib, node fetch | 200 | 200 |
+| gh (Go platform verifier), fake token | | 401, no x509 error |
+| claude with its Keychain login | logged in | logged out |
+| claude `/login` inside the blocked cage | | logged in, `0600` `.credentials.json` in the config dir |
+
+The python row is why the fix is a Mach deny: any Apple-signed binary
+calling Security.framework reads these items silently, so denying exec
+of `security` or the git helper closes nothing.
+
+Beyond the table, and what it does not cover, so do not read the block
+as complete:
+
+- the table above was measured with the original four service names.
+  The list was then widened from the `launchctl` enumeration, and
+  re-measured 2026-10-12 against the same task's real EnforceFs profile
+  in three variants (block stripped, original four, wide): wide and the
+  original four matched on every row. `security list-keychains` and
+  `ls ~/Library/Keychains` fail; `SecItemCopyMatching` with
+  `kSecUseDataProtectionKeychain` returns -25291 (errSecNotAvailable)
+  instead of -25300 (not found), so the data-protection keychain was
+  already cut off by `securityd.xpc`; curl, python urllib and node fetch
+  return 200; gh with a fake token gets its 401 with no x509 error;
+  claude `/login`, codex and gemini start inside the blocked task. The
+  extra names (the rest of `securityd*`, `ctkd*`, the sync helpers) are
+  defence in depth. `keychain_block_cuts_off_securityd_in_the_cage`
+  repeats the dir and data-protection probes with a positive control;
+  like every live cage test it needs an uncaged shell. Service names
+  move between macOS releases: re-enumerate when a new one ships.
+- the header still allows every other `mach-lookup`, launchd included.
+  Whether a caged agent can have launchd run something outside the cage
+  (`launchctl submit`, `open x.command`) and read the Keychain from
+  there has not been measured. If it can, that is a hole in the cage as
+  a whole, not in this block.
+
+TLS does not need the Keychain services in any stack tried (Codex and
+sandbox-runtime keep `SecurityServer` "for TLS"; not needed here).
+
+**Why the dir is not read-only for everyone.** With the services
+reachable and the dir read-only, `security add-generic-password` fails
+(`SecKeychainItemCreateFromContent: UNIX[Operation not permitted]`): the
+legacy keychain is written by the client process, not by securityd. An
+agent keeping its login in the Keychain would fail to persist an OAuth
+refresh and log itself out later. So the dir deny only ships with the
+Mach deny.
+
+**Cost.** Agents that keep their login in the Keychain lose it in a
+blocked task. claude: one `/login`, stored in its config dir. codex:
+already a file. gemini: expected to fall back to its encrypted file
+store (unverified; `GEMINI_FORCE_FILE_STORAGE=true` forces it). copilot
+and muse: Keychain-backed, fallback not measured. The file login is the
+agent's own token, which it can use anyway; what the block protects is
+everyone else's credentials. claude's `/login` lands in the config dir
+the task uses, which for the default account is the shared `~/.claude`:
+the file outlives the task and every task on that account reads it. It
+is not retroactive: a copy of `login.keychain-db` made while the task
+was open stays readable. It does not cover secrets reached other ways
+(inherited env, anything on the allow-list such as `~/.local/share`).
+
+**Open: the default.** Leaving it off means every enforced task can read
+the Keychain items above. Turning it on for new tasks is the better
+posture once every built-in agent has a measured file fallback; until
+then it is opt-in. A stopgap that needs no termic change:
+`gh auth login --insecure-storage` and `credential.helper store` move
+those two credentials into files the cage already denies.
+
 ## Known gap: Monitor mode reaches the CLI control plane
 
 The CLI control socket (docs/plans/cli.md) is denied to `Enforce` /
@@ -208,4 +343,5 @@ outside. If you need the prompt-back protocol, run the task in `Monitor`
 - Sandbox AuxTerminal, setup, run, or archive scripts.
 - Expose `task_set_sandbox` without SIGKILLing live PTYs by default. `kill_live=false` is an explicit escape hatch with a warning — don't make it the default.
 - Widen `tauri.conf.json`'s CSP without reading "Known gap" above. It applies to the whole webview, not to the component you are working on.
+- Make `~/Library/Keychains` read-only without the Keychain Mach deny (breaks every agent's token refresh), or replace that deny with exec denies on `security` (any Apple binary reads the same items). See "Keychain" above.
 - Give caged agents any path to another agent (control plane, scoped token, notify side channel). See "Settled" above for why the narrow versions fail too.

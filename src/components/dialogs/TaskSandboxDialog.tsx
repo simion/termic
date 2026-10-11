@@ -21,7 +21,7 @@ import {
 } from "@/lib/ipc";
 import { effectiveSandboxMode, type SandboxMode, type SandboxSelection, type Settings } from "@/lib/types";
 import { AlertTriangle, Shield, Zap, Save, RotateCw } from "lucide-react";
-import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
+import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { dockerToggleMessage, leaveDockerMessage } from "@/lib/sandboxSwitchCopy";
 
@@ -47,6 +47,7 @@ export function TaskSandboxDialog() {
   const [mode, setMode] = useState<SandboxMode>("off");
   const [rwText,    setRwText]    = useState("");
   const [hostsText, setHostsText] = useState("");
+  const [blockKeychain, setBlockKeychain] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr]   = useState<string | null>(null);
   // OS sandbox support gate. macOS → true. Linux/Windows → false,
@@ -93,6 +94,10 @@ export function TaskSandboxDialog() {
   // host allow-list + any network-only copy are irrelevant, so they're
   // hidden in this mode.
   const fsOnly = mode === "enforce-fs";
+  // the Keychain block only applies to the enforcing modes. Elsewhere the
+  // row is hidden and the stored flag is left alone (not dirty, not sent),
+  // so a trip through Monitor does not silently rewrite it.
+  const keychainRow = enabled && mode !== "monitor";
 
   // Command preview: the exact `docker run ...` a launch would build right
   // now (docker_command_preview -> the SAME build_spec/render_argv the real
@@ -207,6 +212,7 @@ export function TaskSandboxDialog() {
     setMode(effectiveSandboxMode(task));
     setRwText((task.sandbox_rw_paths ?? []).join("\n"));
     setHostsText((task.sandbox_allowed_hosts ?? []).join("\n"));
+    setBlockKeychain(!!task.sandbox_block_keychain);
     setErr(null);
     setBusy(false);
   }, [task?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -225,7 +231,8 @@ export function TaskSandboxDialog() {
   const dirty = task ? (
     mode !== effectiveSandboxMode(task) ||
     !arrEq(splitLines(rwText),    task.sandbox_rw_paths      ?? []) ||
-    !arrEq(splitLines(hostsText), task.sandbox_allowed_hosts ?? [])
+    !arrEq(splitLines(hostsText), task.sandbox_allowed_hosts ?? []) ||
+    (keychainRow && blockKeychain !== !!task.sandbox_block_keychain)
   ) : false;
 
   async function save(restart: boolean) {
@@ -252,7 +259,7 @@ export function TaskSandboxDialog() {
       const killed = await taskSetSandbox(
         task.id, mode,
         lines(rwText), lines(hostsText),
-        restart,
+        restart, keychainRow ? blockKeychain : undefined,
       );
       await loadAll();
       // Quiet success - the kill is the visible feedback (overlay
@@ -315,7 +322,11 @@ export function TaskSandboxDialog() {
     if (!task || dockerBusy) return;
     const ok = await useUI.getState().askConfirm({
       title: t("taskSandbox.leaveDockerTitle", { name: taskLabel(task, useBranchAsTaskName) }),
-      message: leaveDockerMessage(next === "off" ? "off" : "seatbelt"),
+      // This path saves without showing the Keychain row, so a stored
+      // block that is about to apply again is named here instead.
+      message: leaveDockerMessage(next === "off" ? "off" : "seatbelt")
+        + (task.sandbox_block_keychain && (next === "enforce" || next === "enforce-fs")
+          ? " " + t("taskSandbox.leaveDockerKeychainNote") : ""),
       confirmLabel: next === "off" ? t("taskSandbox.confirmStopDocker") : t("taskSandbox.confirmSwitchSeatbelt"),
     });
     if (!ok) return;
@@ -504,6 +515,9 @@ export function TaskSandboxDialog() {
           </div>
         )}
 
+        {/* Keychain block. Enforcing modes only: Monitor never blocks. */}
+        {keychainRow && <KeychainBlockField checked={blockKeychain} onChange={setBlockKeychain} />}
+
         {/* Built-in defaults moved inline under each field below -
             the standalone <details> made users miss what was already
             covered, leading to redundant entries in the "Extra"
@@ -584,7 +598,7 @@ export function TaskSandboxDialog() {
                 <Chip tone="allow">~/.local/bin</Chip>
                 <Chip tone="allow">~/.agents</Chip>
                 <Chip tone="allow">~/Library/Caches</Chip>
-                <Chip tone="allow">~/Library/Keychains</Chip>
+                {!(keychainRow && blockKeychain) && <Chip tone="allow">~/Library/Keychains</Chip>}
                 <Chip tone="allow">/private/tmp</Chip>
                 <Chip tone="allow">TMPDIR</Chip>
                 <Chip tone="allow" muted>{t("taskSandbox.chipShellDotfiles")}</Chip>
@@ -672,6 +686,7 @@ export function TaskSandboxDialog() {
           <Button variant="ghost" type="button" onClick={close} disabled={busy}>{t("common:cancel")}</Button>
           <Button
             variant="secondary" type="button" onClick={() => save(false)}
+            data-testid="sandbox-save-no-restart"
             disabled={busy || !dirty}
             title={!dirty
               ? t("taskSandbox.noChangesTitle")
