@@ -75,6 +75,53 @@ pub struct SandboxBundle {
     /// distinguish enforcing cages (control plane refused) from
     /// Monitor (observe-never-block: CLI use is allowed and logged).
     pub mode: crate::SandboxMode,
+    /// Whether this PTY's profile cut off the Keychain, held for the PTY's
+    /// lifetime so the footer can tell a block that is live from one only
+    /// saved (see `keychain_open_count`).
+    #[allow(dead_code)]
+    pub keychain: KeychainHold,
+}
+
+/// Live agent PTYs per task that can reach the Keychain.
+/// The footer says "Keychain blocked" only once this is zero, so a block
+/// saved without a restart does not read as applied.
+static KEYCHAIN_OPEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn keychain_open() -> &'static Mutex<HashMap<String, u64>> {
+    KEYCHAIN_OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One PTY's entry in `KEYCHAIN_OPEN`, released on drop. A blocked PTY
+/// registers nothing.
+pub struct KeychainHold {
+    task_id: Option<String>,
+}
+
+impl KeychainHold {
+    pub(crate) fn new(task_id: &str, blocked: bool) -> Self {
+        if blocked { return Self { task_id: None }; }
+        *keychain_open().lock().unwrap_or_else(|e| e.into_inner())
+            .entry(task_id.to_string()).or_insert(0) += 1;
+        Self { task_id: Some(task_id.to_string()) }
+    }
+}
+
+impl Drop for KeychainHold {
+    fn drop(&mut self) {
+        let Some(id) = self.task_id.take() else { return };
+        let mut m = keychain_open().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = m.get_mut(&id) {
+            *n = n.saturating_sub(1);
+            if *n == 0 { m.remove(&id); }
+        }
+    }
+}
+
+/// How many of this task's live agent PTYs can still reach the Keychain:
+/// caged ones whose profile left it open, plus uncaged ones (Off, or a
+/// failed provision), which `pty_spawn` registers itself.
+pub fn keychain_open_count(task_id: &str) -> u64 {
+    keychain_open().lock().unwrap_or_else(|e| e.into_inner()).get(task_id).copied().unwrap_or(0)
 }
 
 /// One PTY's registration with the shared watcher. Every sandboxed PTY
@@ -1515,6 +1562,32 @@ pub(crate) fn render_profile_with(
         }
     }
 
+    // Keychain block (opt-in per task). The header's blanket mach-lookup
+    // reaches securityd, and any item that trusts an Apple binary (gh's
+    // token via `security`, git's osxkeychain helper) reads back with no
+    // prompt; denying exec of those binaries does not help, since any
+    // Apple-signed binary calling Security.framework reads it too. Denying
+    // the services closes the legacy keychain (security, the git helper,
+    // the C API) and the data-protection keychain; work handed to launchd
+    // was not measured, see docs/sandbox.md. The dir deny stops the agent
+    // copying or replacing the keychain files. It cannot be a read-only
+    // dir on its own: the legacy keychain is written by the client
+    // process, so a read-only dir with the services up breaks every
+    // agent's token refresh. TLS does not need these services (curl,
+    // node, python and Go's verifier all verified under it).
+    //
+    // Emitted after every file allow, the login store's included, so last
+    // match wins without depending on what the allows cover. Both the
+    // literal and the resolved path are denied, mirroring the runtime
+    // allow loop, or a symlinked home keeps its resolved allow.
+    if blocks_keychain(task, mode) {
+        out.push_str("\n;; --- Keychain blocked for this task ---\n");
+        out.push_str(KEYCHAIN_MACH_DENY);
+        for p in keychain_dirs(&home) {
+            out.push_str(&format!("(deny file-read* file-write* (subpath \"{}\"))\n", sbpl_escape(&p)));
+        }
+    }
+
     // Control-plane socket deny, emitted per-branch below: it must be the
     // FINAL network rule AFTER every allow that could match (the broad
     // unix-socket allow, EnforceFs's `(allow network*)`, and the agy
@@ -1638,9 +1711,10 @@ fn builtin_runtime_paths(home: &str, task_path: &str) -> Vec<String> {
         // file itself lives here. Pre-v0.4.0 the broad-allow model
         // let agents touch it implicitly, the new allowlist would
         // deny it by default and break "claude is logged in" on every
-        // sandboxed spawn. File contents are encrypted; access is
-        // gated by macOS's per-item ACL via securityd regardless of
-        // file-level reads.
+        // sandboxed spawn. The per-item ACL does NOT keep a caged agent
+        // out: any item that trusts an Apple binary reads back through
+        // securityd with no prompt. Tasks that need it closed opt into the
+        // Keychain block (`KEYCHAIN_MACH_DENY`, docs/sandbox.md "Keychain").
         format!("{home}/Library/Keychains"),
         // User-local binaries (pipx, `pip install --user`, `cargo install`,
         // `npm i -g` with a user prefix, and direct ~/.local/bin scripts).
@@ -2062,7 +2136,8 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
         .with_context(|| format!("write {}", profile_path.display()))?;
     dlog(&format!("[sandbox/{}] profile written: {}", task.id, profile_path.display()));
 
-    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher, mode })
+    let keychain = KeychainHold::new(&task.id, blocks_keychain(task, mode));
+    Ok(SandboxBundle { profile_path, filter_path, proxy, path_watcher, mode, keychain })
 }
 
 /// Wrap an agent command with `sandbox-exec -f <profile> env <vars>
@@ -2209,6 +2284,45 @@ const SBPL_HEADER: &str = r#";; termic sandbox profile - generated; do not edit.
 (allow file-write-data (vnode-type CHARACTER-DEVICE))
 (allow file-ioctl      (vnode-type CHARACTER-DEVICE))
 "#;
+
+/// The Keychain services a blocked task cannot reach, from
+/// `launchctl print gui/$UID` / `system` on macOS 26: the legacy file
+/// keychain (SecurityServer), every secd endpoint (`com.apple.securityd*`:
+/// the data-protection keychain on `.xpc`, the system keychain, CKKS / SOS
+/// sync), the keychain agents and sync helpers, and CryptoTokenKit
+/// (`com.apple.ctkd*`), which serves smart-card and token identities as
+/// keychain items. Keychain prompts stop because SecurityServer is
+/// unreachable. authd stays reachable, so this does not stop other
+/// password prompts. TLS trust evaluation goes through trustd and is
+/// unaffected.
+const KEYCHAIN_MACH_DENY: &str = r#"(deny mach-lookup
+  (global-name "com.apple.SecurityServer")
+  (global-name-prefix "com.apple.securityd")
+  (global-name-prefix "com.apple.security.agent")
+  (global-name "com.apple.security.keychain")
+  (global-name "com.apple.security.KeychainStasher")
+  (global-name "com.apple.security.octagon")
+  (global-name "com.apple.security.escrow")
+  (global-name "com.apple.security.kcsharing")
+  (global-name "com.apple.security.cloudkeychainproxy")
+  (global-name-prefix "com.apple.ctkd"))
+"#;
+
+/// Whether this profile cuts off the Keychain. The renderer emits the block
+/// under it and `provision` registers the PTY's hold from it, so the footer
+/// cannot disagree with the profile. Monitor never blocks.
+pub(crate) fn blocks_keychain(task: &Task, mode: crate::SandboxMode) -> bool {
+    task.sandbox_block_keychain
+        && matches!(mode, crate::SandboxMode::Enforce | crate::SandboxMode::EnforceFs)
+}
+
+/// `$HOME/Library/Keychains` and, when it differs, its resolved form. The
+/// runtime allow loop emits both, so the deny has to as well.
+pub(crate) fn keychain_dirs(home: &str) -> Vec<String> {
+    let lit = format!("{}/Library/Keychains", home.trim_end_matches('/'));
+    let canon = canonicalize_or_keep(&lit);
+    if canon != lit && !canon.is_empty() { vec![lit, canon] } else { vec![lit] }
+}
 
 /// Enumerate top-level entries under $HOME and return the absolute
 /// paths of those NOT covered by `user_allowed` and NOT covered by
@@ -2426,6 +2540,7 @@ mod mode_env_tests {
             proxy: None,
             path_watcher: None,
             mode,
+            keychain: KeychainHold { task_id: None },
         }
     }
 
@@ -3407,6 +3522,177 @@ mod tests {
             );
         }
         });
+    }
+
+    // ─── Keychain block ──────────────────────────────────────────────────
+
+    fn keychain_profile(mode: SandboxMode, block: bool) -> String {
+        keychain_profile_with(mode, block, Vec::new())
+    }
+
+    fn keychain_profile_with(mode: SandboxMode, block: bool, rw: Vec<String>) -> String {
+        let task = Task {
+            cli: "claude".into(),
+            path: "/tmp/kc-task".into(),
+            sandbox_block_keychain: block,
+            sandbox_rw_paths: rw,
+            ..Default::default()
+        };
+        let control = ControlPlanePaths { data_dir: None, socket: None };
+        render_profile_with(&task, 1, "claude", &[], mode, &control).unwrap()
+    }
+
+    #[test]
+    fn keychain_block_renders_only_when_set_and_after_the_keychain_allow() {
+        let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+        let allow = format!("(allow file-write* (subpath \"{}/Library/Keychains\"))", sbpl_escape(&home));
+        let deny = format!("(deny file-read* file-write* (subpath \"{}/Library/Keychains\"))", sbpl_escape(&home));
+        for mode in [SandboxMode::Enforce, SandboxMode::EnforceFs] {
+            let off = keychain_profile(mode, false);
+            assert!(!off.contains("com.apple.SecurityServer"), "{mode:?}: no deny unless the task asks");
+            assert!(!off.contains(&deny), "{mode:?}");
+
+            let on = keychain_profile(mode, true);
+            assert!(on.contains(KEYCHAIN_MACH_DENY), "{mode:?}: mach deny missing");
+            // last match wins, so the deny is inert unless it follows the
+            // runtime allow for the same dir.
+            let (a, d) = (on.find(&allow).expect("runtime allow"), on.find(&deny).expect("dir deny"));
+            assert!(d > a, "{mode:?}: dir deny must come after the runtime allow");
+        }
+        // Monitor never blocks.
+        assert!(!keychain_profile(SandboxMode::Monitor, true).contains("com.apple.SecurityServer"));
+    }
+
+    #[test]
+    fn keychain_block_cuts_off_securityd_in_the_cage() {
+        if !cage_available() || !Path::new("/usr/bin/security").exists() {
+            return;
+        }
+        // `security list-keychains` is a harmless securityd round trip: no
+        // item is read, so this never touches a real secret. (A lookup of a
+        // missing item is no good here: it exits 44 open AND blocked.)
+        let run = |profile: String| {
+            let f = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(f.path(), profile).unwrap();
+            Command::new("/usr/bin/sandbox-exec")
+                .arg("-f").arg(f.path())
+                .args(["/usr/bin/security", "list-keychains"])
+                .output()
+                .expect("spawn sandbox-exec security")
+        };
+        let blocked = keychain_profile(SandboxMode::EnforceFs, true);
+        // positive control: the unblocked cage reaches securityd.
+        let open = run(keychain_profile(SandboxMode::EnforceFs, false));
+        assert!(open.status.success(), "unblocked cage should reach securityd; stderr={}",
+                String::from_utf8_lossy(&open.stderr));
+        // the dir deny alone still reaches it, so the Mach deny is what
+        // cuts it off below, not the dir deny riding along.
+        let dir_only = run(blocked.replace(KEYCHAIN_MACH_DENY, ""));
+        assert!(dir_only.status.success(), "dir deny alone should still reach securityd; stderr={}",
+                String::from_utf8_lossy(&dir_only.stderr));
+        assert!(!run(blocked.clone()).status.success(), "blocked cage must not reach securityd");
+
+        // the dir deny on its own: listing the keychain dir works open and
+        // fails blocked.
+        let ls = |profile: &str| {
+            let f = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(f.path(), profile).unwrap();
+            let home = dirs::home_dir().unwrap();
+            Command::new("/usr/bin/sandbox-exec")
+                .arg("-f").arg(f.path())
+                .arg("/bin/ls").arg(home.join("Library/Keychains"))
+                .output().expect("spawn sandbox-exec ls").status.success()
+        };
+        assert!(ls(&keychain_profile(SandboxMode::EnforceFs, false)), "unblocked cage should list the keychain dir");
+        assert!(!ls(&blocked), "blocked cage must not list the keychain dir");
+
+        // the data-protection keychain (secd), which `security` never
+        // touches: a lookup of a missing item answers errSecItemNotFound
+        // (-25300) when secd is reachable, anything else when it is not.
+        // python's ctypes is the smallest Security.framework client on a
+        // stock Mac; skip if it cannot run in the open cage.
+        let dp = |profile: &str| -> Option<String> {
+            let f = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(f.path(), profile).unwrap();
+            let out = Command::new("/usr/bin/sandbox-exec")
+                .arg("-f").arg(f.path())
+                .args(["/usr/bin/python3", "-I", "-c", DP_PROBE])
+                .output().ok()?;
+            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        if dp(&keychain_profile(SandboxMode::EnforceFs, false)).as_deref() == Some("-25300") {
+            assert_ne!(dp(&blocked).as_deref(), Some("-25300"), "blocked cage must not reach secd");
+        }
+    }
+
+    /// `SecItemCopyMatching` against the data-protection keychain for an
+    /// item that does not exist; prints the OSStatus.
+    const DP_PROBE: &str = r#"
+import ctypes as C
+cf = C.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+sec = C.CDLL("/System/Library/Frameworks/Security.framework/Security")
+g = lambda lib, n: C.c_void_p.in_dll(lib, n).value
+cf.CFStringCreateWithCString.restype = C.c_void_p
+cf.CFStringCreateWithCString.argtypes = [C.c_void_p, C.c_char_p, C.c_uint32]
+cf.CFDictionaryCreate.restype = C.c_void_p
+cf.CFDictionaryCreate.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p, C.c_long, C.c_void_p, C.c_void_p]
+sec.SecItemCopyMatching.argtypes = [C.c_void_p, C.c_void_p]
+svc = cf.CFStringCreateWithCString(None, b"termic-probe-nonexistent", 0x08000100)
+K = (C.c_void_p * 3)(g(sec, "kSecClass"), g(sec, "kSecAttrService"), g(sec, "kSecUseDataProtectionKeychain"))
+V = (C.c_void_p * 3)(g(sec, "kSecClassGenericPassword"), svc, g(cf, "kCFBooleanTrue"))
+d = cf.CFDictionaryCreate(None, K, V, 3,
+    C.addressof(C.c_char.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")),
+    C.addressof(C.c_char.in_dll(cf, "kCFTypeDictionaryValueCallBacks")))
+print(sec.SecItemCopyMatching(d, C.byref(C.c_void_p())))
+"#;
+
+    #[test]
+    fn keychain_deny_is_the_last_file_rule_even_over_user_allows() {
+        // hostile allow-list: an ancestor of the keychain dir, a regex over
+        // it, and the dir itself. All render before the deny and lose.
+        let rw = vec![
+            "$HOME/Library".to_string(),
+            "regex:^$HOME/Library/Key.*".to_string(),
+            "$HOME/Library/Keychains".to_string(),
+        ];
+        for mode in [SandboxMode::Enforce, SandboxMode::EnforceFs] {
+            let p = keychain_profile_with(mode, true, rw.clone());
+            let deny = p.rfind("(deny file-read* file-write* (subpath ").expect("dir deny");
+            let last_allow = p.rfind("(allow file-").expect("file allows");
+            assert!(deny > last_allow, "{mode:?}: a file allow follows the keychain deny");
+        }
+    }
+
+    #[test]
+    fn keychain_dirs_covers_the_resolved_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("real/Library/Keychains")).unwrap();
+        let real = canonicalize_or_keep(&tmp.path().join("real").to_string_lossy());
+        let link = tmp.path().join("home");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let home = link.to_string_lossy().into_owned();
+
+        let dirs = keychain_dirs(&home);
+        assert_eq!(dirs, vec![format!("{home}/Library/Keychains"), format!("{real}/Library/Keychains")]);
+        // no symlink, no twin; a trailing slash does not double the separator.
+        assert_eq!(keychain_dirs(&format!("{real}/")), vec![format!("{real}/Library/Keychains")]);
+    }
+
+    #[test]
+    fn keychain_hold_counts_open_ptys_and_releases_on_drop() {
+        let id = format!("kc-hold-{}", std::process::id());
+        assert_eq!(keychain_open_count(&id), 0);
+        let blocked = KeychainHold::new(&id, true);
+        assert_eq!(keychain_open_count(&id), 0, "a blocked PTY registers nothing");
+        let a = KeychainHold::new(&id, false);
+        let b = KeychainHold::new(&id, false);
+        assert_eq!(keychain_open_count(&id), 2);
+        drop(a);
+        assert_eq!(keychain_open_count(&id), 1);
+        drop(b);
+        drop(blocked);
+        assert_eq!(keychain_open_count(&id), 0);
+        assert!(!keychain_open().lock().unwrap().contains_key(&id), "entry removed at zero");
     }
 }
 

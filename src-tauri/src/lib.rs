@@ -545,6 +545,13 @@ pub struct Task {
     /// Off) so all the existing "is there a cage" checks still work.
     #[serde(default)]
     pub sandbox_mode: Option<SandboxMode>,
+    /// Cut the Seatbelt cage off from the macOS Keychain (Enforce /
+    /// EnforceFs only; Monitor never blocks, Docker never sees it). Off by
+    /// default because an agent that keeps its login in the Keychain
+    /// (claude) has to `/login` again inside a blocked task, landing in a
+    /// file instead. See docs/sandbox.md "Keychain".
+    #[serde(default)]
+    pub sandbox_block_keychain: bool,
     /// Per-task YOLO (auto-approve / bypass-permissions) flag.
     /// Applied to EVERY agent launched in this task. Only meaningful
     /// when the task is NOT enforce-sandboxed — under Enforcing the
@@ -867,6 +874,14 @@ impl Task {
             if self.sandbox_enabled { SandboxMode::Enforce } else { SandboxMode::Off }
         )
     }
+
+    /// Whether the Keychain block applies to the next spawn. The flag
+    /// survives a switch to Monitor / Off / Docker, so readers go through
+    /// this, not the raw field (frontend twin: `keychainBlocked`).
+    pub fn keychain_blocked(&self) -> bool {
+        self.sandbox_block_keychain && !self.docker_sandbox_enabled
+            && matches!(self.effective_sandbox_mode(), SandboxMode::Enforce | SandboxMode::EnforceFs)
+    }
 }
 
 /// One entry in a multi-repo task's composition: a user-picked member
@@ -976,6 +991,10 @@ pub struct CreateTaskArgs {
     pub sandbox_rw_paths: Option<Vec<String>>,
     #[serde(default)]
     pub sandbox_allowed_hosts: Option<Vec<String>>,
+    /// Start with the Keychain blocked (`Task::sandbox_block_keychain`), so
+    /// the first spawn is already cut off. Unset → off.
+    #[serde(default)]
+    pub sandbox_block_keychain: Option<bool>,
     /// Run this task's agent in Docker instead of Seatbelt. PINNED at
     /// creation like `sandbox_enabled` above - mutually exclusive with it
     /// (the frontend's engine selector only ever sends one of the two as
@@ -3100,6 +3119,10 @@ struct PtySlot {
     /// read directly, hence the allow.
     #[allow(dead_code)]
     sandbox: Option<SandboxBundle>,
+    /// Keychain-reachable hold for a task agent spawned with no bundle
+    /// (a bundle carries its own). Held for its Drop, never read.
+    #[allow(dead_code)]
+    keychain: Option<sandbox::KeychainHold>,
     /// Task this PTY belongs to, copied from `SpawnArgs.task_id`.
     /// Lets `task_set_sandbox` SIGKILL all PTYs of a task whose
     /// sandbox config was just edited so the next mount picks up the new
@@ -4050,6 +4073,15 @@ fn pty_spawn(
         },
     }};
 
+    // a task agent that ended up with no Seatbelt bundle (Off, or provision
+    // failed) reaches the Keychain too. Count it, so a block saved while it
+    // runs reads "applies on restart" instead of "blocked". Docker is out:
+    // the container never sees the host Keychain.
+    let keychain_hold = match (&args.task_id, &sandbox_bundle) {
+        (Some(tid), None) if !is_docker_spawn => Some(sandbox::KeychainHold::new(tid, false)),
+        _ => None,
+    };
+
     // Windows: resolve a bare name ourselves (see shell_env::resolve_program),
     // against the PATH the child gets below.
     let effective_cmd = shell_env::resolve_program(&effective_cmd, &shell_env::spawn_env().0);
@@ -4592,6 +4624,7 @@ fn pty_spawn(
             master,
             child_pid,
             sandbox: sandbox_bundle,
+            keychain: keychain_hold,
             task_id: args.task_id.clone(),
             role: args.role.clone(),
             feed,
@@ -6228,6 +6261,10 @@ fn task_open_repo(
     sandbox_mode: Option<SandboxMode>,
     sandbox_rw_paths: Option<Vec<String>>,
     sandbox_allowed_hosts: Option<Vec<String>>,
+    // The New Task dialog's Keychain checkbox, or a scheduled run copying
+    // its parent's, so a run is never looser than the task it was
+    // scheduled from. Unset → off.
+    sandbox_block_keychain: Option<bool>,
     docker_sandbox_enabled: Option<bool>,
     docker_extra_mounts: Option<Vec<String>>,
     resume_session_id: Option<String>,
@@ -6425,6 +6462,7 @@ fn task_open_repo(
         // against the main checkout as against a worktree.
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
+        sandbox_block_keychain: sandbox_block_keychain.unwrap_or(false),
         yolo: yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
@@ -6712,6 +6750,7 @@ fn task_import_worktree(
     sandbox_mode: Option<SandboxMode>,
     sandbox_rw_paths: Option<Vec<String>>,
     sandbox_allowed_hosts: Option<Vec<String>>,
+    sandbox_block_keychain: Option<bool>,
     docker_sandbox_enabled: Option<bool>,
     docker_extra_mounts: Option<Vec<String>>,
     resume_session_id: Option<String>,
@@ -6855,6 +6894,7 @@ fn task_import_worktree(
         agent_session_ids,
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
+        sandbox_block_keychain: sandbox_block_keychain.unwrap_or(false),
         yolo: yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
@@ -7285,6 +7325,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         agent_session_ids,
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
+        sandbox_block_keychain: args.sandbox_block_keychain.unwrap_or(false),
         yolo: args.yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
@@ -7365,6 +7406,9 @@ pub struct CreateMultiArgs {
     pub sandbox_rw_paths: Option<Vec<String>>,
     #[serde(default)]
     pub sandbox_allowed_hosts: Option<Vec<String>>,
+    /// See `CreateTaskArgs::sandbox_block_keychain`.
+    #[serde(default)]
+    pub sandbox_block_keychain: Option<bool>,
     /// Run this task's agent in Docker instead of Seatbelt. See
     /// `CreateTaskArgs::docker_sandbox_enabled` - same mutual-exclusivity
     /// enforced in `task_create_multi_sync`.
@@ -7692,6 +7736,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         agent_session_ids: std::collections::HashMap::new(),
         sandbox_enabled,
         sandbox_mode: Some(sandbox_mode),
+        sandbox_block_keychain: args.sandbox_block_keychain.unwrap_or(false),
         yolo: args.yolo.unwrap_or(false),
         sandbox_rw_paths,
         sandbox_allowed_hosts,
@@ -9055,6 +9100,11 @@ fn sandbox_available() -> bool { sandbox::available() }
 struct SandboxDenyCounts {
     network: u64,
     path: u64,
+    /// Not a counter of denies or accesses: live agent PTYs of this task
+    /// that can still reach the Keychain, nonzero while a saved block
+    /// waits for a restart. Rides both polls (deny and access) so the
+    /// footer gets it without a second IPC in either mode.
+    keychain_open: u64,
 }
 
 #[tauri::command]
@@ -9062,6 +9112,7 @@ fn sandbox_deny_counts(id: String) -> SandboxDenyCounts {
     SandboxDenyCounts {
         network: proxy::network_deny_count(&id),
         path:    sandbox::path_deny_count(&id),
+        keychain_open: sandbox::keychain_open_count(&id),
     }
 }
 
@@ -9141,6 +9192,7 @@ fn sandbox_access_counts(id: String) -> SandboxDenyCounts {
     SandboxDenyCounts {
         network: proxy::network_access_count(&id),
         path:    sandbox::path_access_count(&id),
+        keychain_open: sandbox::keychain_open_count(&id),
     }
 }
 
@@ -9260,6 +9312,15 @@ fn task_sandbox_add_allowed_host(
 /// paths. Append to `sandbox_rw_paths`, save. No SIGKILL — same
 /// reasoning: the new entry is purely additive, the running agent's
 /// old profile is narrower, change takes effect on next start.
+/// Whether `path` is `~/Library/Keychains` or under it, through a symlink
+/// on either side (the same two forms the profile's deny is emitted for).
+fn under_keychains(path: &str, home: &str) -> bool {
+    if home.is_empty() { return false; }
+    let forms = [path.to_string(), canon_str(path)];
+    sandbox::keychain_dirs(home).iter()
+        .any(|kc| forms.iter().any(|p| Path::new(p).starts_with(kc)))
+}
+
 #[tauri::command]
 fn task_sandbox_add_allowed_path(
     _state: State<'_, PtyManager>, id: String, path: String,
@@ -9285,6 +9346,12 @@ fn task_sandbox_add_allowed_path(
     };
     let mut list = load_tasks_all();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
+    // The Keychain block's deny is rendered after every allow, so an allow
+    // under it is dead on arrival. Refuse it rather than clear the deny row
+    // and lift a useless entry into the project defaults.
+    if w.keychain_blocked() && under_keychains(&absolute, &home) {
+        return Err("~/Library/Keychains is blocked for this task. Untick \"Block Keychain access\" in its sandbox settings instead.".into());
+    }
     if !w.sandbox_rw_paths.iter().any(|p| p == &stored) {
         w.sandbox_rw_paths.push(stored.clone());
     }
@@ -9485,10 +9552,16 @@ fn task_set_sandbox(
     rw_paths: Vec<String>,
     allowed_hosts: Vec<String>,
     kill_live: bool,
+    // `None` keeps the current value, so a save that does not show the
+    // checkbox (Docker-dormant edits, leaving Docker) cannot clear it.
+    block_keychain: Option<bool>,
 ) -> Result<usize, String> {
     let mut list = load_tasks_all();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     w.sandbox_mode = Some(mode);
+    if let Some(b) = block_keychain {
+        w.sandbox_block_keychain = b;
+    }
     // Keep the legacy bool in sync so every existing "is there a cage"
     // check (footer, YOLO/Zap, pty_spawn) keeps working.
     w.sandbox_enabled = mode != SandboxMode::Off;
@@ -26665,6 +26738,40 @@ fn position_on_cursor_monitor(win: &tauri::WebviewWindow) -> Result<(), Box<dyn 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn keychain_blocked_only_where_the_profile_blocks() {
+        if !sandbox::available() { return; }
+        let t = |mode, docker| Task {
+            sandbox_mode: Some(mode), sandbox_block_keychain: true,
+            docker_sandbox_enabled: docker, ..Default::default()
+        };
+        assert!(t(SandboxMode::Enforce, false).keychain_blocked());
+        assert!(t(SandboxMode::EnforceFs, false).keychain_blocked());
+        // a stored flag outside the enforcing modes is dormant, so an
+        // allow under ~/Library/Keychains must not be refused there.
+        assert!(!t(SandboxMode::Monitor, false).keychain_blocked());
+        assert!(!t(SandboxMode::Off, false).keychain_blocked());
+        assert!(!t(SandboxMode::Enforce, true).keychain_blocked());
+        assert!(!Task { sandbox_mode: Some(SandboxMode::Enforce), ..Default::default() }.keychain_blocked());
+    }
+
+    #[test]
+    fn under_keychains_matches_both_forms_and_nothing_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("real/Library/Keychains/sub")).unwrap();
+        let real = canon_str(&tmp.path().join("real").to_string_lossy());
+        let home = tmp.path().join("home").to_string_lossy().into_owned();
+        std::os::unix::fs::symlink(&real, &home).unwrap();
+
+        assert!(under_keychains(&format!("{home}/Library/Keychains"), &home));
+        assert!(under_keychains(&format!("{home}/Library/Keychains/sub"), &home));
+        // the resolved spelling of the same dir.
+        assert!(under_keychains(&format!("{real}/Library/Keychains/sub"), &home));
+        assert!(!under_keychains(&format!("{home}/Library"), &home));
+        assert!(!under_keychains(&format!("{home}/Library/KeychainsX"), &home));
+        assert!(!under_keychains("/Library/Keychains", ""), "no home, no match");
+    }
 
     // ───────── hooks on by default, once ─────────
 

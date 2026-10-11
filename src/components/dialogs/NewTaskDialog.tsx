@@ -26,7 +26,7 @@ import { uniqueBranch, derivedBranch } from "@/lib/quickTask";
 import { cn } from "@/lib/utils";
 import { yoloModeName } from "@/lib/yoloModeName";
 import { Check, Loader2, AlertTriangle, GitBranch, Link2, FolderGit2, Plus, CircleDot, History, Zap, X, GitPullRequest} from "lucide-react";
-import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
+import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
 import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
@@ -147,6 +147,9 @@ export function NewTaskDialog() {
   // SandboxSelection (off / Seatbelt's 3 modes / docker) rather than a
   // separate mode + engine - see SandboxPicker.tsx.
   const [selection, setSelection] = useState<SandboxSelection>("off");
+  // Keychain block for THIS task. Not remembered across opens and off on
+  // every open, same as the Sandbox dialog's default.
+  const [blockKc, setBlockKc] = useState(false);
   // YOLO for THIS task, seeded on open from the project's default, then the
   // app-wide one (Settings → Sandbox). Unlike the sandbox picker it does NOT
   // remember the last pick: that habit is not scoped to a project, so ticking
@@ -375,6 +378,10 @@ export function NewTaskDialog() {
   // Derived: Seatbelt cage on (Docker is its own separate flag below).
   // Drives the 2-column layout + "send lists" gating.
   const sandbox = !dockerWanted && sandboxMode !== "off" && canSandbox;
+  // Keychain row: enforcing modes only, and only sent while shown, so a
+  // tick left behind by switching to Monitor never rides along.
+  const kcRow = sandbox && sandboxMode !== "monitor";
+  const blockKcArg = kcRow && blockKc;
   // YOLO is moot inside a cage (spawn turns it on, `isTaskCaged`) and has no
   // meaning when the default tab is not an agent, so the checkbox shows the
   // first as "auto" and hides for the second.
@@ -653,6 +660,7 @@ export function NewTaskDialog() {
       p?.default_sandbox_mode ?? (p?.default_sandbox ? "enforce" : null);
     const globalDefault = usePrefs.getState().globalDefaultSandboxKind;
     setSelection(readLastSandbox() ?? projectDefaultSandbox ?? globalDefault);
+    setBlockKc(false);
     const yoloDefault = projectYoloDefault(p, usePrefs.getState().defaultYolo);
     yoloDefaultRef.current = yoloDefault;
     const promptFromLink = !!seed?.prompt;
@@ -1272,6 +1280,7 @@ export function NewTaskDialog() {
         projectId, importSelected, name.trim(), cli,
         {
           enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts),
+          blockKeychain: blockKcArg,
           docker: dockerWanted, dockerExtraMounts: dockerWanted ? splitLines(dockerMounts) : undefined,
         },
         undefined, // no externally-started session id from this dialog
@@ -1309,6 +1318,7 @@ export function NewTaskDialog() {
         projectId, cli, name.trim(),
         {
           enabled: sandbox, mode: sandboxMode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts),
+          blockKeychain: blockKcArg,
           docker: dockerWanted, dockerExtraMounts: dockerWanted ? splitLines(dockerMounts) : undefined,
         },
         undefined,
@@ -1410,6 +1420,7 @@ export function NewTaskDialog() {
           sandbox_mode: sandboxMode,
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
+          sandbox_block_keychain: blockKcArg,
           docker_sandbox_enabled: dockerWanted,
           docker_extra_mounts:    dockerWanted ? splitLines(dockerMounts) : undefined,
           resume_override: resumeOverrideArg(),
@@ -1436,6 +1447,7 @@ export function NewTaskDialog() {
           // for unsandboxed tasks (they don't need these saved).
           sandbox_rw_paths:       sandbox ? splitLines(sbRw)    : undefined,
           sandbox_allowed_hosts:  sandbox ? splitLines(sbHosts) : undefined,
+          sandbox_block_keychain: blockKcArg,
           docker_sandbox_enabled: dockerWanted,
           docker_extra_mounts:    dockerWanted ? splitLines(dockerMounts) : undefined,
           yolo: yoloArg,
@@ -2161,6 +2173,11 @@ export function NewTaskDialog() {
             dockerOffered={dockerOffered}
             compact
           />
+          {kcRow && (
+            <div className="mt-2">
+              <KeychainBlockField checked={blockKc} onChange={setBlockKc} compact />
+            </div>
+          )}
           {selection === "docker" && (
             <div className="mt-2 flex flex-col gap-2">
               <DockerEngineNote compact />

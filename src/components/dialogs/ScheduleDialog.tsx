@@ -23,7 +23,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
-import { SandboxPicker } from "@/components/SandboxPicker";
+import { SandboxPicker, KeychainBlockField } from "@/components/SandboxPicker";
 import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { isTerminalCli, visibleCliIds, workDoneCapable, defaultCliFirst } from "@/lib/agents";
 import { settingsLoad } from "@/lib/ipc";
@@ -77,6 +77,7 @@ export function ScheduleDialog() {
   // line while typing does not fight the split (New Task does the same).
   const [sbRw, setSbRw] = useState("");
   const [sbHosts, setSbHosts] = useState("");
+  const [blockKc, setBlockKc] = useState(false);
   const [catchUp, setCatchUp] = useState(false);
   const [keepRuns, setKeepRuns] = useState(DEFAULT_KEEP_RUNS);
   const [reportDays, setReportDays] = useState<number | null>(DEFAULT_REPORT_DAYS);
@@ -120,6 +121,7 @@ export function ScheduleDialog() {
     setDockerSeeded(seeded === "docker");
     setSelection(seeded === "docker" ? null : seeded);
     setYolo(projectYoloDefault(p, usePrefs.getState().defaultYolo));
+    setBlockKc(false);
     // Depends on the TARGET only: re-seeding when the task list moves would
     // throw away what the user typed.
   }, [target]);
@@ -148,6 +150,8 @@ export function ScheduleDialog() {
   }, [open, newParent, projectId]);
 
   const sandboxMode = selection ? selectionToFields(selection).mode : "off";
+  // enforcing modes only, and only sent while shown (same rule as New Task).
+  const kcRow = sandboxMode === "enforce" || sandboxMode === "enforce-fs";
   // The second column exists only while a Seatbelt mode is picked, so there
   // is no ghost width when the cage is off.
   const cage = newParent && sandboxMode !== "off";
@@ -191,7 +195,7 @@ export function ScheduleDialog() {
         const { mode } = selectionToFields(sel);
         const sandbox = mode === "off"
           ? { enabled: false, rwPaths: [], allowedHosts: [] }
-          : { enabled: true, mode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) };
+          : { enabled: true, mode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts), blockKeychain: kcRow && blockKc };
         await createSchedule({
           projectId,
           agent: {
@@ -383,6 +387,7 @@ export function ScheduleDialog() {
               dockerUnavailableReason={t("schedule.dockerUnavailable")}
               compact
             />
+            {kcRow && <KeychainBlockField checked={blockKc} onChange={setBlockKc} compact />}
             {dockerSeeded && !selection && (
               <p className="text-[11.5px] text-[var(--color-warn)]" data-testid="schedule-docker-pick">{t("schedule.dockerPick")}</p>
             )}

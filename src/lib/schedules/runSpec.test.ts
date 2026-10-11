@@ -21,13 +21,15 @@ describe("runSpecFromParent: the one inheritance point", () => {
       sandbox_mode: "enforce-fs",
       sandbox_rw_paths: ["/Users/u/cache"],
       sandbox_allowed_hosts: ["grafana.acme.com"],
+      sandbox_block_keychain: true,
       accounts: { codex: "work" },
     }));
     expect(spec).toEqual({
       cli: "codex",
       agentArgs: ["--model", "o4"],
       yolo: true,
-      sandbox: { enabled: true, mode: "enforce-fs", rwPaths: ["/Users/u/cache"], allowedHosts: ["grafana.acme.com"] },
+      // a blocked parent never schedules an unblocked run.
+      sandbox: { enabled: true, mode: "enforce-fs", rwPaths: ["/Users/u/cache"], allowedHosts: ["grafana.acme.com"], blockKeychain: true },
       accounts: { codex: "work" },
       memberPaths: undefined,
     });
