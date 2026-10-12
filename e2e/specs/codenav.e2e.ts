@@ -944,15 +944,13 @@ describe("code intelligence", () => {
     }
   });
 
-  // The optional chord (unbound by default). It has to work from where people
-  // are, which is a focused terminal: xterm takes every key it is not told to
-  // let go of, so this is TerminalPane's PASS_TO_APP being exercised, and with
-  // double-Shift off the chord is the only way the dialog can have opened.
-  it("opens Search Everywhere on a recorded chord, from a focused terminal, with double-Shift off", async () => {
+  // The cases below press keys at the agent's terminal. The cases above
+  // leave an EDITOR tab in front (navme.ts), and an editor tab hides the
+  // agent's terminal, so bring the agent tab forward and wait until its
+  // terminal is actually laid out, or there is nothing to focus. Returns the
+  // tab that was in front, for `restoreTab`.
+  const showAgentTerminal = async (): Promise<string | null> => {
     await ensureActiveTask(taskId);
-    // The cases above leave an EDITOR tab in front (navme.ts), and an editor
-    // tab hides the agent's terminal. Bring the agent tab forward and wait
-    // until its terminal is actually laid out, or there is nothing to focus.
     await waitForAgentReady(taskId);
     const previousTab = await browser.execute((id) => {
       const s = window.__termic!.useApp.getState();
@@ -969,56 +967,146 @@ describe("code intelligence", () => {
         return r.width > 0 && r.height > 0;
       });
     }, taskId), { timeout: 10_000, timeoutMsg: "the agent terminal never became visible" });
+    return previousTab;
+  };
+  /** Put back whatever tab was in front, so the cases after see the task
+   *  the way the cases before left it. */
+  const restoreTab = async (previousTab: string | null) => {
+    if (!previousTab) return;
+    await browser.execute((id, tab) =>
+      window.__termic!.useApp.getState().setActiveTabId(id, tab), taskId, previousTab);
+  };
+  /** One keydown + keyup at the agent's visible terminal. `keyCode` too:
+   *  xterm's own handler switches on it, and an event it could not read
+   *  would prove nothing about what it let through. */
+  const pressInTerminal = (k: {
+    key: string; code: string; keyCode: number; meta?: boolean; ctrl?: boolean; shift?: boolean;
+  }) => browser.execute((id, kk) => {
+    const host = document.querySelector(`[data-task-id="${id}"]`);
+    if (!host) throw new Error(`task ${id} is not mounted`);
+    const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")]
+      .find(el => {
+        const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+    if (!ta) throw new Error(`no visible terminal in ${id}`);
+    ta.focus();
+    const ev = {
+      bubbles: true, cancelable: true, key: kk.key, code: kk.code, keyCode: kk.keyCode, which: kk.keyCode,
+      metaKey: !!kk.meta, ctrlKey: !!kk.ctrl, shiftKey: !!kk.shift,
+    };
+    ta.dispatchEvent(new KeyboardEvent("keydown", ev));
+    ta.dispatchEvent(new KeyboardEvent("keyup", ev));
+  }, taskId, k);
+  const searchOpen = () => browser.execute(() =>
+    window.__termic!.useUI.getState().searchEverywhereTaskId !== null) as Promise<boolean>;
+  const savedSearchPrefs = () => browser.execute(() => {
+    const p = window.__termic!.usePrefs.getState();
+    return { mode: p.doubleShiftMode, chord: p.shortcuts["search-everywhere"] };
+  });
+  const restoreSearchPrefs = (o: { mode: string; chord: unknown }) => browser.execute((oo) => {
+    const p = window.__termic!.usePrefs.getState();
+    p.setDoubleShiftMode(oo.mode as any);
+    if (oo.chord) p.setShortcut("search-everywhere", oo.chord as any);
+    else p.resetShortcut("search-everywhere");
+  }, o);
+
+  // The optional chord (unbound by default). It has to work from where people
+  // are, which is a focused terminal, and with double-Shift off the chord is
+  // the only way the dialog can have opened.
+  //
+  // macOS: a PURE Cmd chord, on a key xterm does send for Cmd (Enter, as a
+  // CR, and it cancels the event). That makes this TerminalPane's
+  // PASS_TO_APP being exercised: on a Cmd + letter xterm sends nothing and
+  // lets the key bubble anyway, so that chord would pass with the entry
+  // removed. Off macOS a pure Ctrl chord is the shell's by design, so the
+  // chord carries Shift, which isAppChordInTerminal hands over on its own.
+  it("opens Search Everywhere on a recorded chord, from a focused terminal, with double-Shift off", async () => {
+    const previousTab = await showAgentTerminal();
     const mac = process.platform === "darwin";
-    const original = await browser.execute(() => {
-      const p = window.__termic!.usePrefs.getState();
-      return { mode: p.doubleShiftMode, chord: p.shortcuts["search-everywhere"] };
-    });
+    const original = await savedSearchPrefs();
     try {
-      await browser.execute(() => {
+      await browser.execute((isMac) => {
         const p = window.__termic!.usePrefs.getState();
         p.setDoubleShiftMode("off");
-        p.setShortcut("search-everywhere", { cmd: true, shift: true, alt: false, key: "o" });
-      });
-      await browser.execute((id, isMac) => {
-        const host = document.querySelector(`[data-task-id="${id}"]`);
-        if (!host) throw new Error(`task ${id} is not mounted`);
-        const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")]
-          .find(el => {
-            const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          });
-        if (!ta) throw new Error(`no visible terminal in ${id}`);
-        ta.focus();
-        // keyCode too: xterm's own handler switches on it, and an event it
-        // could not read would prove nothing about what it let through.
-        const k = {
-          bubbles: true, cancelable: true, key: "O", code: "KeyO", keyCode: 79, which: 79,
-          metaKey: isMac, ctrlKey: !isMac, shiftKey: true,
-        };
-        ta.dispatchEvent(new KeyboardEvent("keydown", k));
-        ta.dispatchEvent(new KeyboardEvent("keyup", k));
-      }, taskId, mac);
-      await browser.waitUntil(async () => await browser.execute(() =>
-        window.__termic!.useUI.getState().searchEverywhereTaskId !== null), {
+        p.setShortcut("search-everywhere", isMac
+          ? { cmd: true, shift: false, alt: false, key: "Enter" }
+          : { cmd: true, shift: true, alt: false, key: "o" });
+      }, mac);
+      await pressInTerminal(mac
+        ? { key: "Enter", code: "Enter", keyCode: 13, meta: true }
+        : { key: "O", code: "KeyO", keyCode: 79, ctrl: true, shift: true });
+      await browser.waitUntil(searchOpen, {
         timeout: 5_000, timeoutMsg: "the recorded chord did not open Search Everywhere from the terminal",
       });
       await closeSearchEverywhere();
     } finally {
-      await browser.execute((o) => {
-        const p = window.__termic!.usePrefs.getState();
-        p.setDoubleShiftMode(o.mode as any);
-        if (o.chord) p.setShortcut("search-everywhere", o.chord as any);
-        else p.resetShortcut("search-everywhere");
-      }, original);
-      // Put back whatever tab was in front, so the cases after this one see
-      // the task the way the cases before it left it.
-      if (previousTab) {
-        await browser.execute((id, tab) =>
-          window.__termic!.useApp.getState().setActiveTabId(id, tab), taskId, previousTab);
-      }
+      await restoreSearchPrefs(original);
+      await restoreTab(previousTab);
     }
   });
+
+  // The other half of the same rule (macOS): ⌘R bound to Search everywhere
+  // must not take ⌃R (reverse search) from the shell. `bindingMatches` folds
+  // Ctrl into cmd, so PASS_TO_APP used to hand ⌃R to the app, xterm dropped
+  // it, and useShortcuts bailed on a Mac Ctrl chord in a terminal: the key
+  // reached nobody. Off macOS the binding IS Ctrl+R, so there is nothing to
+  // tell apart.
+  (process.platform === "darwin" ? it : it.skip)(
+    "leaves ⌃R to the shell when ⌘R is bound to Search everywhere", async () => {
+      const previousTab = await showAgentTerminal();
+      const original = await savedSearchPrefs();
+      // What reaches a PTY, at `fetch`, where a Tauri command leaves the page
+      // (the rig in shortcuts-linux.e2e.ts).
+      await browser.execute(() => {
+        const w = window as unknown as { __ptyOut?: number[]; __ptyWatched?: boolean };
+        w.__ptyOut = [];
+        if (w.__ptyWatched) return;
+        w.__ptyWatched = true;
+        const real = window.fetch;
+        window.fetch = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+          try {
+            const url = String((input as Request).url ?? input);
+            if (url.endsWith("/pty_write") && typeof init?.body === "string") {
+              w.__ptyOut!.push(...(JSON.parse(init.body).data as number[]));
+            }
+          } catch { /* not ours to break */ }
+          return real.call(this, input, init);
+        } as typeof window.fetch;
+      });
+      const ptyBytes = () => browser.execute(() => {
+        const w = window as unknown as { __ptyOut?: number[] };
+        const out = w.__ptyOut ?? [];
+        w.__ptyOut = [];
+        return out;
+      }) as unknown as Promise<number[]>;
+      try {
+        await browser.execute(() => {
+          const p = window.__termic!.usePrefs.getState();
+          p.setDoubleShiftMode("off");
+          p.setShortcut("search-everywhere", { cmd: true, shift: false, alt: false, key: "r" });
+        });
+        await ptyBytes();
+        await pressInTerminal({ key: "r", code: "KeyR", keyCode: 82, ctrl: true });
+        await browser.waitUntil(async () => (await ptyBytes()).includes(0x12), {
+          timeout: 5_000, timeoutMsg: "⌃R never reached the PTY with ⌘R bound",
+        });
+        // Synchronous: had the app taken the key, it would have opened the
+        // dialog in the same dispatch that skipped the PTY.
+        expect(await searchOpen()).toBe(false);
+        // ⌃G: leave readline's reverse search the way it was found.
+        await pressInTerminal({ key: "g", code: "KeyG", keyCode: 71, ctrl: true });
+        // And ⌘R itself still opens it from the same terminal.
+        await pressInTerminal({ key: "r", code: "KeyR", keyCode: 82, meta: true });
+        await browser.waitUntil(searchOpen, {
+          timeout: 5_000, timeoutMsg: "⌘R did not open Search Everywhere from the terminal",
+        });
+        await closeSearchEverywhere();
+      } finally {
+        await restoreSearchPrefs(original);
+        await restoreTab(previousTab);
+      }
+    });
 
   it("opens Search Everywhere on double-Shift, files first and symbols when armed", async () => {
     // Most people never turn code intelligence on, so this dialog has to be

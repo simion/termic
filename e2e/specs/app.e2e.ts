@@ -203,15 +203,17 @@ describe("keyboard shortcuts sheet", () => {
       return { g: p.recentTabsGesture, mode: p.ctrlTabMode };
     });
     try {
-      await browser.execute(() => {
+      // Recorded on a German layout: the key US calls ; typed ö, and the
+      // sheet prints what the user's keyboard says.
+      await browser.execute((isMac) => {
         const p = window.__termic!.usePrefs.getState();
         p.setCtrlTabMode("on");
-        p.setRecentTabsGesture({ hold: "alt", code: "Backquote" });
-      });
+        p.setRecentTabsGesture({ hold: isMac ? "cmd" : "ctrl", code: "Semicolon", key: "ö" });
+      }, mac);
       await sheetText();
-      await browser.waitUntil(async () => (await rowKeys("recent-tabs")).includes("`"),
+      await browser.waitUntil(async () => (await rowKeys("recent-tabs")).includes("Ö"),
         { timeout: 5_000, timeoutMsg: "the sheet never printed the recorded gesture" });
-      expect(await rowKeys("recent-tabs")).toEqual([mac ? "⌥" : "Alt", "`"]);
+      expect(await rowKeys("recent-tabs")).toEqual([mac ? "⌘" : "Ctrl", "Ö"]);
 
       await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("off"));
       await browser.waitUntil(async () => !(await rowShown("recent-tabs")),

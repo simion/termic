@@ -57,10 +57,12 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "the bar, and a bar a query closed must NOT reopen when the query clears",
   },
   "tabs-layout.e2e.ts": {
-    count: 1,
-    why: "Ctrl-Tab is asynchronous, so 'the task did not switch' has to be asserted "
-      + "after a settle or it passes against the bug too (one helper, expectStillOn, "
-      + "shared by every such negative)",
+    count: 4,
+    why: "four 'the walk did not move' negatives (a plain Tab, Settings open, the "
+      + "gesture switched off, the old Ctrl-Tab after a rebind). The switch is "
+      + "asynchronous, so each needs a settle or it passes against the bug too. "
+      + "Written at each call site, never inside a helper, so this count is the "
+      + "real number of waits",
   },
   "task.e2e.ts": {
     count: 1,

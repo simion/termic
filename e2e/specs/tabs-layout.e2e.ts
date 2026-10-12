@@ -1954,9 +1954,8 @@ describe("pinned tabs do not scroll away", () => {
 // keyup, but every key pressed in between still arrives with `ctrlKey: false`
 // — Meta propagates, Control does not. So these cases prove the handler, the
 // ordering against xterm, and every rule of the walk; whether macOS hands ⌃⇥
-// to the webview at all, and whether Option+` composes a dead key despite the
-// claim, is the part only a human at the keyboard can confirm. See
-// docs/e2e-tests.md.
+// to the webview at all is the part only a human at the keyboard can
+// confirm. See docs/e2e-tests.md.
 describe("recently-used tab navigation", () => {
   let a!: string, b!: string, c!: string;
 
@@ -1973,12 +1972,57 @@ describe("recently-used tab navigation", () => {
     holdKey: "Control", holdCode: "ControlLeft", holdKeyCode: 17, holdFlag: "ctrlKey",
     key: "Tab", code: "Tab", keyCode: 9,
   };
-  // What macOS sends for Option + `: the key is the start of a dead-key
-  // composition, which is why the gesture records `code`.
-  const OPTION_BACKQUOTE: Gesture = {
-    holdKey: "Alt", holdCode: "AltLeft", holdKeyCode: 18, holdFlag: "altKey",
-    key: "Dead", code: "Backquote", keyCode: 192,
-  };
+  // An Option / Alt hold the recorder accepts on this platform: Option + Tab
+  // on macOS (Option with anything that types is refused there), Alt + F9
+  // elsewhere (Alt + Tab is the desktop's, Alt + a character is Meta to the
+  // terminal). The stored value is what the walk reads, so it is set here
+  // to exactly what Settings would record.
+  const MAC = process.platform === "darwin";
+  const ALT_HOLD: Gesture = MAC
+    ? { holdKey: "Alt", holdCode: "AltLeft", holdKeyCode: 18, holdFlag: "altKey", key: "Tab", code: "Tab", keyCode: 9 }
+    : { holdKey: "Alt", holdCode: "AltLeft", holdKeyCode: 18, holdFlag: "altKey", key: "F9", code: "F9", keyCode: 120 };
+  const ALT_HOLD_PREF = { hold: "alt", code: ALT_HOLD.code };
+
+  /** Watch what reaches a PTY, at `fetch`, where a Tauri command leaves the
+   *  page (`__TAURI_INTERNALS__.invoke` is neither writable nor
+   *  configurable). The same rig as shortcuts-linux.e2e.ts. */
+  const watchPty = () => browser.execute(() => {
+    const w = window as unknown as { __ptyOut?: number[]; __ptyWatched?: boolean };
+    w.__ptyOut = [];
+    if (w.__ptyWatched) return;
+    w.__ptyWatched = true;
+    const real = window.fetch;
+    window.fetch = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+      try {
+        const url = String((input as Request).url ?? input);
+        if (url.endsWith("/pty_write") && typeof init?.body === "string") {
+          w.__ptyOut!.push(...(JSON.parse(init.body).data as number[]));
+        }
+      } catch { /* not ours to break */ }
+      return real.call(this, input, init);
+    } as typeof window.fetch;
+  });
+  /** Bytes written to any PTY since the last call. */
+  const ptyBytes = () => browser.execute(() => {
+    const w = window as unknown as { __ptyOut?: number[] };
+    const out = w.__ptyOut ?? [];
+    w.__ptyOut = [];
+    return out;
+  }) as unknown as Promise<number[]>;
+  /** One plain key at the task's visible terminal. */
+  const typeKey = (taskId: string, key: string, code: string, keyCode: number) =>
+    browser.execute((id, k, c, kc) => {
+      const host = document.querySelector(`[data-task-id="${id}"]`)!;
+      const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")]
+        .find(el => {
+          const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        })!;
+      ta.focus();
+      const ev = { bubbles: true, cancelable: true, key: k, code: c, keyCode: kc, which: kc };
+      ta.dispatchEvent(new KeyboardEvent("keydown", ev));
+      ta.dispatchEvent(new KeyboardEvent("keyup", ev));
+    }, taskId, key, code, keyCode);
 
   // Restored even when a case throws half way: the gesture and the switch
   // are synced prefs, and a rebound walk would break every later spec that
@@ -2048,9 +2092,9 @@ describe("recently-used tab navigation", () => {
 
   /** The walk did NOT move. Asserted after a settle, not immediately: the
    *  switch is asynchronous, so an instant check would pass against the
-   *  broken behaviour too. The one fixed wait in this file. */
+   *  broken behaviour too. The settle is written at each call site, not in
+   *  here, so e2e/fixedWaits.test.ts counts every 500ms this file spends. */
   const expectStillOn = async (id: string) => {
-    await browser.pause(500);
     expect(await visibleTask()).toBe(id);
   };
 
@@ -2147,6 +2191,8 @@ describe("recently-used tab navigation", () => {
       ta.dispatchEvent(new KeyboardEvent("keydown", k));
       ta.dispatchEvent(new KeyboardEvent("keyup", k));
     }, c);
+    // The walk switches asynchronously: give it a window to fail in.
+    await browser.pause(500);
     await expectStillOn(c);
   });
 
@@ -2157,6 +2203,8 @@ describe("recently-used tab navigation", () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
     await waitVisible("[data-testid='ctrl-tab-mode']");
     await walk(c, [false]);
+    // The walk switches asynchronously: give it a window to fail in.
+    await browser.pause(500);
     await expectStillOn(c);
     expect(await browser.execute(
       () => window.__termic!.useApp.getState().view.settingsOpen)).toBe(true);
@@ -2169,6 +2217,8 @@ describe("recently-used tab navigation", () => {
     await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("off"));
     try {
       await walk(c, [false]);
+      // The walk switches asynchronously: give it a window to fail in.
+      await browser.pause(500);
       await expectStillOn(c);
     } finally {
       await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("on"));
@@ -2179,19 +2229,19 @@ describe("recently-used tab navigation", () => {
   });
 
   it("walks on a rebound gesture, and lands when Option comes up", async () => {
-    await browser.execute(() =>
-      window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "alt", code: "Backquote" }));
+    await browser.execute((g) =>
+      window.__termic!.usePrefs.getState().setRecentTabsGesture(g as any), ALT_HOLD_PREF);
     try {
       await visit(a); await visit(b); await visit(c);
-      await walk(c, [false], OPTION_BACKQUOTE);
-      await waitVisibleTask(b, "Option + ` did not step back to the previous task");
+      await walk(c, [false], ALT_HOLD);
+      await waitVisibleTask(b, "the Option hold did not step back to the previous task");
       // Landing is what reorders the ring: the return tap only goes back to
       // C if the Option release landed the first walk on B.
-      await walk(b, [false], OPTION_BACKQUOTE);
+      await walk(b, [false], ALT_HOLD);
       await waitVisibleTask(c, "the Option release did not land the walk");
       // Shift reverses on a rebound gesture too.
       await visit(a); await visit(b); await visit(c);
-      await walk(c, [false, false, true], OPTION_BACKQUOTE);
+      await walk(c, [false, false, true], ALT_HOLD);
       await waitVisibleTask(b, "Shift did not reverse the Option walk");
     } finally {
       await browser.execute(() =>
@@ -2199,12 +2249,43 @@ describe("recently-used tab navigation", () => {
     }
   });
 
+  it("sends nothing to the PTY while it walks on an Option hold", async () => {
+    // With Option as Meta, xterm would send the tapped key down as an ESC
+    // sequence; the capture-phase claim is what keeps it out.
+    await browser.execute((g) =>
+      window.__termic!.usePrefs.getState().setRecentTabsGesture(g as any), ALT_HOLD_PREF);
+    try {
+      await visit(a); await visit(b); await visit(c);
+      await watchPty();
+      // The control: the rig sees a plain key typed into this terminal at
+      // all, or the empty result below would prove nothing. Backspace after
+      // it, so the agent's prompt is left as it was.
+      await typeKey(c, "x", "KeyX", 88);
+      await browser.waitUntil(async () => (await ptyBytes()).includes(0x78), {
+        timeout: 5_000, timeoutMsg: "a typed x never reached the PTY, so the rig sees no writes",
+      });
+      await typeKey(c, "Backspace", "Backspace", 8);
+      await browser.waitUntil(async () => (await ptyBytes()).length === 0, {
+        timeout: 5_000, timeoutMsg: "the PTY writes never went quiet",
+      });
+      await walk(c, [false, true, false], ALT_HOLD);
+      await waitVisibleTask(b, "the Option walk did not move");
+      // The landing is what would have flushed a byte, and it has happened.
+      expect(await ptyBytes()).toEqual([]);
+    } finally {
+      await browser.execute(() =>
+        window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Tab" }));
+    }
+  });
+
   it("leaves the old ⌃⇥ inert once the gesture is rebound", async () => {
-    await browser.execute(() =>
-      window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "alt", code: "Backquote" }));
+    await browser.execute((g) =>
+      window.__termic!.usePrefs.getState().setRecentTabsGesture(g as any), ALT_HOLD_PREF);
     try {
       await visit(a); await visit(b); await visit(c);
       await walk(c, [false], CTRL_TAB);
+      // The walk switches asynchronously: give it a window to fail in.
+      await browser.pause(500);
       await expectStillOn(c);
     } finally {
       await browser.execute(() =>

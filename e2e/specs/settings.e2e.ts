@@ -2278,9 +2278,11 @@ describe("double-Shift mode", () => {
 
 // The chord half of Search everywhere: optional, unbound by default, and
 // recorded like any other row. Double-Shift stays beside it (above).
-// An earlier case in this file leaves the command palette open over the
-// settings pane. Close it so the recorder clicks and the snaps land on the
-// rows, not on the palette.
+// A run once showed the command palette over these snaps. Why it was open
+// is not known: the settings-navigation case that opens it closes it again,
+// and the Tasks snap just before these describes shows no palette. So this
+// is a guard, not a fix: close it and wait for it to be gone, so the
+// recorder clicks and the snaps land on the rows.
 async function closePalette(): Promise<void> {
   await browser.execute(() => window.__termic!.useUI.getState().closeCommandPalette());
   await waitGone('input[placeholder*="Type a command"]');
@@ -2428,49 +2430,91 @@ describe("recently used tabs gesture", () => {
     { timeout: 5_000, timeoutMsg: "the recorder stayed disabled with the gesture on" });
   });
 
+  // The logo key's name off macOS: Super on the Linux desktops, Win on Windows.
+  const logo = process.platform === "linux" ? "Super" : "Win";
+  /** Wait for the refusal to read `text`: each one replaces the last. */
+  const refusedWith = (text: string, what: string) =>
+    browser.waitUntil(async () => (await textOf(ERROR)) === text,
+      { timeout: 5_000, timeoutMsg: `${what} was not refused with: ${text}` });
+
   it("refuses the system's own gesture, by name", async () => {
     await startRecording();
     await press({ key: "Tab", code: "Tab", meta: true });
     await waitVisible(ERROR);
     expect(await textOf(ERROR)).toBe(mac
       ? "⌘⇥ belongs to the system, Termic never sees it."
-      : "Win+Tab belongs to the system, Termic never sees it.");
+      : `${logo}+Tab belongs to the system, Termic never sees it.`);
     expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
   });
 
-  it("refuses Ctrl with a letter, which is readline's", async () => {
+  it("refuses Ctrl with a letter, which is readline's, and says what does work", async () => {
     await press({ key: "r", code: "KeyR", ctrl: true });
-    await browser.waitUntil(async () => (await textOf(ERROR)).startsWith("Ctrl with a letter"),
-      { timeout: 5_000, timeoutMsg: "⌃R was not refused" });
-    expect(await textOf(ERROR))
-      .toBe("Ctrl with a letter belongs to the terminal (readline). Pick Tab or a symbol key.");
+    await refusedWith("Ctrl with that key sends the terminal a control character (^R, ^W). "
+      + "Keys that work with Ctrl: Tab ; ' , . =", "⌃R");
+    // Enter drives the recorder: a message of its own, not "hold exactly one".
+    await press({ key: "Enter", code: "Enter", ctrl: true });
+    await refusedWith("Enter, Space and Backspace cannot be the key you tap. "
+      + "Keys that work with Ctrl: Tab ; ' , . =", "⌃Enter");
+    // And the punctuation that makes a control character: ^[ is ESC.
+    await press({ key: "[", code: "BracketLeft", ctrl: true });
+    await refusedWith("Ctrl with that key sends the terminal a control character (^R, ^W). "
+      + "Keys that work with Ctrl: Tab ; ' , . =", "⌃[");
     expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
   });
 
-  it("records Option + `, by its key and not the dead key it types", async () => {
-    // Still recording: a refusal keeps the recorder open.
+  it("refuses Cmd with a letter, which would kill copy app-wide", async () => {
+    await press({ key: "c", code: "KeyC", meta: true });
+    await refusedWith(mac
+      ? "Cmd with a letter or digit is an app or system shortcut (copy, paste, quit). Keys that work with Cmd: ; ' , ."
+      : `${logo}+C belongs to the system, Termic never sees it.`, "⌘C");
+    expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
+  });
+
+  it("refuses Option + ` (it types) and Alt + ` (the desktop's)", async () => {
+    // What macOS sends for Option + `: the start of a dead-key composition.
     await press({ key: "Dead", code: "Backquote", alt: true });
-    await browser.waitUntil(async () => (await gesture() as { code: string }).code === "Backquote",
-      { timeout: 5_000, timeoutMsg: "Option + ` was never stored" });
-    expect(await gesture()).toEqual({ hold: "alt", code: "Backquote" });
+    await refusedWith(mac
+      ? "Option with that key types a character. Keys that work with Option: Tab"
+      : "Alt+` belongs to the system, Termic never sees it.", "Option + `");
+    expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
+  });
+
+  it("records a symbol key by its code, and prints the character it typed", async () => {
+    // A German layout: the key US calls ; is ö there. Stored by code, shown
+    // by what it typed. Cmd on macOS, Ctrl elsewhere.
+    await press({ key: "ö", code: "Semicolon", meta: mac, ctrl: !mac });
+    await browser.waitUntil(async () => (await gesture() as { code: string }).code === "Semicolon",
+      { timeout: 5_000, timeoutMsg: "the ö key was never stored" });
+    const hold = mac ? "Cmd" : "Ctrl";
+    expect(await gesture()).toEqual({ hold: mac ? "cmd" : "ctrl", code: "Semicolon", key: "ö" });
     const text = await textOf(RECORDER);
-    expect(text).toContain(mac ? "Option" : "Alt");
-    expect(text).toContain("`");
+    expect(text).toContain(hold);
+    expect(text).toContain("Ö");
+    expect(text).not.toContain(";");
     // The hint names the recorded keys, not the factory ones.
-    expect(await textOf('[data-testid="gesture-shortcut-row"]'))
-      .toContain(`Hold ${mac ? "Option" : "Alt"} and tap \``);
+    expect(await textOf('[data-testid="gesture-shortcut-row"]')).toContain(`Hold ${hold} and tap Ö`);
     await snap("recent-tabs-rebound.png");
   });
 
-  it("flags a chord on the same keys, on both rows", async () => {
+  it("flags a chord on the same keys, on both rows, and not one on the US label", async () => {
+    // The chord is pressed with Cmd on macOS and Ctrl elsewhere, the same
+    // hold the gesture just recorded, and recorded by character: ö.
     await browser.execute(() => window.__termic!.usePrefs.getState()
-      .setShortcut("search-everywhere", { cmd: false, shift: false, alt: true, key: "`" }));
+      .setShortcut("search-everywhere", { cmd: true, shift: false, alt: false, key: "ö" }));
     await waitVisible('[data-row-id="search-everywhere"] [data-testid="shortcut-gesture-conflict"]');
     expect(await textOf('[data-row-id="search-everywhere"] [data-testid="shortcut-gesture-conflict"]'))
       .toBe("Conflicts with Recently used tabs (the gesture wins)");
     expect(await textOf('[data-testid="gesture-conflict"]'))
       .toBe("Conflicts with Search everywhere (the gesture wins)");
     await snap("recent-tabs-conflict.png");
+    // ; is the same physical key's US name, and on this layout a different
+    // key (Shift+comma): no conflict.
+    await browser.execute(() => window.__termic!.usePrefs.getState()
+      .setShortcut("search-everywhere", { cmd: true, shift: false, alt: false, key: ";" }));
+    await waitGone('[data-testid="gesture-conflict"]');
+    await browser.execute(() => window.__termic!.usePrefs.getState()
+      .setShortcut("search-everywhere", { cmd: true, shift: false, alt: false, key: "ö" }));
+    await waitVisible('[data-testid="gesture-conflict"]');
     // Off: the gesture fires nothing, so it conflicts with nothing.
     await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("off"));
     await waitGone('[data-testid="gesture-conflict"]');
@@ -2487,6 +2531,28 @@ describe("recently used tabs gesture", () => {
       { timeout: 5_000, timeoutMsg: "reset did not restore ⌃⇥" });
     expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
     await waitGone(RESET);
+  });
+
+  it("says so when the saved gesture cannot be used here, and resets over it", async () => {
+    // What loading a synced Option + ` produces on any platform now: the
+    // default runs, the saved value is kept, and the row says why.
+    await browser.execute(() => window.__termic!.usePrefs.setState({
+      recentTabsGesture: { hold: "ctrl", code: "Tab" },
+      recentTabsGestureRefused: { hold: "alt", code: "Backquote" },
+    } as any));
+    const NOTE = '[data-testid="recent-tabs-refused"]';
+    await waitVisible(NOTE);
+    expect(await textOf(NOTE)).toBe(mac
+      ? "⌥` is saved but cannot be used here, so ⌃⇥ is in use. Record another, or reset to keep ⌃⇥."
+      : "Alt+` is saved but cannot be used here, so Ctrl+Tab is in use. Record another, or reset to keep Ctrl+Tab.");
+    // The gesture in use IS the default, and the reset is offered anyway.
+    await waitVisible(RESET);
+    await snap("recent-tabs-refused.png");
+    await clickWhenVisible(RESET);
+    await waitGone(NOTE);
+    await waitGone(RESET);
+    expect(await browser.execute(() => JSON.parse(localStorage.getItem("recentTabsGesture") ?? "null")))
+      .toEqual({ hold: "ctrl", code: "Tab" });
   });
 });
 
