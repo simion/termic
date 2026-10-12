@@ -393,16 +393,18 @@ export function holdGestureGlyphs(g: HoldGesture): string[] {
 }
 
 /** The name of the held modifier, for prose ("Hold Option and tap `"). */
-export function holdModifierName(hold: HoldModifier, isMac: boolean = IS_MAC): string {
+export function holdModifierName(hold: HoldModifier, isMac: boolean = IS_MAC, isLinux: boolean = IS_LINUX): string {
   if (hold === "ctrl") return "Ctrl";
   if (hold === "alt") return isMac ? "Option" : "Alt";
-  return isMac ? "Cmd" : "Win";
+  // The logo key: Super on the Linux desktops (and in this app's own
+  // terminal note), the Windows key on Windows.
+  return isMac ? "Cmd" : isLinux ? "Super" : "Win";
 }
 
 /** A gesture as one string: `⌃⇥` on macOS, `Ctrl+Tab` elsewhere. */
-export function holdGestureText(g: HoldGesture, isMac: boolean = IS_MAC): string {
+export function holdGestureText(g: HoldGesture, isMac: boolean = IS_MAC, isLinux: boolean = IS_LINUX): string {
   if (isMac) return holdGestureGlyphs(g).join("");
-  return `${holdModifierName(g.hold, false)}+${glyphLabel(holdKeyGlyph(g))}`;
+  return `${holdModifierName(g.hold, false, isLinux)}+${glyphLabel(holdKeyGlyph(g))}`;
 }
 
 /** The modifiers a hold gesture may use here, for the "hold exactly one of"

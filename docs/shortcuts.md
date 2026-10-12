@@ -298,7 +298,8 @@ It refuses, with a message each:
   Windows / Super key with anything, and Alt with Tab, F4, Space, \` (GNOME's
   switch between an application's windows), F1, F2, F7, F8 and F10 (GNOME's
   overview, run dialog, move, resize, maximize). "⌘⇥ belongs to the system,
-  Termic never sees it." These are checked first, so somebody who pressed ⌘⇥
+  Termic never sees it." The logo key is named Super on Linux and Win on
+  Windows (`holdModifierName`). These are checked first, so somebody who pressed ⌘⇥
   with another modifier down is told the real reason.
 - **Enter, Space, Backspace**: they drive the recorder itself. A message of
   their own; they used to get "hold exactly one", which told somebody who

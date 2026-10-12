@@ -3,7 +3,7 @@ import {
   DEFAULT_BINDINGS, DEFAULT_RECENT_TABS, FIXED_SHORTCUTS, GESTURE_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
   bindingFromEvent, bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, codeGlyph,
   conflicts, holdGestureFromEvent, holdGestureGlyphs, holdGestureText, holdHeld, holdReleased,
-  holdAllowedKeys, holdGestureError, holdKeyGlyph, isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, terminalPassesToApp,
+  holdAllowedKeys, holdGestureError, holdKeyGlyph, holdModifierName, isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, terminalPassesToApp,
   tokenForCode,
 } from "./shortcuts";
 
@@ -470,6 +470,13 @@ describe("hold gesture glyphs and names", () => {
     expect(holdGestureGlyphs({ hold: "cmd", code: "KeyJ" })).toEqual(["⌘", "J"]);
     expect(holdGestureGlyphs({ hold: "ctrl", code: "BracketLeft" })).toEqual(["⌃", "["]);
     expect(codeGlyph("Digit1")).toBe("1");
+  });
+
+  it("calls the logo key Super on Linux, Win on Windows", () => {
+    expect(holdModifierName("cmd", true)).toBe("Cmd");
+    expect(holdModifierName("cmd", false, false)).toBe("Win");
+    expect(holdModifierName("cmd", false, true)).toBe("Super");
+    expect(holdGestureText({ hold: "cmd", code: "Tab" }, false, true)).toBe("Super+Tab");
   });
 
   it("writes it as each platform does", () => {
