@@ -1054,3 +1054,44 @@ describe("prefs: custom and imported themes", () => {
     expect(usePrefs.getState().importedThemes).toBe(first);
   });
 });
+
+// Stored chord bindings. The whole map is persisted on every change, so a
+// command that ships unbound (search-everywhere) is written as null, and
+// that null has to read back as "no override", not as garbage or a binding.
+describe("prefs: stored null bindings", () => {
+  const KEY = "shortcutBindings";
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("reads a stored null as unbound, and keeps the other overrides", async () => {
+    localStorage.setItem(KEY, JSON.stringify({
+      "search-everywhere": null,
+      "new-tab": { cmd: true, shift: true, alt: false, key: "t" },
+    }));
+    const { usePrefs } = await import("./prefs");
+    const { shortcuts } = usePrefs.getState();
+    expect(shortcuts["search-everywhere"]).toBeNull();
+    expect(shortcuts["new-tab"]).toEqual({ cmd: true, shift: true, alt: false, key: "t" });
+  });
+
+  it("reads a stored null on a bound command as its default, not as unbound", async () => {
+    // Only a def whose default is null may be unbound; a null anywhere else
+    // is the default coming through.
+    localStorage.setItem(KEY, JSON.stringify({ "file-finder": null }));
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().shortcuts["file-finder"]).toEqual({ cmd: true, shift: false, alt: false, key: "p" });
+  });
+
+  it("writes null when the chord is reset, and reads it back as unbound", async () => {
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setShortcut("search-everywhere", { cmd: true, shift: true, alt: false, key: "o" });
+    usePrefs.getState().resetShortcut("search-everywhere");
+    expect(JSON.parse(localStorage.getItem(KEY)!)["search-everywhere"]).toBeNull();
+    vi.resetModules();
+    const again = await import("./prefs");
+    expect(again.usePrefs.getState().shortcuts["search-everywhere"]).toBeNull();
+  });
+});
