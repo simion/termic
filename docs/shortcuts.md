@@ -220,10 +220,14 @@ set, pure and tested, and the Shortcuts page only draws its answer:
   says they cannot both be live. Unbound rows clash with nothing.
 - **gesture vs chord, only while the gesture is on:** a chord on the gesture's
   key with the same modifier, Shift either way (Shift
-  reverses the walk, so ⌃⇧⇥ is the gesture too). A ctrl or cmd hold meets a
-  `cmd` chord (the fold), an alt hold an `alt` one; a Cmd hold on a digit meets
-  `jump-to-tab`'s 1-9 range. Both rows are flagged "(the gesture wins)": the
-  gesture's capture listener runs first and stops the event.
+  reverses the walk, so ⌃⇧⇥ is the gesture too). The modifier is the one
+  the chord is pressed with: a `cmd` chord meets a Cmd hold on macOS and a
+  Ctrl hold elsewhere, an Option-only chord meets an alt hold, and a digit
+  meets `jump-to-tab`'s 1-9 range. On macOS a Ctrl hold meets no `cmd`
+  chord: `bindingMatches` would also accept ⌃; for a ⌘; chord, but ⌘; itself
+  keeps working, so flagging it warned about nothing. Both rows are flagged
+  "(the gesture wins)": the gesture's capture listener runs first and stops
+  the event.
 - **double-Shift vs anything:** never, it has no key.
 - **Tab in a chord** never gets that far: `isReservedKey` refuses it in the
   chord recorder ("Tab cannot be part of a chord. Recently used tabs can use

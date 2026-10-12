@@ -953,9 +953,13 @@ export function bindingsEqual(a: Binding | null | undefined, b: Binding | null |
  *      row clashes with nothing.
  *  (b) gesture vs chord, only while the gesture is on: a chord on the same
  *      key with the same modifier, Shift either way (Shift reverses the walk,
- *      so ⌃⇧⇥ is the gesture too). `cmd` folds Ctrl, so a ctrl or a cmd hold
- *      meets a `cmd` chord. The gesture's capture listener runs first and
- *      stops the event, so the gesture wins, and the page says so on both rows.
+ *      so ⌃⇧⇥ is the gesture too). The gesture's capture listener runs first
+ *      and stops the event, so the gesture wins, and the page says so on both
+ *      rows. "The same modifier" is the key the chord is PRESSED with: a cmd
+ *      hold on macOS, a ctrl hold elsewhere (Ctrl is the app's Cmd there). On
+ *      macOS a ctrl hold takes only the Ctrl press, which `bindingMatches`
+ *      would also accept for the chord, but the chord's own ⌘ press keeps
+ *      working, so there is nothing to warn about.
  *  (c) double-Shift vs anything: never, it has no key.
  *  (d) Tab in a chord never gets this far: the recorder refuses it.
  *
@@ -964,6 +968,7 @@ export function conflicts(
   binds: BindingMap,
   gesture: HoldGesture,
   ctrlTabMode: CtrlTabMode,
+  isMac: boolean = IS_MAC,
 ): { chords: Set<ShortcutId>; withGesture: ShortcutId[] } {
   const bySig = new Map<string, ShortcutId[]>();
   for (const def of SHORTCUT_DEFS) {
@@ -982,11 +987,15 @@ export function conflicts(
   if (ctrlTabMode === "on") {
     const token = holdKeyToken(gesture);
     const alt = gesture.hold === "alt";
+    // The hold that a `cmd` chord is pressed with on this platform.
+    const cmdHold: HoldModifier = isMac ? "cmd" : "ctrl";
     for (const def of SHORTCUT_DEFS) {
       const b = binds[def.id];
       if (!b) continue;
       const sameKey = b.key === token || (b.key === "1-9" && /^Digit[1-9]$/.test(gesture.code));
-      if (sameKey && b.alt === alt && b.cmd === !alt) withGesture.push(def.id);
+      if (!sameKey) continue;
+      const sameMods = alt ? b.alt && !b.cmd : !b.alt && b.cmd && gesture.hold === cmdHold;
+      if (sameMods) withGesture.push(def.id);
     }
   }
   return { chords, withGesture };

@@ -518,15 +518,30 @@ describe("conflicts", () => {
     expect(conflicts(plain, g, "on").withGesture).toEqual(["search-everywhere"]);
   });
 
-  it("(b) folds Ctrl and Cmd the way a Binding does", () => {
-    const binds = { ...DEFAULT_BINDINGS, "search-everywhere": b("`", { cmd: true }) };
-    expect(conflicts(binds, { hold: "cmd", code: "Backquote" }, "on").withGesture).toEqual(["search-everywhere"]);
-    expect(conflicts(binds, { hold: "ctrl", code: "Backquote" }, "on").withGesture).toEqual(["search-everywhere"]);
-    expect(conflicts(binds, { hold: "alt", code: "Backquote" }, "on").withGesture).toEqual([]);
+  it("(b) off macOS a Ctrl hold meets a cmd chord: Ctrl IS the app's Cmd there", () => {
+    const binds = { ...DEFAULT_BINDINGS, "search-everywhere": b(";", { cmd: true }) };
+    expect(conflicts(binds, { hold: "ctrl", code: "Semicolon" }, "on", false).withGesture)
+      .toEqual(["search-everywhere"]);
+    expect(conflicts(binds, { hold: "alt", code: "Semicolon" }, "on", false).withGesture).toEqual([]);
+  });
+
+  it("(b) on macOS only a Cmd hold meets a cmd chord", () => {
+    // ⌃; held for the walk takes ⌃; only. The ⌘; chord is pressed with Cmd
+    // and keeps working, so flagging it would warn about nothing.
+    const binds = { ...DEFAULT_BINDINGS, "search-everywhere": b(";", { cmd: true }) };
+    expect(conflicts(binds, { hold: "cmd", code: "Semicolon" }, "on", true).withGesture)
+      .toEqual(["search-everywhere"]);
+    expect(conflicts(binds, { hold: "ctrl", code: "Semicolon" }, "on", true).withGesture).toEqual([]);
+    expect(conflicts(binds, { hold: "alt", code: "Semicolon" }, "on", true).withGesture).toEqual([]);
+  });
+
+  it("(b) an alt hold meets an Option-only chord, not an Option-Cmd one", () => {
+    const binds = { ...DEFAULT_BINDINGS, "search-everywhere": b("Tab", { alt: true }) };
+    expect(conflicts(binds, { hold: "alt", code: "Tab" }, "on", true).withGesture).toEqual(["search-everywhere"]);
   });
 
   it("(b) a Cmd hold on a digit meets jump-to-tab's range", () => {
-    expect(conflicts(DEFAULT_BINDINGS, { hold: "cmd", code: "Digit3" }, "on").withGesture)
+    expect(conflicts(DEFAULT_BINDINGS, { hold: "cmd", code: "Digit3" }, "on", true).withGesture)
       .toEqual(["jump-to-tab"]);
   });
 
@@ -731,8 +746,8 @@ describe("hold gestures on a non-US layout", () => {
     const b = (key: string) => ({ ...DEFAULT_BINDINGS, "search-everywhere": { cmd: true, shift: false, alt: false, key } });
     const g = { hold: "cmd" as const, code: "Semicolon", key: "ö" };
     // ⌘; on this layout is Shift+, : not the gesture's key at all.
-    expect(conflicts(b(";"), g, "on").withGesture).toEqual([]);
-    expect(conflicts(b("ö"), g, "on").withGesture).toEqual(["search-everywhere"]);
+    expect(conflicts(b(";"), g, "on", true).withGesture).toEqual([]);
+    expect(conflicts(b("ö"), g, "on", true).withGesture).toEqual(["search-everywhere"]);
   });
 
   it("reads a stored character back, and still reads a value without one", () => {
