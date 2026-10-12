@@ -64,6 +64,7 @@ import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/
 import { delegatedTitle } from "@/lib/delegatedWork";
 import { FILE_MANAGER } from "@/lib/openExternal";
 import { kbd } from "@/lib/platform";
+import { useSidebarTabDrag } from "./useSidebarTabDrag";
 
 /** Pick a default name for a freshly-created task (repo-root OR worktree).
  *  Format: "<agent>-N" where N is the next unused index for that CLI among
@@ -2892,6 +2893,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const stopTask = useApp(s => s.stopTask);
   // Sidebar only shows main-pane terminal tabs; split-pane tabs live in SplitView.
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
+  // Drag a tab row to reorder it (docs/ui.md "The sidebar's tab rows"). Keyed
+  // on the joined id string, never the array: see the hook.
+  const tabDrag = useSidebarTabDrag(w.id, terminalTabs.map(t => t.id).join(" "));
   const collectedProps = collectTaskProps(tabs);
   const isLoaded = terminalTabs.some(t => t.ptyId);
   // The run controls the COLLAPSED header row carries, mirroring the child rows
@@ -3719,6 +3723,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           ? rawTitle
           : formatTerminalTitle(rawTitle, resolveIconId(tab.cli, agents), workingIndicator);
         const isTabRenaming = tabRenaming?.id === tab.id;
+        const isTabDragging = tabDrag.dragTabId === tab.id;
 
         return (
           <div
@@ -3729,7 +3734,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             // `[data-tab-id=...]` query would grab this row instead.
             data-sidebar-tab-id={tab.id}
             data-active={isTabActive ? "" : undefined}
+            data-dragging={isTabDragging ? "" : undefined}
+            // The drag's translateY is written to this element directly
+            // (useSidebarTabDrag), so the row must not take a `style` prop.
+            onPointerDown={isTabRenaming ? undefined : (e) => tabDrag.onRowPointerDown(e, tab.id)}
             onClick={() => {
+              // The click that trails a drop is not a selection.
+              if (tabDrag.clickSuppressed.current) { tabDrag.clickSuppressed.current = false; return; }
               setActive(w.id);
               setActiveTabId(w.id, tab.id);
             }}
@@ -3744,7 +3755,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             }}
             className={cn(
               "group/tab relative ml-8 flex items-center gap-1.5 rounded-md px-1.5 py-[3px] text-[12.5px] cursor-pointer select-none transition-colors",
-              isTabHot
+              // Lifted look while dragged, the same as a dragged task header.
+              // Its own branch so a hover colour cannot override it.
+              isTabDragging
+                ? "z-20 bg-[var(--color-accent)]/15 text-[var(--color-accent)] shadow-lg"
+                : isTabHot
                 ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
                 : isTabActive
                   ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"

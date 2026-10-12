@@ -1,4 +1,4 @@
-import { archiveTask, clickMenuItem, clickWhenVisible, clickMenuItemUntilReady, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickMenuItem, clickWhenVisible, clickMenuItemUntilReady, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, pointerRelease, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 // Tabs are how a task holds multiple terminals/agents/editors. Guards adding a
 // tab through the "+" menu and switching the active tab by clicking it.
@@ -519,6 +519,252 @@ describe("sidebar tab row menu", () => {
     await clickMenuItem("Close");
     await waitGone(`[data-sidebar-tab-id="${shell}"]`, 5_000);
     expect(await tabIds(taskId)).toEqual(before.filter((id) => id !== shell));
+  });
+});
+
+// Dragging a tab's child row in the sidebar reorders the task's tabs: the
+// rows, the tab strip (same `tabs[taskId]`) and the durable agent order on
+// disk all move together. Guards the clamps (own task only, pinned rows stay
+// a block), that hidden edit tabs keep their strip slot, and that neither the
+// drop nor a short press goes wrong on activation.
+describe("sidebar tab drag", () => {
+  let taskId!: string;
+  let otherId!: string;
+  after(async () => {
+    await dismissOverlays();
+    if (taskId) await archiveTask(taskId);
+    if (otherId) await archiveTask(otherId);
+  });
+
+  const tabIds = (id: string) =>
+    browser.execute(
+      (i) => (window.__termic!.useApp.getState().tabs[i] ?? []).map((t: any) => t.id),
+      id,
+    ) as Promise<string[]>;
+
+  const rowIds = (id: string) =>
+    browser.execute(
+      (i) => (window.__termic!.useApp.getState().tabs[i] ?? [])
+        .filter((t: any) => t.type === "terminal" && !t.paneId).map((t: any) => t.id),
+      id,
+    ) as Promise<string[]>;
+
+  const sidebarRowIds = (id: string) =>
+    browser.execute(
+      (i) =>
+        [...document.querySelectorAll(`[data-sidebar-task-row="${i}"] [data-testid="sidebar-tab-row"]`)]
+          .map((r) => (r as HTMLElement).dataset.sidebarTabId ?? ""),
+      id,
+    ) as Promise<string[]>;
+
+  const stripPillIds = (id: string) =>
+    browser.execute(
+      (i) =>
+        [...document.querySelectorAll(`[data-task-id="${i}"] [data-main-strip] [data-tab-id]`)]
+          .map((p) => (p as HTMLElement).dataset.tabId ?? ""),
+      id,
+    ) as Promise<string[]>;
+
+  const persistedIds = async (id: string) =>
+    (await browser.execute(async (i) => {
+      const tasks = await window.__termic!.ipc.tasksList();
+      return (tasks.find((t: any) => t.id === i)?.persisted_tabs ?? []).map((p: any) => p.id);
+    }, id)) as string[];
+
+  const activeTab = (id: string) =>
+    browser.execute((i) => window.__termic!.useApp.getState().activeTab[i], id) as Promise<string | undefined>;
+
+  const row = (tabId: string) => `[data-sidebar-tab-id="${tabId}"]`;
+
+  const seedTerminal = (id: string, cli: string) =>
+    browser.execute(
+      (i, c) => {
+        const tabId = crypto.randomUUID();
+        window.__termic!.useApp.getState().addTab(
+          i, { id: tabId, type: "terminal", title: c, cli: c } as any, { focus: false },
+        );
+        return tabId;
+      },
+      id, cli,
+    ) as Promise<string>;
+
+  const expand = (id: string) =>
+    browser.execute((i) => {
+      const app = window.__termic!.useApp.getState();
+      const proj = app.projects.find((p: any) => p.name === "fixture-repo");
+      app.setProjectCollapsed(proj.id, false);
+      app.setTaskCollapsed(i, false);
+    }, id);
+
+  /** The full gesture in ONE synchronous turn, including the `click` a real
+   *  release produces (pointerDrag fires none). The click has to land before
+   *  the drop's 0ms timer clears the suppression flag, which is the timing a
+   *  real mouse gives it, and only a single execute reproduces that. `dy` is
+   *  the travel in px from the source row's centre. */
+  const pressMoveRelease = (fromSel: string, dy: number) =>
+    browser.execute((sel, d) => {
+      const src = document.querySelector(sel) as HTMLElement | null;
+      if (!src) throw new Error(`no row: ${sel}`);
+      src.scrollIntoView({ block: "nearest" });
+      const r = src.getBoundingClientRect();
+      const x = r.left + r.width / 2, y0 = r.top + r.height / 2;
+      const under = (yy: number) => (document.elementFromPoint(x, yy) as HTMLElement | null) ?? document.body;
+      const fire = (type: string, yy: number, node: EventTarget) => node.dispatchEvent(new PointerEvent(type, {
+        clientX: x, clientY: yy, button: 0, buttons: type === "pointerup" ? 0 : 1,
+        pointerType: "mouse", bubbles: true, cancelable: true,
+      }));
+      fire("pointerdown", y0, src);
+      const steps = Math.max(1, Math.ceil(Math.abs(d) / 6));
+      for (let i = 1; i <= steps; i++) fire("pointermove", y0 + (d * i) / steps, under(y0 + (d * i) / steps));
+      const end = y0 + d;
+      const target = under(end);
+      fire("pointerup", end, target);
+      target.dispatchEvent(new MouseEvent("click", { clientX: x, clientY: end, button: 0, bubbles: true, cancelable: true }));
+    }, fromSel, dy);
+
+  it("dragging the third row above the first reorders the sidebar, the strip and the disk", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-tabrow-drag");
+    await ensureActiveTask(taskId);
+    await expand(taskId);
+    await browser.waitUntil(async () => (await tabIds(taskId)).length === 1,
+      { timeout: 10_000, timeoutMsg: "the task's agent tab never seeded" });
+    await seedTerminal(taskId, "shell");
+    await seedTerminal(taskId, "fakeagent");
+    await browser.waitUntil(async () => (await sidebarRowIds(taskId)).length === 3,
+      { timeout: 5_000, timeoutMsg: "the three tab rows never rendered" });
+
+    const [a0, sh, a1] = await tabIds(taskId);
+    const active = await activeTab(taskId);
+    await browser.waitUntil(async () => JSON.stringify(await persistedIds(taskId)) === JSON.stringify([a0, a1]),
+      { timeout: 10_000, timeoutMsg: "the seeded agents never reached persisted_tabs" });
+
+    // Held mid-gesture: the row is lifted and the order is already live.
+    await pointerDrag(row(a1), row(a0), { land: "top", hold: true });
+    expect(await browser.execute((s) => document.querySelector(s)!.hasAttribute("data-dragging"), row(a1))).toBe(true);
+    await snap("sidebar-tab-drag-mid.png");
+    await pointerRelease(row(a0), "top");
+    await waitGone(`${row(a1)}[data-dragging]`, 5_000);
+
+    const want = [a1, a0, sh];
+    expect(await tabIds(taskId)).toEqual(want);
+    await browser.waitUntil(async () => JSON.stringify(await sidebarRowIds(taskId)) === JSON.stringify(want),
+      { timeout: 5_000, timeoutMsg: `sidebar rows never matched ${want.join(",")}` });
+    await browser.waitUntil(async () => JSON.stringify(await stripPillIds(taskId)) === JSON.stringify(want),
+      { timeout: 5_000, timeoutMsg: `tab strip never matched ${want.join(",")}` });
+    // Only agents are durable, and they persist in the new order.
+    await browser.waitUntil(async () => JSON.stringify(await persistedIds(taskId)) === JSON.stringify([a1, a0]),
+      { timeout: 10_000, timeoutMsg: "persisted_tabs never took the dragged order" });
+    // The lifted transform is gone with the drag.
+    expect(await browser.execute((s) => (document.querySelector(s) as HTMLElement).style.transform, row(a1))).toBe("");
+    // The drop moved a tab, it did not select one.
+    expect(await activeTab(taskId)).toBe(active);
+  });
+
+  it("the click that trails a drop selects nothing, and an inactive task stays inactive", async () => {
+    otherId = await openTask("e2e-tabrow-drag-other");
+    await ensureActiveTask(otherId);
+    await expand(taskId);
+    await waitVisible(`[data-sidebar-task-row="${taskId}"] [data-testid="sidebar-tab-row"]`);
+    const before = await rowIds(taskId); // [a1, a0, sh]
+    const active = await activeTab(taskId);
+    const rowH = await browser.execute((s) => document.querySelector(s)!.getBoundingClientRect().height, row(before[2]));
+
+    // Bottom row to just above the middle row's midpoint: one slot up.
+    await pressMoveRelease(row(before[2]), -(rowH + 4));
+    const want = [before[0], before[2], before[1]];
+    await browser.waitUntil(async () => JSON.stringify(await rowIds(taskId)) === JSON.stringify(want),
+      { timeout: 5_000, timeoutMsg: `rows never took ${want.join(",")}` });
+    // The trailing click landed on the dropped row; it must not have
+    // activated the task or the tab.
+    expect(await browser.execute(() => window.__termic!.useApp.getState().activeTaskId)).toBe(otherId);
+    expect(await activeTab(taskId)).toBe(active);
+    // ...and the suppression flag was cleared, so the NEXT click works.
+    await browser.execute((s) => (document.querySelector(s) as HTMLElement).click(), row(before[1]));
+    await browser.waitUntil(async () =>
+      (await browser.execute(() => window.__termic!.useApp.getState().activeTaskId)) === taskId,
+      { timeout: 5_000, timeoutMsg: "a plain click after the drop did not activate the task" });
+    expect(await activeTab(taskId)).toBe(before[1]);
+  });
+
+  it("a press under the threshold is a click: it activates and moves nothing", async () => {
+    const before = await rowIds(taskId);
+    const current = await activeTab(taskId);
+    const target = before.find((id) => id !== current)!;
+    await pressMoveRelease(row(target), 2);
+    await browser.waitUntil(async () => (await activeTab(taskId)) === target,
+      { timeout: 5_000, timeoutMsg: "a short press did not activate its tab" });
+    expect(await rowIds(taskId)).toEqual(before);
+    expect(await browser.execute((s) => document.querySelector(s)!.hasAttribute("data-dragging"), row(target))).toBe(false);
+  });
+
+  it("dropping onto another task's row is refused: the row clamps to its own list", async () => {
+    await ensureActiveTask(taskId);
+    await expand(taskId);
+    await expand(otherId);
+    await waitVisible(`[data-sidebar-task-id="${otherId}"]`);
+    const mine = await tabIds(taskId);
+    const theirs = await tabIds(otherId);
+    const rows = await rowIds(taskId);
+    const otherBelow = await browser.execute((a, b) =>
+      document.querySelector(`[data-sidebar-task-id="${b}"]`)!.getBoundingClientRect().top >
+      document.querySelector(`[data-sidebar-task-row="${a}"]`)!.getBoundingClientRect().top, taskId, otherId);
+    // Drag the row farthest from the other task toward it.
+    const dragged = otherBelow ? rows[0] : rows[rows.length - 1];
+    await pointerDrag(row(dragged), `[data-sidebar-task-id="${otherId}"]`);
+
+    expect(await tabIds(otherId)).toEqual(theirs);
+    expect([...(await tabIds(taskId))].sort()).toEqual([...mine].sort());
+    const after = await rowIds(taskId);
+    expect(otherBelow ? after[after.length - 1] : after[0]).toBe(dragged);
+  });
+
+  it("pinned rows stay a block: an unpinned row stops below them, a pinned one above the rest", async () => {
+    const rows = await rowIds(taskId);
+    const pinned = rows[1];
+    await browser.execute((i, t) => window.__termic!.useApp.getState().pinTab(i, t), taskId, pinned);
+    await browser.waitUntil(async () => (await rowIds(taskId))[0] === pinned,
+      { timeout: 5_000, timeoutMsg: "pinning did not move the tab to the head" });
+    const [p, u1, u2] = await rowIds(taskId);
+
+    // The last unpinned row aimed at the very top lands right after the pin.
+    await pointerDrag(row(u2), row(p), { land: "top" });
+    expect(await rowIds(taskId)).toEqual([p, u2, u1]);
+
+    // The pinned row aimed at the bottom does not leave the pinned block.
+    await pointerDrag(row(p), row(u1), { land: "bottom" });
+    expect(await rowIds(taskId)).toEqual([p, u2, u1]);
+
+    await browser.execute((i, t) => window.__termic!.useApp.getState().unpinTab(i, t), taskId, pinned);
+  });
+
+  it("an edit tab between rows keeps its place in the strip", async () => {
+    await ensureActiveTask(taskId);
+    const rows = await rowIds(taskId);
+    // Park an edit tab right after the first row.
+    await browser.execute((i) => window.__termic!.useApp.getState().openPreviewTab(i,
+      { type: "edit", path: "README.md", title: "README.md", permanent: true }), taskId);
+    const edit = await browser.waitUntil(async () =>
+      (await browser.execute((i) => (window.__termic!.useApp.getState().tabs[i] ?? [])
+        .find((t: any) => t.type === "edit")?.id, taskId)) as string | undefined,
+      { timeout: 5_000, timeoutMsg: "the edit tab never opened" }) as string;
+    const firstIdx = (await tabIds(taskId)).indexOf(rows[0]);
+    await browser.execute((i, e, at) => window.__termic!.useApp.getState().reorderTab(i, e, at),
+      taskId, edit, firstIdx + 1);
+    const before = await tabIds(taskId);
+    expect(before.indexOf(edit)).toBe(before.indexOf(rows[0]) + 1);
+
+    // Last row to the top: the edit tab still follows the row it followed.
+    const last = rows[rows.length - 1];
+    await pointerDrag(row(last), row(rows[0]), { land: "top" });
+    const after = await tabIds(taskId);
+    expect(after.filter((id) => id !== edit)).toEqual([last, ...before.filter((id) => id !== edit && id !== last)]);
+    expect(after.indexOf(edit)).toBe(after.indexOf(rows[0]) + 1);
+    await browser.waitUntil(async () => JSON.stringify(await stripPillIds(taskId)) === JSON.stringify(after),
+      { timeout: 5_000, timeoutMsg: `tab strip never matched ${after.join(",")}` });
+
+    await browser.execute((i, e) => window.__termic!.useApp.getState().closeTab(i, e), taskId, edit);
   });
 });
 

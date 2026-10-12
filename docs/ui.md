@@ -382,6 +382,53 @@ re-activate the anchor over the new tab. The row carries
 already use: the sidebar comes first in the DOM, so a bare
 `[data-tab-id=...]` query would grab the row.
 
+Dragging a row reorders the task's tabs. A primary-button press arms it
+and the drag starts past 4px of travel (the task drag's threshold), so a
+shorter press is still a click; the click that trails a drop is swallowed
+(a flag cleared on a 0ms timer, as the task drag does). A press on the
+close button, a run control, the rename input or anything else
+interactive never arms it, nor does a row being renamed or a task with a
+single row. The row follows the cursor with the lifted look of a dragged
+task header and no ghost, and the order is live: siblings move as the
+cursor crosses their midpoints, through `reorderTab`, so the tab strip
+moves in step and `syncDurableTabs` writes the agents' new order. There
+is one order, not a sidebar order beside a strip order.
+
+Clamps, all silent:
+
+- Only this task's rows are hit-tested (inside its
+  `[data-sidebar-task-row]`). Past them, over another task or project,
+  the row parks at the top or bottom of its own list. A tab never
+  changes task this way.
+- Pinned rows stay a block at the head, as in the tab strip: a pinned
+  row moves only among pinned rows, an unpinned one stops below them.
+- The rows are a filtered view of the task's tabs, which also hold
+  edit/diff/scratch tabs and split-pane terminals. Those keep their slot
+  in the strip: the drop anchors on the row it lands before
+  (`sidebarTabMoveIndex` in `src/lib/tabActions.ts`), and clamps again
+  in the full strip so an unpinned edit tab between the groups never
+  ends up above a pinned row.
+
+The drag works on store state alone, so it reorders an inactive or
+unmounted task's tabs without activating it. The hook
+(`useSidebarTabDrag`) runs once per task row with no store subscription,
+and writes the follow-the-cursor transform to the row element directly:
+only the id of the lifted row is React state, so a pointermove that
+crosses no midpoint (most of them) does not re-render the task row, and
+the row must not take a React `style` prop, which would overwrite the
+transform. A move that DOES reorder writes `tabs` and re-renders the
+task row: once per crossing, not per pointermove. The post-reorder
+re-anchor keys on the joined id string, never the rows array (the #127
+loop, see `useTabStripDrag`). The compact rail and the STATUS section's
+rows do not drag.
+
+A drag ends the same way however it ends: on a release, on
+`pointercancel`, and when the task row unmounts mid-drag (the task
+archived, closed by an agent over the CLI, its project collapsed). The
+order is live, so there is nothing left to commit; the end only drops
+the document listeners and the transform, and an unmount leaves no
+listener behind to reorder on a later pointermove.
+
 ## Task groups in the sidebar
 
 When an agent inside task A creates task B (`termic new`, or MCP `task_new`)
