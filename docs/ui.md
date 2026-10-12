@@ -1687,6 +1687,60 @@ external tab from a ⌘-click) gets the same source / split / preview shell.
 anything else as another external tab. Relative images are not loaded, see
 docs/sandbox.md "Known gap".
 
+**Every block knows its source lines.** markdown-it's `src_lines` core rule
+stamps `data-src-line` / `data-src-end` (1-based, inclusive, trailing blank
+lines trimmed) on each rendered block; a fence carries them on its `<pre>`.
+Raw HTML in a document passes through with whatever `data-src-*` it wrote,
+and those values decide which lines a comment quotes to the agent, so ours
+carry a per-load nonce and `claimDocument()` unwraps ours and drops the
+rest. It runs on everything that enters the preview, the render and each
+mermaid SVG (mermaid sanitizes its labels itself and keeps `data-*`). Two
+features read them:
+
+- **Split-view scroll sync** (`useScrollSync` in `components/task/markdownScrollSync.ts`).
+  Either pane drives the other: the blocks give (line, y) anchors and
+  positions between them are interpolated, so a tall image or long paragraph
+  scrolls smoothly. Anchors are cached until a re-render or a ResizeObserver
+  hit (late images, mermaid). The echo of a programmatic `scrollTop` write is
+  recognised by the value it lands on, not a time window (a busy frame
+  delivers it late), which is what stops the two panes feeding each other. A
+  pane with no box never drives. The pane that was already on screen leads
+  when split opens, and the first sync waits for the ResizeObserver's initial
+  delivery so the editor's `attachHiddenScrollRestore` cannot undo it. A
+  rebuild re-aligns to the editor.
+- **Comments on rendered text** (`usePreviewComments` in
+  `previewComments.ts`). Selecting in the preview raises a "＋ Comment" pill;
+  the comment lands in the same `reviewComments` store as an editor comment.
+  The quote is ALWAYS the selection: it is what the user pointed at, and
+  quoting the whole block (the old fallback whenever the selection was not
+  verbatim source) turned "this phrase" into "this paragraph". The line range
+  starts as the innermost stamped block at each end of the selection and is
+  narrowed by `narrowSelection()` to the lines the selection spans in the
+  source, matched with every whitespace run elastic (most markdown is
+  hard-wrapped, and the rendering joins those lines with a space). When the
+  selection is not in the source as typed (inline markdown, an entity), the
+  locator stays the block's lines. In the preview the quoted text itself is
+  wrapped in `<mark class="tc-md-quote">` (a `<mark>`, not the CSS Custom
+  Highlight API, see docs/gotchas.md), the open composer's included; only
+  when that text cannot be found in the rendering (an editor comment quoting
+  `**markdown**`) are the blocks marked instead. Because it is the same comment, it
+  shows beside its source in the editor too, and the editor's anchors keep it
+  on its code through edits. The composer and card are the editor's own
+  (`commentBoxes.ts`, framework-free DOM, styled by `.tc-comment-*` in
+  index.css), placed in slot divs that `placeSlots()` keeps after the
+  top-level block holding the innermost blocks the range touches (those are
+  what the quote is searched in, and the fallback marks, so a comment on one
+  list item marks that item, and
+  markdown inside an unstamped `<div align="center">` still counts). It moves
+  only slots that are out of place: moving a node detaches it, and a detached
+  composer textarea loses focus (the innerHTML rebuild detaches them all, so
+  `rebuild()` puts the caret back). Slots and commented blocks are marked
+  with `data-tc-slot` (`SLOT_ATTR`) / `data-tc-commented`, which the
+  sanitizer and `claimDocument()` strip from documents (with any `tc-*`
+  class, so a README cannot draw a fake card either); find, ⌘C
+  and `unmarkFind`'s normalize all leave the cards out. Task files only
+  (`commentFile`); whole-file comments have no block and stay in the editor.
+
 **Word wrap** (`prefs.editorWordWrap`, off by default) lives in Settings >
 Appearance and the palette's "Toggle word wrap". No toolbar control, by
 choice. It is its own compartment in `EditorPane`, reconfigured in place.
@@ -1886,6 +1940,10 @@ It votes on the DIFFERENCE between consecutive indented lines rather than the sm
 Not done: `.editorconfig`, which is the explicit signal and should win over the guess when a project has one.
 
 ## Inline review comments (two surfaces)
+
+(A third, the rendered markdown preview, shares the store and the
+composer/card in `commentBoxes.ts`, but not this extension: see "Markdown
+preview" above.)
 
 `reviewCommentsExtension(taskId, file, surface)` is one component with two loudness settings, because the same gesture means different things in the two places it runs.
 

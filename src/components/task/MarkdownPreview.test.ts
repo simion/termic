@@ -14,7 +14,7 @@ import { taskFileReadBase64 } from "@/lib/ipc";
 import {
   attemptReveal, captureReveal, consumeNavRevalidate, expireRevealGrace, gateRemoteImages, hydrateTaskImages,
   IMG_CACHE_MAX_ENTRIES, imgCacheInsert, markFindMatches, newNavRevalidateState, newRevealState,
-  remoteImageBannerKind, unmarkFind,
+  remoteImageBannerKind, renderSanitized, unmarkFind,
   type ImgCache, type MarkdownCtx,
 } from "./MarkdownPreview";
 
@@ -612,9 +612,40 @@ describe("unmarkFind", () => {
     expect(h.querySelector("p")!.childNodes).toHaveLength(1);
   });
 
+  it("only rejoins text where marks were, not inside comment cards", () => {
+    const h = host("<p>a needle b</p>");
+    // React owns a portaled card's text nodes; merging them breaks its next update
+    const card = document.createElement("div");
+    card.setAttribute("data-tc-slot", "");
+    card.append("one", "two");
+    h.append(card);
+    markFindMatches(h, "needle");
+    unmarkFind(h);
+    expect(card.childNodes).toHaveLength(2);
+    expect(h.querySelector("p")!.childNodes).toHaveLength(1);
+  });
+
   it("leaves a document with no marks alone", () => {
     const h = host("<p>untouched</p>");
     unmarkFind(h);
     expect(h.innerHTML).toBe("<p>untouched</p>");
+  });
+});
+
+describe("review comment slots", () => {
+  beforeEach(() => { document.body.innerHTML = ""; });
+
+  it("find skips comment cards", () => {
+    const h = host('<p>needle</p><div data-tc-slot=""><p>needle in a card</p></div>');
+    expect(markFindMatches(h, "needle")).toHaveLength(1);
+  });
+
+  // the slot marker is a data attribute precisely so a document cannot wear
+  // it: a forged one would hide its text from find and the comment pill.
+  it("a document cannot forge a slot or a commented block", () => {
+    const html = renderSanitized('<div data-tc-slot="" data-tc-commented="" class="x">hidden?</div>');
+    expect(html).not.toContain("data-tc-");
+    const h = host(html);
+    expect(markFindMatches(h, "hidden")).toHaveLength(1);
   });
 });

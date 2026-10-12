@@ -768,6 +768,169 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
 }
 .markdown-body > :first-child { margin-top: 0 !important; }
 .markdown-body > :last-child  { margin-bottom: 0 !important; }
+/* a block a review comment points at (previewComments placeSlots): the
+   editor's commented-line stripe, hung just outside the text column. */
+.markdown-body [data-tc-commented] {
+  background: var(--color-accent-soft);
+  box-shadow: -8px 0 0 0 var(--color-accent-soft), -10px 0 0 0 var(--color-accent);
+}
+/* the exact text a review comment quotes (previewComments markQuote); the
+   block rule above is the fallback when that text is not in the rendering.
+   Same <mark> treatment as find, for the same WKWebView reason. */
+.markdown-body mark.tc-md-quote {
+  background-color: var(--color-accent-soft);
+  color: inherit;
+  font: inherit;
+  border-radius: 2px;
+  box-shadow: inset 0 -2px 0 0 var(--color-accent);
+}
+.markdown-body .tc-comment-card,
+.markdown-body .tc-comment-composer { margin: 8px 0; }
+
+/* Review comment boxes (components/task/commentBoxes.ts), shared by the
+   editor/diff widgets and the markdown preview. An accent left rail ties them
+   to the commented-line stripe, a flat fill (no popover shadow) so they read
+   as part of the document, not floating over it. Each host adds its own
+   layout (reviewCommentsExt's baseTheme: margins, sticky). */
+.tc-comment-card, .tc-comment-composer {
+  padding: 8px 11px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-soft);
+  border-left: 2.5px solid var(--color-accent);
+  background: var(--color-bg-2);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.tc-comment-composer { background: var(--color-bg-1); }
+.tc-comment-loc {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--color-fg-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.tc-comment-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.tc-comment-tools { display: flex; gap: 2px; opacity: 0; transition: opacity 120ms; }
+.tc-comment-card:hover .tc-comment-tools { opacity: 1; }
+.tc-comment-body {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tc-comment-body-empty { color: var(--color-fg-faint); font-style: italic; }
+/* the selected code, quoted above the box: the same fenced snippet the agent
+   is about to receive */
+.tc-comment-quote {
+  margin: 5px 0 0;
+  padding: 5px 8px;
+  max-height: 132px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-soft);
+  background: var(--color-bg);
+  color: var(--color-fg-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+.tc-comment-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 6px 0;
+  padding: 6px 8px;
+  min-height: 32px;
+  max-height: 220px;
+  /* commentBoxes autoGrow turns it on at the cap; text always wraps */
+  overflow-y: hidden;
+  overflow-x: hidden;
+  resize: none;
+  line-height: 1.45;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-size: 13px;
+  font-family: system-ui, -apple-system, sans-serif;
+  outline: none;
+}
+.tc-comment-textarea:focus { border-color: var(--color-accent); }
+/* wraps rather than squeezes: in a narrow pane the hint plus three buttons do
+   not fit on one line, and the buttons shrank below their text ("Canc el") */
+.tc-comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px 8px;
+}
+/* takes the slack while there is any, and is the first thing to give */
+.tc-comment-hint {
+  font-size: 11px;
+  color: var(--color-fg-faint);
+  margin-right: auto;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.tc-btn {
+  padding: 4px 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  /* a button is its label: never shrink one narrower than its word */
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tc-btn-ghost { background: transparent; color: var(--color-fg-dim); border-color: var(--color-border); }
+.tc-btn-ghost:hover { background: var(--color-hover); color: var(--color-fg); }
+.tc-btn-primary { background: var(--color-accent); color: var(--color-accent-fg); border-color: var(--color-accent-deep); }
+/* accent-deep is dark in every theme, so the ink goes back to white
+   (accent-fg would be dark-on-dark on rosepine) */
+.tc-btn-primary:hover { background: var(--color-accent-deep); color: white; }
+/* the "＋ Comment" pill over a selection (diff pane, markdown preview) */
+.tc-add-comment-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent-deep);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+.tc-add-comment-btn:hover { background: var(--color-accent-deep); color: white; }
+.tc-btn-send { display: inline-flex; align-items: center; gap: 5px; }
+.tc-btn-send svg { width: 12px; height: 12px; }
+.tc-icon-btn {
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  color: var(--color-fg-faint);
+}
+.tc-icon-btn:hover { background: var(--color-hover); color: var(--color-fg); }
+.tc-icon-btn-danger:hover { color: var(--color-err); }
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,

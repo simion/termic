@@ -70,6 +70,7 @@ export default {
   },
 
   mdPreview: {
+    addComment: "Comment",
     openFailed: "Couldn't open {{path}}: {{error}}",
     fileNotFound: "File not found: {{path}}",
     revealFailed: "Couldn't reveal {{path}}: {{error}}",

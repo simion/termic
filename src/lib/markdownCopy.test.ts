@@ -56,9 +56,14 @@ describe("clipboardHtmlForRange", () => {
     expect(html).toBe("<table><tbody><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></tbody></table>");
   });
 
-  it("unwraps relative links and find highlights, keeping their text", () => {
-    const h = host('<p><a href="docs/setup.md">setup</a> and <mark class="md-find md-find-current">match</mark></p>');
-    expect(clipboardHtmlForRange(selectAll(h), h)).toBe("<p>setup and match</p>");
+  it("unwraps relative links, find and comment-quote highlights, keeping their text", () => {
+    const h = host('<p><a href="docs/setup.md">setup</a> and <mark class="md-find md-find-current">match</mark> <mark class="tc-md-quote">quoted</mark></p>');
+    expect(clipboardHtmlForRange(selectAll(h), h)).toBe("<p>setup and match quoted</p>");
+  });
+
+  it("drops review-comment cards the selection crosses", () => {
+    const h = host('<p>before</p><div data-tc-slot=""><div>lines 1 Edit Delete</div></div><p>after</p>');
+    expect(clipboardHtmlForRange(selectAll(h), h)).toBe("<p>before</p><p>after</p>");
   });
 
   it("drops local and blocked images but keeps remote ones", () => {

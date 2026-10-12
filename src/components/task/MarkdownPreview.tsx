@@ -41,6 +41,7 @@
 // so the chunk only lands when a markdown file is actually previewed.
 
 import { useEffect, useRef, useState } from "react";
+import type { EditorView } from "@codemirror/view";
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
 import { Check, ImageOff, ChevronUp, ChevronDown, X } from "lucide-react";
@@ -48,11 +49,13 @@ import { fileReadExternal, openPath, taskFileReadBase64, taskPathStat, taskRevea
 import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveExternalHref, resolveTaskHref } from "@/lib/markdownPaths";
 import { navigateDirTab, openDirTab } from "@/lib/dirTabs";
 import { useApp } from "@/store/app";
-import { clipboardHtmlForRange } from "@/lib/markdownCopy";
+import { clipboardHtmlForRange, SLOT_ATTR } from "@/lib/markdownCopy";
 import { useUI } from "@/store/ui";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { TerminalExitedBanner } from "./TerminalExitedBanner";
+import { useScrollSync } from "./markdownScrollSync";
+import { usePreviewComments } from "./previewComments";
 
 // Monotonic id source for mermaid render targets. Math.random/Date.now are
 // avoided elsewhere in this codebase; a plain counter is deterministic enough.
@@ -81,11 +84,15 @@ const ALLOWED_TAGS = [
  *  README setting its own class is inert without `style`. `data-mermaid` is
  *  listed explicitly rather than via ALLOW_DATA_ATTR so the data-* surface stays
  *  exactly one attribute wide. It grants nothing new: a ```mermaid fence already
- *  renders author-controlled diagram source (securityLevel: "strict"). */
+ *  renders author-controlled diagram source (securityLevel: "strict").
+ *  `data-src-line` / `data-src-end` are the source line range stamped by the
+ *  `src_lines` core rule below (scroll sync, and the lines a preview comment
+ *  cites and quotes to the agent). A document can write them too, so ours
+ *  carry a nonce and claimDocument() drops every one that does not. */
 const ALLOWED_ATTR = [
   "href", "src", "alt", "title", "align",
   "width", "height", "class", "colspan", "rowspan", "start",
-  "data-mermaid",
+  "data-mermaid", "data-src-line", "data-src-end",
 ];
 
 /** markdown-it renders, DOMPurify decides what survives. Runs on the ASSEMBLED
@@ -97,7 +104,7 @@ const ALLOWED_ATTR = [
  *  DOMPurify's URI check still blocks `javascript:` in href/src, and the CSP
  *  (script-src 'self', no 'unsafe-inline') independently prevents inline script
  *  and event handlers from ever executing. Three gates, not one. */
-function renderSanitized(text: string): string {
+export function renderSanitized(text: string): string {
   return DOMPurify.sanitize(md.render(text), {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
@@ -110,15 +117,62 @@ function renderSanitized(text: string): string {
 // tag then has to survive the allowlist above. linkify autolinks bare URLs; we
 // intercept ```mermaid fences below.
 const md = new MarkdownIt({ html: true, linkify: true, typographer: false, breaks: false });
+// stamp every rendered block with the 1-based inclusive source lines it came
+// from, so the preview can be mapped back onto the editor (scroll sync, and
+// which lines a comment made on rendered text points at). Raw HTML in the
+// document passes through with whatever data-src-* it wrote, so a stamp of
+// ours is prefixed with a per-load nonce the document cannot know.
+const SRC_STAMP = `${crypto.randomUUID()}:`;
+md.core.ruler.push("src_lines", (state) => {
+  const lines = state.src.split("\n");
+  for (const t of state.tokens) {
+    if (!t.map || !t.block || t.nesting < 0 || t.type === "inline") continue;
+    // a list item's map runs through the blank line after it; trim that so
+    // a comment on it does not claim (and quote) an empty line.
+    let end = t.map[1];
+    while (end > t.map[0] + 1 && !lines[end - 1]?.trim()) end--;
+    t.attrSet("data-src-line", SRC_STAMP + (t.map[0] + 1));
+    t.attrSet("data-src-end", SRC_STAMP + end);
+  }
+});
+
+/** Run on every piece of document content once it is in the preview (the
+ *  sanitized render, and each mermaid SVG, which has its own sanitizer):
+ *  unwrap our line stamps to the bare number and drop any the document wrote
+ *  itself, and strip the comment UI's `data-tc-*` markers and `tc-*` classes
+ *  so a document cannot pass for it (or be skipped by find and copy). */
+export function claimDocument(root: ParentNode): void {
+  for (const el of Array.from(root.querySelectorAll("[data-src-line], [data-src-end]"))) {
+    for (const a of ["data-src-line", "data-src-end"]) {
+      const v = el.getAttribute(a);
+      if (v == null) continue;
+      if (v.startsWith(SRC_STAMP)) el.setAttribute(a, v.slice(SRC_STAMP.length));
+      else el.removeAttribute(a);
+    }
+  }
+  for (const el of Array.from(root.querySelectorAll(`[${SLOT_ATTR}], [data-tc-commented]`))) {
+    el.removeAttribute(SLOT_ATTR);
+    el.removeAttribute("data-tc-commented");
+  }
+  for (const el of Array.from(root.querySelectorAll('[class*="tc-"]'))) {
+    for (const c of Array.from(el.classList)) if (c.startsWith("tc-")) el.classList.remove(c);
+  }
+}
 const defaultFence = md.renderer.rules.fence!;
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-  const info = tokens[idx].info.trim().split(/\s+/)[0]?.toLowerCase();
+  const tok = tokens[idx];
+  const info = tok.info.trim().split(/\s+/)[0]?.toLowerCase();
+  const at = tok.attrGet("data-src-line");
+  const lines = at ? ` data-src-line="${at}" data-src-end="${tok.attrGet("data-src-end")}"` : "";
   if (info === "mermaid") {
     // Stash the diagram source URI-encoded in a data attr; rendered to SVG
     // after the HTML is injected (mermaid.render is async).
-    return `<div class="mermaid-block" data-mermaid="${encodeURIComponent(tokens[idx].content)}"></div>`;
+    return `<div class="mermaid-block"${lines} data-mermaid="${encodeURIComponent(tok.content)}"></div>`;
   }
-  return defaultFence(tokens, idx, options, env, self);
+  // the default fence puts token attrs on the inner <code>; the lines belong
+  // on the <pre>, which is the block that actually sits in the flow.
+  tok.attrs = tok.attrs?.filter(([k]) => k !== "data-src-line" && k !== "data-src-end") ?? null;
+  return defaultFence(tokens, idx, options, env, self).replace(/^<pre/, `<pre${lines}`);
 };
 
 // mermaid is imported lazily so the (large) chunk only loads on first preview.
@@ -574,13 +628,17 @@ const FIND_DEBOUNCE_MS = 90;
 export function unmarkFind(host: HTMLElement): void {
   const marks = Array.from(host.querySelectorAll(`mark.${FIND_MARK_CLASS}`));
   if (!marks.length) return;
+  // only the marks' own parents: the host also holds the comment slots, which
+  // are not the document's to rewrite.
+  const parents = new Set<Node>();
   for (const m of marks) {
     const parent = m.parentNode;
     if (!parent) continue;
     while (m.firstChild) parent.insertBefore(m.firstChild, m);
     parent.removeChild(m);
+    parents.add(parent);
   }
-  host.normalize();
+  for (const p of parents) p.normalize();
 }
 
 /** Case-insensitive literal matcher for `query`, with one deliberate liberty:
@@ -619,7 +677,7 @@ export function markFindMatches(host: HTMLElement, query: string): HTMLElement[]
     acceptNode(node) {
       if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
       for (let el = node.parentElement; el && el !== host; el = el.parentElement) {
-        if (el.classList.contains("mermaid-block")) return NodeFilter.FILTER_REJECT;
+        if (el.classList.contains("mermaid-block") || el.hasAttribute(SLOT_ATTR)) return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;
     },
@@ -662,7 +720,7 @@ function scrollMarkIntoView(scroller: HTMLElement, el: HTMLElement): void {
 
 export function MarkdownPreview(
   { text, themeDark, linkify = true, ctx, revealHeading, onRevealConsumed, visible = true,
-    ownsFind, editorVisible = false,
+    ownsFind, editorVisible = false, syncView = null, commentFile,
     remoteImagesAllowed = true, onUnblockRemoteImages, onAlwaysLoadRemoteImages }: {
     text: string; themeDark: boolean; linkify?: boolean; ctx?: MarkdownCtx;
     /** Pending `#fragment` to scroll to once content renders (from a
@@ -696,6 +754,12 @@ export function MarkdownPreview(
      *  false (preview-only, or the editor-less Changelog dialog) the preview
      *  unconditionally owns Cmd+F. Defaults to false. */
     editorVisible?: boolean;
+    /** The source editor to keep in scroll step with while both are on
+     *  screen (split view). Null/absent = no sync. */
+    syncView?: EditorView | null;
+    /** Task-relative path of the file, when it is a task file that takes
+     *  review comments (needs `ctx` for the task id). Absent = no comments. */
+    commentFile?: string;
     /** Whether remote (http/https) images may load (issue #69). Defaults to
      *  true for callers with no untrusted-markdown threat model (the
      *  Changelog dialog renders termic's own bundled release notes).
@@ -737,6 +801,12 @@ export function MarkdownPreview(
   // Cmd+F belongs to this pane (vs the editor in split view). tabIndex lets a
   // click land focus here for that check.
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const realignSync = useScrollSync(scrollerRef, hostRef, syncView, visible, editorVisible);
+  const comments = usePreviewComments({
+    hostRef, scrollerRef, taskId: commentFile ? ctx?.taskId : undefined, file: commentFile, text,
+    focusPane: () => containerRef.current?.focus({ preventScroll: true }),
+  });
   const findInputRef = useRef<HTMLInputElement>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -926,7 +996,12 @@ export function MarkdownPreview(
     // don't autolink; explicit [text](url) links still render. The md instance
     // is shared, but set+render are atomic per effect run so there's no bleed.
     md.set({ linkify });
-    host.innerHTML = renderSanitized(text || "");
+    comments.rebuild(() => {
+      host.innerHTML = renderSanitized(text || "");
+      claimDocument(host);
+    });
+    // the blocks moved under a still editor: re-align to it
+    realignSync();
     hydrateTaskImages(host, ctx, imgCacheRef.current!, { revalidatePositive: isNavigation });
     setHasBlockedRemoteImages(gateRemoteImages(host, remoteImagesAllowed));
     // innerHTML above threw away every <mark>, so re-run the search against the
@@ -964,6 +1039,7 @@ export function MarkdownPreview(
           const { svg } = await mermaid.render(`mmd-${mermaidSeq++}`, src);
           if (!alive) return;
           el.innerHTML = svg;
+          claimDocument(el);
         } catch (e) {
           console.error("[markdown-preview] mermaid render failed:", e);
           if (!alive) return;
@@ -1221,14 +1297,18 @@ export function MarkdownPreview(
     const host = hostRef.current;
     const sel = window.getSelection();
     if (!host || !sel || sel.isCollapsed || sel.rangeCount === 0) return;
-    const html = Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i))
-      .filter(r => host.contains(r.commonAncestorContainer))
-      .map(r => clipboardHtmlForRange(r, host))
-      .join("");
+    const ranges = Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i))
+      .filter(r => host.contains(r.commonAncestorContainer));
+    const html = ranges.map(r => clipboardHtmlForRange(r, host)).join("");
     if (!html) return;
     e.preventDefault();
     e.clipboardData.setData("text/html", html);
+    // comment cards are app UI, not the document. toString() follows layout,
+    // so hiding the ones in the selection for the read keeps them out.
+    const cards = comments.slotEls().filter(el => ranges.some(r => r.intersectsNode(el)));
+    for (const el of cards) el.style.display = "none";
     e.clipboardData.setData("text/plain", sel.toString());
+    for (const el of cards) el.style.display = "";
   }
 
   function handleAlways() {
@@ -1280,7 +1360,9 @@ export function MarkdownPreview(
         />
       )}
       <div
-        className="min-h-0 flex-1 overflow-auto"
+        ref={scrollerRef}
+        className="relative min-h-0 flex-1 overflow-auto"
+        onMouseUp={comments.onMouseUp}
         // Pull focus onto the pane when the reader clicks into it (WKWebView
         // won't do this for non-editable content on its own). Makes the
         // split-view Cmd+F check work and blurs the editor so it stops
@@ -1291,6 +1373,17 @@ export function MarkdownPreview(
         {/* data-selectable: the app chrome is user-select:none, and a
             rendered document is the one pane you read like a web page. */}
         <div ref={hostRef} data-selectable className="markdown-body" onClick={onClick} onCopy={onCopy} />
+        {comments.pill && (
+          <button
+            type="button"
+            data-testid="md-add-comment"
+            style={{ top: comments.pill.top, left: comments.pill.left }}
+            // mousedown + preventDefault keeps the selection alive to be read
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); comments.openDraft(); }}
+            // the diff pane's pill, same class
+            className="tc-add-comment-btn absolute z-10"
+          >＋ {t("mdPreview.addComment")}</button>
+        )}
       </div>
     </div>
   );

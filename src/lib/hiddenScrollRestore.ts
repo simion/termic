@@ -17,6 +17,11 @@
 // only on ResizeObserver edges (zero ↔ non-zero boxes), which deliver
 // after layout — a scroll event in the same frame as a re-show still
 // sees hidden=true and is ignored.
+//
+// The markdown preview's scroll sync (components/task/markdownScrollSync)
+// relies on this observer being created before its own, so the restore lands
+// first and the sync reads the restored position. Keep the restore inside a
+// ResizeObserver callback.
 export function attachHiddenScrollRestore(el: HTMLElement): () => void {
   let top = 0;
   let left = 0;

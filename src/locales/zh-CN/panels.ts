@@ -69,6 +69,7 @@ export default {
   },
 
   mdPreview: {
+    addComment: "评论",
     openFailed: "无法打开 {{path}}：{{error}}",
     fileNotFound: "找不到文件：{{path}}",
     revealFailed: "无法显示 {{path}}：{{error}}",

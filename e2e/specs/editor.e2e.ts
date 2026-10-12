@@ -9,6 +9,10 @@ declare global {
     /** Every src the PDF embed has taken, recorded by the pdf-preview spec so
      *  "this tick changed nothing" is an observation, not a wait. */
     __pdfSrcLog?: string[];
+    /** The on-screen copy of `sel` in the md-split spec's task. Installed by
+     *  that spec; every visited task stays mounted, so a bare query can land
+     *  on a hidden one. */
+    __mdShown?: (sel: string) => HTMLElement;
   }
 }
 
@@ -2691,7 +2695,7 @@ describe("comment on an editor selection for the agent", () => {
    *  mounted and clickable. Layout is not what these cases are about. */
   const cards = () =>
     browser.execute((id) =>
-      [...document.querySelectorAll(`[data-task-id="${id}"] .tc-comment-card`)]
+      [...document.querySelectorAll(`[data-task-id="${id}"] .cm-editor .tc-comment-card`)]
         .map(el => el.textContent ?? ""),
       taskId!) as Promise<string[]>;
 
@@ -2862,7 +2866,7 @@ describe("comment on an editor selection for the agent", () => {
 
     // Put the queue back to one card so the batch cases below stay readable.
     await browser.execute((id) => {
-      const card = [...document.querySelectorAll(`[data-task-id="${id}"] .tc-comment-card`)]
+      const card = [...document.querySelectorAll(`[data-task-id="${id}"] .cm-editor .tc-comment-card`)]
         .find(el => (el.textContent ?? "").includes("Selection only"))!;
       (card.querySelector(".tc-icon-btn-danger") as HTMLElement).click();
     }, taskId!);
@@ -4130,5 +4134,286 @@ describe("unviewable file notice", () => {
       NOTICE,
     );
     expect(notice).toBe(false);
+  });
+});
+
+// Markdown split view: the preview scrolls in step with the source, and a
+// selection in the RENDERED text takes a review comment the way an editor
+// selection does. Scroll events are dispatched by hand after each scrollTop
+// write: an occluded window may never deliver them on its own, and what is
+// under test is the sync, not WebKit's event cadence.
+describe("markdown split: scroll sync and preview comments", () => {
+  let taskId!: string;
+  const NAME = "e2e-long.md";
+  const SECTIONS = 40;
+  // line 1 title, line 2 blank, then 5 lines per section:
+  // heading, blank, two paragraph lines, blank.
+  const headingLine = (i: number) => 3 + (i - 1) * 5;
+  const source = () => {
+    let s = "# Long doc\n\n";
+    for (let i = 1; i <= SECTIONS; i++) s += `## Section ${i}\n\nParagraph ${i} first line\nand its second line.\n\n`;
+    return s;
+  };
+
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+    rmSync(path.join(fixture, NAME), { force: true });
+  });
+
+  /** Which section heading sits at the top of the preview viewport. */
+  const previewTopSection = () =>
+    browser.execute(() => {
+      const host = window.__mdShown!(".markdown-body");
+      const top = host.parentElement!.getBoundingClientRect().top;
+      const at = Array.from(host.querySelectorAll("h2")).filter(h => h.getBoundingClientRect().top <= top + 4).pop();
+      return at ? Number(at.textContent!.replace(/\D+/g, "")) : 0;
+    });
+
+  it("opens a long markdown file in split view", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-md-split");
+    writeFileSync(path.join(fixture, NAME), source());
+    await browser.execute((id, name) => {
+      window.__mdShown = (sel) => Array.from(document.querySelector(`[data-task-id="${id}"]`)!.querySelectorAll<HTMLElement>(sel))
+        .find(el => el.getBoundingClientRect().width > 0)!;
+      const app = window.__termic!.useApp.getState();
+      app.bumpFsRevision(id);
+      app.openPreviewTab(id, { type: "edit", path: name, title: name });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tab = app.tabs[id].find((t: any) => t.type === "edit" && t.path === name);
+      app.persistTab(id, tab.id);
+      app.setActiveTabId(id, tab.id);
+      app.patchTab(id, tab.id, { mdView: "split" });
+    }, taskId, NAME);
+    await browser.waitUntil(
+      () => browser.execute(() => window.__mdShown!(".markdown-body")?.querySelectorAll("h2").length === 40),
+      { timeout: 10_000, timeoutMsg: "the split preview never rendered the long doc" },
+    );
+    // every rendered block knows its source lines
+    expect(await browser.execute(() =>
+      Array.from(window.__mdShown!(".markdown-body").querySelectorAll("h2")).slice(0, 2).map(h => h.getAttribute("data-src-line")),
+    )).toEqual([String(headingLine(1)), String(headingLine(2))]);
+  });
+
+  it("follows the editor when the source scrolls", async () => {
+    await browser.waitUntil(async () => {
+      await browser.execute((line) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const view = (window.__mdShown!(".cm-editor") as unknown as { __cmView: any }).__cmView;
+        const sd = view.scrollDOM as HTMLElement;
+        const offset = view.documentTop - sd.getBoundingClientRect().top + sd.scrollTop;
+        sd.scrollTop = view.lineBlockAt(view.state.doc.line(line).from).top + offset;
+        sd.dispatchEvent(new Event("scroll"));
+      }, headingLine(20));
+      return (await previewTopSection()) === 20;
+    }, { timeout: 8_000, timeoutMsg: "the preview did not follow the editor to section 20" });
+    await snap("md-split-scroll-sync.png");
+  });
+
+  it("moves the editor when the preview scrolls", async () => {
+    // retried: a scroll event can coalesce with the echo of the editor-driven
+    // scroll above and be read as that echo, which is the guard doing its job.
+    await browser.waitUntil(async () => {
+      const line = await browser.execute(() => {
+        const host = window.__mdShown!(".markdown-body");
+        const scroller = host.parentElement!;
+        const h = host.querySelectorAll("h2")[29];
+        scroller.scrollTop += h.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+        scroller.dispatchEvent(new Event("scroll"));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const view = (window.__mdShown!(".cm-editor") as unknown as { __cmView: any }).__cmView;
+        const y = view.scrollDOM.getBoundingClientRect().top - view.documentTop + 1;
+        return view.state.doc.lineAt(view.lineBlockAtHeight(y).from).number as number;
+      });
+      return Math.abs(line - headingLine(30)) <= 1;
+    }, { timeout: 8_000, timeoutMsg: "the editor did not follow the preview to section 30" });
+  });
+
+  // the editor's own boxes (commentBoxes), scoped to the preview
+  const composer = ".markdown-body .tc-comment-composer";
+  const card = ".markdown-body .tc-comment-card";
+  const has = (sel: string) => browser.execute((s) => !!document.querySelector(s), sel);
+  const clickButton = (scope: string, label: string) =>
+    browser.execute((sc, l) => {
+      (Array.from(document.querySelectorAll(`${sc} button`)).find(b => b.textContent === l) as HTMLElement).click();
+    }, scope, label);
+  const commentedBlocks = () =>
+    browser.execute(() => window.__mdShown!(".markdown-body").querySelectorAll("[data-tc-commented]").length);
+  /** The highlighted quote text, whitespace runs collapsed. */
+  const quotedText = () =>
+    browser.execute(() => Array.from(window.__mdShown!(".markdown-body").querySelectorAll("mark.tc-md-quote"))
+      .map(m => m.textContent).join("").replace(/\s+/g, " "));
+  /** Select `phrase` (whitespace-elastic, so it can cross the source's hard
+   *  wrap) inside the paragraph starting `para`, and release the mouse. */
+  const selectInParagraph = (para: string, phrase: string) =>
+    browser.execute((pa, ph) => {
+      const host = window.__mdShown!(".markdown-body");
+      const p = Array.from(host.querySelectorAll("p")).find(x => x.textContent!.startsWith(pa))!;
+      const node = p.firstChild as Text;
+      const m = new RegExp(ph.split(" ").join("\\s+")).exec(node.nodeValue!)!;
+      const r = document.createRange();
+      r.setStart(node, m.index);
+      r.setEnd(node, m.index + m[0].length);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(r);
+      host.parentElement!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    }, para, phrase);
+  const openComposerFromPill = async () => {
+    await browser.waitUntil(() => has('[data-testid="md-add-comment"]'),
+      { timeout: 5_000, timeoutMsg: "no comment pill over the preview selection" });
+    // commits on mousedown so the selection is still there to read
+    await browser.execute(() => document.querySelector('[data-testid="md-add-comment"]')!
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })));
+    await browser.waitUntil(() => has(`${composer} textarea`),
+      { timeout: 5_000, timeoutMsg: "the preview composer never opened" });
+  };
+
+  it("offers a comment on part of a rendered paragraph, quoting just that part", async () => {
+    // crosses the source's hard wrap ("first line\nand its second line.")
+    await selectInParagraph("Paragraph 30 ", "line and its second");
+    await openComposerFromPill();
+    // the SOURCE lines the selection spans, and the selection as the quote,
+    // not the whole paragraph
+    expect(await browser.execute((c) => document.querySelector(c)!.textContent, composer))
+      .toContain(`${NAME} · lines ${headingLine(30) + 2}–${headingLine(30) + 3}`);
+    expect(await browser.execute((c) => document.querySelector(`${c} .tc-comment-quote`)!.textContent!.replace(/\s+/g, " "), composer))
+      .toBe("line and its second");
+    // opening the composer clears the selection, so the quote stays lit
+    expect(await quotedText()).toBe("line and its second");
+    // ready to type: the slot is in the document before the composer focuses
+    const focused = (c: string) => browser.execute((sel) => document.activeElement === document.querySelector(`${sel} textarea`), c);
+    await browser.waitUntil(() => focused(composer), { timeout: 2_000, timeoutMsg: "the composer opened without focus" });
+    await snap("md-preview-composer.png");
+    // a rebuild of the rendered document (here an edit at the end of the
+    // source) must not take the caret out of the composer
+    await browser.execute(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (window.__mdShown!(".cm-editor") as unknown as { __cmView: any }).__cmView;
+      view.dispatch({ changes: { from: view.state.doc.length, insert: "\nTrailing rebuild marker.\n" } });
+    });
+    await browser.waitUntil(
+      () => browser.execute(() => window.__mdShown!(".markdown-body").textContent!.includes("Trailing rebuild marker")),
+      { timeout: 5_000, timeoutMsg: "the preview never re-rendered the edit" },
+    );
+    expect(await focused(composer)).toBe(true);
+  });
+
+  it("sizes the comment box to its text, with no scrollbars, zoomed in too", async () => {
+    // measured, not looked at: overflow is what draws the scrollbars
+    const overflow = () => browser.execute((c) => {
+      const ta = document.querySelector(`${c} textarea`) as HTMLTextAreaElement;
+      ta.value = "first line of a comment\nand a second";
+      ta.dispatchEvent(new Event("input"));
+      // height must fit exactly; width is allowed a rounding pixel at a
+      // fractional zoom, so what matters there is that it cannot scroll
+      const cs = getComputedStyle(ta);
+      return { y: ta.scrollHeight - ta.clientHeight, overflowX: cs.overflowX, overflowY: cs.overflowY };
+    }, composer);
+    try {
+      for (const zoom of [100, 150]) {
+        await browser.execute((z) => window.__termic!.usePrefs.getState().setUiScale(z), zoom);
+        expect({ zoom, ...(await overflow()) }).toEqual({ zoom, y: 0, overflowX: "hidden", overflowY: "hidden" });
+      }
+    } finally {
+      await browser.execute(() => window.__termic!.usePrefs.getState().setUiScale(100));
+      await browser.execute((c) => { (document.querySelector(`${c} textarea`) as HTMLTextAreaElement).value = ""; }, composer);
+    }
+  });
+
+  it("queues it, with a card in the preview and only the quoted text marked", async () => {
+    await browser.execute((c) => {
+      const ta = document.querySelector(`${c} textarea`) as HTMLTextAreaElement;
+      ta.value = "tighten this";
+    }, composer);
+    await clickButton(composer, "Add to pending");
+    await browser.waitUntil(() => has(card), { timeout: 5_000, timeoutMsg: "no comment card in the preview" });
+    expect(await has(composer)).toBe(false);
+    expect(await browser.execute((c) => document.querySelector(c)!.textContent, card)).toContain("tighten this");
+    // survives the rebuild above, and highlights the text, not the paragraph
+    expect(await quotedText()).toBe("line and its second");
+    expect(await commentedBlocks()).toBe(0);
+    await snap("md-preview-comment-card.png");
+  });
+
+  it("shows the same comment beside its source in the editor", async () => {
+    await browser.waitUntil(
+      () => browser.execute((id) =>
+        Array.from(document.querySelectorAll(`[data-task-id="${id}"] .cm-editor .tc-comment-card`))
+          .some(c => c.textContent?.includes("tighten this")), taskId),
+      { timeout: 5_000, timeoutMsg: "the editor never showed the preview's comment" },
+    );
+  });
+
+  it("edits it in place from the preview card", async () => {
+    await clickButton(card, "Edit");
+    await browser.waitUntil(() => has(`${composer} textarea`), { timeout: 5_000, timeoutMsg: "edit never opened the composer" });
+    // the card it is editing steps aside while the composer is open
+    expect(await has(card)).toBe(false);
+    await browser.execute((c) => {
+      const ta = document.querySelector(`${c} textarea`) as HTMLTextAreaElement;
+      ta.value = "tighten this more";
+    }, composer);
+    await clickButton(composer, "Update");
+    await browser.waitUntil(
+      () => browser.execute((c) => document.querySelector(c)?.textContent?.includes("tighten this more") ?? false, card),
+      { timeout: 5_000, timeoutMsg: "the edited body never reached the card" },
+    );
+  });
+
+  it("deletes it from the preview card", async () => {
+    await clickButton(card, "Delete");
+    await browser.waitUntil(async () => !(await has(card)) && (await quotedText()) === "",
+      { timeout: 5_000, timeoutMsg: "the deleted comment stayed on the preview" });
+  });
+
+  it("narrows a selection inside one source line to that line", async () => {
+    // paragraph 32 is lines 160-161; "second line" is all on 161
+    await selectInParagraph("Paragraph 32 ", "second line");
+    await openComposerFromPill();
+    const label = await browser.execute((c) => document.querySelector(`${c} .tc-comment-loc`)!.textContent, composer);
+    expect(label).toBe(`${NAME} · line ${headingLine(32) + 3}`);
+    await clickButton(composer, "Cancel");
+    await browser.waitUntil(async () => !(await has(composer)) && (await quotedText()) === "",
+      { timeout: 5_000, timeoutMsg: "cancelling left the composer or its highlight behind" });
+  });
+
+  it("keeps the preview's place when switching from preview to split", async () => {
+    const setView = (v: string) => browser.execute((id, name, mode) => {
+      const app = window.__termic!.useApp.getState();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tab = app.tabs[id].find((t: any) => t.type === "edit" && t.path === name);
+      app.patchTab(id, tab.id, { mdView: mode });
+    }, taskId, NAME, v);
+    await setView("preview");
+    // read down to section 10 in the preview alone, while the hidden editor
+    // is still wherever the split left it
+    await browser.waitUntil(async () => {
+      await browser.execute(() => {
+        const host = window.__mdShown!(".markdown-body");
+        const scroller = host.parentElement!;
+        const h = host.querySelectorAll("h2")[9];
+        scroller.scrollTop += h.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      });
+      return (await previewTopSection()) === 10;
+    }, { timeout: 5_000, timeoutMsg: "could not scroll the preview to section 10" });
+    await setView("split");
+    // the pane the reader was looking at leads; the editor follows it
+    await browser.waitUntil(
+      () => browser.execute(() => !!window.__mdShown!(".cm-editor")),
+      { timeout: 5_000, timeoutMsg: "split never showed the editor" },
+    );
+    await browser.waitUntil(async () => {
+      const line = await browser.execute(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const view = (window.__mdShown!(".cm-editor") as unknown as { __cmView: any }).__cmView;
+        const y = view.scrollDOM.getBoundingClientRect().top - view.documentTop + 1;
+        return view.state.doc.lineAt(view.lineBlockAtHeight(y).from).number as number;
+      });
+      return Math.abs(line - headingLine(10)) <= 1;
+    }, { timeout: 5_000, timeoutMsg: "the editor did not follow the preview to section 10" });
+    // and the preview did not get dragged to the editor's old place instead
+    expect(await previewTopSection()).toBe(10);
   });
 });

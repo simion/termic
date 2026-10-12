@@ -19,36 +19,20 @@ import {
 } from "@codemirror/view";
 import { StateField, StateEffect, type EditorState, RangeSet, type Range } from "@codemirror/state";
 import { useReviewComments, type ReviewComment } from "@/store/reviewComments";
-import { sendCommentsToAgent } from "@/lib/sendComments";
+import { buildCard, buildComposer, type CommentTarget, type ComposerSpec } from "./commentBoxes";
 import {
   anchorForLines, anchorStateChanged, linesForAnchor, mapAnchor, stateForAnchor, type Anchor,
 } from "@/lib/commentAnchors";
 
-/** A comment-in-progress (range + quote captured, body being typed). */
-interface Composer {
-  mode: "new" | "edit";
-  id?: string;
-  startLine: number | null;
-  endLine: number | null;
-  quote: string;
-  initialBody: string;
-}
-
 interface CommentData {
   /** Committed comments for THIS file, line-sorted. Synced from the store. */
   comments: ReviewComment[];
-  composer: Composer | null;
+  composer: ComposerSpec | null;
   /** The live selection each comment was made on, by comment id, mapped
    *  through every edit (see lib/commentAnchors.ts). This — not the stored
    *  line number — is where a comment actually points while the buffer is
    *  being edited under it. File-level comments (null lines) have no anchor. */
   anchors: Map<string, Anchor>;
-}
-
-interface Ctx {
-  taskId: string;
-  file: string;
-  source: "diff" | "editor";
 }
 
 /**
@@ -74,7 +58,7 @@ export interface ReviewSurface {
 const DIFF_SURFACE: ReviewSurface = { selection: "pill", hoverGutter: true, source: "diff" };
 
 const setComments = StateEffect.define<ReviewComment[]>();
-const openComposer = StateEffect.define<Composer>();
+const openComposer = StateEffect.define<ComposerSpec>();
 const closeComposer = StateEffect.define<void>();
 
 const dataField = StateField.define<CommentData>({
@@ -93,7 +77,7 @@ const dataField = StateField.define<CommentData>({
       if (e.is(setComments)) {
         comments = e.value;
         // The edited comment was deleted out from under us → drop the composer.
-        if (composer?.mode === "edit" && !comments.some(c => c.id === composer!.id)) composer = null;
+        if (composer?.id && !comments.some(c => c.id === composer!.id)) composer = null;
         // Seed an anchor for each comment we have not met yet, and forget the
         // ones whose comment is gone. An id we already track keeps its live
         // anchor: it has been mapped through edits the stored lines predate.
@@ -134,12 +118,6 @@ const hoverLineField = StateField.define<number | null>({
 
 const clampLine = (state: EditorState, n: number) => Math.max(1, Math.min(state.doc.lines, n));
 
-function locLabel(start: number | null, end: number | null, file: string): string {
-  const base = file.split("/").pop() || file;
-  if (start == null) return `${base} · whole file`;
-  if (end != null && end !== start) return `${base} · lines ${start}–${end}`;
-  return `${base} · line ${start}`;
-}
 
 // CodeMirror fills its height map (and so lays out the gutter) from each block
 // widget's BORDER BOX, so vertical margin on the element `toDOM` returns is
@@ -200,189 +178,32 @@ function sizeToPane(el: HTMLElement, view: EditorView) {
   el.style.left = `${gutters}px`;
 }
 
-// lucide `send` — the same glyph the pending-comments bar puts on its Send
-// button, so "this goes to the agent now" looks the same everywhere.
-const SEND_ICON_SVG =
-  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
-  `<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/>` +
-  `<path d="m21.854 2.147-10.94 10.939"/></svg>`;
-
 // ── Widgets ───────────────────────────────────────────────────────────────
 
 class ComposerWidget extends WidgetType {
-  constructor(readonly c: Composer, readonly ctx: Ctx) { super(); }
+  constructor(readonly c: ComposerSpec, readonly ctx: CommentTarget) { super(); }
 
   eq(other: ComposerWidget) {
     // Same composer identity → reuse the DOM so an unrelated transaction
     // (e.g. a selection change) doesn't blow away a focused textarea.
-    return other.c.mode === this.c.mode
-      && other.c.id === this.c.id
+    return other.c.id === this.c.id
       && other.c.startLine === this.c.startLine
       && other.c.endLine === this.c.endLine;
   }
 
   toDOM(view: EditorView) {
-    const wrap = document.createElement("div");
-    wrap.className = "tc-comment-composer";
+    const wrap = buildComposer(this.c, this.ctx,
+      {
+        // a send hands the stage to the agent (switches to its tab, focuses
+        // its terminal), and an editor grabbing focus a beat before that
+        // lands would fight it.
+        onClose: (sent) => { view.dispatch({ effects: closeComposer.of() }); if (!sent) view.focus(); },
+        // the grow happens after CodeMirror measured the widget, so re-sync
+        // the height map or the gutter drifts (see `blockShell`).
+        onResize: () => view.requestMeasure(),
+      },
+    );
     sizeToPane(wrap, view);
-
-    const head = document.createElement("div");
-    head.className = "tc-comment-loc";
-    head.textContent = locLabel(this.c.startLine, this.c.endLine, this.ctx.file);
-    wrap.appendChild(head);
-
-    // The selected code, shown as the first "message" in the box. It always
-    // travelled with the comment (composeCommentsMessage fences it), but the
-    // composer only ever showed a line range, so the send looked like it was
-    // sending line numbers. Now the payload is on screen before you commit to
-    // it, and the comment below is plainly the second half of the message.
-    const quote = this.c.quote.replace(/\n+$/, "");
-    if (quote) {
-      const pre = document.createElement("pre");
-      pre.className = "tc-comment-quote";
-      pre.textContent = quote;
-      wrap.appendChild(pre);
-    }
-
-    const ta = document.createElement("textarea");
-    ta.className = "tc-comment-textarea";
-    // Send takes the selection with an empty body, so say so rather than
-    // implying a comment is required.
-    ta.placeholder = quote ? "Add a comment (optional)" : "Add a comment";
-    ta.value = this.c.initialBody;
-    // Rough starting height (no layout yet, so `scrollHeight` is 0 here) to
-    // keep an edit composer from mounting at one line and popping open a frame
-    // later; `autoGrow` corrects for wrapping once it is in the document.
-    ta.rows = Math.min(this.c.initialBody.split("\n").length, 8);
-    ta.spellcheck = false;
-    ta.autocapitalize = "off";
-    ta.setAttribute("autocorrect", "off");
-    wrap.appendChild(ta);
-
-    // Grow with content (Shift+Enter newlines) up to a cap. The grow happens
-    // after CodeMirror measured the widget, so re-sync the height map or the
-    // gutter drifts (see `blockShell`); CodeMirror coalesces these per frame.
-    const autoGrow = () => {
-      ta.style.height = "auto";
-      ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`;
-      view.requestMeasure();
-    };
-    ta.addEventListener("input", autoGrow);
-
-    const row = document.createElement("div");
-    row.className = "tc-comment-actions";
-
-    const hint = document.createElement("span");
-    hint.className = "tc-comment-hint";
-    hint.textContent = "↵ to send · ⇧↵ for newline";
-    row.appendChild(hint);
-
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.className = "tc-btn tc-btn-ghost tc-btn-cancel";
-    cancel.textContent = "Cancel";
-    row.appendChild(cancel);
-
-    // Two ways out, because a remark on code is sometimes the whole thought
-    // and sometimes one of five. "Add to pending" queues it with the rest;
-    // "Send" (the accent CTA) ships this one immediately, and the comment body
-    // is OPTIONAL there — the selected code alone is a legitimate message.
-    // Editing an existing queued comment offers Update only: it is already in
-    // the queue, and the bar is where a queue gets sent.
-    const editing = this.c.mode === "edit" && !!this.c.id;
-
-    const queue = document.createElement("button");
-    queue.type = "button";
-    queue.className = "tc-btn tc-btn-ghost tc-btn-queue";
-    queue.textContent = editing ? "Update" : "Add to pending";
-    row.appendChild(queue);
-
-    const send = document.createElement("button");
-    send.type = "button";
-    send.className = "tc-btn tc-btn-primary tc-btn-send";
-    send.innerHTML = `${SEND_ICON_SVG}<span>Send</span>`;
-    send.title = "Send this selection to the agent now";
-    if (!editing) row.appendChild(send);
-
-    wrap.appendChild(row);
-
-    /** The comment as it stands, whether or not it was ever queued. */
-    const draft = (body: string): ReviewComment => ({
-      id: this.c.id ?? "draft",
-      taskId: this.ctx.taskId,
-      file: this.ctx.file,
-      startLine: this.c.startLine,
-      endLine: this.c.endLine,
-      quote: this.c.quote,
-      body,
-      source: this.ctx.source,
-    });
-
-    const commit = () => {
-      const body = ta.value.trim();
-      // The selection IS the message; a comment is something you may add to
-      // it. So only a comment with nothing in it at all — no quote either,
-      // i.e. an empty whole-file remark — has nothing to queue, and that is
-      // the one case worth bouncing back to the box.
-      if (!body && !quote) { ta.focus(); return; }
-      const store = useReviewComments.getState();
-      if (editing && this.c.id) {
-        store.update(this.ctx.taskId, this.c.id, body);
-      } else {
-        store.add({
-          taskId: this.ctx.taskId,
-          file: this.ctx.file,
-          startLine: this.c.startLine,
-          endLine: this.c.endLine,
-          quote: this.c.quote,
-          body,
-          source: this.ctx.source,
-        });
-      }
-      view.dispatch({ effects: closeComposer.of() });
-      view.focus();
-    };
-
-    const sendNow = () => {
-      void sendCommentsToAgent(this.ctx.taskId, [draft(ta.value.trim())], {
-        label: locLabel(this.c.startLine, this.c.endLine, this.ctx.file),
-      });
-      // Close, but do NOT take focus back: the send hands the stage to the
-      // agent (switches to its tab, focuses its terminal), and an editor
-      // grabbing focus a beat before that lands would fight it.
-      view.dispatch({ effects: closeComposer.of() });
-    };
-    const cancelFn = () => {
-      view.dispatch({ effects: closeComposer.of() });
-      view.focus();
-    };
-
-    queue.addEventListener("click", commit);
-    send.addEventListener("click", sendNow);
-    cancel.addEventListener("click", cancelFn);
-    ta.addEventListener("keydown", (e) => {
-      // Enter takes the accent action (send now), Shift+Enter inserts a
-      // newline — chat-composer muscle memory, and the CTA is what Enter
-      // should mean. Editing a queued comment has no send button, so there
-      // Enter still updates it in place.
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        if (editing) commit(); else sendNow();
-      }
-      else if (e.key === "Escape") { e.preventDefault(); cancelFn(); }
-      e.stopPropagation(); // keep keystrokes out of CodeMirror's keymap
-    });
-
-    setTimeout(() => {
-      // The composer can mount outside the visible viewport — a file-level
-      // comment anchors at doc start (pos 0), which is scrolled away whenever
-      // the user is deep in the diff. Reveal it before focusing: focus() on
-      // an off-screen child of the CM scroller does not scroll it in.
-      wrap.scrollIntoView({ block: "nearest" });
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-      autoGrow();
-    }, 0);
     return blockShell(wrap);
   }
 
@@ -390,7 +211,7 @@ class ComposerWidget extends WidgetType {
 }
 
 class CommentCardWidget extends WidgetType {
-  constructor(readonly comment: ReviewComment, readonly ctx: Ctx) { super(); }
+  constructor(readonly comment: ReviewComment, readonly ctx: CommentTarget) { super(); }
 
   eq(other: CommentCardWidget) {
     // The RANGE is part of what the card renders (its "· line 12" label), and
@@ -404,62 +225,11 @@ class CommentCardWidget extends WidgetType {
   }
 
   toDOM(view: EditorView) {
-    const wrap = document.createElement("div");
-    wrap.className = "tc-comment-card";
+    const c = this.comment;
+    const wrap = buildCard(c, () => view.dispatch({
+      effects: openComposer.of({ id: c.id, startLine: c.startLine, endLine: c.endLine, quote: c.quote, body: c.body }),
+    }));
     sizeToPane(wrap, view);
-
-    const head = document.createElement("div");
-    head.className = "tc-comment-card-head";
-
-    const loc = document.createElement("span");
-    loc.className = "tc-comment-loc";
-    loc.textContent = locLabel(this.comment.startLine, this.comment.endLine, this.ctx.file);
-    head.appendChild(loc);
-
-    const tools = document.createElement("div");
-    tools.className = "tc-comment-tools";
-
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "tc-icon-btn";
-    edit.title = "Edit comment";
-    edit.textContent = "Edit";
-    tools.appendChild(edit);
-
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "tc-icon-btn tc-icon-btn-danger";
-    del.title = "Delete comment";
-    del.textContent = "Delete";
-    tools.appendChild(del);
-
-    head.appendChild(tools);
-    wrap.appendChild(head);
-
-    const body = document.createElement("div");
-    // A queued selection with no remark on it is legitimate (the code is the
-    // message), but an empty card looks broken. Say what it is instead; the
-    // quote itself is right above, in the file.
-    body.className = this.comment.body.trim() ? "tc-comment-body" : "tc-comment-body tc-comment-body-empty";
-    body.textContent = this.comment.body.trim() || "Selection only";
-    wrap.appendChild(body);
-
-    edit.addEventListener("click", () => {
-      view.dispatch({
-        effects: openComposer.of({
-          mode: "edit",
-          id: this.comment.id,
-          startLine: this.comment.startLine,
-          endLine: this.comment.endLine,
-          quote: this.comment.quote,
-          initialBody: this.comment.body,
-        }),
-      });
-    });
-    del.addEventListener("click", () => {
-      useReviewComments.getState().remove(this.ctx.taskId, this.comment.id);
-    });
-
     return blockShell(wrap);
   }
 
@@ -468,7 +238,7 @@ class CommentCardWidget extends WidgetType {
 
 // ── Decorations ─────────────────────────────────────────────────────────────
 
-function buildDeco(state: EditorState, ctx: Ctx): DecorationSet {
+function buildDeco(state: EditorState, ctx: CommentTarget): DecorationSet {
   const { comments, composer, anchors } = state.field(dataField);
   const ranges: Range<Decoration>[] = [];
   // Where a comment sits RIGHT NOW: its mapped anchor while we hold one (the
@@ -492,7 +262,7 @@ function buildDeco(state: EditorState, ctx: Ctx): DecorationSet {
 
   // Committed comment cards (skip the one currently being edited).
   for (const c of comments) {
-    if (composer?.mode === "edit" && composer.id === c.id) continue;
+    if (composer?.id === c.id) continue;
     const anchor = linesOf(c)?.end ?? null;
     const pos = anchor == null ? 0 : state.doc.line(anchor).to;
     ranges.push(
@@ -558,7 +328,7 @@ function commentsForFile(taskId: string, file: string): ReviewComment[] {
     .sort((a, b) => (a.startLine ?? -1) - (b.startLine ?? -1) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-function storeSyncPlugin(ctx: Ctx) {
+function storeSyncPlugin(ctx: CommentTarget) {
   return ViewPlugin.define((view): PluginValue => {
     // The store fires on EVERY mutation app-wide (any task/file), and
     // DiffPane keeps views alive across tab switches + can mount two views
@@ -606,7 +376,7 @@ function storeSyncPlugin(ctx: Ctx) {
  */
 const REANCHOR_DEBOUNCE_MS = 300;
 
-function anchorSyncPlugin(ctx: Ctx) {
+function anchorSyncPlugin(ctx: CommentTarget) {
   return ViewPlugin.define((view): PluginValue => {
     let timer = 0;
     let destroyed = false;
@@ -682,7 +452,7 @@ function attachInstantTip(btn: HTMLElement, view: EditorView, text: string): () 
 }
 
 class AddCommentGutterMarker extends GutterMarker {
-  constructor(readonly ctx: Ctx, readonly lineNo: number, readonly wholeSelection = false) { super(); }
+  constructor(readonly ctx: CommentTarget, readonly lineNo: number, readonly wholeSelection = false) { super(); }
 
   eq(other: AddCommentGutterMarker) {
     return other.lineNo === this.lineNo && other.wholeSelection === this.wholeSelection;
@@ -717,7 +487,7 @@ class AddCommentGutterMarker extends GutterMarker {
       const line = view.state.doc.line(s);
       view.dispatch({
         selection: { anchor: line.from },
-        effects: openComposer.of({ mode: "new", startLine: s, endLine: s, quote: line.text, initialBody: "" }),
+        effects: openComposer.of({ startLine: s, endLine: s, quote: line.text, body: "" }),
       });
     });
     return btn;
@@ -738,7 +508,7 @@ function gutterLine(state: EditorState, surface: ReviewSurface): number | null {
 }
 
 /** Gutter that shows a comment button on one line (see `gutterLine`). */
-function commentGutter(ctx: Ctx, surface: ReviewSurface) {
+function commentGutter(ctx: CommentTarget, surface: ReviewSurface) {
   return gutter({
     // A gutter costs its width on every line, forever, and an editor is read
     // far more than it is commented on. Where the button is selection-driven
@@ -811,7 +581,7 @@ function hoverTrackPlugin() {
 /** Build the review-comments extension for one file in one task. `surface`
  *  defaults to the diff pane's loud affordances; editors pass the quiet set. */
 export function reviewCommentsExtension(taskId: string, file: string, surface: ReviewSurface = DIFF_SURFACE) {
-  const ctx: Ctx = { taskId, file, source: surface.source };
+  const ctx: CommentTarget = { taskId, file, source: surface.source };
 
   const decoField = StateField.define<DecorationSet>({
     create: (state) => buildDeco(state, ctx),
@@ -868,7 +638,7 @@ export function dispatchSelectionComment(view: EditorView): boolean {
   view.dispatch({
     // Collapse the selection so the tooltip dismisses, then open the composer.
     selection: { anchor: view.state.doc.line(s).from },
-    effects: openComposer.of({ mode: "new", startLine: s, endLine: en, quote, initialBody: "" }),
+    effects: openComposer.of({ startLine: s, endLine: en, quote, body: "" }),
   });
   return true;
 }
@@ -877,7 +647,7 @@ export function dispatchSelectionComment(view: EditorView): boolean {
 export function dispatchFileComment(view: EditorView) {
   view.dispatch({
     effects: [
-      openComposer.of({ mode: "new", startLine: null, endLine: null, quote: "", initialBody: "" }),
+      openComposer.of({ startLine: null, endLine: null, quote: "", body: "" }),
       // The composer anchors at doc start; when the user is scrolled down,
       // pos 0 is outside CM's rendered viewport, so the widget's DOM never
       // even mounts (no toDOM → no self-focus). Scroll there in the same
@@ -895,40 +665,16 @@ const baseTheme = EditorView.baseTheme({
     boxShadow: "inset 2px 0 0 0 var(--color-accent)",
   },
   ".tc-add-comment-tip": { background: "transparent", border: "none" },
-  ".tc-add-comment-btn": {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "4px",
-    padding: "4px 9px",
-    borderRadius: "7px",
-    fontSize: "12px",
-    fontWeight: "500",
-    lineHeight: "1",
-    cursor: "pointer",
-    color: "var(--color-accent-fg)",
-    background: "var(--color-accent)",
-    border: "1px solid var(--color-accent-deep)",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.35)",
-    whiteSpace: "nowrap",
-  },
-  // Hover drops to accent-deep, which is dark in every theme, so the ink
-  // goes back to white (accent-fg would be dark-on-dark on rosepine).
-  ".tc-add-comment-btn:hover": { background: "var(--color-accent-deep)", color: "#fff" },
   // Inline thread cards: an accent left rail ties them to the commented-line
   // stripe, a flat fill (no popover shadow) so they read as part of the diff,
   // not floating over it. Vertical spacing belongs HERE, inside `blockShell`,
   // never on the shell itself (GH #157).
   ".tc-comment-card, .tc-comment-composer": {
     // Width is set per widget in toDOM (see sizeToPane); border-box so the
-    // number it computes is the whole box.
+    // number it computes is the whole box. The look is shared with the
+    // markdown preview and lives in index.css; this is the editor layout.
     boxSizing: "border-box",
     margin: "3px 14px 9px 14px",
-    padding: "8px 11px 9px",
-    borderRadius: "8px",
-    border: "1px solid var(--color-border-soft)",
-    borderLeft: "2.5px solid var(--color-accent)",
-    background: "var(--color-bg-2)",
-    fontFamily: "system-ui, -apple-system, sans-serif",
     // A widget is a child of `.cm-content`, which is as wide as the longest
     // line. In a file that scrolls sideways the card would scroll away with
     // it, so it sticks to the left edge of the viewport instead. Sticky costs
@@ -940,117 +686,6 @@ const baseTheme = EditorView.baseTheme({
     // width. Until then the card is unstuck, which is the harmless state.
     position: "sticky",
   },
-  ".tc-comment-composer": { background: "var(--color-bg-1)" },
-  ".tc-comment-loc": {
-    display: "inline-flex",
-    alignItems: "center",
-    fontSize: "10.5px",
-    fontWeight: "600",
-    letterSpacing: "0.01em",
-    color: "var(--color-fg-faint)",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  },
-  ".tc-comment-card-head": {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "8px",
-    marginBottom: "5px",
-  },
-  ".tc-comment-tools": { display: "flex", gap: "2px", opacity: "0", transition: "opacity 120ms" },
-  ".tc-comment-card:hover .tc-comment-tools": { opacity: "1" },
-  ".tc-comment-body": {
-    fontSize: "13px",
-    lineHeight: "1.45",
-    color: "var(--color-fg)",
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-  },
-  ".tc-comment-body-empty": { color: "var(--color-fg-faint)", fontStyle: "italic" },
-  // The selected code, quoted above the box. Reads as the first message: the
-  // same fenced snippet the agent is about to receive.
-  ".tc-comment-quote": {
-    margin: "5px 0 0",
-    padding: "5px 8px",
-    maxHeight: "132px",
-    overflow: "auto",
-    borderRadius: "6px",
-    border: "1px solid var(--color-border-soft)",
-    background: "var(--color-bg)",
-    color: "var(--color-fg-dim)",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-    fontSize: "11.5px",
-    lineHeight: "1.5",
-    whiteSpace: "pre",
-    tabSize: "2",
-  },
-  ".tc-comment-textarea": {
-    display: "block",
-    width: "100%",
-    boxSizing: "border-box",
-    margin: "6px 0",
-    padding: "6px 8px",
-    minHeight: "32px",
-    maxHeight: "220px",
-    overflowY: "auto",
-    resize: "none",
-    lineHeight: "1.45",
-    borderRadius: "6px",
-    border: "1px solid var(--color-border)",
-    background: "var(--color-bg)",
-    color: "var(--color-fg)",
-    fontSize: "13px",
-    fontFamily: "system-ui, -apple-system, sans-serif",
-    outline: "none",
-  },
-  ".tc-comment-textarea:focus": { borderColor: "var(--color-accent)" },
-  // Wraps rather than squeezes. The card is sized against the pane (half of
-  // it, floor 340px), so in a narrow right panel the hint plus three buttons
-  // do not fit on one line; without this the buttons shrank below their text
-  // and broke mid-word ("Canc el", "Sen d").
-  ".tc-comment-actions": {
-    display: "flex",
-    flexWrap: "wrap",
-    justifyContent: "flex-end",
-    alignItems: "center",
-    gap: "6px 8px",
-  },
-  // Takes the slack while there is any, and is the first thing to give: it is
-  // a reminder, and the buttons carry the actions.
-  ".tc-comment-hint": {
-    fontSize: "11px",
-    color: "var(--color-fg-faint)",
-    marginRight: "auto",
-    minWidth: "0",
-    flexShrink: "1",
-  },
-  ".tc-btn": {
-    padding: "4px 11px",
-    borderRadius: "6px",
-    fontSize: "12px",
-    fontWeight: "500",
-    cursor: "pointer",
-    border: "1px solid transparent",
-    // A button is its label. Never let flex shrink one narrower than the word
-    // it carries.
-    whiteSpace: "nowrap",
-    flexShrink: "0",
-  },
-  ".tc-btn-ghost": { background: "transparent", color: "var(--color-fg-dim)", borderColor: "var(--color-border)" },
-  ".tc-btn-ghost:hover": { background: "var(--color-hover)", color: "var(--color-fg)" },
-  ".tc-btn-primary": { background: "var(--color-accent)", color: "var(--color-accent-fg)", borderColor: "var(--color-accent-deep)" },
-  ".tc-btn-primary:hover": { background: "var(--color-accent-deep)", color: "#fff" },
-  ".tc-icon-btn": {
-    padding: "2px 7px",
-    borderRadius: "5px",
-    fontSize: "11px",
-    cursor: "pointer",
-    background: "transparent",
-    border: "none",
-    color: "var(--color-fg-faint)",
-  },
-  ".tc-icon-btn:hover": { background: "var(--color-hover)", color: "var(--color-fg)" },
-  ".tc-icon-btn-danger:hover": { color: "var(--color-err)" },
 
   // Per-line hover gutter. A slim fixed column so the diff doesn't reflow as
   // the button appears/disappears; the marker only renders on the hovered line.
@@ -1106,6 +741,4 @@ const baseTheme = EditorView.baseTheme({
   },
   ".tc-line-add-btn:hover": { background: "var(--color-accent-deep)", color: "#fff" },
   ".tc-line-add-btn svg": { width: "12px", height: "12px" },
-  ".tc-btn-send": { display: "inline-flex", alignItems: "center", gap: "5px" },
-  ".tc-btn-send svg": { width: "12px", height: "12px" },
 });

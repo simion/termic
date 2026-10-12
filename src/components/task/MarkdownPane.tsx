@@ -82,7 +82,11 @@ export function MarkdownPane(
   const [buf, setBuf] = useState({ path: srcKey, text: "" });
   const text = buf.path === srcKey ? buf.text : "";
   const debounceRef = useRef<number | null>(null);
+  // the live editor, for split-view scroll sync. Same-value sets bail, so
+  // the per-keystroke onContent costs nothing here.
+  const [editorView, setEditorView] = useState<EditorView | null>(null);
   function onContent(view: EditorView) {
+    setEditorView(view);
     if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
     const path = srcKey;
     debounceRef.current = window.setTimeout(() => setBuf({ path, text: view.state.doc.toString() }), 200);
@@ -147,6 +151,8 @@ export function MarkdownPane(
             visible={visible && showPreview}
             ownsFind={ownsFind && showPreview}
             editorVisible={showEditor}
+            syncView={view === "split" ? editorView : null}
+            commentFile={tab.type === "edit" ? tab.path : undefined}
             remoteImagesAllowed={remoteImagesAllowed}
             onUnblockRemoteImages={
               remoteImagesAllowed ? undefined
