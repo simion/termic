@@ -3,7 +3,7 @@ import {
   DEFAULT_BINDINGS, DEFAULT_RECENT_TABS, FIXED_SHORTCUTS, GESTURE_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
   bindingFromEvent, bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, codeGlyph,
   conflicts, holdGestureFromEvent, holdGestureGlyphs, holdGestureText, holdHeld, holdReleased,
-  isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, tokenForCode,
+  isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, terminalPassesToApp, tokenForCode,
 } from "./shortcuts";
 
 // `SHORTCUT_DEFS` is the single source of truth for every bindable key, and it
@@ -561,5 +561,36 @@ describe("bindingText", () => {
   });
   it("keeps the glyph run on macOS", () => {
     expect(bindingText({ key: "p", cmd: true, shift: true, alt: false }, true)).toBe("⇧⌘P");
+  });
+});
+
+// TerminalPane's PASS_TO_APP. On macOS Ctrl is the terminal's own modifier
+// (GH #10), and useShortcuts bails on a Mac Ctrl chord in a terminal, so a
+// Ctrl press the terminal handed over would reach neither the shell nor the
+// app. Only Cmd may be taken there.
+describe("terminalPassesToApp", () => {
+  const ev = (key: string, mods: { ctrl?: boolean; meta?: boolean; shift?: boolean; alt?: boolean }) => ({
+    key, code: `Key${key.toUpperCase()}`,
+    ctrlKey: !!mods.ctrl, metaKey: !!mods.meta, shiftKey: !!mods.shift, altKey: !!mods.alt,
+    getModifierState: () => false,
+  }) as unknown as KeyboardEvent;
+  const binds = { ...DEFAULT_BINDINGS, "search-everywhere": { cmd: true, shift: false, alt: false, key: "r" } };
+  const ids = ["file-finder", "search-everywhere"] as const;
+
+  it("on macOS hands over ⌘R bound to Search everywhere", () => {
+    expect(terminalPassesToApp(ev("r", { meta: true }), binds, ids, true)).toBe(true);
+  });
+
+  it("on macOS keeps ⌃R (reverse search) for the shell, though ⌘R is bound", () => {
+    expect(terminalPassesToApp(ev("r", { ctrl: true }), binds, ids, true)).toBe(false);
+    // The same for the shipped ⌘P: ⌃P is readline's previous line.
+    expect(terminalPassesToApp(ev("p", { ctrl: true }), binds, ids, true)).toBe(false);
+    expect(terminalPassesToApp(ev("p", { meta: true }), binds, ids, true)).toBe(true);
+  });
+
+  it("off macOS keeps plain Ctrl+letter, and takes it with Shift or Alt", () => {
+    expect(terminalPassesToApp(ev("r", { ctrl: true }), binds, ids, false)).toBe(false);
+    const shifted = { ...binds, "search-everywhere": { cmd: true, shift: true, alt: false, key: "r" } };
+    expect(terminalPassesToApp(ev("r", { ctrl: true, shift: true }), shifted, ids, false)).toBe(true);
   });
 });

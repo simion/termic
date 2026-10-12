@@ -34,7 +34,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
-import { IS_MAC, bindingMatches, isAppChordInTerminal, matchesTerminalAppBinding, superIsHeld, type ShortcutId } from "@/lib/shortcuts";
+import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld, terminalPassesToApp, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId, sessionHolder } from "@/lib/agentHooks";
 import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
@@ -1376,9 +1376,10 @@ const captureArmedRef = useRef(false);
     // so user rebinds are honored.
     const PASS_TO_APP: ShortcutId[] = [
       "file-finder", "find-in-files", "broadcast", "open-settings",
-      // Unbound by default; once recorded it must reach the app from a
-      // terminal too, the way double-Shift does (that one is tracked on the
-      // window, so it never needed passing).
+      // Unbound by default; once recorded it reaches the app from a terminal
+      // too, the way double-Shift does (that one is tracked on the window, so
+      // it never needed passing). On macOS with Cmd; elsewhere only when the
+      // chord carries Shift or Alt, since plain Ctrl+letter is the shell's.
       "search-everywhere",
     ];
     term.attachCustomKeyEventHandler((e) => {
@@ -1411,13 +1412,10 @@ const captureArmedRef = useRef(false);
       if (e.type === "keydown" && isTerminalCloseCombo(e, IS_MAC)) return false;
       if (e.type === "keydown") {
         const binds = usePrefs.getState().shortcuts;
-        // Off macOS the app's Cmd is Ctrl, and plain Ctrl+letter belongs to
-        // the shell (Ctrl+P is readline's previous-line). Only a binding that
-        // also carries Shift or Alt is taken from the terminal there.
-        if (PASS_TO_APP.some(id => {
-          const b = binds[id];
-          return matchesTerminalAppBinding(e, b, IS_MAC);
-        })) {
+        // macOS: the Cmd press only (Ctrl is the shell's, ⌃R stays reverse
+        // search). Elsewhere: only a binding that also carries Shift or Alt,
+        // since plain Ctrl+letter is the shell's. See terminalPassesToApp.
+        if (terminalPassesToApp(e, binds, PASS_TO_APP)) {
           return false; // let the global handler take it (file finder, find-in-files, …)
         }
         // The same rule for EVERY shortcut, not only the four above: a chord

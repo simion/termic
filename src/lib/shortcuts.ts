@@ -617,6 +617,27 @@ export function isAppChordInTerminal(e: KeyboardEvent, binds: Partial<BindingMap
   return false;
 }
 
+/** The few app chords a focused TERMINAL hands to the app instead of the
+ *  PTY (TerminalPane's `PASS_TO_APP`). xterm would otherwise send the key down
+ *  and preventDefault it, so the window handler never fires.
+ *
+ *  On macOS only the Cmd press is taken. `bindingMatches` folds Ctrl into
+ *  `cmd`, so ⌘R bound to a command would match ⌃R as well; but Ctrl is the
+ *  terminal's own modifier there (GH #10), and useShortcuts bails on a Ctrl
+ *  chord in a terminal, so a ⌃R handed over would reach neither the shell
+ *  (reverse search) nor the app. Off macOS the app's Cmd is Ctrl, and plain
+ *  Ctrl+letter belongs to the shell (Ctrl+P is readline's previous line), so
+ *  only a binding that also carries Shift or Alt is taken there. */
+export function terminalPassesToApp(
+  e: KeyboardEvent, binds: Partial<BindingMap>, ids: readonly ShortcutId[], isMac: boolean = IS_MAC,
+): boolean {
+  return ids.some(id => {
+    const b = binds[id];
+    const allowed = isMac ? e.metaKey : !!b?.shift || !!b?.alt;
+    return allowed && bindingMatches(e, b);
+  });
+}
+
 /** Tab, including Shift+Tab on Linux. X gives Shift+Tab its own keysym
  *  (ISO_Left_Tab) and WebKitGTK reports it as `key: "Unidentified"`, so a
  *  check on `key` alone never saw ⌃⇧⇥ there. `code` is the physical key. */

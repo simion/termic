@@ -148,8 +148,14 @@ everyone else. Recording a chord is optional, and the chord and double-Shift
 are independent: either can be off while the other works. Its row in
 Settings carries the chord recorder ("Not set" while unbound) and, beside it,
 the double-Shift mode select. A recorded chord is in `PASS_TO_APP`
-(TerminalPane), so it works with a terminal focused, the way double-Shift does
-(that one is tracked on the window, so it never needed passing).
+(TerminalPane), so it reaches the app with a terminal focused, the way
+double-Shift does (that one is tracked on the window, so it never needed
+passing). That holds as recorded only on macOS, and only for the Cmd press:
+`terminalPassesToApp` leaves ⌃R with the shell even when ⌘R is bound, because
+`bindingMatches` folds Ctrl into `cmd` and useShortcuts bails on a Mac Ctrl
+chord in a terminal, so a handed-over ⌃R reached nobody. Off macOS a chord is
+taken from a terminal only if it carries Shift or Alt; a plain Ctrl+letter
+stays the shell's.
 
 `defaultBinding: Binding | null` and `BindingMap = Record<ShortcutId, Binding |
 null>` are what make that possible. `bindingMatches` treats null as no match,

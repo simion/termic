@@ -293,7 +293,8 @@ export function useShortcuts() {
 
         // Search everywhere's chord: unbound by default (double-Shift is the
         // gesture), so this only fires once somebody records one. Reaches here
-        // from a focused terminal through TerminalPane's PASS_TO_APP.
+        // from a focused terminal through TerminalPane's PASS_TO_APP: on macOS
+        // with Cmd, elsewhere only if the chord carries Shift or Alt.
         case "search-everywhere":
           if (!taskId) return;
           e.preventDefault();
