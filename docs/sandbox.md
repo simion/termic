@@ -354,11 +354,33 @@ as complete:
   repeats the dir and data-protection probes with a positive control;
   like every live cage test it needs an uncaged shell. Service names
   move between macOS releases: re-enumerate when a new one ships.
-- the header still allows every other `mach-lookup`, launchd included.
-  Whether a caged agent can have launchd run something outside the cage
-  (`launchctl submit`, `open x.command`) and read the Keychain from
-  there has not been measured. If it can, that is a hole in the cage as
-  a whole, not in this block.
+- the header still allows every other `mach-lookup`, launchd included,
+  but the operations that hand work to something outside the cage are
+  separate Seatbelt operations the header never allows, so `(deny
+  default)` refuses them. Measured 2026-10-12 on macOS 26.5, same
+  EnforceFs profile, each route trying to run `security list-keychains`
+  outside the cage into `/private/tmp`, with an uncaged positive
+  control per route (all four controls ran it):
+
+  | Route | Seatbelt operation | Caged |
+  |---|---|---|
+  | `launchctl submit` | `job-creation` | blocked |
+  | `open x.command` | `lsopen` | blocked |
+  | `osascript` telling Terminal to `do script` | `appleevent-send` | blocked |
+  | `osascript` `do shell script` (in-process) | none, stays caged | runs, Keychain unreachable |
+
+  The header is shared by every enforcing cage, so this holds with or
+  without the Keychain block.
+- what the table above does not close: delayed handoff through files
+  the cage can write and something uncaged later runs. The shell
+  startup files on the runtime list (`.zshrc`, `.zshenv`, `.zprofile`,
+  `.bashrc`), the parent repo's `.git/` (hooks, `core.fsmonitor`) and
+  the task's setup / run scripts all execute outside the cage (an
+  AuxTerminal, your own terminal, termic's own `git`). An agent can
+  plant a `security find-generic-password` there and read its output
+  on the next run. Not fixed by the Keychain block; anything that
+  claims an agent cannot see a Keychain secret has to close these
+  first, or say "cannot read it directly".
 
 TLS does not need the Keychain services in any stack tried (Codex and
 sandbox-runtime keep `SecurityServer` "for TLS"; not needed here).
