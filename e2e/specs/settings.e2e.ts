@@ -2278,6 +2278,14 @@ describe("double-Shift mode", () => {
 
 // The chord half of Search everywhere: optional, unbound by default, and
 // recorded like any other row. Double-Shift stays beside it (above).
+// An earlier case in this file leaves the command palette open over the
+// settings pane. Close it so the recorder clicks and the snaps land on the
+// rows, not on the palette.
+async function closePalette(): Promise<void> {
+  await browser.execute(() => window.__termic!.useUI.getState().closeCommandPalette());
+  await waitGone('input[placeholder*="Type a command"]');
+}
+
 describe("search everywhere chord", () => {
   const ROW = '[data-row-id="search-everywhere"]';
   const RECORDER = `${ROW} [data-testid="shortcut-recorder"]`;
@@ -2299,6 +2307,7 @@ describe("search everywhere chord", () => {
   it("reads Not set by default", async () => {
     await waitForAppShell();
     await requireTermicApi();
+    await closePalette();
     original = await binding();
     await browser.execute(() => {
       window.__termic!.usePrefs.getState().resetShortcut("search-everywhere");
@@ -2328,6 +2337,8 @@ describe("search everywhere chord", () => {
     const text = await textOf(RECORDER);
     expect(text).toContain("Shift");
     expect(text).toContain("O");
+    await browser.execute((sel) => document.querySelector(sel)?.scrollIntoView({ block: "center" }), ROW);
+    await snap("search-everywhere-recorded.png");
   });
 
   it("resets to Not set", async () => {
@@ -2383,6 +2394,7 @@ describe("recently used tabs gesture", () => {
   it("shows ⌃⇥ with an Off / On select, and no reset at the default", async () => {
     await waitForAppShell();
     await requireTermicApi();
+    await closePalette();
     [originalGesture, originalMode, originalSearch] = await browser.execute(() => {
       const p = window.__termic!.usePrefs.getState();
       return [p.recentTabsGesture, p.ctrlTabMode, p.shortcuts["search-everywhere"]] as [unknown, string, unknown];
