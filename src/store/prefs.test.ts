@@ -105,7 +105,7 @@ describe("prefs: doubleShiftMode", () => {
 // The recently-used-tabs gesture. Absent has to mean ⌃⇥, which is what every
 // profile from before it was recordable has, so no migration exists to get
 // wrong. A Cmd gesture is not usable off macOS and this test environment is
-// not a Mac, so the platform-neutral Option/Alt gesture is the one stored.
+// not a Mac, so a Ctrl gesture on a key other than Tab is the one stored.
 describe("prefs: recentTabsGesture", () => {
   const KEY = "recentTabsGesture";
   beforeEach(() => {
@@ -120,9 +120,9 @@ describe("prefs: recentTabsGesture", () => {
   });
 
   it("reads back a stored gesture", async () => {
-    localStorage.setItem(KEY, JSON.stringify({ hold: "alt", code: "Backquote" }));
+    localStorage.setItem(KEY, JSON.stringify({ hold: "ctrl", code: "Semicolon" }));
     const { usePrefs } = await import("./prefs");
-    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "alt", code: "Backquote" });
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "ctrl", code: "Semicolon" });
   });
 
   it("reads garbage as the default, and leaves the stored value alone", async () => {
@@ -134,9 +134,9 @@ describe("prefs: recentTabsGesture", () => {
 
   it("persists what it is set to, as JSON", async () => {
     const { usePrefs } = await import("./prefs");
-    usePrefs.getState().setRecentTabsGesture({ hold: "alt", code: "Backquote" });
-    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "alt", code: "Backquote" });
-    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "alt", code: "Backquote" });
+    usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Semicolon" });
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "ctrl", code: "Semicolon" });
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "ctrl", code: "Semicolon" });
   });
 
   it("does not publish an unchanged gesture", async () => {
@@ -152,9 +152,9 @@ describe("prefs: recentTabsGesture", () => {
     // Config sync writes the key behind the store's back.
     const { usePrefs, reloadPrefsFromStorage } = await import("./prefs");
     expect(reloadPrefsFromStorage()).not.toContain("recentTabsGesture");
-    localStorage.setItem(KEY, JSON.stringify({ hold: "alt", code: "Backquote" }));
+    localStorage.setItem(KEY, JSON.stringify({ hold: "ctrl", code: "Semicolon" }));
     expect(reloadPrefsFromStorage()).toContain("recentTabsGesture");
-    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "alt", code: "Backquote" });
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "ctrl", code: "Semicolon" });
     expect(reloadPrefsFromStorage()).not.toContain("recentTabsGesture");
   });
 });

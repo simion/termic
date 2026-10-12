@@ -268,26 +268,52 @@ and the landing by `holdReleased` (the flag going false). `endsGesture` in
 `lib/ctrlTab.ts` takes the tap code, so a dead key's `key` cannot end the walk.
 
 The recorder (`holdGestureFromEvent`) takes one held modifier plus a key and
-ignores Shift (it reverses). It refuses, with a message each:
+ignores Shift (it reverses). The rules are `holdGestureError`, which the
+stored-value parser shares. One principle: the walk's capture listener
+`preventDefault`s and stops every press of the gesture, everywhere outside
+Settings and dialogs, so the gesture may only take a key nothing else needs.
+It refuses, with a message each:
 
-- **none, or two modifiers**, and Enter / Backspace / Space: "Hold exactly one
-  of Ctrl, Option, Cmd and press a key." (Ctrl, Alt off macOS; Cmd is only a
-  choice on macOS). Esc cancels the recording.
-- **what the OS keeps**: ⌘⇥, ⌘Space and ⌃Space on macOS; Alt+Tab and the
-  Windows / Super key with anything elsewhere. "⌘⇥ belongs to the system,
+- **none, or two modifiers**: "Hold exactly one of Ctrl, Option, Cmd and
+  press a key." (Ctrl, Alt off macOS; Cmd is only a choice on macOS). Esc
+  cancels the recording.
+- **what the OS keeps**: ⌘⇥, ⌘\`, ⌘Space and ⌃Space on macOS. Elsewhere the
+  Windows / Super key with anything, and Alt with Tab, F4, Space, \` (GNOME's
+  switch between an application's windows), F1, F2, F7, F8 and F10 (GNOME's
+  overview, run dialog, move, resize, maximize). "⌘⇥ belongs to the system,
   Termic never sees it." These are checked first, so somebody who pressed ⌘⇥
   with another modifier down is told the real reason.
-- **Ctrl + letter or digit**: readline's (^R, ^P, ^W), and the gesture claims
-  its key before xterm sees it.
+- **Enter, Space, Backspace**: they drive the recorder itself. A message of
+  their own; they used to get "hold exactly one", which told somebody who
+  held exactly one that they had not.
+- **arrows, Home, End, Page Up / Down**, with any modifier: Option and Ctrl
+  move by word, Cmd to the line's ends, ⌃+arrow on macOS is Mission Control.
+- **Ctrl + letter, digit, or a key that makes a control character**
+  (`` [ \ ] / - ` ``): ^R, ^P, ^W are readline's, ^[ is ESC, ^\ is SIGQUIT,
+  ^] is GS, ^/ and ^- (^_ once the walk's Shift is on it) are undo, ^\` is
+  NUL in most terminals. All platforms.
 - **Cmd + letter or digit** (macOS): copy, paste, cut, undo, quit, close.
-  The walk's capture listener `preventDefault`s every press of the gesture,
-  so ⌘C recorded here would kill copy app-wide, and `conflicts` could not
-  say so: ⌘C and ⌘V are the system's, not `SHORTCUT_DEFS`.
-- **Option / Alt + letter or digit**: it types a character on macOS, and is the
-  agent's own chord in a terminal elsewhere. Option + a symbol (`) is allowed:
-  the keydown is claimed with `preventDefault`, which is what has to stop the
-  dead-key composition (verified by hand, not by the suite: a synthetic event
-  starts no composition).
+  ⌘C recorded here would kill copy app-wide, and `conflicts` could not say
+  so: ⌘C and ⌘V are the system's, not `SHORTCUT_DEFS`.
+- **Option + any key with a character** (macOS): letters, digits and
+  punctuation all type something (å, …, æ), and \` is the dead key for à and
+  è. `preventDefault` would stop the composition, but the character is the
+  point: claiming Option + \` takes accented typing away from every editor
+  and prompt. Option + Tab is what is left, plus the function keys.
+- **Alt + any key with a character** (off macOS): Alt is Meta to the
+  terminal, so Alt+B / F move by word and Alt+. yanks the last argument.
+  Punctuation is no different from letters there.
+
+Every key refusal names what DOES record with that modifier here
+(`holdAllowedKeys`: Ctrl takes Tab ; ' , . = everywhere; Option takes Tab;
+Cmd takes ; ' , .; off macOS Alt takes only F3 F5 F6 F9 F11 F12), and
+`shortcuts.test.ts` records every key the list names, so the advice cannot
+point at a refusal. The default ⌃⇥ and at least one alternative stay
+recordable on every platform.
+
+Matching is by `code`, so the rules are about physical keys on a US layout:
+on a German layout `BracketLeft` is ü, and Ctrl+ü is refused as Ctrl+[.
+That errs on the side of refusing.
 
 **A Cmd hold** (macOS): WebKit drops the keyup of a non-modifier key while Cmd
 is held, so the tap's keyup may never arrive. Nothing depends on it: landing
@@ -296,11 +322,14 @@ reads the modifier's own release.
 **Why it may take a Ctrl chord at all**, when GH #10 deliberately gave Ctrl to
 the terminal: with the default, nothing observable is lost. xterm's
 `evaluateKeyboardEvent` reads only `shiftKey` for Tab, so ⌃⇥ reaches the PTY as
-a plain `\t` and ⌃⇧⇥ as a plain `ESC[Z` — byte-identical to ⇥ and ⇧⇥, which are
+a plain `\t` and ⌃⇧⇥ as a plain `ESC[Z`, byte-identical to ⇥ and ⇧⇥, which are
 untouched. No program on the far end could tell the difference, so there was
-no binding there to take. That is also why the recorder refuses Ctrl+letter:
-those ARE readline's. It is still switchable off in Settings for anyone who
-wants that rule to have no exceptions.
+no binding there to take. A rebound Ctrl gesture is held to the closest rule
+the recorder can enforce: Ctrl + ; ' , . = make no control character, so
+readline has nothing bound to them, but a TUI on an extended keyboard
+protocol could tell them apart and would lose that key. The gesture is still
+switchable off in Settings for anyone who wants the rule to have no
+exceptions.
 
 **Three listeners, not the usual one.** A window **capture**-phase `keydown`,
 because xterm listens on its own textarea and its `cancel()` calls

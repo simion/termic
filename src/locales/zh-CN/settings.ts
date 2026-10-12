@@ -497,7 +497,10 @@ export default {
     recentTabsRecorderAria: "录制「最近使用的标签页」手势",
     holdNeedsOne: "请只按住 {{mods}} 中的一个，再按一个键。",
     holdOsReserved: "{{keys}} 归系统所有，Termic 收不到它。",
+    holdRecorderKey: "Enter、空格和 Backspace 不能用作点按的键。可与 {{mod}} 搭配的键：{{allowed}}",
+    holdMovesCursor: "{{mod}} 加这个键会移动光标或切换桌面。可与 {{mod}} 搭配的键：{{allowed}}",
     holdTerminalKey: "{{mod}} 加这个键会向终端发送控制字符（^R、^W）。可与 {{mod}} 搭配的键：{{allowed}}",
+    holdMetaKey: "{{mod}} 加这个键会作为 Meta 键发给终端（Alt+B、Alt+.）。可与 {{mod}} 搭配的键：{{allowed}}",
     holdTypes: "{{mod}} 加这个键会输入字符。可与 {{mod}} 搭配的键：{{allowed}}",
     holdAppKey: "{{mod}} 加字母或数字是应用或系统的快捷键（复制、粘贴、退出）。可与 {{mod}} 搭配的键：{{allowed}}",
 

@@ -6,8 +6,9 @@
 //
 // Two kinds of recorder. A chord row records a `Binding` (one combination
 // pressed at once). The recently-used-tabs row records a `HoldGesture` (a
-// modifier to hold and a key to tap), with refusals of its own: the system's
-// chords, Ctrl+letter (readline's) and Option+letter (it types).
+// modifier to hold and a key to tap), with refusals of its own (the system's
+// chords, keys the terminal or the editor needs, keys that type): the rules
+// are `holdGestureError` in lib/shortcuts.ts.
 
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -102,7 +103,10 @@ export function ShortcutsSection() {
       switch (err.kind) {
         case "holdNeedsOne": return t("shortcuts.holdNeedsOne", { mods: holdModifierChoices() });
         case "holdOsReserved": return t("shortcuts.holdOsReserved", { keys: err.keys });
+        case "holdRecorderKey": return t("shortcuts.holdRecorderKey", { mod: err.mod, allowed: err.allowed });
+        case "holdMovesCursor": return t("shortcuts.holdMovesCursor", { mod: err.mod, allowed: err.allowed });
         case "holdTerminalKey": return t("shortcuts.holdTerminalKey", { mod: err.mod, allowed: err.allowed });
+        case "holdMetaKey": return t("shortcuts.holdMetaKey", { mod: err.mod, allowed: err.allowed });
         case "holdTypes": return t("shortcuts.holdTypes", { mod: err.mod, allowed: err.allowed });
         case "holdAppKey": return t("shortcuts.holdAppKey", { mod: err.mod, allowed: err.allowed });
       }

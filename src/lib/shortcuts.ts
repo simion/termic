@@ -294,7 +294,8 @@ export const DEFAULT_RECENT_TABS: HoldGesture = { hold: "ctrl", code: "Tab" };
 /** A refusal about the tapped key. Each names the held modifier (`mod`) and
  *  the keys that DO work with it here (`allowed`), so the message leads to a
  *  gesture that records instead of to another refusal. */
-export type HoldKeyErrorKind = "holdTerminalKey" | "holdTypes" | "holdAppKey";
+export type HoldKeyErrorKind =
+  | "holdRecorderKey" | "holdMovesCursor" | "holdTerminalKey" | "holdTypes" | "holdMetaKey" | "holdAppKey";
 
 /** Why a recorded hold gesture was refused. Each `kind` is a locale key under
  *  `settings:shortcuts.*`; `keys` fills `holdOsReserved`. */
@@ -382,6 +383,28 @@ export function holdModifierChoices(isMac: boolean = IS_MAC): string {
 
 const ALNUM_CODE = /^(Key[A-Z]|Digit[0-9])$/;
 
+/** Every key that has a character: letters, digits, and the punctuation in
+ *  CODE_CHAR (IntlBackslash included). */
+function typesCharacter(code: string): boolean {
+  return ALNUM_CODE.test(code) || code in CODE_CHAR;
+}
+
+/** Ctrl with these sends a C0 control character down a terminal: ^[ is ESC,
+ *  ^\ SIGQUIT, ^] GS (xterm's own table), ^/ and ^- (^_ with Shift, which
+ *  the walk's reverse adds) readline's undo, ^` NUL in most terminals. */
+const CTRL_CONTROL_CODES = new Set(["BracketLeft", "BracketRight", "Backslash", "Slash", "Minus", "Backquote"]);
+
+/** Keys that move a cursor with every modifier on some platform: Option and
+ *  Ctrl+arrow by word, ⌘+arrow to the line's ends, Home / End / Page. ⌃+arrow
+ *  on macOS is Mission Control. */
+const CURSOR_CODES = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+
+/** Off macOS, what Windows and the Linux desktops do with Alt held: Tab
+ *  switches windows, F4 closes one, Space opens the window menu, ` switches
+ *  between an application's windows (GNOME), and F1, F2, F7, F8, F10 are
+ *  GNOME's overview, run dialog, move, resize and maximize. */
+const ALT_OS_CODES = new Set(["Tab", "F4", "Space", "Backquote", "F1", "F2", "F7", "F8", "F10"]);
+
 /** The keys a hold on `hold` can be recorded with on this platform, as the
  *  refusals print them ("Keys that work with Ctrl: ..."). A sample that is
  *  sure to record, not an exhaustive list: function keys work too. Kept next
@@ -389,7 +412,7 @@ const ALNUM_CODE = /^(Key[A-Z]|Digit[0-9])$/;
  *  (`shortcuts.test.ts` records every key it names). */
 export function holdAllowedKeys(hold: HoldModifier, isMac: boolean = IS_MAC): string {
   if (hold === "ctrl") return "Tab ; ' , . =";
-  if (hold === "alt") return isMac ? "Tab" : "F1-F3 F5-F12";
+  if (hold === "alt") return isMac ? "Tab" : "F3 F5 F6 F9 F11 F12";
   return isMac ? "; ' , ." : "";
 }
 
@@ -402,28 +425,37 @@ function keyError(kind: HoldKeyErrorKind, hold: HoldModifier, isMac: boolean): H
 export function holdGestureError(g: HoldGesture, isMac: boolean = IS_MAC): HoldError | null {
   if (!g.code || MODIFIER_CODES.has(g.code)) return { kind: "holdNeedsOne" };
   if (isMac) {
-    // ⌘⇥ is the app switcher, ⌘Space Spotlight, ⌃Space the input source
-    // switcher: the system takes all three before the webview sees them.
-    if ((g.hold === "cmd" && (g.code === "Tab" || g.code === "Space"))
+    // ⌘⇥ is the app switcher, ⌘` the next window, ⌘Space Spotlight, ⌃Space
+    // the input source switcher: the system takes them before the webview
+    // sees them.
+    if ((g.hold === "cmd" && (g.code === "Tab" || g.code === "Space" || g.code === "Backquote"))
         || (g.hold === "ctrl" && g.code === "Space")) {
       return { kind: "holdOsReserved", keys: holdGestureText(g, true) };
     }
-  } else if (g.hold === "cmd" || (g.hold === "alt" && g.code === "Tab")) {
-    // Alt+Tab is the window switcher on Windows and every Linux desktop, and
-    // the Windows / Super key is the desktop's whatever it is held with.
+  } else if (g.hold === "cmd" || (g.hold === "alt" && ALT_OS_CODES.has(g.code))) {
+    // The Windows / Super key is the desktop's whatever it is held with.
     return { kind: "holdOsReserved", keys: holdGestureText(g, false) };
   }
   // Keys that confirm, clear or type in the recorder itself.
   if (g.code === "Enter" || g.code === "NumpadEnter" || g.code === "Backspace"
       || g.code === "Escape" || g.code === "Space") {
-    return { kind: "holdNeedsOne" };
+    return keyError("holdRecorderKey", g.hold, isMac);
   }
+  if (CURSOR_CODES.has(g.code)) return keyError("holdMovesCursor", g.hold, isMac);
   // Ctrl+letter is readline's (^R, ^P, ^W...), and the gesture claims its key
-  // before xterm sees it, so it would take one away from every shell.
-  if (g.hold === "ctrl" && ALNUM_CODE.test(g.code)) return keyError("holdTerminalKey", g.hold, isMac);
-  // Option / Alt + letter types a character (å, ∫...) on macOS, and is the
-  // agent's own chord in a terminal elsewhere.
-  if (g.hold === "alt" && ALNUM_CODE.test(g.code)) return keyError("holdTypes", g.hold, isMac);
+  // before xterm sees it, so it would take one away from every shell. The
+  // same for the punctuation that makes a control character.
+  if (g.hold === "ctrl" && (ALNUM_CODE.test(g.code) || CTRL_CONTROL_CODES.has(g.code))) {
+    return keyError("holdTerminalKey", g.hold, isMac);
+  }
+  if (g.hold === "alt" && typesCharacter(g.code)) {
+    // macOS: Option + any of these types a character (å, …, æ) or starts one
+    // (` is the dead key for à and è). preventDefault would stop the
+    // composition, but the point is the character: claiming the key takes
+    // it away from every editor and prompt. Elsewhere Alt is Meta to the
+    // terminal: Alt+B and Alt+F move by word, Alt+. yanks the last argument.
+    return keyError(isMac ? "holdTypes" : "holdMetaKey", g.hold, isMac);
+  }
   // ⌘ + letter or digit is copy, paste, cut, undo, quit, close... The walk's
   // capture listener preventDefaults every press of the gesture, so ⌘C here
   // would kill copy app-wide, and `conflicts` cannot say so: ⌘C / ⌘V are not
@@ -536,10 +568,13 @@ export const DOUBLE_SHIFT_MODES: DoubleShiftMode[] =
  *  be a cycle.
  *
  *  On/off rather than the four modes double-Shift needs, because the awkward
- *  question that one answers ("should this fire while I am typing?") has no
- *  equivalent here: the recorder only accepts keys that type nothing while
- *  the modifier is held (holdGestureError). The id keeps its historic name
- *  so stored prefs carry over. */
+ *  question that one answers ("should this fire while I am typing?") is
+ *  answered by the recorder instead: holdGestureError refuses a key that
+ *  types with the held modifier (Option + anything with a character), one
+ *  the terminal reads (Ctrl + letter or control character, Alt as Meta off
+ *  macOS), one that moves the cursor, and the app's and system's own (⌘C,
+ *  ⌘⇥). What is left is Tab and a few symbol keys that do nothing there.
+ *  The id keeps its historic name so stored prefs carry over. */
 export type CtrlTabMode = "off" | "on";
 
 /** Labelled plain Off / On: the gesture itself sits on the recorder beside

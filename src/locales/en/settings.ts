@@ -510,7 +510,10 @@ export default {
     // platform names it. {{allowed}}: keys that do record with it here
     // (lib/shortcuts.ts holdAllowedKeys), so no sentence end after it: a
     // period would read as one more key.
+    holdRecorderKey: "Enter, Space and Backspace cannot be the key you tap. Keys that work with {{mod}}: {{allowed}}",
+    holdMovesCursor: "{{mod}} with that key moves the cursor or switches desktops. Keys that work with {{mod}}: {{allowed}}",
     holdTerminalKey: "{{mod}} with that key sends the terminal a control character (^R, ^W). Keys that work with {{mod}}: {{allowed}}",
+    holdMetaKey: "{{mod}} with that key reaches the terminal as Meta (Alt+B, Alt+.). Keys that work with {{mod}}: {{allowed}}",
     holdTypes: "{{mod}} with that key types a character. Keys that work with {{mod}}: {{allowed}}",
     holdAppKey: "{{mod}} with a letter or digit is an app or system shortcut (copy, paste, quit). Keys that work with {{mod}}: {{allowed}}",
 

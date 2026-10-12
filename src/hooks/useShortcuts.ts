@@ -769,7 +769,9 @@ export function useShortcuts() {
  * xterm's `evaluateKeyboardEvent` reads only `shiftKey` for Tab, so ⌃⇥ goes
  * down the PTY as a plain `\t` and ⌃⇧⇥ as a plain `ESC[Z` — byte-identical to
  * ⇥ and ⇧⇥, which still reach the shell untouched. The recorder refuses
- * Ctrl+letter for exactly this reason (those ARE readline's). It is still
+ * Ctrl+letter and the keys that make a control character for exactly this
+ * reason (those ARE readline's), and every other key something else needs
+ * (holdGestureError, docs/shortcuts.md). It is still
  * switchable off in Settings, for anyone who wants that rule to have no
  * exceptions at all.
  *
