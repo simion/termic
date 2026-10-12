@@ -793,109 +793,7 @@ function useCtrlTabWalk() {
   const held = useRef<HoldGesture | null>(null);
 
   useEffect(() => {
-    /** True when the key is not ours to take right now. */
-    function standDown(): boolean {
-      if (usePrefs.getState().ctrlTabMode === "off") return true;
-      // Both halves are needed, and gotchas.md says why: the hand-rolled
-      // Settings overlay traps and autofocuses nothing, so `activeElement`
-      // never enters it and only the store flag sees it. Without this, the
-      // first press of a walk would close Settings, because `setActiveTask`
-      // replaces `view` rather than spreading it. It is also what lets the
-      // Settings recorder record the gesture itself.
-      if (useApp.getState().view.settingsOpen) return true;
-      return !!(document.activeElement as HTMLElement | null)?.closest?.('[role="dialog"]');
-    }
-
-    /** Finish the walk: land properly on wherever it stopped. */
-    function land() {
-      const { commit, origin } = endCtrlTab(walk.current);
-      walk.current = IDLE;
-      held.current = null;
-      if (commit) {
-        const app = useApp.getState();
-        // `setActiveTask` resets the DEPARTING tab's activity timestamps so
-        // the idle heuristic needs a fresh input→output cycle. It derives
-        // "departing" from `activeTaskId`, which the walk has already moved,
-        // so do it here where both ends are known — and only for a real move
-        // between tasks, or a walk that wrapped home would fire it for nothing.
-        if (origin && origin.taskId !== commit.taskId) {
-          const from = (app.tabs[origin.taskId] ?? []).find(t => t.id === origin.tabId);
-          if (from?.type === "terminal") {
-            app.patchTab(origin.taskId, origin.tabId, { lastInputAt: null, lastOutputAt: null });
-          }
-        }
-        // The real setters, the same path a click takes, so the arrival
-        // bookkeeping (badges cleared, project expanded, recents) happens
-        // exactly once — for the place the user actually stopped on, never for
-        // the ones they flashed past.
-        app.setActiveTask(commit.taskId);
-        app.setActiveTabId(commit.taskId, commit.tabId);
-        // Recorded explicitly rather than left to the tracker: the pointers
-        // ALREADY hold the destination by now, so there is no guarantee the
-        // commit changes them and fires the subscription.
-        useRecentPlaces.getState().push(commit);
-        // Focus must follow a keyboard switch, or the tab that just left keeps
-        // it and still receives keystrokes (panes stay mounted, so a hidden one
-        // can still hold focus). Terminals re-focus themselves when their task
-        // becomes active, but an EDITOR tab in another task does not, so this
-        // is the only thing that lands focus in that case. Once per gesture,
-        // not once per step, so the ordinary retry budget is right here.
-        focusMainTab(commit.tabId);
-      }
-      // After the tracker's own pending flush, which must still see the walk
-      // as in flight so it does not re-record what was just pushed.
-      queueMicrotask(resumeRecording);
-    }
-
-    function onKeyDown(e: KeyboardEvent) {
-      const state = walk.current;
-      const g = held.current ?? usePrefs.getState().recentTabsGesture;
-      const code = eventCode(e);
-      // Exactly the one modifier: ⌥⌃⇥ is somebody else's chord.
-      if (code === g.code && holdHeld(e, g.hold)) {
-        if (!state.active && standDown()) return;
-        // Claimed even when there is nowhere to go. The alternative is that
-        // the key silently types into whatever agent has focus, depending on
-        // state the user cannot see; a key that does nothing beats a key that
-        // does something unwanted in a prompt. preventDefault is also what
-        // keeps an Option + ` hold from starting a dead-key composition.
-        e.preventDefault();
-        e.stopPropagation();
-        if (!state.active) { suspendRecording(); held.current = g; }
-        const next = stepCtrlTab(state, {
-          shift: e.shiftKey,
-          repeat: e.repeat,
-          ring: () => buildRing(currentPlace(), livePlaces()),
-        });
-        walk.current = next.state;
-        if (next.target) useApp.getState().previewPlace(next.target.taskId, next.target.tabId);
-        return;
-      }
-      // A real keystroke ends the walk, and is NOT swallowed: the user meant
-      // it for whatever is now on screen. Modifiers and auto-repeats do not
-      // end it — Shift is how the walk reverses, and the held modifier
-      // repeats for as long as it is down.
-      if (state.active && endsGesture(e.key, e.repeat, code, g.code)) land();
-    }
-
-    function onKeyUp(e: KeyboardEvent) {
-      if (!walk.current.active) return;
-      const g = held.current ?? usePrefs.getState().recentTabsGesture;
-      // xterm calls focus() on itself for any non-modifier keyup, which during
-      // a walk would pull focus into a terminal that is on its way off screen.
-      if (eventCode(e) === g.code) { e.preventDefault(); e.stopPropagation(); }
-      // Off the modifier flag rather than the released key's name, as
-      // modKeyClass does: the name misses a release that arrives while another
-      // modifier is down, and misses synthetic sequences in tests.
-      if (holdReleased(e, g.hold)) land();
-    }
-
-    // NON-capture, and that is load-bearing. `blur` does not bubble but it
-    // DOES capture, so a capture listener would see every element blur — and
-    // the walk causes them, by hiding the pane it is leaving. It would abort
-    // on the first press. Same reasoning as modKeyClass.
-    function onBlur() { if (walk.current.active) land(); }
-
+    const { onKeyDown, onKeyUp, onBlur } = recentTabsWalkHandlers(walk, held);
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("blur", onBlur);
@@ -905,6 +803,122 @@ function useCtrlTabWalk() {
       window.removeEventListener("blur", onBlur);
     };
   }, []);
+}
+
+/** The walk's three listeners over its two refs, outside the hook so the
+ *  key handling is testable without rendering anything. */
+export function recentTabsWalkHandlers(
+  walk: { current: CtrlTabState },
+  held: { current: HoldGesture | null },
+): { onKeyDown: (e: KeyboardEvent) => void; onKeyUp: (e: KeyboardEvent) => void; onBlur: () => void } {
+  /** True when the key is not ours to take right now. */
+  function standDown(): boolean {
+    if (usePrefs.getState().ctrlTabMode === "off") return true;
+    // Both halves are needed, and gotchas.md says why: the hand-rolled
+    // Settings overlay traps and autofocuses nothing, so `activeElement`
+    // never enters it and only the store flag sees it. Without this, the
+    // first press of a walk would close Settings, because `setActiveTask`
+    // replaces `view` rather than spreading it. It is also what lets the
+    // Settings recorder record the gesture itself.
+    if (useApp.getState().view.settingsOpen) return true;
+    return !!(document.activeElement as HTMLElement | null)?.closest?.('[role="dialog"]');
+  }
+
+  /** Finish the walk: land properly on wherever it stopped. */
+  function land() {
+    const { commit, origin } = endCtrlTab(walk.current);
+    walk.current = IDLE;
+    held.current = null;
+    if (commit) {
+      const app = useApp.getState();
+      // `setActiveTask` resets the DEPARTING tab's activity timestamps so
+      // the idle heuristic needs a fresh input→output cycle. It derives
+      // "departing" from `activeTaskId`, which the walk has already moved,
+      // so do it here where both ends are known — and only for a real move
+      // between tasks, or a walk that wrapped home would fire it for nothing.
+      if (origin && origin.taskId !== commit.taskId) {
+        const from = (app.tabs[origin.taskId] ?? []).find(t => t.id === origin.tabId);
+        if (from?.type === "terminal") {
+          app.patchTab(origin.taskId, origin.tabId, { lastInputAt: null, lastOutputAt: null });
+        }
+      }
+      // The real setters, the same path a click takes, so the arrival
+      // bookkeeping (badges cleared, project expanded, recents) happens
+      // exactly once — for the place the user actually stopped on, never for
+      // the ones they flashed past.
+      app.setActiveTask(commit.taskId);
+      app.setActiveTabId(commit.taskId, commit.tabId);
+      // Recorded explicitly rather than left to the tracker: the pointers
+      // ALREADY hold the destination by now, so there is no guarantee the
+      // commit changes them and fires the subscription.
+      useRecentPlaces.getState().push(commit);
+      // Focus must follow a keyboard switch, or the tab that just left keeps
+      // it and still receives keystrokes (panes stay mounted, so a hidden one
+      // can still hold focus). Terminals re-focus themselves when their task
+      // becomes active, but an EDITOR tab in another task does not, so this
+      // is the only thing that lands focus in that case. Once per gesture,
+      // not once per step, so the ordinary retry budget is right here.
+      focusMainTab(commit.tabId);
+    }
+    // After the tracker's own pending flush, which must still see the walk
+    // as in flight so it does not re-record what was just pushed.
+    queueMicrotask(resumeRecording);
+  }
+
+  function onKeyDown(e: KeyboardEvent) {
+    const state = walk.current;
+    const g = held.current ?? usePrefs.getState().recentTabsGesture;
+    const code = eventCode(e);
+    // Exactly the one modifier: ⌥⌃⇥ is somebody else's chord.
+    if (code === g.code && holdHeld(e, g.hold)) {
+      if (!state.active && standDown()) return;
+      // Claimed even when there is nowhere to go. The alternative is that
+      // the key silently types into whatever agent has focus, depending on
+      // state the user cannot see; a key that does nothing beats a key that
+      // does something unwanted in a prompt. preventDefault is also what
+      // keeps an Option + ` hold from starting a dead-key composition.
+      e.preventDefault();
+      e.stopPropagation();
+      const next = stepCtrlTab(state, {
+        shift: e.shiftKey,
+        repeat: e.repeat,
+        ring: () => buildRing(currentPlace(), livePlaces()),
+      });
+      // Only once a walk has actually begun. An auto-repeat as the first
+      // keydown (the key was held while a dialog closed) leaves the walk
+      // idle, and only a landing undoes these two, which needs a live walk:
+      // the gesture would stay pinned and recording suspended for good.
+      if (!state.active && next.state.active) { suspendRecording(); held.current = g; }
+      walk.current = next.state;
+      if (next.target) useApp.getState().previewPlace(next.target.taskId, next.target.tabId);
+      return;
+    }
+    // A real keystroke ends the walk, and is NOT swallowed: the user meant
+    // it for whatever is now on screen. Modifiers and auto-repeats do not
+    // end it — Shift is how the walk reverses, and the held modifier
+    // repeats for as long as it is down.
+    if (state.active && endsGesture(e.key, e.repeat, code, g.code)) land();
+  }
+
+  function onKeyUp(e: KeyboardEvent) {
+    if (!walk.current.active) return;
+    const g = held.current ?? usePrefs.getState().recentTabsGesture;
+    // xterm calls focus() on itself for any non-modifier keyup, which during
+    // a walk would pull focus into a terminal that is on its way off screen.
+    if (eventCode(e) === g.code) { e.preventDefault(); e.stopPropagation(); }
+    // Off the modifier flag rather than the released key's name, as
+    // modKeyClass does: the name misses a release that arrives while another
+    // modifier is down, and misses synthetic sequences in tests.
+    if (holdReleased(e, g.hold)) land();
+  }
+
+  // NON-capture, and that is load-bearing. `blur` does not bubble but it
+  // DOES capture, so a capture listener would see every element blur — and
+  // the walk causes them, by hiding the pane it is leaving. It would abort
+  // on the first press. Same reasoning as modKeyClass.
+  function onBlur() { if (walk.current.active) land(); }
+
+  return { onKeyDown, onKeyUp, onBlur };
 }
 
 function inTermFocused() {
