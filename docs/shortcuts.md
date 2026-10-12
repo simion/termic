@@ -258,10 +258,14 @@ top of the gesture itself.
 (`{ hold: "ctrl" | "alt" | "cmd", code }`, `lib/shortcuts.ts`), stored as JSON
 in `prefs.recentTabsGesture` (localStorage `recentTabsGesture`, synced). Absent
 means ⌃⇥, so no profile needed a migration. It is read through
-`parseHoldGesture`, which turns anything unreadable, anything the recorder
+`readHoldGesture`, which turns anything unreadable, anything the recorder
 would refuse, and a Cmd gesture on a platform without Cmd (synced from a Mac
 to Linux) into the default, at read time only: the stored value is never
-rewritten, so the Mac it came from keeps its choice.
+rewritten, so the Mac it came from keeps its choice. A well-formed gesture
+refused that way is kept as `prefs.recentTabsGestureRefused`, and the
+Settings row says so ("⌘; is saved but cannot be used here, so ⌃⇥ is in
+use") beside the reset button; resetting is the one thing that writes over
+the stored value, because it is the user choosing the default here.
 
 The tapped key is recorded as **`KeyboardEvent.code`**, the physical key, not
 `key`. With Option held, macOS turns letters into other characters and ` into

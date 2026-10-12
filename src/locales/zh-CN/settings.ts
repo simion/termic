@@ -495,6 +495,7 @@ export default {
     doubleShiftAria: "双击 Shift 打开「全局搜索」的时机",
     ctrlTabAria: "是否启用「最近使用的标签页」手势",
     recentTabsRecorderAria: "录制「最近使用的标签页」手势",
+    recentTabsRefused: "已保存 {{saved}}，但在这里无法使用，因此当前使用 {{current}}。请重新录制，或重置以保留 {{current}}。",
     holdNeedsOne: "请只按住 {{mods}} 中的一个，再按一个键。",
     holdOsReserved: "{{keys}} 归系统所有，Termic 收不到它。",
     holdRecorderKey: "Enter、空格和 Backspace 不能用作点按的键。可与 {{mod}} 搭配的键：{{allowed}}",

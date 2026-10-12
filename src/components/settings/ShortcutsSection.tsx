@@ -32,6 +32,7 @@ import {
   glyphLabel,
   holdGestureFromEvent,
   holdGestureGlyphs,
+  holdGestureText,
   holdGesturesEqual,
   holdModifierChoices,
   isValidBinding,
@@ -80,6 +81,10 @@ export function ShortcutsSection() {
   const ctrlTabMode = usePrefs(s => s.ctrlTabMode);
   const setCtrlTabMode = usePrefs(s => s.setCtrlTabMode);
   const gesture = usePrefs(s => s.recentTabsGesture);
+  // A stored gesture this platform cannot use (synced from a Mac, or recorded
+  // before a rule refused it). The default runs in its place; the row says
+  // so and offers the reset, which writes over it.
+  const refusedGesture = usePrefs(s => s.recentTabsGestureRefused);
   const setGesture = usePrefs(s => s.setRecentTabsGesture);
 
   const [recordingId, setRecordingId] = useState<ShortcutId | GestureShortcutId | null>(null);
@@ -145,7 +150,7 @@ export function ShortcutsSection() {
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [recordingId, setShortcut, setGesture, t]);
 
-  const gestureCustom = !holdGesturesEqual(gesture, DEFAULT_RECENT_TABS);
+  const gestureCustom = !holdGesturesEqual(gesture, DEFAULT_RECENT_TABS) || !!refusedGesture;
   const anyCustom = gestureCustom
     || SHORTCUT_DEFS.some(d => !bindingsEqual(shortcuts[d.id], DEFAULT_BINDINGS[d.id]));
 
@@ -302,6 +307,14 @@ export function ShortcutsSection() {
                       <span className="truncate text-[11.5px] text-[var(--color-fg-faint)]">
                         {gestureShortcutHint(f.id, gesture, t)}
                       </span>
+                      {refusedGesture && (
+                        <span data-testid="recent-tabs-refused" className="text-[11.5px] text-[var(--color-fg-dim)]">
+                          {t("shortcuts.recentTabsRefused", {
+                            saved: holdGestureText(refusedGesture),
+                            current: holdGestureText(gesture),
+                          })}
+                        </span>
+                      )}
                       {shadowed.length > 0 && (
                         <span data-testid="gesture-conflict" className="text-[11.5px] text-[var(--color-accent)]">
                           {t("shortcuts.conflictGestureSelf", { names: shadowed.join(", ") })}

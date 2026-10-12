@@ -501,6 +501,9 @@ export default {
     doubleShiftAria: "When double-Shift opens Search everywhere",
     ctrlTabAria: "Whether the recently used tabs gesture is on",
     recentTabsRecorderAria: "Record the recently used tabs gesture",
+    // A stored gesture this platform cannot use, so the default runs instead.
+    // {{saved}} and {{current}}: both as the platform writes them (⌘;, Ctrl+Tab).
+    recentTabsRefused: "{{saved}} is saved but cannot be used here, so {{current}} is in use. Record another, or reset to keep {{current}}.",
     // The hold-gesture recorder's refusals. {{mods}}: the modifiers this
     // platform offers ("Ctrl, Option, Cmd" on macOS, "Ctrl, Alt" elsewhere).
     holdNeedsOne: "Hold exactly one of {{mods}} and press a key.",

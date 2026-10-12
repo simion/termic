@@ -149,6 +149,21 @@ describe("prefs: recentTabsGesture", () => {
     expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "ctrl", code: "Semicolon", key: ";" });
   });
 
+  it("remembers a stored gesture it cannot use here, and reset writes over it", async () => {
+    // Cmd, synced from a Mac: unusable off macOS, so the default runs. The
+    // stored value is left alone, and Settings shows why with a reset.
+    localStorage.setItem(KEY, JSON.stringify({ hold: "cmd", code: "Semicolon" }));
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "ctrl", code: "Tab" });
+    expect(usePrefs.getState().recentTabsGestureRefused).toEqual({ hold: "cmd", code: "Semicolon" });
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "cmd", code: "Semicolon" });
+    // Resetting to the default it already runs is not a no-op: it is the
+    // user choosing it here.
+    usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Tab" });
+    expect(usePrefs.getState().recentTabsGestureRefused).toBeNull();
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "ctrl", code: "Tab" });
+  });
+
   it("does not publish an unchanged gesture", async () => {
     // docs/performance.md bear trap 8: an unchanged write still copies the
     // whole store and re-runs every selector.

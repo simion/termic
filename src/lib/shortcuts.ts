@@ -498,23 +498,36 @@ export function holdGestureError(g: HoldGesture, isMac: boolean = IS_MAC): HoldE
 }
 
 /** Read a stored gesture. Anything unreadable, or a gesture this platform
- *  cannot use (Cmd synced over from a Mac to Linux), reads as the default.
- *  Read time only: the stored value is never rewritten, so the Mac it came
- *  from keeps its choice. */
-export function parseHoldGesture(raw: string | null, isMac: boolean = IS_MAC): HoldGesture {
-  if (!raw) return DEFAULT_RECENT_TABS;
+ *  cannot use (Cmd synced over from a Mac to Linux, or one an older build
+ *  recorded before a rule refused it), reads as the default. Read time only:
+ *  the stored value is never rewritten, so the Mac it came from keeps its
+ *  choice. `refused` is that well-formed but unusable gesture, so Settings
+ *  can say why the default is running and offer the reset that writes it;
+ *  garbage is not worth a note and reads as null. */
+export function readHoldGesture(
+  raw: string | null, isMac: boolean = IS_MAC,
+): { gesture: HoldGesture; refused: HoldGesture | null } {
+  const fallback = { gesture: DEFAULT_RECENT_TABS, refused: null };
+  if (!raw) return fallback;
   try {
     const v = JSON.parse(raw) as Partial<HoldGesture> | null;
-    if (!v || typeof v !== "object") return DEFAULT_RECENT_TABS;
-    if (v.hold !== "ctrl" && v.hold !== "alt" && v.hold !== "cmd") return DEFAULT_RECENT_TABS;
-    if (typeof v.code !== "string" || !/^[A-Za-z0-9]+$/.test(v.code)) return DEFAULT_RECENT_TABS;
+    if (!v || typeof v !== "object") return fallback;
+    if (v.hold !== "ctrl" && v.hold !== "alt" && v.hold !== "cmd") return fallback;
+    if (typeof v.code !== "string" || !/^[A-Za-z0-9]+$/.test(v.code)) return fallback;
     const g: HoldGesture = { hold: v.hold, code: v.code };
     // Optional, and display-only: a bad one is dropped, not fatal.
     if (isKeyLabel(v.key)) g.key = v.key;
-    return holdGestureError(g, isMac) ? DEFAULT_RECENT_TABS : g;
+    return holdGestureError(g, isMac)
+      ? { gesture: DEFAULT_RECENT_TABS, refused: g }
+      : { gesture: g, refused: null };
   } catch {
-    return DEFAULT_RECENT_TABS;
+    return fallback;
   }
+}
+
+/** `readHoldGesture`'s gesture alone. */
+export function parseHoldGesture(raw: string | null, isMac: boolean = IS_MAC): HoldGesture {
+  return readHoldGesture(raw, isMac).gesture;
 }
 
 /** The same gesture: the same modifier and physical key. `key` is a label,

@@ -3,7 +3,7 @@ import {
   DEFAULT_BINDINGS, DEFAULT_RECENT_TABS, FIXED_SHORTCUTS, GESTURE_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
   bindingFromEvent, bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, codeGlyph,
   conflicts, holdGestureFromEvent, holdGestureGlyphs, holdGestureText, holdHeld, holdReleased,
-  holdAllowedKeys, holdGestureError, holdKeyGlyph, holdModifierName, isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, terminalPassesToApp,
+  holdAllowedKeys, holdGestureError, holdKeyGlyph, holdModifierName, isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, readHoldGesture, terminalPassesToApp,
   tokenForCode,
 } from "./shortcuts";
 
@@ -251,6 +251,22 @@ describe("parseHoldGesture", () => {
     expect(parseHoldGesture('{"hold":"cmd","code":"Semicolon"}', false)).toEqual(DEFAULT_RECENT_TABS);
     expect(parseHoldGesture('{"hold":"ctrl","code":"Semicolon"}', false))
       .toEqual({ hold: "ctrl", code: "Semicolon" });
+  });
+});
+
+describe("readHoldGesture", () => {
+  it("names a well-formed gesture this platform cannot use, so Settings can say so", () => {
+    expect(readHoldGesture('{"hold":"cmd","code":"Semicolon"}', false))
+      .toEqual({ gesture: DEFAULT_RECENT_TABS, refused: { hold: "cmd", code: "Semicolon" } });
+    expect(readHoldGesture('{"hold":"alt","code":"Backquote"}', true))
+      .toEqual({ gesture: DEFAULT_RECENT_TABS, refused: { hold: "alt", code: "Backquote" } });
+  });
+
+  it("refuses nothing for a usable gesture, an absent one, or garbage", () => {
+    expect(readHoldGesture('{"hold":"ctrl","code":"Semicolon"}', false))
+      .toEqual({ gesture: { hold: "ctrl", code: "Semicolon" }, refused: null });
+    expect(readHoldGesture(null, true)).toEqual({ gesture: DEFAULT_RECENT_TABS, refused: null });
+    expect(readHoldGesture("{nope", true)).toEqual({ gesture: DEFAULT_RECENT_TABS, refused: null });
   });
 });
 

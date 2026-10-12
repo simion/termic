@@ -15,7 +15,7 @@ import {
 } from "@/lib/customTheme";
 import {
   DEFAULT_BINDINGS,
-  parseHoldGesture,
+  readHoldGesture,
   type Binding,
   type BindingMap,
   type DoubleShiftMode,
@@ -894,10 +894,13 @@ interface PrefsState {
    *  somebody who wants that rule to have no exceptions can have it. */
   ctrlTabMode: CtrlTabMode;
   /** Which modifier is held and which key is tapped for the recently-used-tabs
-   *  walk. Read through `parseHoldGesture`, so a value this platform cannot
+   *  walk. Read through `readHoldGesture`, so a value this platform cannot
    *  use (Cmd, synced from a Mac to Linux) reads as ⌃⇥ without being
    *  rewritten. */
   recentTabsGesture: HoldGesture;
+  /** The stored gesture when this platform cannot use it (and the default is
+   *  running instead), else null. Settings says so and offers the reset. */
+  recentTabsGestureRefused: HoldGesture | null;
   /** Last-used view for markdown edit tabs (source / preview / split).
    *  New markdown tabs open in this mode, and toggling a tab's view
    *  updates it — so the app remembers however you last looked at a doc. */
@@ -1323,7 +1326,7 @@ function readStoredPrefs() {
   })();
   // Absent means never set, and the gesture ships on.
   const initialCtrlTabMode: CtrlTabMode = lsGet(LS_CTRL_TAB_MODE, "on") === "off" ? "off" : "on";
-  const initialRecentTabsGesture = parseHoldGesture(lsGet(LS_RECENT_TABS_GESTURE, "") || null);
+  const storedRecentTabs = readHoldGesture(lsGet(LS_RECENT_TABS_GESTURE, "") || null);
   const initialMarkdownView: MarkdownView = (() => {
     const raw = lsGet(LS_MD_VIEW, "source");
     return raw === "preview" || raw === "split" ? raw : "source";
@@ -1417,7 +1420,8 @@ function readStoredPrefs() {
     useBranchAsTaskName: initialUseBranchAsTaskName,
     doubleShiftMode: initialDoubleShiftMode,
     ctrlTabMode: initialCtrlTabMode,
-    recentTabsGesture: initialRecentTabsGesture,
+    recentTabsGesture: storedRecentTabs.gesture,
+    recentTabsGestureRefused: storedRecentTabs.refused,
     markdownDefaultView: initialMarkdownView,
     svgDefaultView: initialSvgView,
     htmlDefaultView: initialHtmlView,
@@ -1878,13 +1882,15 @@ export const usePrefs = create<PrefsState>(set => ({
     set({ ctrlTabMode: v });
   },
   setRecentTabsGesture: (g) => {
-    const cur = usePrefs.getState().recentTabsGesture;
-    if (cur.hold === g.hold && cur.code === g.code && cur.key === g.key) return;
+    const { recentTabsGesture: cur, recentTabsGestureRefused: refused } = usePrefs.getState();
+    // Not a no-op while a refused gesture is stored: setting the default it
+    // already runs is the reset, which writes over the unusable value.
+    if (!refused && cur.hold === g.hold && cur.code === g.code && cur.key === g.key) return;
     // `key` only when there is one: an absent field is what the parser reads
     // as "use the US label".
     const next: HoldGesture = g.key ? { hold: g.hold, code: g.code, key: g.key } : { hold: g.hold, code: g.code };
     try { localStorage.setItem(LS_RECENT_TABS_GESTURE, JSON.stringify(next)); } catch {}
-    set({ recentTabsGesture: next });
+    set({ recentTabsGesture: next, recentTabsGestureRefused: null });
   },
   setMarkdownDefaultView: (v) => {
     try { localStorage.setItem(LS_MD_VIEW, v); } catch {}
