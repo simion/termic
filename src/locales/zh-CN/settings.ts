@@ -497,8 +497,9 @@ export default {
     recentTabsRecorderAria: "录制「最近使用的标签页」手势",
     holdNeedsOne: "请只按住 {{mods}} 中的一个，再按一个键。",
     holdOsReserved: "{{keys}} 归系统所有，Termic 收不到它。",
-    holdTerminalKey: "Ctrl 加字母归终端（readline）使用。请选 Tab 或符号键。",
-    holdTypes: "{{alt}} 加字母会输入字符。请选 Tab 或符号键。",
+    holdTerminalKey: "{{mod}} 加这个键会向终端发送控制字符（^R、^W）。可与 {{mod}} 搭配的键：{{allowed}}",
+    holdTypes: "{{mod}} 加这个键会输入字符。可与 {{mod}} 搭配的键：{{allowed}}",
+    holdAppKey: "{{mod}} 加字母或数字是应用或系统的快捷键（复制、粘贴、退出）。可与 {{mod}} 搭配的键：{{allowed}}",
 
     // 各行文案，按快捷键 id 通过 lib/shortcutCopy.ts 取用：设置页和 ⌘/ 面板
     // 用的是同一份，两边不会各说各话。没有可解释内容的行不写 hint，

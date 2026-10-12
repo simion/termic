@@ -291,13 +291,17 @@ export interface HoldGesture {
 
 export const DEFAULT_RECENT_TABS: HoldGesture = { hold: "ctrl", code: "Tab" };
 
+/** A refusal about the tapped key. Each names the held modifier (`mod`) and
+ *  the keys that DO work with it here (`allowed`), so the message leads to a
+ *  gesture that records instead of to another refusal. */
+export type HoldKeyErrorKind = "holdTerminalKey" | "holdTypes" | "holdAppKey";
+
 /** Why a recorded hold gesture was refused. Each `kind` is a locale key under
  *  `settings:shortcuts.*`; `keys` fills `holdOsReserved`. */
 export type HoldError =
   | { kind: "holdNeedsOne" }
   | { kind: "holdOsReserved"; keys: string }
-  | { kind: "holdTerminalKey" }
-  | { kind: "holdTypes" };
+  | { kind: HoldKeyErrorKind; mod: string; allowed: string };
 
 const MODIFIER_CODES = new Set([
   "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "AltLeft", "AltRight",
@@ -378,6 +382,21 @@ export function holdModifierChoices(isMac: boolean = IS_MAC): string {
 
 const ALNUM_CODE = /^(Key[A-Z]|Digit[0-9])$/;
 
+/** The keys a hold on `hold` can be recorded with on this platform, as the
+ *  refusals print them ("Keys that work with Ctrl: ..."). A sample that is
+ *  sure to record, not an exhaustive list: function keys work too. Kept next
+ *  to `holdGestureError`, whose rules it has to agree with
+ *  (`shortcuts.test.ts` records every key it names). */
+export function holdAllowedKeys(hold: HoldModifier, isMac: boolean = IS_MAC): string {
+  if (hold === "ctrl") return "Tab ; ' , . =";
+  if (hold === "alt") return isMac ? "Tab" : "F1-F3 F5-F12";
+  return isMac ? "; ' , ." : "";
+}
+
+function keyError(kind: HoldKeyErrorKind, hold: HoldModifier, isMac: boolean): HoldError {
+  return { kind, mod: holdModifierName(hold, isMac), allowed: holdAllowedKeys(hold, isMac) };
+}
+
 /** The rule the recorder and the stored-value parser share. null when the
  *  gesture is one Termic can see and may own. */
 export function holdGestureError(g: HoldGesture, isMac: boolean = IS_MAC): HoldError | null {
@@ -401,10 +420,15 @@ export function holdGestureError(g: HoldGesture, isMac: boolean = IS_MAC): HoldE
   }
   // Ctrl+letter is readline's (^R, ^P, ^W...), and the gesture claims its key
   // before xterm sees it, so it would take one away from every shell.
-  if (g.hold === "ctrl" && ALNUM_CODE.test(g.code)) return { kind: "holdTerminalKey" };
+  if (g.hold === "ctrl" && ALNUM_CODE.test(g.code)) return keyError("holdTerminalKey", g.hold, isMac);
   // Option / Alt + letter types a character (å, ∫...) on macOS, and is the
   // agent's own chord in a terminal elsewhere.
-  if (g.hold === "alt" && ALNUM_CODE.test(g.code)) return { kind: "holdTypes" };
+  if (g.hold === "alt" && ALNUM_CODE.test(g.code)) return keyError("holdTypes", g.hold, isMac);
+  // ⌘ + letter or digit is copy, paste, cut, undo, quit, close... The walk's
+  // capture listener preventDefaults every press of the gesture, so ⌘C here
+  // would kill copy app-wide, and `conflicts` cannot say so: ⌘C / ⌘V are not
+  // SHORTCUT_DEFS, they are the system's.
+  if (g.hold === "cmd" && ALNUM_CODE.test(g.code)) return keyError("holdAppKey", g.hold, isMac);
   return null;
 }
 

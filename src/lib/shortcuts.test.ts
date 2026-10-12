@@ -310,13 +310,31 @@ describe("holdGestureFromEvent", () => {
   });
 
   it("refuses Ctrl with a letter or a digit (readline's)", () => {
-    expect(holdGestureFromEvent(kd("KeyR", "r", { ctrl: true }), true)).toEqual({ error: { kind: "holdTerminalKey" } });
-    expect(holdGestureFromEvent(kd("Digit1", "1", { ctrl: true }), false)).toEqual({ error: { kind: "holdTerminalKey" } });
+    expect(holdGestureFromEvent(kd("KeyR", "r", { ctrl: true }), true))
+      .toEqual({ error: { kind: "holdTerminalKey", mod: "Ctrl", allowed: "Tab ; ' , . =" } });
+    expect(holdGestureFromEvent(kd("Digit1", "1", { ctrl: true }), false))
+      .toMatchObject({ error: { kind: "holdTerminalKey" } });
   });
 
   it("refuses Option / Alt with a letter or a digit (it types)", () => {
-    expect(holdGestureFromEvent(kd("KeyJ", "∆", { alt: true }), true)).toEqual({ error: { kind: "holdTypes" } });
-    expect(holdGestureFromEvent(kd("Digit2", "™", { alt: true }), true)).toEqual({ error: { kind: "holdTypes" } });
+    expect(holdGestureFromEvent(kd("KeyJ", "∆", { alt: true }), true))
+      .toEqual({ error: { kind: "holdTypes", mod: "Option", allowed: "Tab" } });
+    expect(holdGestureFromEvent(kd("Digit2", "™", { alt: true }), true)).toMatchObject({ error: { kind: "holdTypes" } });
+  });
+
+  it("refuses Cmd with a letter or a digit (copy, paste, quit...)", () => {
+    // The walk's capture listener preventDefaults every press of the
+    // gesture, so ⌘C recorded here would kill copy app-wide.
+    for (const [code, key] of [["KeyC", "c"], ["KeyV", "v"], ["KeyX", "x"], ["KeyZ", "z"],
+                               ["KeyQ", "q"], ["KeyW", "w"], ["Digit1", "1"]]) {
+      expect(holdGestureFromEvent(kd(code, key, { meta: true }), true), code)
+        .toMatchObject({ error: { kind: "holdAppKey" } });
+    }
+    expect(holdGestureFromEvent(kd("KeyC", "c", { meta: true }), true))
+      .toEqual({ error: { kind: "holdAppKey", mod: "Cmd", allowed: "; ' , ." } });
+    // And a stored one (hand-edited, or from a build before the rule) is
+    // never acted on.
+    expect(parseHoldGesture('{"hold":"cmd","code":"KeyC"}', true)).toEqual(DEFAULT_RECENT_TABS);
   });
 
   it("does not read AltGr as Alt or Ctrl", () => {

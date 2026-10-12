@@ -506,9 +506,13 @@ export default {
     holdNeedsOne: "Hold exactly one of {{mods}} and press a key.",
     // {{keys}}: the combination as the platform writes it (⌘⇥, Alt+Tab).
     holdOsReserved: "{{keys}} belongs to the system, Termic never sees it.",
-    holdTerminalKey: "Ctrl with a letter belongs to the terminal (readline). Pick Tab or a symbol key.",
-    // {{alt}}: Option on macOS, Alt elsewhere.
-    holdTypes: "{{alt}} with a letter types a character. Pick Tab or a symbol key.",
+    // The refusals about the tapped key. {{mod}}: the held modifier as the
+    // platform names it. {{allowed}}: keys that do record with it here
+    // (lib/shortcuts.ts holdAllowedKeys), so no sentence end after it: a
+    // period would read as one more key.
+    holdTerminalKey: "{{mod}} with that key sends the terminal a control character (^R, ^W). Keys that work with {{mod}}: {{allowed}}",
+    holdTypes: "{{mod}} with that key types a character. Keys that work with {{mod}}: {{allowed}}",
+    holdAppKey: "{{mod}} with a letter or digit is an app or system shortcut (copy, paste, quit). Keys that work with {{mod}}: {{allowed}}",
 
     // The rows themselves, keyed by shortcut id through lib/shortcutCopy.ts:
     // the settings page and the ⌘/ sheet both draw them, so the copy lives in

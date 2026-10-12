@@ -102,8 +102,9 @@ export function ShortcutsSection() {
       switch (err.kind) {
         case "holdNeedsOne": return t("shortcuts.holdNeedsOne", { mods: holdModifierChoices() });
         case "holdOsReserved": return t("shortcuts.holdOsReserved", { keys: err.keys });
-        case "holdTerminalKey": return t("shortcuts.holdTerminalKey");
-        case "holdTypes": return t("shortcuts.holdTypes", { alt: ALT_LABEL });
+        case "holdTerminalKey": return t("shortcuts.holdTerminalKey", { mod: err.mod, allowed: err.allowed });
+        case "holdTypes": return t("shortcuts.holdTypes", { mod: err.mod, allowed: err.allowed });
+        case "holdAppKey": return t("shortcuts.holdAppKey", { mod: err.mod, allowed: err.allowed });
       }
     };
     const onKey = (e: KeyboardEvent) => {

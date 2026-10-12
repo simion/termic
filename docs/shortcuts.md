@@ -279,6 +279,10 @@ ignores Shift (it reverses). It refuses, with a message each:
   with another modifier down is told the real reason.
 - **Ctrl + letter or digit**: readline's (^R, ^P, ^W), and the gesture claims
   its key before xterm sees it.
+- **Cmd + letter or digit** (macOS): copy, paste, cut, undo, quit, close.
+  The walk's capture listener `preventDefault`s every press of the gesture,
+  so ⌘C recorded here would kill copy app-wide, and `conflicts` could not
+  say so: ⌘C and ⌘V are the system's, not `SHORTCUT_DEFS`.
 - **Option / Alt + letter or digit**: it types a character on macOS, and is the
   agent's own chord in a terminal elsewhere. Option + a symbol (`) is allowed:
   the keydown is claimed with `preventDefault`, which is what has to stop the
