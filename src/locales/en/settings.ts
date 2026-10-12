@@ -618,6 +618,7 @@ export default {
         label: "Command palette",
         hint: "Search every command and action (the {{shiftCmdP}} convention from VS Code / Sublime)",
       },
+      changeTheme: { label: "Change theme", hint: "Every theme, with a live preview as you arrow through them" },
       newTaskQuick: { label: "New task…", hint: "Search a project and start a new task" },
       openSettings: { label: "Open settings" },
       fileFinder: { label: "Open file finder" },

@@ -45,6 +45,7 @@ mod shell_env;
 mod automation;
 mod cli_server;
 mod forge;
+mod theme_import;
 mod mcp_server;
 // Config sync through a git repo the user owns (docs/ideas/config-sync.md).
 mod config_sync;
@@ -14577,8 +14578,21 @@ const PREVIEW_CAP: u64 = 20_000_000;
 /// file past the cap. `Read::take(cap + 1)` bounds the actual read
 /// regardless of what fstat reported, so a file that grows mid-read past
 /// the point fstat saw still gets capped rather than fully buffered.
-fn read_capped_file(abs: &Path, cap: u64) -> Result<Vec<u8>, String> {
-    let f = fs::File::open(abs).map_err(|e| format!("open failed: {e}"))?;
+///
+/// Opened `O_NONBLOCK` on unix: a plain `open` of a FIFO blocks until a
+/// writer shows up, which is forever, before fstat ever gets to refuse it.
+/// The flag only changes FIFO / device semantics; a regular file reads the
+/// same. Theme files go through here too (`theme_import::read_capped`),
+/// from dirs other apps and cloned repos can write.
+pub(crate) fn read_capped_file(abs: &Path, cap: u64) -> Result<Vec<u8>, String> {
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let f = opts.open(abs).map_err(|e| format!("open failed: {e}"))?;
     let meta = f.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err(format!("not a file: {}", abs.display()));
@@ -23809,11 +23823,24 @@ fn themes_dir_path() -> Result<PathBuf> {
     Ok(p)
 }
 
-/// List every parseable custom theme file in the themes dir. A file
-/// that fails to read or parse is skipped with a log line — one bad JSON
-/// must never blank the theme picker. Sorted by file stem for stable order.
+/// List every parseable custom theme file in the themes dir. A file that
+/// fails to read or parse is skipped with a log line, one bad JSON must
+/// never blank the theme picker. Sorted by file stem for stable order.
+/// Ghostty / Warp imports are a separate command (`themes_imports`): the
+/// picker refetches this list on every open, and the import scan is a few
+/// hundred files it has no use for.
+///
+/// An unreadable themes dir is an `Err`, not an empty list: the frontend
+/// keeps its current list on error, while a list missing the active theme
+/// reads as "deleted" and resets the user's pick.
 #[tauri::command]
 async fn themes_list() -> Result<Vec<CustomThemeFile>, String> {
+    tauri::async_runtime::spawn_blocking(themes_list_sync)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn themes_list_sync() -> Result<Vec<CustomThemeFile>, String> {
     let dir = themes_dir_path().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
@@ -23822,12 +23849,15 @@ async fn themes_list() -> Result<Vec<CustomThemeFile>, String> {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-        let raw = match fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[themes] skipping {}: {e}", path.display());
-                continue;
-            }
+        // `ghostty:x.json` would share an id with the import `ghostty:x`
+        // in the palette's theme list
+        if stem.contains(':') {
+            eprintln!("[themes] skipping {}: ':' is reserved for imports", path.display());
+            continue;
+        }
+        let Some(raw) = theme_import::read_capped(&path) else {
+            eprintln!("[themes] skipping {}: not a readable file under the size cap", path.display());
+            continue;
         };
         match serde_json::from_str::<CustomThemeFile>(&raw) {
             Ok(mut theme) => {
@@ -23842,6 +23872,51 @@ async fn themes_list() -> Result<Vec<CustomThemeFile>, String> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+/// Every Ghostty / Warp theme on this machine, translated (theme_import.rs).
+/// Read-only, for the command palette's theme list.
+#[tauri::command]
+async fn themes_imports() -> Result<Vec<CustomThemeFile>, String> {
+    tauri::async_runtime::spawn_blocking(theme_import::imported_themes)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Write a picked import into the themes dir as a native theme file and
+/// return its stem. The frontend sends the theme already resolved (palette
+/// filled, chrome derived), so the copy is an ordinary theme from here on:
+/// it syncs, and it outlives the Ghostty / Warp file. Refuses when the copy
+/// already exists: the palette hides an import whose copy lists, so one that
+/// exists here failed to parse, most likely a hand edit, and re-picking the
+/// import must not wipe it. Only `id` picks the path, through
+/// `theme_import::copy_stem`; the colors are validated again on every read
+/// like any other theme file.
+#[tauri::command]
+async fn themes_save_import(theme: CustomThemeFile) -> Result<String, String> {
+    let stem = theme_import::copy_stem(&theme.id).ok_or("not an imported theme id")?;
+    let body = serde_json::to_vec_pretty(&serde_json::json!({
+        "name": theme.name,
+        "colorScheme": theme.color_scheme,
+        "ui": theme.ui,
+        "terminal": theme.terminal,
+    }))
+    .map_err(|e| e.to_string())?;
+    // a real theme is ~2 KB; past the read cap the copy would never list
+    if body.len() > 64 * 1024 {
+        return Err("theme too large".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = themes_dir_path().map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{stem}.json"));
+        if path.symlink_metadata().is_ok() {
+            return Err(format!("{stem}.json already exists in the themes folder"));
+        }
+        write_atomic(&path, &body).map_err(|e| e.to_string())?;
+        Ok(stem)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Ensure the themes directory exists and return its absolute path.
@@ -25738,7 +25813,7 @@ pub fn run() {
             window_close_choice, window_is_windowless, close_prompt_ack,
             tray_set_attention,
             list_monospace_fonts, list_font_families,
-            themes_list, themes_dir,
+            themes_list, themes_dir, themes_imports, themes_save_import,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

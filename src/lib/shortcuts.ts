@@ -50,6 +50,7 @@ export type ShortcutId =
   | "terminal-paste"
   | "new-task-quick"
   | "command-palette"
+  | "change-theme"
   | "open-settings"
   | "file-finder"
   | "task-finder"
@@ -177,6 +178,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // General
   { id: "command-palette", group: "General",
     defaultBinding: B("p", { cmd: true, shift: true }) },
+  { id: "change-theme", group: "General",
+    defaultBinding: B("t", { cmd: true, alt: true }) },
   { id: "new-task-quick", group: "General",
     defaultBinding: B("n", { cmd: true }) },
   { id: "open-settings", group: "General",

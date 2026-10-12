@@ -163,12 +163,8 @@ export default {
     worktree: "工作树",
   },
   themePicker: {
-    system: "跟随系统",
-    light: "浅色",
     autoBadge: "自动",
-    customThemes: "自定义主题",
-    openThemesFolder: "打开主题文件夹",
-    agentThemeTip: "提示：在 claude / codex 中运行一次 <code>/theme</code> 即可匹配。",
+    changeTheme: "更换主题",
   },
   dashboard: {
     tagline: "CLI 编程智能体的家",

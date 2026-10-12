@@ -1238,6 +1238,11 @@ export const themesList = () => invoke<CustomThemeFile[]>("themes_list");
 /** Ensure + return the custom themes directory (absolute path), for the
  *  picker's "Open themes folder" row. */
 export const themesDir  = () => invoke<string>("themes_dir");
+/** Ghostty / Warp themes on this machine, translated but unvalidated: run
+ *  each through customTheme.ts's sanitizeImport. For the palette's theme list. */
+export const themesImports = () => invoke<CustomThemeFile[]>("themes_imports");
+/** Save a picked import as a native theme file; resolves to its file stem. */
+export const themesSaveImport = (theme: CustomThemeFile) => invoke<string>("themes_save_import", { theme });
 export const settingsSave  = (s: Settings) => invoke<void>("settings_save", { s });
 export const agentsSave    = (agents: Agent[]) => invoke<void>("agents_save", { agents });
 export const discoverRepos = (dir: string) => invoke<DiscoveredRepo[]>("discover_repos", { dir });

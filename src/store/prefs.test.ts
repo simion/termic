@@ -836,3 +836,139 @@ describe("prefs: status section", () => {
     expect(JSON.parse(localStorage.getItem("statusGroupCollapsed")!)).toEqual({ g1: true });
   });
 });
+
+// A theme missing from themes_list means "the user deleted the file", so the
+// pick resets to claude and is persisted. An import is never the active
+// theme outside a palette preview: picking one saves a native copy, so the
+// Ghostty / Warp file going away cannot strand the pick.
+describe("prefs: custom and imported themes", () => {
+  let listed: () => Promise<unknown>;
+  let imports: () => Promise<unknown>;
+  let saved: (args: { theme: { id: string } }) => Promise<unknown>;
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+    imports = () => Promise.resolve([]);
+    saved = ({ theme }) => Promise.resolve(theme.id.replace(":", "-"));
+    vi.doMock("@tauri-apps/api/core", () => ({
+      invoke: vi.fn((cmd: string, args: any) =>
+        cmd === "themes_list" ? listed()
+        : cmd === "themes_imports" ? imports()
+        : cmd === "themes_save_import" ? saved(args)
+        : Promise.resolve(undefined)),
+    }));
+  });
+  afterEach(() => { vi.doUnmock("@tauri-apps/api/core"); vi.unstubAllGlobals(); });
+
+  const file = (id: string) => ({
+    id, name: id, colorScheme: "dark", ui: {}, terminal: { background: "#272822" },
+  });
+
+  async function pick(id: string, files: unknown[]) {
+    const prefs = await import("./prefs");
+    listed = () => Promise.resolve(files);
+    await prefs.usePrefs.getState().loadCustomThemes();
+    prefs.usePrefs.getState().setThemeMode(`custom:${id}` as const);
+    return prefs;
+  }
+
+  it("resets a native pick whose file was deleted", async () => {
+    const { usePrefs } = await pick("paper", [file("paper")]);
+    listed = () => Promise.resolve([]);
+    await usePrefs.getState().loadCustomThemes();
+    expect(usePrefs.getState().themeMode).toBe("claude");
+    expect(localStorage.getItem("customThemeCache")).toBeNull();
+  });
+
+  it("keeps a native pick when the listing itself fails", async () => {
+    const { usePrefs } = await pick("paper", [file("paper")]);
+    listed = () => Promise.reject(new Error("themes dir unreadable"));
+    await usePrefs.getState().loadCustomThemes();
+    expect(usePrefs.getState().themeMode).toBe("custom:paper");
+    expect(usePrefs.getState().customThemes.map(t => t.id)).toEqual(["custom:paper"]);
+  });
+
+  it("picks an import by saving a native copy and switching to it", async () => {
+    const { usePrefs } = await import("./prefs");
+    listed = () => Promise.resolve([]);
+    imports = () => Promise.resolve([file("ghostty:monokai")]);
+    await usePrefs.getState().loadImportedThemes();
+    let sent: any;
+    saved = (args) => {
+      sent = args.theme;
+      listed = () => Promise.resolve([{ ...args.theme, id: "ghostty-monokai" }]);
+      return Promise.resolve("ghostty-monokai");
+    };
+    await usePrefs.getState().pickImportedTheme("custom:ghostty:monokai");
+    // the copy carries the derived chrome, not the bare palette
+    expect(sent.id).toBe("ghostty:monokai");
+    expect(sent.ui["bg-1"]).toBeDefined();
+    expect(usePrefs.getState().themeMode).toBe("custom:ghostty-monokai");
+    expect(localStorage.getItem("themeMode")).toBe("custom:ghostty-monokai");
+
+    // the Ghostty file goes away: the copy is untouched by it
+    imports = () => Promise.resolve([]);
+    await usePrefs.getState().loadImportedThemes();
+    await usePrefs.getState().loadCustomThemes();
+    expect(usePrefs.getState().themeMode).toBe("custom:ghostty-monokai");
+  });
+
+  it("leaves the theme alone when saving the copy fails", async () => {
+    const { usePrefs } = await pick("paper", [file("paper")]);
+    imports = () => Promise.resolve([file("warp:x")]);
+    await usePrefs.getState().loadImportedThemes();
+    saved = () => Promise.reject(new Error("read-only"));
+    await expect(usePrefs.getState().pickImportedTheme("custom:warp:x")).rejects.toThrow();
+    expect(usePrefs.getState().themeMode).toBe("custom:paper");
+  });
+
+  it("does not reset a palette preview of an import when the listing lands", async () => {
+    const { usePrefs } = await pick("paper", [file("paper")]);
+    imports = () => Promise.resolve([file("warp:x")]);
+    await usePrefs.getState().loadImportedThemes();
+    usePrefs.getState().previewThemeMode("custom:warp:x");
+    await usePrefs.getState().loadCustomThemes();
+    expect(usePrefs.getState().themeMode).toBe("custom:warp:x");
+  });
+
+  // quitting mid-preview must reopen on the committed theme: before, the
+  // previewed import id was persisted with no cache payload behind it, and
+  // the next launch fell back to claude
+  it("never persists a preview, and a commit or rollback ends it", async () => {
+    const { usePrefs } = await pick("paper", [file("paper"), file("ink")]);
+    imports = () => Promise.resolve([file("warp:x")]);
+    await usePrefs.getState().loadImportedThemes();
+    usePrefs.getState().previewThemeMode("custom:warp:x");
+    usePrefs.getState().previewThemeMode("custom:ink");
+    expect(usePrefs.getState().themeMode).toBe("custom:ink");
+    expect(localStorage.getItem("themeMode")).toBe("custom:paper");
+    expect(JSON.parse(localStorage.getItem("customThemeCache")!).id).toBe("custom:paper");
+    // a refetch while previewing leaves both alone
+    await usePrefs.getState().loadCustomThemes();
+    expect(JSON.parse(localStorage.getItem("customThemeCache")!).id).toBe("custom:paper");
+
+    // rolled back: a deleted file resets again, so the preview is over
+    usePrefs.getState().setThemeMode("custom:paper");
+    listed = () => Promise.resolve([file("ink")]);
+    await usePrefs.getState().loadCustomThemes();
+    expect(usePrefs.getState().themeMode).toBe("claude");
+  });
+
+  it("republishes an unchanged scan when the list was cleared", async () => {
+    const { usePrefs } = await import("./prefs");
+    imports = () => Promise.resolve([file("warp:x")]);
+    await usePrefs.getState().loadImportedThemes();
+    usePrefs.setState({ importedThemes: [] });
+    await usePrefs.getState().loadImportedThemes();
+    expect(usePrefs.getState().importedThemes.map(t => t.id)).toEqual(["custom:warp:x"]);
+  });
+
+  it("does not republish an unchanged import list", async () => {
+    const { usePrefs } = await import("./prefs");
+    imports = () => Promise.resolve([file("warp:x")]);
+    await usePrefs.getState().loadImportedThemes();
+    const first = usePrefs.getState().importedThemes;
+    await usePrefs.getState().loadImportedThemes();
+    expect(usePrefs.getState().importedThemes).toBe(first);
+  });
+});

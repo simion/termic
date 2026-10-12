@@ -67,7 +67,7 @@ export interface TermicApi {
     subscribe: (fn: (s: any, prev: any) => void) => () => void;
   };
   useUI: { getState: () => any; setState: (p: any) => void };
-  usePrefs: { getState: () => any };
+  usePrefs: { getState: () => any; setState: (p: any) => void; subscribe: (fn: (s: any, prev: any) => void) => () => void };
   useRace: { getState: () => any };
   /** PR/MR store (src/store/pr.ts). Specs seed `byTask` directly to render
    *  card states without a real forge/network. */

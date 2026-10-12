@@ -260,6 +260,15 @@ export function useShortcuts() {
           return;
         }
 
+        // ⌥⌘T → the theme list, or close it, same toggle as the palette.
+        case "change-theme": {
+          e.preventDefault();
+          const ui = useUI.getState();
+          if (ui.commandPaletteOpen) ui.closeCommandPalette();
+          else ui.openCommandPalette("theme");
+          return;
+        }
+
         // ⌘B / ⌥⌘B → collapse the left sidebar / hide the right panel.
         case "toggle-left-sidebar":
           e.preventDefault();

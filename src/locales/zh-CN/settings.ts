@@ -611,6 +611,7 @@ export default {
         label: "命令面板",
         hint: "搜索所有命令和操作（沿用 VS Code / Sublime 的 {{shiftCmdP}} 习惯）",
       },
+      changeTheme: { label: "更换主题", hint: "所有主题，用方向键浏览时实时预览" },
       newTaskQuick: { label: "新建任务…", hint: "搜索项目并开始一个新任务" },
       openSettings: { label: "打开设置" },
       fileFinder: { label: "打开文件选择器" },

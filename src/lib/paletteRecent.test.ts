@@ -3,12 +3,15 @@
 // mocked Date.now globally would pin the behaviour to how the mock is wired
 // rather than to the rule.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   RECENT_MAX,
   RECENT_TTL_MS,
   parseRecents,
+  readSchemeFilter,
+  readThemeRecents,
   recentIds,
+  recordThemeRecent,
   withRecorded,
   type RecentEntry,
 } from "./paletteRecent";
@@ -114,5 +117,36 @@ describe("recentIds", () => {
       { id: "a", at: T0 + 1 },
     ];
     expect(recentIds(entries, new Set(["a", "b"]))).toEqual(["b", "a"]);
+  });
+});
+
+// The theme list's own two bits. localStorage is shared with whatever is
+// there, so a corrupt or foreign value must read as "nothing saved".
+describe("theme recents and filter", () => {
+  let store: Map<string, string>;
+  beforeEach(() => {
+    store = new Map();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+    });
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("keeps the newest committed themes first, deduped and capped", () => {
+    for (const id of ["a", "b", "c", "a", "d"]) recordThemeRecent(id);
+    expect(readThemeRecents()).toEqual(["d", "a", "c"].slice(0, RECENT_MAX));
+  });
+
+  it("reads corrupt or foreign values as empty", () => {
+    store.set("commandPaletteThemeRecent", "{not json");
+    expect(readThemeRecents()).toEqual([]);
+    store.set("commandPaletteThemeRecent", JSON.stringify(["a", 7, null, "b"]));
+    expect(readThemeRecents()).toEqual(["a", "b"]);
+    store.set("commandPaletteThemeFilter", "sepia");
+    expect(readSchemeFilter()).toBeNull();
+    store.set("commandPaletteThemeFilter", "light");
+    expect(readSchemeFilter()).toBe("light");
   });
 });

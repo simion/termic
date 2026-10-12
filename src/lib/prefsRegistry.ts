@@ -159,6 +159,8 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "statusGroupCollapsed", scoped: true, class: "local", reason: "collapse state" },
   { key: "recentTasks", scoped: true, class: "local", reason: "recent tasks, and tasks are per machine" },
   { key: "commandPaletteRecent", scoped: false, class: "local", reason: "recent palette commands" },
+  { key: "commandPaletteThemeRecent", scoped: false, class: "local", reason: "recent palette theme picks" },
+  { key: "commandPaletteThemeFilter", scoped: false, class: "local", reason: "palette theme list dark / light toggle" },
   { key: "sidebarWidth", scoped: false, class: "local", reason: "panel size" },
 
   // ── Task view layout ──

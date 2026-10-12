@@ -6,7 +6,7 @@
 // whole screen on open) — just a subtle dim + blur that fades in, ⇧⌘P only.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { useTranslation, Trans } from "react-i18next";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Search, Plus, FileText, Pencil, GitBranch, Archive, Zap, ShieldCheck,
@@ -14,7 +14,7 @@ import {
   FolderCog, RefreshCw, ScrollText, CalendarClock, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, ListTodo, Bell, SquareTerminal, FolderPlus, History, Square,
   Play, Swords, Megaphone, Columns2, Rows2, Clock, UserPen, GitPullRequest, Activity, Code2,
-  NotepadText, Waypoints, CircleDot, UsersRound, WrapText, ListFilter, ListX, type LucideIcon } from "lucide-react";
+  NotepadText, Waypoints, CircleDot, UsersRound, WrapText, ListFilter, ListX, FolderOpen, type LucideIcon } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useProfiles } from "@/store/profiles";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -23,15 +23,18 @@ import { copyAgentBriefing } from "@/lib/agentBriefing";
 import { useApp } from "@/store/app";
 import { jumpToNextWaiting } from "@/lib/waitingAgents";
 import { newScratchTab } from "@/lib/scratchTabs";
-import { readRecents, recentIds, recordRecent } from "@/lib/paletteRecent";
-import { usePrefs, type BuiltinThemeMode, type ThemeMode } from "@/store/prefs";
+import {
+  readRecents, recentIds, recordRecent, readThemeRecents, recordThemeRecent,
+  readSchemeFilter, writeSchemeFilter, type SchemeFilter,
+} from "@/lib/paletteRecent";
+import { usePrefs, resolveTheme, type BuiltinThemeMode, type ThemeMode } from "@/store/prefs";
 import { useUpdate } from "@/store/update";
 import { fuzzyMatch, Highlighted } from "@/lib/fuzzy";
 import { bindingGlyphs, type ShortcutId, bindingText } from "@/lib/shortcuts";
 import { confirmAndArchive } from "@/lib/archiveTask";
-import { taskSetYolo, openPath, procmonOpenWindow } from "@/lib/ipc";
+import { taskSetYolo, openPath, procmonOpenWindow, themesDir } from "@/lib/ipc";
 import { profileOpen } from "@/lib/ipc";
-import { isCustomId } from "@/lib/customTheme";
+import { copyIdOf, isCustomId, themeSource } from "@/lib/customTheme";
 import { effectiveLanguageId, languageLabel } from "@/lib/languages";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -42,7 +45,8 @@ import { setTreeFold } from "@/lib/treeFold";
 const ISSUE_URL = "https://github.com/simion/termic/issues/new";
 
 // Section render order. Sections with no (filtered) commands are dropped.
-const SECTION_ORDER = ["Task", "Agent", "View", "Application", "Settings"] as const;
+// System / Dark / Light only ever hold the Change-theme submenu's rows.
+const SECTION_ORDER = ["Task", "Agent", "View", "Application", "Settings", "System", "Dark", "Light"] as const;
 type Section = (typeof SECTION_ORDER)[number];
 
 /** Pseudo-section pinned above the rest, holding what you last ran (expiry and
@@ -58,6 +62,9 @@ const SECTION_LABEL_KEY: Record<string, string> = {
   View: "commandPalette.sectionView",
   Application: "commandPalette.sectionApplication",
   Settings: "commandPalette.sectionSettings",
+  System: "commandPalette.themeSectionSystem",
+  Dark: "commandPalette.themeDark",
+  Light: "commandPalette.themeLight",
   [RECENT_SECTION]: "commandPalette.sectionRecent",
 };
 
@@ -94,6 +101,11 @@ interface Cmd {
 // Theme display names. auto/light/dark are common words and translate
 // (commandPalette.themeAuto/themeLight/themeDark); the rest are proper-noun
 // theme names, the same in every language.
+type ThemeEntry = { id: ThemeMode; label: string; scheme: "system" | "dark" | "light"; imported?: boolean };
+const SCHEME_RANK: Record<ThemeEntry["scheme"], number> = { system: 0, dark: 1, light: 2 };
+const SCHEME_FILTERS: SchemeFilter[] = ["dark", "light", "all"];
+const SOURCE_LABEL = { ghostty: "Ghostty", warp: "Warp" } as const;
+
 const THEME_LABELS: Record<Exclude<BuiltinThemeMode, "auto" | "light" | "dark">, string> = {
   claude: "Claude",
   solarized: "Solarized",
@@ -112,6 +124,7 @@ export function CommandPalette() {
   const projects = useApp(s => s.projects);
   const themeMode = usePrefs(s => s.themeMode);
   const customThemes = usePrefs(s => s.customThemes);
+  const importedThemes = usePrefs(s => s.importedThemes);
   const binds = usePrefs(s => s.shortcuts);
   const inlineBlame = usePrefs(s => s.inlineBlame);
   const editorWordWrap = usePrefs(s => s.editorWordWrap);
@@ -119,21 +132,40 @@ export function CommandPalette() {
   // Only whether there is one: the Clear row comes and goes with it.
   const sidebarFiltered = useUI(s => s.sidebarQuery.trim() !== "");
 
-  // Built-ins first, then the custom theme files — the submenu's order.
-  // `t` is a dep so a language switch recomputes the built-in labels.
-  const themeEntries = useMemo<{ id: ThemeMode; label: string }[]>(
+  // Every theme with its scheme, in the submenu's order: System, then the
+  // dark themes, then the light ones, each run sorted by name. An import
+  // already saved as a copy is left out: the copy is listed under the same
+  // name. `t` is a dep so a language switch recomputes the built-in labels.
+  const themeEntries = useMemo<ThemeEntry[]>(
     () => {
       const builtinLabel = (m: BuiltinThemeMode) =>
         m === "auto" ? t("commandPalette.themeAuto")
         : m === "light" ? t("commandPalette.themeLight")
         : m === "dark" ? t("commandPalette.themeDark")
         : THEME_LABELS[m];
-      return [
-        ...THEME_ORDER.map(m => ({ id: m as ThemeMode, label: builtinLabel(m) })),
-        ...customThemes.map(th => ({ id: th.id as ThemeMode, label: th.name })),
+      const entries: ThemeEntry[] = [
+        ...THEME_ORDER.map(m => ({
+          id: m as ThemeMode, label: builtinLabel(m),
+          scheme: m === "auto" ? "system" as const : m === "light" ? "light" as const : "dark" as const,
+        })),
+        ...customThemes.map(th => ({ id: th.id as ThemeMode, label: th.name, scheme: th.colorScheme })),
+        ...importedThemes
+          .filter(th => !customThemes.some(c => c.id === copyIdOf(th.id)))
+          .map(th => ({ id: th.id as ThemeMode, label: th.name, scheme: th.colorScheme, imported: true })),
       ];
+      return entries.sort((a, b) =>
+        SCHEME_RANK[a.scheme] - SCHEME_RANK[b.scheme] || a.label.localeCompare(b.label));
     },
-    [customThemes, t],
+    [customThemes, importedThemes, t],
+  );
+  // Which schemes the submenu lists: the saved toggle, else the current
+  // theme's scheme, so arrowing through a dark list never flashes a light
+  // theme. Tab or the toggle changes (and saves) it. System always lists.
+  const [schemeFilter, setSchemeFilter] = useState<SchemeFilter>("all");
+  const changeSchemeFilter = (f: SchemeFilter) => { setSchemeFilter(f); writeSchemeFilter(f); };
+  const visibleThemes = useMemo(
+    () => themeEntries.filter(e => schemeFilter === "all" || e.scheme === "system" || e.scheme === schemeFilter),
+    [themeEntries, schemeFilter],
   );
   const themeLabel = (m: ThemeMode) =>
     themeEntries.find(e => e.id === m)?.label ?? (isCustomId(m) ? m.slice("custom:".length) : m);
@@ -151,6 +183,13 @@ export function CommandPalette() {
   // null when no preview is active (never entered, or committed). Set means
   // "roll back to this if the user cancels / closes without choosing".
   const themeOriginalRef = useRef<ThemeMode | null>(null);
+  // Bumped on every entry into the theme list, so the highlight placement
+  // below can tell a fresh entry from rows changing under an open list.
+  const [themeEntry, setThemeEntry] = useState(0);
+  // The theme the user actually has, which the check mark follows. Not
+  // `themeMode` while previewing: that moves on every arrow press, and
+  // rebuilding hundreds of rows per press just to move one icon is waste.
+  const committedTheme = themeOriginalRef.current ?? themeMode;
 
   const task = useMemo(() => tasks.find(w => w.id === activeTaskId) ?? null, [tasks, activeTaskId]);
   // The active main-pane tab when it is an editor. "Set syntax" re-highlights
@@ -174,23 +213,34 @@ export function CommandPalette() {
     setView("root"); setQuery("");
   };
 
+  // Enter the Change-theme submenu and start a live preview: arrowing through
+  // the themes applies each one; cancelling restores the captured original.
+  const enterThemeView = () => {
+    // Refresh the custom theme files so the list reflects the folder, and
+    // scan the imports, which only this list shows.
+    void usePrefs.getState().loadCustomThemes();
+    void usePrefs.getState().loadImportedThemes();
+    themeOriginalRef.current = usePrefs.getState().themeMode;
+    // a saved filter that hides the current theme is skipped this once:
+    // opening the list must never preview a different theme
+    const scheme = resolveTheme(themeOriginalRef.current);
+    const saved = readSchemeFilter();
+    setSchemeFilter(saved === "all" || saved === scheme ? saved : scheme);
+    setView("theme"); setQuery(""); setThemeEntry(n => n + 1);
+  };
+
   // Reset on open; roll back an uncommitted theme preview on close (outside
   // click / ⇧⌘P while still previewing).
   useEffect(() => {
-    if (open) { setQuery(""); setActiveIdx(0); setView("root"); }
+    if (open) {
+      setQuery(""); setActiveIdx(0);
+      if (useUI.getState().commandPaletteView === "theme") enterThemeView(); else setView("root");
+    }
     else if (themeOriginalRef.current) {
       usePrefs.getState().setThemeMode(themeOriginalRef.current);
       themeOriginalRef.current = null;
     }
   }, [open]);
-  // When entering the theme submenu, start on the CURRENT theme so the
-  // live preview doesn't jump the instant you open it.
-  useEffect(() => {
-    if (view === "theme") {
-      const cur = themeOriginalRef.current ?? usePrefs.getState().themeMode;
-      setActiveIdx(Math.max(0, themeEntries.findIndex(e => e.id === cur)));
-    } else setActiveIdx(0);
-  }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Wrap an action so it closes the palette, then runs once the click that
    *  triggered it has fully settled.
@@ -214,16 +264,39 @@ export function CommandPalette() {
   // `t` is a dep so a language switch rebuilds the labels.
   const commands = useMemo<Cmd[]>(() => {
     if (view === "theme") {
-      return themeEntries.map<Cmd>(({ id: m, label }) => ({
+      return visibleThemes.map<Cmd>(({ id: m, label, scheme, imported }) => {
+        const src = themeSource(m);
+        // where the theme came from, as a muted tag (searchable via keywords);
+        // built-ins carry none
+        const tag = src ? SOURCE_LABEL[src] : isCustomId(m) ? t("commandPalette.themeSourceCustom") : undefined;
+        return {
         id: `theme:${m}`,
-        section: "View",
+        section: scheme === "system" ? "System" : scheme === "light" ? "Light" : "Dark",
         label,
-        icon: m === themeMode ? Check : Palette,
-        keywords: "theme appearance color",
+        suffix: tag,
+        icon: m === committedTheme ? Check : Palette,
+        keywords: `theme appearance color ${tag ?? ""}`,
         // Commit: the live preview already applied it; clear the rollback
-        // marker so close() won't revert, then close.
-        run: () => { themeOriginalRef.current = null; usePrefs.getState().setThemeMode(m); close(); },
-      }));
+        // marker so close() won't revert, then close. An import commits by
+        // saving its native copy, and falls back to the original if that fails.
+        run: () => {
+          const original = themeOriginalRef.current;
+          themeOriginalRef.current = null;
+          // an import is kept as its saved copy, so that is what recurs
+          recordThemeRecent(imported && isCustomId(m) ? copyIdOf(m) : m);
+          if (imported && isCustomId(m)) {
+            usePrefs.getState().pickImportedTheme(m).catch(e => {
+              console.error("[themes] could not save the imported theme", e);
+              if (original) usePrefs.getState().setThemeMode(original);
+              // the palette is already closed, so without this the pick
+              // just reads as a click that did not land
+              useUI.getState().pushToast(t("commandPalette.themeImportFailed", { name: label, error: String(e) }), "error");
+            });
+          } else usePrefs.getState().setThemeMode(m);
+          close();
+        },
+        };
+      });
     }
 
     const cmds: Cmd[] = [];
@@ -487,16 +560,9 @@ export function CommandPalette() {
     });
     cmds.push({
       id: "change-theme", section: "View", label: t("commandPalette.cmd.changeTheme"),
-      suffix: themeLabel(themeMode), icon: Palette, keywords: "appearance color dark light",
-      run: () => {
-        // Refresh the custom theme files so the submenu reflects the folder
-        // (same refetch-on-open the picker does on trigger hover).
-        void usePrefs.getState().loadCustomThemes();
-        // Enter the submenu and start a live preview — arrowing through the
-        // themes applies each one; cancelling restores this captured original.
-        themeOriginalRef.current = usePrefs.getState().themeMode;
-        setView("theme"); setQuery("");
-      },
+      suffix: themeLabel(committedTheme), icon: Palette, keywords: "appearance color dark light",
+      shortcutId: "change-theme",
+      run: enterThemeView,
     });
     cmds.push({
       id: "shortcuts", section: "View", label: t("commandPalette.cmd.keyboardShortcuts"),
@@ -591,16 +657,17 @@ export function CommandPalette() {
     }
 
     return cmds;
-  }, [view, task, proj, themeMode, themeEntries, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab, sidebarFiltered, t]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, task, proj, committedTheme, visibleThemes, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab, sidebarFiltered, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Recents, re-read on every open so an hour spent with the palette closed
   // expires them (the list is only ever consulted at build time). Empty query
   // only: once you are searching, you want the best match, and a pinned
   // section would push it down and duplicate rows.
   const recents = useMemo(
-    () => (open && view === "root" && !query
-      ? recentIds(readRecents(), new Set(commands.map(c => c.id)))
-      : []),
+    () => (!open || query ? []
+      : view === "root" ? recentIds(readRecents(), new Set(commands.map(c => c.id)))
+      // the themes last committed, if the toggle shows them
+      : readThemeRecents().map(id => `theme:${id}`).filter(id => commands.some(c => c.id === id))),
     [open, view, query, commands],
   );
 
@@ -649,6 +716,11 @@ export function CommandPalette() {
   }, [commands, query, recents]);
 
   const rows = filtered.rows;
+  // the best-match jump below keys on WHICH rows are listed, not the row
+  // objects: arrowing the theme list previews each theme, the preview moves
+  // the check icon, that rebuilds every row, and keying on `rows` snapped
+  // the highlight straight back to the best match
+  const rowIds = rows.map(r => r.cmd.id).join("\n");
 
   // Jump the highlight to the strongest match on query change, without
   // touching row order (sections and insertion order stay put — see
@@ -656,15 +728,45 @@ export function CommandPalette() {
   // whichever section happens to sort first, even when a later row is
   // the obviously-intended match (e.g. "upd" landing on "Jump to next
   // waiting agent" over "Check for updates").
-  useEffect(() => {
-    if (!query) { setActiveIdx(0); return; }
+  const bestMatch = () => {
     let bestIdx = 0;
     let bestScore = -Infinity;
     for (let i = 0; i < rows.length; i++) {
       if (rows[i].score > bestScore) { bestScore = rows[i].score; bestIdx = i; }
     }
-    setActiveIdx(bestIdx);
-  }, [query, rows]);
+    return bestIdx;
+  };
+  useEffect(() => {
+    if (view === "theme") return; // placed during render, below
+    setActiveIdx(query ? bestMatch() : 0);
+  }, [query, rowIds, view]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The theme list's highlight IS the live preview, so it is placed during
+  // render rather than in an effect: an effect lands one commit late, and
+  // the preview would apply whatever row sat at the stale index first.
+  // - entering the list or switching the filter: the current theme (else
+  //   the filter's first theme, never System, which previews the OS theme)
+  // - typing: the best match
+  // - rows changing under it (imports landing after the list opened, the
+  //   query cleared): the same theme, not the same position
+  const [placed, setPlaced] = useState({ key: "", rowIds: "" });
+  const placeKey = `${themeEntry}|${schemeFilter}|${query}`;
+  if (open && view === "theme" && (placed.key !== placeKey || placed.rowIds !== rowIds)) {
+    const sameEntry = placed.key.startsWith(`${themeEntry}|${schemeFilter}|`);
+    let idx = query ? bestMatch() : -1;
+    if (!query && sameEntry) {
+      const id = placed.rowIds.split("\n")[activeIdx];
+      idx = rows.findIndex(r => r.cmd.id === id);
+    }
+    if (idx < 0) {
+      const cur = `theme:${committedTheme}`;
+      const section = schemeFilter === "light" ? "Light" : "Dark";
+      idx = rows.findIndex(r => r.cmd.id === cur);
+      if (idx < 0) idx = Math.max(0, rows.findIndex(r => r.cmd.section === section));
+    }
+    setPlaced({ key: placeKey, rowIds });
+    if (idx !== activeIdx) setActiveIdx(idx);
+  }
 
   // Clamp the active index to the current row count.
   useEffect(() => {
@@ -676,16 +778,25 @@ export function CommandPalette() {
     listRef.current?.querySelector<HTMLElement>(`[data-row="${activeIdx}"]`)?.scrollIntoView({ block: "nearest" });
   }, [activeIdx]);
 
-  // Live theme preview — apply the highlighted theme as you move through the
-  // submenu. Just a CSS-var swap, fully reversible (cancelThemePreview).
+  // Live theme preview: apply the highlighted theme as you move through the
+  // list, without persisting it (cancelThemePreview rolls it back). Keyed on
+  // the highlighted theme, not the row objects, so a rebuilt list does not
+  // re-apply it, and gated on `open`: closing drops the Recent section,
+  // which shifts every row under the stale index. A commit leaves `view` at
+  // "theme", so the original marker gates it too: reopening must not preview
+  // the last session's row before `enterThemeView` places the highlight.
+  const highlightedId = rows[activeIdx]?.cmd.id;
   useEffect(() => {
-    if (view !== "theme") return;
-    const id = rows[activeIdx]?.cmd.id;
-    if (id?.startsWith("theme:")) usePrefs.getState().setThemeMode(id.slice(6) as ThemeMode);
-  }, [view, activeIdx, rows]);
+    if (!open || view !== "theme" || !themeOriginalRef.current) return;
+    if (highlightedId?.startsWith("theme:")) usePrefs.getState().previewThemeMode(highlightedId.slice(6) as ThemeMode);
+  }, [open, view, highlightedId, themeEntry]);
 
   function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "ArrowDown") {
+    if (e.key === "Tab" && view === "theme") {
+      e.preventDefault();
+      const n = SCHEME_FILTERS.length;
+      changeSchemeFilter(SCHEME_FILTERS[(SCHEME_FILTERS.indexOf(schemeFilter) + (e.shiftKey ? n - 1 : 1)) % n]);
+    } else if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveIdx(i => Math.min(i + 1, rows.length - 1));
     } else if (e.key === "ArrowUp") {
@@ -708,9 +819,8 @@ export function CommandPalette() {
   const glyphsFor = (id?: ShortcutId) => (id && binds[id] ? bindingGlyphs(binds[id]) : null);
 
   /** Every path that runs a command goes through here, so recording can't drift
-   *  from invocation. Theme submenu entries are not recorded: they are a live
-   *  preview you arrow through, and remembering the last one you happened to
-   *  land on is noise, not intent. */
+   *  from invocation. Theme entries keep their own recents, recorded on commit
+   *  (`recordThemeRecent`), never for a row merely previewed. */
   const runCmd = (cmd: Cmd) => {
     if (view === "root" && !cmd.noRecent) recordRecent(cmd.id);
     cmd.run();
@@ -786,6 +896,28 @@ export function CommandPalette() {
               placeholder={view === "theme" ? t("commandPalette.placeholderTheme") : t("commandPalette.placeholderRoot")}
               className="w-full bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
             />
+            {view === "theme" && (
+              <div className="flex shrink-0 rounded-md border border-[var(--color-border)] p-0.5" title={t("commandPalette.themeFilterHint")}>
+                {SCHEME_FILTERS.map(f => (
+                  <button
+                    key={f}
+                    type="button"
+                    tabIndex={-1}
+                    data-testid={`theme-filter-${f}`}
+                    // mousedown, not click: keep focus (and the caret) in the input
+                    onMouseDown={e => { e.preventDefault(); changeSchemeFilter(f); }}
+                    className={cn(
+                      "rounded px-2 py-0.5 text-[11.5px]",
+                      f === schemeFilter
+                        ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                        : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
+                    )}
+                  >
+                    {f === "dark" ? t("commandPalette.themeDark") : f === "light" ? t("commandPalette.themeLight") : t("commandPalette.themeFilterAll")}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div ref={listRef} className="no-scrollbar max-h-[min(60vh,440px)] overflow-y-auto py-1">
             {rows.length === 0 && (
@@ -803,7 +935,7 @@ export function CommandPalette() {
                 <div className="flex items-center gap-1.5 px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wider text-[var(--color-fg-faint)]">
                   {group.section === RECENT_SECTION && <Clock className="h-3 w-3" />}
                   {t(SECTION_LABEL_KEY[group.section])}
-                  {group.section === RECENT_SECTION && (
+                  {group.section === RECENT_SECTION && view === "root" && (
                     <span className="normal-case tracking-normal opacity-70">{t("commandPalette.recentHint")}</span>
                   )}
                 </div>
@@ -859,6 +991,29 @@ export function CommandPalette() {
               </div>
             ))}
           </div>
+          {view === "theme" && (
+            // What the sidebar's hover menu used to carry: the way into the
+            // themes folder, and why an agent's own colors did not follow.
+            <div className="flex items-center gap-3 border-t border-[var(--color-border)] px-3 py-2 text-[11.5px] text-[var(--color-fg-faint)]">
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="theme-open-folder"
+                onClick={() => { themesDir().then(openPath).catch(() => {}); }}
+                className="flex shrink-0 items-center gap-1.5 hover:text-[var(--color-fg)]"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("commandPalette.openThemesFolder")}
+              </button>
+              <span className="min-w-0 truncate">
+                <Trans
+                  t={t}
+                  i18nKey="commandPalette.agentThemeTip"
+                  components={{ code: <span className="mono text-[var(--color-fg-dim)]" /> }}
+                />
+              </span>
+            </div>
+          )}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

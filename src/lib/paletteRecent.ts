@@ -83,3 +83,40 @@ export function recordRecent(id: string, now = Date.now()): void {
     // Private mode / quota. Recents are a convenience; never break the palette.
   }
 }
+
+// The Change-theme list keeps its own two bits, with no expiry: the themes
+// you last committed (pinned above the list, which can run to hundreds with
+// the imports) and the dark / light / all toggle.
+const LS_THEME_RECENT = "commandPaletteThemeRecent";
+const LS_THEME_FILTER = "commandPaletteThemeFilter";
+export type SchemeFilter = "all" | "dark" | "light";
+
+export function readThemeRecents(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(LS_THEME_RECENT) ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, RECENT_MAX) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function recordThemeRecent(id: string): void {
+  try {
+    const next = [id, ...readThemeRecents().filter(x => x !== id)].slice(0, RECENT_MAX);
+    localStorage.setItem(LS_THEME_RECENT, JSON.stringify(next));
+  } catch {}
+}
+
+/** null until the user touches the toggle. */
+export function readSchemeFilter(): SchemeFilter | null {
+  try {
+    const v = localStorage.getItem(LS_THEME_FILTER);
+    return v === "all" || v === "dark" || v === "light" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSchemeFilter(f: SchemeFilter): void {
+  try { localStorage.setItem(LS_THEME_FILTER, f); } catch {}
+}

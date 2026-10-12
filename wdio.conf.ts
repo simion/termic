@@ -106,6 +106,12 @@ export const config: WebdriverIO.Config = {
     // touching the developer's real ~/.claude/settings.json. Honoured only by
     // the `e2e`-feature binary (agent_hooks::host_config_dir).
     process.env.TERMIC_E2E_AGENT_HOME = dataDir;
+    // Ghostty / Warp theme import reads this instead of the real home, so a
+    // run sees theme-import.e2e.ts's fixtures and not the developer's own
+    // themes, with `<home>/bundled` standing in for Ghostty's bundled dir.
+    // termic's own themes dir is NOT redirected (see the spec's header for
+    // why). Honoured only by the `e2e`-feature binary (theme_import.rs).
+    process.env.TERMIC_E2E_THEME_HOME = path.join(dataDir, "theme-home");
     // Touch ID for sudo offer: `perl` stands in for sudo, eligibility is
     // forced and the enable script is a stub (sudo_touchid.rs). Honoured only
     // by the `e2e`-feature binary.

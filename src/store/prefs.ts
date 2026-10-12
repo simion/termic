@@ -8,10 +8,10 @@ import type { SandboxSelection } from "@/lib/types";
 import { setDiagnosticsEnabled } from "@/lib/lsp/diagnosticsPref";
 import { setChosenServers, setChosenCommands } from "@/lib/lsp/serverChoice";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { listFontFamilies, listMonospaceFonts, sudoTouchIdSetOffer, themesList } from "@/lib/ipc";
+import { listFontFamilies, listMonospaceFonts, sudoTouchIdSetOffer, themesImports, themesList, themesSaveImport } from "@/lib/ipc";
 import {
-  applyCustomVars, clearCustomVars, clearThemeCache, isCustomId, mergeTerminal,
-  readThemeCache, sanitizeTheme, writeThemeCache, type CustomTheme,
+  applyCustomVars, clearCustomVars, clearThemeCache, copyIdOf, isCustomId, mergeTerminal,
+  readThemeCache, sanitizeImport, sanitizeTheme, writeThemeCache, type CustomTheme,
 } from "@/lib/customTheme";
 import {
   DEFAULT_BINDINGS,
@@ -286,7 +286,9 @@ export const TERMINAL_THEMES: Record<ResolvedTheme, Record<string, string>> = {
  *  fetched list wins; before the first themes_list answer (module load,
  *  first paint) we fall back to the localStorage cache of the active theme. */
 function customThemeById(id: string): CustomTheme | null {
-  const fromStore = usePrefs.getState().customThemes.find(t => t.id === id);
+  const s = usePrefs.getState();
+  // imports only resolve while the palette previews one (see pickImportedTheme)
+  const fromStore = s.customThemes.find(t => t.id === id) ?? s.importedThemes.find(t => t.id === id);
   if (fromStore) return fromStore;
   const cached = readThemeCache();
   return cached && cached.id === id ? cached : null;
@@ -656,6 +658,11 @@ interface PrefsState {
    *  only changes when the on-disk content actually changed, so
    *  subscribers don't re-render on every picker hover. */
   customThemes: CustomTheme[];
+  /** Sanitized Ghostty / Warp imports, chrome derived. Loaded only when
+   *  the command palette's theme list opens (a few hundred files). Never
+   *  the active theme outside a palette preview: picking one saves a
+   *  native copy (pickImportedTheme). */
+  importedThemes: CustomTheme[];
   /** Bumped when the ACTIVE custom theme's payload changed on a refetch
    *  (file edited while selected). Terminal panes key their live-swap
    *  effect on this so an edit updates xterm without a theme re-pick. */
@@ -974,12 +981,22 @@ interface PrefsState {
    *  left alone — it's not part of the Appearance page. */
   resetAppearance:    () => void;
   setThemeMode:       (m: ThemeMode) => void;
+  /** Show `m` without persisting it: the command palette's live preview.
+   *  Quitting mid-preview reopens on the last `setThemeMode`, and
+   *  `loadCustomThemes` leaves the active theme alone until the palette
+   *  commits or rolls back (both through `setThemeMode`). */
+  previewThemeMode:   (m: ThemeMode) => void;
   /** Convenience: cycle auto → light → dark → auto. */
   cycleThemeMode:     () => void;
   /** Fetch + sanitize the custom theme files, then reconcile the active
    *  selection: file deleted → fall back to "claude" (persisted), file
    *  edited → re-apply vars + bump customThemeRev. Safe to fire often. */
   loadCustomThemes:   () => Promise<void>;
+  loadImportedThemes: () => Promise<void>;
+  /** Save import `id` (`custom:ghostty:x`) as a native theme file and switch
+   *  to that copy, so the pick syncs and survives the source file. Rejects
+   *  when the save fails, leaving the theme mode untouched. */
+  pickImportedTheme:  (id: `custom:${string}`) => Promise<void>;
   setDesktopNotifications: (v: boolean) => void;
   setCompletionSound: (v: boolean) => void;
   setCompletionSoundId: (id: CompletionSoundId) => void;
@@ -1401,9 +1418,17 @@ setDiagnosticsEnabled(stored.codeIntelDiagnostics);
 setChosenServers(stored.codeIntelServers);
 setChosenCommands(stored.codeIntelCommands);
 
+/** True while the palette previews a theme (`previewThemeMode`), until the
+ *  next `setThemeMode` commits or rolls it back. */
+let previewing = false;
+/** The last `themes_imports` answer and what it was published as, so an
+ *  unchanged scan is one compare. */
+let lastImports: { raw: string; themes: CustomTheme[] } | null = null;
+
 export const usePrefs = create<PrefsState>(set => ({
   ...stored,
   customThemes: [],
+  importedThemes: [],
   customThemeRev: 0,
   systemScheme: readSystemScheme(),
 
@@ -1587,6 +1612,7 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setShowAllInstalledFonts(d.showAllInstalledFonts);
   },
   setThemeMode: (m) => {
+    previewing = false;
     // Picking a custom theme refreshes the first-paint cache so applyTheme
     // (and the next launch's module-load paint) has the payload at hand.
     if (isCustomId(m)) {
@@ -1594,6 +1620,12 @@ export const usePrefs = create<PrefsState>(set => ({
       if (theme) writeThemeCache(theme);
     }
     try { localStorage.setItem(LS_THEME, m); } catch {}
+    applyTheme(m);
+    set({ themeMode: m });
+  },
+  previewThemeMode: (m) => {
+    previewing = true;
+    if (usePrefs.getState().themeMode === m) return;
     applyTheme(m);
     set({ themeMode: m });
   },
@@ -1606,7 +1638,10 @@ export const usePrefs = create<PrefsState>(set => ({
     // (picker, terminal panes) shouldn't re-render on a no-op refetch.
     if (JSON.stringify(prev) !== JSON.stringify(themes)) set({ customThemes: themes });
     const mode = usePrefs.getState().themeMode;
-    if (!isCustomId(mode)) return;
+    // a preview is not the user's theme: whatever is highlighted (an import,
+    // which is never in this list, or a file the cache does not hold) is
+    // settled by the commit or rollback
+    if (previewing || !isCustomId(mode)) return;
     const active = themes.find(t => t.id === mode);
     if (!active) {
       // The active theme's file was deleted — fall back to the default
@@ -1622,6 +1657,26 @@ export const usePrefs = create<PrefsState>(set => ({
       applyTheme(mode);
       set(s => ({ customThemeRev: s.customThemeRev + 1 }));
     }
+  },
+  loadImportedThemes: async () => {
+    let files;
+    try { files = await themesImports(); } catch { return; }
+    // compared before sanitizing: deriving the chrome for a few hundred
+    // themes on every list open is the expensive part, and it is usually
+    // the same list
+    const raw = JSON.stringify(files);
+    if (raw === lastImports?.raw && usePrefs.getState().importedThemes === lastImports.themes) return;
+    const themes = files.map(f => sanitizeImport(f, TERMINAL_THEMES));
+    lastImports = { raw, themes };
+    set({ importedThemes: themes });
+  },
+  pickImportedTheme: async (id) => {
+    const theme = usePrefs.getState().importedThemes.find(t => t.id === id);
+    if (!theme) throw new Error(`unknown imported theme ${id}`);
+    // saved as already resolved, so the copy paints exactly like the preview
+    const stem = await themesSaveImport({ ...theme, id: id.slice("custom:".length) });
+    await usePrefs.getState().loadCustomThemes();
+    usePrefs.getState().setThemeMode(`custom:${stem}`);
   },
   setDesktopNotifications: (v) => {
     try { localStorage.setItem(LS_DESKTOPNOTIF, v ? "1" : "0"); } catch {}

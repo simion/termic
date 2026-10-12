@@ -1,4 +1,4 @@
-import { archiveTask, clickByText, clickMenuItem, clickMenuItemUntilReady, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickMenuItem, clickWhenVisible, clickMenuItemUntilReady, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 // Tabs are how a task holds multiple terminals/agents/editors. Guards adding a
 // tab through the "+" menu and switching the active tab by clicking it.
@@ -790,17 +790,19 @@ describe("theme switching", () => {
     }
   });
 
-  const openPicker = () =>
-    browser.execute(() => {
-      // The picker trigger is the Sun/Moon button in the top bar; it opens on
-      // hover, so dispatch the enter/over events React's onMouseEnter watches.
-      const btn = [...document.querySelectorAll("button")].find((b) =>
-        b.querySelector("svg.lucide-sun, svg.lucide-moon"),
-      );
-      if (!btn) throw new Error("theme picker trigger not found");
-      btn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-      btn.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+  /** The sidebar icon opens the theme list; pick a row from it. The list
+   *  is filtered to the current theme's scheme, so widen it to All first. */
+  const pick = async (mode: string) => {
+    await clickWhenVisible('[data-testid="theme-picker"]');
+    await waitVisible('[data-testid="theme-filter-all"]');
+    // the filter acts on mousedown, which a scripted click never fires
+    await browser.execute(() => {
+      document.querySelector('[data-testid="theme-filter-all"]')!
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
     });
+    await clickWhenVisible(`[data-cmd-id="theme:${mode}"]`);
+    await browser.waitUntil(() => browser.execute(() => !window.__termic!.useUI.getState().commandPaletteOpen));
+  };
 
   it("switches theme via the picker and applies it to <html>", async () => {
     await waitForAppShell();
@@ -809,8 +811,7 @@ describe("theme switching", () => {
       () => window.__termic!.usePrefs.getState().themeMode,
     );
 
-    await openPicker();
-    await clickByText("Light");
+    await pick("light");
     await browser.waitUntil(
       () =>
         browser.execute(
@@ -821,8 +822,7 @@ describe("theme switching", () => {
       { timeout: 8_000, timeoutMsg: "Light theme was not applied to <html>" },
     );
 
-    await openPicker();
-    await clickByText("Dark+");
+    await pick("dark");
     await browser.waitUntil(
       () =>
         browser.execute(

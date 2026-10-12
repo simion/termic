@@ -13,6 +13,9 @@ import {
   readThemeCache,
   writeThemeCache,
   clearThemeCache,
+  deriveChrome,
+  sanitizeImport,
+  copyIdOf,
   type CustomThemeFile,
 } from "@/lib/customTheme";
 
@@ -269,5 +272,130 @@ describe("example.json.sample", () => {
     expect(Object.keys(t.ui)).toHaveLength(UI_KEYS.length);
     expect(Object.keys(t.terminal)).toHaveLength(Object.keys(sample.terminal).length);
     expect(t.colorScheme).toBe("dark");
+  });
+});
+
+// ── imported themes (Ghostty / Warp) ──────────────────────────────────
+
+describe("deriveChrome / imported themes", () => {
+  // classic Monokai: the palette most terminal ports share
+  const monokai = {
+    background: "#272822", foreground: "#f8f8f2",
+    black: "#272822", red: "#f92672", green: "#a6e22e", yellow: "#e6db74",
+    blue: "#66d9ef", magenta: "#ae81ff", cyan: "#a1efe4", white: "#f8f8f2",
+  };
+  const lum = (hex: string) => {
+    const n = parseInt(hex.slice(1), 16);
+    return ((n >> 16) & 255) + ((n >> 8) & 255) + (n & 255);
+  };
+
+  it("derives every UI key, all valid colors", () => {
+    const { ui } = deriveChrome(monokai);
+    for (const k of UI_KEYS) expect(isValidColor(ui[k]), k).toBe(true);
+  });
+
+  it("reads the scheme off the background and steps surfaces the right way", () => {
+    const d = deriveChrome(monokai);
+    expect(d.colorScheme).toBe("dark");
+    expect(lum(d.ui["bg-1"])).toBeGreaterThan(lum(d.ui.bg));
+    expect(lum(d.ui["bg-3"])).toBeGreaterThan(lum(d.ui["bg-1"]));
+
+    const l = deriveChrome({ ...monokai, background: "#fafafa", foreground: "#272822" });
+    expect(l.colorScheme).toBe("light");
+    expect(lum(l.ui["bg-1"])).toBeLessThan(lum(l.ui.bg));
+    expect(lum(l.ui["bg-3"])).toBeLessThan(lum(l.ui["bg-1"]));
+  });
+
+  it("keeps accent and status hues readable on a light background", () => {
+    const light = { ...monokai, background: "#fafaf8", foreground: "#272822" };
+    const { ui } = deriveChrome(light);
+    const rgb = (h: string) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    const rl = (h: string) => {
+      const [r, g, b] = rgb(h).map(v => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a: string, b: string) => {
+      const [hi, lo] = [rl(a), rl(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    for (const k of ["accent", "ok", "warn", "err"]) expect(ratio(ui[k], ui.bg), k).toBeGreaterThanOrEqual(3);
+    expect(ratio(deriveChrome(monokai).ui["accent-deep"], "#ffffff")).toBeGreaterThanOrEqual(4.5);
+    // ink on the accent fill comes from the theme's own pair
+    expect([ui.bg, ui.fg]).toContain(ui["accent-fg"]);
+    expect(ratio(ui["accent-fg"], ui.accent)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("maps status colors from ANSI and honours a supplied accent", () => {
+    expect(deriveChrome(monokai).ui.err).toBe("#f92672");
+    expect(deriveChrome(monokai).ui.ok).toBe("#a6e22e");
+    expect(deriveChrome(monokai, "#fd971f").ui.accent).toBe("#fd971f");
+  });
+
+  // stand-ins for TERMINAL_THEMES: just enough to tell which one filled a key
+  const bases = {
+    dark: { background: "#0b0b0d", foreground: "#eceef1", blue: "#4c8bf5", cursor: "#d97757" },
+    light: { background: "#ffffff", foreground: "#1f2328", blue: "#2c5fb3", cursor: "#d97757" },
+  };
+  const imp = (terminal: Record<string, string>, ui: Record<string, string> = {}): CustomThemeFile =>
+    ({ id: "warp:x", name: "X", colorScheme: "", ui, terminal });
+
+  it("derives chrome in sanitizeImport only, never for a native file", () => {
+    const base = { id: "ghostty:monokai", name: "Monokai", colorScheme: "", terminal: monokai };
+    const imported = sanitizeImport({ ...base, ui: { accent: "#fd971f" } }, bases);
+    expect(imported.colorScheme).toBe("dark");
+    expect(imported.ui.accent).toBe("#fd971f");
+    expect(imported.ui["bg-1"]).toBeDefined();
+
+    const native = sanitizeTheme({ ...base, ui: {} });
+    expect(native.ui).toEqual({});
+  });
+
+  it("fills an import's missing keys from the base, and derives chrome from the same palette", () => {
+    const { blue: _, ...noBlue } = monokai;
+    const t = sanitizeImport(imp(noBlue), bases);
+    // the terminal's blue and the chrome's blue are one color
+    expect(t.terminal.blue).toBe("#4c8bf5");
+    expect(t.ui["palette-blue"]).toBe("#4c8bf5");
+    expect(t.terminal.cursor).toBe("#d97757");
+
+    // palette-only file: chrome bg is the base the terminal paints, not #000
+    const bare = sanitizeImport(imp({ red: "#f92672" }), bases);
+    expect(bare.ui.bg).toBe("#0b0b0d");
+    expect(bare.terminal.background).toBe("#0b0b0d");
+
+    // a light background picks the light base
+    const light = sanitizeImport(imp({ background: "#fafafa" }), bases);
+    expect(light.colorScheme).toBe("light");
+    expect(light.terminal.foreground).toBe("#1f2328");
+  });
+
+  it("keeps a Warp accent only as an input, so its contrast fix sticks", () => {
+    // pale yellow on near-white is ~1.4:1 as given
+    const t = sanitizeImport(imp({ background: "#fafafa", foreground: "#272822" }, { accent: "#ffd700" }), bases);
+    expect(t.ui.accent).not.toBe("#ffd700");
+    // the siblings were built from the adjusted value, and still agree with it
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(t.ui.accent.slice(i, i + 2), 16));
+    expect(t.ui["accent-soft"]).toBe(`rgba(${r}, ${g}, ${b}, 0.22)`);
+  });
+
+  it("ignores the file's colorScheme for an import, the background decides", () => {
+    const t = sanitizeImport({ ...imp(monokai), colorScheme: "light" }, bases);
+    expect(t.colorScheme).toBe("dark");
+  });
+
+  it("reads its saved copy back as a native theme that paints the same", () => {
+    // pickImportedTheme writes the resolved import as a native file
+    // (themes_save_import keeps name / colorScheme / ui / terminal), and
+    // loadCustomThemes compares the two with JSON.stringify: any drift would
+    // repaint the moment the copy replaces the preview
+    const t = sanitizeImport(imp(monokai, { accent: "#fd971f" }), bases);
+    const { id: _, ...onDisk } = JSON.parse(JSON.stringify(t));
+    const copy = sanitizeTheme({ ...onDisk, id: "warp-x" });
+    expect(JSON.stringify({ ...copy, id: t.id })).toBe(JSON.stringify(t));
+  });
+
+  it("names the copy the way theme_import.rs copy_stem does", () => {
+    expect(copyIdOf("custom:ghostty:monokai-classic")).toBe("custom:ghostty-monokai-classic");
+    expect(copyIdOf("custom:warp:w")).toBe("custom:warp-w");
   });
 });

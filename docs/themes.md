@@ -27,24 +27,76 @@ sources live in `src-tauri/assets/themes/`.
 
 One JSON file per theme. The picker's "Open themes folder" row opens this
 directory (and creates it if needed). Themes are read at startup and
-re-read every time the picker opens, so the edit loop is: save the file,
-hover the picker, done. No restart, no watcher.
+re-read every time the theme list opens, so the edit loop is: save the
+file, reopen the list, done. No restart, no watcher.
 
 ## Picking a theme
 
-Two ways, same as the built-ins:
+One list holds every theme: the built-ins, your theme files and the
+Ghostty / Warp imports. Three ways in: click the theme icon (sun/moon) in
+the sidebar footer, press ⌥⌘T, or ⇧⌘P then "Change theme…".
 
-- Hover the theme icon (sun/moon) in the title bar. Custom themes list
-  below the built-ins, with an "Open themes folder" row at the bottom.
-- ⇧⌘P, then "Change theme…". Arrow keys live-preview each theme; Enter
-  commits, Escape rolls back to what you had.
+- Sections: System, then Dark, then Light, each sorted by name. Each row is
+  tagged with where it came from (Custom, Ghostty, Warp; built-ins carry
+  none), and typing the tag filters to it.
+- A Dark / Light / All toggle beside the search box (Tab cycles it). It
+  opens on your saved choice, or on the current theme's scheme, so
+  arrowing through dark themes never flashes a light one. A saved choice
+  that would hide the current theme is skipped for that opening.
+- The three themes you last committed are pinned at the top.
+- Arrow keys live-preview each theme; Enter commits, Escape rolls back to
+  what you had. The footer opens the themes folder.
 
 The keyboard theme-cycle shortcut only cycles System / Light / Dark, so a
 custom theme sticks until you explicitly pick something else.
 
 The theme's id is its file name (a file named `rose-pine-moon.json` becomes
 `custom:rose-pine-moon` internally), so a file named `claude.json` can
-never shadow the built-in Claude theme.
+never shadow the built-in Claude theme. A file name containing `:` is
+skipped: that character is reserved for import ids (below).
+
+## Ghostty and Warp themes
+
+Themes you already have for Ghostty or Warp show up in the theme list
+beside your own, tagged Ghostty / Warp. A Ghostty install alone is ~460
+themes, which is why the list has a filter, sections and search.
+
+Where termic looks (read only, nothing is ever written there):
+
+- Ghostty: `$XDG_CONFIG_HOME/ghostty/themes` (default `~/.config/...`),
+  `~/Library/Application Support/com.mitchellh.ghostty/themes`, then the
+  bundled catalog, from the first of `$GHOSTTY_RESOURCES_DIR/themes`,
+  `/Applications/Ghostty.app/...`, `~/Applications/Ghostty.app/...`,
+  `/usr/local/share/ghostty/themes`, `/usr/share/ghostty/themes` that
+  exists. A user theme shadows a bundled one of the same name, as in
+  Ghostty. Ghostty's config (`theme =`) is not read: every name it can
+  select is already listed from these dirs.
+- Warp: `~/.warp/themes` and `$XDG_DATA_HOME/warp-terminal/themes`, three
+  folders deep (a cloned `warpdotdev/themes` repo works). No Windows path
+  yet.
+
+Both formats are only a terminal palette (Warp adds an accent), so the
+chrome is derived from it: surfaces step from the background toward the
+foreground, status colors come from the ANSI slots, and anything used as
+text on the chrome is pushed to 3:1 contrast. Light or dark is read off
+the background.
+
+Previewing any theme in the palette changes nothing on disk or in the
+saved preference (`previewThemeMode`): quitting mid-preview reopens on the
+theme you had. Committing an import
+(Enter) saves it as an ordinary theme file in this folder, named
+`<ghostty|warp>-<name>.json`, and switches to that. From then on it is a
+normal custom theme: it syncs, you can edit it, and it stays put if the
+Ghostty / Warp file goes away. The palette hides an import once its copy
+exists; delete the copy to re-import a theme whose source changed. A copy
+that exists but fails to parse (a hand edit gone wrong) is never
+overwritten: picking the import again reports the clash instead. A file
+name with no ASCII letters or digits has nothing to name the copy after,
+so it does not list.
+
+Caps, since those dirs are writable by other apps and cloned repos: 256 KB
+per file, 512 files per source dir, 128 characters per name, and colors
+must be hex.
 
 ## File format
 

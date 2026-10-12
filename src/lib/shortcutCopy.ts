@@ -51,6 +51,7 @@ const DEF_KEY: Record<ShortcutId, string> = {
   "terminal-copy": "terminalCopy",
   "terminal-paste": "terminalPaste",
   "command-palette": "commandPalette",
+  "change-theme": "changeTheme",
   "new-task-quick": "newTaskQuick",
   "open-settings": "openSettings",
   "file-finder": "fileFinder",
