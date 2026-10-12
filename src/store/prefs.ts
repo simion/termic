@@ -886,12 +886,16 @@ interface PrefsState {
    *  Lives with the shortcuts rather than with code navigation, because the
    *  dialog searches FILES first and symbols only where a checkout is armed. */
   doubleShiftMode: DoubleShiftMode;
-  /** Whether ⌃⇥ / ⌃⇧⇥ walk the recently-used tabs (see CTRL_TAB_MODES).
+  /** Whether the recently-used-tabs gesture is on (see CTRL_TAB_MODES). Its
+   *  keys are `recentTabsGesture`, ⌃⇥ / ⌃⇧⇥ unless rebound; the name is
+   *  historic, kept so stored prefs carry over.
    *
-   *  It earns a switch because it is the one Ctrl chord termic keeps for
-   *  itself: everything else with only Ctrl on it goes to the focused terminal
-   *  (GH #10). Nothing observable is lost (xterm sends ⌃⇥ as a plain tab), but
-   *  somebody who wants that rule to have no exceptions can have it. */
+   *  It earns a switch because the gesture is claimed before the focused
+   *  terminal sees the key, and with the default that is the one Ctrl chord
+   *  termic keeps for itself: everything else with only Ctrl on it goes to
+   *  the terminal (GH #10). Nothing observable is lost with ⌃⇥ (xterm sends
+   *  it as a plain tab), and the recorder refuses the keys a terminal needs,
+   *  but somebody who wants that rule to have no exceptions can have it. */
   ctrlTabMode: CtrlTabMode;
   /** Which modifier is held and which key is tapped for the recently-used-tabs
    *  walk. Read through `readHoldGesture`, so a value this platform cannot

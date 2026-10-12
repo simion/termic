@@ -23,7 +23,8 @@
 //   ⌃⇥, ⌃⇧⇥ → walk the recently-used tabs (a GESTURE, not a binding: see
 //              below; its modifier and key are recordable in Settings)
 //   ⇧⇧       → search everywhere (double-Shift; it also has a chord, which
-//              ships unbound)
+//              ships unbound. Once recorded it works from a terminal on
+//              macOS; elsewhere only if it carries Shift or Alt)
 //   Shortcuts cheat-sheet: icon-only, no keyboard binding
 import { useEffect, useRef } from "react";
 import { useApp } from "@/store/app";

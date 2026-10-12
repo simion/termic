@@ -2,39 +2,60 @@
 
 ## Architecture
 
-`src/lib/shortcuts.ts` is the single source of truth: `ShortcutId` union + `SHORTCUT_DEFS` (each: `id`, `group`, `defaultBinding`, which is null for a command that ships unbound, and an optional `gesture`; see "Gestures" below). Hold-and-tap gestures live beside it in `GESTURE_SHORTCUTS`. A `Binding` is `{ cmd, shift, alt, key }` where `cmd` folds Cmd=Ctrl, `key` is a normalized token or `"1-9"` sentinel.
+`src/lib/shortcuts.ts` is the single source of truth: `ShortcutId` union +
+`SHORTCUT_DEFS` (each: `id`, `group`, `defaultBinding`, which is null for a
+command that ships unbound, and an optional `gesture`; see "Gestures" below).
+Hold-and-tap gestures live beside it in `GESTURE_SHORTCUTS`. A `Binding` is
+`{ cmd, shift, alt, key }` where `cmd` folds Cmd=Ctrl, `key` is a normalized
+token or `"1-9"` sentinel.
 
 The rows' **wording is not in that file**: labels, hints and the mode select's
-options are locale entries (`settings:shortcuts.defs.*`), reached by id through
-`src/lib/shortcutCopy.ts`. The Shortcuts page and the ⌘/ sheet both draw the
-same rows, so one copy is the only way they cannot disagree, and a new
-`ShortcutId` is a compile error until it has a key there. A dynamic key like
-that is invisible to `usedKeys.test.ts` (it reads literals) and to
+options are locale entries (`settings:shortcuts.defs.*`), reached by id
+through `src/lib/shortcutCopy.ts`. The Shortcuts page and the ⌘/ sheet both
+draw the same rows, so one copy is the only way they cannot disagree, and a
+new `ShortcutId` is a compile error until it has a key there. A dynamic key
+like that is invisible to `usedKeys.test.ts` (it reads literals) and to
 `parity.test.ts` (it only compares en against zh-CN), so
 `shortcutCopy.test.ts` is what pins it: every id resolves to a label in both
 languages, the hint set matches across them, and no copy is left behind for a
 row that no longer exists.
 
-**Adding a shortcut** = new `ShortcutId` + `SHORTCUT_DEFS` entry + `case` in `useShortcuts` (for global ones). Help modal and settings editor are data-driven from `SHORTCUT_DEFS`.
+**Adding a shortcut** = new `ShortcutId` + `SHORTCUT_DEFS` entry + `case` in
+`useShortcuts` (for global ones). Help modal and settings editor are
+data-driven from `SHORTCUT_DEFS`.
 
 ## Runtime
 
-- **Resolved bindings** in prefs store (`usePrefs(s => s.shortcuts)`): `DEFAULT_BINDINGS` merged with localStorage overrides. Mutate via `setShortcut`/`resetShortcut`/`resetAllShortcuts`.
-- **Global handler** (`src/hooks/useShortcuts.ts`): one `keydown` listener, matches via `bindingMatches(e, binding)`.
-- **Contextual shortcuts** (need component state) handled inside the component with a capture-phase listener that `stopPropagation`s only when it claims the key. Shared chord meaning different things by context is expected, not a bug.
-  - A component that stays MOUNTED while off screen (every visited task, every open tab) must gate that listener on an app-wide claim, not "am I laid out". Several instances answer the latter yes at once, and capture + `stopPropagation` means the loser doesn't just misfire, it eats the chord from whoever should have had it. Store state can't finish the job either: it doesn't model the bottom split, the right panel, or a modal on top. See the ⌘F bullet in [gotchas.md](gotchas.md#reactzustand-traps).
-- **Help modal** (`ShortcutsHelpDialog`, triggered by `open-shortcuts`): read-only, grouped by `GROUP_ORDER`. Edit button jumps to Settings → Shortcuts.
+- **Resolved bindings** in prefs store (`usePrefs(s => s.shortcuts)`):
+  `DEFAULT_BINDINGS` merged with localStorage overrides. Mutate via
+  `setShortcut`/`resetShortcut`/`resetAllShortcuts`.
+- **Global handler** (`src/hooks/useShortcuts.ts`): one `keydown` listener,
+  matches via `bindingMatches(e, binding)`.
+- **Contextual shortcuts** (need component state) handled inside the component
+  with a capture-phase listener that `stopPropagation`s only when it claims
+  the key. Shared chord meaning different things by context is expected, not a
+  bug.
+  - A component that stays MOUNTED while off screen (every visited task, every
+    open tab) must gate that listener on an app-wide claim, not "am I laid
+    out". Several instances answer the latter yes at once, and capture +
+    `stopPropagation` means the loser doesn't just misfire, it eats the chord
+    from whoever should have had it. Store state can't finish the job either:
+    it doesn't model the bottom split, the right panel, or a modal on top. See
+    the ⌘F bullet in [gotchas.md](gotchas.md#reactzustand-traps).
+- **Help modal** (`ShortcutsHelpDialog`, triggered by `open-shortcuts`):
+  read-only, grouped by `GROUP_ORDER`. Edit button jumps to Settings →
+  Shortcuts.
 
 ## What "Cmd" is on each platform, and what a real key looks like
 
 One table serves all three platforms. `Binding.cmd` is Cmd on macOS, and off
-macOS it is Ctrl OR the Windows / Super key (`eventCmd` in `lib/shortcuts.ts`).
-The second half is what makes shortcuts usable from INSIDE a terminal there:
-plain Ctrl+letter is the shell's (Ctrl+J is a line feed, Ctrl+P is readline's
-previous line), so the terminal keeps all of them, and of the Ctrl chords only
-the handful in `PASS_TO_APP` that also carry Shift or Alt are handed to the
-app. Win+J on Windows and Super+J on Linux toggle the terminal panel from a
-focused terminal exactly as ⌘J does on a Mac.
+macOS it is Ctrl OR the Windows / Super key (`eventCmd` in
+`lib/shortcuts.ts`). The second half is what makes shortcuts usable from
+INSIDE a terminal there: plain Ctrl+letter is the shell's (Ctrl+J is a line
+feed, Ctrl+P is readline's previous line), so the terminal keeps all of them,
+and of the Ctrl chords only the handful in `PASS_TO_APP` that also carry Shift
+or Alt are handed to the app. Win+J on Windows and Super+J on Linux toggle the
+terminal panel from a focused terminal exactly as ⌘J does on a Mac.
 
 Three things a real key does on Linux that a synthetic `KeyboardEvent` never
 shows. All three were measured with real X key events against WebKitGTK 2.52,
@@ -56,12 +77,12 @@ and `e2e/specs/shortcuts-linux.e2e.ts` presses every binding that way:
   Shift's effect back out, and a recorded binding stores the key, not the
   character.
 
-Settings → Shortcuts says so on Linux (`shortcuts.terminalNote`), and draws its
-key chips in the platform's order: `bindingGlyphs` emits Ctrl, Alt, Shift off
-macOS, the order `bindingText` already printed, where the chips used to read
-"Shift Ctrl A". Copy and paste in a terminal are the terminal's own (they are
-handled in its key handler, before the Super guard), so Super+Shift+V pastes
-like Ctrl+Shift+V does.
+Settings → Shortcuts says so on Linux (`shortcuts.terminalNote`), and draws
+its key chips in the platform's order: `bindingGlyphs` emits Ctrl, Alt, Shift
+off macOS, the order `bindingText` already printed, where the chips used to
+read "Shift Ctrl A". Copy and paste in a terminal are the terminal's own (they
+are handled in its key handler, before the Super guard), so Super+Shift+V
+pastes like Ctrl+Shift+V does.
 
 **Off macOS a terminal gives the app every chord that carries Shift or Alt
 with Ctrl** (`isAppChordInTerminal`), and keeps plain Ctrl+letter for the
@@ -108,11 +129,11 @@ readline's Alt+B / F / D).
 ## Code navigation keys
 
 The five editor jumps (`go-to-definition` F12, `find-usages` ⇧F12,
-`go-to-implementation` ⌥⇧B, `go-to-type-definition` ⌥⇧T, `file-structure` ⌘F12)
-are ordinary `SHORTCUT_DEFS` entries, so they appear in the help sheet and in
-Settings → Shortcuts like anything else. They were five literal key strings in
-a CodeMirror keymap: they worked for whoever already knew F12, could not be
-found, and could not be changed.
+`go-to-implementation` ⌥⇧B, `go-to-type-definition` ⌥⇧T, `file-structure`
+⌘F12) are ordinary `SHORTCUT_DEFS` entries, so they appear in the help sheet
+and in Settings → Shortcuts like anything else. They were five literal key
+strings in a CodeMirror keymap: they worked for whoever already knew F12,
+could not be found, and could not be changed.
 
 They stay a **CodeMirror keymap** rather than moving to the window handler,
 because they must fire only while an editor has focus (F12 in a terminal
@@ -132,22 +153,24 @@ function key types nothing, so it cannot swallow input.
 They live in their own **Code navigation** group, named after the feature and
 therefore after the type-checking switch (`shortcutGroupLabel` in
 `lib/shortcutCopy.ts`, the one group heading that is not a locale entry). Back
-/ Forward stay in Navigation: they walk a folder
-listing's trail as well as the symbol trail, so filing them here would describe
-half of what they do.
+/ Forward stay in Navigation: they walk a folder listing's trail as well as
+the symbol trail, so filing them here would describe half of what they do.
 
 ## Gestures, and the one command with no default chord
 
-Two triggers in the app are not a chord, and both are now the user's to set.
+Two triggers in the app are not a chord. Recently used tabs is the user's to
+set, modifier and key. Double-Shift is not rebindable (see below); what is
+the user's is when it applies, and Search everywhere has an optional chord
+beside it.
 
 **Search everywhere** is an ordinary `SHORTCUT_DEFS` entry
 (`search-everywhere`, group Code navigation) with `defaultBinding: null` and
-`gesture: "double-shift"`. It ships **unbound**: every free chord is somebody's
-muscle memory, and double-Shift already answers "how do I open it" for
-everyone else. Recording a chord is optional, and the chord and double-Shift
-are independent: either can be off while the other works. Its row in
-Settings carries the chord recorder ("Not set" while unbound) and, beside it,
-the double-Shift mode select. A recorded chord is in `PASS_TO_APP`
+`gesture: "double-shift"`. It ships **unbound**: every free chord is
+somebody's muscle memory, and double-Shift already answers "how do I open it"
+for everyone else. Recording a chord is optional, and the chord and
+double-Shift are independent: either can be off while the other works. Its row
+in Settings carries the chord recorder ("Not set" while unbound) and, beside
+it, the double-Shift mode select. A recorded chord is in `PASS_TO_APP`
 (TerminalPane), so it reaches the app with a terminal focused, the way
 double-Shift does (that one is tracked on the window, so it never needed
 passing). That holds as recorded only on macOS, and only for the Cmd press:
@@ -157,13 +180,14 @@ chord in a terminal, so a handed-over ⌃R reached nobody. Off macOS a chord is
 taken from a terminal only if it carries Shift or Alt; a plain Ctrl+letter
 stays the shell's.
 
-`defaultBinding: Binding | null` and `BindingMap = Record<ShortcutId, Binding |
-null>` are what make that possible. `bindingMatches` treats null as no match,
-`bindingsEqual(null, null)` is true (so the reset button stays hidden while
-the row is at its default), reset puts null back, and `loadShortcuts` reads a
-stored null as "no override" (the whole map is persisted on every change, so
-null is only ever the default, and a default added later still reaches the
-profile). Only a command with another way in may ship unbound;
+`defaultBinding: Binding | null` and
+`BindingMap = Record<ShortcutId, Binding | null>` are what make that
+possible. `bindingMatches` treats null as no match,
+`bindingsEqual(null, null)` is true (so the reset button stays hidden
+while the row is at its default), reset puts null back, and `loadShortcuts`
+reads a stored null as "no override" (the whole map is persisted on every
+change, so null is only ever the default, and a default added later still
+reaches the profile). Only a command with another way in may ship unbound;
 `shortcuts.test.ts` pins that list to `search-everywhere`. Every consumer of
 `shortcuts[id]` was moved onto the nullable type by the compiler, so a new one
 has to handle "unbound" too.
@@ -216,8 +240,9 @@ would turn the gesture off wherever the location is not reported.
 `conflicts(binds, gesture, ctrlTabMode)` in `lib/shortcuts.ts` is the one rule
 set, pure and tested, and the Shortcuts page only draws its answer:
 
-- **chord vs chord:** two rows on one signature, unless `NON_CONFLICTING_GROUPS`
-  says they cannot both be live. Unbound rows clash with nothing.
+- **chord vs chord:** two rows on one signature, unless
+  `NON_CONFLICTING_GROUPS` says they cannot both be live. Unbound rows clash
+  with nothing.
 - **gesture vs chord, only while the gesture is on:** a chord on the gesture's
   key with the same modifier, Shift either way (Shift
   reverses the walk, so ⌃⇧⇥ is the gesture too). The modifier is the one
@@ -242,38 +267,40 @@ into cycling that task's tabs.
 
 It exists because every other navigation key here is POSITIONAL (⌥↑/↓, ⌥⌘↑/↓,
 ⌥⌘←/→, ⇧⌘[/], ⌘1..9), and none of them answers "take me back to the thing I
-was just looking at". With eight agents open that is the question you ask most,
-and the tab two slots to the left is not the tab you were in.
+was just looking at". With eight agents open that is the question you ask
+most, and the tab two slots to the left is not the tab you were in.
 
 **Why it is not a `SHORTCUT_DEFS` entry.** A `Binding` cannot express it:
 `bindingMatches` folds Cmd and Ctrl into one flag, so the nearest thing the
-table could hold is `{cmd:true, key:"Tab"}`, which renders as ⌘⇥ and is dead on
-macOS. It is also hold-and-tap rather than one chord, and it needs `keyup`,
+table could hold is `{cmd:true, key:"Tab"}`, which renders as ⌘⇥ and is dead
+on macOS. It is also hold-and-tap rather than one chord, and it needs `keyup`,
 which nothing else in the app does. `isValidBinding` therefore refuses Tab
 outright (`isReservedKey`) — without that, recording ⌃⇥ as a chord would store
 that half-dead binding and fire it on every press of the gesture, forever, on
 top of the gesture itself.
 
 **Both halves are recordable.** The gesture is a `HoldGesture`
-(`{ hold: "ctrl" | "alt" | "cmd", code }`, `lib/shortcuts.ts`), stored as JSON
-in `prefs.recentTabsGesture` (localStorage `recentTabsGesture`, synced). Absent
+(`{ hold: "ctrl" | "alt" | "cmd", code, key? }`, `lib/shortcuts.ts`), stored
+as JSON in
+`prefs.recentTabsGesture` (localStorage `recentTabsGesture`, synced). Absent
 means ⌃⇥, so no profile needed a migration. It is read through
 `readHoldGesture`, which turns anything unreadable, anything the recorder
 would refuse, and a Cmd gesture on a platform without Cmd (synced from a Mac
 to Linux) into the default, at read time only: the stored value is never
 rewritten, so the Mac it came from keeps its choice. A well-formed gesture
-refused that way is kept as `prefs.recentTabsGestureRefused`, and the
-Settings row says so ("⌘; is saved but cannot be used here, so ⌃⇥ is in
-use") beside the reset button; resetting is the one thing that writes over
-the stored value, because it is the user choosing the default here.
+refused that way is kept as `prefs.recentTabsGestureRefused`, and the Settings
+row says so ("⌘; is saved but cannot be used here, so ⌃⇥ is in use") beside
+the reset button; resetting is the one thing that writes over the stored
+value, because it is the user choosing the default here.
 
 The tapped key is recorded as **`KeyboardEvent.code`**, the physical key, not
 `key`. With Option held, macOS turns letters into other characters and ` into
-a dead key (`key: "Dead"`), so `key` would record something different on
-every layout and never match its own next press. The modifier is matched by
+a dead key (`key: "Dead"`), so `key` would record something different on every
+layout and never match its own next press. The modifier is matched by
 `holdHeld` (exactly that one modifier down, Shift aside; Alt excludes AltGr)
 and the landing by `holdReleased` (the flag going false). `endsGesture` in
-`lib/ctrlTab.ts` takes the tap code, so a dead key's `key` cannot end the walk.
+`lib/ctrlTab.ts` takes the tap code, so a dead key's `key` cannot end the
+walk.
 
 A code is named after the US key in that place, though: on a German layout
 `Semicolon` is ö. So the recorder also keeps the character the key typed
@@ -303,8 +330,8 @@ It refuses, with a message each:
   switch between an application's windows), F1, F2, F7, F8 and F10 (GNOME's
   overview, run dialog, move, resize, maximize). "⌘⇥ belongs to the system,
   Termic never sees it." The logo key is named Super on Linux and Win on
-  Windows (`holdModifierName`). These are checked first, so somebody who pressed ⌘⇥
-  with another modifier down is told the real reason.
+  Windows (`holdModifierName`). These are checked first, so somebody who
+  pressed ⌘⇥ with another modifier down is told the real reason.
 - **Enter, Space, Backspace**: they drive the recorder itself. A message of
   their own; they used to get "hold exactly one", which told somebody who
   held exactly one that they had not.
@@ -343,15 +370,14 @@ reads the modifier's own release.
 
 **Why it may take a Ctrl chord at all**, when GH #10 deliberately gave Ctrl to
 the terminal: with the default, nothing observable is lost. xterm's
-`evaluateKeyboardEvent` reads only `shiftKey` for Tab, so ⌃⇥ reaches the PTY as
-a plain `\t` and ⌃⇧⇥ as a plain `ESC[Z`, byte-identical to ⇥ and ⇧⇥, which are
-untouched. No program on the far end could tell the difference, so there was
-no binding there to take. A rebound Ctrl gesture is held to the closest rule
-the recorder can enforce: Ctrl + ; ' , . = make no control character, so
-readline has nothing bound to them, but a TUI on an extended keyboard
-protocol could tell them apart and would lose that key. The gesture is still
-switchable off in Settings for anyone who wants the rule to have no
-exceptions.
+`evaluateKeyboardEvent` reads only `shiftKey` for Tab, so ⌃⇥ reaches the PTY
+as a plain `\t` and ⌃⇧⇥ as a plain `ESC[Z`, byte-identical to ⇥ and ⇧⇥, which
+are untouched. No program on the far end could tell the difference, so there
+was no binding there to take. A rebound Ctrl gesture is held to the closest
+rule the recorder can enforce: Ctrl + ; ' , . = make no control character, so
+readline has nothing bound to them, but a TUI on an extended keyboard protocol
+could tell them apart and would lose that key. The gesture is still switchable
+off in Settings for anyone who wants the rule to have no exceptions.
 
 **Three listeners, not the usual one.** A window **capture**-phase `keydown`,
 because xterm listens on its own textarea and its `cancel()` calls
@@ -381,18 +407,18 @@ for the duration. Each step changes what is on screen, which is what feeds the
 recency list; walking the live list would reorder it under the next keypress.
 
 **It only offers places it can reach for free.** `livePlaces` filters on
-`mountedTasks`, not on "does this tab still exist". `stopTask` keeps a task and
-its tabs but evicts it from `mountedTasks` and kills its PTYs, so the weaker
-check would let ⌃⇥ resurrect a task the user explicitly stopped. Navigation
-must never start a process — which is also why the ring is session-only and is
-not seeded from the persisted `recentTasks` at startup.
+`mountedTasks`, not on "does this tab still exist". `stopTask` keeps a task
+and its tabs but evicts it from `mountedTasks` and kills its PTYs, so the
+weaker check would let ⌃⇥ resurrect a task the user explicitly stopped.
+Navigation must never start a process — which is also why the ring is
+session-only and is not seeded from the persisted `recentTasks` at startup.
 
 The list itself is `store/recentPlaces.ts`, fed by a subscription in
-`lib/recentPlacesTracker.ts` rather than from inside the setters, so all thirty
-call sites of those two setters record for free (deep links, the CLI, the
-palette, LSP navigation, the sidebar). The push is coalesced into a microtask
-because picking a task and a tab is one act that three call sites perform as
-two calls.
+`lib/recentPlacesTracker.ts` rather than from inside the setters, so all
+thirty call sites of those two setters record for free (deep links, the CLI,
+the palette, LSP navigation, the sidebar). The push is coalesced into a
+microtask because picking a task and a tab is one act that three call sites
+perform as two calls.
 
 ## Back and Forward (⌘[ / ⌘])
 
@@ -403,19 +429,20 @@ conditionally on top of task switching and each carrying an escape hatch so it
 "never silently stole" the key.
 
 All of that machinery existed to protect task switching, which ⌥⌘↑ / ⌥⌘↓
-already do and do inside a split too (tabs have ⇧⌘[ / ⇧⌘]). Removing it removed
-the conditionals with it: the handler is now the folder listing if it has
-somewhere to go, else the symbol jump trail, else nothing. A key that quietly
-changes which task you are looking at once a history runs out is how people
-lose their place.
+already do and do inside a split too (tabs have ⇧⌘[ / ⇧⌘]). Removing it
+removed the conditionals with it: the handler is now the folder listing if it
+has somewhere to go, else the symbol jump trail, else nothing. A key that
+quietly changes which task you are looking at once a history runs out is how
+people lose their place.
 
-The listing goes first because it is the more local history and the one you can
-see. `dirHistoryTarget` (pure, unit-tested) decides which listing may claim it
-from DOM-focus facts, rather than that logic living inline in the handler.
+The listing goes first because it is the more local history and the one you
+can see. `dirHistoryTarget` (pure, unit-tested) decides which listing may
+claim it from DOM-focus facts, rather than that logic living inline in the
+handler.
 
-The ids are `nav-back` / `nav-forward`. They were `task-prev` / `task-next`, and
-before that `workspace-prev` / `workspace-next`; `lib/lsMigration.ts` carries a
-user's rebind across both renames.
+The ids are `nav-back` / `nav-forward`. They were `task-prev` / `task-next`,
+and before that `workspace-prev` / `workspace-next`; `lib/lsMigration.ts`
+carries a user's rebind across both renames.
 
 ## ⌥-click on a changed file row
 
@@ -427,7 +454,11 @@ changed file", for why the diff is not always the right reader.
 
 ## Glyphs
 
-`bindingGlyphs(b)` returns `["⌥","⇧","⌘", key]`. Help modal uses raw glyphs (⌘ ⌥ ⇧); settings editor uses `glyphLabel` (Cmd/Ctrl, Option/Alt). `isValidBinding` requires Cmd/Ctrl or Option to prevent swallowing normal typing. The top-bar command-palette button (docs/ui.md) builds its tooltip the same way, so a rebind retitles it.
+`bindingGlyphs(b)` returns `["⌥","⇧","⌘", key]`. Help modal uses raw glyphs (⌘
+⌥ ⇧); settings editor uses `glyphLabel` (Cmd/Ctrl, Option/Alt).
+`isValidBinding` requires Cmd/Ctrl or Option to prevent swallowing normal
+typing. The top-bar command-palette button (docs/ui.md) builds its tooltip the
+same way, so a rebind retitles it.
 
 ## Kanban filter bar (`/` and ⌘F)
 
@@ -446,7 +477,16 @@ view" > Filtering.
 
 ## Prompt palette (⌥⌘P)
 
-`prompt-palette` (default ⌥⌘P) is a plain single-chord shortcut that opens `PromptPalette.tsx`: a searchable list of enabled prompts (fuzzy-filtered by title only). Enter runs the highlighted one; while the query is empty, digits `1-9` fire the top rows directly (a positional accelerator, Raycast-style, not a persisted per-prompt key). Firing goes through `fireOrPickDestination` in `src/lib/promptFire.ts`, which sends straight to the focused agent tab or falls back to the shared destination-picker dialog (`PromptDestinationDialog.tsx`) when there's no focused live agent. The Prompts dropdown in `UnifiedBar.tsx` always opens the picker so you can tweak the body and choose a target.
+`prompt-palette` (default ⌥⌘P) is a plain single-chord shortcut that opens
+`PromptPalette.tsx`: a searchable list of enabled prompts (fuzzy-filtered by
+title only). Enter runs the highlighted one; while the query is empty, digits
+`1-9` fire the top rows directly (a positional accelerator, Raycast-style, not
+a persisted per-prompt key). Firing goes through `fireOrPickDestination` in
+`src/lib/promptFire.ts`, which sends straight to the focused agent tab or
+falls back to the shared destination-picker dialog
+(`PromptDestinationDialog.tsx`) when there's no focused live agent. The
+Prompts dropdown in `UnifiedBar.tsx` always opens the picker so you can tweak
+the body and choose a target.
 
 ## Task finder (⌘O)
 
@@ -461,25 +501,39 @@ whichever element was previously focused.
 
 ## Add selection to agent (⇧⌘L)
 
-`add-selection-to-agent` is contextual, not global: it has no `case` in `useShortcuts`. `EditorPane` owns it, and answers only when the selection is non-empty AND the editor either holds DOM focus or is the visible active tab (`focused ? focused !== v.dom : !isActive`) — the two are mutually exclusive, so two mounted editors can never both fire on one press. With no selection it does not `preventDefault`, so the chord falls through untouched.
+`add-selection-to-agent` is contextual, not global: it has no `case` in
+`useShortcuts`. `EditorPane` owns it, and answers only when the selection is
+non-empty AND the editor either holds DOM focus or is the visible active tab
+(`focused ? focused !== v.dom : !isActive`) — the two are mutually exclusive,
+so two mounted editors can never both fire on one press. With no selection it
+does not `preventDefault`, so the chord falls through untouched.
 
-⇧⌘L is what the agent-first editors converged on for this action (Cursor's "Add selection to Chat", VS Code Copilot's "Add Selection to Chat"; Zed uses ⌘>), and it sits next to termic's own ⌘L "focus main agent".
+⇧⌘L is what the agent-first editors converged on for this action (Cursor's
+"Add selection to Chat", VS Code Copilot's "Add Selection to Chat"; Zed uses
+⌘>), and it sits next to termic's own ⌘L "focus main agent".
 
-It does not send anything. It opens the review-comment composer (`dispatchSelectionComment` in `reviewCommentsExt.ts`) on the selected lines — the same surface the diff pane uses, so editor remarks queue in the `reviewComments` store alongside diff ones and go to the agent as ONE batch from the pending-comments bar. The pointer route is the gutter icon that appears next to a selection (the diff's labelled pill stays on the diff, see [ui.md](ui.md#inline-review-comments-two-surfaces)). Both paths land in the same place; neither writes to a PTY on its own.
+It does not send anything. It opens the review-comment composer
+(`dispatchSelectionComment` in `reviewCommentsExt.ts`) on the selected lines —
+the same surface the diff pane uses, so editor remarks queue in the
+`reviewComments` store alongside diff ones and go to the agent as ONE batch
+from the pending-comments bar. The pointer route is the gutter icon that
+appears next to a selection (the diff's labelled pill stays on the diff, see
+[ui.md](ui.md#inline-review-comments-two-surfaces)). Both paths land in the
+same place; neither writes to a PTY on its own.
 
 ## ⌘W on an empty window closes the profile
 
-`close-tab` closes the innermost thing there is to close, and when a window has
-no task open the window itself is that thing. That is the browser convention
-(a tab, then the last tab takes the window with it).
+`close-tab` closes the innermost thing there is to close, and when a window
+has no task open the window itself is that thing. That is the browser
+convention (a tab, then the last tab takes the window with it).
 
 **Never the last window.** Closing that one is a QUIT, not a close: it is
 governed by the close-action setting (menu bar / quit / ask) and by ⌘Q.
-Escalating a tab-close key into a quit is how someone loses the agents they had
-running, so ⌘W is a no-op there.
+Escalating a tab-close key into a quit is how someone loses the agents they
+had running, so ⌘W is a no-op there.
 
 The check is split on purpose. `shouldCloseProfileWindow` (`lib/profileScope`)
 decides only whether this window is empty enough for the shortcut to mean the
 window; **Rust owns the window count**, in `window_close_if_not_last`. The
-frontend learns about a sibling closing through an event, so its count can be a
-moment stale, and being wrong in that direction quits the app.
+frontend learns about a sibling closing through an event, so its count can be
+a moment stale, and being wrong in that direction quits the app.

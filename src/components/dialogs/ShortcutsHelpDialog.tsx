@@ -34,7 +34,8 @@ interface Row {
   id: string;
   label: string;
   glyphs: string[];
-  fixed: string | null;
+  /** Search everywhere only: the double-Shift mode's label while it is on. */
+  doubleShiftLabel: string | null;
 }
 
 // Terminal copy/paste are native (⌘C / ⌘V) on macOS and only wired on
@@ -96,12 +97,12 @@ export function ShortcutsHelpDialog() {
                 // The chosen mode's own label, the same string the Shortcuts
                 // page offers: printing "Double tap, left" to somebody who
                 // chose either Shift describes a restriction they turned off.
-                fixed: on ? doubleShiftModeLabel(doubleShiftMode, t) : null,
+                doubleShiftLabel: on ? doubleShiftModeLabel(doubleShiftMode, t) : null,
               }];
             }
             // Unbound, with no other way in: nothing to press.
             if (!b) return [];
-            return [{ id: d.id, label: shortcutLabel(d.id, t), glyphs: bindingGlyphs(b), fixed: null }];
+            return [{ id: d.id, label: shortcutLabel(d.id, t), glyphs: bindingGlyphs(b), doubleShiftLabel: null }];
           }),
         // A gesture switched off in Settings is not a shortcut this window
         // has: printing it would be an instruction that does nothing. It is
@@ -115,7 +116,7 @@ export function ShortcutsHelpDialog() {
             id: g.id,
             label: gestureShortcutLabel(g.id, t),
             glyphs: holdGestureGlyphs(recentTabsGesture),
-            fixed: null,
+            doubleShiftLabel: null,
           })),
       ];
       if (rows.length) out.push({ group, rows });
@@ -199,10 +200,10 @@ export function ShortcutsHelpDialog() {
               >
                 <span className="min-w-0 truncate text-[13.5px] text-[var(--color-fg)]">{row.label}</span>
                 <div className="flex shrink-0 items-center gap-1">
-                  {/* Why it has no recorder, said in one word rather than by
-                      leaving the reader to wonder why this row is different. */}
-                  {row.fixed && (
-                    <span className="text-[11px] text-[var(--color-fg-faint)]">{row.fixed}</span>
+                  {/* Search everywhere's second trigger, by the mode's own
+                      label, beside the chord (or ⇧⇧ while it has none). */}
+                  {row.doubleShiftLabel && (
+                    <span className="text-[11px] text-[var(--color-fg-faint)]">{row.doubleShiftLabel}</span>
                   )}
                   {row.glyphs.map((g, i) => <KeyCap key={i} glyph={g} />)}
                 </div>
