@@ -344,18 +344,24 @@ It refuses, with a message each:
 - **Cmd + letter or digit** (macOS): copy, paste, cut, undo, quit, close.
   ⌘C recorded here would kill copy app-wide, and `conflicts` could not say
   so: ⌘C and ⌘V are the system's, not `SHORTCUT_DEFS`.
-- **Option + any key with a character** (macOS): letters, digits and
-  punctuation all type something (å, …, æ), and \` is the dead key for à and
-  è. `preventDefault` would stop the composition, but the character is the
-  point: claiming Option + \` takes accented typing away from every editor
-  and prompt. Option + Tab is what is left, plus the function keys.
+- **Option + letter or digit** (macOS): it types a character (å, ∫, ¡).
+  Option + punctuation is allowed, matching the chord recorder, which takes
+  Option with any key. It types too (…, æ), and Option + \` is the dead key
+  for à and è: while that gesture is on, the walk's capture listener claims
+  the key with `preventDefault` (which is what stops the dead-key
+  composition), so the character is gone from every editor and prompt. That
+  is a known trade-off the user chooses by recording it, not something the
+  recorder protects against. Whether `preventDefault` really stops a real
+  dead key in WKWebView is verified by hand, not by the suite: a synthetic
+  event starts no composition.
 - **Alt + any key with a character** (off macOS): Alt is Meta to the
   terminal, so Alt+B / F move by word and Alt+. yanks the last argument.
   Punctuation is no different from letters there.
 
 Every key refusal names what DOES record with that modifier here
-(`holdAllowedKeys`: Ctrl takes Tab ; ' , . = everywhere; Option takes Tab;
-Cmd takes ; ' , .; off macOS Alt takes only F3 F5 F6 F9 F11 F12), and
+(`holdAllowedKeys`: Ctrl takes Tab ; ' , . = everywhere; Option takes
+Tab \` ; ' , . =; Cmd takes ; ' , .; off macOS Alt takes only F3 F5 F6 F9
+F11 F12), and
 `shortcuts.test.ts` records every key the list names, so the advice cannot
 point at a refusal. The default ⌃⇥ and at least one alternative stay
 recordable on every platform.

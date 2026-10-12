@@ -517,7 +517,7 @@ export default {
     holdMovesCursor: "{{mod}} with that key moves the cursor or switches desktops. Keys that work with {{mod}}: {{allowed}}",
     holdTerminalKey: "{{mod}} with that key sends the terminal a control character (^R, ^W). Keys that work with {{mod}}: {{allowed}}",
     holdMetaKey: "{{mod}} with that key reaches the terminal as Meta (Alt+B, Alt+.). Keys that work with {{mod}}: {{allowed}}",
-    holdTypes: "{{mod}} with that key types a character. Keys that work with {{mod}}: {{allowed}}",
+    holdTypes: "{{mod}} with a letter or digit types a character. Keys that work with {{mod}}: {{allowed}}",
     holdAppKey: "{{mod}} with a letter or digit is an app or system shortcut (copy, paste, quit). Keys that work with {{mod}}: {{allowed}}",
 
     // The rows themselves, keyed by shortcut id through lib/shortcutCopy.ts:

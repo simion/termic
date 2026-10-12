@@ -241,9 +241,14 @@ describe("parseHoldGesture", () => {
     // that takes a key from readline or from the system.
     expect(parseHoldGesture('{"hold":"ctrl","code":"KeyR"}', true)).toEqual(DEFAULT_RECENT_TABS);
     expect(parseHoldGesture('{"hold":"cmd","code":"Tab"}', true)).toEqual(DEFAULT_RECENT_TABS);
-    // Recordable before the punctuation rules, refused since: Option+` is the
-    // dead key for à and è.
-    expect(parseHoldGesture('{"hold":"alt","code":"Backquote"}', true)).toEqual(DEFAULT_RECENT_TABS);
+  });
+
+  it("reads Option + ` back on macOS: Option + punctuation is a gesture there", () => {
+    // The chord recorder takes Option with any key, so the gesture is not
+    // stricter. Off macOS Alt + ` is the desktop's.
+    expect(parseHoldGesture('{"hold":"alt","code":"Backquote"}', true))
+      .toEqual({ hold: "alt", code: "Backquote" });
+    expect(parseHoldGesture('{"hold":"alt","code":"Backquote"}', false)).toEqual(DEFAULT_RECENT_TABS);
   });
 
   it("reads a Cmd gesture synced to Linux or Windows as the default", () => {
@@ -258,8 +263,10 @@ describe("readHoldGesture", () => {
   it("names a well-formed gesture this platform cannot use, so Settings can say so", () => {
     expect(readHoldGesture('{"hold":"cmd","code":"Semicolon"}', false))
       .toEqual({ gesture: DEFAULT_RECENT_TABS, refused: { hold: "cmd", code: "Semicolon" } });
+    expect(readHoldGesture('{"hold":"alt","code":"KeyE"}', true))
+      .toEqual({ gesture: DEFAULT_RECENT_TABS, refused: { hold: "alt", code: "KeyE" } });
     expect(readHoldGesture('{"hold":"alt","code":"Backquote"}', true))
-      .toEqual({ gesture: DEFAULT_RECENT_TABS, refused: { hold: "alt", code: "Backquote" } });
+      .toEqual({ gesture: { hold: "alt", code: "Backquote" }, refused: null });
   });
 
   it("refuses nothing for a usable gesture, an absent one, or garbage", () => {
@@ -309,7 +316,7 @@ describe("holdGestureFromEvent", () => {
     // they had not.
     for (const [code, key] of [["Enter", "Enter"], ["Backspace", "Backspace"], ["Space", " "]]) {
       expect(holdGestureFromEvent(kd(code, key, { alt: true }), true), code)
-        .toEqual({ error: { kind: "holdRecorderKey", mod: "Option", allowed: "Tab" } });
+        .toEqual({ error: { kind: "holdRecorderKey", mod: "Option", allowed: "Tab ` ; ' , . =" } });
     }
   });
 
@@ -343,7 +350,7 @@ describe("holdGestureFromEvent", () => {
 
   it("refuses Option / Alt with a letter or a digit (it types)", () => {
     expect(holdGestureFromEvent(kd("KeyJ", "∆", { alt: true }), true))
-      .toEqual({ error: { kind: "holdTypes", mod: "Option", allowed: "Tab" } });
+      .toEqual({ error: { kind: "holdTypes", mod: "Option", allowed: "Tab ` ; ' , . =" } });
     expect(holdGestureFromEvent(kd("Digit2", "™", { alt: true }), true)).toMatchObject({ error: { kind: "holdTypes" } });
   });
 
@@ -387,12 +394,14 @@ describe("holdGestureFromEvent", () => {
     }
   });
 
-  it("refuses Option with any key that types on macOS, punctuation included", () => {
-    // Option+` is a dead key (à, è), Option+; types …, Option+' types æ.
+  it("records Option with punctuation on macOS, by its code, like the chord recorder", () => {
+    // Option+` is a dead key (à, è), Option+; types …: what is recorded is
+    // the physical key, and no character is kept for display (Option
+    // changed it). Claiming the key while the gesture is on is the user's
+    // trade-off (docs/shortcuts.md).
     for (const [code, key] of [["Backquote", "Dead"], ["Semicolon", "…"], ["Quote", "æ"],
                                ["Comma", "≤"], ["Period", "≥"], ["Equal", "≠"], ["IntlBackslash", "§"]]) {
-      expect(holdGestureFromEvent(kd(code, key, { alt: true }), true), code)
-        .toEqual({ error: { kind: "holdTypes", mod: "Option", allowed: "Tab" } });
+      expect(holdGestureFromEvent(kd(code, key, { alt: true }), true), code).toEqual({ hold: "alt", code });
     }
   });
 

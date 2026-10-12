@@ -2479,13 +2479,27 @@ describe("recently used tabs gesture", () => {
     expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
   });
 
-  it("refuses Option + ` (it types) and Alt + ` (the desktop's)", async () => {
+  it("records Option + ` on macOS by its key, not the dead key; refuses Alt + ` elsewhere", async () => {
     // What macOS sends for Option + `: the start of a dead-key composition.
+    // Option + punctuation records, as the chord recorder takes Option with
+    // any key; off macOS Alt + ` is the desktop's (GNOME's window switch).
     await press({ key: "Dead", code: "Backquote", alt: true });
-    await refusedWith(mac
-      ? "Option with that key types a character. Keys that work with Option: Tab"
-      : "Alt+` belongs to the system, Termic never sees it.", "Option + `");
-    expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
+    if (!mac) {
+      await refusedWith("Alt+` belongs to the system, Termic never sees it.", "Alt + `");
+      expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
+      return;
+    }
+    await browser.waitUntil(async () => (await gesture() as { code: string }).code === "Backquote",
+      { timeout: 5_000, timeoutMsg: "Option + ` was never stored" });
+    expect(await gesture()).toEqual({ hold: "alt", code: "Backquote" });
+    const text = await textOf(RECORDER);
+    expect(text).toContain("Option");
+    expect(text).toContain("`");
+    // The hint names the recorded keys, not the factory ones.
+    expect(await textOf('[data-testid="gesture-shortcut-row"]')).toContain("Hold Option and tap `");
+    await snap("recent-tabs-option-backquote.png");
+    // Recording again for the case below, which presses without starting it.
+    await startRecording();
   });
 
   it("records a symbol key by its code, and prints the character it typed", async () => {
@@ -2543,17 +2557,18 @@ describe("recently used tabs gesture", () => {
   });
 
   it("says so when the saved gesture cannot be used here, and resets over it", async () => {
-    // What loading a synced Option + ` produces on any platform now: the
-    // default runs, the saved value is kept, and the row says why.
+    // What loading a saved Option / Alt + E produces on every platform (it
+    // types é's dead key on macOS, it is Meta-E to the terminal elsewhere):
+    // the default runs, the saved value is kept, and the row says why.
     await browser.execute(() => window.__termic!.usePrefs.setState({
       recentTabsGesture: { hold: "ctrl", code: "Tab" },
-      recentTabsGestureRefused: { hold: "alt", code: "Backquote" },
+      recentTabsGestureRefused: { hold: "alt", code: "KeyE" },
     } as any));
     const NOTE = '[data-testid="recent-tabs-refused"]';
     await waitVisible(NOTE);
     expect(await textOf(NOTE)).toBe(mac
-      ? "⌥` is saved but cannot be used here, so ⌃⇥ is in use. Record another, or reset to keep ⌃⇥."
-      : "Alt+` is saved but cannot be used here, so Ctrl+Tab is in use. Record another, or reset to keep Ctrl+Tab.");
+      ? "⌥E is saved but cannot be used here, so ⌃⇥ is in use. Record another, or reset to keep ⌃⇥."
+      : "Alt+E is saved but cannot be used here, so Ctrl+Tab is in use. Record another, or reset to keep Ctrl+Tab.");
     // The gesture in use IS the default, and the reset is offered anyway.
     await waitVisible(RESET);
     await snap("recent-tabs-refused.png");

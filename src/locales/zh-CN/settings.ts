@@ -502,7 +502,7 @@ export default {
     holdMovesCursor: "{{mod}} 加这个键会移动光标或切换桌面。可与 {{mod}} 搭配的键：{{allowed}}",
     holdTerminalKey: "{{mod}} 加这个键会向终端发送控制字符（^R、^W）。可与 {{mod}} 搭配的键：{{allowed}}",
     holdMetaKey: "{{mod}} 加这个键会作为 Meta 键发给终端（Alt+B、Alt+.）。可与 {{mod}} 搭配的键：{{allowed}}",
-    holdTypes: "{{mod}} 加这个键会输入字符。可与 {{mod}} 搭配的键：{{allowed}}",
+    holdTypes: "{{mod}} 加字母或数字会输入字符。可与 {{mod}} 搭配的键：{{allowed}}",
     holdAppKey: "{{mod}} 加字母或数字是应用或系统的快捷键（复制、粘贴、退出）。可与 {{mod}} 搭配的键：{{allowed}}",
 
     // 各行文案，按快捷键 id 通过 lib/shortcutCopy.ts 取用：设置页和 ⌘/ 面板

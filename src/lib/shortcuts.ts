@@ -445,7 +445,7 @@ const ALT_OS_CODES = new Set(["Tab", "F4", "Space", "Backquote", "F1", "F2", "F7
  *  (`shortcuts.test.ts` records every key it names). */
 export function holdAllowedKeys(hold: HoldModifier, isMac: boolean = IS_MAC): string {
   if (hold === "ctrl") return "Tab ; ' , . =";
-  if (hold === "alt") return isMac ? "Tab" : "F3 F5 F6 F9 F11 F12";
+  if (hold === "alt") return isMac ? "Tab ` ; ' , . =" : "F3 F5 F6 F9 F11 F12";
   return isMac ? "; ' , ." : "";
 }
 
@@ -481,14 +481,17 @@ export function holdGestureError(g: HoldGesture, isMac: boolean = IS_MAC): HoldE
   if (g.hold === "ctrl" && (ALNUM_CODE.test(g.code) || CTRL_CONTROL_CODES.has(g.code))) {
     return keyError("holdTerminalKey", g.hold, isMac);
   }
-  if (g.hold === "alt" && typesCharacter(g.code)) {
-    // macOS: Option + any of these types a character (å, …, æ) or starts one
-    // (` is the dead key for à and è). preventDefault would stop the
-    // composition, but the point is the character: claiming the key takes
-    // it away from every editor and prompt. Elsewhere Alt is Meta to the
-    // terminal: Alt+B and Alt+F move by word, Alt+. yanks the last argument.
-    return keyError(isMac ? "holdTypes" : "holdMetaKey", g.hold, isMac);
-  }
+  // macOS: Option + letter or digit types a character (å, ∫, ¡) and is
+  // refused. Option + punctuation is allowed, as the chord recorder allows
+  // Option with any key: it types a character too (…, æ, and ` is the dead
+  // key for à and è), and while the gesture is on that character is gone
+  // from every editor and prompt. A trade-off the user makes by choosing it
+  // (docs/shortcuts.md). The claim's preventDefault is what stops the
+  // dead-key composition.
+  if (isMac && g.hold === "alt" && ALNUM_CODE.test(g.code)) return keyError("holdTypes", g.hold, isMac);
+  // Elsewhere Alt is Meta to the terminal: Alt+B and Alt+F move by word,
+  // Alt+. yanks the last argument. Punctuation is no different there.
+  if (!isMac && g.hold === "alt" && typesCharacter(g.code)) return keyError("holdMetaKey", g.hold, isMac);
   // ⌘ + letter or digit is copy, paste, cut, undo, quit, close... The walk's
   // capture listener preventDefaults every press of the gesture, so ⌘C here
   // would kill copy app-wide, and `conflicts` cannot say so: ⌘C / ⌘V are not
@@ -626,10 +629,12 @@ export const DOUBLE_SHIFT_MODES: DoubleShiftMode[] =
  *  On/off rather than the four modes double-Shift needs, because the awkward
  *  question that one answers ("should this fire while I am typing?") is
  *  answered by the recorder instead: holdGestureError refuses a key that
- *  types with the held modifier (Option + anything with a character), one
+ *  types with the held modifier (Option + a letter or digit), one
  *  the terminal reads (Ctrl + letter or control character, Alt as Meta off
  *  macOS), one that moves the cursor, and the app's and system's own (⌘C,
- *  ⌘⇥). What is left is Tab and a few symbol keys that do nothing there.
+ *  ⌘⇥). What is left is Tab and a few symbol keys, and on macOS Option
+ *  with punctuation, which does type (…, the ` dead key): that one is the
+ *  user's trade-off, made by recording it.
  *  The id keeps its historic name so stored prefs carry over. */
 export type CtrlTabMode = "off" | "on";
 

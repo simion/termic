@@ -1973,9 +1973,11 @@ describe("recently-used tab navigation", () => {
     key: "Tab", code: "Tab", keyCode: 9,
   };
   // An Option / Alt hold the recorder accepts on this platform: Option + Tab
-  // on macOS (Option with anything that types is refused there), Alt + F9
-  // elsewhere (Alt + Tab is the desktop's, Alt + a character is Meta to the
-  // terminal). The stored value is what the walk reads, so it is set here
+  // on macOS, Alt + F9 elsewhere (Alt + Tab is the desktop's, Alt + a
+  // character is Meta to the terminal). Tab rather than Option + `, which
+  // also records on macOS, because xterm WOULD send a Tab for Option + Tab
+  // (and nothing for the dead key), so the no-bytes case below is only
+  // proof with Tab. The stored value is what the walk reads, so it is set
   // to exactly what Settings would record.
   const MAC = process.platform === "darwin";
   const ALT_HOLD: Gesture = MAC
