@@ -1376,6 +1376,10 @@ const captureArmedRef = useRef(false);
     // so user rebinds are honored.
     const PASS_TO_APP: ShortcutId[] = [
       "file-finder", "find-in-files", "broadcast", "open-settings",
+      // Unbound by default; once recorded it must reach the app from a
+      // terminal too, the way double-Shift does (that one is tracked on the
+      // window, so it never needed passing).
+      "search-everywhere",
     ];
     term.attachCustomKeyEventHandler((e) => {
       // IME composition guard (Korean/Japanese/Chinese). xterm's

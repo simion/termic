@@ -485,12 +485,20 @@ export default {
     terminalNote: "在终端里，Ctrl+字母归 shell 使用。此时请用 {{key}} 代替 Ctrl：{{key}}+J 切换终端面板，{{key}}+T 打开标签页。带 Shift 或 Alt 的组合键用 Ctrl 也可以。如果某个组合键没有反应，说明它被桌面环境占用（在 GNOME 上 {{key}}+L 是锁屏）：请在这里重新绑定。",
     resetAll: "全部重置",
     conflict: "与另一个快捷键冲突",
-    reservedTab: "Tab 键属于「最近使用的标签页」手势。",
+    conflictGesture: "与「最近使用的标签页」冲突（以手势为准）",
+    conflictGestureSelf: "与 {{names}} 冲突（以手势为准）",
+    reservedTab: "Tab 不能用在组合键里。「最近使用的标签页」可以使用它。",
     needsMod: "请在组合键中加入 {{cmd}} 或 {{alt}}。",
     pressKeys: "请按键…",
+    notSet: "未设置",
     resetDefault: "重置为默认",
     doubleShiftAria: "双击 Shift 打开「全局搜索」的时机",
-    ctrlTabAria: "Ctrl+Tab 是否遍历最近使用的标签页",
+    ctrlTabAria: "是否启用「最近使用的标签页」手势",
+    recentTabsRecorderAria: "录制「最近使用的标签页」手势",
+    holdNeedsOne: "请只按住 {{mods}} 中的一个，再按一个键。",
+    holdOsReserved: "{{keys}} 归系统所有，Termic 收不到它。",
+    holdTerminalKey: "Ctrl 加字母归终端（readline）使用。请选 Tab 或符号键。",
+    holdTypes: "{{alt}} 加字母会输入字符。请选 Tab 或符号键。",
 
     // 各行文案，按快捷键 id 通过 lib/shortcutCopy.ts 取用：设置页和 ⌘/ 面板
     // 用的是同一份，两边不会各说各话。没有可解释内容的行不写 hint，
@@ -510,19 +518,12 @@ export default {
       doubleLeftShift: "双击左 Shift",
       doubleNotInTerminal: "双击 Shift（终端内除外）",
       doubleShift: "双击 Shift",
-      holdCtrlTab: "按住 Ctrl，点按 Tab",
+      on: "开启",
     },
-    fixed: {
-      searchEverywhere: {
-        label: "全局搜索",
-        // 不说清是哪个 Shift：那是设置的职责，写死「左」在用户选了任一侧之后就是错的。
-        hint: "文件始终可搜；某个检出开启代码导航后，类和函数也能搜到。",
-        reason: "双击",
-      },
+    gestures: {
       recentTabs: {
         label: "最近使用的标签页",
-        hint: "按住 Ctrl 点按 Tab，可以按顺序回看你刚看过的内容；加上 Shift 则反向。",
-        reason: "按住并点按",
+        hint: "按住 {{mod}} 点按 {{key}}，可以按顺序回看你刚看过的内容；加上 Shift 则反向。",
       },
     },
     defs: {
@@ -548,6 +549,11 @@ export default {
       fileStructure: {
         label: "文件大纲",
         hint: "这个文件里有什么，可以筛选，不必滚动全文。",
+      },
+      searchEverywhere: {
+        label: "全局搜索",
+        // 不说清是哪个 Shift：那是设置的职责，写死「左」在用户选了任一侧之后就是错的。
+        hint: "文件始终可搜；某个检出开启代码导航后，类和函数也能搜到。",
       },
       navForward: { label: "前进", hint: "重走一次「后退」。" },
       taskPrevArrow: {

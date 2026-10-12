@@ -152,9 +152,9 @@ describe("no untranslated keys on screen", () => {
     // from different tables in that module.
     const shortcutsPage = async () => {
       await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
-      // The two fixed rows carry the page's own testids, and they exist in
+      // The gesture row carries the page's own testid, and it exists in
       // either language: the Reset all button's label does not.
-      await waitVisible('[data-testid="fixed-shortcut-row"]');
+      await waitVisible('[data-testid="gesture-shortcut-row"]');
       return await browser.execute(() =>
         (document.querySelector('[data-testid="settings-pane"]') as HTMLElement)?.innerText ?? "") as string;
     };
@@ -181,8 +181,8 @@ describe("no untranslated keys on screen", () => {
     await expectClean("settings-shortcuts-zh");
     await snap("settings-shortcuts-zh.png");
 
-    // The gesture with no chord carries a select instead of a recorder, and
-    // its options are the other half of the module's copy.
+    // Double-Shift carries a select beside the chord recorder, and its
+    // options are the other half of the module's copy.
     const modes = await browser.execute(() =>
       [...(document.querySelector('[data-testid="double-shift-mode"]') as HTMLSelectElement).options]
         .map(o => o.textContent ?? ""));

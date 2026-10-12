@@ -339,7 +339,7 @@ export function CommandPalette() {
         // read about is a gesture nobody finds: the palette is where someone
         // learns this exists.
         id: "search-everywhere", section: "Task", label: t("commandPalette.cmd.searchEverywhere"),
-        icon: Search, keywords: "symbol symbols class classes file goto double shift jetbrains",
+        icon: Search, shortcutId: "search-everywhere", keywords: "symbol symbols class classes file goto double shift jetbrains",
         run: act(() => useUI.getState().openSearchEverywhere(task.id)),
       });
       cmds.push({
@@ -982,7 +982,7 @@ export function CommandPalette() {
                         // Plain gray glyph text on the right (Conductor-style),
                         // not boxed keycaps.
                         <span className="shrink-0 text-[12px] tracking-wide text-[var(--color-fg-faint)]">
-                          {cmd.shortcutId && binds[cmd.shortcutId] ? bindingText(binds[cmd.shortcutId]) : glyphs.join("")}
+                          {(cmd.shortcutId && binds[cmd.shortcutId] ? bindingText(binds[cmd.shortcutId]!) : null) ?? glyphs.join("")}
                         </span>
                       )}
                     </button>

@@ -1939,7 +1939,9 @@ describe("pinned tabs do not scroll away", () => {
 // ⌃⇥ walks the places you actually looked at, newest first, instead of the
 // positional order every other navigation key in the app uses. It is a
 // GESTURE, not a binding: the ring is snapshotted on the first tap, each tap
-// switches live, and releasing Control lands.
+// switches live, and releasing the held modifier lands. Both halves are
+// recordable (Settings, `prefs.recentTabsGesture`), so the walk here is
+// parameterized by the gesture it drives.
 //
 // The keys are dispatched at the terminal's own textarea rather than at
 // `window`, because "does xterm eat this?" is the entire risk. xterm listens
@@ -1952,12 +1954,43 @@ describe("pinned tabs do not scroll away", () => {
 // keyup, but every key pressed in between still arrives with `ctrlKey: false`
 // — Meta propagates, Control does not. So these cases prove the handler, the
 // ordering against xterm, and every rule of the walk; whether macOS hands ⌃⇥
-// to the webview at all is the one part only a human at the keyboard can
-// confirm. See docs/e2e-tests.md.
+// to the webview at all, and whether Option+` composes a dead key despite the
+// claim, is the part only a human at the keyboard can confirm. See
+// docs/e2e-tests.md.
 describe("recently-used tab navigation", () => {
   let a!: string, b!: string, c!: string;
 
+  /** One gesture, as the events a real keyboard would send for it. `keyCode`
+   *  on both, not just `key`: xterm's evaluateKeyboardEvent switches on
+   *  keyCode, so an event without it would never have reached the PTY and
+   *  proves nothing about what we took from it. */
+  type Gesture = {
+    holdKey: string; holdCode: string; holdKeyCode: number;
+    holdFlag: "ctrlKey" | "altKey" | "metaKey";
+    key: string; code: string; keyCode: number;
+  };
+  const CTRL_TAB: Gesture = {
+    holdKey: "Control", holdCode: "ControlLeft", holdKeyCode: 17, holdFlag: "ctrlKey",
+    key: "Tab", code: "Tab", keyCode: 9,
+  };
+  // What macOS sends for Option + `: the key is the start of a dead-key
+  // composition, which is why the gesture records `code`.
+  const OPTION_BACKQUOTE: Gesture = {
+    holdKey: "Alt", holdCode: "AltLeft", holdKeyCode: 18, holdFlag: "altKey",
+    key: "Dead", code: "Backquote", keyCode: 192,
+  };
+
+  // Restored even when a case throws half way: the gesture and the switch
+  // are synced prefs, and a rebound walk would break every later spec that
+  // presses ⌃⇥.
+  let originalGesture: unknown = null;
+  let originalMode: string | null = null;
   after(async () => {
+    await browser.execute((g, m) => {
+      const p = window.__termic!.usePrefs.getState();
+      if (g) p.setRecentTabsGesture(g as any);
+      if (m) p.setCtrlTabMode(m as any);
+    }, originalGesture, originalMode);
     for (const id of [a, b, c]) if (id) await archiveTask(id);
   });
 
@@ -1969,9 +2002,10 @@ describe("recently-used tab navigation", () => {
         .find(el => el.getBoundingClientRect().width > 0)
         ?.getAttribute("data-task-id") ?? null);
 
-  /** Hold Control, tap Tab once per entry (true = with Shift), release. */
-  const walk = (taskId: string, taps: boolean[]) =>
-    browser.execute((id, presses: boolean[]) => {
+  /** Hold the gesture's modifier, tap its key once per entry (true = with
+   *  Shift), release. ⌃⇥ unless told otherwise. */
+  const walk = (taskId: string, taps: boolean[], g: Gesture = CTRL_TAB) =>
+    browser.execute((id, presses: boolean[], gesture: Gesture) => {
       const host = document.querySelector(`[data-task-id="${id}"]`);
       if (!host) throw new Error(`task ${id} is not mounted`);
       const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")]
@@ -1981,19 +2015,23 @@ describe("recently-used tab navigation", () => {
         });
       if (!ta) throw new Error(`no visible terminal in ${id}`);
       ta.focus();
-      const ctrl = { key: "Control", code: "ControlLeft", keyCode: 17, which: 17 };
+      const hold = {
+        key: gesture.holdKey, code: gesture.holdCode,
+        keyCode: gesture.holdKeyCode, which: gesture.holdKeyCode,
+      };
       const base = { bubbles: true, cancelable: true };
-      ta.dispatchEvent(new KeyboardEvent("keydown", { ...base, ...ctrl, ctrlKey: true }));
+      ta.dispatchEvent(new KeyboardEvent("keydown", { ...base, ...hold, [gesture.holdFlag]: true }));
       for (const shift of presses) {
-        // keyCode 9, not just key:"Tab" — xterm's evaluateKeyboardEvent
-        // switches on keyCode, so an event without it would never have
-        // reached the PTY and proves nothing about what we took from it.
-        const k = { ...base, key: "Tab", code: "Tab", keyCode: 9, which: 9, ctrlKey: true, shiftKey: shift };
+        const k = {
+          ...base, key: gesture.key, code: gesture.code,
+          keyCode: gesture.keyCode, which: gesture.keyCode,
+          [gesture.holdFlag]: true, shiftKey: shift,
+        };
         ta.dispatchEvent(new KeyboardEvent("keydown", k));
         ta.dispatchEvent(new KeyboardEvent("keyup", k));
       }
-      ta.dispatchEvent(new KeyboardEvent("keyup", { ...base, ...ctrl, ctrlKey: false }));
-    }, taskId, taps);
+      ta.dispatchEvent(new KeyboardEvent("keyup", { ...base, ...hold, [gesture.holdFlag]: false }));
+    }, taskId, taps, g);
 
   /** Select a task and wait for it, so the recency order is deterministic.
    *  One round trip per visit: the tracker coalesces within a microtask, which
@@ -2008,9 +2046,27 @@ describe("recently-used tab navigation", () => {
     browser.waitUntil(async () => (await visibleTask()) === id,
       { timeout: 10_000, timeoutMsg: why });
 
+  /** The walk did NOT move. Asserted after a settle, not immediately: the
+   *  switch is asynchronous, so an instant check would pass against the
+   *  broken behaviour too. The one fixed wait in this file. */
+  const expectStillOn = async (id: string) => {
+    await browser.pause(500);
+    expect(await visibleTask()).toBe(id);
+  };
+
   it("steps back to where you just were, and lands there on release", async () => {
     await waitForAppShell();
     await requireTermicApi();
+    [originalGesture, originalMode] = await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      return [p.recentTabsGesture, p.ctrlTabMode] as [unknown, string];
+    });
+    // From the default, whatever an earlier run left behind.
+    await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      p.setRecentTabsGesture({ hold: "ctrl", code: "Tab" });
+      p.setCtrlTabMode("on");
+    });
     a = await openTask("e2e-ctrltab-a");
     b = await openTask("e2e-ctrltab-b");
     c = await openTask("e2e-ctrltab-c");
@@ -2091,10 +2147,7 @@ describe("recently-used tab navigation", () => {
       ta.dispatchEvent(new KeyboardEvent("keydown", k));
       ta.dispatchEvent(new KeyboardEvent("keyup", k));
     }, c);
-    // Asserting after a settle, not immediately: an instant check would pass
-    // against the broken behaviour too, since the switch is not synchronous.
-    await browser.pause(500);
-    expect(await visibleTask()).toBe(c);
+    await expectStillOn(c);
   });
 
   it("stands down while Settings is open", async () => {
@@ -2104,14 +2157,62 @@ describe("recently-used tab navigation", () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
     await waitVisible("[data-testid='ctrl-tab-mode']");
     await walk(c, [false]);
-    // Same asynchronous switch as the case above: assert after a settle, or
-    // "the task did not change" passes against the broken behaviour too.
-    await browser.pause(500);
-    expect(await visibleTask()).toBe(c);
+    await expectStillOn(c);
     expect(await browser.execute(
       () => window.__termic!.useApp.getState().view.settingsOpen)).toBe(true);
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
     await waitGone("[data-testid='ctrl-tab-mode']");
+  });
+
+  it("stands down when it is switched off", async () => {
+    await visit(a); await visit(b); await visit(c);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("off"));
+    try {
+      await walk(c, [false]);
+      await expectStillOn(c);
+    } finally {
+      await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("on"));
+    }
+    // And back on, the same keys walk again: off was the switch, not the key.
+    await walk(c, [false]);
+    await waitVisibleTask(b, "switching the gesture back on did not bring it back");
+  });
+
+  it("walks on a rebound gesture, and lands when Option comes up", async () => {
+    await browser.execute(() =>
+      window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "alt", code: "Backquote" }));
+    try {
+      await visit(a); await visit(b); await visit(c);
+      await walk(c, [false], OPTION_BACKQUOTE);
+      await waitVisibleTask(b, "Option + ` did not step back to the previous task");
+      // Landing is what reorders the ring: the return tap only goes back to
+      // C if the Option release landed the first walk on B.
+      await walk(b, [false], OPTION_BACKQUOTE);
+      await waitVisibleTask(c, "the Option release did not land the walk");
+      // Shift reverses on a rebound gesture too.
+      await visit(a); await visit(b); await visit(c);
+      await walk(c, [false, false, true], OPTION_BACKQUOTE);
+      await waitVisibleTask(b, "Shift did not reverse the Option walk");
+    } finally {
+      await browser.execute(() =>
+        window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Tab" }));
+    }
+  });
+
+  it("leaves the old ⌃⇥ inert once the gesture is rebound", async () => {
+    await browser.execute(() =>
+      window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "alt", code: "Backquote" }));
+    try {
+      await visit(a); await visit(b); await visit(c);
+      await walk(c, [false], CTRL_TAB);
+      await expectStillOn(c);
+    } finally {
+      await browser.execute(() =>
+        window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Tab" }));
+    }
+    // Restored: ⌃⇥ walks again.
+    await walk(c, [false]);
+    await waitVisibleTask(b, "⌃⇥ did not come back after the reset");
   });
 });
 

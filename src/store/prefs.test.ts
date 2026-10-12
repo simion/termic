@@ -102,6 +102,63 @@ describe("prefs: doubleShiftMode", () => {
   });
 });
 
+// The recently-used-tabs gesture. Absent has to mean ⌃⇥, which is what every
+// profile from before it was recordable has, so no migration exists to get
+// wrong. A Cmd gesture is not usable off macOS and this test environment is
+// not a Mac, so the platform-neutral Option/Alt gesture is the one stored.
+describe("prefs: recentTabsGesture", () => {
+  const KEY = "recentTabsGesture";
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", fakeLocalStorage());
+    vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("defaults to Ctrl+Tab with nothing in localStorage", async () => {
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "ctrl", code: "Tab" });
+  });
+
+  it("reads back a stored gesture", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ hold: "alt", code: "Backquote" }));
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "alt", code: "Backquote" });
+  });
+
+  it("reads garbage as the default, and leaves the stored value alone", async () => {
+    localStorage.setItem(KEY, "{nope");
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "ctrl", code: "Tab" });
+    expect(localStorage.getItem(KEY)).toBe("{nope");
+  });
+
+  it("persists what it is set to, as JSON", async () => {
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setRecentTabsGesture({ hold: "alt", code: "Backquote" });
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "alt", code: "Backquote" });
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "alt", code: "Backquote" });
+  });
+
+  it("does not publish an unchanged gesture", async () => {
+    // docs/performance.md bear trap 8: an unchanged write still copies the
+    // whole store and re-runs every selector.
+    const { usePrefs } = await import("./prefs");
+    const before = usePrefs.getState();
+    usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Tab" });
+    expect(usePrefs.getState()).toBe(before);
+  });
+
+  it("is picked up by reloadPrefsFromStorage, and only when it moved", async () => {
+    // Config sync writes the key behind the store's back.
+    const { usePrefs, reloadPrefsFromStorage } = await import("./prefs");
+    expect(reloadPrefsFromStorage()).not.toContain("recentTabsGesture");
+    localStorage.setItem(KEY, JSON.stringify({ hold: "alt", code: "Backquote" }));
+    expect(reloadPrefsFromStorage()).toContain("recentTabsGesture");
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "alt", code: "Backquote" });
+    expect(reloadPrefsFromStorage()).not.toContain("recentTabsGesture");
+  });
+});
+
 describe("prefs: findInFilesRegex", () => {
   const KEY = "findInFilesRegex";
   beforeEach(() => {

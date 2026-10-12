@@ -133,10 +133,11 @@ describe("keyboard shortcuts sheet", () => {
     expect(text).not.toContain("Previous task");
   });
 
-  it("lists double-Shift, with no recorder and a reason", async () => {
-    // The gesture nobody guesses. It cannot be a Binding (a double tap is not
-    // a chord), so it is a read-only row rather than absent: a reader looking
-    // for "how do I open Search everywhere" finds it in the same list.
+  it("lists double-Shift, with its mode, while the chord is unbound", async () => {
+    // The gesture nobody guesses. Search everywhere's chord ships unbound, so
+    // by default double-Shift is the row's only key, printed rather than
+    // absent: a reader looking for "how do I open Search everywhere" finds it
+    // in the same list.
     const text = await sheetText();
     expect(text).toContain("Search everywhere");
     const row = await browser.execute(() => {
@@ -152,8 +153,9 @@ describe("keyboard shortcuts sheet", () => {
   });
 
   it("follows the double-Shift mode, and drops the row when it is off", async () => {
-    // Double-Shift is the one shortcut with no chord to rebind, so what
-    // Settings offers is WHEN it applies. The sheet has to say the same thing:
+    // With no chord recorded (the default), double-Shift is the only way in,
+    // and a double tap has no key to rebind, so what Settings offers is WHEN
+    // it applies. The sheet has to say the same thing:
     // printing "Double tap, left" to somebody who chose either Shift describes
     // a restriction they turned off, and printing the row at all when the
     // gesture is off tells them to press something inert.
@@ -183,6 +185,85 @@ describe("keyboard shortcuts sheet", () => {
     }
     await sheetText();
     expect(await rowText()).toContain("Double left Shift");
+  });
+
+  /** The keycaps of one sheet row, as printed. */
+  const rowKeys = (id: string) => browser.execute((rid) =>
+    [...(document.querySelector(`[data-shortcut-id="${rid}"]`)?.querySelectorAll("kbd") ?? [])]
+      .map(k => (k as HTMLElement).innerText), id) as Promise<string[]>;
+  const rowShown = (id: string) => browser.execute((rid) =>
+    !!document.querySelector(`[data-shortcut-id="${rid}"]`), id);
+
+  it("prints the recently-used-tabs gesture as recorded, and drops it when off", async () => {
+    // The keys are the user's now, so the sheet has to print THEIR gesture:
+    // a hardcoded ⌃⇥ would tell somebody who moved it to press a dead key.
+    const mac = process.platform === "darwin";
+    const original = await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      return { g: p.recentTabsGesture, mode: p.ctrlTabMode };
+    });
+    try {
+      await browser.execute(() => {
+        const p = window.__termic!.usePrefs.getState();
+        p.setCtrlTabMode("on");
+        p.setRecentTabsGesture({ hold: "alt", code: "Backquote" });
+      });
+      await sheetText();
+      await browser.waitUntil(async () => (await rowKeys("recent-tabs")).includes("`"),
+        { timeout: 5_000, timeoutMsg: "the sheet never printed the recorded gesture" });
+      expect(await rowKeys("recent-tabs")).toEqual([mac ? "⌥" : "Alt", "`"]);
+
+      await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("off"));
+      await browser.waitUntil(async () => !(await rowShown("recent-tabs")),
+        { timeout: 5_000, timeoutMsg: "the sheet kept a gesture that is switched off" });
+    } finally {
+      await browser.execute((o) => {
+        const p = window.__termic!.usePrefs.getState();
+        p.setRecentTabsGesture(o.g as any);
+        p.setCtrlTabMode(o.mode as any);
+      }, original);
+    }
+  });
+
+  it("prints a recorded search chord beside the double-Shift mode, and drops the row only when both are off", async () => {
+    const mac = process.platform === "darwin";
+    const original = await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      return { mode: p.doubleShiftMode, chord: p.shortcuts["search-everywhere"] };
+    });
+    const rowText = () => browser.execute(() =>
+      (document.querySelector('[data-shortcut-id="search-everywhere"]') as HTMLElement)?.innerText ?? "");
+    try {
+      await browser.execute(() => {
+        const p = window.__termic!.usePrefs.getState();
+        p.setDoubleShiftMode("left");
+        p.setShortcut("search-everywhere", { cmd: true, shift: true, alt: false, key: "o" });
+      });
+      await sheetText();
+      await browser.waitUntil(async () => (await rowKeys("search-everywhere")).includes("O"),
+        { timeout: 5_000, timeoutMsg: "the sheet never printed the recorded chord" });
+      // Chord AND mode: both open it, so both are printed.
+      expect(await rowKeys("search-everywhere")).toEqual(mac ? ["⇧", "⌘", "O"] : ["Ctrl", "Shift", "O"]);
+      expect(await rowText()).toContain("Double left Shift");
+
+      // Double-Shift off, chord still there: the row stays, without the mode.
+      await browser.execute(() => window.__termic!.usePrefs.getState().setDoubleShiftMode("off"));
+      await browser.waitUntil(async () => !(await rowText()).includes("Double"),
+        { timeout: 5_000, timeoutMsg: "the sheet kept printing a double-Shift mode that is off" });
+      expect(await rowKeys("search-everywhere")).toEqual(mac ? ["⇧", "⌘", "O"] : ["Ctrl", "Shift", "O"]);
+
+      // Both off: nothing opens it, so the sheet does not list it.
+      await browser.execute(() => window.__termic!.usePrefs.getState().resetShortcut("search-everywhere"));
+      await browser.waitUntil(async () => !(await rowShown("search-everywhere")),
+        { timeout: 5_000, timeoutMsg: "the sheet listed a command with no way to open it" });
+    } finally {
+      await browser.execute((o) => {
+        const p = window.__termic!.usePrefs.getState();
+        p.setDoubleShiftMode(o.mode as any);
+        if (o.chord) p.setShortcut("search-everywhere", o.chord as any);
+        else p.resetShortcut("search-everywhere");
+      }, original);
+    }
   });
 
   it("gives the code-navigation keys a section of their own", async () => {

@@ -81,6 +81,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "shortcutBindings", scoped: false, class: "sync" },
   { key: "doubleShiftMode", scoped: false, class: "sync" },
   { key: "ctrlTabMode", scoped: false, class: "sync" },
+  { key: "recentTabsGesture", scoped: false, class: "sync" },
 
   // ── Notifications, indicators, confirm-before prompts ──
   { key: "desktopNotifications", scoped: false, class: "sync" },

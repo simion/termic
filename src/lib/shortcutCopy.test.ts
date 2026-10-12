@@ -19,16 +19,16 @@ import zhCN from "@/locales/zh-CN";
 import {
   CTRL_TAB_MODES,
   DOUBLE_SHIFT_MODES,
-  FIXED_SHORTCUTS,
+  DEFAULT_RECENT_TABS,
+  GESTURE_SHORTCUTS,
   GROUP_ORDER,
   SHORTCUT_DEFS,
 } from "./shortcuts";
 import {
   ctrlTabModeLabel,
   doubleShiftModeLabel,
-  fixedShortcutHint,
-  fixedShortcutLabel,
-  fixedShortcutReason,
+  gestureShortcutHint,
+  gestureShortcutLabel,
   shortcutGroupLabel,
   shortcutHint,
   shortcutLabel,
@@ -123,18 +123,20 @@ describe("shortcut copy", () => {
     }
   });
 
-  it("names the gestures that cannot be rebound", () => {
+  it("names the gesture rows, with the recorded keys in the hint", () => {
     for (const lang of LANGS) {
       const t = strictT(lang);
-      for (const fixed of FIXED_SHORTCUTS) {
-        expect(fixedShortcutLabel(fixed.id, t).length, `${lang} ${fixed.id}`).toBeGreaterThan(0);
-        expect(fixedShortcutHint(fixed.id, t).length, `${lang} ${fixed.id}`).toBeGreaterThan(0);
-        // Never drawn for the two rows that carry a mode select (the select
-        // names the gesture instead), but a third row without one prints it
-        // where the recorder would be, so it has to exist.
-        expect(fixedShortcutReason(fixed.id, t).length, `${lang} ${fixed.id}`).toBeGreaterThan(0);
+      for (const g of GESTURE_SHORTCUTS) {
+        expect(gestureShortcutLabel(g.id, t).length, `${lang} ${g.id}`).toBeGreaterThan(0);
+        // strictT refuses an unfilled {{mod}} or {{key}}.
+        expect(gestureShortcutHint(g.id, DEFAULT_RECENT_TABS, t).length, `${lang} ${g.id}`).toBeGreaterThan(0);
       }
     }
+    const t = strictT("en");
+    expect(gestureShortcutHint("recent-tabs", DEFAULT_RECENT_TABS, t))
+      .toBe("Hold Ctrl and tap Tab to step back through what you were looking at; add Shift to go the other way.");
+    expect(gestureShortcutHint("recent-tabs", { hold: "alt", code: "Backquote" }, t))
+      .toMatch(/^Hold (Option|Alt) and tap ` to step back/);
   });
 
   it("names every mode of both gestures", () => {
@@ -159,9 +161,9 @@ describe("shortcut copy", () => {
     expect(DOUBLE_SHIFT_MODES.map(m => doubleShiftModeLabel(m, t))).toEqual([
       "Off", "Double left Shift", "Double Shift, not in a terminal", "Double Shift",
     ]);
-    expect(CTRL_TAB_MODES.map(m => ctrlTabModeLabel(m, t))).toEqual([
-      "Off", "Hold Ctrl, tap Tab",
-    ]);
+    // The one exception: recently used tabs prints its keys on the recorder
+    // beside the select, so its select is a plain switch.
+    expect(CTRL_TAB_MODES.map(m => ctrlTabModeLabel(m, t))).toEqual(["Off", "On"]);
   });
 
   it("names every group a list can render", () => {
@@ -188,8 +190,8 @@ describe("shortcut copy", () => {
     for (const lang of LANGS) {
       const shortcuts = shortcutsOf(lang);
       expect(Object.keys(shortcuts.defs)).toHaveLength(SHORTCUT_DEFS.length);
-      expect(Object.keys(shortcuts.fixed)).toHaveLength(FIXED_SHORTCUTS.length);
-      // The four double-Shift modes plus the "Off" they share with ⌃⇥.
+      expect(Object.keys(shortcuts.gestures)).toHaveLength(GESTURE_SHORTCUTS.length);
+      // The four double-Shift modes, "On", and the "Off" both selects share.
       expect(Object.keys(shortcuts.modes)).toHaveLength(5);
       expect(Object.keys(shortcuts.groups)).toHaveLength(GROUP_ORDER.length - 1);
     }

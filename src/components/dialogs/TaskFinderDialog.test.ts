@@ -37,8 +37,8 @@ describe("TaskFinder shortcut and state", () => {
     // binding.
     expect(shortcutLabel("task-finder", i18n.getFixedT("en"))).toBe("Open task finder");
     expect(def?.group).toBe("General");
-    expect(def?.defaultBinding.key).toBe("o");
-    expect(def?.defaultBinding.cmd).toBe(true);
+    expect(def?.defaultBinding?.key).toBe("o");
+    expect(def?.defaultBinding?.cmd).toBe(true);
     expect(DEFAULT_BINDINGS["task-finder"]).toEqual({
       key: "o",
       cmd: true,

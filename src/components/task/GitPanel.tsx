@@ -140,7 +140,7 @@ export function GitPanel({ task, status, refresh, onOpenDiff, onOpenFile, onDoub
   // Resolved (user-overridable) bindings for the contextual Git shortcuts.
   const stageBinding = usePrefs(s => s.shortcuts["stage-file"]);
   const discardBinding = usePrefs(s => s.shortcuts["discard-file"]);
-  const stageGlyph = bindingText(stageBinding);
+  const stageGlyph = stageBinding ? bindingText(stageBinding) : "";
 
   const [activeRepoDir, setActiveRepoDir] = useState<string>("");
   // Dir of a repo the user just committed. Its pill stays visible and focused

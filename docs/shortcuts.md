@@ -2,7 +2,7 @@
 
 ## Architecture
 
-`src/lib/shortcuts.ts` is the single source of truth: `ShortcutId` union + `SHORTCUT_DEFS` (each: `id`, `group`, `defaultBinding`). A `Binding` is `{ cmd, shift, alt, key }` where `cmd` folds Cmd=Ctrl, `key` is a normalized token or `"1-9"` sentinel.
+`src/lib/shortcuts.ts` is the single source of truth: `ShortcutId` union + `SHORTCUT_DEFS` (each: `id`, `group`, `defaultBinding`, which is null for a command that ships unbound, and an optional `gesture`; see "Gestures" below). Hold-and-tap gestures live beside it in `GESTURE_SHORTCUTS`. A `Binding` is `{ cmd, shift, alt, key }` where `cmd` folds Cmd=Ctrl, `key` is a normalized token or `"1-9"` sentinel.
 
 The rows' **wording is not in that file**: labels, hints and the mode select's
 options are locale entries (`settings:shortcuts.defs.*`), reached by id through
@@ -136,21 +136,45 @@ therefore after the type-checking switch (`shortcutGroupLabel` in
 listing's trail as well as the symbol trail, so filing them here would describe
 half of what they do.
 
-## Shortcuts that cannot be rebound
+## Gestures, and the one command with no default chord
 
-`FIXED_SHORTCUTS` is a small separate list for gestures that are not a chord.
-Two entries: Double-Shift (Search everywhere) via `lib/doubleTap.ts`, and ⌃⇥
-(Recently used tabs) via `lib/ctrlTab.ts`. Both are handled in `useShortcuts`,
-and both carry a mode select in Settings where the recorder would be.
+Two triggers in the app are not a chord, and both are now the user's to set.
 
-A row that carries such a select says so with `control`
-(`"double-shift" | "ctrl-tab"`). The Shortcuts page and the ⌘/ sheet both
-branch on it. They used to branch on `f.id === "search-everywhere"`, in five
-places across the two files, which was fine while there was one such row and a
-copy-paste bug waiting to happen as soon as there were two.
+**Search everywhere** is an ordinary `SHORTCUT_DEFS` entry
+(`search-everywhere`, group Code navigation) with `defaultBinding: null` and
+`gesture: "double-shift"`. It ships **unbound**: every free chord is somebody's
+muscle memory, and double-Shift already answers "how do I open it" for
+everyone else. Recording a chord is optional, and the chord and double-Shift
+are independent: either can be off while the other works. Its row in
+Settings carries the chord recorder ("Not set" while unbound) and, beside it,
+the double-Shift mode select. A recorded chord is in `PASS_TO_APP`
+(TerminalPane), so it works with a terminal focused, the way double-Shift does
+(that one is tracked on the window, so it never needed passing).
 
-**Double-Shift cannot be rebound, so what Settings offers instead is WHEN it
-applies** (`prefs.doubleShiftMode`, a select on that same read-only row):
+`defaultBinding: Binding | null` and `BindingMap = Record<ShortcutId, Binding |
+null>` are what make that possible. `bindingMatches` treats null as no match,
+`bindingsEqual(null, null)` is true (so the reset button stays hidden while
+the row is at its default), reset puts null back, and `loadShortcuts` reads a
+stored null as "no override" (the whole map is persisted on every change, so
+null is only ever the default, and a default added later still reaches the
+profile). Only a command with another way in may ship unbound;
+`shortcuts.test.ts` pins that list to `search-everywhere`. Every consumer of
+`shortcuts[id]` was moved onto the nullable type by the compiler, so a new one
+has to handle "unbound" too.
+
+**Recently used tabs** is a `GESTURE_SHORTCUTS` entry (`recent-tabs`,
+`control: "hold-tap"`): a recorder for a `HoldGesture` plus the Off / On
+select (`prefs.ctrlTabMode`, which keeps its historic name so stored prefs
+carry over). It cannot be a `SHORTCUT_DEFS` entry, because a `Binding` folds
+Cmd and Ctrl into one flag, and it needs keyup (see the next section).
+
+The ⌘/ sheet prints what each currently IS: the recorded hold gesture (dropped
+while Off), and for Search everywhere the chord if one is set plus the
+double-Shift mode's own label if it is on, dropping the row only when both are
+off. A sheet printing something inert is an instruction to press nothing.
+
+**Double-Shift cannot be rebound, so what Settings offers is WHEN it
+applies** (`prefs.doubleShiftMode`, the select on the Search everywhere row):
 
 | mode | label the reader sees | |
 | --- | --- | --- |
@@ -163,33 +187,43 @@ Every label names the WHOLE gesture, and the row prints nothing else beside
 the select. It first shipped reading "Double tap, left" next to a select
 saying "Left Shift only": the same gesture named twice, in two vocabularies,
 neither half meaning anything alone. `DOUBLE_SHIFT_MODES` is the one list, and
-the command sheet prints the current mode's label from it where a recorder
-would be, so the two surfaces cannot word it differently.
+the command sheet prints the current mode's label from it, so the two
+surfaces cannot word it differently. The recently-used-tabs select is the
+exception and reads plain Off / On: its keys are on the recorder right beside
+it, and since they can be any modifier and key, an option naming them could
+not stay true.
 
-The reason it needs a setting at all: this is two taps of the key that starts
-every capital letter, and there is no other key to move it to. The right-hand
-Shift is the one a touch typist holds for left-hand capitals, so excluding it
-keeps the gesture while dropping the hand the accidents come from, and under
-`left` a right-Shift press CANCELS a half-finished tap rather than being
-ignored (left-right-left inside the window is typing, not a request).
+The reason double-Shift needs a setting at all: this is two taps of the key
+that starts every capital letter, and there is no other key to move it to.
+The right-hand Shift is the one a touch typist holds for left-hand capitals,
+so excluding it keeps the gesture while dropping the hand the accidents come
+from, and under `left` a right-Shift press CANCELS a half-finished tap rather
+than being ignored (left-right-left inside the window is typing, not a
+request).
 
 The location test is written as "not the right-hand one", never
 `location === 1`: a synthetic event carries location 0, and a rule demanding 1
-would turn the gesture off wherever the location is not reported. The ⌘/ sheet drops the row
-entirely when the mode is off, since a sheet printing a gesture that does
-nothing is an instruction to press an inert key.
+would turn the gesture off wherever the location is not reported.
 
-They are deliberately NOT in `SHORTCUT_DEFS`: everything there has a `Binding`,
-and the bindings map, the conflict check, the Settings recorder and the
-localStorage migration all assume one. A def without a binding would need a
-special case in each.
+### Conflicts
 
-Both surfaces render them read-only, with their keys spelled out literally and
-a word where the recorder would be ("Double tap"). Shown rather than hidden,
-because a reader looking for "how do I open Search everywhere" reads its
-absence as the app not having it.
+`conflicts(binds, gesture, ctrlTabMode)` in `lib/shortcuts.ts` is the one rule
+set, pure and tested, and the Shortcuts page only draws its answer:
 
-## Recently used tabs (⌃⇥ / ⌃⇧⇥)
+- **chord vs chord:** two rows on one signature, unless `NON_CONFLICTING_GROUPS`
+  says they cannot both be live. Unbound rows clash with nothing.
+- **gesture vs chord, only while the gesture is on:** a chord on the gesture's
+  key (`tokenForCode(code)`) with the same modifier, Shift either way (Shift
+  reverses the walk, so ⌃⇧⇥ is the gesture too). A ctrl or cmd hold meets a
+  `cmd` chord (the fold), an alt hold an `alt` one; a Cmd hold on a digit meets
+  `jump-to-tab`'s 1-9 range. Both rows are flagged "(the gesture wins)": the
+  gesture's capture listener runs first and stops the event.
+- **double-Shift vs anything:** never, it has no key.
+- **Tab in a chord** never gets that far: `isReservedKey` refuses it in the
+  chord recorder ("Tab cannot be part of a chord. Recently used tabs can use
+  it."), because a `{cmd:true, key:"Tab"}` binding would fire on every ⌃⇥.
+
+## Recently used tabs (⌃⇥ / ⌃⇧⇥, recordable)
 
 Hold Ctrl, tap Tab to step back through the places you were actually looking
 at, Shift to step the other way, release to land. A "place" is a
@@ -206,26 +240,71 @@ and the tab two slots to the left is not the tab you were in.
 table could hold is `{cmd:true, key:"Tab"}`, which renders as ⌘⇥ and is dead on
 macOS. It is also hold-and-tap rather than one chord, and it needs `keyup`,
 which nothing else in the app does. `isValidBinding` therefore refuses Tab
-outright (`isReservedKey`) — without that, recording ⌃⇥ in Settings would store
+outright (`isReservedKey`) — without that, recording ⌃⇥ as a chord would store
 that half-dead binding and fire it on every press of the gesture, forever, on
 top of the gesture itself.
 
+**Both halves are recordable.** The gesture is a `HoldGesture`
+(`{ hold: "ctrl" | "alt" | "cmd", code }`, `lib/shortcuts.ts`), stored as JSON
+in `prefs.recentTabsGesture` (localStorage `recentTabsGesture`, synced). Absent
+means ⌃⇥, so no profile needed a migration. It is read through
+`parseHoldGesture`, which turns anything unreadable, anything the recorder
+would refuse, and a Cmd gesture on a platform without Cmd (synced from a Mac
+to Linux) into the default, at read time only: the stored value is never
+rewritten, so the Mac it came from keeps its choice.
+
+The tapped key is recorded as **`KeyboardEvent.code`**, the physical key, not
+`key`. With Option held, macOS turns letters into other characters and ` into
+a dead key (`key: "Dead"`), so `key` would record something different on
+every layout and never match its own next press. The modifier is matched by
+`holdHeld` (exactly that one modifier down, Shift aside; Alt excludes AltGr)
+and the landing by `holdReleased` (the flag going false). `endsGesture` in
+`lib/ctrlTab.ts` takes the tap code, so a dead key's `key` cannot end the walk.
+
+The recorder (`holdGestureFromEvent`) takes one held modifier plus a key and
+ignores Shift (it reverses). It refuses, with a message each:
+
+- **none, or two modifiers**, and Enter / Backspace / Space: "Hold exactly one
+  of Ctrl, Option, Cmd and press a key." (Ctrl, Alt off macOS; Cmd is only a
+  choice on macOS). Esc cancels the recording.
+- **what the OS keeps**: ⌘⇥, ⌘Space and ⌃Space on macOS; Alt+Tab and the
+  Windows / Super key with anything elsewhere. "⌘⇥ belongs to the system,
+  Termic never sees it." These are checked first, so somebody who pressed ⌘⇥
+  with another modifier down is told the real reason.
+- **Ctrl + letter or digit**: readline's (^R, ^P, ^W), and the gesture claims
+  its key before xterm sees it.
+- **Option / Alt + letter or digit**: it types a character on macOS, and is the
+  agent's own chord in a terminal elsewhere. Option + a symbol (`) is allowed:
+  the keydown is claimed with `preventDefault`, which is what has to stop the
+  dead-key composition (verified by hand, not by the suite: a synthetic event
+  starts no composition).
+
+**A Cmd hold** (macOS): WebKit drops the keyup of a non-modifier key while Cmd
+is held, so the tap's keyup may never arrive. Nothing depends on it: landing
+reads the modifier's own release.
+
 **Why it may take a Ctrl chord at all**, when GH #10 deliberately gave Ctrl to
-the terminal: nothing observable is lost. xterm's `evaluateKeyboardEvent` reads
-only `shiftKey` for Tab, so ⌃⇥ reaches the PTY as a plain `\t` and ⌃⇧⇥ as a
-plain `ESC[Z` — byte-identical to ⇥ and ⇧⇥, which are untouched. No program on
-the far end could tell the difference, so there was no binding there to take.
-It is still switchable off in Settings for anyone who wants that rule to have
-no exceptions.
+the terminal: with the default, nothing observable is lost. xterm's
+`evaluateKeyboardEvent` reads only `shiftKey` for Tab, so ⌃⇥ reaches the PTY as
+a plain `\t` and ⌃⇧⇥ as a plain `ESC[Z` — byte-identical to ⇥ and ⇧⇥, which are
+untouched. No program on the far end could tell the difference, so there was
+no binding there to take. That is also why the recorder refuses Ctrl+letter:
+those ARE readline's. It is still switchable off in Settings for anyone who
+wants that rule to have no exceptions.
 
 **Three listeners, not the usual one.** A window **capture**-phase `keydown`,
 because xterm listens on its own textarea and its `cancel()` calls
-`stopPropagation` — anything on the bubble phase never sees the key. Plus
-`keyup` (the walk lands when Control comes up, detected as `!e.ctrlKey` rather
-than `key === "Control"`, as `modKeyClass` does) and `blur`. The blur listener
-is **non-capture**, and that is load-bearing: `blur` does not bubble but it
-does capture, and the walk itself causes element blurs by hiding the pane it is
-leaving, so a capture listener would abort on the first tap.
+`stopPropagation` — anything on the bubble phase never sees the key. The same
+phase keeps an Option hold out of the PTY: with Option as Meta, xterm would
+send the tapped key as an ESC sequence. Plus `keyup` (the walk lands when the
+held modifier comes up, detected off its flag rather than the released key's
+name, as `modKeyClass` does) and `blur`. The blur listener is **non-capture**,
+and that is load-bearing: `blur` does not bubble but it does capture, and the
+walk itself causes element blurs by hiding the pane it is leaving, so a
+capture listener would abort on the first tap. The walk remembers the gesture
+it started with, so a config-sync pull that rebinds it mid-hold cannot change
+which release lands it. It stands down while Settings is open, which is also
+what lets the Settings recorder record the gesture itself.
 
 **A step is a PREVIEW, not a visit** — `previewPlace` in the app store, not
 `setActiveTask`/`setActiveTabId`. Selecting something is how this app decides

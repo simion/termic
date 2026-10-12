@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, clearLanguagePref, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, rmTree } from "../helpers";
+import { archiveTask, clearLanguagePref, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, textOf, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, rmTree } from "../helpers";
 
 /** Click the [role="switch"] in the settings row whose label matches exactly.
  *  Toggle rows are label + switch inside one .justify-between wrapper
@@ -2196,11 +2196,13 @@ describe("default tasks path", () => {
 // agentsSave. Both snapshot their order up front and put it back in teardown:
 // this profile is shared with every other spec, and a drifted order outlives
 // the run (see the signal-inspector note above).
-// P2: how double-Shift is chosen. It is the one shortcut with no chord, so
-// the Shortcuts page cannot offer to rebind it; what it offers instead is when
-// the gesture applies, from off to either Shift anywhere.
+// P2: how double-Shift is chosen. A double tap has no key to record, so what
+// the Shortcuts page offers for it is when the gesture applies, from off to
+// either Shift anywhere. It sits on the Search everywhere row, beside that
+// command's own (optional) chord recorder.
 describe("double-Shift mode", () => {
   const SELECT = '[data-testid="double-shift-mode"]';
+  const ROW = '[data-row-id="search-everywhere"]';
   let original = "left";
 
   const pref = () =>
@@ -2222,7 +2224,7 @@ describe("double-Shift mode", () => {
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
   });
 
-  it("sits on the double-Shift row, defaulting to the left Shift", async () => {
+  it("sits on the Search everywhere row, defaulting to the left Shift", async () => {
     await waitForAppShell();
     await requireTermicApi();
     original = await pref() as string;
@@ -2231,12 +2233,13 @@ describe("double-Shift mode", () => {
       window.__termic!.useApp.getState().openSettings("shortcuts");
     });
     await waitVisible(SELECT);
-    // On the fixed row itself, not a block of its own somewhere else on the
-    // page: that row is where a reader goes to ask about this gesture.
-    expect(await browser.execute((sel) => {
+    // On the row itself, beside its chord recorder, not a block of its own
+    // somewhere else on the page: that row is where a reader goes to ask
+    // about this command.
+    expect(await browser.execute((sel, row) => {
       const el = document.querySelector(sel);
-      return !!el?.closest('[data-testid="fixed-shortcut-row"]');
-    }, SELECT)).toBe(true);
+      return !!el?.closest(row);
+    }, SELECT, ROW)).toBe(true);
     expect(await browser.execute((sel) =>
       (document.querySelector(sel) as HTMLSelectElement).value, SELECT)).toBe("left");
   });
@@ -2257,9 +2260,8 @@ describe("double-Shift mode", () => {
   it("prints no second name for the gesture beside the select", async () => {
     // It used to read "Double tap, left" next to a select saying "Left Shift
     // only": the same gesture, named twice, in two vocabularies.
-    const row = await browser.execute((sel) =>
-      (document.querySelector(sel)?.closest('[data-testid="fixed-shortcut-row"]') as HTMLElement)
-        ?.innerText ?? "", SELECT);
+    const row = await browser.execute((row) =>
+      (document.querySelector(row) as HTMLElement)?.innerText ?? "", ROW);
     expect(row).not.toContain("Double tap");
   });
 
@@ -2271,6 +2273,208 @@ describe("double-Shift mode", () => {
         timeoutMsg: `double-Shift mode never became ${mode}`,
       });
     }
+  });
+});
+
+// The chord half of Search everywhere: optional, unbound by default, and
+// recorded like any other row. Double-Shift stays beside it (above).
+describe("search everywhere chord", () => {
+  const ROW = '[data-row-id="search-everywhere"]';
+  const RECORDER = `${ROW} [data-testid="shortcut-recorder"]`;
+  const RESET = `${ROW} [data-testid="shortcut-reset"]`;
+  let original: unknown = null;
+
+  const binding = () => browser.execute(() =>
+    window.__termic!.usePrefs.getState().shortcuts["search-everywhere"]);
+
+  after(async () => {
+    await browser.execute((b) => {
+      const p = window.__termic!.usePrefs.getState();
+      if (b) p.setShortcut("search-everywhere", b as any);
+      else p.resetShortcut("search-everywhere");
+    }, original);
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
+  it("reads Not set by default", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    original = await binding();
+    await browser.execute(() => {
+      window.__termic!.usePrefs.getState().resetShortcut("search-everywhere");
+      window.__termic!.useApp.getState().openSettings("shortcuts");
+    });
+    await waitVisible(RECORDER);
+    expect(await binding()).toBeNull();
+    expect(await textOf(RECORDER)).toBe("Not set");
+    // Nothing to reset while it is at its default.
+    expect(await browser.execute((sel) => !!document.querySelector(sel), RESET)).toBe(false);
+  });
+
+  it("records ⇧⌘O", async () => {
+    await clickWhenVisible(RECORDER);
+    await browser.waitUntil(async () => (await textOf(RECORDER)).includes("Press keys"),
+      { timeout: 5_000, timeoutMsg: "the recorder never started recording" });
+    const mac = process.platform === "darwin";
+    await browser.execute((isMac) => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "O", code: "KeyO",
+        metaKey: isMac, ctrlKey: !isMac, shiftKey: true,
+      }));
+    }, mac);
+    await browser.waitUntil(async () => !!(await binding()),
+      { timeout: 5_000, timeoutMsg: "the chord was never stored" });
+    expect(await binding()).toEqual({ cmd: true, shift: true, alt: false, key: "o" });
+    const text = await textOf(RECORDER);
+    expect(text).toContain("Shift");
+    expect(text).toContain("O");
+  });
+
+  it("resets to Not set", async () => {
+    await clickWhenVisible(RESET);
+    await browser.waitUntil(async () => (await binding()) === null,
+      { timeout: 5_000, timeoutMsg: "reset did not unbind the chord" });
+    expect(await textOf(RECORDER)).toBe("Not set");
+  });
+});
+
+// The recently-used-tabs gesture: a modifier to hold and a key to tap, both
+// recordable, with refusals of its own. The recorder takes keys from a
+// capture listener on window, so the events are dispatched at the page.
+describe("recently used tabs gesture", () => {
+  const RECORDER = '[data-testid="recent-tabs-recorder"]';
+  const RESET = '[data-testid="recent-tabs-reset"]';
+  const ERROR = '[data-testid="recent-tabs-error"]';
+  const MODE = '[data-testid="ctrl-tab-mode"]';
+  const mac = process.platform === "darwin";
+  let originalGesture: unknown = null;
+  let originalMode = "on";
+  let originalSearch: unknown = null;
+
+  const gesture = () => browser.execute(() =>
+    window.__termic!.usePrefs.getState().recentTabsGesture);
+
+  /** A keydown as the recorder sees it. `code` is the physical key. */
+  const press = (o: { key: string; code: string; ctrl?: boolean; alt?: boolean; meta?: boolean; shift?: boolean }) =>
+    browser.execute((e) => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: e.key, code: e.code,
+        ctrlKey: !!e.ctrl, altKey: !!e.alt, metaKey: !!e.meta, shiftKey: !!e.shift,
+      }));
+    }, o);
+
+  const startRecording = async () => {
+    await clickWhenVisible(RECORDER);
+    await browser.waitUntil(async () => (await textOf(RECORDER)).includes("Press keys"),
+      { timeout: 5_000, timeoutMsg: "the gesture recorder never started recording" });
+  };
+
+  after(async () => {
+    await browser.execute((g, m, s) => {
+      const p = window.__termic!.usePrefs.getState();
+      if (g) p.setRecentTabsGesture(g as any);
+      p.setCtrlTabMode(m as any);
+      if (s) p.setShortcut("search-everywhere", s as any);
+      else p.resetShortcut("search-everywhere");
+    }, originalGesture, originalMode, originalSearch);
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
+  it("shows ⌃⇥ with an Off / On select, and no reset at the default", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    [originalGesture, originalMode, originalSearch] = await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      return [p.recentTabsGesture, p.ctrlTabMode, p.shortcuts["search-everywhere"]] as [unknown, string, unknown];
+    });
+    await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      p.setRecentTabsGesture({ hold: "ctrl", code: "Tab" });
+      p.setCtrlTabMode("on");
+      p.resetShortcut("search-everywhere");
+      window.__termic!.useApp.getState().openSettings("shortcuts");
+    });
+    await waitVisible(RECORDER);
+    const text = await textOf(RECORDER);
+    expect(text).toContain("Ctrl");
+    expect(text).toContain("Tab");
+    expect(await browser.execute((sel) => !!document.querySelector(sel), RESET)).toBe(false);
+    expect(await browser.execute((sel) =>
+      [...(document.querySelector(sel) as HTMLSelectElement).options].map(o => o.textContent), MODE))
+      .toEqual(["Off", "On"]);
+    await snap("recent-tabs-default.png");
+  });
+
+  it("is greyed and cannot record while Off", async () => {
+    await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("off"));
+    await browser.waitUntil(() => browser.execute((sel) =>
+      (document.querySelector(sel) as HTMLButtonElement).disabled, RECORDER),
+    { timeout: 5_000, timeoutMsg: "the recorder stayed enabled with the gesture off" });
+    await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("on"));
+    await browser.waitUntil(() => browser.execute((sel) =>
+      !(document.querySelector(sel) as HTMLButtonElement).disabled, RECORDER),
+    { timeout: 5_000, timeoutMsg: "the recorder stayed disabled with the gesture on" });
+  });
+
+  it("refuses the system's own gesture, by name", async () => {
+    await startRecording();
+    await press({ key: "Tab", code: "Tab", meta: true });
+    await waitVisible(ERROR);
+    expect(await textOf(ERROR)).toBe(mac
+      ? "⌘⇥ belongs to the system, Termic never sees it."
+      : "Win+Tab belongs to the system, Termic never sees it.");
+    expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
+  });
+
+  it("refuses Ctrl with a letter, which is readline's", async () => {
+    await press({ key: "r", code: "KeyR", ctrl: true });
+    await browser.waitUntil(async () => (await textOf(ERROR)).startsWith("Ctrl with a letter"),
+      { timeout: 5_000, timeoutMsg: "⌃R was not refused" });
+    expect(await textOf(ERROR))
+      .toBe("Ctrl with a letter belongs to the terminal (readline). Pick Tab or a symbol key.");
+    expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
+  });
+
+  it("records Option + `, by its key and not the dead key it types", async () => {
+    // Still recording: a refusal keeps the recorder open.
+    await press({ key: "Dead", code: "Backquote", alt: true });
+    await browser.waitUntil(async () => (await gesture() as { code: string }).code === "Backquote",
+      { timeout: 5_000, timeoutMsg: "Option + ` was never stored" });
+    expect(await gesture()).toEqual({ hold: "alt", code: "Backquote" });
+    const text = await textOf(RECORDER);
+    expect(text).toContain(mac ? "Option" : "Alt");
+    expect(text).toContain("`");
+    // The hint names the recorded keys, not the factory ones.
+    expect(await textOf('[data-testid="gesture-shortcut-row"]'))
+      .toContain(`Hold ${mac ? "Option" : "Alt"} and tap \``);
+    await snap("recent-tabs-rebound.png");
+  });
+
+  it("flags a chord on the same keys, on both rows", async () => {
+    await browser.execute(() => window.__termic!.usePrefs.getState()
+      .setShortcut("search-everywhere", { cmd: false, shift: false, alt: true, key: "`" }));
+    await waitVisible('[data-row-id="search-everywhere"] [data-testid="shortcut-gesture-conflict"]');
+    expect(await textOf('[data-row-id="search-everywhere"] [data-testid="shortcut-gesture-conflict"]'))
+      .toBe("Conflicts with Recently used tabs (the gesture wins)");
+    expect(await textOf('[data-testid="gesture-conflict"]'))
+      .toBe("Conflicts with Search everywhere (the gesture wins)");
+    await snap("recent-tabs-conflict.png");
+    // Off: the gesture fires nothing, so it conflicts with nothing.
+    await browser.execute(() => window.__termic!.usePrefs.getState().setCtrlTabMode("off"));
+    await waitGone('[data-testid="gesture-conflict"]');
+    await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      p.setCtrlTabMode("on");
+      p.resetShortcut("search-everywhere");
+    });
+  });
+
+  it("resets to ⌃⇥", async () => {
+    await clickWhenVisible(RESET);
+    await browser.waitUntil(async () => (await gesture() as { code: string }).code === "Tab",
+      { timeout: 5_000, timeoutMsg: "reset did not restore ⌃⇥" });
+    expect(await gesture()).toEqual({ hold: "ctrl", code: "Tab" });
+    await waitGone(RESET);
   });
 });
 

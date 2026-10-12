@@ -169,3 +169,30 @@ describe("what interrupts a walk", () => {
     expect(endsGesture("c", true)).toBe(false);
   });
 });
+
+describe("what interrupts a walk on a rebound gesture", () => {
+  it("is not ended by its own tap key, matched by code", () => {
+    // Option + ` on macOS: the key is a dead key and says "Dead". The code is
+    // the physical key, which is what the gesture recorded.
+    expect(endsGesture("Dead", false, "Backquote", "Backquote")).toBe(false);
+    expect(endsGesture("`", false, "Backquote", "Backquote")).toBe(false);
+  });
+
+  it("is ended by Tab once Tab is not the gesture's key", () => {
+    expect(endsGesture("Tab", false, "Tab", "Backquote")).toBe(true);
+  });
+
+  it("is not ended by the held Option, nor AltGr", () => {
+    expect(endsGesture("Alt", true, "AltLeft", "Backquote")).toBe(false);
+    expect(endsGesture("AltGraph", false, "AltRight", "Backquote")).toBe(false);
+  });
+
+  it("is ended by a real keystroke", () => {
+    expect(endsGesture("j", false, "KeyJ", "Backquote")).toBe(true);
+  });
+
+  it("still knows Tab by name where the code is missing", () => {
+    expect(endsGesture("Tab", false, "", "Tab")).toBe(false);
+    expect(endsGesture("Tab", false, "Tab", "Tab")).toBe(false);
+  });
+});

@@ -70,7 +70,8 @@ export type ShortcutId =
   | "find-usages"
   | "go-to-implementation"
   | "go-to-type-definition"
-  | "file-structure";
+  | "file-structure"
+  | "search-everywhere";
 
 export type ShortcutGroup =
   | "Navigation" | "Code navigation" | "Tabs" | "Terminal" | "Git" | "General";
@@ -78,7 +79,14 @@ export type ShortcutGroup =
 export interface ShortcutDef {
   id: ShortcutId;
   group: ShortcutGroup;
-  defaultBinding: Binding;
+  /** null = ships unbound. Only a command that has another way in may do
+   *  this (search-everywhere has double-Shift); everything else needs a key,
+   *  or it is a command nobody can reach. Reset puts null back. */
+  defaultBinding: Binding | null;
+  /** A second trigger that is not a chord, drawn as a select beside the
+   *  recorder on the same row. The chord and the gesture are independent:
+   *  either can be off while the other works. */
+  gesture?: "double-shift";
 }
 
 const B = (key: string, mods: Partial<Omit<Binding, "key">> = {}): Binding => ({
@@ -123,6 +131,13 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B("t", { alt: true, shift: true }) },
   { id: "file-structure", group: "Code navigation",
     defaultBinding: B("F12", { cmd: true }) },
+  // Double-Shift is JetBrains' gesture for this, and stays (a select on the
+  // same row picks when it applies). The chord is for whoever wants a key
+  // they can press on purpose. Unbound by default: every free chord is
+  // somebody's muscle memory, and the gesture already answers "how do I open
+  // it" for everyone else.
+  { id: "search-everywhere", group: "Code navigation",
+    defaultBinding: null, gesture: "double-shift" },
   { id: "nav-forward", group: "Navigation",
     defaultBinding: B("]", { cmd: true }) },
   { id: "task-prev-arrow", group: "Navigation",
@@ -231,45 +246,240 @@ export const GROUP_ORDER: ShortcutGroup[] =
   ["Navigation", "Code navigation", "Tabs", "Terminal", "Git", "General"];
 
 /**
- * Shortcuts that exist, are worth finding, and cannot be rebound.
+ * Shortcuts that are a GESTURE rather than a chord.
  *
  * Kept OUT of `SHORTCUT_DEFS` deliberately. Everything there is a `Binding`,
- * and a Binding is one chord: the bindings map, the conflict check, the
- * recorder in Settings and the localStorage migration all assume it. A def
- * with no binding would have to be special-cased in each of them.
+ * and a Binding is one chord pressed at once: the bindings map, the conflict
+ * check, the chord recorder and the localStorage migration all assume it.
+ * Recently used tabs is hold-a-modifier-and-tap, it needs keyup, and it has
+ * to tell Ctrl from Cmd, which a Binding folds together.
  *
- * So: a small separate list, rendered read-only in the help sheet and in
- * Settings, with its keys spelled out rather than derived. Discoverability is
- * the point; a gesture nobody can find is a feature nobody has.
+ * Its keys are recordable all the same (a `HoldGesture`, in the prefs store
+ * as `recentTabsGesture`), with a recorder of its own on the row. Search
+ * everywhere used to be listed here too; it is a def now, with a chord that
+ * ships unbound and its double-Shift select (`ShortcutDef.gesture`).
  */
-export type FixedShortcutId = "search-everywhere" | "recent-tabs";
+export type GestureShortcutId = "recent-tabs";
 
-export interface FixedShortcut {
-  id: FixedShortcutId;
+export interface GestureShortcut {
+  id: GestureShortcutId;
   group: ShortcutGroup;
-  /** Exactly what is printed, in order. Not derived from a Binding. */
-  glyphs: string[];
-  /** Which mode select this row carries in Settings, if any. The rendering was
-   *  `f.id === "search-everywhere"` in five places across two files while there
-   *  was only one such row; a second one made that a copy-paste bug waiting to
-   *  happen. */
-  control?: "double-shift" | "ctrl-tab";
+  /** What the row carries in Settings. `hold-tap`: a HoldGesture recorder
+   *  plus the on/off select. */
+  control: "hold-tap";
 }
 
-export const FIXED_SHORTCUTS: FixedShortcut[] = [
-  {
-    id: "search-everywhere",
-    group: "Code navigation",
-    glyphs: ["⇧", "⇧"],
-    control: "double-shift",
-  },
-  {
-    id: "recent-tabs",
-    group: "Navigation",
-    glyphs: ["⌃", "⇥"],
-    control: "ctrl-tab",
-  },
+export const GESTURE_SHORTCUTS: GestureShortcut[] = [
+  { id: "recent-tabs", group: "Navigation", control: "hold-tap" },
 ];
+
+// ── Hold gestures (recently used tabs) ──────────────────────────────────
+//
+// Hold one modifier, tap a key, release the modifier to land. The modifier is
+// the user's choice, and so is the key, recorded as `KeyboardEvent.code` (the
+// physical key) rather than `key`: with Option held, macOS turns letters into
+// other characters and ` into a dead key (`key: "Dead"`), so `key` would
+// record something different on every layout.
+
+export type HoldModifier = "ctrl" | "alt" | "cmd";
+
+export interface HoldGesture {
+  hold: HoldModifier;
+  /** `KeyboardEvent.code`: "Tab", "Backquote", "KeyJ"... */
+  code: string;
+}
+
+export const DEFAULT_RECENT_TABS: HoldGesture = { hold: "ctrl", code: "Tab" };
+
+/** Why a recorded hold gesture was refused. Each `kind` is a locale key under
+ *  `settings:shortcuts.*`; `keys` fills `holdOsReserved`. */
+export type HoldError =
+  | { kind: "holdNeedsOne" }
+  | { kind: "holdOsReserved"; keys: string }
+  | { kind: "holdTerminalKey" }
+  | { kind: "holdTypes" };
+
+const MODIFIER_CODES = new Set([
+  "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "AltLeft", "AltRight",
+  "MetaLeft", "MetaRight", "OSLeft", "OSRight", "CapsLock", "Fn", "FnLock", "AltGraph",
+]);
+const MODIFIER_NAMES = new Set([
+  "Shift", "Control", "Alt", "Meta", "CapsLock", "AltGraph", "Super", "OS", "Fn",
+]);
+
+/** What each punctuation code is called as a binding token and as a glyph.
+ *  Letters (KeyX) and digits (DigitN) are derived. */
+const CODE_CHAR: Record<string, string> = {
+  Backquote: "`", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+  Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/",
+  IntlBackslash: "§",
+};
+
+/** The `code` a key would have, for an event that does not carry one (some
+ *  synthetic events). Tab, letters, digits and the punctuation above. */
+function codeFromKey(key: string): string {
+  if (key === "Tab") return "Tab";
+  if (/^[a-zA-Z]$/.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^[0-9]$/.test(key)) return `Digit${key}`;
+  for (const [code, ch] of Object.entries(CODE_CHAR)) if (ch === key) return code;
+  return "";
+}
+
+/** The physical key of an event: `code`, which every real key reports, or a
+ *  reconstruction from `key` when it is missing. */
+export function eventCode(e: Pick<KeyboardEvent, "code" | "key">): string {
+  return e.code || codeFromKey(e.key);
+}
+
+/** A code as a Binding key token ("KeyJ" -> "j", "Tab" -> "Tab"), which is
+ *  how a gesture is compared with a chord for conflicts. */
+export function tokenForCode(code: string): string {
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1].toLowerCase();
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit) return digit[1];
+  return CODE_CHAR[code] ?? code;
+}
+
+/** A code as the glyph a key chip prints ("Tab" -> "⇥", "KeyJ" -> "J"). */
+export function codeGlyph(code: string): string {
+  if (code === "Tab") return "⇥";
+  if (code === "Space") return "␣";
+  if (code === "Enter") return "↩";
+  return keyGlyph(tokenForCode(code));
+}
+
+const HOLD_GLYPH: Record<HoldModifier, string> = { ctrl: "⌃", alt: "⌥", cmd: "⌘" };
+
+/** Chips for a gesture: the held modifier, then the tapped key. */
+export function holdGestureGlyphs(g: HoldGesture): string[] {
+  return [HOLD_GLYPH[g.hold], codeGlyph(g.code)];
+}
+
+/** The name of the held modifier, for prose ("Hold Option and tap `"). */
+export function holdModifierName(hold: HoldModifier, isMac: boolean = IS_MAC): string {
+  if (hold === "ctrl") return "Ctrl";
+  if (hold === "alt") return isMac ? "Option" : "Alt";
+  return isMac ? "Cmd" : "Win";
+}
+
+/** A gesture as one string: `⌃⇥` on macOS, `Ctrl+Tab` elsewhere. */
+export function holdGestureText(g: HoldGesture, isMac: boolean = IS_MAC): string {
+  if (isMac) return holdGestureGlyphs(g).join("");
+  return `${holdModifierName(g.hold, false)}+${glyphLabel(codeGlyph(g.code))}`;
+}
+
+/** The modifiers a hold gesture may use here, for the "hold exactly one of"
+ *  message. Cmd is only a choice on macOS: off it, the Windows / Super key
+ *  belongs to the desktop. */
+export function holdModifierChoices(isMac: boolean = IS_MAC): string {
+  return isMac ? "Ctrl, Option, Cmd" : "Ctrl, Alt";
+}
+
+const ALNUM_CODE = /^(Key[A-Z]|Digit[0-9])$/;
+
+/** The rule the recorder and the stored-value parser share. null when the
+ *  gesture is one Termic can see and may own. */
+export function holdGestureError(g: HoldGesture, isMac: boolean = IS_MAC): HoldError | null {
+  if (!g.code || MODIFIER_CODES.has(g.code)) return { kind: "holdNeedsOne" };
+  if (isMac) {
+    // ⌘⇥ is the app switcher, ⌘Space Spotlight, ⌃Space the input source
+    // switcher: the system takes all three before the webview sees them.
+    if ((g.hold === "cmd" && (g.code === "Tab" || g.code === "Space"))
+        || (g.hold === "ctrl" && g.code === "Space")) {
+      return { kind: "holdOsReserved", keys: holdGestureText(g, true) };
+    }
+  } else if (g.hold === "cmd" || (g.hold === "alt" && g.code === "Tab")) {
+    // Alt+Tab is the window switcher on Windows and every Linux desktop, and
+    // the Windows / Super key is the desktop's whatever it is held with.
+    return { kind: "holdOsReserved", keys: holdGestureText(g, false) };
+  }
+  // Keys that confirm, clear or type in the recorder itself.
+  if (g.code === "Enter" || g.code === "NumpadEnter" || g.code === "Backspace"
+      || g.code === "Escape" || g.code === "Space") {
+    return { kind: "holdNeedsOne" };
+  }
+  // Ctrl+letter is readline's (^R, ^P, ^W...), and the gesture claims its key
+  // before xterm sees it, so it would take one away from every shell.
+  if (g.hold === "ctrl" && ALNUM_CODE.test(g.code)) return { kind: "holdTerminalKey" };
+  // Option / Alt + letter types a character (å, ∫...) on macOS, and is the
+  // agent's own chord in a terminal elsewhere.
+  if (g.hold === "alt" && ALNUM_CODE.test(g.code)) return { kind: "holdTypes" };
+  return null;
+}
+
+/** Read a stored gesture. Anything unreadable, or a gesture this platform
+ *  cannot use (Cmd synced over from a Mac to Linux), reads as the default.
+ *  Read time only: the stored value is never rewritten, so the Mac it came
+ *  from keeps its choice. */
+export function parseHoldGesture(raw: string | null, isMac: boolean = IS_MAC): HoldGesture {
+  if (!raw) return DEFAULT_RECENT_TABS;
+  try {
+    const v = JSON.parse(raw) as Partial<HoldGesture> | null;
+    if (!v || typeof v !== "object") return DEFAULT_RECENT_TABS;
+    if (v.hold !== "ctrl" && v.hold !== "alt" && v.hold !== "cmd") return DEFAULT_RECENT_TABS;
+    if (typeof v.code !== "string" || !/^[A-Za-z0-9]+$/.test(v.code)) return DEFAULT_RECENT_TABS;
+    const g: HoldGesture = { hold: v.hold, code: v.code };
+    return holdGestureError(g, isMac) ? DEFAULT_RECENT_TABS : g;
+  } catch {
+    return DEFAULT_RECENT_TABS;
+  }
+}
+
+export function holdGesturesEqual(a: HoldGesture, b: HoldGesture): boolean {
+  return a.hold === b.hold && a.code === b.code;
+}
+
+function altGraph(e: KeyboardEvent): boolean {
+  return typeof e.getModifierState === "function" && e.getModifierState("AltGraph");
+}
+
+/** A recorded keydown as a hold gesture. null for a bare modifier press (the
+ *  user is on the way to the key); an error for a combination Termic cannot
+ *  or must not own. Shift is ignored: it is how the walk reverses. */
+export function holdGestureFromEvent(
+  e: KeyboardEvent, isMac: boolean = IS_MAC,
+): HoldGesture | { error: HoldError } | null {
+  if (MODIFIER_NAMES.has(e.key) || MODIFIER_CODES.has(e.code)) return null;
+  const code = eventCode(e);
+  // AltGr reports as Ctrl+Alt in Chromium, and either way it is a typing key.
+  const ag = altGraph(e);
+  const held: HoldModifier[] = [];
+  if (e.ctrlKey && !ag) held.push("ctrl");
+  if (e.altKey && !ag) held.push("alt");
+  if (e.metaKey || (!isMac && superIsHeld())) held.push("cmd");
+  // The desktop's own chords first: telling somebody who pressed ⌘⇥ to hold
+  // exactly one modifier would be telling them what they already did.
+  for (const hold of held) {
+    const err = holdGestureError({ hold, code }, isMac);
+    if (err?.kind === "holdOsReserved") return { error: err };
+  }
+  if (held.length !== 1) return { error: { kind: "holdNeedsOne" } };
+  const g: HoldGesture = { hold: held[0], code };
+  const err = holdGestureError(g, isMac);
+  return err ? { error: err } : g;
+}
+
+/** Exactly the gesture's modifier is down (Shift aside, which reverses).
+ *  Alt excludes AltGr, a typing key on most European layouts. */
+export function holdHeld(e: KeyboardEvent, hold: HoldModifier): boolean {
+  switch (hold) {
+    case "ctrl": return e.ctrlKey && !e.metaKey && !e.altKey;
+    case "alt": return e.altKey && !e.ctrlKey && !e.metaKey && !altGraph(e);
+    case "cmd": return e.metaKey && !e.ctrlKey && !e.altKey;
+  }
+}
+
+/** The gesture's modifier has come up, so the walk lands. Read off the flag
+ *  rather than `key === "Control"`, which misses a release that arrives while
+ *  another modifier is down, and every synthetic sequence. */
+export function holdReleased(e: KeyboardEvent, hold: HoldModifier): boolean {
+  switch (hold) {
+    case "ctrl": return !e.ctrlKey;
+    case "alt": return !e.altKey;
+    case "cmd": return !e.metaKey;
+  }
+}
 
 /** When the double-Shift gesture opens Search everywhere.
  *
@@ -295,7 +505,7 @@ export type DoubleShiftMode = "off" | "left" | "outside-terminal" | "any";
 export const DOUBLE_SHIFT_MODES: DoubleShiftMode[] =
   ["off", "left", "outside-terminal", "any"];
 
-/** Whether ⌃⇥ walks the recently-used tabs.
+/** Whether the recently-used-tabs gesture (⌃⇥ unless rebound) is on.
  *
  *  Declared here, next to DOUBLE_SHIFT_MODES and for the same reason: prefs
  *  already imports this module for the bindings, so the other direction would
@@ -303,12 +513,14 @@ export const DOUBLE_SHIFT_MODES: DoubleShiftMode[] =
  *
  *  On/off rather than the four modes double-Shift needs, because the awkward
  *  question that one answers ("should this fire while I am typing?") has no
- *  equivalent here: Tab with Ctrl held types nothing, and a terminal cannot
- *  tell ⌃⇥ from ⇥ anyway (see the note on the gesture in useShortcuts). */
+ *  equivalent here: the recorder only accepts keys that type nothing while
+ *  the modifier is held (holdGestureError). The id keeps its historic name
+ *  so stored prefs carry over. */
 export type CtrlTabMode = "off" | "on";
 
-/** Each label names the WHOLE gesture, the same rule DOUBLE_SHIFT_MODES follows
- *  (see lib/shortcutCopy.ts: `ctrlTabModeLabel`). */
+/** Labelled plain Off / On: the gesture itself sits on the recorder beside
+ *  the select, so the option no longer spells it out (and could not, now that
+ *  it can be any modifier and key). */
 export const CTRL_TAB_MODES: CtrlTabMode[] = ["off", "on"];
 
 /** Groups of rebindable commands that intentionally share a binding and can
@@ -320,7 +532,8 @@ export const NON_CONFLICTING_GROUPS: ShortcutId[][] = [
   ["split-pane-below", "discard-file"],
 ];
 
-export type BindingMap = Record<ShortcutId, Binding>;
+/** null = unbound, which only a def whose default is null can be. */
+export type BindingMap = Record<ShortcutId, Binding | null>;
 
 export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(
   SHORTCUT_DEFS.map(d => [d.id, d.defaultBinding]),
@@ -437,7 +650,7 @@ export function eventKeyToken(e: KeyboardEvent): string {
 
 /** True when the event's modifiers + key satisfy the binding. The "1-9"
  *  sentinel matches any digit 1-9 with the binding's modifiers. */
-export function bindingMatches(e: KeyboardEvent, b: Binding | undefined): boolean {
+export function bindingMatches(e: KeyboardEvent, b: Binding | null | undefined): boolean {
   if (!b) return false;
   // LINUX/WINDOWS: Ctrl folds into `cmd`, so every shortcut fires there too.
   // Inside a terminal, readline keeps plain Ctrl+letter: xterm consumes those
@@ -479,11 +692,11 @@ export function bindingFromEvent(e: KeyboardEvent, digitMode = false): Binding |
 /**
  * Keys the registry refuses outright, whatever modifiers are on them.
  *
- * Tab, because ⌃⇥ is the recently-used-tabs gesture and a `Binding` cannot
- * tell it apart: `bindingMatches` folds Cmd and Ctrl into one flag, so a
- * recorded ⌃⇥ is stored as `{cmd:true, key:"Tab"}` and then fires on every
- * press of the gesture, forever, on top of it. (The ⌘⇥ reading it renders as
- * is dead anyway — macOS owns that one and the webview never sees it.)
+ * Tab, because a `Binding` cannot tell ⌃⇥ from ⌘⇥: `bindingMatches` folds
+ * Cmd and Ctrl into one flag, so a recorded ⌃⇥ would be stored as
+ * `{cmd:true, key:"Tab"}` and fire on every press of the recently-used-tabs
+ * gesture, on top of it. Tab stays available to that gesture, which has a
+ * recorder of its own (a `HoldGesture`) and can tell the two apart.
  */
 export function isReservedKey(key: string): boolean {
   return key === "Tab";
@@ -604,7 +817,56 @@ export function bindingSignature(b: Binding): string {
   return `${b.cmd ? "C" : ""}${b.shift ? "S" : ""}${b.alt ? "A" : ""}:${b.key}`;
 }
 
-export function bindingsEqual(a: Binding | undefined, b: Binding | undefined): boolean {
+/** Two bindings are the same chord. Two nulls are equal (both unbound), so a
+ *  row whose default is null reads as "not customised" while it stays so. */
+export function bindingsEqual(a: Binding | null | undefined, b: Binding | null | undefined): boolean {
+  if (a === null && b === null) return true;
   if (!a || !b) return false;
   return a.cmd === b.cmd && a.shift === b.shift && a.alt === b.alt && a.key === b.key;
+}
+
+/** Who clashes with whom on the Shortcuts page.
+ *
+ *  (a) chord vs chord: two rows on one signature, unless a
+ *      NON_CONFLICTING_GROUPS entry says they cannot both be live. An unbound
+ *      row clashes with nothing.
+ *  (b) gesture vs chord, only while the gesture is on: a chord on the same
+ *      key with the same modifier, Shift either way (Shift reverses the walk,
+ *      so ⌃⇧⇥ is the gesture too). `cmd` folds Ctrl, so a ctrl or a cmd hold
+ *      meets a `cmd` chord. The gesture's capture listener runs first and
+ *      stops the event, so the gesture wins, and the page says so on both rows.
+ *  (c) double-Shift vs anything: never, it has no key.
+ *  (d) Tab in a chord never gets this far: the recorder refuses it.
+ *
+ *  Pure, so the rules are tested without drawing the page. */
+export function conflicts(
+  binds: BindingMap,
+  gesture: HoldGesture,
+  ctrlTabMode: CtrlTabMode,
+): { chords: Set<ShortcutId>; withGesture: ShortcutId[] } {
+  const bySig = new Map<string, ShortcutId[]>();
+  for (const def of SHORTCUT_DEFS) {
+    const b = binds[def.id];
+    if (!b) continue;
+    const sig = bindingSignature(b);
+    bySig.set(sig, [...(bySig.get(sig) ?? []), def.id]);
+  }
+  const chords = new Set<ShortcutId>();
+  for (const list of bySig.values()) {
+    if (list.length <= 1) continue;
+    if (NON_CONFLICTING_GROUPS.some(g => list.every(id => g.includes(id)))) continue;
+    list.forEach(id => chords.add(id));
+  }
+  const withGesture: ShortcutId[] = [];
+  if (ctrlTabMode === "on") {
+    const token = tokenForCode(gesture.code);
+    const alt = gesture.hold === "alt";
+    for (const def of SHORTCUT_DEFS) {
+      const b = binds[def.id];
+      if (!b) continue;
+      const sameKey = b.key === token || (b.key === "1-9" && /^Digit[1-9]$/.test(gesture.code));
+      if (sameKey && b.alt === alt && b.cmd === !alt) withGesture.push(def.id);
+    }
+  }
+  return { chords, withGesture };
 }

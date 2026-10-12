@@ -34,7 +34,7 @@ export function WaitingAgentsPill() {
 
   if (!settled || count < 1) return null;
 
-  const glyphs = bindingText(binding);
+  const glyphs = binding ? bindingText(binding) : "";
   const label = `${t("waitingPill.jump")}${glyphs ? ` (${glyphs})` : ""}`;
 
   return (

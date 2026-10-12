@@ -944,6 +944,57 @@ describe("code intelligence", () => {
     }
   });
 
+  // The optional chord (unbound by default). It has to work from where people
+  // are, which is a focused terminal: xterm takes every key it is not told to
+  // let go of, so this is TerminalPane's PASS_TO_APP being exercised, and with
+  // double-Shift off the chord is the only way the dialog can have opened.
+  it("opens Search Everywhere on a recorded chord, from a focused terminal, with double-Shift off", async () => {
+    await ensureActiveTask(taskId);
+    const mac = process.platform === "darwin";
+    const original = await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      return { mode: p.doubleShiftMode, chord: p.shortcuts["search-everywhere"] };
+    });
+    try {
+      await browser.execute(() => {
+        const p = window.__termic!.usePrefs.getState();
+        p.setDoubleShiftMode("off");
+        p.setShortcut("search-everywhere", { cmd: true, shift: true, alt: false, key: "o" });
+      });
+      await browser.execute((id, isMac) => {
+        const host = document.querySelector(`[data-task-id="${id}"]`);
+        if (!host) throw new Error(`task ${id} is not mounted`);
+        const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")]
+          .find(el => {
+            const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+        if (!ta) throw new Error(`no visible terminal in ${id}`);
+        ta.focus();
+        // keyCode too: xterm's own handler switches on it, and an event it
+        // could not read would prove nothing about what it let through.
+        const k = {
+          bubbles: true, cancelable: true, key: "O", code: "KeyO", keyCode: 79, which: 79,
+          metaKey: isMac, ctrlKey: !isMac, shiftKey: true,
+        };
+        ta.dispatchEvent(new KeyboardEvent("keydown", k));
+        ta.dispatchEvent(new KeyboardEvent("keyup", k));
+      }, taskId, mac);
+      await browser.waitUntil(async () => await browser.execute(() =>
+        window.__termic!.useUI.getState().searchEverywhereTaskId !== null), {
+        timeout: 5_000, timeoutMsg: "the recorded chord did not open Search Everywhere from the terminal",
+      });
+      await closeSearchEverywhere();
+    } finally {
+      await browser.execute((o) => {
+        const p = window.__termic!.usePrefs.getState();
+        p.setDoubleShiftMode(o.mode as any);
+        if (o.chord) p.setShortcut("search-everywhere", o.chord as any);
+        else p.resetShortcut("search-everywhere");
+      }, original);
+    }
+  });
+
   it("opens Search Everywhere on double-Shift, files first and symbols when armed", async () => {
     // Most people never turn code intelligence on, so this dialog has to be
     // useful without it: files always, symbols merged in when a checkout is

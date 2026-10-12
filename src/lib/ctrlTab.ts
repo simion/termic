@@ -1,5 +1,6 @@
-// The ⌃⇥ walk: hold Control, tap Tab to step back through the places you were
-// looking at, ⌃⇧⇥ to step the other way, release Control to land.
+// The recently-used-tabs walk (⌃⇥ unless rebound): hold the modifier, tap the
+// key to step back through the places you were looking at, add Shift to step
+// the other way, release the modifier to land.
 //
 // A pure decision so the fiddly part is testable, exactly like `doubleTap.ts`.
 // And the fiddly part is NOT the stepping — it is everything that must NOT end
@@ -32,7 +33,7 @@ export interface CtrlTabState {
 export const IDLE: CtrlTabState = { active: false, ring: [], index: 0, origin: null };
 
 /** Keys that are part of holding a chord, not a keystroke that interrupts it. */
-const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "AltGraph"]);
 
 /**
  * The ring for one gesture, plus the index to start from.
@@ -102,12 +103,16 @@ export function end(state: CtrlTabState): {
 /**
  * Should this keydown end a walk in flight?
  *
- * Modifiers and auto-repeats must not: holding Control repeats forever, and
- * Shift is how the walk reverses. A real keystroke does end it, and is NOT
- * swallowed — the user meant it for whatever is now on screen.
+ * Modifiers and auto-repeats must not: holding the modifier repeats forever,
+ * and Shift is how the walk reverses. Nor does the gesture's own tap key,
+ * matched by `code` (`tapCode`, "Tab" unless rebound): with Option held, ` is
+ * a dead key and its `key` says "Dead". A real keystroke does end it, and is
+ * NOT swallowed — the user meant it for whatever is now on screen.
  */
-export function endsGesture(key: string, repeat: boolean): boolean {
+export function endsGesture(key: string, repeat: boolean, code = "", tapCode = "Tab"): boolean {
   if (repeat) return false;
   if (MODIFIER_KEYS.has(key)) return false;
-  return key !== "Tab";
+  if (code === tapCode) return false;
+  // A platform that reports no code: the default tap key by name.
+  return !(tapCode === "Tab" && key === "Tab");
 }

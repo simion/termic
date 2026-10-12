@@ -17,9 +17,13 @@ import { codeIntelName } from "./lsp/featureName";
 import {
   type CtrlTabMode,
   type DoubleShiftMode,
-  type FixedShortcutId,
+  type GestureShortcutId,
+  type HoldGesture,
   type ShortcutGroup,
   type ShortcutId,
+  codeGlyph,
+  glyphLabel,
+  holdModifierName,
 } from "./shortcuts";
 
 /** A `t` from react-i18next, loose enough that any namespace's binding fits. */
@@ -73,23 +77,23 @@ const DEF_KEY: Record<ShortcutId, string> = {
   "go-to-implementation": "goToImplementation",
   "go-to-type-definition": "goToTypeDefinition",
   "file-structure": "fileStructure",
+  "search-everywhere": "searchEverywhere",
 };
 
-/** Same, for the two gestures that are not a chord
- *  (`settings:shortcuts.fixed`). */
-const FIXED_KEY: Record<FixedShortcutId, string> = {
-  "search-everywhere": "searchEverywhere",
+/** Same, for the gesture rows that are not a chord
+ *  (`settings:shortcuts.gestures`). */
+const GESTURE_KEY: Record<GestureShortcutId, string> = {
   "recent-tabs": "recentTabs",
 };
 
-/** Same, for the selects those two rows carry (`settings:shortcuts.modes`).
+/** Same, for the selects the two gesture rows carry (`settings:shortcuts.modes`).
  *  "Off" is one key for both: the two selects offer the same word. */
 const MODE_KEY: Record<DoubleShiftMode | CtrlTabMode, string> = {
   "off": "off",
   "left": "doubleLeftShift",
   "outside-terminal": "doubleNotInTerminal",
   "any": "doubleShift",
-  "on": "holdCtrlTab",
+  "on": "on",
 };
 
 /** Same, for the group headings (`settings:shortcuts.groups`). "Code
@@ -147,18 +151,18 @@ export function shortcutGroupLabel(
   return t(`settings:shortcuts.groups.${GROUP_KEY[group]}`);
 }
 
-/** A gesture that cannot be rebound: its name, the line under it, and (for a
- *  row that carries no mode select) why there is no recorder beside it. */
-export function fixedShortcutLabel(id: FixedShortcutId, t: T): string {
-  return t(`settings:shortcuts.fixed.${FIXED_KEY[id]}.label`);
+/** A gesture row (not a chord): its name, and the line under it. The hint
+ *  names the gesture's own keys, so it reads right after a rebind:
+ *  "Hold Option and tap ` ...". */
+export function gestureShortcutLabel(id: GestureShortcutId, t: T): string {
+  return t(`settings:shortcuts.gestures.${GESTURE_KEY[id]}.label`);
 }
 
-export function fixedShortcutHint(id: FixedShortcutId, t: T): string {
-  return t(`settings:shortcuts.fixed.${FIXED_KEY[id]}.hint`);
-}
-
-export function fixedShortcutReason(id: FixedShortcutId, t: T): string {
-  return t(`settings:shortcuts.fixed.${FIXED_KEY[id]}.reason`);
+export function gestureShortcutHint(id: GestureShortcutId, gesture: HoldGesture, t: T): string {
+  return t(`settings:shortcuts.gestures.${GESTURE_KEY[id]}.hint`, {
+    mod: holdModifierName(gesture.hold),
+    key: glyphLabel(codeGlyph(gesture.code)),
+  });
 }
 
 /** What one double-Shift mode is called. Each names the WHOLE gesture, since
@@ -167,7 +171,8 @@ export function doubleShiftModeLabel(mode: DoubleShiftMode, t: T): string {
   return t(`settings:shortcuts.modes.${MODE_KEY[mode]}`);
 }
 
-/** Same, for the ⌃⇥ select. */
+/** Same, for the recently-used-tabs select: plain Off / On, since the keys
+ *  sit on the recorder beside it. */
 export function ctrlTabModeLabel(mode: CtrlTabMode, t: T): string {
   return t(`settings:shortcuts.modes.${MODE_KEY[mode]}`);
 }

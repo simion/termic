@@ -132,6 +132,8 @@ const ptyBytes = () => browser.execute(() => {
 
 (canPress ? describe : describe.skip)("shortcuts on Linux, with real keys", () => {
   let taskId = "";
+  // Values can be null at runtime (search-everywhere ships unbound), which
+  // the audit loops skip; the per-command cases only name bound ones.
   let bindings: Record<string, Binding> = {};
   const TERMINAL = ".xterm-screen";
 
@@ -404,8 +406,8 @@ const ptyBytes = () => browser.execute(() => {
     const kept: string[] = [];
     const unmatched: string[] = [];
     for (const [id, b] of Object.entries(bindings).sort()) {
-      // A binding with no Cmd in it has no Super form.
-      if (!b.cmd) continue;
+      // A binding with no Cmd in it has no Super form, and an unbound one none at all.
+      if (!b?.cmd) continue;
       const e = await pressBinding(b, "Super_L");
       if (!e) kept.push(id);
       else if (!wouldMatch(e, b, true)) unmatched.push(`${id} (arrived as key ${JSON.stringify(e.key)})`);
@@ -424,7 +426,7 @@ const ptyBytes = () => browser.execute(() => {
     const kept: string[] = [];
     const unmatched: string[] = [];
     for (const [id, b] of Object.entries(bindings).sort()) {
-      if (!b.cmd) continue;
+      if (!b?.cmd) continue;
       const e = await pressBinding(b, "Control_L");
       if (!e) kept.push(id);
       else if (!wouldMatch(e, b, false)) unmatched.push(`${id} (arrived as key ${JSON.stringify(e.key)})`);
