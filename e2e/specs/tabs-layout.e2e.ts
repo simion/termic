@@ -339,6 +339,189 @@ describe("sidebar task menu: New submenu", () => {
   });
 });
 
+// Right-clicking a tab's row in the sidebar: "New below" puts the new tab
+// directly under the clicked one (not at the end of the list), and "Close"
+// closes it. The order has to agree in the sidebar, the tab strip and on disk,
+// because all three read the one tab list.
+describe("sidebar tab row menu", () => {
+  let taskId!: string;
+  after(async () => {
+    await dismissOverlays();
+    if (taskId) await archiveTask(taskId);
+  });
+
+  const tabIds = (id: string) =>
+    browser.execute(
+      (i) => (window.__termic!.useApp.getState().tabs[i] ?? []).map((t: any) => t.id),
+      id,
+    ) as Promise<string[]>;
+
+  const sidebarRowIds = (id: string) =>
+    browser.execute(
+      (i) =>
+        [...document.querySelectorAll(`[data-sidebar-task-row="${i}"] [data-testid="sidebar-tab-row"]`)]
+          .map((r) => (r as HTMLElement).dataset.sidebarTabId ?? ""),
+      id,
+    ) as Promise<string[]>;
+
+  const stripPillIds = (id: string) =>
+    browser.execute(
+      (i) =>
+        [...document.querySelectorAll(`[data-task-id="${i}"] [data-main-strip] [data-tab-id]`)]
+          .map((p) => (p as HTMLElement).dataset.tabId ?? ""),
+      id,
+    ) as Promise<string[]>;
+
+  /** Add a tab through the store, at the end, without focusing it. Setup only:
+   *  the feature under test is the menu, not how these got there. */
+  const seedTerminal = (id: string, cli: string) =>
+    browser.execute(
+      (i, c) => {
+        const tabId = crypto.randomUUID();
+        window.__termic!.useApp.getState().addTab(
+          i, { id: tabId, type: "terminal", title: c, cli: c } as any, { focus: false },
+        );
+        return tabId;
+      },
+      id, cli,
+    ) as Promise<string>;
+
+  async function openTabRowMenu(tabId: string) {
+    await dismissOverlays();
+    await browser.execute((t) => {
+      const row = document.querySelector(`[data-sidebar-tab-id="${t}"]`);
+      if (!row) throw new Error(`no sidebar row for tab ${t}`);
+      row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, button: 2 }));
+    }, tabId);
+    await waitVisible('[data-testid="sidebar-tab-menu"]', 5_000);
+  }
+
+  /** The labels of the open "New below" submenu (the menu holding "Terminal"). */
+  const submenuEntries = () =>
+    browser.execute(() => {
+      const menu = [...document.querySelectorAll("[role='menu']")].find((m) =>
+        [...m.querySelectorAll("[role='menuitem']")].some((i) => i.textContent?.trim() === "Terminal"),
+      );
+      if (!menu) throw new Error("no open menu contains a Terminal entry");
+      return [...menu.querySelectorAll("[role='menuitem']")].map((e) => e.textContent?.trim() ?? "");
+    }) as Promise<string[]>;
+
+  async function openNewBelow(tabId: string) {
+    await clickMenuItemUntilReady("New below", () => browser.execute(() =>
+      [...document.querySelectorAll("[role='menuitem']")].some((e) => e.textContent?.trim() === "Terminal"),
+    ) as Promise<boolean>, { reopen: () => openTabRowMenu(tabId) });
+  }
+
+  it("opens on right-click with New below and Close, and Escape changes nothing", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-tabrow-menu");
+    await ensureActiveTask(taskId);
+    await browser.execute((id) => {
+      const app = window.__termic!.useApp.getState();
+      const proj = app.projects.find((p: any) => p.name === "fixture-repo");
+      app.setProjectCollapsed(proj.id, false);
+      app.setTaskCollapsed(id, false);
+    }, taskId);
+    await browser.waitUntil(async () => (await tabIds(taskId)).length === 1,
+      { timeout: 10_000, timeoutMsg: "the task's agent tab never seeded" });
+    await seedTerminal(taskId, "shell");
+    await seedTerminal(taskId, "shell");
+    await browser.waitUntil(async () => (await sidebarRowIds(taskId)).length === 3,
+      { timeout: 5_000, timeoutMsg: "the three tab rows never rendered" });
+
+    const [agent] = await tabIds(taskId);
+    const before = await tabIds(taskId);
+    await openTabRowMenu(agent);
+    const items = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="sidebar-tab-menu"] [role="menuitem"]')]
+        .map((e) => e.textContent?.trim() ?? ""),
+    );
+    expect(items).toEqual(["New below", "Close"]);
+    await snap("sidebar-tab-row-menu.png");
+
+    await browser.execute(() => {
+      document.querySelector('[data-testid="sidebar-tab-menu"]')!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await waitGone('[data-testid="sidebar-tab-menu"]', 5_000);
+    expect(await tabIds(taskId)).toEqual(before);
+  });
+
+  it("offers the + menu's entries without the scratchpads", async () => {
+    const [agent] = await tabIds(taskId);
+    await openTabRowMenu(agent);
+    await openNewBelow(agent);
+    const entries = await submenuEntries();
+    expect(entries).toContain("Terminal");
+    expect(entries).toContain("FakeAgent");
+    expect(entries.some((e) => e.includes("Scratchpad"))).toBe(false);
+    await dismissOverlays();
+  });
+
+  it("New below > Terminal lands right under the clicked row, in the sidebar and the strip", async () => {
+    const before = await tabIds(taskId); // agent, shell, shell
+    await openTabRowMenu(before[0]);
+    await openNewBelow(before[0]);
+    await clickMenuItemUntilReady("Terminal", async () => (await tabIds(taskId)).length === 4,
+      { reopen: async () => { await openTabRowMenu(before[0]); await openNewBelow(before[0]); } });
+
+    const after = await tabIds(taskId);
+    const added = after.find((id) => !before.includes(id))!;
+    expect(after).toEqual([before[0], added, before[1], before[2]]);
+    await browser.waitUntil(async () => JSON.stringify(await sidebarRowIds(taskId)) === JSON.stringify(after),
+      { timeout: 5_000, timeoutMsg: `sidebar rows never matched ${after.join(",")}` });
+    await browser.waitUntil(async () => JSON.stringify(await stripPillIds(taskId)) === JSON.stringify(after),
+      { timeout: 5_000, timeoutMsg: `tab strip never matched ${after.join(",")}` });
+    // The picked tab is the one you are now looking at, not the anchor.
+    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId)).toBe(added);
+    // ...and the anchor is no longer marked selected: one active pill and one
+    // active row, both the new tab. Read as state (`data-active`), not as the
+    // row's computed background: the rows fade with `transition-colors`, and a
+    // computed colour read here came back mid-fade or still at the old value
+    // across runs while the class list was already right (docs/gotchas.md,
+    // "getComputedStyle during a transition returns the value mid-flight").
+    const marked = await browser.execute((i) => ({
+      pills: [...document.querySelectorAll(`[data-task-id="${i}"] [data-main-strip] [data-tab-id][data-active]`)]
+        .map((p) => (p as HTMLElement).dataset.tabId),
+      rows: [...document.querySelectorAll(`[data-sidebar-task-row="${i}"] [data-testid="sidebar-tab-row"][data-active]`)]
+        .map((r) => (r as HTMLElement).dataset.sidebarTabId),
+    }), taskId);
+    expect(marked).toEqual({ pills: [added], rows: [added] });
+    await snap("sidebar-tab-row-new-below.png");
+  });
+
+  it("New below > an agent keeps its slot on disk", async () => {
+    // Shells are not durable, so the agents carry the persisted order.
+    const second = await seedTerminal(taskId, "fakeagent");
+    const [first] = await tabIds(taskId);
+    const before = await tabIds(taskId);
+    await openTabRowMenu(first);
+    await openNewBelow(first);
+    await clickMenuItemUntilReady("FakeAgent", async () => (await tabIds(taskId)).length === before.length + 1,
+      { reopen: async () => { await openTabRowMenu(first); await openNewBelow(first); } });
+    const added = (await tabIds(taskId)).find((id) => !before.includes(id))!;
+
+    await browser.waitUntil(async () => {
+      const persisted = await browser.execute(async (id) => {
+        const tasks = await window.__termic!.ipc.tasksList();
+        return (tasks.find((t: any) => t.id === id)?.persisted_tabs ?? []).map((p: any) => p.id);
+      }, taskId) as string[];
+      return JSON.stringify(persisted) === JSON.stringify([first, added, second]);
+    }, { timeout: 10_000, timeoutMsg: "persisted_tabs never took the inserted order" });
+  });
+
+  it("Close removes the clicked tab and only that one", async () => {
+    const before = await tabIds(taskId);
+    const shell = await browser.execute((id) =>
+      (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.cli === "shell")!.id, taskId);
+    await openTabRowMenu(shell);
+    await clickMenuItem("Close");
+    await waitGone(`[data-sidebar-tab-id="${shell}"]`, 5_000);
+    expect(await tabIds(taskId)).toEqual(before.filter((id) => id !== shell));
+  });
+});
+
 // Renaming a tab (double-click -> inline edit -> Enter) is a common action and
 // exercises the controlled-input + persist path. Guards that the committed
 // name lands in the store.

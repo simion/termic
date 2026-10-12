@@ -2951,6 +2951,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   }, [taskRenaming !== null]);
   // Tab rename — per-tab id + draft value
   const [tabRenaming, setTabRenaming] = useState<{ id: string; value: string } | null>(null);
+  // The tab child row whose right-click menu is open, if any. One id rather
+  // than a flag per row: only one menu is ever open.
+  const [tabMenuId, setTabMenuId] = useState<string | null>(null);
 
   // Auto-expand rules per mode:
   //   "click"  — auto-expand 1→2+ (legacy behavior).
@@ -3048,6 +3051,16 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
     ensureDefaultTab(w.id, w.cli || "claude");
     addTab(w.id, tab);
     setMenuOpen(false);
+  }
+
+  // The tab row's "New below": the same activate-first dance as
+  // spawnIntoTask, but the new tab lands right under the row that was
+  // right-clicked instead of at the end of the list.
+  function spawnBelowTab(afterTabId: string, tab: Tab) {
+    setActive(w.id);
+    ensureDefaultTab(w.id, w.cli || "claude");
+    addTab(w.id, tab, { afterTabId });
+    setTabMenuId(null);
   }
 
   function commitTabRename() {
@@ -3710,6 +3723,12 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
         return (
           <div
             key={tab.id}
+            data-testid="sidebar-tab-row"
+            // Not `data-tab-id`: the tab strip's pills carry that, and the
+            // sidebar comes first in the DOM, so a spec's bare
+            // `[data-tab-id=...]` query would grab this row instead.
+            data-sidebar-tab-id={tab.id}
+            data-active={isTabActive ? "" : undefined}
             onClick={() => {
               setActive(w.id);
               setActiveTabId(w.id, tab.id);
@@ -3718,8 +3737,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               e.stopPropagation();
               if (!isTabRenaming) setTabRenaming({ id: tab.id, value: title });
             }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!isTabRenaming) setTabMenuId(tab.id);
+            }}
             className={cn(
-              "group/tab ml-8 flex items-center gap-1.5 rounded-md px-1.5 py-[3px] text-[12.5px] cursor-pointer select-none transition-colors",
+              "group/tab relative ml-8 flex items-center gap-1.5 rounded-md px-1.5 py-[3px] text-[12.5px] cursor-pointer select-none transition-colors",
               isTabHot
                 ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
                 : isTabActive
@@ -3811,6 +3835,69 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <X className="h-3 w-3" />
               </button>
             </span>
+            {/* Right-click menu. Mounted only while open, so a long tab list
+                costs no Radix tree per row. The trigger is an inert overlay
+                that just gives the menu something to anchor to; the row's
+                own clicks still pass through it. */}
+            {tabMenuId === tab.id && (
+              <DropdownRoot open onOpenChange={(open) => { if (!open) setTabMenuId(null); }}>
+                <DropdownTrigger asChild>
+                  <span aria-hidden className="pointer-events-none absolute inset-0" />
+                </DropdownTrigger>
+                <DropdownMenu
+                  side="right"
+                  align="start"
+                  onCloseAutoFocus={(e) => e.preventDefault()}
+                >
+                  {/* React bubbles portal events through the component tree,
+                      so without this a pick would reach the row's onClick
+                      and re-activate the anchor tab over the new one. */}
+                  <div data-testid="sidebar-tab-menu" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                  <DropdownSub>
+                    <DropdownSubTrigger className="justify-between" data-testid="sidebar-tab-menu-new-below">
+                      <span className="flex items-center gap-2">
+                        <Plus className="h-4 w-4" />
+                        <span>{t("tabMenuNewBelow")}</span>
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                    </DropdownSubTrigger>
+                    <DropdownSubContent>
+                      <NewTabMenuItems
+                        taskId={w.id}
+                        onSpawnCli={(cli) => spawnBelowTab(tab.id, {
+                          id: crypto.randomUUID(),
+                          type: "terminal",
+                          title: agentDisplayName(cli, agents),
+                          cli,
+                        })}
+                        onSpawnShell={() => spawnBelowTab(tab.id, {
+                          id: crypto.randomUUID(),
+                          type: "terminal",
+                          title: t("terminalTabTitle"),
+                          cli: "shell",
+                        })}
+                        onResume={(entryId) => {
+                          setActive(w.id);
+                          ensureDefaultTab(w.id, w.cli || "claude");
+                          resumeClosedTab(w.id, entryId, { afterTabId: tab.id });
+                          setTabMenuId(null);
+                        }}
+                        onMore={() => { setTabMenuId(null); setView("history", { projectId: w.project_id }); }}
+                      />
+                    </DropdownSubContent>
+                  </DropdownSub>
+                  <DropdownSeparator />
+                  <DropdownItem
+                    data-testid="sidebar-tab-menu-close"
+                    onSelect={() => { setTabMenuId(null); requestCloseTab(w.id, tab.id); }}
+                  >
+                    <X className="h-4 w-4" />
+                    <span>{t("tabMenuClose")}</span>
+                  </DropdownItem>
+                  </div>
+                </DropdownMenu>
+              </DropdownRoot>
+            )}
           </div>
         );
       })}

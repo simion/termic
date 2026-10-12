@@ -355,6 +355,33 @@ deferred by a `setTimeout`, not a `requestAnimationFrame`: a just-mounted
 listener has to be attached first, and rAF is frozen on an occluded window (see
 [gotchas.md](gotchas.md)).
 
+## The sidebar's tab rows
+
+Each expanded task lists its main-pane terminal tabs as child rows. Click
+activates, double-click renames, and right-click opens a menu with two
+entries:
+
+- **New below** is the "+" menu (`NewTabMenuItems`) minus the scratchpads,
+  which get no row, so "below" would mean nothing for them. The pick goes
+  through `addTab(..., { afterTabId })` (`resumeClosedTab` takes the same
+  option), which inserts right after the clicked tab instead of appending.
+  An unpinned tab never lands inside the pinned block at the head of the
+  strip: below a pinned tab means the first slot after the block, which
+  ends after the LAST pinned main-strip tab (a split-pane tab keeps its
+  array slot and can sit between two pinned ones). The sidebar, the tab strip and `persisted_tabs` all read that one list, so
+  the slot holds in all three and across a relaunch.
+- **Close** is `requestCloseTab`, so a running agent still asks first.
+
+It is a Radix `DropdownMenu` opened on `contextmenu`, the task row's
+pattern, not a `ContextMenu`: that is what lets it reuse the dropdown
+items of `NewTabMenuItems`. The menu mounts only while open, and its
+content stops click propagation, because React bubbles portal events up
+the component tree and a pick would otherwise reach the row's onClick and
+re-activate the anchor over the new tab. The row carries
+`data-sidebar-tab-id`, not `data-tab-id`, which the tab strip's pills
+already use: the sidebar comes first in the DOM, so a bare
+`[data-tab-id=...]` query would grab the row.
+
 ## Task groups in the sidebar
 
 When an agent inside task A creates task B (`termic new`, or MCP `task_new`)

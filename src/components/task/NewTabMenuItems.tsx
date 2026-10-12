@@ -106,8 +106,10 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
   taskId: string;
   onSpawnCli: (cli: string) => void;
   onSpawnShell: () => void;
-  /** New scratchpad (GH #244) - task (default), project, profile, or global. */
-  onScratchpad: (scope?: "task" | "project" | "profile" | "global") => void;
+  /** New scratchpad (GH #244) - task (default), project, profile, or global.
+   *  Omitted, the scratchpad rows are left out: the sidebar tab row's "New
+   *  below" has no row to show a pad in, so "below" would mean nothing. */
+  onScratchpad?: (scope?: "task" | "project" | "profile" | "global") => void;
   /** Reopen a closed tab with its original session id. */
   onResume: (entryId: string) => void;
   /** "More…" under Resume — jump to the full History view. */
@@ -133,6 +135,7 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
       <DropdownSeparator />
       <DropdownLabel>{t("newTab.newAgent")}</DropdownLabel>
       <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={onSpawnCli} />
+      {onScratchpad && (<>
       <DropdownSeparator />
       <DropdownItem onSelect={() => onScratchpad("task")} data-testid="new-scratchpad" className="items-center">
         <span className="shrink-0 text-[var(--color-fg-dim)]"><NotepadText className="h-4 w-4" /></span>
@@ -152,6 +155,7 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
         <span className="shrink-0 text-[var(--color-fg-dim)]"><NotepadText className="h-4 w-4" /></span>
         {t("newTab.scratchpadGlobal")}
       </DropdownItem>
+      </>)}
       {/* Resume is a NESTED submenu, not an inline section. It grows with
           every closed tab, and a flat list of five "Claude Code" rows pushed
           the things you actually came here for (Terminal, the agent list,

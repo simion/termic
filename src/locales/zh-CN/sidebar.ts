@@ -122,6 +122,8 @@ export default {
   stopTask: "停止任务",
   archiveTask: "归档任务",
   closeTab: "关闭标签页",
+  tabMenuNewBelow: "在下方新建",
+  tabMenuClose: "关闭",
   terminalTabTitle: "终端",
   taskNamePlaceholder: "任务名称",
   branchPlaceholder: "分支",
