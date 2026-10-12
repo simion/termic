@@ -4260,9 +4260,21 @@ describe("markdown split: scroll sync and preview comments", () => {
       sel.addRange(r);
       host.parentElement!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     }, para, phrase);
-  const openComposerFromPill = async () => {
-    await browser.waitUntil(() => has('[data-testid="md-add-comment"]'),
-      { timeout: 5_000, timeoutMsg: "no comment pill over the preview selection" });
+  const openComposerFromPill = async (select: () => Promise<unknown>) => {
+    await select();
+    try {
+      // re-selects while waiting: on the macOS CI runner the first programmatic
+      // selection after the scroll-sync cases does not raise the pill
+      await browser.waitUntil(async () => (await has('[data-testid="md-add-comment"]')) || (await select(), false),
+        { timeout: 5_000, interval: 500 });
+    } catch {
+      const state = await browser.execute(() => ({
+        selection: String(window.getSelection()),
+        active: (document.activeElement as HTMLElement | null)?.className?.toString(),
+        windowFocused: document.hasFocus(),
+      }));
+      throw new Error(`no comment pill over the preview selection: ${JSON.stringify(state)}`);
+    }
     // commits on mousedown so the selection is still there to read
     await browser.execute(() => document.querySelector('[data-testid="md-add-comment"]')!
       .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })));
@@ -4272,8 +4284,7 @@ describe("markdown split: scroll sync and preview comments", () => {
 
   it("offers a comment on part of a rendered paragraph, quoting just that part", async () => {
     // crosses the source's hard wrap ("first line\nand its second line.")
-    await selectInParagraph("Paragraph 30 ", "line and its second");
-    await openComposerFromPill();
+    await openComposerFromPill(() => selectInParagraph("Paragraph 30 ", "line and its second"));
     // the SOURCE lines the selection spans, and the selection as the quote,
     // not the whole paragraph
     expect(await browser.execute((c) => document.querySelector(c)!.textContent, composer))
@@ -4370,8 +4381,7 @@ describe("markdown split: scroll sync and preview comments", () => {
 
   it("narrows a selection inside one source line to that line", async () => {
     // paragraph 32 is lines 160-161; "second line" is all on 161
-    await selectInParagraph("Paragraph 32 ", "second line");
-    await openComposerFromPill();
+    await openComposerFromPill(() => selectInParagraph("Paragraph 32 ", "second line"));
     const label = await browser.execute((c) => document.querySelector(`${c} .tc-comment-loc`)!.textContent, composer);
     expect(label).toBe(`${NAME} · line ${headingLine(32) + 3}`);
     await clickButton(composer, "Cancel");
