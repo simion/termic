@@ -2,7 +2,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, w
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  archiveTask, ensureActiveTask, mouseDrag, openTask, requireTermicApi, snap, waitForAppShell, waitVisible, waitGone,
+  archiveTask, ensureActiveTask, mouseDrag, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitVisible, waitGone,
 } from "../helpers";
 
 // Code intelligence (GH #174), driven end to end against a real language server
@@ -950,6 +950,25 @@ describe("code intelligence", () => {
   // double-Shift off the chord is the only way the dialog can have opened.
   it("opens Search Everywhere on a recorded chord, from a focused terminal, with double-Shift off", async () => {
     await ensureActiveTask(taskId);
+    // The cases above leave an EDITOR tab in front (navme.ts), and an editor
+    // tab hides the agent's terminal. Bring the agent tab forward and wait
+    // until its terminal is actually laid out, or there is nothing to focus.
+    await waitForAgentReady(taskId);
+    const previousTab = await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      const prev = s.activeTab[id] as string | undefined;
+      const agent = (s.tabs[id] ?? []).find((t: any) => t.type === "terminal" && !t.paneId);
+      if (!agent) throw new Error(`task ${id} has no agent terminal tab`);
+      s.setActiveTabId(id, agent.id);
+      return prev ?? null;
+    }, taskId);
+    await browser.waitUntil(() => browser.execute((id) => {
+      const host = document.querySelector(`[data-task-id="${id}"]`);
+      return !!host && [...host.querySelectorAll(".xterm-helper-textarea")].some(el => {
+        const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+    }, taskId), { timeout: 10_000, timeoutMsg: "the agent terminal never became visible" });
     const mac = process.platform === "darwin";
     const original = await browser.execute(() => {
       const p = window.__termic!.usePrefs.getState();
@@ -992,6 +1011,12 @@ describe("code intelligence", () => {
         if (o.chord) p.setShortcut("search-everywhere", o.chord as any);
         else p.resetShortcut("search-everywhere");
       }, original);
+      // Put back whatever tab was in front, so the cases after this one see
+      // the task the way the cases before it left it.
+      if (previousTab) {
+        await browser.execute((id, tab) =>
+          window.__termic!.useApp.getState().setActiveTabId(id, tab), taskId, previousTab);
+      }
     }
   });
 
