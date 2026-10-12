@@ -21,8 +21,8 @@ import {
   type HoldGesture,
   type ShortcutGroup,
   type ShortcutId,
-  codeGlyph,
   glyphLabel,
+  holdKeyGlyph,
   holdModifierName,
 } from "./shortcuts";
 
@@ -161,7 +161,7 @@ export function gestureShortcutLabel(id: GestureShortcutId, t: T): string {
 export function gestureShortcutHint(id: GestureShortcutId, gesture: HoldGesture, t: T): string {
   return t(`settings:shortcuts.gestures.${GESTURE_KEY[id]}.hint`, {
     mod: holdModifierName(gesture.hold),
-    key: glyphLabel(codeGlyph(gesture.code)),
+    key: glyphLabel(holdKeyGlyph(gesture)),
   });
 }
 

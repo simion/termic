@@ -3,7 +3,7 @@ import {
   DEFAULT_BINDINGS, DEFAULT_RECENT_TABS, FIXED_SHORTCUTS, GESTURE_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
   bindingFromEvent, bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, codeGlyph,
   conflicts, holdGestureFromEvent, holdGestureGlyphs, holdGestureText, holdHeld, holdReleased,
-  holdAllowedKeys, holdGestureError, isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, terminalPassesToApp,
+  holdAllowedKeys, holdGestureError, holdKeyGlyph, isValidBinding, isReservedKey, matchesTerminalAppBinding, parseHoldGesture, terminalPassesToApp,
   tokenForCode,
 } from "./shortcuts";
 
@@ -698,5 +698,52 @@ describe("terminalPassesToApp", () => {
     expect(terminalPassesToApp(ev("r", { ctrl: true }), binds, ids, false)).toBe(false);
     const shifted = { ...binds, "search-everywhere": { cmd: true, shift: true, alt: false, key: "r" } };
     expect(terminalPassesToApp(ev("r", { ctrl: true, shift: true }), shifted, ids, false)).toBe(true);
+  });
+});
+
+// The gesture is matched by `code`, the physical key, which is right for
+// matching and wrong for reading: on a German layout the key US calls ";" is
+// ö. The recorder keeps the character the key typed, for display and for
+// the conflict check, whose chords are recorded by character too.
+describe("hold gestures on a non-US layout", () => {
+  const qwertzCmdOe = kd("Semicolon", "ö", { meta: true });
+
+  it("records the key's own character beside its code", () => {
+    expect(holdGestureFromEvent(qwertzCmdOe, true)).toEqual({ hold: "cmd", code: "Semicolon", key: "ö" });
+  });
+
+  it("keeps no character for a key that reports none, or one Shift or Option changed", () => {
+    expect(holdGestureFromEvent(kd("Tab", "Tab", { ctrl: true }), true)).toEqual({ hold: "ctrl", code: "Tab" });
+    expect(holdGestureFromEvent(kd("Quote", "Dead", { ctrl: true }), false)).toEqual({ hold: "ctrl", code: "Quote" });
+    expect(holdGestureFromEvent(kd("Semicolon", ":", { ctrl: true, shift: true }), false))
+      .toEqual({ hold: "ctrl", code: "Semicolon" });
+  });
+
+  it("prints the character, not the US label", () => {
+    expect(holdKeyGlyph({ hold: "cmd", code: "Semicolon", key: "ö" })).toBe("Ö");
+    expect(holdGestureGlyphs({ hold: "cmd", code: "Semicolon", key: "ö" })).toEqual(["⌘", "Ö"]);
+    expect(holdGestureText({ hold: "ctrl", code: "Semicolon", key: "ö" }, false)).toBe("Ctrl+Ö");
+    // Stored before the field existed: the US label, as before.
+    expect(holdKeyGlyph({ hold: "cmd", code: "Semicolon" })).toBe(";");
+  });
+
+  it("compares with chords by that character", () => {
+    const b = (key: string) => ({ ...DEFAULT_BINDINGS, "search-everywhere": { cmd: true, shift: false, alt: false, key } });
+    const g = { hold: "cmd" as const, code: "Semicolon", key: "ö" };
+    // ⌘; on this layout is Shift+, : not the gesture's key at all.
+    expect(conflicts(b(";"), g, "on").withGesture).toEqual([]);
+    expect(conflicts(b("ö"), g, "on").withGesture).toEqual(["search-everywhere"]);
+  });
+
+  it("reads a stored character back, and still reads a value without one", () => {
+    expect(parseHoldGesture('{"hold":"cmd","code":"Semicolon","key":"ö"}', true))
+      .toEqual({ hold: "cmd", code: "Semicolon", key: "ö" });
+    expect(parseHoldGesture('{"hold":"cmd","code":"Semicolon"}', true))
+      .toEqual({ hold: "cmd", code: "Semicolon" });
+    // A key field that is not one printable character is dropped, not fatal.
+    expect(parseHoldGesture('{"hold":"cmd","code":"Semicolon","key":"Dead"}', true))
+      .toEqual({ hold: "cmd", code: "Semicolon" });
+    expect(parseHoldGesture('{"hold":"cmd","code":"Semicolon","key":7}', true))
+      .toEqual({ hold: "cmd", code: "Semicolon" });
   });
 });

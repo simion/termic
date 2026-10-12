@@ -117,7 +117,8 @@ const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
 const LS_BRANCH_AS_TASK_NAME = "useBranchAsTaskName";
 const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
 const LS_CTRL_TAB_MODE = "ctrlTabMode";
-// JSON `{hold, code}` (lib/shortcuts.ts HoldGesture). Absent means ⌃⇥, so a
+// JSON `{hold, code, key?}` (lib/shortcuts.ts HoldGesture; `key` is a
+// display label, and a value without it still loads). Absent means ⌃⇥, so a
 // profile from before the gesture was recordable needs no migration.
 const LS_RECENT_TABS_GESTURE = "recentTabsGesture";
 const LS_MD_VIEW       = "markdownDefaultView";
@@ -1878,9 +1879,12 @@ export const usePrefs = create<PrefsState>(set => ({
   },
   setRecentTabsGesture: (g) => {
     const cur = usePrefs.getState().recentTabsGesture;
-    if (cur.hold === g.hold && cur.code === g.code) return;
-    try { localStorage.setItem(LS_RECENT_TABS_GESTURE, JSON.stringify({ hold: g.hold, code: g.code })); } catch {}
-    set({ recentTabsGesture: { hold: g.hold, code: g.code } });
+    if (cur.hold === g.hold && cur.code === g.code && cur.key === g.key) return;
+    // `key` only when there is one: an absent field is what the parser reads
+    // as "use the US label".
+    const next: HoldGesture = g.key ? { hold: g.hold, code: g.code, key: g.key } : { hold: g.hold, code: g.code };
+    try { localStorage.setItem(LS_RECENT_TABS_GESTURE, JSON.stringify(next)); } catch {}
+    set({ recentTabsGesture: next });
   },
   setMarkdownDefaultView: (v) => {
     try { localStorage.setItem(LS_MD_VIEW, v); } catch {}

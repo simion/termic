@@ -285,8 +285,18 @@ export type HoldModifier = "ctrl" | "alt" | "cmd";
 
 export interface HoldGesture {
   hold: HoldModifier;
-  /** `KeyboardEvent.code`: "Tab", "Backquote", "KeyJ"... */
+  /** `KeyboardEvent.code`: "Tab", "Backquote", "KeyJ"... What is matched. */
   code: string;
+  /** The character the key typed when it was recorded (`KeyboardEvent.key`,
+   *  lower-cased), for display and for the conflict check only. A code is
+   *  named after the US key in that place, so on a German layout
+   *  "Semicolon" is ö, and printing ";" would name a key the user does not
+   *  have. Absent when the key reported no single character (Tab, a dead
+   *  key), when Shift or Option changed it, and on values stored before the
+   *  field existed: those fall back to the US label. It is the RECORDING
+   *  machine's layout, so a gesture synced to a machine with another layout
+   *  prints the first one's character until it is recorded there. */
+  key?: string;
 }
 
 export const DEFAULT_RECENT_TABS: HoldGesture = { hold: "ctrl", code: "Tab" };
@@ -356,9 +366,30 @@ export function codeGlyph(code: string): string {
 
 const HOLD_GLYPH: Record<HoldModifier, string> = { ctrl: "⌃", alt: "⌥", cmd: "⌘" };
 
+/** The tapped key's glyph: the character it typed when recorded, else the
+ *  US label of its code. */
+export function holdKeyGlyph(g: HoldGesture): string {
+  if (!g.key) return codeGlyph(g.code);
+  // Upper case like a key cap (Ö), unless that is not one character (ß).
+  const up = g.key.toUpperCase();
+  return [...up].length === 1 ? up : g.key;
+}
+
+/** The token a chord on the gesture's key would carry. Chords are recorded
+ *  by character (`bindingFromEvent`), so the recorded character is the
+ *  layout-correct comparison; without one, the US token of the code. */
+function holdKeyToken(g: HoldGesture): string {
+  return g.key ?? tokenForCode(g.code);
+}
+
+/** One printable character, which is all `HoldGesture.key` may hold. */
+function isKeyLabel(k: unknown): k is string {
+  return typeof k === "string" && [...k].length === 1 && /^\S$/u.test(k) && !/\p{Cc}/u.test(k);
+}
+
 /** Chips for a gesture: the held modifier, then the tapped key. */
 export function holdGestureGlyphs(g: HoldGesture): string[] {
-  return [HOLD_GLYPH[g.hold], codeGlyph(g.code)];
+  return [HOLD_GLYPH[g.hold], holdKeyGlyph(g)];
 }
 
 /** The name of the held modifier, for prose ("Hold Option and tap `"). */
@@ -371,7 +402,7 @@ export function holdModifierName(hold: HoldModifier, isMac: boolean = IS_MAC): s
 /** A gesture as one string: `⌃⇥` on macOS, `Ctrl+Tab` elsewhere. */
 export function holdGestureText(g: HoldGesture, isMac: boolean = IS_MAC): string {
   if (isMac) return holdGestureGlyphs(g).join("");
-  return `${holdModifierName(g.hold, false)}+${glyphLabel(codeGlyph(g.code))}`;
+  return `${holdModifierName(g.hold, false)}+${glyphLabel(holdKeyGlyph(g))}`;
 }
 
 /** The modifiers a hold gesture may use here, for the "hold exactly one of"
@@ -476,12 +507,16 @@ export function parseHoldGesture(raw: string | null, isMac: boolean = IS_MAC): H
     if (v.hold !== "ctrl" && v.hold !== "alt" && v.hold !== "cmd") return DEFAULT_RECENT_TABS;
     if (typeof v.code !== "string" || !/^[A-Za-z0-9]+$/.test(v.code)) return DEFAULT_RECENT_TABS;
     const g: HoldGesture = { hold: v.hold, code: v.code };
+    // Optional, and display-only: a bad one is dropped, not fatal.
+    if (isKeyLabel(v.key)) g.key = v.key;
     return holdGestureError(g, isMac) ? DEFAULT_RECENT_TABS : g;
   } catch {
     return DEFAULT_RECENT_TABS;
   }
 }
 
+/** The same gesture: the same modifier and physical key. `key` is a label,
+ *  so it is not compared. */
 export function holdGesturesEqual(a: HoldGesture, b: HoldGesture): boolean {
   return a.hold === b.hold && a.code === b.code;
 }
@@ -513,7 +548,13 @@ export function holdGestureFromEvent(
   if (held.length !== 1) return { error: { kind: "holdNeedsOne" } };
   const g: HoldGesture = { hold: held[0], code };
   const err = holdGestureError(g, isMac);
-  return err ? { error: err } : g;
+  if (err) return { error: err };
+  // The character, for display. Not under Shift (it changed the character)
+  // nor under Option on macOS (it types a different one), and never a dead
+  // key's "Dead" or a named key's "Tab".
+  const k = e.key?.toLowerCase();
+  if (!e.shiftKey && !(isMac && g.hold === "alt") && isKeyLabel(k)) g.key = k;
+  return g;
 }
 
 /** Exactly the gesture's modifier is down (Shift aside, which reverses).
@@ -939,7 +980,7 @@ export function conflicts(
   }
   const withGesture: ShortcutId[] = [];
   if (ctrlTabMode === "on") {
-    const token = tokenForCode(gesture.code);
+    const token = holdKeyToken(gesture);
     const alt = gesture.hold === "alt";
     for (const def of SHORTCUT_DEFS) {
       const b = binds[def.id];

@@ -139,6 +139,16 @@ describe("prefs: recentTabsGesture", () => {
     expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "ctrl", code: "Semicolon" });
   });
 
+  it("keeps the recorded key's character, and a gesture stored without one still loads", async () => {
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Semicolon", key: "ö" });
+    expect(usePrefs.getState().recentTabsGesture).toEqual({ hold: "ctrl", code: "Semicolon", key: "ö" });
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "ctrl", code: "Semicolon", key: "ö" });
+    // Re-recorded on another layout: same key, new character, so it is written.
+    usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Semicolon", key: ";" });
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ hold: "ctrl", code: "Semicolon", key: ";" });
+  });
+
   it("does not publish an unchanged gesture", async () => {
     // docs/performance.md bear trap 8: an unchanged write still copies the
     // whole store and re-runs every selector.

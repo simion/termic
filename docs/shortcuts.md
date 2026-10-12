@@ -219,7 +219,7 @@ set, pure and tested, and the Shortcuts page only draws its answer:
 - **chord vs chord:** two rows on one signature, unless `NON_CONFLICTING_GROUPS`
   says they cannot both be live. Unbound rows clash with nothing.
 - **gesture vs chord, only while the gesture is on:** a chord on the gesture's
-  key (`tokenForCode(code)`) with the same modifier, Shift either way (Shift
+  key with the same modifier, Shift either way (Shift
   reverses the walk, so ⌃⇧⇥ is the gesture too). A ctrl or cmd hold meets a
   `cmd` chord (the fold), an alt hold an `alt` one; a Cmd hold on a digit meets
   `jump-to-tab`'s 1-9 range. Both rows are flagged "(the gesture wins)": the
@@ -266,6 +266,19 @@ every layout and never match its own next press. The modifier is matched by
 `holdHeld` (exactly that one modifier down, Shift aside; Alt excludes AltGr)
 and the landing by `holdReleased` (the flag going false). `endsGesture` in
 `lib/ctrlTab.ts` takes the tap code, so a dead key's `key` cannot end the walk.
+
+A code is named after the US key in that place, though: on a German layout
+`Semicolon` is ö. So the recorder also keeps the character the key typed
+(`HoldGesture.key`, lower-cased) when there is a plain one: not for Tab or a
+dead key, not under Shift, not under Option on macOS. It is display and
+comparison only. The chips print it (`holdKeyGlyph`: ⌘Ö, not ⌘;), and
+`conflicts` compares it with the chords, which are recorded by character
+too (`bindingFromEvent`), so ⌘ö meets a ⌘ö chord and not ⌘;, which on that
+layout is Shift+comma. A value stored without the field, from before it
+existed or from a key that had no character, falls back to the US label of
+the code, and still loads. The character is the recording machine's layout:
+a gesture synced to a machine with another layout keeps printing the first
+one's until it is recorded again there.
 
 The recorder (`holdGestureFromEvent`) takes one held modifier plus a key and
 ignores Shift (it reverses). The rules are `holdGestureError`, which the
