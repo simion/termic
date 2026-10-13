@@ -34,7 +34,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
-import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld, type ShortcutId } from "@/lib/shortcuts";
+import { IS_MAC, bindingMatches, isAppChordInTerminal, matchesTerminalAppBinding, superIsHeld, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId, sessionHolder } from "@/lib/agentHooks";
 import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
@@ -1412,7 +1412,7 @@ const captureArmedRef = useRef(false);
         // also carries Shift or Alt is taken from the terminal there.
         if (PASS_TO_APP.some(id => {
           const b = binds[id];
-          return (IS_MAC || !!b?.shift || !!b?.alt) && bindingMatches(e, b);
+          return matchesTerminalAppBinding(e, b, IS_MAC);
         })) {
           return false; // let the global handler take it (file finder, find-in-files, …)
         }

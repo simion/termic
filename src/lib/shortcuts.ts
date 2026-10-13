@@ -453,6 +453,13 @@ export function bindingMatches(e: KeyboardEvent, b: Binding | undefined): boolea
   return eventKeyToken(e) === baseKey(b.key, b.shift);
 }
 
+/** Whether a terminal key event matches an app binding that xterm must pass through. */
+export function matchesTerminalAppBinding(e: KeyboardEvent, b: Binding | undefined, isMac: boolean): boolean {
+  // Control without Command is reserved for readline and terminal key bindings on macOS.
+  if (isMac && e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) return false;
+  return (isMac || !!b?.shift || !!b?.alt) && bindingMatches(e, b);
+}
+
 /** Build a Binding from a recorded keydown. Returns null for a bare modifier
  *  press (no real key yet). `digitMode` collapses a recorded digit into the
  *  "1-9" range sentinel (used by the jump-to-tab row). */

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_BINDINGS, FIXED_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
-  bindingFromEvent, bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, isValidBinding, isReservedKey,
+  bindingFromEvent, bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual,
+  isValidBinding, isReservedKey, matchesTerminalAppBinding,
 } from "./shortcuts";
 
 // `SHORTCUT_DEFS` is the single source of truth for every bindable key, and it
@@ -221,6 +222,30 @@ describe("AltGr", () => {
   });
   it("still fires it from a real Ctrl+Alt", () => {
     expect(bindingMatches(ev({ ctrlKey: true, altKey: true }), ctrlAltP)).toBe(true);
+  });
+});
+
+describe("terminal app shortcut matching", () => {
+  const fileFinder = DEFAULT_BINDINGS["file-finder"];
+  // Build key events with explicit modifiers for shortcut matching.
+  const event = (modifiers: Partial<KeyboardEvent>) => ({
+    key: "p", code: "KeyP", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,
+    getModifierState: () => false, ...modifiers,
+  }) as KeyboardEvent;
+
+  it("leaves macOS Control+P for the terminal", () => {
+    const ctrlP = event({ ctrlKey: true });
+    expect(bindingMatches(ctrlP, fileFinder)).toBe(true);
+    expect(matchesTerminalAppBinding(ctrlP, fileFinder, true)).toBe(false);
+  });
+
+  it("still passes macOS Command+P to the app", () => {
+    expect(matchesTerminalAppBinding(event({ metaKey: true }), fileFinder, true)).toBe(true);
+  });
+
+  it("keeps modified Ctrl shortcuts available off macOS", () => {
+    const binding = { key: "p", cmd: true, shift: true, alt: false };
+    expect(matchesTerminalAppBinding(event({ ctrlKey: true, shiftKey: true }), binding, false)).toBe(true);
   });
 });
 
