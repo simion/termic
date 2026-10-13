@@ -2326,7 +2326,8 @@ describe("search everywhere chord", () => {
     });
     await waitVisible(RECORDER);
     expect(await binding()).toBeNull();
-    expect(await textOf(RECORDER)).toBe("Not set");
+    // innerText ends in a newline in some CI windows, not locally.
+    expect((await textOf(RECORDER)).trim()).toBe("Not set");
     // Nothing to reset while it is at its default.
     expect(await browser.execute((sel) => !!document.querySelector(sel), RESET)).toBe(false);
   });
@@ -2356,7 +2357,8 @@ describe("search everywhere chord", () => {
     await clickWhenVisible(RESET);
     await browser.waitUntil(async () => (await binding()) === null,
       { timeout: 5_000, timeoutMsg: "reset did not unbind the chord" });
-    expect(await textOf(RECORDER)).toBe("Not set");
+    // innerText ends in a newline in some CI windows, not locally.
+    expect((await textOf(RECORDER)).trim()).toBe("Not set");
   });
 });
 

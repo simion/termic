@@ -2251,6 +2251,19 @@ describe("recently-used tab navigation", () => {
     }
   });
 
+  /** PTY bytes minus xterm's focus reports (ESC [ I and ESC [ O). */
+  const withoutFocusReports = (bytes: number[]): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0x1b && bytes[i + 1] === 0x5b && (bytes[i + 2] === 0x49 || bytes[i + 2] === 0x4f)) {
+        i += 2;
+        continue;
+      }
+      out.push(bytes[i]);
+    }
+    return out;
+  };
+
   it("sends nothing to the PTY while it walks on an Option hold", async () => {
     // With Option as Meta, xterm would send the tapped key down as an ESC
     // sequence; the capture-phase claim is what keeps it out.
@@ -2273,7 +2286,11 @@ describe("recently-used tab navigation", () => {
       await walk(c, [false, true, false], ALT_HOLD);
       await waitVisibleTask(b, "the Option walk did not move");
       // The landing is what would have flushed a byte, and it has happened.
-      expect(await ptyBytes()).toEqual([]);
+      // Focus reports are not the tapped key: switching tasks blurs one
+      // terminal and focuses another, and a program that asked for focus
+      // events (DECSET 1004) gets ESC [ O / ESC [ I for that. CI's Windows
+      // window has focus and sends them; the occluded macOS one does not.
+      expect(withoutFocusReports(await ptyBytes())).toEqual([]);
     } finally {
       await browser.execute(() =>
         window.__termic!.usePrefs.getState().setRecentTabsGesture({ hold: "ctrl", code: "Tab" }));
