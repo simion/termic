@@ -808,7 +808,7 @@ export function bindingMatches(e: KeyboardEvent, b: Binding | null | undefined):
 }
 
 /** Whether a terminal key event matches an app binding that xterm must pass through. */
-export function matchesTerminalAppBinding(e: KeyboardEvent, b: Binding | undefined, isMac: boolean): boolean {
+export function matchesTerminalAppBinding(e: KeyboardEvent, b: Binding | null | undefined, isMac: boolean): boolean {
   // Control without Command is reserved for readline and terminal key bindings on macOS.
   if (isMac && e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) return false;
   return (isMac || !!b?.shift || !!b?.alt) && bindingMatches(e, b);
