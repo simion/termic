@@ -6,11 +6,11 @@
 // The wrapper carries `data-task-group-id` for the sidebar's task drag, which
 // hit-tests these blocks to decide whether a dropped row joins or leaves.
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight } from "lucide-react";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
+import { GroupCaption } from "./GroupCaption";
 import { accentCss } from "@/lib/accents";
 import { groupBadgeKinds, groupColorCss } from "@/lib/taskGroups";
 import { usePrefs } from "@/store/prefs";
@@ -56,24 +56,6 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
   const renaming = useUI(s => (s.groupRenaming?.groupId === group.id ? s.groupRenaming.value : null));
   const setRenaming = (value: string | null) =>
     useUI.setState({ groupRenaming: value === null ? null : { groupId: group.id, value } });
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  // A menu closing restores focus after autoFocus has run; take it back two
-  // frames later (TaskRow's rename does the same).
-  // Select the whole name the moment a rename starts, so typing replaces it.
-  // Unconditional: `autoFocus` has usually focused the field already, and a
-  // select gated on "not focused yet" never ran, leaving the caret at the
-  // end. Once now, and again two frames on for a menu whose close hands
-  // focus back after us.
-  useEffect(() => {
-    if (renaming === null) return;
-    const take = () => { inputRef.current?.focus(); inputRef.current?.select(); };
-    take();
-    const r = requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (document.activeElement !== inputRef.current) take();
-    }));
-    return () => cancelAnimationFrame(r);
-  }, [renaming !== null]);
-
   const reload = () => useApp.getState().loadAll();
   const commitRename = () => {
     if (renaming === null) return;
@@ -116,76 +98,30 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
               px-1, gap-1, an 18px chevron box, then a gap-1.5 name container),
               so its icon sits in the chevron column and its label in the name
               column of the loose rows around it, by construction rather than
-              by tuned pixels. */}
-          <div
-            data-testid={`task-group-header-${group.id}`}
-            // Hover like a task row: the caption is a clickable row, not a label.
-            className="ml-3 flex h-[var(--task-row-h)] cursor-pointer select-none items-center gap-1 rounded-md px-1 text-[13px] font-medium transition-colors hover:bg-[var(--color-hover)]"
-            style={{ color }}
+              by tuned pixels. Hover like a task row: the caption is a
+              clickable row, not a label. */}
+          <GroupCaption
+            testIdPrefix="task-group"
+            id={group.id}
+            label={label}
+            color={color}
+            collapsed={collapsed}
+            onToggleCollapsed={onToggleCollapsed}
+            renaming={renaming}
+            onRenameStart={() => setRenaming(label)}
+            onRenameChange={setRenaming}
+            onRenameCommit={commitRename}
+            onRenameCancel={() => setRenaming(null)}
+            renamePlaceholder={t("taskGroup.renamePlaceholder")}
+            expandLabel={t("taskGroup.expand")}
+            collapseLabel={t("taskGroup.collapse")}
+            className="ml-3 flex h-[var(--task-row-h)] items-center gap-1 rounded-md px-1 text-[13px]"
+            chevronClassName="p-0.5"
             onPointerDown={onDragPointerDown ? (e) => onDragPointerDown(e, group.id, projectId) : undefined}
-            // A click toggles, at once. A double-click still renames, and it
-            // arrives as click(1), click(2), dblclick: the second click is
-            // ignored and the dblclick undoes the first one's toggle, so a
-            // rename leaves the group as it was. Delaying every click by the
-            // double-click window instead would make every expand feel slow.
-            onClick={(e) => {
-              if (renaming !== null || e.detail > 1) return;
-              onToggleCollapsed?.();
-            }}
-            onDoubleClick={() => {
-              if (renaming !== null) return;
-              onToggleCollapsed?.();
-              setRenaming(label);
-            }}
-          >
-            {/* The chevron sits where a task row's does. It is a button of
-                its own for the keyboard; a click on it is the caption's
-                toggle, and it takes no part in the rename gesture. */}
-            <button
-              type="button"
-              data-no-drag
-              data-testid={`task-group-toggle-${group.id}`}
-              aria-label={collapsed ? t("taskGroup.expand") : t("taskGroup.collapse")}
-              title={collapsed ? t("taskGroup.expand") : t("taskGroup.collapse")}
-              aria-expanded={!collapsed}
-              onClick={(e) => { e.stopPropagation(); if (e.detail <= 1) onToggleCollapsed?.(); }}
-              onDoubleClick={(e) => e.stopPropagation()}
-              className="shrink-0 rounded p-0.5 hover:bg-[var(--color-bg-3)]"
-            >
-              {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            </button>
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
-              {renaming !== null ? (
-                // Same font, weight and colour as the label it replaces, with
-                // no padding or border in the box: the outline is drawn
-                // OUTSIDE, so entering rename moves no text by a pixel.
-                <input
-                  ref={inputRef}
-                  autoFocus
-                  data-testid={`task-group-rename-${group.id}`}
-                  value={renaming}
-                  placeholder={t("taskGroup.renamePlaceholder")}
-                  onChange={e => setRenaming(e.target.value)}
-                  onBlur={commitRename}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") commitRename();
-                    else if (e.key === "Escape") setRenaming(null);
-                    e.stopPropagation();
-                  }}
-                  onPointerDown={e => e.stopPropagation()}
-                  onClick={e => e.stopPropagation()}
-                  onDoubleClick={e => e.stopPropagation()}
-                  autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-                  className="m-0 w-full min-w-0 flex-1 rounded-sm border-0 bg-[var(--color-bg)] p-0 [font:inherit] text-inherit outline outline-1 outline-offset-2 outline-[var(--color-accent)]"
-                />
-              ) : (
-                <span data-testid={`task-group-label-${group.id}`} className="truncate">{label}</span>
-              )}
-            </div>
-            {renaming === null && (summarized
+            trailing={summarized
               ? <GroupBadges groupId={group.id} memberIds={memberIds} count={count} />
-              : <span className="ml-auto shrink-0 pr-1 tabular-nums text-[11px] font-normal text-[var(--color-fg-faint)]">{count}</span>)}
-          </div>
+              : <span className="ml-auto shrink-0 pr-1 tabular-nums text-[11px] font-normal text-[var(--color-fg-faint)]">{count}</span>}
+          />
         </ContextMenuTrigger>
         <ContextMenuContent>
           <GroupActionsMenuItems

@@ -362,6 +362,80 @@ deferred by a `setTimeout`, not a `requestAnimationFrame`: a just-mounted
 listener has to be attached first, and rAF is frozen on an occluded window (see
 [gotchas.md](gotchas.md)).
 
+## The sidebar's tab rows
+
+Each expanded task lists its main-pane terminal tabs as child rows. Click
+activates, double-click renames, and right-click opens a menu with three
+entries:
+
+- **New below** is the "+" menu (`NewTabMenuItems`) minus the scratchpads,
+  which get no row, so "below" would mean nothing for them. The pick goes
+  through `addTab(..., { afterTabId })` (`resumeClosedTab` takes the same
+  option), which inserts right after the clicked tab instead of appending.
+  An unpinned tab never lands inside the pinned block at the head of the
+  strip: below a pinned tab means the first slot after the block. The
+  sidebar, the tab strip and `persisted_tabs` all read that one list, so
+  the slot holds in all three and across a relaunch.
+- **Move to subgroup** gathers the row under a subgroup caption inside the
+  task (see "Tab subgroups" below).
+- **Close** is `requestCloseTab`, so a running agent still asks first.
+
+It is a Radix `DropdownMenu` opened on `contextmenu`, the task row's
+pattern, not a `ContextMenu`: that is what lets it reuse the dropdown
+items of `NewTabMenuItems`. The menu mounts only while open, and its
+content stops click propagation, because React bubbles portal events up
+the component tree and a pick would otherwise reach the row's onClick and
+re-activate the anchor over the new tab. The row carries
+`data-sidebar-tab-id`, not `data-tab-id`, which the tab strip's pills
+already use: the sidebar comes first in the DOM, so a bare
+`[data-tab-id=...]` query would grab the row.
+
+Dragging a row reorders the task's tabs. A primary-button press arms it
+and the drag starts past 4px of travel (the task drag's threshold), so a
+shorter press is still a click; the click that trails a drop is swallowed
+(a flag cleared on a 0ms timer, as the task drag does). A press on the
+close button, a run control, the rename input or anything else
+interactive never arms it, nor does a row being renamed or a task with a
+single row. The row follows the cursor with the lifted look of a dragged
+task header and no ghost, and the order is live: siblings move as the
+cursor crosses their midpoints, through `reorderTab`, so the tab strip
+moves in step and `syncDurableTabs` writes the agents' new order. There
+is one order, not a sidebar order beside a strip order.
+
+Clamps, all silent:
+
+- Only this task's rows are hit-tested (inside its
+  `[data-sidebar-task-row]`). Past them, over another task or project,
+  the row parks at the top or bottom of its own list. A tab never
+  changes task this way.
+- Pinned rows stay a block at the head, as in the tab strip: a pinned
+  row moves only among pinned rows, an unpinned one stops below them.
+- The rows are a filtered view of the task's tabs, which also hold
+  edit/diff/scratch tabs and split-pane terminals. Those keep their slot
+  in the strip: the drop anchors on the row it lands before
+  (`sidebarTabMoveIndex` in `src/lib/tabActions.ts`), and clamps again
+  in the full strip so an unpinned edit tab between the groups never
+  ends up above a pinned row.
+
+The drag works on store state alone, so it reorders an inactive or
+unmounted task's tabs without activating it. The hook
+(`useSidebarTabDrag`) runs once per task row with no store subscription,
+and writes the follow-the-cursor transform to the row element directly:
+only the id of the lifted row is React state, so a pointermove that
+crosses no midpoint (most of them) does not re-render the task row, and
+the row must not take a React `style` prop, which would overwrite the
+transform. A move that DOES reorder writes `tabs` and re-renders the task
+row, as does one that changes the subgroup the lifted row wears (its
+`subDrag` state): once per crossing, not per pointermove. The post-reorder re-anchor keys on
+the joined id string, never the rows array (the #127 loop, see
+`useTabStripDrag`); it is the DRAWN order, subgroup blocks included,
+because a subgroup override moves the lifted row between blocks without
+any reorder. The hook takes two optional callbacks, read through a ref
+at call time: `onMove` after each move's reorder and `onDrop` once when a
+started drag ends, however it ends (release, cancel, or the row
+unmounting mid-drag). Tab subgroups hang their hit test and drop commit on
+them. The compact rail and the STATUS section's rows do not drag.
+
 ## Task groups in the sidebar
 
 When an agent inside task A creates task B (`termic new`, or MCP `task_new`)
@@ -447,6 +521,108 @@ Dragging the CAPTION moves the whole block within its project, the task
 twin of the project-folder drag: it hit-tests only top-level items (loose
 rows and other blocks), moves the members through the store as one run,
 and writes the display order through `task_reorder` on drop.
+
+## Tab subgroups
+
+Inside one task, the tab rows can be gathered under collapsible subgroup
+captions: "the three reviewers", "the frontend pair". The pure rules live
+in `src/lib/tabSubgroups.ts`, the block in `TabSubgroupBlock.tsx`, the
+actions in the app store (`setTabSubgroup`, `newTabSubgroup`,
+`renameTabSubgroup`, `recolorTabSubgroup`, `dissolveTabSubgroup`,
+`setTabSubgroupCollapsed`, `dropTabInSubgroup`, `settleStripTabSubgroup`).
+Only main-pane terminal tabs are members; there are no nested subgroups
+and none for split-pane tabs.
+
+Data: membership lives on each tab, `TerminalTab.subgroup` /
+`PersistedTab.subgroup` = `{ id, name, color? }`, every member carrying an
+identical copy (the `Task.group` precedent). There is no list of
+subgroups and no IPC of its own: the copies ride `task_set_tabs`. A
+subgroup exists while one tab carries it, so closing its last member
+removes it, and a subgroup holding only shells is gone after a relaunch
+(shells are not durable). Members disagreeing after a bad write: the first
+member's copy wins, and the next rename or recolour rewrites all of them.
+
+The invariant: among a task's main-strip terminal tabs, each subgroup's
+members form ONE contiguous run, after the pinned head block, and a pinned
+tab is never a member. That is why the tab strip needs no subgroup drawing:
+its order already agrees with the sidebar's. Pinning a member removes it
+from its subgroup; moving a pinned tab into one unpins it. The paths that
+keep the runs whole:
+
+- Move to subgroup joins at the subgroup's TAIL; Remove from subgroup
+  lands the row right AFTER the run it left; New subgroup... founds one
+  with this tab (stepping out of its old run first) in the next free
+  accent (`nextSubgroupColor`, task groups' founding order) and opens the
+  caption's rename at once.
+- New below on a member creates the tab inside the same subgroup.
+- A closed member brought back with Resume (the close toast's action, or
+  the closed-tab list in a "+" menu) comes back LOOSE at the end of the
+  strip: the closed-tab entry keeps no membership. Resumed from a
+  member's New below, it joins that member's subgroup like any New below.
+- Moving a tab into a split pane clears its subgroup; a tab coming back to
+  main is loose and the runs are gathered, so it never splits one.
+- Restore copies `subgroup` from `persisted_tabs` and gathers the runs, so
+  a task file a bad write left split still comes back whole.
+- `reorderTab` itself NEVER touches membership (`reseatAtPinBoundary`
+  calls it too). The two drags settle it on drop instead (below), and
+  on EVERY way a started drag ends, not only a release: their reorder is
+  live, so an end that skipped the settle would leave the order the live
+  reorder tore (a loose tab between two members), and `syncDurableTabs`
+  would persist it. The tab strip settles on a release in the strip, on a
+  release over a pane or split target (after that move; a no-op when the
+  store took the tab out of the strip, the repair when it refused), on
+  `pointercancel`, and when the strip unmounts mid-drag. The sidebar drag
+  commits through `onDrop` on a release, on `pointercancel`, and when the
+  task row unmounts mid-drag (the task archived, closed by an agent over
+  the CLI, its project collapsed); the store's drop bails on a task or tab
+  that is gone.
+
+Drawing: a block at the run's position, `data-tab-subgroup-id` on the
+wrapper and `data-collapsed` on wrapper and caption. The caption copies a
+tab row's box model (ml-8, px-1.5, py-[3px], a 14px glyph box), so its
+chevron sits in the rows' agent-icon column and its name in their title
+column; members sit one step further in (ml-12) behind a 1px rail in the
+subgroup's accent under the chevron's centre. The caption itself is
+`GroupCaption`, shared with task groups, so click toggles, double-click
+renames and the rename field moves no text in both. Right-click the
+caption for the swatch row, Rename subgroup and Ungroup tabs
+(`GroupActionsMenuItems`, with the subgroup's own labels); Ungroup clears every member and keeps
+positions.
+
+Collapsed (`collapsedTabSubgroups` in scoped localStorage, keyed by
+subgroup id, pruned in `loadAll` against the ids persisted and live tabs
+carry): the caption shows the member count plus one of each work mark its
+HIDDEN rows would draw (`subgroupBadgeKinds`, the `groupBadgeKinds` rule
+per tab). The active tab's row stays visible inside a folded subgroup, and
+activating a tab never unfolds one: Ctrl+Tab and Cmd+digit would otherwise
+write fold state on every step. A sidebar query or project filter matching
+a hidden row's title shows that row while filtering. A TaskRow reads its
+subgroups' fold state through ONE selector returning a joined string, so a
+fold or a rename in one task renders no other row (pinned in
+`selectorFanout.test.ts`).
+
+Drag, sidebar (on top of the tab-row drag above): during the drag the
+lifted row wears whichever block the cursor is inside, caption included
+(`hitTestTabSubgroup` in TaskRow, the `hitTestTaskGroup` twin), so the
+block grows and shrinks under it before anything is written. Inside a
+block joins, outside every block leaves, inside another block moves.
+Joining a folded subgroup opens it; a pinned row never joins; no drag
+creates a subgroup. The drop (`dropTabInSubgroup`) commits the membership
+where the row is and gathers the runs in ONE tabs write. A block lying
+wholly below the cursor anchors the move on its FIRST member
+(`sidebarDropBeforeId` in `src/lib/tabActions.ts`), not on the first row
+drawn below the cursor: a folded block may show only its active member,
+which can be its last one, or none, and anchoring there put the tab inside
+the run in store order, so the gather moved it below the block and the
+slot directly above a folded block could not be reached.
+
+Drag, tab strip: position decides membership, applied once when the drag
+ends however it ends (`useTabStripDrag`'s `onDropInStrip`, main strip
+only, `stripMembership`).
+Landing between two members of one subgroup joins it; a member still
+touching its run stays; a member dropped away from its run leaves; a loose
+tab at the edge of a run stays loose, so dragging past a block never
+sweeps a tab into it.
 
 ## What a folded header shows
 

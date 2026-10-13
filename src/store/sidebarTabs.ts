@@ -271,6 +271,17 @@ export function createRowTabsSelector(taskId: string): (s: AppState) => Tab[] {
   };
 }
 
+/** A TaskRow's fold state for its OWN tab subgroups: which of the ids in
+ *  `subgroupIdsKey` (space-joined) are collapsed, joined the same way. One
+ *  string per row, so a fold in another task renders no row but its own
+ *  (bear trap 5, pinned in selectorFanout.test.ts). A row with no subgroup
+ *  selects a constant. */
+export function createCollapsedSubgroupsSelector(subgroupIdsKey: string): (s: AppState) => string {
+  if (!subgroupIdsKey) return () => "";
+  const ids = subgroupIdsKey.split(" ");
+  return (s) => ids.filter(id => s.collapsedTabSubgroups[id]).join(" ");
+}
+
 export function useRowTabs(taskId: string): Tab[] {
   const select = useMemo(() => createRowTabsSelector(taskId), [taskId]);
   return useApp(select);

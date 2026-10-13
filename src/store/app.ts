@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { logWorkState } from "@/lib/workStateLog";
 import { useUI } from "@/store/ui";
-import type { Project, Task, Tab, TerminalTab, DiffTab, PersistedTab, SplitTree, PaneLeaf, SplitDir, TaskSchedule } from "@/lib/types";
+import type { Project, Task, Tab, TerminalTab, DiffTab, PersistedTab, SplitTree, PaneLeaf, SplitDir, TaskSchedule, TabSubgroup } from "@/lib/types";
 import { sameSchedule } from "@/lib/schedules/record";
 import {
   findLeaf, getAllLeaves, countLeaves, replaceNode, removeLeaf,
@@ -29,6 +29,11 @@ import { applyProp } from "@/lib/tabProps";
 import { visitMayClearWorking } from "@/lib/taskBoardState";
 import { unreadClearsOnSight } from "@/lib/taskWorkState";
 import { scoped } from "@/lib/profileScope";
+import { i18n } from "@/lib/i18n";
+import {
+  gatherSubgroupRuns, isStripRow, memberOf, nextSubgroupColor, reseatForSubgroup, sameSubgroup,
+  stripMembership, subgroupIdsIn, withSubgroup,
+} from "@/lib/tabSubgroups";
 import { pruneMemberSets } from "@/components/dialogs/memberModes";
 
 /** An agent tab closed via the "X", snapshotted just before its session
@@ -175,6 +180,11 @@ export interface AppState {
    *  marks instead. localStorage like the project folders' map, pruned in
    *  `loadAll` when a group is gone. */
   collapsedTaskGroups: Record<string, boolean>;
+  /** Per TAB SUBGROUP collapse state (src/lib/tabSubgroups.ts), keyed by
+   *  subgroup id. true = members hidden behind the caption except the active
+   *  tab's row. localStorage next to the task groups' map, pruned in
+   *  `loadAll` against the ids persisted and live tabs still carry. */
+  collapsedTabSubgroups: Record<string, boolean>;
   /** Task ids most recently activated, newest first, capped at
    *  RECENT_TASKS_CAP. Drives the dashboard's "Recent" row, which is the
    *  only way back into a task from the home screen without hunting the
@@ -273,6 +283,33 @@ export interface AppState {
   /** Set a project-group's collapse state (keyed by group name). */
   setGroupCollapsed: (group: string, collapsed: boolean) => void;
   setTaskGroupCollapsed: (groupId: string, collapsed: boolean) => void;
+  /** Tab subgroups (docs/ui.md "Tab subgroups"). Each is one `tabs[taskId]`
+   *  write plus `syncDurableTabs`, and returns the state untouched when
+   *  nothing changes (performance bear trap 8).
+   *
+   *  `setTabSubgroup`: the row menu's Move to / Remove from. Joining lands
+   *  after the subgroup's last member and unpins; leaving lands right after
+   *  the run (src/lib/tabSubgroups.ts `reseatForSubgroup`). */
+  setTabSubgroup: (taskId: string, tabId: string, subgroup: TabSubgroup | null) => void;
+  /** Found a subgroup holding `tabId` (fresh id, next free accent), start
+   *  its caption's rename, and return its id. */
+  newTabSubgroup: (taskId: string, tabId: string) => string;
+  /** Rewrite every member's name. A trimmed-empty name is a no-op. */
+  renameTabSubgroup: (taskId: string, subgroupId: string, name: string) => void;
+  /** Rewrite every member's colour; undefined = the default accent. */
+  recolorTabSubgroup: (taskId: string, subgroupId: string, color?: string) => void;
+  /** Ungroup: clear every member, positions kept. */
+  dissolveTabSubgroup: (taskId: string, subgroupId: string) => void;
+  setTabSubgroupCollapsed: (subgroupId: string, collapsed: boolean) => void;
+  /** The sidebar row drag's drop: `tabId` takes `subgroup` (null = loose)
+   *  WHERE IT IS, then every run is gathered back to contiguous, in ONE
+   *  tabs write. The live drag already put the row in place through
+   *  `reorderTab`; this only settles membership. A pinned tab never joins. */
+  dropTabInSubgroup: (taskId: string, tabId: string, subgroup: TabSubgroup | null) => void;
+  /** The tab strip drag's drop: position decides membership
+   *  (`stripMembership`), then runs are gathered. Never called from
+   *  `reorderTab`, which `reseatAtPinBoundary` also uses. */
+  settleStripTabSubgroup: (taskId: string, tabId: string) => void;
   /** Assign a palette color to a group folder (null clears back to the
    *  default). Keys are palette names ("red"…); the sidebar maps them to
    *  --color-palette-* tokens and ignores unknown keys. */
@@ -376,8 +413,10 @@ export interface AppState {
    *  sidebar row. The schedule runner is the only caller. */
   setTaskSchedule: (taskId: string, schedule: TaskSchedule | null) => void;
   /** `opts.focus` (default true) — pass false to add the tab without
-   *  activating or stealing keyboard focus (e.g. a background setup run). */
-  addTab: (taskId: string, tab: Tab, opts?: { focus?: boolean }) => void;
+   *  activating or stealing keyboard focus (e.g. a background setup run).
+   *  `opts.afterTabId` inserts right after that tab instead of appending
+   *  (the sidebar tab row's "New below"); an unknown id appends. */
+  addTab: (taskId: string, tab: Tab, opts?: { focus?: boolean; afterTabId?: string }) => void;
   /** Add a terminal tab to whichever pane is active: the focused split pane
    *  (wired into its tab strip) or the main pane. Used by the Run pop-out
    *  (GH #54) so the run terminal lands where the user is looking.
@@ -397,7 +436,7 @@ export interface AppState {
    *  `sessionId` so the agent resumes via `--resume <uuid>` (see
    *  `decideResume` in TerminalPane) instead of starting a new
    *  conversation. Removes the entry from `closedTabs` once reopened. */
-  resumeClosedTab: (taskId: string, entryId: string) => void;
+  resumeClosedTab: (taskId: string, entryId: string, opts?: { afterTabId?: string }) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
   /** Show a place WITHOUT treating it as a visit — see the implementation. */
   previewPlace: (taskId: string, tabId: string) => void;
@@ -506,6 +545,7 @@ const LS_COLLAPSED_PROJ = scoped("collapsedProjects"); // Record<projId, true>
 const LS_COLLAPSED_TASK   = scoped("collapsedTasks"); // Record<taskId, bool>
 const LS_COLLAPSED_GRP  = scoped("collapsedGroups"); // Record<groupName, bool>
 const LS_COLLAPSED_TASK_GRP = scoped("collapsedTaskGroups"); // Record<taskGroupId, bool>
+const LS_COLLAPSED_TAB_SUBGRP = scoped("collapsedTabSubgroups"); // Record<tabSubgroupId, bool>
 const LS_GROUP_COLORS   = scoped("groupColors"); // Record<groupName, paletteKey>
 const LS_RECENT_TASKS   = scoped("recentTasks"); // string[] of task ids, newest first
 /** How many tasks the dashboard's Recent row remembers. A way back into what
@@ -516,6 +556,7 @@ const initialCollapsed   = (() => { try { return JSON.parse(localStorage.getItem
 const initialCollapsedTask = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_TASK)   || "{}"); } catch { return {}; } })();
 const initialCollapsedGrp = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_GRP) || "{}"); } catch { return {}; } })();
 const initialCollapsedTaskGrp = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_TASK_GRP) || "{}"); } catch { return {}; } })();
+const initialCollapsedTabSubgrp = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_TAB_SUBGRP) || "{}"); } catch { return {}; } })();
 const initialGroupColors = (() => { try { return JSON.parse(localStorage.getItem(LS_GROUP_COLORS) || "{}"); } catch { return {}; } })();
 // Array, not a record: an unparseable or hand-edited value must not become a
 // non-array that every consumer then has to defend against.
@@ -590,19 +631,63 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       // The store is the ONLY writer of tab properties (GH #358), so the
       // full list rides every sync and the disk copy simply follows it.
       ...(t.props?.length ? { props: t.props } : {}),
+      // Main pane only. This guard is the ONLY one: `task_set_tabs` merges
+      // with `keep_pane`, so Rust would keep a copy sent on a split-pane
+      // tab (it drops `subgroup` only for the right panel's tabs). Absent,
+      // never null, when ungrouped: Rust skips `None`.
+      ...(t.subgroup && !t.paneId ? { subgroup: t.subgroup } : {}),
     }));
+}
+
+/** Key-order-insensitive JSON: what `syncDurableTabs` compares. The live
+ *  list is built here and the prior one was serialized by Rust, and the two
+ *  do not agree on key order (`agent_args`, and `scheduled`, which
+ *  `withPriorScheduled` appends after `props`), so a plain JSON.stringify
+ *  compare saw a change on every task's first sync after a load and wrote
+ *  the identical list back. Keys whose value is undefined drop out, as they
+ *  do on the wire. */
+function canonicalJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(Object.keys(val).sort().map(k => [k, (val as Record<string, unknown>)[k]]))
+      : val);
 }
 
 /** Carry each record's `scheduled` over from `prior` by tab id. The durable
  *  tab list is built from live tabs, which know nothing of what is on disk;
  *  `scheduled` is written only by syncScheduledMessages, so the in-memory
- *  mirror must keep the value that write left, not re-derive it. Appended
- *  last and only when non-empty, which is how Rust serializes it, so a record
- *  read back from disk still compares equal. */
+ *  mirror must keep the value that write left, not re-derive it. Set only
+ *  when non-empty, so a record read back from disk still compares equal
+ *  under `canonicalJson` (key order does not matter there). */
 function withPriorScheduled(next: PersistedTab[], prior: PersistedTab[]): PersistedTab[] {
   const byId = new Map(prior.filter(p => p.scheduled?.length).map(p => [p.id, p.scheduled!]));
   if (!byId.size) return next;
   return next.map(t => byId.has(t.id) ? { ...t, scheduled: byId.get(t.id) } : t);
+}
+
+/** `list` with `tab` added: right after `afterTabId` when that tab is in
+ *  the list, else at the end. An unpinned tab never lands inside the pinned
+ *  block at the front of the main strip (the invariant `reseatAtPinBoundary`
+ *  keeps), so "below" a pinned tab means the first slot after the block. The
+ *  block ends after the LAST pinned main-strip tab, not at the first tab that
+ *  is not one: a split-pane tab keeps its array slot and can sit between two
+ *  pinned tabs ([A(P), X(pane), C(P)]), and stopping there would put the new
+ *  tab between A and C in the strip. The `sidebarTabMoveIndex` rule. */
+function insertTab(list: Tab[], tab: Tab, afterTabId?: string): Tab[] {
+  const anchor = afterTabId ? list.findIndex(t => t.id === afterTabId) : -1;
+  if (anchor < 0) return [...list, tab];
+  let at = anchor + 1;
+  if (!tab.pinned) {
+    let pinEnd = 0;
+    list.forEach((t, i) => { if (t.pinned && !t.paneId) pinEnd = i + 1; });
+    at = Math.max(at, pinEnd);
+  }
+  // New below on a subgroup member lands inside the same subgroup: right
+  // after a member is inside (or at the tail of) its run, so the run stays
+  // contiguous. A tab that is not a strip row, or is pinned, never joins.
+  const sg = memberOf(list[anchor]);
+  const inherit = sg && isStripRow(tab) && !tab.pinned;
+  return [...list.slice(0, at), inherit ? withSubgroup(tab, sg) : tab, ...list.slice(at)];
 }
 
 /**
@@ -646,6 +731,79 @@ function reseatAtPinBoundary(
   // reorderTab bails when the order is already right (a tab pinned while it
   // sits at the boundary), but the flag itself still has to reach disk.
   get().syncDurableTabs(taskId);
+}
+
+/** Rewrite every member copy of one subgroup in a task (`map` returning null
+ *  removes the membership), positions kept. One tabs write plus a durable
+ *  sync, or nothing at all when no copy changes (bear trap 8). */
+function rewriteSubgroup(
+  set: (fn: (s: AppState) => Partial<AppState> | AppState) => void,
+  get: () => AppState,
+  taskId: string,
+  subgroupId: string,
+  map: (g: TabSubgroup) => TabSubgroup | null,
+) {
+  let changed = false;
+  set(s => {
+    const list = s.tabs[taskId];
+    if (!list) return s;
+    // The first member's copy is canonical: a disagreeing member is
+    // overwritten with the mapped first copy, which is how a bad write heals.
+    // Members by `memberOf`, like every other helper: a pinned tab with a
+    // stray copy is not one, so it is neither rewritten nor (by joining)
+    // unpinned here.
+    const first = list.map(memberOf).find(g => g?.id === subgroupId);
+    if (!first) return s;
+    const mapped = map(first);
+    let touched = false;
+    const next = list.map(t => {
+      if (memberOf(t)?.id !== subgroupId) return t;
+      if (mapped && sameSubgroup(memberOf(t), mapped)) return t;
+      touched = true;
+      return withSubgroup(t, mapped);
+    });
+    if (!touched) return s;
+    changed = true;
+    return { tabs: { ...s.tabs, [taskId]: next } };
+  });
+  if (changed) get().syncDurableTabs(taskId);
+}
+
+/** The drops' commit: give `tabId` the membership `pick` decides for the
+ *  current order, in place, then gather every run back to contiguous. One
+ *  tabs write. A pinned tab never joins (it keeps no membership either).
+ *
+ *  `pick` may hand back a copy taken at hover time (the sidebar drag), and
+ *  the subgroup can be renamed, recoloured or dissolved while the row is in
+ *  the air. So only its id counts: the copy written is the one the
+ *  subgroup's members carry NOW, and a subgroup nobody carries any more
+ *  (dissolved mid-drag) leaves the tab loose instead of reviving it. */
+function settleMembership(
+  set: (fn: (s: AppState) => Partial<AppState> | AppState) => void,
+  get: () => AppState,
+  taskId: string,
+  tabId: string,
+  pick: (list: Tab[]) => TabSubgroup | null,
+) {
+  let changed = false;
+  set(s => {
+    const list = s.tabs[taskId];
+    const tab = list?.find(t => t.id === tabId);
+    if (!list || !tab || !isStripRow(tab)) return s;
+    const picked = tab.pinned ? null : pick(list);
+    const want = picked
+      ? (list.filter(t => t.id !== tabId).map(memberOf).find(g => g?.id === picked.id)
+        ?? (memberOf(tab)?.id === picked.id ? memberOf(tab) : null))
+      : null;
+    const placed = sameSubgroup(tab.subgroup, want)
+      ? list
+      : list.map(t => (t.id === tabId ? withSubgroup(t, want) : t));
+    const next = gatherSubgroupRuns(placed);
+    if (next === list) return s; // bear trap 8
+    changed = true;
+    return { tabs: { ...s.tabs, [taskId]: next } };
+  });
+  if (changed) get().syncDurableTabs(taskId);
 }
 
 /** `reseatAtPinBoundary` for the bottom scratch shells (own array, no disk). */
@@ -773,6 +931,7 @@ export const useApp = create<AppState>((set, get) => ({
   collapsedTasks: initialCollapsedTask as Record<string, boolean>,
   collapsedGroups: initialCollapsedGrp as Record<string, boolean>,
   collapsedTaskGroups: initialCollapsedTaskGrp as Record<string, boolean>,
+  collapsedTabSubgroups: initialCollapsedTabSubgrp as Record<string, boolean>,
   groupColors: initialGroupColors as Record<string, string>,
   recentTasks: initialRecentTasks,
   agents: [],
@@ -840,7 +999,21 @@ export const useApp = create<AppState>((set, get) => ({
       );
       try { localStorage.setItem(LS_COLLAPSED_TASK_GRP, JSON.stringify(collapsedTaskGroups)); } catch {}
     }
-    set({ projects, tasks, collapsedGroups, collapsedTaskGroups, groupColors, recentTasks, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [], previewBrowser: settings.preview_browser ?? "" });
+    // Tab subgroups: a subgroup exists while a tab carries it, persisted (an
+    // agent tab) or live (a shell is not durable, so a shell-only subgroup
+    // lives only in this session's tabs).
+    const liveTabSubgroups = subgroupIdsIn([
+      ...tasks.map(t => t.persisted_tabs),
+      ...Object.values(get().tabs) as TerminalTab[][],
+    ]);
+    let collapsedTabSubgroups = get().collapsedTabSubgroups;
+    if (Object.keys(collapsedTabSubgroups).some(k => !liveTabSubgroups.has(k))) {
+      collapsedTabSubgroups = Object.fromEntries(
+        Object.entries(collapsedTabSubgroups).filter(([k]) => liveTabSubgroups.has(k)),
+      );
+      try { localStorage.setItem(LS_COLLAPSED_TAB_SUBGRP, JSON.stringify(collapsedTabSubgroups)); } catch {}
+    }
+    set({ projects, tasks, collapsedGroups, collapsedTaskGroups, collapsedTabSubgroups, groupColors, recentTasks, agents: (settings.agents as import("@/lib/types").Agent[]) ?? [], previewBrowser: settings.preview_browser ?? "" });
     // Same housekeeping for Agent Race cohorts: once every task in a race is
     // archived or deleted, drop the race so the board and its localStorage
     // don't accumulate dead entries.
@@ -1279,6 +1452,65 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem(LS_COLLAPSED_TASK_GRP, JSON.stringify(next)); } catch {}
     return { collapsedTaskGroups: next };
   }),
+
+  setTabSubgroup: (taskId, tabId, subgroup) => {
+    let changed = false;
+    set(s => {
+      const list = s.tabs[taskId];
+      if (!list) return s;
+      const next = reseatForSubgroup(list, tabId, subgroup);
+      if (next === list) return s; // bear trap 8
+      changed = true;
+      return { tabs: { ...s.tabs, [taskId]: next } };
+    });
+    if (changed) get().syncDurableTabs(taskId);
+  },
+
+  newTabSubgroup: (taskId, tabId) => {
+    const list = get().tabs[taskId] ?? [];
+    const tab = list.find(t => t.id === tabId);
+    if (!tab || !isStripRow(tab)) return "";
+    const subgroup: TabSubgroup = {
+      id: crypto.randomUUID(),
+      name: i18n.t("sidebar:tabSubgroup.defaultName"),
+      color: nextSubgroupColor(list),
+    };
+    get().setTabSubgroup(taskId, tabId, subgroup);
+    useUI.setState({ tabSubgroupRenaming: { subgroupId: subgroup.id, value: subgroup.name } });
+    return subgroup.id;
+  },
+
+  renameTabSubgroup: (taskId, subgroupId, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    rewriteSubgroup(set, get, taskId, subgroupId, g => ({ ...g, name: trimmed }));
+  },
+
+  recolorTabSubgroup: (taskId, subgroupId, color) => {
+    rewriteSubgroup(set, get, taskId, subgroupId, g => {
+      const { color: _c, ...rest } = g; void _c;
+      return color ? { ...rest, color } : rest;
+    });
+  },
+
+  dissolveTabSubgroup: (taskId, subgroupId) => {
+    rewriteSubgroup(set, get, taskId, subgroupId, () => null);
+  },
+
+  setTabSubgroupCollapsed: (subgroupId, collapsed) => set(s => {
+    if (!!s.collapsedTabSubgroups[subgroupId] === collapsed) return s; // bear trap 8
+    const next = { ...s.collapsedTabSubgroups, [subgroupId]: collapsed };
+    try { localStorage.setItem(LS_COLLAPSED_TAB_SUBGRP, JSON.stringify(next)); } catch {}
+    return { collapsedTabSubgroups: next };
+  }),
+
+  dropTabInSubgroup: (taskId, tabId, subgroup) => {
+    settleMembership(set, get, taskId, tabId, () => subgroup);
+  },
+
+  settleStripTabSubgroup: (taskId, tabId) => {
+    settleMembership(set, get, taskId, tabId, list => stripMembership(list.filter(isStripRow), tabId));
+  },
   setGroupCollapsed: (group, collapsed) => set(s => {
     const next = { ...s.collapsedGroups, [group]: collapsed };
     try { localStorage.setItem(LS_COLLAPSED_GRP, JSON.stringify(next)); } catch {}
@@ -1705,8 +1937,9 @@ export const useApp = create<AppState>((set, get) => ({
         }
       }
 
+      // A split pane has no subgroups: the tab leaves its subgroup.
       const updatedTabs = (s.tabs[taskId] ?? []).map(t =>
-        t.id !== tabId ? t : { ...t, paneId: toPaneId },
+        t.id !== tabId ? t : { ...withSubgroup(t, null), paneId: toPaneId },
       );
 
       // Moving the ACTIVE main tab out: hand the main pane to its neighbor
@@ -1763,10 +1996,13 @@ export const useApp = create<AppState>((set, get) => ({
           : pruned;
       }
       const mainLeaf = newTree ? getAllLeaves(newTree).find(l => l.isMain) : null;
-      // Clearing paneId puts the tab back in the main strip's filter.
-      const updatedTabs = (s.tabs[taskId] ?? []).map(t =>
+      // Clearing paneId puts the tab back in the main strip's filter, loose,
+      // at the array slot it kept while in the pane. That slot can sit inside
+      // a tab subgroup's run, so the runs are gathered back to contiguous,
+      // which puts the returning tab right after the run it would split.
+      const updatedTabs = gatherSubgroupRuns((s.tabs[taskId] ?? []).map(t =>
         t.id !== tabId ? t : { ...t, paneId: undefined },
-      );
+      ));
 
       if (!newTree || newTree.type === 'pane') {
         // Splits fully dissolved — clear all split state for the task.
@@ -1855,8 +2091,9 @@ export const useApp = create<AppState>((set, get) => ({
       }
       moved = true;
 
+      // A split pane has no subgroups: the tab leaves its subgroup.
       const updatedTabs = (s.tabs[taskId] ?? []).map(t =>
-        t.id !== tabId ? t : { ...t, paneId: newLeafId },
+        t.id !== tabId ? t : { ...withSubgroup(t, null), paneId: newLeafId },
       );
       // Moving the ACTIVE main tab out: hand main to its neighbor (same rule
       // as closeTab / moveTabToPane).
@@ -1949,6 +2186,8 @@ export const useApp = create<AppState>((set, get) => ({
         ...(pt.pinned ? { pinned: true } : {}),
         ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
         ...(pt.props?.length ? { props: pt.props } : {}),
+        // A pinned tab is never a member, whatever the file says.
+        ...(pt.subgroup && !pt.pinned ? { subgroup: pt.subgroup } : {}),
         // idle: restored run tabs keep their spot but never auto-fire the
         // script — the user presses play (RunPane placeholder / pill).
         ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
@@ -2020,7 +2259,9 @@ export const useApp = create<AppState>((set, get) => ({
         }
       }
 
-      const allRestored = [...restoredMain, ...restoredPaneTabs];
+      // Each subgroup's members come back as one run, even from a file a
+      // bad write left split (src/lib/tabSubgroups.ts invariant).
+      const allRestored = [...gatherSubgroupRuns(restoredMain), ...restoredPaneTabs];
       // When we repaired corruption, overwrite persisted_tabs DIRECTLY with
       // the cleaned set — can't go through syncDurableTabs, whose merge would
       // re-add the dropped phantom tabs as "closed-but-durable".
@@ -2098,7 +2339,7 @@ export const useApp = create<AppState>((set, get) => ({
     const next = [...withPriorScheduled(live, prev), ...closed];
     // Skip the work when nothing changed (avoids task-identity churn
     // that would re-render the sidebar, and a redundant disk write).
-    if (JSON.stringify(prev) === JSON.stringify(next)) return;
+    if (canonicalJson(prev) === canonicalJson(next)) return;
     set(s => ({
       tasks: s.tasks.map(w => w.id === taskId ? { ...w, persisted_tabs: next } : w),
     }));
@@ -2193,7 +2434,7 @@ export const useApp = create<AppState>((set, get) => ({
   addTab: (taskId, tab, opts) => {
     const focus = opts?.focus ?? true;
     set(s => {
-      const next = [...(s.tabs[taskId] || []), tab];
+      const next = insertTab(s.tabs[taskId] || [], tab, opts?.afterTabId);
       return {
         tabs: { ...s.tabs, [taskId]: next },
         ...(focus ? { activeTab: { ...s.activeTab, [taskId]: tab.id } } : {}),
@@ -2254,7 +2495,17 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   pinTab: (taskId, tabId) => {
-    get().patchTab(taskId, tabId, { pinned: true });
+    // A pinned tab is never a subgroup member (the pinned block heads the
+    // strip, a subgroup is a run after it), so the membership is dropped in
+    // the same write that sets the flag: no render ever sees a pinned
+    // member or a loose, still-unpinned tab. The move to the pin boundary
+    // is a second write (`reorderTab`), as it is for `unpinTab`.
+    // `withSubgroup` REMOVES the key (absent is the only ungrouped state).
+    set(s => {
+      const list = s.tabs[taskId];
+      if (!list?.some(t => t.id === tabId)) return s;
+      return { tabs: { ...s.tabs, [taskId]: list.map(t => (t.id === tabId ? { ...withSubgroup(t, null), pinned: true } : t)) } };
+    });
     reseatAtPinBoundary(set, get, taskId, tabId);
   },
 
@@ -2380,7 +2631,7 @@ export const useApp = create<AppState>((set, get) => ({
    }
   },
 
-  resumeClosedTab: (taskId, entryId) => {
+  resumeClosedTab: (taskId, entryId, opts) => {
     const entry = (get().closedTabs[taskId] ?? []).find(e => e.id === entryId);
     if (!entry) return;
     set(s => ({
@@ -2406,7 +2657,7 @@ export const useApp = create<AppState>((set, get) => ({
       sessionId: entry.sessionId ?? undefined,
       agentArgs: entry.agentArgs,
     };
-    get().addTab(taskId, tab);
+    get().addTab(taskId, tab, { afterTabId: opts?.afterTabId });
   },
 
   setActiveTabId: (taskId, tabId) => set(s => {

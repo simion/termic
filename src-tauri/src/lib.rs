@@ -774,6 +774,26 @@ pub struct PersistedTab {
     /// sends them with every `task_set_tabs`, so this is a plain copy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<TabProp>,
+    /// The tab subgroup this tab sits in inside its task's sidebar tree
+    /// (docs/ui.md "Tab subgroups"). Every member carries an identical copy,
+    /// like `Task.group`; None is the only "ungrouped" state and is not
+    /// written, so a task file from before the field reads and writes back
+    /// unchanged. Declared LAST so the serialized key order stays the one
+    /// older builds wrote. Main-pane only: `merge_persisted_tabs` drops it
+    /// without `keep_pane`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgroup: Option<TabSubgroup>,
+}
+
+/// A named, coloured run of tabs inside one task (docs/ui.md "Tab
+/// subgroups"). Mirror of `TabSubgroup` in src/lib/types.ts. `color` is an
+/// accent palette key; None means the default accent.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TabSubgroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// One tab property (GH #358). `since` is when its key was FIRST set on
@@ -827,6 +847,8 @@ pub struct PersistedTabInput {
     pub pinned: bool,
     #[serde(default)]
     pub props: Vec<TabProp>,
+    #[serde(default)]
+    pub subgroup: Option<TabSubgroup>,
 }
 
 impl Task {
@@ -8716,9 +8738,34 @@ fn merge_persisted_tabs(
                 run_member: if keep_pane { t.run_member } else { None },
                 pinned: t.pinned,
                 props: t.props,
+                // Subgroups are a main-strip notion; the right split has none.
+                subgroup: if keep_pane { t.subgroup } else { None },
             }
         })
         .collect()
+}
+
+/// Whether two durable tab lists are the same record, field by field. The
+/// `task_set_tabs` no-op check: every persisted field has to be compared
+/// here, or a change to only that field is skipped and never reaches disk.
+fn same_persisted_tabs(a: &[PersistedTab], b: &[PersistedTab]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(a, b)| {
+            a.id == b.id
+                && a.cli == b.cli
+                && a.agent_args == b.agent_args
+                && a.title == b.title
+                && a.custom_title == b.custom_title
+                && a.is_default == b.is_default
+                && a.command == b.command
+                && a.session_id == b.session_id
+                && a.pane_leaf_id == b.pane_leaf_id
+                && a.run_member == b.run_member
+                && a.pinned == b.pinned
+                && a.scheduled == b.scheduled
+                && a.props == b.props
+                && a.subgroup == b.subgroup
+        })
 }
 
 /// Replace a task's durable agent-tab list (metadata + order). The
@@ -8733,24 +8780,11 @@ fn task_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String>
     let mut list = load_tasks_all();
     let w = list.iter_mut().find(|w| w.id == id).ok_or("no such task")?;
     let next = merge_persisted_tabs(&w.persisted_tabs, tabs, true);
-    // No-op when nothing actually changed (compare the serialized shape;
-    // session_id lives outside the input so equal metadata + preserved
-    // uuids means an identical record).
-    let same = next.len() == w.persisted_tabs.len()
-        && next.iter().zip(w.persisted_tabs.iter()).all(|(a, b)| {
-            a.id == b.id
-                && a.cli == b.cli
-                && a.title == b.title
-                && a.custom_title == b.custom_title
-                && a.is_default == b.is_default
-                && a.command == b.command
-                && a.session_id == b.session_id
-                && a.pane_leaf_id == b.pane_leaf_id
-                && a.run_member == b.run_member
-                && a.pinned == b.pinned
-                && a.scheduled == b.scheduled
-                && a.props == b.props
-        });
+    // No-op when nothing actually changed (`same_persisted_tabs` compares
+    // every persisted field, one by one; session_id lives outside the
+    // input, so equal metadata + preserved uuids means an identical
+    // record).
+    let same = same_persisted_tabs(&next, &w.persisted_tabs);
     if same {
         return Ok(());
     }
@@ -29807,6 +29841,83 @@ mod tests {
         assert_eq!(next[1].title.as_deref(), Some("renamed"));
         assert_eq!(next[1].scheduled, vec![msg]);
         assert_eq!(next[1].session_id.as_deref(), Some("s-a"));
+    }
+
+    // Tab subgroups (docs/ui.md "Tab subgroups") ride on the tab record.
+    #[test]
+    fn a_task_file_without_subgroup_loads_as_none_and_writes_none_back() {
+        let t: PersistedTab = serde_json::from_str(r#"{"id":"t1","cli":"claude"}"#).unwrap();
+        assert!(t.subgroup.is_none());
+        assert!(!serde_json::to_string(&t).unwrap().contains("subgroup"));
+    }
+
+    fn subgroup(color: Option<&str>) -> TabSubgroup {
+        TabSubgroup { id: "g1".into(), name: "Backend".into(), color: color.map(Into::into) }
+    }
+
+    #[test]
+    fn subgroup_survives_a_round_trip_and_is_the_last_key() {
+        let t = PersistedTab {
+            id: "t1".into(), cli: "claude".into(),
+            props: vec![TabProp { key: "k".into(), value: "v".into(), since: 1 }],
+            subgroup: Some(subgroup(Some("teal"))),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.ends_with(r#""subgroup":{"id":"g1","name":"Backend","color":"teal"}}"#), "{json}");
+        let back: PersistedTab = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.subgroup, Some(subgroup(Some("teal"))));
+        // No colour is not written either.
+        let plain = PersistedTab { subgroup: Some(subgroup(None)), ..t };
+        assert!(!serde_json::to_string(&plain).unwrap().contains("color"));
+    }
+
+    #[test]
+    fn merge_keeps_subgroup_on_the_main_strip_only() {
+        let mut inp = input("a", "a");
+        inp.subgroup = Some(subgroup(None));
+        let main = merge_persisted_tabs(&[], vec![inp.clone()], true);
+        assert_eq!(main[0].subgroup, Some(subgroup(None)));
+        let right = merge_persisted_tabs(&[], vec![inp], false);
+        assert!(right[0].subgroup.is_none());
+    }
+
+    #[test]
+    fn a_subgroup_only_change_is_not_a_no_op() {
+        let prior = merge_persisted_tabs(&[], vec![input("a", "a")], true);
+        let mut inp = input("a", "a");
+        inp.subgroup = Some(subgroup(None));
+        let next = merge_persisted_tabs(&prior, vec![inp], true);
+        assert!(!same_persisted_tabs(&next, &prior));
+        // A rename of the subgroup is a change too.
+        let mut renamed = input("a", "a");
+        renamed.subgroup = Some(TabSubgroup { name: "Frontend".into(), ..subgroup(None) });
+        let again = merge_persisted_tabs(&next, vec![renamed], true);
+        assert!(!same_persisted_tabs(&again, &next));
+        // The identical list still is one.
+        let mut same = input("a", "a");
+        same.subgroup = Some(subgroup(None));
+        assert!(same_persisted_tabs(&merge_persisted_tabs(&next, vec![same], true), &next));
+    }
+
+    // `same_persisted_tabs` compares `agent_args` too (main's inline check
+    // did not): a tab whose only change is its argv still reaches disk, so
+    // a resumed agent comes back with the flags it was last given.
+    #[test]
+    fn an_agent_args_only_change_is_not_a_no_op() {
+        let prior = merge_persisted_tabs(&[], vec![input("a", "a")], true);
+        let mut inp = input("a", "a");
+        inp.agent_args = vec!["--model".into(), "opus".into()];
+        let next = merge_persisted_tabs(&prior, vec![inp], true);
+        assert_eq!(next[0].agent_args, vec!["--model".to_string(), "opus".to_string()]);
+        assert!(!same_persisted_tabs(&next, &prior));
+        // A different argv is a change; the identical one is not.
+        let mut other = input("a", "a");
+        other.agent_args = vec!["--model".into(), "sonnet".into()];
+        assert!(!same_persisted_tabs(&merge_persisted_tabs(&next, vec![other], true), &next));
+        let mut same = input("a", "a");
+        same.agent_args = vec!["--model".into(), "opus".into()];
+        assert!(same_persisted_tabs(&merge_persisted_tabs(&next, vec![same], true), &next));
     }
 
     #[test]

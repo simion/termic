@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
 import { useApp, useActiveTabId } from "@/store/app";
-import { useRowTabs, useSidebarTabFacts } from "@/store/sidebarTabs";
+import { createCollapsedSubgroupsSelector, useRowTabs, useSidebarTabFacts } from "@/store/sidebarTabs";
 import { usePrefs, scheduledNavVisible, taskLocationIconShown } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
@@ -35,7 +35,7 @@ import { withCreateLock } from "@/lib/createLock";
 import { confirmAndArchive } from "@/lib/archiveTask";
 import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
-import type { Tab, Task, TaskGroup, TerminalTab } from "@/lib/types";
+import type { Tab, TabSubgroup, Task, TaskGroup, TerminalTab } from "@/lib/types";
 import { agentDisplayName, workDoneCapable } from "@/lib/agents";
 import { effectiveSandboxMode, isSandboxEnforced, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/SandboxIcon";
@@ -64,6 +64,9 @@ import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/
 import { delegatedTitle } from "@/lib/delegatedWork";
 import { FILE_MANAGER } from "@/lib/openExternal";
 import { kbd } from "@/lib/platform";
+import { useSidebarTabDrag } from "./useSidebarTabDrag";
+import { TabSubgroupBlock } from "./TabSubgroupBlock";
+import { layoutTabRows, taskSubgroups } from "@/lib/tabSubgroups";
 
 /** Pick a default name for a freshly-created task (repo-root OR worktree).
  *  Format: "<agent>-N" where N is the next unused index for that CLI among
@@ -2898,6 +2901,77 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const stopTask = useApp(s => s.stopTask);
   // Sidebar only shows main-pane terminal tabs; split-pane tabs live in SplitView.
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
+  // ─ Tab subgroups (docs/ui.md "Tab subgroups") ─
+  // The membership the lifted row wears while a tab-row drag hovers a block:
+  // set per move by `hitTestTabSubgroup`, committed by the drop. State for
+  // the render, mirrored in a ref for the drag hooks, which run from
+  // listeners registered on press.
+  const [subDrag, setSubDragState] = useState<{ id: string; sg: TabSubgroup | null } | null>(null);
+  const subDragRef = useRef(subDrag);
+  const setSubDrag = (v: { id: string; sg: TabSubgroup | null } | null) => { subDragRef.current = v; setSubDragState(v); };
+  const subgroupFor = (t: TerminalTab): TabSubgroup | null =>
+    subDrag?.id === t.id ? subDrag.sg : (!t.pinned ? t.subgroup ?? null : null);
+  const tabSegments = layoutTabRows(terminalTabs, subgroupFor);
+  // Fold state for THIS task's subgroups through one selector returning a
+  // string, so a fold elsewhere renders no other row (bear trap 5).
+  const subgroupIdsKey = taskSubgroups(terminalTabs).map(g => g.id).join(" ");
+  const collapsedSubKey = useApp(useMemo(() => createCollapsedSubgroupsSelector(subgroupIdsKey), [subgroupIdsKey]));
+  const collapsedSubs = new Set(collapsedSubKey ? collapsedSubKey.split(" ") : []);
+  // A sidebar filter or query matching a tab title inside a COLLAPSED
+  // subgroup shows that row while filtering. Selected as the ids it matches,
+  // and only computed while one of this task's subgroups is folded.
+  const subFilterKey = useUI(s => {
+    if (!collapsedSubKey) return "";
+    const f = s.taskFilters[w.project_id];
+    const q = (s.sidebarQuery || (isFilterActive(f) ? f?.text ?? "" : "")).trim().toLowerCase();
+    if (!q) return "";
+    return terminalTabs
+      .filter(tab => tab.subgroup && ((tab.customTitle ? tab.title : (tab.liveTitle || tab.title)) ?? "").toLowerCase().includes(q))
+      .map(tab => tab.id).join(" ");
+  });
+  // Which block the cursor is inside, the caption included. Stable at the
+  // edges without hysteresis, like the task drag's `hitTestTaskGroup`:
+  // inside a block the row joins it, which keeps the block under the cursor;
+  // past its edge the row leaves, which shrinks the block away. A pinned row
+  // never joins. Joining a folded subgroup opens it.
+  const hitTestTabSubgroup = (tabId: string, clientY: number, list: HTMLElement) => {
+    const st = useApp.getState();
+    const all = (st.tabs[w.id] ?? []).filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
+    const tab = all.find(t => t.id === tabId);
+    if (!tab || tab.pinned) return;
+    let hit: string | null = null;
+    for (const el of Array.from(list.querySelectorAll<HTMLElement>("[data-tab-subgroup-id]"))) {
+      const r = el.getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom) { hit = el.dataset.tabSubgroupId!; break; }
+    }
+    const cur = subDragRef.current?.id === tabId ? subDragRef.current.sg : (tab.subgroup ?? null);
+    if ((cur?.id ?? null) === hit) return;
+    const sg = hit === null ? null
+      : all.find(t => t.id !== tabId && !t.pinned && t.subgroup?.id === hit)?.subgroup ?? null;
+    if (hit !== null && !sg) return;
+    setSubDrag({ id: tabId, sg });
+    if (sg && st.collapsedTabSubgroups[sg.id]) st.setTabSubgroupCollapsed(sg.id, false);
+  };
+  // Drag a tab row to reorder it (docs/ui.md "The sidebar's tab rows"). Keyed
+  // on the DRAWN order as a joined string, never an array: see the hook.
+  const tabDrag = useSidebarTabDrag(
+    w.id,
+    tabSegments.map(seg => (seg.kind === "tab" ? seg.tab.id : `[${seg.subgroup.id} ${seg.tabs.map(t => t.id).join(" ")}]`)).join(" "),
+    {
+      onMove: hitTestTabSubgroup,
+      // The drop commits order and membership in one store update: the row
+      // keeps the membership it wore under the cursor, and every run is
+      // gathered back to contiguous.
+      onDrop: (tabId) => {
+        const o = subDragRef.current;
+        const st = useApp.getState();
+        const tab = (st.tabs[w.id] ?? []).find(t => t.id === tabId) as TerminalTab | undefined;
+        setSubDrag(null);
+        if (!tab) return;
+        st.dropTabInSubgroup(w.id, tabId, o?.id === tabId ? o.sg : (tab.subgroup ?? null));
+      },
+    },
+  );
   const collectedProps = collectTaskProps(tabs);
   const isLoaded = terminalTabs.some(t => t.ptyId);
   // The run controls the COLLAPSED header row carries, mirroring the child rows
@@ -2957,6 +3031,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   }, [taskRenaming !== null]);
   // Tab rename — per-tab id + draft value
   const [tabRenaming, setTabRenaming] = useState<{ id: string; value: string } | null>(null);
+  // The tab child row whose right-click menu is open, if any. One id rather
+  // than a flag per row: only one menu is ever open.
+  const [tabMenuId, setTabMenuId] = useState<string | null>(null);
 
   // Auto-expand rules per mode:
   //   "click"  — auto-expand 1→2+ (legacy behavior).
@@ -3056,12 +3133,292 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
     setMenuOpen(false);
   }
 
+  // The tab row's "New below": the same activate-first dance as
+  // spawnIntoTask, but the new tab lands right under the row that was
+  // right-clicked instead of at the end of the list.
+  function spawnBelowTab(afterTabId: string, tab: Tab) {
+    setActive(w.id);
+    ensureDefaultTab(w.id, w.cli || "claude");
+    addTab(w.id, tab, { afterTabId });
+    setTabMenuId(null);
+  }
+
   function commitTabRename() {
     if (!tabRenaming) return;
     const trimmed = tabRenaming.value.trim();
     if (trimmed) renameTab(w.id, tabRenaming.id, trimmed);
     else clearTabCustomTitle(w.id, tabRenaming.id);
     setTabRenaming(null);
+  }
+
+  // One tab child row. A function, not a component: it reads this row's
+  // subscriptions and local state, so extracting it would add none.
+  function renderTabRow(tab: TerminalTab, inSubgroup: boolean) {
+    const isTabActive = isActive && tab.id === activeTabId;
+    const isTabHot = isTabActive;
+    const showBell    = attentionIndicator && tab.unread?.reason === "attention";
+    const showDone    = settledHighlight && !showBell && tab.workState === "done";
+    const showWorking = workingIndicator && !showBell && !showDone && tab.workState === "working";
+    // An idle tab that still has something running. Lowest priority: it
+    // only ever draws in the slot nothing else wanted.
+    const showDelegated = workingIndicator && !showBell && !showDone && !showWorking
+      && !!tab.delegatedWork;
+    const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
+    const title = tab.customTitle
+      ? rawTitle
+      : formatTerminalTitle(rawTitle, resolveIconId(tab.cli, agents), workingIndicator);
+    const isTabRenaming = tabRenaming?.id === tab.id;
+    const isTabDragging = tabDrag.dragTabId === tab.id;
+
+    return (
+      <div
+        key={tab.id}
+        data-testid="sidebar-tab-row"
+        // Not `data-tab-id`: the tab strip's pills carry that, and the
+        // sidebar comes first in the DOM, so a spec's bare
+        // `[data-tab-id=...]` query would grab this row instead.
+        data-sidebar-tab-id={tab.id}
+        data-active={isTabActive ? "" : undefined}
+        // The subgroup this row is DRAWN in (a drag override included).
+        // Not `data-tab-subgroup-id`, which the blocks own for hit tests.
+        data-row-subgroup={inSubgroup ? subgroupFor(tab)?.id : undefined}
+        data-dragging={isTabDragging ? "" : undefined}
+        // The drag's translateY is written to this element directly
+        // (useSidebarTabDrag), so the row must not take a `style` prop.
+        onPointerDown={isTabRenaming ? undefined : (e) => tabDrag.onRowPointerDown(e, tab.id)}
+        onClick={() => {
+          // The click that trails a drop is not a selection.
+          if (tabDrag.clickSuppressed.current) { tabDrag.clickSuppressed.current = false; return; }
+          setActive(w.id);
+          setActiveTabId(w.id, tab.id);
+        }}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          if (!isTabRenaming) setTabRenaming({ id: tab.id, value: title });
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!isTabRenaming) setTabMenuId(tab.id);
+        }}
+        className={cn(
+          "group/tab relative flex items-center gap-1.5 rounded-md px-1.5 py-[3px] text-[12.5px] cursor-pointer select-none transition-colors",
+          // A subgroup member sits one step in, clear of the block's rail.
+          inSubgroup ? "ml-12" : "ml-8",
+          // Lifted look while dragged, the same as a dragged task header.
+          // Its own branch so a hover colour cannot override it.
+          isTabDragging
+            ? "z-20 bg-[var(--color-accent)]/15 text-[var(--color-accent)] shadow-lg"
+            : isTabHot
+            ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+            : isTabActive
+              ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
+              : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+        )}
+      >
+        {/* Brand icon stays at the start; the work-state badge moves
+            to the end of the row (after the title) per iTerm2's
+            tab-bullet placement. */}
+        <span className={cn("shrink-0", CLI_BRAND_COLOR[resolveIconId(tab.cli, agents)] || "text-[var(--color-fg-dim)]")}>
+          <CliIcon cli={resolveIconId(tab.cli, agents)} className="h-3.5 w-3.5" />
+        </span>
+
+        {isTabRenaming ? (
+          <input
+            autoFocus
+            value={tabRenaming!.value}
+            onChange={e => setTabRenaming(r => r ? { ...r, value: e.target.value } : r)}
+            onBlur={commitTabRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); commitTabRename(); }
+              else if (e.key === "Escape") { e.preventDefault(); setTabRenaming(null); }
+              e.stopPropagation();
+            }}
+            onClick={e => e.stopPropagation()}
+            onDoubleClick={e => e.stopPropagation()}
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            // No `py-*`: the parent row already has py-[3px]; doubling
+            // pads the input up to a taller row than the static span
+            // (the row jumped a few px when entering rename mode).
+            // `leading-tight` keeps the text vertically centred against
+            // the surrounding non-renaming rows.
+            className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-0 leading-tight text-[12.5px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
+          />
+        ) : (
+          // Same reason as the tab pill: the badge slot is taken over by
+          // the row's kebab on hover, so the state has to be on the name
+          // to be reachable at all.
+          <span
+            className="min-w-0 flex-1 truncate"
+            title={tab.delegatedWork ? delegatedTitle(tab.delegatedWork, tChrome) : undefined}
+          >{title}</span>
+        )}
+        {/* This tab's own properties (GH #358), so it is visible which
+            agent set what; the task row above shows them collected. */}
+        {!isTabRenaming && !!tab.props?.length && (
+          <span
+            data-testid="tab-props"
+            title={tab.props.map(p => `${p.key}: ${p.value}`).join("\n")}
+            className="min-w-0 max-w-[45%] shrink truncate text-[11px] text-[var(--color-fg-dim)]"
+          >{tab.props.map(p => p.value).join(" · ")}</span>
+        )}
+        {/* Run tabs (GH #54): the same two controls the tab pill carries,
+            because a run is otherwise invisible (and unstoppable) from
+            anywhere but the task that owns it. The collapsed task header
+            renders the identical control (see `collapsedRunTabs`), so this
+            pair lives in one component. */}
+        {!isTabRenaming && tab.runTab && (
+          <RunTabControl taskId={w.id} tab={tab} title={title} isMounted={isMounted} />
+        )}
+        {/* Trailing slot — status badge by default. Close × only
+            appears when hovering the badge itself, not the whole
+            row — row hover keeps the badge visible. */}
+        <span className="group/badge relative flex h-4 w-4 shrink-0 items-center justify-center">
+          {(showBell || showDone || showWorking || showDelegated) && (
+            // Pinned to its own layer, same reason as the task row's
+            // badge above: a transition-only layer gets snapped into
+            // existence and the mark jumps a pixel on hover.
+            <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/badge:opacity-0 [transform:translate3d(0,0,0)]">
+              {showBell ? <TaskWorkBadge reason="attention" />
+                : showDone ? <TaskWorkBadge reason="done" delegated={tab.delegatedWork} />
+                : showWorking ? <TaskWorkBadge reason="working" delegated={tab.delegatedWork} />
+                : <TaskWorkBadge reason="delegated" delegated={tab.delegatedWork} />}
+            </span>
+          )}
+          <button
+            title={t("closeTab")}
+            onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
+            className={cn(
+              "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
+              (showBell || showDone || showWorking || showDelegated)
+                // Badge visible: X only on badge-slot hover
+                ? "opacity-0 group-hover/badge:opacity-100 pointer-events-none group-hover/badge:pointer-events-auto"
+                // No badge: X on row hover (original behaviour)
+                : "opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto",
+            )}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+        {/* Right-click menu. Mounted only while open, so a long tab list
+            costs no Radix tree per row. The trigger is an inert overlay
+            that just gives the menu something to anchor to; the row's
+            own clicks still pass through it. */}
+        {tabMenuId === tab.id && (
+          <DropdownRoot open onOpenChange={(open) => { if (!open) setTabMenuId(null); }}>
+            <DropdownTrigger asChild>
+              <span aria-hidden className="pointer-events-none absolute inset-0" />
+            </DropdownTrigger>
+            <DropdownMenu
+              side="right"
+              align="start"
+              onCloseAutoFocus={(e) => e.preventDefault()}
+            >
+              {/* React bubbles portal events through the component tree,
+                  so without this a pick would reach the row's onClick
+                  and re-activate the anchor tab over the new one. */}
+              <div data-testid="sidebar-tab-menu" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+              <DropdownSub>
+                <DropdownSubTrigger className="justify-between" data-testid="sidebar-tab-menu-new-below">
+                  <span className="flex items-center gap-2">
+                    <Plus className="h-4 w-4" />
+                    <span>{t("tabMenuNewBelow")}</span>
+                  </span>
+                  <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                </DropdownSubTrigger>
+                <DropdownSubContent>
+                  <NewTabMenuItems
+                    taskId={w.id}
+                    onSpawnCli={(cli) => spawnBelowTab(tab.id, {
+                      id: crypto.randomUUID(),
+                      type: "terminal",
+                      title: agentDisplayName(cli, agents),
+                      cli,
+                    })}
+                    onSpawnShell={() => spawnBelowTab(tab.id, {
+                      id: crypto.randomUUID(),
+                      type: "terminal",
+                      title: t("terminalTabTitle"),
+                      cli: "shell",
+                    })}
+                    onResume={(entryId) => {
+                      setActive(w.id);
+                      ensureDefaultTab(w.id, w.cli || "claude");
+                      resumeClosedTab(w.id, entryId, { afterTabId: tab.id });
+                      setTabMenuId(null);
+                    }}
+                    onMore={() => { setTabMenuId(null); setView("history", { projectId: w.project_id }); }}
+                  />
+                </DropdownSubContent>
+              </DropdownSub>
+              <DropdownSub>
+                <DropdownSubTrigger className="justify-between" data-testid="sidebar-tab-menu-move-to-subgroup">
+                  <span className="flex items-center gap-2">
+                    <Folder className="h-4 w-4" />
+                    <span>{t("tabSubgroup.moveToSubgroup")}</span>
+                  </span>
+                  <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                </DropdownSubTrigger>
+                <DropdownSubContent className="max-h-80 overflow-y-auto">
+                  {taskSubgroups(terminalTabs).map(g => {
+                    const current = !tab.pinned && tab.subgroup?.id === g.id;
+                    return (
+                      <DropdownItem
+                        key={g.id}
+                        className="items-center [&>svg]:mt-0"
+                        data-testid={`sidebar-tab-menu-subgroup-${g.id}`}
+                        data-current={current ? "" : undefined}
+                        onSelect={() => {
+                          setTabMenuId(null);
+                          if (current) return;
+                          // Open it so the moved row stays in view.
+                          const st = useApp.getState();
+                          st.setTabSubgroupCollapsed(g.id, false);
+                          st.setTabSubgroup(w.id, tab.id, g);
+                        }}
+                      >
+                        {current
+                          ? <Check className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+                          : <span className="mx-0.5 block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: taskGroupColorCss(g) }} />}
+                        <span className="truncate">{g.name}</span>
+                      </DropdownItem>
+                    );
+                  })}
+                  {taskSubgroups(terminalTabs).length > 0 && <DropdownSeparator />}
+                  <DropdownItem
+                    className="items-center [&>svg]:mt-0"
+                    data-testid="sidebar-tab-menu-new-subgroup"
+                    onSelect={() => { setTabMenuId(null); useApp.getState().newTabSubgroup(w.id, tab.id); }}
+                  >
+                    <FolderPlus className="h-4 w-4" />
+                    <span>{t("tabSubgroup.newSubgroup")}</span>
+                  </DropdownItem>
+                  {tab.subgroup && !tab.pinned && (
+                    <DropdownItem
+                      className="items-center [&>svg]:mt-0"
+                      data-testid="sidebar-tab-menu-leave-subgroup"
+                      onSelect={() => { setTabMenuId(null); useApp.getState().setTabSubgroup(w.id, tab.id, null); }}
+                    >
+                      <FolderMinus className="h-4 w-4" />
+                      <span>{t("tabSubgroup.removeFromSubgroup")}</span>
+                    </DropdownItem>
+                  )}
+                </DropdownSubContent>
+              </DropdownSub>
+              <DropdownSeparator />
+              <DropdownItem
+                data-testid="sidebar-tab-menu-close"
+                onSelect={() => { setTabMenuId(null); requestCloseTab(w.id, tab.id); }}
+              >
+                <X className="h-4 w-4" />
+                <span>{t("tabMenuClose")}</span>
+              </DropdownItem>
+              </div>
+            </DropdownMenu>
+          </DropdownRoot>
+        )}
+      </div>
+    );
   }
 
   // Compact mode: render a minimal icon-only row (no tree, no children).
@@ -3703,128 +4060,31 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
         </span>
       </div>
 
-      {/* Tab children — terminal tabs only; edit/diff are transient file views */}
-      {!collapsed && terminalTabs.map(tab => {
-        const isTabActive = isActive && tab.id === activeTabId;
-        const isTabHot = isTabActive;
-        const showBell    = attentionIndicator && tab.unread?.reason === "attention";
-        const showDone    = settledHighlight && !showBell && tab.workState === "done";
-        const showWorking = workingIndicator && !showBell && !showDone && tab.workState === "working";
-        // An idle tab that still has something running. Lowest priority: it
-        // only ever draws in the slot nothing else wanted.
-        const showDelegated = workingIndicator && !showBell && !showDone && !showWorking
-          && !!tab.delegatedWork;
-        const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
-        const title = tab.customTitle
-          ? rawTitle
-          : formatTerminalTitle(rawTitle, resolveIconId(tab.cli, agents), workingIndicator);
-        const isTabRenaming = tabRenaming?.id === tab.id;
-
+      {/* Tab children — terminal tabs only; edit/diff are transient file views.
+          Subgroups draw as one block at their first member (src/lib/tabSubgroups.ts). */}
+      {!collapsed && tabSegments.map(seg => {
+        if (seg.kind === "tab") return renderTabRow(seg.tab, false);
+        const sgId = seg.subgroup.id;
+        const sgCollapsed = collapsedSubs.has(sgId);
+        // Folded: the active tab's row stays visible (activating a tab never
+        // unfolds, or Ctrl+Tab would write fold state on every step), as do
+        // the row being dragged and a row the filter matches.
+        const shown = sgCollapsed
+          ? seg.tabs.filter(tab => tab.id === activeTabId || tab.id === tabDrag.dragTabId || subFilterKey.split(" ").includes(tab.id))
+          : seg.tabs;
+        const hiddenIds = sgCollapsed ? seg.tabs.filter(tab => !shown.includes(tab)).map(tab => tab.id) : [];
         return (
-          <div
-            key={tab.id}
-            onClick={() => {
-              setActive(w.id);
-              setActiveTabId(w.id, tab.id);
-            }}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              if (!isTabRenaming) setTabRenaming({ id: tab.id, value: title });
-            }}
-            className={cn(
-              "group/tab ml-8 flex items-center gap-1.5 rounded-md px-1.5 py-[3px] text-[12.5px] cursor-pointer select-none transition-colors",
-              isTabHot
-                ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
-                : isTabActive
-                  ? "bg-[var(--color-bg-2)] text-[var(--color-fg)]"
-                  : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-            )}
+          <TabSubgroupBlock
+            key={`subgroup:${sgId}`}
+            taskId={w.id}
+            subgroup={seg.subgroup}
+            count={seg.tabs.length}
+            hiddenIds={hiddenIds}
+            collapsed={sgCollapsed}
+            onToggleCollapsed={() => useApp.getState().setTabSubgroupCollapsed(sgId, !sgCollapsed)}
           >
-            {/* Brand icon stays at the start; the work-state badge moves
-                to the end of the row (after the title) per iTerm2's
-                tab-bullet placement. */}
-            <span className={cn("shrink-0", CLI_BRAND_COLOR[resolveIconId(tab.cli, agents)] || "text-[var(--color-fg-dim)]")}>
-              <CliIcon cli={resolveIconId(tab.cli, agents)} className="h-3.5 w-3.5" />
-            </span>
-
-            {isTabRenaming ? (
-              <input
-                autoFocus
-                value={tabRenaming!.value}
-                onChange={e => setTabRenaming(r => r ? { ...r, value: e.target.value } : r)}
-                onBlur={commitTabRename}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); commitTabRename(); }
-                  else if (e.key === "Escape") { e.preventDefault(); setTabRenaming(null); }
-                  e.stopPropagation();
-                }}
-                onClick={e => e.stopPropagation()}
-                onDoubleClick={e => e.stopPropagation()}
-                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
-                // No `py-*`: the parent row already has py-[3px]; doubling
-                // pads the input up to a taller row than the static span
-                // (the row jumped a few px when entering rename mode).
-                // `leading-tight` keeps the text vertically centred against
-                // the surrounding non-renaming rows.
-                className="min-w-0 flex-1 rounded border-0 bg-[var(--color-bg-2)] px-1 py-0 leading-tight text-[12.5px] text-[var(--color-fg)] outline-none ring-1 ring-inset ring-[var(--color-accent)]"
-              />
-            ) : (
-              // Same reason as the tab pill: the badge slot is taken over by
-              // the row's kebab on hover, so the state has to be on the name
-              // to be reachable at all.
-              <span
-                className="min-w-0 flex-1 truncate"
-                title={tab.delegatedWork ? delegatedTitle(tab.delegatedWork, tChrome) : undefined}
-              >{title}</span>
-            )}
-            {/* This tab's own properties (GH #358), so it is visible which
-                agent set what; the task row above shows them collected. */}
-            {!isTabRenaming && !!tab.props?.length && (
-              <span
-                data-testid="tab-props"
-                title={tab.props.map(p => `${p.key}: ${p.value}`).join("\n")}
-                className="min-w-0 max-w-[45%] shrink truncate text-[11px] text-[var(--color-fg-dim)]"
-              >{tab.props.map(p => p.value).join(" · ")}</span>
-            )}
-            {/* Run tabs (GH #54): the same two controls the tab pill carries,
-                because a run is otherwise invisible (and unstoppable) from
-                anywhere but the task that owns it. The collapsed task header
-                renders the identical control (see `collapsedRunTabs`), so this
-                pair lives in one component. */}
-            {!isTabRenaming && tab.runTab && (
-              <RunTabControl taskId={w.id} tab={tab} title={title} isMounted={isMounted} />
-            )}
-            {/* Trailing slot — status badge by default. Close × only
-                appears when hovering the badge itself, not the whole
-                row — row hover keeps the badge visible. */}
-            <span className="group/badge relative flex h-4 w-4 shrink-0 items-center justify-center">
-              {(showBell || showDone || showWorking || showDelegated) && (
-                // Pinned to its own layer, same reason as the task row's
-                // badge above: a transition-only layer gets snapped into
-                // existence and the mark jumps a pixel on hover.
-                <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/badge:opacity-0 [transform:translate3d(0,0,0)]">
-                  {showBell ? <TaskWorkBadge reason="attention" />
-                    : showDone ? <TaskWorkBadge reason="done" delegated={tab.delegatedWork} />
-                    : showWorking ? <TaskWorkBadge reason="working" delegated={tab.delegatedWork} />
-                    : <TaskWorkBadge reason="delegated" delegated={tab.delegatedWork} />}
-                </span>
-              )}
-              <button
-                title={t("closeTab")}
-                onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
-                className={cn(
-                  "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-                  (showBell || showDone || showWorking || showDelegated)
-                    // Badge visible: X only on badge-slot hover
-                    ? "opacity-0 group-hover/badge:opacity-100 pointer-events-none group-hover/badge:pointer-events-auto"
-                    // No badge: X on row hover (original behaviour)
-                    : "opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto",
-                )}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
-          </div>
+            {shown.map(tab => renderTabRow(tab, true))}
+          </TabSubgroupBlock>
         );
       })}
     </div>

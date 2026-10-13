@@ -24,3 +24,90 @@ export function closableSiblings(strip: StripTab[], tabId: string, mode: "others
   const candidates = mode === "right" ? strip.slice(idx + 1) : strip;
   return candidates.filter(t => t.id !== tabId && !t.pinned).map(t => t.id);
 }
+
+/** The fields the sidebar's tab-row drag reads off a tab. */
+export interface SidebarStripTab extends StripTab {
+  type: string;
+  paneId?: string | null;
+}
+
+/**
+ * Where `reorderTab` must put `dragId` so that, among the sidebar's tab rows
+ * (main-pane terminal tabs), it lands right before `beforeId`, or after the
+ * last row when `beforeId` is null. `all` is the task's FULL tab array, which
+ * also holds edit/diff/scratch tabs and split-pane tabs the sidebar does not
+ * draw; the result is in `reorderTab`'s own terms, an index into `all` with
+ * the dragged tab removed. Null when no row would move (or an id is not a
+ * row), so the caller writes nothing.
+ *
+ * Pinned tabs own the head of the strip, so the move is clamped to the
+ * dragged row's own group, exactly like the tab strip's drag: a pinned row
+ * stops at the end of the pinned rows, an unpinned one cannot cross above
+ * them. The clamp runs twice, once among the rows and once in the full
+ * strip, because a hidden tab can sit between the two groups: in
+ * [Pa, Pb, edit, Ut], dropping Pa below Pb anchors before Ut, which would
+ * otherwise put Pa after the unpinned edit tab.
+ */
+export function sidebarTabMoveIndex(
+  all: readonly SidebarStripTab[],
+  dragId: string,
+  beforeId: string | null,
+): number | null {
+  const vis = all.filter(t => t.type === "terminal" && !t.paneId);
+  const cur = vis.findIndex(t => t.id === dragId);
+  if (cur < 0) return null;
+  const pinned = !!vis[cur].pinned;
+  const visW = vis.filter(t => t.id !== dragId);
+  let target = beforeId === null ? visW.length : visW.findIndex(t => t.id === beforeId);
+  if (target < 0) return null;
+  const boundary = visW.filter(t => t.pinned).length;
+  target = pinned ? Math.min(target, boundary) : Math.max(target, boundary);
+  if (target === cur) return null;
+
+  const fullW = all.filter(t => t.id !== dragId);
+  let idx: number;
+  if (target < visW.length) idx = fullW.findIndex(t => t.id === visW[target].id);
+  else if (visW.length) idx = fullW.findIndex(t => t.id === visW[visW.length - 1].id) + 1;
+  else idx = fullW.length;
+  let pinEnd = 0;
+  fullW.forEach((t, i) => { if (t.pinned && !t.paneId) pinEnd = i + 1; });
+  return pinned ? Math.min(idx, pinEnd) : Math.max(idx, pinEnd);
+}
+
+/** One hit-test candidate of the sidebar tab-row drag, in DOM order: a tab
+ *  row, or a tab subgroup's block (its wrapper, caption included). */
+export type SidebarDropCandidate =
+  | { kind: "row"; id: string; top: number; bottom: number }
+  | { kind: "block"; subgroupId: string; top: number; bottom: number };
+
+/**
+ * The row the sidebar tab-row drag drops BEFORE (null: after the last row):
+ * the first row whose midpoint is below the cursor, except that a subgroup
+ * block lying wholly below the cursor anchors on that subgroup's FIRST member
+ * in store order (`firstMember`, which skips the dragged tab).
+ *
+ * Why the block counts: a folded block still draws its active member's row,
+ * which can be its LAST member, or no member at all. Anchoring on the first
+ * row drawn below the cursor then put the tab between two members (or past
+ * the whole run) in store order, and the drop's gather moved it below the
+ * block, so the slot directly above a folded block was unreachable. With the
+ * cursor INSIDE a block, the rows inside it decide as before.
+ */
+export function sidebarDropBeforeId(
+  cands: readonly SidebarDropCandidate[],
+  clientY: number,
+  dragId: string,
+  firstMember: (subgroupId: string) => string | null,
+): string | null {
+  for (const c of cands) {
+    if (c.kind === "block") {
+      if (clientY >= c.top) continue;
+      const first = firstMember(c.subgroupId);
+      if (first) return first;
+      continue;
+    }
+    if (c.id === dragId) continue;
+    if (clientY < (c.top + c.bottom) / 2) return c.id;
+  }
+  return null;
+}

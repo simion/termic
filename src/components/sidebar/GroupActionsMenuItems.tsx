@@ -19,7 +19,7 @@ import { ACCENTS } from "@/lib/accents";
 import { cn } from "@/lib/utils";
 import { FolderMinus, Pencil } from "lucide-react";
 
-export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onRename, ungroupLabel = "Ungroup projects" }: {
+export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onRename, ungroupLabel = "Ungroup projects", renameLabel }: {
   name: string;
   /** The group's resolved accent CSS (`accentCss(groupColors[name])`), or
    *  undefined for an uncoloured folder. */
@@ -29,6 +29,9 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
   onRename?: () => void;
   /** Task groups reuse this menu; the word is theirs to pick. */
   ungroupLabel?: string;
+  /** Same for Rename: a tab subgroup says "subgroup". Defaults to
+   *  "Rename group". */
+  renameLabel?: string;
 }) {
   const { t } = useTranslation("sidebar");
   return (
@@ -78,7 +81,7 @@ export function GroupActionsMenuItems({ name, accent, onSetColor, onUngroup, onR
       {onRename && (
         <ContextMenuItem onSelect={onRename}>
           <Pencil />
-          {t("groupActions.renameGroup")}
+          {renameLabel ?? t("groupActions.renameGroup")}
         </ContextMenuItem>
       )}
       <ContextMenuItem onSelect={onUngroup}>

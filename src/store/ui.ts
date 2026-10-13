@@ -251,6 +251,10 @@ interface UIState {
    *  here rather than in TaskGroupBlock because Move to group > New group
    *  starts it from a task's menu, before the block it targets has mounted. */
   groupRenaming: { groupId: string; value: string } | null;
+  /** The tab subgroup whose caption is being renamed, and the draft. Here
+   *  for the same reason as `groupRenaming`: Move to subgroup > New subgroup
+   *  starts it from a tab row's menu, before the block it targets mounts. */
+  tabSubgroupRenaming: { subgroupId: string; value: string } | null;
   /** ⇧⌘F find-in-files dialog — task id, null = closed. */
   findInFilesTaskId: string | null;
   /** Global "blocking work in flight" message. Shows a centered loader over
@@ -566,6 +570,7 @@ export const useUI = create<UIState>((set, get) => ({
   promptFire: null,
   renameRequest: null,
   groupRenaming: null,
+  tabSubgroupRenaming: null,
   busyMessage: null,
   fileTreeNonce: 0,
   confirm: null,

@@ -464,6 +464,20 @@ export interface PersistedTab {
   /** Key/value properties an agent put on this tab (GH #358). Absent when
    *  there are none (Rust skips an empty list). */
   props?: TabProp[];
+  /** The tab subgroup this main-pane tab sits in (docs/ui.md "Tab
+   *  subgroups"). Absent = ungrouped, never null: Rust skips `None`. */
+  subgroup?: TabSubgroup;
+}
+
+/** A named, coloured run of a task's main-pane terminal tabs in the sidebar
+ *  tree (docs/ui.md "Tab subgroups"). No list of them exists anywhere: every
+ *  member tab carries an identical copy, like `Task.group`, and a subgroup
+ *  exists while one tab carries it. `color` is an accent palette key.
+ *  Mirror of `TabSubgroup` in src-tauri/src/lib.rs. */
+export interface TabSubgroup {
+  id: string;
+  name: string;
+  color?: string;
 }
 
 /** One tab property (GH #358). `since` is when its key was FIRST set on
@@ -1475,6 +1489,11 @@ export interface TerminalTab extends BaseTab {
   /** Key/value properties an agent set on this tab via `termic prop`
    *  (GH #358), in the order they were set. Durable for durable tabs. */
   props?: TabProp[];
+  /** The tab subgroup this tab sits in (main pane only, never pinned).
+   *  Absent = ungrouped. Every member carries an identical copy; members
+   *  form one contiguous run of the main strip's terminal tabs, after the
+   *  pinned block (src/lib/tabSubgroups.ts). */
+  subgroup?: TabSubgroup;
   /** Launch command for `cli === "custom"` tabs — run through a login
    *  shell (`zsh -lc`). Seeded from the task's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */

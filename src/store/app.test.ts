@@ -807,6 +807,76 @@ describe("reorderTab", () => {
   });
 });
 
+// ── addTab afterTabId (sidebar tab row "New below") ───────────────────
+
+describe("addTab afterTabId", () => {
+  const ids = getTabIds;
+  function seed(taskId: string, n: number) {
+    for (let i = 0; i < n; i++) addTab(taskId, makeTermTab({ id: `t${i}` }));
+  }
+
+  it("appends when no anchor is given", () => {
+    seed("ws1", 2);
+    useApp.getState().addTab("ws1", makeTermTab({ id: "new" }));
+    expect(ids("ws1")).toEqual(["t0", "t1", "new"]);
+  });
+
+  it("inserts directly after the anchor", () => {
+    seed("ws1", 3);
+    useApp.getState().addTab("ws1", makeTermTab({ id: "new" }), { afterTabId: "t0" });
+    expect(ids("ws1")).toEqual(["t0", "new", "t1", "t2"]);
+  });
+
+  it("inserts after the last tab when that is the anchor", () => {
+    seed("ws1", 2);
+    useApp.getState().addTab("ws1", makeTermTab({ id: "new" }), { afterTabId: "t1" });
+    expect(ids("ws1")).toEqual(["t0", "t1", "new"]);
+  });
+
+  it("appends when the anchor is gone (closed while the menu was open)", () => {
+    seed("ws1", 2);
+    useApp.getState().addTab("ws1", makeTermTab({ id: "new" }), { afterTabId: "nope" });
+    expect(ids("ws1")).toEqual(["t0", "t1", "new"]);
+  });
+
+  it("keeps an unpinned tab out of the pinned block", () => {
+    addTab("ws1", makeTermTab({ id: "p0", pinned: true }));
+    addTab("ws1", makeTermTab({ id: "p1", pinned: true }));
+    addTab("ws1", makeTermTab({ id: "t0" }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "new" }), { afterTabId: "p0" });
+    expect(ids("ws1")).toEqual(["p0", "p1", "new", "t0"]);
+  });
+
+  it("steps past a split-pane tab that sits inside the pinned block", () => {
+    // A pane tab keeps its array slot, so [A(P), X(pane), C(P)] is a real
+    // state (pin A, move X to a split, pin C). "Below A" must still land
+    // after C, never between two pinned tabs of the main strip.
+    addTab("ws1", makeTermTab({ id: "A", pinned: true }));
+    addTab("ws1", makeTermTab({ id: "X", paneId: "L1" }));
+    addTab("ws1", makeTermTab({ id: "C", pinned: true }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "new" }), { afterTabId: "A" });
+    expect(ids("ws1")).toEqual(["A", "X", "C", "new"]);
+  });
+
+  it("persists the inserted order, so it survives a relaunch", () => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" })] } as never);
+    for (const id of ["t0", "t1"]) addTab("ws1", makeTermTab({ id, cli: "claude" }));
+    useApp.getState().addTab("ws1", makeTermTab({ id: "new", cli: "claude" }), { afterTabId: "t0" });
+    const calls = vi.mocked(ipc.taskSetTabs).mock.calls;
+    const persisted = calls[calls.length - 1]?.[1] as PersistedTab[];
+    expect(persisted.map(p => p.id)).toEqual(["t0", "new", "t1"]);
+  });
+
+  it("resumeClosedTab honours the anchor too", () => {
+    seed("ws1", 3);
+    useApp.setState(s => ({
+      closedTabs: { ...s.closedTabs, ws1: [{ id: "e1", tabId: "back", title: "Claude", cli: "claude", closedAt: new Date().toISOString() } as never] },
+    }));
+    useApp.getState().resumeClosedTab("ws1", "e1", { afterTabId: "t0" });
+    expect(ids("ws1")).toEqual(["t0", "back", "t1", "t2"]);
+  });
+});
+
 // ── pin / unpin (issue #183) ──────────────────────────────────────────
 
 describe("pinTab / unpinTab", () => {

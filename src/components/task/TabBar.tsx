@@ -82,6 +82,8 @@ export function TabBar({ task }: { task: Task }) {
     currentPaneId: null,
     onDropToPane: (tabId, toPaneId) => moveTabToPane(task.id, tabId, toPaneId),
     onDropToSplit: (tabId, toPaneId, zone) => useApp.getState().moveTabToSplit(task.id, tabId, toPaneId, zone),
+    // Position decides tab-subgroup membership in the strip.
+    onDropInStrip: (tabId) => useApp.getState().settleStripTabSubgroup(task.id, tabId),
   });
 
   // ⌘T from the main pane (handled in useShortcuts) opens this menu so

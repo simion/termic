@@ -11,7 +11,7 @@ import { taskDelegatedWork, taskWorkBadge, type WorkStatePrefs } from "@/lib/tas
  *  uncoloured project folder uses. */
 export const GROUP_FALLBACK_COLOR = "var(--color-fg-faint)";
 
-export const groupColorCss = (g: TaskGroup | undefined): string =>
+export const groupColorCss = (g: { color?: string } | undefined): string =>
   accentCss(g?.color) ?? GROUP_FALLBACK_COLOR;
 
 /** Every live group, once each, in first-appearance order: what "Move to
@@ -79,8 +79,15 @@ export function nextGroupColor(tasks: Task[]): string {
     live.add(t.group.id);
     if (t.group.color) used.add(t.group.color);
   }
+  return pickFoundingColor(used, live.size);
+}
+
+/** The founding pick on its own: the first accent (in FOUNDING_ORDER) not in
+ *  `used`, cycling by `liveCount` once all are taken. Tab subgroups
+ *  (src/lib/tabSubgroups.ts) found theirs the same way. */
+export function pickFoundingColor(used: ReadonlySet<string>, liveCount: number): string {
   const order = FOUNDING_ORDER.filter(k => ACCENTS.some(c => c.key === k));
-  return order.find(k => !used.has(k)) ?? order[live.size % order.length];
+  return order.find(k => !used.has(k)) ?? order[liveCount % order.length];
 }
 
 /** Tasks whose group the sidebar does NOT draw: the only live member of

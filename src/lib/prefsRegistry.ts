@@ -153,6 +153,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "collapsedTasks", scoped: true, class: "local", reason: "collapse state" },
   { key: "collapsedGroups", scoped: true, class: "local", reason: "collapse state" },
   { key: "collapsedTaskGroups", scoped: true, class: "local", reason: "collapse state" },
+  { key: "collapsedTabSubgroups", scoped: true, class: "local", reason: "collapse state" },
   { key: "statusBucketCollapsed", scoped: true, class: "local", reason: "collapse state" },
   { key: "statusSectionCollapsed", scoped: true, class: "local", reason: "collapse state" },
   { key: "statusTaskExpanded", scoped: true, class: "local", reason: "collapse state" },

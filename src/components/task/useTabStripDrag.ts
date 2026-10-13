@@ -31,8 +31,21 @@ export function useTabStripDrag(opts: {
   onDropToPane?: (tabId: string, toPaneId: string) => void;
   /** Called on an edge drop: split the target pane (null = main) in half. */
   onDropToSplit?: (tabId: string, toPaneId: string | null, zone: "left" | "right" | "top" | "bottom") => void;
+  /** Called once whenever a STARTED drag ends, however it ends: a release
+   *  in the strip, a release on a pane or split target (after that handler
+   *  ran), a cancelled pointer stream, or this strip unmounting mid-drag.
+   *  The main strip settles tab-subgroup membership by position here
+   *  (docs/ui.md "Tab subgroups"), and only here: the live reorder runs
+   *  through `reorderTab`, which must never touch it, so any end that
+   *  skipped this would leave the order the live reorder tore. After a pane
+   *  or split move the store accepted, the tab is no longer a strip row and
+   *  the settle writes nothing; after one it refused, the settle repairs. */
+  onDropInStrip?: (tabId: string) => void;
 }) {
-  const { taskId, stripRef, stripTabs, allTabs, reorderTab, currentPaneId, onDropToPane, onDropToSplit } = opts;
+  const { taskId, stripRef, stripTabs, allTabs, reorderTab, currentPaneId, onDropToPane, onDropToSplit, onDropInStrip } = opts;
+  // The unmount cleanup is registered once, so it reaches the CURRENT
+  // callback through a ref rather than the first render's closure.
+  const onDropInStripRef = useRef(onDropInStrip); onDropInStripRef.current = onDropInStrip;
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragTx, setDragTx] = useState(0);
   const suppressClickRef = useRef(false);
@@ -177,6 +190,9 @@ export function useTabStripDrag(opts: {
           onDropToPane(d.id, target.toPaneId);
         }
       }
+      // Also after a pane/split drop: the store can refuse it, and the tab
+      // then stays in the strip wherever the live reorder left it.
+      onDropInStrip?.(d.id);
       suppressClickRef.current = true;
       setTimeout(() => { suppressClickRef.current = false; }, 0);
     }
@@ -185,13 +201,18 @@ export function useTabStripDrag(opts: {
   // Abort without dropping — WKWebView can cancel a pointer stream mid-drag
   // (gesture interruption); without this the listeners leak and the pill
   // stays in dragging styling (pointer-events:none) until a stray pointerup.
+  // No pane or split drop, but the live reorder already moved the tab, so
+  // wherever it is now is the committed order and its membership is settled
+  // like a release in the strip.
   function onPointerCancel() {
+    const d = dragRef.current;
     hideDragGhost();
     clearDropTarget();
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
     window.removeEventListener("pointercancel", onPointerCancel);
     dragRef.current = null; setDragId(null); setDragTx(0);
+    if (d?.started) onDropInStrip?.(d.id);
   }
   function startDrag(tabId: string, e: React.PointerEvent) {
     if (e.button !== 0) return;
@@ -236,6 +257,12 @@ export function useTabStripDrag(opts: {
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
     window.removeEventListener("pointercancel", onPointerCancel);
+    // Unmounted mid-drag (task archived or closed under the cursor): settle
+    // what the live reorder already did, as a cancel would. The store
+    // action bails on a task or tab that is gone.
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (d?.started) onDropInStripRef.current?.(d.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
