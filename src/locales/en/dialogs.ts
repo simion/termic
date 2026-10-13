@@ -48,6 +48,7 @@ export default {
     sectionRecent: "Recent",
     themeSectionSystem: "System",
     themeFilterAll: "All",
+    themeCurrentHint: "Your current theme. Click to jump back to it",
     themeFilterHint: "Tab switches between dark, light and all themes",
     themeSourceCustom: "Custom",
     themeImportFailed: "Could not save {{name}} as a theme file: {{error}}",

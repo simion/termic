@@ -186,6 +186,13 @@ describe("theme import (Ghostty / Warp)", () => {
     await waitForAppShell();
     await requireTermicApi();
     original = await themeMode();
+    // a run killed mid-spec never reaches `after`, so the shared prefs can
+    // still name a copy this hook just deleted: the list cannot open on a
+    // theme it does not hold, and restoring it would restore nothing
+    if (COPIES.some(c => original === `custom:${c}`)) {
+      original = "claude";
+      await browser.execute(() => window.__termic!.usePrefs.getState().setThemeMode("claude"));
+    }
     // the list's saved toggle and recents would leak in from earlier runs;
     // saved first, since they are the user's own
     saved = await browser.execute((keys) => {
@@ -316,6 +323,61 @@ describe("theme import (Ghostty / Warp)", () => {
     expect(second).not.toBe(first);
     expect(third).not.toBe(second);
     expect(previewed).toBe(second!.slice("theme:".length));
+    expect(await themeMode()).toBe(original);
+  });
+
+  it("shows the current theme above the list and jumps back to it", async () => {
+    const CHIP = '[data-testid="theme-current"]';
+    const chip = () => browser.execute((s) => document.querySelector(s)?.textContent?.trim(), CHIP);
+    const rowLabel = (m: string) => browser.execute((mm) =>
+      document.querySelector(`[data-cmd-id="theme:${mm}"] span.truncate`)?.textContent?.trim(), m);
+    // the highlighted row sits inside the list's scroll viewport
+    const activeInView = () => browser.execute(() => {
+      const row = [...document.querySelectorAll("[data-row]")].find(r => (r as HTMLElement).style.background);
+      const list = row?.closest(".overflow-y-auto");
+      if (!row || !list) return false;
+      const r = row.getBoundingClientRect(), l = list.getBoundingClientRect();
+      return r.top >= l.top - 1 && r.bottom <= l.bottom + 1;
+    });
+
+    await openList();
+    await waitVisible('[data-cmd-id="theme:custom:warp:e2e-monokai"]');
+    await waitVisible(CHIP);
+    // a short name must render whole, not clipped to an ellipsis by the input
+    const clipped = () => browser.execute((s) => {
+      const span = document.querySelector(`${s} span`) as HTMLElement;
+      return span.scrollWidth > span.clientWidth;
+    }, CHIP);
+    const opened = { chip: await chip(), label: await rowLabel(original), inView: await activeInView(), clipped: await clipped() };
+
+    // wander off: a query that hides it, and a previewed row
+    await key("e2e monokai");
+    await browser.waitUntil(() => browser.execute(() => !document.querySelector('[data-cmd-id="theme:claude"]')));
+    await key("ArrowDown");
+    await browser.waitUntil(async () => (await themeMode()) !== original);
+    const wandered = await chip();
+    await snap("theme-current-chip.png");
+
+    // the chip acts on mousedown (so the input keeps focus), which a
+    // scripted `.click()` never fires
+    await browser.execute((s) => {
+      document.querySelector(s)!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+    }, CHIP);
+    await browser.waitUntil(async () => (await activeId()) === `theme:${original}`);
+    const back = {
+      query: await browser.execute((s) => (document.querySelector(s) as HTMLInputElement).value, INPUT),
+      previewed: await themeMode(),
+      inView: await activeInView(),
+    };
+    await closeList();
+
+    expect(opened.chip).toBeTruthy();
+    expect(opened.chip).toBe(opened.label);
+    expect(opened.inView).toBe(true);
+    expect(opened.clipped).toBe(false);
+    // the chip follows the committed theme, not the preview
+    expect(wandered).toBe(opened.chip);
+    expect(back).toEqual({ query: "", previewed: original, inView: true });
     expect(await themeMode()).toBe(original);
   });
 

@@ -47,6 +47,7 @@ export default {
     sectionRecent: "最近使用",
     themeSectionSystem: "系统",
     themeFilterAll: "全部",
+    themeCurrentHint: "当前主题。点击跳回该主题",
     themeFilterHint: "按 Tab 在深色、浅色和全部主题之间切换",
     themeSourceCustom: "自定义",
     themeImportFailed: "无法将 {{name}} 保存为主题文件：{{error}}",

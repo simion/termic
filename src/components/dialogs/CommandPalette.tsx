@@ -228,6 +228,14 @@ export function CommandPalette() {
     setSchemeFilter(saved === "all" || saved === scheme ? saved : scheme);
     setView("theme"); setQuery(""); setThemeEntry(n => n + 1);
   };
+  // back to the committed theme from wherever the list has wandered: clear
+  // the query, widen a filter that hides it (unsaved, as on entry), and
+  // re-place the highlight, which also rolls the preview back to it
+  const jumpToCurrentTheme = () => {
+    const scheme = resolveTheme(committedTheme);
+    if (schemeFilter !== "all" && committedTheme !== "auto" && schemeFilter !== scheme) setSchemeFilter(scheme);
+    setQuery(""); setThemeEntry(n => n + 1);
+  };
 
   // Reset on open; roll back an uncommitted theme preview on close (outside
   // click / ⇧⌘P while still previewing).
@@ -773,10 +781,12 @@ export function CommandPalette() {
     if (activeIdx > rows.length - 1) setActiveIdx(Math.max(0, rows.length - 1));
   }, [rows.length, activeIdx]);
 
-  // Scroll the active row into view on keyboard nav.
+  // Scroll the active row into view on keyboard nav, and on every entry into
+  // the theme list: reopening can land on the same index as last time, and
+  // keyed on the index alone the current theme sat below the fold.
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-row="${activeIdx}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [activeIdx]);
+  }, [activeIdx, open, view, themeEntry]);
 
   // Live theme preview: apply the highlighted theme as you move through the
   // list, without persisting it (cancelThemePreview rolls it back). Keyed on
@@ -894,8 +904,24 @@ export function CommandPalette() {
               autoCapitalize="off"
               autoComplete="off"
               placeholder={view === "theme" ? t("commandPalette.placeholderTheme") : t("commandPalette.placeholderRoot")}
-              className="w-full bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent pl-1 text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none"
             />
+            {view === "theme" && (
+              // the theme you actually have, always in sight: its row can be
+              // anywhere in a long list, and arrowing moves the preview off it
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="theme-current"
+                // mousedown, not click: keep focus (and the caret) in the input
+                onMouseDown={e => { e.preventDefault(); jumpToCurrentTheme(); }}
+                title={t("commandPalette.themeCurrentHint")}
+                className="flex max-w-[45%] shrink-0 items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"
+              >
+                <Check className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{themeLabel(committedTheme)}</span>
+              </button>
+            )}
             {view === "theme" && (
               <div className="flex shrink-0 rounded-md border border-[var(--color-border)] p-0.5" title={t("commandPalette.themeFilterHint")}>
                 {SCHEME_FILTERS.map(f => (

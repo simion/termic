@@ -44,6 +44,10 @@ the sidebar footer, press ⌥⌘T, or ⇧⌘P then "Change theme…".
   arrowing through dark themes never flashes a light one. A saved choice
   that would hide the current theme is skipped for that opening.
 - The three themes you last committed are pinned at the top.
+- The theme you have is named beside the search box, whatever the list
+  is showing, and the list opens scrolled to its row. Clicking the name
+  clears the search, widens a filter that hides it and jumps back to it
+  (which also ends any preview).
 - Arrow keys live-preview each theme; Enter commits, Escape rolls back to
   what you had. The footer opens the themes folder.
 
