@@ -77,7 +77,23 @@ async function clickFor(selector: string, notInside?: string): Promise<void> {
     const r = el.getBoundingClientRect();
     return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
   }, selector, notInside ?? null) as { x: number; y: number } | null;
-  if (!at) throw new Error(`clickFor: nothing visible matches ${selector}${notInside ? ` outside ${notInside}` : ""}`);
+  if (!at) {
+    // say what WAS on screen, so a miss names the state it found
+    const seen = await browser.execute((sel) => {
+      const app = window.__termic!.useApp.getState();
+      const id = app.activeTaskId;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tab = id ? app.tabs[id]?.find((t: any) => t.id === app.activeTab[id]) : null;
+      return {
+        task: id, tab: tab ? { type: tab.type, path: tab.path } : null,
+        matches: [...document.querySelectorAll<HTMLElement>(sel)].map(e => {
+          const r = e.getBoundingClientRect();
+          return { task: e.closest("[data-task-id]")?.getAttribute("data-task-id"), w: r.width, h: r.height };
+        }),
+      };
+    }, selector);
+    throw new Error(`clickFor: nothing visible matches ${selector}${notInside ? ` outside ${notInside}` : ""}: ${JSON.stringify(seen)}`);
+  }
   const { win, x, y } = appWindow();
   xdo("windowfocus", win);
   xdo("mousemove", String(x + at.x), String(y + at.y), "click", "1");
