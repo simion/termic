@@ -4334,6 +4334,18 @@ describe("markdown split: scroll sync and preview comments", () => {
         box: { w: ta.clientWidth, h: ta.clientHeight, scroll: ta.scrollHeight, win: window.innerWidth, dpr: devicePixelRatio },
       };
     }, composer);
+    // the panes are what the zoom squeezes: on a small screen (Windows CI's
+    // is 1024x768) the sidebar and right panel leave the preview a few px
+    // wide at 150, and two short lines then wrap past the box's cap. The
+    // case is about the box fitting its text, so it gets the room.
+    const chrome = (hide: boolean) => browser.execute((h) => {
+      const app = window.__termic!.useApp.getState();
+      const was = { compact: app.compactSidebar, hidden: app.rightPanelHidden };
+      if (app.compactSidebar !== h) app.toggleCompactSidebar();
+      if (app.rightPanelHidden !== h) app.toggleRightPanel();
+      return was;
+    }, hide);
+    const was = await chrome(true);
     try {
       for (const zoom of [100, 150]) {
         await browser.execute((z) => window.__termic!.usePrefs.getState().setUiScale(z), zoom);
@@ -4343,6 +4355,11 @@ describe("markdown split: scroll sync and preview comments", () => {
       }
     } finally {
       await browser.execute(() => window.__termic!.usePrefs.getState().setUiScale(100));
+      await browser.execute((w) => {
+        const app = window.__termic!.useApp.getState();
+        if (app.compactSidebar !== w.compact) app.toggleCompactSidebar();
+        if (app.rightPanelHidden !== w.hidden) app.toggleRightPanel();
+      }, was);
       await browser.execute((c) => { (document.querySelector(`${c} textarea`) as HTMLTextAreaElement).value = ""; }, composer);
     }
   });
