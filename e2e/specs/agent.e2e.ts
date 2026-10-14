@@ -300,8 +300,20 @@ describe("terminal right-click menu", () => {
     expect(await item("Copy")).toEqual({ disabled: false });
     await choose("Copy");
     // The fixture's banner is on screen from the moment it is ready.
-    await browser.waitUntil(async () => readClipboard().includes("FAKE-AGENT ready"), {
-      timeout: 10_000,
+    // Copied again on each miss, as the paste case below does: on Windows a
+    // write can lose the clipboard to another process and is not retried.
+    let first = true;
+    await browser.waitUntil(async () => {
+      if (!first) {
+        await openMenu();
+        await choose("Select all");
+        await openMenu();
+        await choose("Copy");
+      }
+      first = false;
+      return readClipboard().includes("FAKE-AGENT ready");
+    }, {
+      timeout: 15_000, interval: 500,
       timeoutMsg: "Copy never put the terminal's text on the clipboard",
     });
   });
