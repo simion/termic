@@ -4327,12 +4327,19 @@ describe("markdown split: scroll sync and preview comments", () => {
       // height must fit exactly; width is allowed a rounding pixel at a
       // fractional zoom, so what matters there is that it cannot scroll
       const cs = getComputedStyle(ta);
-      return { y: ta.scrollHeight - ta.clientHeight, overflowX: cs.overflowX, overflowY: cs.overflowY };
+      return {
+        y: ta.scrollHeight - ta.clientHeight, overflowX: cs.overflowX, overflowY: cs.overflowY,
+        // not asserted: the box's geometry, so a failure says whether the
+        // composer was squeezed
+        box: { w: ta.clientWidth, h: ta.clientHeight, scroll: ta.scrollHeight, win: window.innerWidth, dpr: devicePixelRatio },
+      };
     }, composer);
     try {
       for (const zoom of [100, 150]) {
         await browser.execute((z) => window.__termic!.usePrefs.getState().setUiScale(z), zoom);
-        expect({ zoom, ...(await overflow()) }).toEqual({ zoom, y: 0, overflowX: "hidden", overflowY: "hidden" });
+        const { box, ...got } = await overflow();
+        if (got.y !== 0 || got.overflowY !== "hidden") console.log(`comment box at ${zoom}: ${JSON.stringify(box)}`);
+        expect({ zoom, ...got }).toEqual({ zoom, y: 0, overflowX: "hidden", overflowY: "hidden" });
       }
     } finally {
       await browser.execute(() => window.__termic!.usePrefs.getState().setUiScale(100));
