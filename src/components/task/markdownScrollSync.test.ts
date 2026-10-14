@@ -83,7 +83,9 @@ describe("previewAnchors", () => {
 // delivery late, and the first sync was spent on the delivery where it had
 // none, so the editor never followed (a Linux CI flake on editor.e2e.ts).
 describe("useScrollSync, entering split from the preview", () => {
-  it("waits for the editor to have a box before spending its first sync", async () => {
+  // the preview read down to line 21 (one 20px block per line, scrollTop
+  // 400), and an editor that sits elsewhere and gets its height late
+  async function rig() {
     const { createElement, useRef } = await import("react");
     const { createRoot } = await import("react-dom/client");
     const { act } = await import("react");
@@ -107,7 +109,6 @@ describe("useScrollSync, entering split from the preview", () => {
       });
       el.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
     };
-    // the preview, read down to line 21 (one block per line, 20px each)
     const scroller = document.createElement("div");
     const host = document.createElement("div");
     for (let line = 1; line <= 100; line++) {
@@ -119,10 +120,9 @@ describe("useScrollSync, entering split from the preview", () => {
     }
     scroller.append(host);
     box(scroller, { client: () => 100, scroll: 2100 }, 400);
-    // the editor, laid out late: no height on the first delivery
-    let edHeight = 0;
     const ed = document.createElement("div");
-    box(ed, { client: () => edHeight, scroll: 2100 });
+    const edBox = { height: 0 };
+    box(ed, { client: () => edBox.height, scroll: 2100 });
     const view = {
       scrollDOM: ed,
       get documentTop() { return -ed.scrollTop; },
@@ -137,19 +137,43 @@ describe("useScrollSync, entering split from the preview", () => {
       return null;
     }
     const root = createRoot(document.createElement("div"));
+    await act(async () => { root.render(createElement(Probe, { editorVisible: false })); });
+    await act(async () => { root.render(createElement(Probe, { editorVisible: true })); });
+    return {
+      scroller, ed, edBox,
+      deliver: () => { for (const fire of observers) fire(); },
+      done: async () => { await act(async () => { root.unmount(); }); globalThis.ResizeObserver = RealRO; },
+    };
+  }
+
+  it("waits for the editor to have a box before spending its first sync", async () => {
+    const r = await rig();
     try {
-      await act(async () => { root.render(createElement(Probe, { editorVisible: false })); });
-      await act(async () => { root.render(createElement(Probe, { editorVisible: true })); });
       // first delivery: the editor has no height yet, so nothing can sync
-      for (const fire of observers) fire();
-      expect(ed.scrollTop).toBe(0);
+      r.deliver();
+      expect(r.ed.scrollTop).toBe(0);
       // the editor gets its height: that resize is the retry
-      edHeight = 100;
-      for (const fire of observers) fire();
-      expect(ed.scrollTop).toBe(400);
-    } finally {
-      await act(async () => { root.unmount(); });
-      globalThis.ResizeObserver = RealRO;
-    }
+      r.edBox.height = 100;
+      r.deliver();
+      expect(r.ed.scrollTop).toBe(400);
+    } finally { await r.done(); }
+  });
+
+  it("does not let a restored editor position lead before the first sync", async () => {
+    const r = await rig();
+    try {
+      // WebKitGTK: the editor comes back with a width and no height, and
+      // hiddenScrollRestore puts back where it was hidden (line 61)
+      r.deliver();
+      r.ed.scrollTop = 1200;
+      // its scroll event lands once the editor has its height, before the
+      // delivery that runs the first sync
+      r.edBox.height = 100;
+      r.ed.dispatchEvent(new Event("scroll"));
+      r.deliver();
+      // the preview led: neither pane went to the editor's old place
+      expect(r.scroller.scrollTop).toBe(400);
+      expect(r.ed.scrollTop).toBe(400);
+    } finally { await r.done(); }
   });
 });

@@ -122,8 +122,13 @@ export function useScrollSync(
       return true;
     };
     const isEcho = (el: HTMLElement, echo: number | null) => echo != null && Math.abs(el.scrollTop - echo) <= 1;
-    const fromEditor = () => { const echo = isEcho(ed, echoEd); echoEd = null; if (!echo) sync("editor"); };
-    const fromPreview = () => { const echo = isEcho(scroller, echoPv); echoPv = null; if (!echo) sync("preview"); };
+    // until the first sync has run, a scroll is the panes being laid out, not
+    // the reader. WebKitGTK shows the editor with a width and no height, and
+    // hiddenScrollRestore puts its old position back on that delivery; the
+    // scroll event lands before the first sync and would drag the preview
+    // to the editor's old place, with the first sync then following it.
+    const fromEditor = () => { const echo = isEcho(ed, echoEd); echoEd = null; if (!echo && !first) sync("editor"); };
+    const fromPreview = () => { const echo = isEcho(scroller, echoPv); echoPv = null; if (!echo && !first) sync("preview"); };
     // the first sync waits for the ResizeObserver's initial delivery, which
     // lands before paint and AFTER the editor's attachHiddenScrollRestore
     // (an older observer, so notified first) puts back the position it had
