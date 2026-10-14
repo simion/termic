@@ -34,6 +34,13 @@ describe("repoSlug", () => {
     expect(repoSlug("123")).toBe(null);
     expect(repoSlug("https://github.com/")).toBe(null);
   });
+  it("has no answer for a local-path remote, however the platform spells it", () => {
+    expect(repoSlug("/Users/u/src/web.git")).toBe(null);
+    expect(repoSlug("D:\\a\\src\\web.git")).toBe(null);
+    // what Windows Chromium makes of the drive path above
+    expect(repoSlug("file:///D:/a/src/web.git")).toBe(null);
+    expect(repoSlug("ssh://git@github.com/acme/web.git")).toBe("acme/web");
+  });
 });
 
 describe("prReviewPrompt", () => {
