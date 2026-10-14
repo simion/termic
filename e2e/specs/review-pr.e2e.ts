@@ -269,9 +269,16 @@ describe("review a PR: the dialog", () => {
     await setInputValue(INPUT, "not a pr");
     await waitVisible('[data-testid="review-pr-hint"]');
     expect(await startDisabled()).toBe(true);
+    // which hint is up names the cause: unparsed, wrong repo, or an existing
+    // review task to reuse.
+    const hint = () => browser.execute((i) => ({
+      input: (document.querySelector(i) as HTMLInputElement | null)?.value ?? null,
+      hints: Array.from(document.querySelectorAll('[data-testid="review-pr-hint"]')).map(h => h.textContent),
+    }), INPUT);
     for (const ok of ["42", "#42", "https://github.com/acme/web/pull/42"]) {
       await setInputValue(INPUT, ok);
-      await waitGone('[data-testid="review-pr-hint"]');
+      await browser.waitUntil(async () => (await hint()).hints.length === 0,
+        { timeout: 15_000, timeoutMsg: `hint never cleared: ${JSON.stringify(await hint())}` });
       expect(await startDisabled()).toBe(false);
     }
   });
