@@ -156,6 +156,7 @@ export const taskOpenRepo = (
   name?: string,
   sandbox?: {
     enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; docker?: boolean;
+    blockKeychain?: boolean;
     /** `Task.docker_extra_mounts` override; unset falls back to
      *  `Settings.docker_default_extra_mounts` (only meaningful with `docker`). */
     dockerExtraMounts?: string[];
@@ -180,6 +181,7 @@ export const taskOpenRepo = (
     sandboxMode: sandbox?.mode,
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
+    sandboxBlockKeychain: sandbox?.blockKeychain,
     dockerSandboxEnabled: sandbox?.docker,
     dockerExtraMounts: sandbox?.dockerExtraMounts,
     resumeSessionId, resumeOverride, agentArgs, yolo,
@@ -198,6 +200,7 @@ export const taskImportWorktree = (
   cli?: string,
   sandbox?: {
     enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; docker?: boolean;
+    blockKeychain?: boolean;
     dockerExtraMounts?: string[];
   },
   /** Externally-started session the agent resumes on first spawn (GH #169). */
@@ -215,6 +218,7 @@ export const taskImportWorktree = (
     sandboxMode: sandbox?.mode,
     sandboxRwPaths: sandbox?.rwPaths,
     sandboxAllowedHosts: sandbox?.allowedHosts,
+    sandboxBlockKeychain: sandbox?.blockKeychain,
     dockerSandboxEnabled: sandbox?.docker,
     dockerExtraMounts: sandbox?.dockerExtraMounts,
     resumeSessionId, resumeOverride, yolo, agentArgs,
@@ -323,10 +327,12 @@ export const taskSetSandbox = (
    *  the running agent retains its OLD seatbelt permissions until it
    *  next respawns. The dialog warns the user about this. */
   killLive: boolean = true,
+  /** Omit to keep the task's current value. */
+  blockKeychain?: boolean,
 ) => invoke<number>("task_set_sandbox", {
   id, mode,
   rwPaths, allowedHosts,
-  killLive,
+  killLive, blockKeychain,
 });
 /** Whether the OS supports the sandbox at all. Returns false on
  *  Linux / Windows (Seatbelt is macOS-only). Frontend uses this to
@@ -389,7 +395,13 @@ export const agentContextDevin = (agentId: string, account: string | null, sessi
 /** Per-task deny counters surfaced in the TerminalPane footer
  *  chip. Currently only `network` (the proxy bumps it on every CONNECT
  *  / HTTP request that fails the host allowlist). Cheap to poll. */
-export interface SandboxDenyCounts { network: number; path: number }
+export interface SandboxDenyCounts {
+  network: number; path: number;
+  /** Not a counter: live agent PTYs of the task that can still reach the
+   *  Keychain, nonzero while a saved block waits for a restart. Returned
+   *  by both `sandboxDenyCounts` and `sandboxAccessCounts`. */
+  keychain_open: number;
+}
 export const sandboxDenyCounts = (id: string) =>
   invoke<SandboxDenyCounts>("sandbox_deny_counts", { id });
 

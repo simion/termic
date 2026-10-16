@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import type { SandboxMode, SandboxSelection } from "@/lib/types";
 import { SANDBOX_VISUALS, sandboxPickerLabelT, sandboxModeText, SandboxIcon, DockerSandboxIcon, DOCKER_SANDBOX_COLOR } from "@/components/SandboxIcon";
 import { SEATBELT_AVAILABLE } from "@/lib/platform";
+import { Checkbox } from "@/components/ui/Checkbox";
 
 /** Row-major order: OFF / ENFORCING (FS) on top, MONITORING / ENFORCING
  *  below, DOCKER on its own row - it's a different MECHANISM, not another
@@ -135,6 +136,28 @@ export function SandboxPicker({
         </button>
       )}
     </div>
+  );
+}
+
+/** The per-task Keychain block checkbox. Shared by New Task, Schedule (new
+ *  parent), Sandbox and Edit, so none can set an enforcing mode without
+ *  showing it; callers render it only for enforce / enforce-fs. `compact`
+ *  matches the compact SandboxPicker it sits under (the create dialogs
+ *  have a fixed height, so every line here costs a scrollbar). */
+export function KeychainBlockField({ checked, onChange, compact = false }: { checked: boolean; onChange: (v: boolean) => void; compact?: boolean }) {
+  const { t } = useTranslation("dialogs");
+  return (
+    <label className={cn("flex cursor-pointer items-start select-none", compact ? "gap-2" : "gap-3")}>
+      <Checkbox checked={checked} onChange={onChange} data-testid="sandbox-block-keychain" />
+      <div className="flex flex-col">
+        <span className={cn("font-medium text-[var(--color-fg)]", compact ? "text-[12.5px]" : "text-[13.5px]")}>
+          {t("taskSandbox.blockKeychainLabel")}
+        </span>
+        <span className={cn("text-[var(--color-fg-dim)]", compact ? "text-[11px]" : "mt-1 text-[12.5px] leading-relaxed")}>
+          {t("taskSandbox.blockKeychainHint")}
+        </span>
+      </div>
+    </label>
   );
 }
 

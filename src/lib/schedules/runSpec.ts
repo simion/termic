@@ -14,7 +14,7 @@ export interface RunSpec {
   cli: string;
   agentArgs: string[];
   yolo: boolean;
-  sandbox: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[] };
+  sandbox: { enabled: boolean; mode?: SandboxMode; rwPaths: string[]; allowedHosts: string[]; blockKeychain?: boolean };
   /** Agent id -> account name, applied with `taskSetAccount` before mount. */
   accounts: Record<string, string>;
   /** Multi-repo projects: which members to link. Undefined elsewhere. */
@@ -54,6 +54,7 @@ export function runSpecFromParent(parent: Task, project?: Pick<Project, "type"> 
           mode,
           rwPaths: [...(parent.sandbox_rw_paths ?? [])],
           allowedHosts: [...(parent.sandbox_allowed_hosts ?? [])],
+          blockKeychain: !!parent.sandbox_block_keychain,
         },
     accounts: { ...(parent.accounts ?? {}) },
     memberPaths: project?.type === "multi"

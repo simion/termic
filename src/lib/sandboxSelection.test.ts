@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect } from "vitest";
-import { selectionFor, selectionToFields, isTaskCaged, effectiveSandboxMode, type SandboxMode } from "@/lib/types";
+import { selectionFor, selectionToFields, isTaskCaged, effectiveSandboxMode, keychainBlocked, type SandboxMode } from "@/lib/types";
 import { setSeatbeltAvailableForTests } from "@/lib/platform";
 
 describe("selectionFor", () => {
@@ -81,5 +81,23 @@ describe("off macOS (no Seatbelt)", () => {
   it("still treats a Docker task as caged", () => {
     setSeatbeltAvailableForTests(false);
     expect(isTaskCaged({ sandbox_mode: "off", docker_sandbox_enabled: true })).toBe(true);
+  });
+});
+
+describe("keychainBlocked", () => {
+  afterEach(() => setSeatbeltAvailableForTests(true));
+
+  it("applies only when the flag is set AND the mode enforces", () => {
+    const cases: [SandboxMode, boolean][] = [["off", false], ["monitor", false], ["enforce-fs", true], ["enforce", true]];
+    for (const [m, want] of cases) {
+      expect(keychainBlocked({ sandbox_mode: m, sandbox_block_keychain: true })).toBe(want);
+      expect(keychainBlocked({ sandbox_mode: m, sandbox_block_keychain: false })).toBe(false);
+    }
+  });
+
+  it("is off under docker and without seatbelt, whatever is stored", () => {
+    expect(keychainBlocked({ sandbox_mode: "enforce", sandbox_block_keychain: true, docker_sandbox_enabled: true })).toBe(false);
+    setSeatbeltAvailableForTests(false);
+    expect(keychainBlocked({ sandbox_mode: "enforce", sandbox_block_keychain: true })).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ import { taskRename, taskSetCli, taskSetYolo, taskSetResumeOverride, taskSetSand
 import { readMemberModes, seedMemberMode, persistMemberMode } from "./memberModes";
 import { cn } from "@/lib/utils";
 import { effectiveSandboxMode, isTaskCaged, selectionFor, selectionToFields, type CreateMultiMember, type MemberMode, type Project, type SandboxSelection, type Settings, type Task, type TaskMember } from "@/lib/types";
-import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
+import { SandboxPicker, DockerEngineNote, KeychainBlockField } from "@/components/SandboxPicker";
 import { memberSandboxUnion } from "@/lib/projectSandboxDefault";
 import { ListField } from "@/components/settings/Controls";
 import { SANDBOX_PRESETS } from "@/lib/sandboxPresets";
@@ -77,6 +77,7 @@ export function EditTaskDialog() {
   const [sel, setSel] = useState<SandboxSelection>("off");
   const [sbRw, setSbRw] = useState("");
   const [sbHosts, setSbHosts] = useState("");
+  const [blockKc, setBlockKc] = useState(false);
   const [dockerMounts, setDockerMounts] = useState("");
   const [resume, setResume] = useState("");
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -152,6 +153,7 @@ export function EditTaskDialog() {
     setSel(selectionFor(effectiveSandboxMode(t), !!t.docker_sandbox_enabled));
     setSbRw((t.sandbox_rw_paths ?? []).join("\n"));
     setSbHosts((t.sandbox_allowed_hosts ?? []).join("\n"));
+    setBlockKc(!!t.sandbox_block_keychain);
     setDockerMounts((t.docker_extra_mounts ?? []).join("\n"));
     setResume(t.resume_override ?? "");
     // A set override shows expanded; empty keeps create's collapsed
@@ -261,8 +263,13 @@ export function EditTaskDialog() {
   // Create's coercion: caged or non-agent ⇒ store yolo=false. Saves a
   // stale record flag AND rejects the tick the disabled checkbox can't.
   const yoloEff = yoloApplies && yolo && !yoloCaged;
+  // same rule as TaskSandboxDialog: the Keychain row shows (and counts)
+  // only for the enforcing modes, so changing the mode here always shows
+  // whether the block will apply.
+  const kcRow = !selDocker && (selMode === "enforce" || selMode === "enforce-fs");
   const sandboxDirty = !!task && (
     sel !== selNow ||
+    (kcRow && blockKc !== !!task.sandbox_block_keychain) ||
     !arrEq(lines(sbRw), task.sandbox_rw_paths ?? []) ||
     !arrEq(lines(sbHosts), task.sandbox_allowed_hosts ?? []) ||
     !arrEq(lines(dockerMounts), task.docker_extra_mounts ?? [])
@@ -356,7 +363,7 @@ export function EditTaskDialog() {
           // Record the cage FIRST, then drop Docker — same order as
           // TaskSandboxDialog: a respawn between the calls lands on the
           // new seatbelt profile rather than uncaged.
-          await taskSetSandbox(task.id, selMode, lines(sbRw), lines(sbHosts), false);
+          await taskSetSandbox(task.id, selMode, lines(sbRw), lines(sbHosts), false, kcRow ? blockKc : undefined);
           if (task.docker_sandbox_enabled) {
             await taskSetDocker(task.id, false, task.docker_extra_args ?? [], lines(dockerMounts));
           } else if (mounted) {
@@ -895,6 +902,7 @@ export function EditTaskDialog() {
                 {t("editTask.networkUnrestricted")}
               </p>
             )}
+            {kcRow && <KeychainBlockField checked={blockKc} onChange={setBlockKc} />}
           </div>
         )}
         </div>{/* end columns row */}
