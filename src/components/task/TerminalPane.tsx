@@ -33,6 +33,7 @@ import { preserveImagesOnErase } from "@/lib/terminalImagePersistence";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
+import { terminalNewlineBytes } from "@/lib/terminalNewline";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld, terminalPassesToApp, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
@@ -1359,6 +1360,10 @@ const captureArmedRef = useRef(false);
     // xterm.js by default sends plain \r for BOTH Enter and Shift+Enter,
     // so without an override the agent can't tell them apart.
     //
+    // OpenCode uses its Ctrl+J newline binding (LF); other agents keep
+    // backslash + CR. Resolve the base agent so OpenCode clones work too.
+    //
+    // For the other agents:
     // We send `\\` + `\r` (literal backslash then CR) — the same
     // sequence `/terminal-setup` writes into iTerm2 for Claude Code.
     // Claude's input parser reads the trailing backslash as a
@@ -1517,9 +1522,11 @@ const captureArmedRef = useRef(false);
       if (e.type === "keydown" && e.shiftKey && isEnter && !e.altKey && !e.ctrlKey && !e.metaKey) {
         const pid = ptyRef.current;
         if (pid) {
+          // For non-OpenCode agents:
           // `\` + `\r` (0x5c 0x0d) — claude's `hasUsedBackslashReturn`
           // path. Gemini + codex accept it too.
-          ipc.ptyWrite(pid, [0x5c, 0x0d]).catch(() => {});
+          const baseId = builtinBaseId(tab.cli, useApp.getState().agents);
+          ipc.ptyWrite(pid, terminalNewlineBytes(baseId)).catch(() => {});
         }
         // BOTH stops are required:
         //   - return false      → xterm.js skips its keydown handler

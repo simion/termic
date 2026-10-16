@@ -25,6 +25,12 @@ The bands are what the app looks like and runs, then how it behaves while you wo
 
 Appearance carries its own sub-tabs (Terminal, Editor, Interface & Sidebar) on the strip Settings → Projects uses. Terminal leads.
 
+Shift+Enter in task terminals sends LF (Ctrl+J, OpenCode's `input.newline`
+binding) for OpenCode and agents extending it; other agents retain
+backslash + CR. This is automatic, with no user preference. Enter is
+unchanged. The scratch shell and settings preview keep their ordinary
+xterm keyboard behavior.
+
 A per-project page carries four of those sub-tabs: Scripts & run (Members & scripts on a multi-repo project), Sandbox, Code navigation and More. Code navigation is named by `codeIntelName()`, so it reads Code intelligence once type checking is on, exactly like the panel it opens. It earned a tab rather than sitting under Scripts & run, where it started: it shares nothing with the setup/run/archive scripts that tab exists for, it is the size of a page on its own (arming, languages, the server picker, per-language settings), and it is machine-local `projects.json` while that tab's storage strip is switching between personal and the committed `.termic.yaml`. Its live preview is a real `AuxTerminal`, so it is click-armed: a settings visit must never fork a shell on its own, and the pty dies when the tab unmounts.
 
 Each page owns one domain, and a setting belongs to the page whose domain it changes, not the page that happened to be open when it was written. General is app-level only (repos directory, personal file-tree excludes, remote images in the markdown preview); it is deliberately short. A new setting that needs a fifth thing on General is a sign the domain wants its own rail item.
