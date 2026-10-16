@@ -30,9 +30,12 @@ describe("tab management", () => {
    *  is already open, since a second pointerdown on the trigger closes it. */
   const openPlusMenu = async () => {
     await browser.waitUntil(
-      () => browser.execute(() => {
+      () => browser.execute((id) => {
         if (document.querySelector("[role='menu']")) return true;
-        const strip = document.querySelector("[data-main-strip]");
+        // this task's strip: every visited task stays mounted, hidden, and
+        // an unscoped lookup finds the first one, which added the tab to a
+        // leftover task whenever an earlier spec left one behind
+        const strip = document.querySelector(`[data-task-id="${id}"] [data-main-strip]`);
         const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
           b.querySelector("svg.lucide-plus"),
         );
@@ -43,7 +46,7 @@ describe("tab management", () => {
         el.dispatchEvent(new PointerEvent("pointerup", opts));
         el.click();
         return !!document.querySelector("[role='menu']");
-      }),
+      }, taskId),
       { timeout: 15_000, interval: 250, timeoutMsg: "the tab strip's + menu never opened" },
     );
     await waitVisible("[role='menu']");
@@ -53,6 +56,7 @@ describe("tab management", () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-tabs");
+    await ensureActiveTask(taskId);
 
     // Starts with the single agent tab.
     await browser.waitUntil(async () => (await tabCount()) === 1, {
@@ -65,12 +69,12 @@ describe("tab management", () => {
     // task activates, slower under full-suite load).
     await browser.waitUntil(
       () =>
-        browser.execute(() => {
-          const strip = document.querySelector("[data-main-strip]");
+        browser.execute((id) => {
+          const strip = document.querySelector(`[data-task-id="${id}"] [data-main-strip]`);
           return [...(strip?.querySelectorAll("button") ?? [])].some((b) =>
             b.querySelector("svg.lucide-plus"),
           );
-        }),
+        }, taskId),
       { timeout: 10_000, timeoutMsg: "tab '+' button never appeared" },
     );
 
@@ -311,8 +315,8 @@ describe("sidebar task menu: New submenu", () => {
 
     // Same list from the "+" button on the active task's strip. Radix opens on
     // pointerdown, so a bare .click() is not enough.
-    await browser.execute(() => {
-      const strip = document.querySelector("[data-main-strip]");
+    await browser.execute((id) => {
+      const strip = document.querySelector(`[data-task-id="${id}"] [data-main-strip]`);
       const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
         b.querySelector("svg.lucide-plus"),
       );
@@ -321,7 +325,7 @@ describe("sidebar task menu: New submenu", () => {
       plus.dispatchEvent(new PointerEvent("pointerdown", opts));
       plus.dispatchEvent(new PointerEvent("pointerup", opts));
       (plus as HTMLElement).click();
-    });
+    }, taskId!);
     await browser.waitUntil(
       () =>
         browser.execute(() =>

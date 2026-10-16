@@ -4327,15 +4327,39 @@ describe("markdown split: scroll sync and preview comments", () => {
       // height must fit exactly; width is allowed a rounding pixel at a
       // fractional zoom, so what matters there is that it cannot scroll
       const cs = getComputedStyle(ta);
-      return { y: ta.scrollHeight - ta.clientHeight, overflowX: cs.overflowX, overflowY: cs.overflowY };
+      return {
+        y: ta.scrollHeight - ta.clientHeight, overflowX: cs.overflowX, overflowY: cs.overflowY,
+        // not asserted: the box's geometry, so a failure says whether the
+        // composer was squeezed
+        box: { w: ta.clientWidth, h: ta.clientHeight, scroll: ta.scrollHeight, win: window.innerWidth, dpr: devicePixelRatio },
+      };
     }, composer);
+    // the panes are what the zoom squeezes: on a small screen (Windows CI's
+    // is 1024x768) the sidebar and right panel leave the preview a few px
+    // wide at 150, and two short lines then wrap past the box's cap. The
+    // case is about the box fitting its text, so it gets the room.
+    const chrome = (hide: boolean) => browser.execute((h) => {
+      const app = window.__termic!.useApp.getState();
+      const was = { compact: app.compactSidebar, hidden: app.rightPanelHidden };
+      if (app.compactSidebar !== h) app.toggleCompactSidebar();
+      if (app.rightPanelHidden !== h) app.toggleRightPanel();
+      return was;
+    }, hide);
+    const was = await chrome(true);
     try {
       for (const zoom of [100, 150]) {
         await browser.execute((z) => window.__termic!.usePrefs.getState().setUiScale(z), zoom);
-        expect({ zoom, ...(await overflow()) }).toEqual({ zoom, y: 0, overflowX: "hidden", overflowY: "hidden" });
+        const { box, ...got } = await overflow();
+        if (got.y !== 0 || got.overflowY !== "hidden") console.log(`comment box at ${zoom}: ${JSON.stringify(box)}`);
+        expect({ zoom, ...got }).toEqual({ zoom, y: 0, overflowX: "hidden", overflowY: "hidden" });
       }
     } finally {
       await browser.execute(() => window.__termic!.usePrefs.getState().setUiScale(100));
+      await browser.execute((w) => {
+        const app = window.__termic!.useApp.getState();
+        if (app.compactSidebar !== w.compact) app.toggleCompactSidebar();
+        if (app.rightPanelHidden !== w.hidden) app.toggleRightPanel();
+      }, was);
       await browser.execute((c) => { (document.querySelector(`${c} textarea`) as HTMLTextAreaElement).value = ""; }, composer);
     }
   });
@@ -4421,18 +4445,27 @@ describe("markdown split: scroll sync and preview comments", () => {
       () => browser.execute(() => !!window.__mdShown!(".cm-editor")),
       { timeout: 5_000, timeoutMsg: "split never showed the editor" },
     );
+    // the editor's place and box on the last poll, for the timeout message
+    let seen: unknown;
     await browser.waitUntil(async () => {
-      const line = await browser.execute(() => {
+      const at = await browser.execute(() => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const view = (window.__mdShown!(".cm-editor") as unknown as { __cmView: any }).__cmView;
-        const y = view.scrollDOM.getBoundingClientRect().top - view.documentTop + 1;
-        return view.state.doc.lineAt(view.lineBlockAtHeight(y).from).number as number;
+        const sd = view.scrollDOM as HTMLElement;
+        const y = sd.getBoundingClientRect().top - view.documentTop + 1;
+        return {
+          line: view.state.doc.lineAt(view.lineBlockAtHeight(y).from).number as number,
+          top: sd.scrollTop, client: sd.clientHeight, scroll: sd.scrollHeight,
+        };
       });
-      return Math.abs(line - headingLine(10)) <= 1;
+      seen = { ...at, want: headingLine(10), preview: await previewTopSection() };
+      return Math.abs(at.line - headingLine(10)) <= 1;
     // A miss here was a race, not slowness: WebKitGTK can give the editor
     // its height one ResizeObserver delivery late, and the first sync used
     // to be spent on the delivery where it had none (markdownScrollSync.ts).
-    }, { timeout: 5_000, timeoutMsg: "the editor did not follow the preview to section 10" });
+    }, { timeout: 5_000 }).catch(() => {
+      throw new Error(`the editor did not follow the preview to section 10: ${JSON.stringify(seen)}`);
+    });
     // and the preview did not get dragged to the editor's old place instead
     expect(await previewTopSection()).toBe(10);
   });

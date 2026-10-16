@@ -33,6 +33,10 @@ export function repoSlug(url: string): string | null {
   const scp = t.match(/^[^@/]+@[^:/]+:(.+)$/);
   let path = scp ? scp[1] : null;
   if (!path) {
+    // a forge URL only. A local path is not a repo on any forge, and Windows
+    // Chromium reads `D:\...` as `file:///D:/...`, which would name the
+    // fixture's parent folder as a repo and flag every pasted link as wrong
+    if (!/^(https?|ssh|git):\/\//i.test(t)) return null;
     try { path = new URL(t).pathname.replace(/^\/+/, ""); } catch { return null; }
   }
   // A PR link carries more than the repo: cut at the PR segment.
