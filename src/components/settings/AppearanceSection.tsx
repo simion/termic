@@ -812,15 +812,31 @@ function ThemeSelect({ value, onChange }: { value: string; onChange: (id: string
 // Compact integer stepper. Replaces the previous range slider — direct
 // keyboard entry + step buttons is faster than dragging a slider to hit
 // a specific px value, especially for the small 10..20 range we expose.
+//
+// The field keeps its own draft text so partial input ("1" on the way to
+// "15", or an empty box) isn't clamped mid-keystroke. In-range values —
+// including spinner / arrow-key steps — apply live; anything else is
+// clamped (or reverted, if empty) when the field loses focus or on Enter.
 function NumberInput({ value, onChange, min, max, step = 1 }: { value: number; onChange: (n: number) => void; min: number; max: number; step?: number }) {
   const clamp = (n: number) => Math.max(min, Math.min(max, Math.round(n)));
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const n = Number(draft);
+    if (draft.trim() !== "" && Number.isFinite(n) && clamp(n) !== value) onChange(clamp(n));
+    setDraft(null);
+  };
   return (
     <input
-      type="number" min={min} max={max} step={step} value={value}
+      type="number" min={min} max={max} step={step} value={draft ?? value}
       onChange={(e) => {
-        const n = Number(e.target.value);
-        if (Number.isFinite(n)) onChange(clamp(n));
+        const raw = e.target.value;
+        setDraft(raw);
+        const n = Number(raw);
+        if (raw.trim() !== "" && Number.isInteger(n) && n >= min && n <= max) onChange(n);
       }}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
       className="h-7 w-[64px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] tabular-nums focus:border-[var(--color-accent-soft)] focus:outline-none"
     />
   );
