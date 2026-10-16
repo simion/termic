@@ -378,8 +378,12 @@ export interface AppState {
   /** `opts.focus` (default true) — pass false to add the tab without
    *  activating or stealing keyboard focus (e.g. a background setup run).
    *  `opts.afterTabId` inserts right after that tab instead of appending
-   *  (the sidebar tab row's "New below"); an unknown id appends. */
-  addTab: (taskId: string, tab: Tab, opts?: { focus?: boolean; afterTabId?: string }) => void;
+   *  (the sidebar tab row's "New below"); an unknown id appends.
+   *  `opts.beforeTabId` inserts right before that tab instead ("New above"). */
+  addTab: (taskId: string, tab: Tab, opts?: { focus?: boolean; afterTabId?: string; beforeTabId?: string }) => void;
+  /** Mark a tab unread from the sidebar menu (`markedUnread`). Persisted;
+   *  cleared the next time the tab is shown. */
+  markTabUnread: (taskId: string, tabId: string) => void;
   /** Add a terminal tab to whichever pane is active: the focused split pane
    *  (wired into its tab strip) or the main pane. Used by the Run pop-out
    *  (GH #54) so the run terminal lands where the user is looking.
@@ -399,7 +403,7 @@ export interface AppState {
    *  `sessionId` so the agent resumes via `--resume <uuid>` (see
    *  `decideResume` in TerminalPane) instead of starting a new
    *  conversation. Removes the entry from `closedTabs` once reopened. */
-  resumeClosedTab: (taskId: string, entryId: string, opts?: { afterTabId?: string }) => void;
+  resumeClosedTab: (taskId: string, entryId: string, opts?: { afterTabId?: string; beforeTabId?: string }) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
   /** Show a place WITHOUT treating it as a visit — see the implementation. */
   previewPlace: (taskId: string, tabId: string) => void;
@@ -589,6 +593,7 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       // in its pane on relaunch (the run script re-fires, like custom tabs).
       run_member: t.runTab ? t.runTab.member : null,
       pinned: !!t.pinned,
+      ...(t.markedUnread ? { marked_unread: true } : {}),
       // The store is the ONLY writer of tab properties (GH #358), so the
       // full list rides every sync and the disk copy simply follows it.
       ...(t.props?.length ? { props: t.props } : {}),
@@ -607,6 +612,33 @@ function withPriorScheduled(next: PersistedTab[], prior: PersistedTab[]): Persis
   return next.map(t => byId.has(t.id) ? { ...t, scheduled: byId.get(t.id) } : t);
 }
 
+/** A tab moved into a split pane has no sidebar row, so nothing could ever
+ *  clear a manual unread mark there, and dragging it in is looking at it. */
+function intoPane(t: Tab, paneId: string): Tab {
+  return { ...t, paneId, ...((t as TerminalTab).markedUnread ? { markedUnread: false } : {}) } as Tab;
+}
+
+/** Clear the manual unread mark on the tab a close or a move just put on
+ *  screen in the main pane. Those paths write `activeTab` directly rather
+ *  than through setActiveTabId, and a click on the revealed tab is no
+ *  visit (it is already showing), so without this the dot would stick.
+ *  Only when the task is the one on screen; persists the clear. */
+function clearShownMark(
+  get: () => AppState,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+  taskId: string,
+) {
+  const s = get();
+  if (s.activeTaskId !== taskId) return;
+  const id = s.activeTab[taskId];
+  const tab = (s.tabs[taskId] ?? []).find(t => t.id === id);
+  if (!tab || tab.type !== "terminal" || !tab.markedUnread) return;
+  set(st => ({
+    tabs: { ...st.tabs, [taskId]: (st.tabs[taskId] ?? []).map(t => t.id === id ? { ...t, markedUnread: false } as Tab : t) },
+  }));
+  get().syncDurableTabs(taskId);
+}
+
 /** `list` with `tab` added: right after `afterTabId` when that tab is in
  *  the list, else at the end. An unpinned tab never lands inside the pinned
  *  block at the front of the main strip (the invariant `reseatAtPinBoundary`
@@ -615,10 +647,12 @@ function withPriorScheduled(next: PersistedTab[], prior: PersistedTab[]): Persis
  *  is not one: a split-pane tab keeps its array slot and can sit between two
  *  pinned tabs ([A(P), X(pane), C(P)]), and stopping there would put the new
  *  tab between A and C in the strip. The `sidebarTabMoveIndex` rule. */
-function insertTab(list: Tab[], tab: Tab, afterTabId?: string): Tab[] {
-  const anchor = afterTabId ? list.findIndex(t => t.id === afterTabId) : -1;
+function insertTab(list: Tab[], tab: Tab, afterTabId?: string, beforeTabId?: string): Tab[] {
+  const anchorId = beforeTabId ?? afterTabId;
+  const anchor = anchorId ? list.findIndex(t => t.id === anchorId) : -1;
   if (anchor < 0) return [...list, tab];
-  let at = anchor + 1;
+  // "Above" a tab is its own slot; the pin rule below applies the same way.
+  let at = beforeTabId ? anchor : anchor + 1;
   if (!tab.pinned) {
     let pinEnd = 0;
     list.forEach((t, i) => { if (t.pinned && !(t as TerminalTab).paneId) pinEnd = i + 1; });
@@ -1098,6 +1132,12 @@ export const useApp = create<AppState>((set, get) => ({
           if (unreadClearsOnSight(t.unread)) {
             nt = { ...nt, unread: null };
           }
+          // A manual mark clears only when its tab COMES on screen: the task
+          // was not active before. Re-activating the task already on
+          // screen (every sidebar tab-row click does, before it picks the
+          // tab) is not a visit, or marking the open tab and clicking away
+          // would clear it on the way out.
+          if (t.id === activeId && t.markedUnread && prev !== id) nt = { ...nt, markedUnread: false };
           const clearable = t.workState === "done"
             || (t.workState === "working" && visitMayClearWorking(s.agentHooksInstalled, t.cli));
           if (t.id === activeId && clearable) {
@@ -1113,6 +1153,7 @@ export const useApp = create<AppState>((set, get) => ({
         });
         return { tabs: { ...s.tabs, [id]: next } };
       });
+      if (prev !== id && tabs.some(t => t.id === activeId && t.type === "terminal" && t.markedUnread)) get().syncDurableTabs(id);
     }
   },
 
@@ -1728,7 +1769,7 @@ export const useApp = create<AppState>((set, get) => ({
       }
 
       const updatedTabs = (s.tabs[taskId] ?? []).map(t =>
-        t.id !== tabId ? t : { ...t, paneId: toPaneId },
+        t.id !== tabId ? t : intoPane(t, toPaneId),
       );
 
       // Moving the ACTIVE main tab out: hand the main pane to its neighbor
@@ -1752,6 +1793,8 @@ export const useApp = create<AppState>((set, get) => ({
         } : {}),
       };
     });
+    // The main pane's next tab just came on screen.
+    clearShownMark(get, set, taskId);
     // The moved tab becomes the target pane's visible tab — focus follows the
     // drop so the user can type immediately (terminal or editor).
     focusPaneTab(tabId);
@@ -1812,6 +1855,7 @@ export const useApp = create<AppState>((set, get) => ({
       };
     });
     if (moved) {
+      clearShownMark(get, set, taskId);
       focusMainTab(tabId);
       get().syncDurableTabs(taskId);
       get().saveSplitLayout(taskId);
@@ -1878,7 +1922,7 @@ export const useApp = create<AppState>((set, get) => ({
       moved = true;
 
       const updatedTabs = (s.tabs[taskId] ?? []).map(t =>
-        t.id !== tabId ? t : { ...t, paneId: newLeafId },
+        t.id !== tabId ? t : intoPane(t, newLeafId),
       );
       // Moving the ACTIVE main tab out: hand main to its neighbor (same rule
       // as closeTab / moveTabToPane).
@@ -1969,6 +2013,7 @@ export const useApp = create<AppState>((set, get) => ({
         ...(pt.agent_args?.length ? { agentArgs: pt.agent_args } : {}),
         ...(unattendedRestore && pt.is_default ? { unattended: true } : {}),
         ...(pt.pinned ? { pinned: true } : {}),
+        ...(pt.marked_unread ? { markedUnread: true } : {}),
         ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
         ...(pt.props?.length ? { props: pt.props } : {}),
         // idle: restored run tabs keep their spot but never auto-fire the
@@ -2014,6 +2059,7 @@ export const useApp = create<AppState>((set, get) => ({
               customTitle: !!pt.custom_title,
               paneId: pt.pane_leaf_id!,
               ...(pt.pinned ? { pinned: true } : {}),
+              ...(pt.marked_unread ? { markedUnread: true } : {}),
               ...(pt.command ? { command: pt.command } : {}),
               ...(pt.session_id ? { sessionId: pt.session_id } : {}),
               ...(pt.agent_args?.length ? { agentArgs: pt.agent_args } : {}),
@@ -2215,7 +2261,7 @@ export const useApp = create<AppState>((set, get) => ({
   addTab: (taskId, tab, opts) => {
     const focus = opts?.focus ?? true;
     set(s => {
-      const next = insertTab(s.tabs[taskId] || [], tab, opts?.afterTabId);
+      const next = insertTab(s.tabs[taskId] || [], tab, opts?.afterTabId, opts?.beforeTabId);
       return {
         tabs: { ...s.tabs, [taskId]: next },
         ...(focus ? { activeTab: { ...s.activeTab, [taskId]: tab.id } } : {}),
@@ -2387,6 +2433,8 @@ export const useApp = create<AppState>((set, get) => ({
    // it), while a closed MAIN tab stays durable and auto-resumes when the
    // task wakes — see the merge rule in syncDurableTabs. No-op if
    // nothing changed, and skipped entirely when nothing was closed.
+   // The tab that takes over the main pane just came on screen.
+   if (closed) clearShownMark(get, set, taskId);
    if (closed) get().syncDurableTabs(taskId);
    if (focusId) {
      // Sync activePaneId to the main pane so the store agrees with where
@@ -2428,61 +2476,80 @@ export const useApp = create<AppState>((set, get) => ({
       sessionId: entry.sessionId ?? undefined,
       agentArgs: entry.agentArgs,
     };
-    get().addTab(taskId, tab, { afterTabId: opts?.afterTabId });
+    get().addTab(taskId, tab, { afterTabId: opts?.afterTabId, beforeTabId: opts?.beforeTabId });
   },
 
-  setActiveTabId: (taskId, tabId) => set(s => {
-    // Looking at a tab = "I've seen this / I'm dealing with it now."
-    // Clear EVERY status flag on focus:
-    //   - unread (bell/attention/exit)
-    //   - workState (done OR working) → idle
-    // Clearing "working" on focus is the manual escape hatch for
-    // stuck spinners, and it applies ONLY to agents whose state is read
-    // from their terminal (see visitMayClearWorking). For an agent that
-    // reports its own state there is nothing to escape from, and the
-    // clear was destroying live state that nothing put back.
-    // Historically it was unconditional because agents like Claude Code
-    // stream continuously (thinking dots, elapsed counter), defeating every automatic
-    // demoter — focusing the tab is now the user's "I see it, kill
-    // the spinner" gesture. The next sender signal / submit will
-    // re-arm working if work is actually still happening.
-    const list = s.tabs[taskId] || [];
-    const now = Date.now();
-    const next = list.map(t => {
-      if (t.id !== tabId) return t;
-      // Terminal tabs carry workState — clear via a typed TerminalTab
-      // patch. Edit/diff tabs only have `unread` to clear.
-      if (t.type === "terminal") {
-        const patch: Partial<TerminalTab> = {};
-        // Not an attention bell: the agent is still waiting on an answer.
-        if (unreadClearsOnSight(t.unread)) patch.unread = null;
-        // "Some of the delegated work came back" is news, and looking at the
-        // tab is reading it: drop the partial mark and keep the plain
-        // delegated ring, which still says the rest is running.
-        if (t.delegatedWork?.partial) patch.delegatedWork = { ...t.delegatedWork, partial: false };
-        if (t.workState === "done"
-            || (t.workState === "working" && visitMayClearWorking(s.agentHooksInstalled, t.cli))) {
-          patch.workState = "idle";
-          patch.workProgress = null;
-          patch.workProgressKind = null;
-          patch.workClearedAt = now;
+  setActiveTabId: (taskId, tabId) => {
+    // A manual mark clears when the tab COMES on screen, not when the tab
+    // that is already showing is picked again: marking the open tab must
+    // last until the user leaves it and comes back.
+    const alreadyShown = get().activeTaskId === taskId && get().activeTab[taskId] === tabId;
+    const marked = !alreadyShown
+      && (get().tabs[taskId] || []).some(t => t.id === tabId && t.type === "terminal" && t.markedUnread);
+    set(s => {
+      // Looking at a tab = "I've seen this / I'm dealing with it now."
+      // Clear EVERY status flag on focus:
+      //   - unread (bell/attention/exit)
+      //   - workState (done OR working) → idle
+      // Clearing "working" on focus is the manual escape hatch for
+      // stuck spinners, and it applies ONLY to agents whose state is read
+      // from their terminal (see visitMayClearWorking). For an agent that
+      // reports its own state there is nothing to escape from, and the
+      // clear was destroying live state that nothing put back.
+      // Historically it was unconditional because agents like Claude Code
+      // stream continuously (thinking dots, elapsed counter), defeating every automatic
+      // demoter — focusing the tab is now the user's "I see it, kill
+      // the spinner" gesture. The next sender signal / submit will
+      // re-arm working if work is actually still happening.
+      const list = s.tabs[taskId] || [];
+      const now = Date.now();
+      const next = list.map(t => {
+        if (t.id !== tabId) return t;
+        // Terminal tabs carry workState — clear via a typed TerminalTab
+        // patch. Edit/diff tabs only have `unread` to clear.
+        if (t.type === "terminal") {
+          const patch: Partial<TerminalTab> = {};
+          // Not an attention bell: the agent is still waiting on an answer.
+          if (unreadClearsOnSight(t.unread)) patch.unread = null;
+          // A tab the user marked unread is read once it is shown again.
+          if (marked) patch.markedUnread = false;
+          // "Some of the delegated work came back" is news, and looking at the
+          // tab is reading it: drop the partial mark and keep the plain
+          // delegated ring, which still says the rest is running.
+          if (t.delegatedWork?.partial) patch.delegatedWork = { ...t.delegatedWork, partial: false };
+          if (t.workState === "done"
+              || (t.workState === "working" && visitMayClearWorking(s.agentHooksInstalled, t.cli))) {
+            patch.workState = "idle";
+            patch.workProgress = null;
+            patch.workProgressKind = null;
+            patch.workClearedAt = now;
+          }
+          return Object.keys(patch).length ? { ...t, ...patch } : t;
         }
-        return Object.keys(patch).length ? { ...t, ...patch } : t;
-      }
-      // Every non-terminal tab type has only `unread` to clear. Spreading a
-      // `Partial<typeof t>` over the union widens `type` back to the union
-      // (TS distributes the spread, not the narrowing), so cast the result
-      // rather than the patch.
-      // A pad's own "changed since you looked" mark clears the same way.
-      if (t.type === "scratch" && t.unseen) return { ...t, unread: null, unseen: false } as Tab;
-      if (t.unread) return { ...t, unread: null } as Tab;
-      return t;
+        // Every non-terminal tab type has only `unread` to clear. Spreading a
+        // `Partial<typeof t>` over the union widens `type` back to the union
+        // (TS distributes the spread, not the narrowing), so cast the result
+        // rather than the patch.
+        // A pad's own "changed since you looked" mark clears the same way.
+        if (t.type === "scratch" && t.unseen) return { ...t, unread: null, unseen: false } as Tab;
+        if (t.unread) return { ...t, unread: null } as Tab;
+        return t;
+      });
+      return {
+        activeTab: { ...s.activeTab, [taskId]: tabId },
+        tabs: { ...s.tabs, [taskId]: next },
+      };
     });
-    return {
-      activeTab: { ...s.activeTab, [taskId]: tabId },
-      tabs: { ...s.tabs, [taskId]: next },
-    };
-  }),
+    // The mark is on disk, so seeing the tab has to clear it there too.
+    if (marked) get().syncDurableTabs(taskId);
+  },
+
+  markTabUnread: (taskId, tabId) => {
+    const tab = (get().tabs[taskId] || []).find(t => t.id === tabId);
+    if (!tab || tab.type !== "terminal" || tab.markedUnread) return;
+    get().patchTab(taskId, tabId, { markedUnread: true });
+    get().syncDurableTabs(taskId);
+  },
 
   /**
    * Show a place, without any of the bookkeeping that means "the user is now

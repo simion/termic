@@ -125,6 +125,7 @@ export default {
     attention: "Agent needs your input",
     done: "Agent finished a turn",
     doneAria: "Work done",
+    marked: "Marked unread",
     doneDelegated: "Agent finished a turn, {{held}}",
     doneDelegatedRunning: "Agent finished a turn, {{held}} still running",
     delegated: "Background work still running",

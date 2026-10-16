@@ -125,6 +125,7 @@ export default {
     attention: "智能体需要你的输入",
     done: "智能体完成了一轮",
     doneAria: "工作完成",
+    marked: "标记为未读",
     doneDelegated: "智能体完成了一轮，{{held}}",
     doneDelegatedRunning: "智能体完成了一轮，{{held}} 仍在运行",
     delegated: "有后台工作仍在运行",

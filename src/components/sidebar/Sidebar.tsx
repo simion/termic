@@ -12,7 +12,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown, newTaskButtonShow
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest, SlidersHorizontal, CircleDot } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -60,7 +60,7 @@ import { useTaskQuery } from "@/hooks/useTaskQuery";
 import { setTreeFold, treeFoldKey, type TreeFold } from "@/lib/treeFold";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
-import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
+import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated, taskMarkedUnread } from "@/lib/taskWorkState";
 import { delegatedTitle } from "@/lib/delegatedWork";
 import { FILE_MANAGER } from "@/lib/openExternal";
 import { kbd } from "@/lib/platform";
@@ -2929,6 +2929,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const ensureDefaultTab = useApp(s => s.ensureDefaultTab);
   const addTab = useApp(s => s.addTab);
   const resumeClosedTab = useApp(s => s.resumeClosedTab);
+  const markTabUnread = useApp(s => s.markTabUnread);
   const setView = useApp(s => s.setView);
   const renameTab = useApp(s => s.renameTab);
   const clearTabCustomTitle = useApp(s => s.clearTabCustomTitle);
@@ -3055,12 +3056,15 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Working aggregate is independent of settledHighlight (it's its own
   // opt-in pref) but yields to attention/done — a finished or blocked agent
   // is more actionable than one still chugging.
-  const hasWorking = !hasAttention && !hasDone && taskWorking(tabs, workPrefs);
+  // A tab the user marked unread by hand: under done, over working (the
+  // precedence in taskWorkBadge).
+  const hasMarked = !hasAttention && !hasDone && taskMarkedUnread(tabs);
+  const hasWorking = !hasAttention && !hasDone && !hasMarked && taskWorking(tabs, workPrefs);
   // Lowest rung: something the agent started is still running, and nothing
   // else wanted the slot. `rowDelegated` is the report itself, for the
   // tooltip; the first tab that has one speaks for the row, which matches how
   // every other aggregate here works.
-  const hasDelegated = !hasAttention && !hasDone && !hasWorking
+  const hasDelegated = !hasAttention && !hasDone && !hasMarked && !hasWorking
     && taskDelegated(tabs, workPrefs);
   const rowDelegated = (tabs.find(
     t => t.type === "terminal" && !!(t as TerminalTab).delegatedWork,
@@ -3120,13 +3124,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
     setMenuOpen(false);
   }
 
-  // The tab row's "New below": the same activate-first dance as
-  // spawnIntoTask, but the new tab lands right under the row that was
+  // The tab row's "New above" / "New below": the same activate-first dance
+  // as spawnIntoTask, but the new tab lands right next to the row that was
   // right-clicked instead of at the end of the list.
-  function spawnBelowTab(afterTabId: string, tab: Tab) {
+  function spawnNextToTab(anchorId: string, where: "above" | "below", tab: Tab) {
     setActive(w.id);
     ensureDefaultTab(w.id, w.cli || "claude");
-    addTab(w.id, tab, { afterTabId });
+    addTab(w.id, tab, where === "above" ? { beforeTabId: anchorId } : { afterTabId: anchorId });
     setTabMenuId(null);
   }
 
@@ -3158,10 +3162,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               for the full bell/check badge, so color carries meaning:
               warm = needs you, blue = work done. The ring lifts it off
               the icon regardless of the tile's background. */}
-          {(hasAttention || hasDone) ? (
+          {(hasAttention || hasDone || hasMarked) ? (
             <span
               className="absolute -right-0.5 -top-0.5 block h-2.5 w-2.5 rounded-full ring-2 ring-[var(--color-bg-1)]"
-              style={{ backgroundColor: hasAttention ? "var(--color-warn)" : "var(--color-info)" }}
+              style={{ backgroundColor: hasAttention ? "var(--color-warn)" : hasDone ? "var(--color-info)" : "var(--color-marked)" }}
             />
           ) : hasWorking ? (
             // No room for a full spinner on the rail; a faint pulsing dot
@@ -3771,6 +3775,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           >
           {collapsed && (hasAttention ? <TaskWorkBadge reason="attention" />
             : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
+            : hasMarked ? <TaskWorkBadge reason="marked" />
             : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
             : hasDelegated ? <TaskWorkBadge reason="delegated" delegated={rowDelegated} />
             : null)}
@@ -3784,10 +3789,12 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
         const isTabHot = isTabActive;
         const showBell    = attentionIndicator && tab.unread?.reason === "attention";
         const showDone    = settledHighlight && !showBell && tab.workState === "done";
-        const showWorking = workingIndicator && !showBell && !showDone && tab.workState === "working";
+        // Marked unread by hand: under done, over working (taskWorkBadge).
+        const showMarked  = !showBell && !showDone && !!tab.markedUnread;
+        const showWorking = workingIndicator && !showBell && !showDone && !showMarked && tab.workState === "working";
         // An idle tab that still has something running. Lowest priority: it
         // only ever draws in the slot nothing else wanted.
-        const showDelegated = workingIndicator && !showBell && !showDone && !showWorking
+        const showDelegated = workingIndicator && !showBell && !showDone && !showMarked && !showWorking
           && !!tab.delegatedWork;
         const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const title = tab.customTitle
@@ -3812,8 +3819,11 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             onClick={() => {
               // The click that trails a drop is not a selection.
               if (tabDrag.clickSuppressed.current) { tabDrag.clickSuppressed.current = false; return; }
-              setActive(w.id);
+              // Tab first: activating the task reads its CURRENT active tab
+              // as seen, which must be this row's tab, not the one the task
+              // last showed (a manual unread mark on that one would go).
               setActiveTabId(w.id, tab.id);
+              setActive(w.id);
             }}
             onDoubleClick={(e) => {
               e.stopPropagation();
@@ -3895,13 +3905,14 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 appears when hovering the badge itself, not the whole
                 row — row hover keeps the badge visible. */}
             <span className="group/badge relative flex h-4 w-4 shrink-0 items-center justify-center">
-              {(showBell || showDone || showWorking || showDelegated) && (
+              {(showBell || showDone || showMarked || showWorking || showDelegated) && (
                 // Pinned to its own layer, same reason as the task row's
                 // badge above: a transition-only layer gets snapped into
                 // existence and the mark jumps a pixel on hover.
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/badge:opacity-0 [transform:translate3d(0,0,0)]">
                   {showBell ? <TaskWorkBadge reason="attention" />
                     : showDone ? <TaskWorkBadge reason="done" delegated={tab.delegatedWork} />
+                    : showMarked ? <TaskWorkBadge reason="marked" />
                     : showWorking ? <TaskWorkBadge reason="working" delegated={tab.delegatedWork} />
                     : <TaskWorkBadge reason="delegated" delegated={tab.delegatedWork} />}
                 </span>
@@ -3911,7 +3922,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 onClick={(e) => { e.stopPropagation(); requestCloseTab(w.id, tab.id); }}
                 className={cn(
                   "absolute inset-0 flex items-center justify-center rounded p-0.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
-                  (showBell || showDone || showWorking || showDelegated)
+                  (showBell || showDone || showMarked || showWorking || showDelegated)
                     // Badge visible: X only on badge-slot hover
                     ? "opacity-0 group-hover/badge:opacity-100 pointer-events-none group-hover/badge:pointer-events-auto"
                     // No badge: X on row hover (original behaviour)
@@ -3940,6 +3951,39 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                       and re-activate the anchor tab over the new one. */}
                   <div data-testid="sidebar-tab-menu" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                   <DropdownSub>
+                    <DropdownSubTrigger className="justify-between" data-testid="sidebar-tab-menu-new-above">
+                      <span className="flex items-center gap-2">
+                        <Plus className="h-4 w-4" />
+                        <span>{t("tabMenuNewAbove")}</span>
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                    </DropdownSubTrigger>
+                    <DropdownSubContent>
+                      <NewTabMenuItems
+                        taskId={w.id}
+                        onSpawnCli={(cli) => spawnNextToTab(tab.id, "above", {
+                          id: crypto.randomUUID(),
+                          type: "terminal",
+                          title: agentDisplayName(cli, agents),
+                          cli,
+                        })}
+                        onSpawnShell={() => spawnNextToTab(tab.id, "above", {
+                          id: crypto.randomUUID(),
+                          type: "terminal",
+                          title: t("terminalTabTitle"),
+                          cli: "shell",
+                        })}
+                        onResume={(entryId) => {
+                          setActive(w.id);
+                          ensureDefaultTab(w.id, w.cli || "claude");
+                          resumeClosedTab(w.id, entryId, { beforeTabId: tab.id });
+                          setTabMenuId(null);
+                        }}
+                        onMore={() => { setTabMenuId(null); setView("history", { projectId: w.project_id }); }}
+                      />
+                    </DropdownSubContent>
+                  </DropdownSub>
+                  <DropdownSub>
                     <DropdownSubTrigger className="justify-between" data-testid="sidebar-tab-menu-new-below">
                       <span className="flex items-center gap-2">
                         <Plus className="h-4 w-4" />
@@ -3950,13 +3994,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                     <DropdownSubContent>
                       <NewTabMenuItems
                         taskId={w.id}
-                        onSpawnCli={(cli) => spawnBelowTab(tab.id, {
+                        onSpawnCli={(cli) => spawnNextToTab(tab.id, "below", {
                           id: crypto.randomUUID(),
                           type: "terminal",
                           title: agentDisplayName(cli, agents),
                           cli,
                         })}
-                        onSpawnShell={() => spawnBelowTab(tab.id, {
+                        onSpawnShell={() => spawnNextToTab(tab.id, "below", {
                           id: crypto.randomUUID(),
                           type: "terminal",
                           title: t("terminalTabTitle"),
@@ -3972,6 +4016,14 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                       />
                     </DropdownSubContent>
                   </DropdownSub>
+                  <DropdownItem
+                    data-testid="sidebar-tab-menu-mark-unread"
+                    disabled={!!tab.markedUnread}
+                    onSelect={() => { setTabMenuId(null); markTabUnread(w.id, tab.id); }}
+                  >
+                    <CircleDot className="h-4 w-4" />
+                    <span>{t("tabMenuMarkUnread")}</span>
+                  </DropdownItem>
                   <DropdownSeparator />
                   <DropdownItem
                     data-testid="sidebar-tab-menu-close"

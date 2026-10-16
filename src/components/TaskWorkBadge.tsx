@@ -109,6 +109,23 @@ export function TaskWorkBadge(
       </span>
     );
   }
+  // Marked unread by the user: the done bullet's shape, in orange.
+  if (reason === "marked") {
+    return (
+      <span
+        data-testid={testId}
+        data-work-state="marked"
+        className="shrink-0 flex items-center justify-center"
+        title={t("taskWorkBadge.marked")}
+        aria-label={t("taskWorkBadge.marked")}
+      >
+        <span
+          className="block h-2 w-2 rounded-full"
+          style={{ backgroundColor: "var(--color-marked)" }}
+        />
+      </span>
+    );
+  }
   // done — solid blue bullet, iTerm2-style, in --color-info (defined in
   // @theme; themes can override). h-3.5 visually matches the bell + spinner.
   return (

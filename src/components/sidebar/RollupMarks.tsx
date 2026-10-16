@@ -26,7 +26,7 @@ export function WorkMarkList({ kinds, badgeTestId }: { kinds: string; badgeTestI
           <span className="block h-2 w-2 rounded-full border-[1.5px]" style={{ borderColor: "var(--color-info)" }} />
         </span>
       ) : (
-        <TaskWorkBadge key={k} reason={k as "attention" | "done" | "working" | "delegated"} testId={badgeTestId} />
+        <TaskWorkBadge key={k} reason={k as "attention" | "done" | "marked" | "working" | "delegated"} testId={badgeTestId} />
       ))}
     </>
   );

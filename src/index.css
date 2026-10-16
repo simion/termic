@@ -93,6 +93,9 @@
      only a hard-coded fallback (var(--color-info, #4aa3ff)) sprinkled at
      the point of use; defined here so themes can override it. */
   --color-info:      #4aa3ff;
+  /* "Marked unread" orange: the dot a tab the user marked unread from the
+     sidebar menu carries until it is shown again. */
+  --color-marked:    #f0883e;
   /* Behind the HTML preview's iframe (HtmlPane). A document that sets no
      background expects the browser's white page, and black default text
      on the app's dark --color-bg is unreadable. Deliberately the same in

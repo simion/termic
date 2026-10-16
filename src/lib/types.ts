@@ -464,6 +464,8 @@ export interface PersistedTab {
   run_member?: string | null;
   /** Pinned state, so a pinned tab comes back pinned and leftmost. */
   pinned?: boolean;
+  /** Marked unread from the sidebar menu, so the mark survives a relaunch. */
+  marked_unread?: boolean;
   /** Scheduled queue messages (GH #300). Absent when there are none (Rust
    *  skips an empty list). Owned by `taskSetTabScheduled`; `taskSetTabs`
    *  never writes it. */
@@ -1507,6 +1509,10 @@ export interface BaseTab {
    *  `OSC 1337;RequestAttention=yes|fireworks`. Cleared when the tab
    *  becomes active. Renders as a small dot independent of unread. */
   needsAttention?: boolean;
+  /** The user marked this tab unread from its sidebar menu. Draws an orange
+   *  dot on the tab row and the task row until the tab is next shown.
+   *  Not `unread`: that is agent news and drives the OS notification. */
+  markedUnread?: boolean;
   /** Triggered when the tab requires user attention (BEL, idle, exit,
    *  agent-emitted "done" or explicit "attention" — agent is blocked
    *  waiting for the user to approve/answer). */

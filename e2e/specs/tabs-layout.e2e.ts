@@ -406,13 +406,22 @@ describe("sidebar tab row menu", () => {
       return [...menu.querySelectorAll("[role='menuitem']")].map((e) => e.textContent?.trim() ?? "");
     }) as Promise<string[]>;
 
-  async function openNewBelow(tabId: string) {
-    await clickMenuItemUntilReady("New below", () => browser.execute(() =>
+  async function openNewSub(label: "New above" | "New below", tabId: string) {
+    await clickMenuItemUntilReady(label, () => browser.execute(() =>
       [...document.querySelectorAll("[role='menuitem']")].some((e) => e.textContent?.trim() === "Terminal"),
     ) as Promise<boolean>, { reopen: () => openTabRowMenu(tabId) });
   }
+  const openNewBelow = (tabId: string) => openNewSub("New below", tabId);
+  const openNewAbove = (tabId: string) => openNewSub("New above", tabId);
 
-  it("opens on right-click with New below and Close, and Escape changes nothing", async () => {
+  /** The mark a tab row (or, folded, the task row) draws, or null. */
+  const rowMark = (sel: string) =>
+    browser.execute((q) => {
+      const b = document.querySelector(`${q} [data-testid="work-badge"]`) as HTMLElement | null;
+      return b?.dataset.workState ?? null;
+    }, sel) as Promise<string | null>;
+
+  it("opens on right-click with New above, New below, Mark as unread and Close, and Escape changes nothing", async () => {
     await waitForAppShell();
     await requireTermicApi();
     taskId = await openTask("e2e-tabrow-menu");
@@ -437,7 +446,7 @@ describe("sidebar tab row menu", () => {
       [...document.querySelectorAll('[data-testid="sidebar-tab-menu"] [role="menuitem"]')]
         .map((e) => e.textContent?.trim() ?? ""),
     );
-    expect(items).toEqual(["New below", "Close"]);
+    expect(items).toEqual(["New above", "New below", "Mark as unread", "Close"]);
     await snap("sidebar-tab-row-menu.png");
 
     await browser.execute(() => {
@@ -509,6 +518,138 @@ describe("sidebar tab row menu", () => {
       }, taskId) as string[];
       return JSON.stringify(persisted) === JSON.stringify([first, added, second]);
     }, { timeout: 10_000, timeoutMsg: "persisted_tabs never took the inserted order" });
+  });
+
+  it("New above > Terminal lands right above the clicked row, in the sidebar and the strip", async () => {
+    const before = await tabIds(taskId);
+    const anchor = before[1];
+    await openTabRowMenu(anchor);
+    await openNewAbove(anchor);
+    await clickMenuItemUntilReady("Terminal", async () => (await tabIds(taskId)).length === before.length + 1,
+      { reopen: async () => { await openTabRowMenu(anchor); await openNewAbove(anchor); } });
+
+    const after = await tabIds(taskId);
+    const added = after.find((id) => !before.includes(id))!;
+    expect(after).toEqual([before[0], added, ...before.slice(1)]);
+    await browser.waitUntil(async () => JSON.stringify(await sidebarRowIds(taskId)) === JSON.stringify(after),
+      { timeout: 5_000, timeoutMsg: `sidebar rows never matched ${after.join(",")}` });
+    await browser.waitUntil(async () => JSON.stringify(await stripPillIds(taskId)) === JSON.stringify(after),
+      { timeout: 5_000, timeoutMsg: `tab strip never matched ${after.join(",")}` });
+    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId)).toBe(added);
+  });
+
+  it("New above the first tab puts the new one first", async () => {
+    const before = await tabIds(taskId);
+    await openTabRowMenu(before[0]);
+    await openNewAbove(before[0]);
+    await clickMenuItemUntilReady("Terminal", async () => (await tabIds(taskId)).length === before.length + 1,
+      { reopen: async () => { await openTabRowMenu(before[0]); await openNewAbove(before[0]); } });
+    const after = await tabIds(taskId);
+    const added = after.find((id) => !before.includes(id))!;
+    expect(after).toEqual([added, ...before]);
+  });
+
+  it("Mark as unread draws an orange dot on the row and the folded task until the tab is shown", async () => {
+    const agent = await browser.execute((id) =>
+      (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.cli === "fakeagent")!.id, taskId) as string;
+    // Not the tab on screen: marking it must not need a visit to stick.
+    expect(await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId)).not.toBe(agent);
+    await openTabRowMenu(agent);
+    await clickMenuItem("Mark as unread");
+    await waitGone('[data-testid="sidebar-tab-menu"]', 5_000);
+
+    const rowSel = `[data-sidebar-tab-id="${agent}"]`;
+    await browser.waitUntil(async () => (await rowMark(rowSel)) === "marked",
+      { timeout: 5_000, timeoutMsg: "the marked row never drew its dot" });
+    // Measured, not eyeballed: the dot is the --color-marked token.
+    const colors = await browser.execute((q) => {
+      const dot = document.querySelector(`${q} [data-work-state="marked"] span`) as HTMLElement;
+      const probe = document.createElement("span");
+      probe.style.color = "var(--color-marked)";
+      document.body.appendChild(probe);
+      const want = getComputedStyle(probe).color;
+      probe.remove();
+      return { dot: getComputedStyle(dot).backgroundColor, want };
+    }, rowSel);
+    expect(colors.dot).toBe(colors.want);
+    await snap("sidebar-tab-row-marked-unread.png");
+
+    // It is on disk, so a relaunch keeps it.
+    await browser.waitUntil(async () => {
+      const p = await browser.execute(async (id, t) => {
+        const tasks = await window.__termic!.ipc.tasksList();
+        return (tasks.find((x: any) => x.id === id)?.persisted_tabs ?? []).find((x: any) => x.id === t)?.marked_unread ?? false;
+      }, taskId, agent);
+      return p === true;
+    }, { timeout: 10_000, timeoutMsg: "marked_unread never reached the task file" });
+
+    // Folded, the task row carries it.
+    await browser.execute((id) => window.__termic!.useApp.getState().setTaskCollapsed(id, true), taskId);
+    await browser.waitUntil(async () => (await rowMark(`[data-sidebar-task-row="${taskId}"]`)) === "marked",
+      { timeout: 5_000, timeoutMsg: "the folded task row never showed the marked dot" });
+    await snap("sidebar-task-row-marked-unread.png");
+    await browser.execute((id) => window.__termic!.useApp.getState().setTaskCollapsed(id, false), taskId);
+    await waitVisible(rowSel, 5_000);
+
+    // Showing the tab is reading it.
+    await clickWhenVisible(rowSel);
+    await browser.waitUntil(async () => (await rowMark(rowSel)) === null,
+      { timeout: 5_000, timeoutMsg: "the dot stayed after the tab was shown" });
+    await browser.waitUntil(async () => {
+      const p = await browser.execute(async (id, t) => {
+        const tasks = await window.__termic!.ipc.tasksList();
+        return (tasks.find((x: any) => x.id === id)?.persisted_tabs ?? []).find((x: any) => x.id === t)?.marked_unread ?? false;
+      }, taskId, agent);
+      return p === false;
+    }, { timeout: 10_000, timeoutMsg: "the cleared mark never left the task file" });
+  });
+
+  it("Mark as unread on the open tab lasts until it is left and shown again", async () => {
+    const open = await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId) as string;
+    const other = (await tabIds(taskId)).find((id) => id !== open)!;
+    const openSel = `[data-sidebar-tab-id="${open}"]`;
+    await openTabRowMenu(open);
+    await clickMenuItem("Mark as unread");
+    await waitGone('[data-testid="sidebar-tab-menu"]', 5_000);
+    await browser.waitUntil(async () => (await rowMark(openSel)) === "marked",
+      { timeout: 5_000, timeoutMsg: "the open tab never drew its marked dot" });
+
+    // Leaving through another row: that click re-activates the task first,
+    // which must not read the marked tab as seen on the way out.
+    await clickWhenVisible(`[data-sidebar-tab-id="${other}"]`);
+    await browser.waitUntil(async () =>
+      (await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId)) === other,
+      { timeout: 5_000, timeoutMsg: "the other tab never became active" });
+    expect(await rowMark(openSel)).toBe("marked");
+
+    // Coming back is the visit that reads it.
+    await clickWhenVisible(openSel);
+    await browser.waitUntil(async () => (await rowMark(openSel)) === null,
+      { timeout: 5_000, timeoutMsg: "the dot stayed after the tab was shown again" });
+  });
+
+  it("opening the task through another tab row leaves the mark on the tab it last showed", async () => {
+    const last = await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId) as string;
+    const other = (await tabIds(taskId)).find((id) => id !== last)!;
+    const lastSel = `[data-sidebar-tab-id="${last}"]`;
+    await openTabRowMenu(last);
+    await clickMenuItem("Mark as unread");
+    await waitGone('[data-testid="sidebar-tab-menu"]', 5_000);
+    await browser.waitUntil(async () => (await rowMark(lastSel)) === "marked",
+      { timeout: 5_000, timeoutMsg: "the tab never drew its marked dot" });
+    // Setup: the task is no longer the one on screen.
+    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+
+    await clickWhenVisible(`[data-sidebar-tab-id="${other}"]`);
+    await browser.waitUntil(async () => (await browser.execute(
+      (id) => { const s = window.__termic!.useApp.getState(); return s.activeTaskId === id ? s.activeTab[id] : null; },
+      taskId)) === other, { timeout: 5_000, timeoutMsg: "the clicked tab never came up" });
+    // The tab the task last showed never came on screen, so it is unread still.
+    expect(await rowMark(lastSel)).toBe("marked");
+
+    await clickWhenVisible(lastSel);
+    await browser.waitUntil(async () => (await rowMark(lastSel)) === null,
+      { timeout: 5_000, timeoutMsg: "the dot stayed after the tab was shown" });
   });
 
   it("Close removes the clicked tab and only that one", async () => {

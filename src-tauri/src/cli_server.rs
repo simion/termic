@@ -9576,7 +9576,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("close_tab".into(), Ok(serde_json::json!({ "killedPty": true })));
-        let persisted = |id: &str, cli: &str, run: Option<&str>| crate::PersistedTab { props: Default::default(),
+        let persisted = |id: &str, cli: &str, run: Option<&str>| crate::PersistedTab { props: Default::default(), marked_unread: false,
             agent_args: Vec::new(),
             id: id.into(),
             cli: cli.into(),
@@ -9615,7 +9615,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("close_tab".into(), Ok(serde_json::json!({})));
-        let persisted = |id: &str, is_default: bool| crate::PersistedTab { props: Default::default(),
+        let persisted = |id: &str, is_default: bool| crate::PersistedTab { props: Default::default(), marked_unread: false,
             agent_args: Vec::new(),
             id: id.into(),
             cli: "claude".into(),
@@ -9696,7 +9696,7 @@ mod tests {
         // the snapshot was fresh by AGE while missing the new tab entirely.
         let host = StubHost::default();
         let mut t = w3(&host);
-        t.persisted_tabs.push(crate::PersistedTab { props: Default::default(),
+        t.persisted_tabs.push(crate::PersistedTab { props: Default::default(), marked_unread: false,
             agent_args: Vec::new(),
             id: "brand-new".into(),
             cli: "shell".into(),
@@ -9759,7 +9759,7 @@ mod tests {
         let host = StubHost::default();
         let mut t = w3(&host);
         t.persisted_tabs = vec![
-            crate::PersistedTab { props: Default::default(),
+            crate::PersistedTab { props: Default::default(), marked_unread: false,
                 agent_args: Vec::new(),
                 id: "tab-a".into(),
                 cli: "claude".into(),
@@ -9773,7 +9773,7 @@ mod tests {
                 pinned: false,
                 scheduled: Vec::new(),
             },
-            crate::PersistedTab { props: Default::default(),
+            crate::PersistedTab { props: Default::default(), marked_unread: false,
                 agent_args: Vec::new(),
                 id: "tab-x".into(),
                 cli: "custom".into(),
@@ -9787,7 +9787,7 @@ mod tests {
                 pinned: false,
                 scheduled: Vec::new(),
             },
-            crate::PersistedTab { props: Default::default(),
+            crate::PersistedTab { props: Default::default(), marked_unread: false,
                 agent_args: Vec::new(),
                 id: "tab-sh".into(),
                 cli: "shell".into(),

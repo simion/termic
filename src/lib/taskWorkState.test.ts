@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  taskNeedsAttention, taskWorkDone, taskWorking, taskWorkBadge, taskDelegated, unreadClearsOnSight,
+  taskNeedsAttention, taskWorkDone, taskWorking, taskWorkBadge, taskDelegated, taskMarkedUnread, unreadClearsOnSight,
 } from "@/lib/taskWorkState";
 import type { Tab } from "@/lib/types";
 import type { DelegatedWork } from "@/lib/delegatedWork";
@@ -164,5 +164,25 @@ describe("unreadClearsOnSight", () => {
   it("nothing to clear is not a mark", () => {
     expect(unreadClearsOnSight(null)).toBe(false);
     expect(unreadClearsOnSight(undefined)).toBe(false);
+  });
+});
+
+describe("a tab marked unread by hand", () => {
+  const OFF = { settledHighlight: false, workingIndicator: false, attentionIndicator: false };
+
+  it("draws the marked dot, whatever the work-state prefs say", () => {
+    expect(taskMarkedUnread([term({ markedUnread: true } as Partial<Tab>)])).toBe(true);
+    expect(taskWorkBadge([term({ markedUnread: true } as Partial<Tab>)], OFF)).toBe("marked");
+  });
+
+  it("ranks under attention and done, over working", () => {
+    const m = term({ id: "m", markedUnread: true } as Partial<Tab>);
+    expect(taskWorkBadge([m, term({ unread: { reason: "attention" } })], ON)).toBe("attention");
+    expect(taskWorkBadge([m, term({ workState: "done" })], ON)).toBe("done");
+    expect(taskWorkBadge([m, term({ workState: "working" })], ON)).toBe("marked");
+  });
+
+  it("ignores non-terminal tabs", () => {
+    expect(taskMarkedUnread([edit({ markedUnread: true } as Partial<Tab>)])).toBe(false);
   });
 });

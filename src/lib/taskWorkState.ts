@@ -18,7 +18,7 @@ import type { Tab } from "./types";
  *  `cliAgentState.ts` ranks working ABOVE attention for the CLI wire; that
  *  divergence predates this helper and is deliberately not resolved here,
  *  because `TaskSummary.work_state` is a published contract. */
-export type WorkBadgeReason = "attention" | "done" | "working" | "delegated";
+export type WorkBadgeReason = "attention" | "done" | "working" | "delegated" | "marked";
 
 export interface WorkStatePrefs {
   /** `settledHighlight` — gates the DONE bullet. It used to gate attention
@@ -98,6 +98,12 @@ export function taskDelegatedWork(tabs: Tab[], p: WorkStatePrefs) {
   return (t && t.type === "terminal" ? t.delegatedWork : null) ?? null;
 }
 
+/** The user marked a tab unread from its sidebar menu (`markedUnread`). Not
+ *  behind a pref: the user asked for this mark by hand. Ranks under done and
+ *  over working, so a spinner cannot hide a reminder the user set. */
+export const taskMarkedUnread = (tabs: Tab[]): boolean =>
+  tabs.some(t => t.type === "terminal" && !!t.markedUnread);
+
 /** The whole precedence in one call: what this row should draw, or null.
  *
  *  Callers that need the individual flags (the sidebar logs all three to the
@@ -106,6 +112,7 @@ export function taskDelegatedWork(tabs: Tab[], p: WorkStatePrefs) {
 export function taskWorkBadge(tabs: Tab[], p: WorkStatePrefs): WorkBadgeReason | null {
   if (taskNeedsAttention(tabs, p)) return "attention";
   if (taskWorkDone(tabs, p)) return "done";
+  if (taskMarkedUnread(tabs)) return "marked";
   if (taskWorking(tabs, p)) return "working";
   // LAST, and it is the only rung that is not a work state: a tab with nothing
   // spinning and nothing to announce, that still has something running. It

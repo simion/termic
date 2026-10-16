@@ -150,8 +150,8 @@ export const flattenSegments = (segs: TaskListSegment[]): Task[] =>
   segs.flatMap(s => (s.kind === "task" ? [s.task] : s.tasks));
 
 /** One mark a collapsed group's caption can carry, in the order drawn. */
-export type GroupBadgeKind = "attention" | "done" | "partial" | "working" | "delegated";
-const GROUP_BADGE_ORDER: GroupBadgeKind[] = ["attention", "done", "partial", "working", "delegated"];
+export type GroupBadgeKind = "attention" | "done" | "partial" | "marked" | "working" | "delegated";
+const GROUP_BADGE_ORDER: GroupBadgeKind[] = ["attention", "done", "partial", "marked", "working", "delegated"];
 
 /** What a COLLAPSED group shows in place of its rows: one of each mark any
  *  member's row would draw, never just the most urgent, so "two finished and

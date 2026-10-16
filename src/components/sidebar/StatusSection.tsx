@@ -511,10 +511,11 @@ function StatusTaskTabs({ taskId, agents, workPrefs }: {
             data-active={hot || undefined}
             role="button"
             tabIndex={0}
-            onClick={() => { setActive(taskId); setActiveTabId(taskId, tab.id); }}
+            // Tab first, as in the tree's tab rows (see there).
+            onClick={() => { setActiveTabId(taskId, tab.id); setActive(taskId); }}
             onKeyDown={ev => {
               if (ev.key === "Enter" || ev.key === " ") {
-                ev.preventDefault(); setActive(taskId); setActiveTabId(taskId, tab.id);
+                ev.preventDefault(); setActiveTabId(taskId, tab.id); setActive(taskId);
               }
             }}
             className={cn(

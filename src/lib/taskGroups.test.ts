@@ -181,3 +181,13 @@ describe("groupBadgeKinds", () => {
     expect(groupBadgeKinds([idle, idle], ALL, true)).toEqual([]);
   });
 });
+
+describe("groupBadgeKinds with a hand-marked tab", () => {
+  it("rolls the marked dot up between done and working", () => {
+    const ON = { settledHighlight: true, workingIndicator: true, attentionIndicator: true };
+    const marked = [{ id: "m", type: "terminal", markedUnread: true }] as never;
+    const done = [{ id: "d", type: "terminal", workState: "done" }] as never;
+    const working = [{ id: "w", type: "terminal", workState: "working" }] as never;
+    expect(groupBadgeKinds([working, marked, done], ON, true)).toEqual(["done", "marked", "working"]);
+  });
+});

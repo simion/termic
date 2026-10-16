@@ -776,6 +776,10 @@ pub struct PersistedTab {
     /// pinned tab comes back pinned and leftmost.
     #[serde(default)]
     pub pinned: bool,
+    /// Marked unread from the sidebar tab menu; cleared when the tab is
+    /// next shown. Skipped when false so existing task files do not change.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marked_unread: bool,
     /// Queue messages with a "send after" date (GH #300). Owned solely by
     /// `task_set_tab_scheduled`; `task_set_tabs` PRESERVES it by tab id, for
     /// the same reason it preserves `session_id`: a rename racing a schedule
@@ -839,6 +843,8 @@ pub struct PersistedTabInput {
     pub run_member: Option<String>,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
+    pub marked_unread: bool,
     #[serde(default)]
     pub props: Vec<TabProp>,
 }
@@ -8754,6 +8760,7 @@ fn merge_persisted_tabs(
                 pane_leaf_id: if keep_pane { t.pane_leaf_id } else { None },
                 run_member: if keep_pane { t.run_member } else { None },
                 pinned: t.pinned,
+                marked_unread: t.marked_unread,
                 props: t.props,
             }
         })
@@ -8787,6 +8794,7 @@ fn task_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String>
                 && a.pane_leaf_id == b.pane_leaf_id
                 && a.run_member == b.run_member
                 && a.pinned == b.pinned
+                && a.marked_unread == b.marked_unread
                 && a.scheduled == b.scheduled
                 && a.props == b.props
         });
@@ -30041,6 +30049,18 @@ mod tests {
         let t = PersistedTab { id: "t1".into(), cli: "claude".into(), pinned: true, ..Default::default() };
         let back: PersistedTab = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert!(back.pinned);
+    }
+
+    #[test]
+    fn marked_unread_survives_a_round_trip_and_is_absent_when_false() {
+        let t = PersistedTab { id: "t1".into(), cli: "claude".into(), marked_unread: true, ..Default::default() };
+        let back: PersistedTab = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert!(back.marked_unread);
+        // An unmarked tab writes the record exactly as before the field.
+        let plain = PersistedTab { id: "t1".into(), cli: "claude".into(), ..Default::default() };
+        assert!(!serde_json::to_string(&plain).unwrap().contains("marked_unread"));
+        let old: PersistedTab = serde_json::from_str(r#"{"id":"t1","cli":"claude"}"#).unwrap();
+        assert!(!old.marked_unread);
     }
 
     // Scheduled queue messages (GH #300) ride on the tab record.
