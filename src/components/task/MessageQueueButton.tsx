@@ -402,7 +402,8 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                 max={MAX_REPEAT}
                 value={repeat}
                 spellCheck={false}
-                onChange={e => setRepeat(Math.min(MAX_REPEAT, Math.max(1, Number(e.target.value) || 1)))}
+                onChange={e => setRepeat(Math.min(MAX_REPEAT, Math.max(0, Number(e.target.value) || 0)))}
+                onBlur={() => setRepeat(r => Math.min(MAX_REPEAT, Math.max(1, Math.round(r) || 1)))}
                 className="w-12 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-center font-mono text-[12px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
               ×
