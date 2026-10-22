@@ -187,7 +187,7 @@ describe("drag a file onto a terminal", () => {
 // outlines the terminal; a drop on it reaches the PTY; a drop outside types
 // nothing.
 describe("drop a file from Finder onto a terminal", () => {
-  let taskId: string | undefined;
+  let taskId!: string;
   after(async () => {
     if (taskId) await archiveTask(taskId);
   });
