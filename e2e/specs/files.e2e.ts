@@ -177,6 +177,101 @@ describe("drag a file onto a terminal", () => {
   });
 });
 
+// P1: dropping a file from Finder onto a terminal types its path at the prompt.
+// WebDriver can't start an OS drag, so the spec emits the same `tauri://drag-*`
+// events Tauri's native handler would, through Tauri's real event bus, at a
+// point taken from the terminal's own rect. That covers the listener, the hit
+// test, and the PTY write. What it can't prove is the unit wry uses for the
+// position: on macOS it's logical points (see initTerminalDropHandler), and
+// the unit test pins that on a Retina devicePixelRatio. Cases: hovering
+// outlines the terminal; a drop on it reaches the PTY; a drop outside types
+// nothing.
+describe("drop a file from Finder onto a terminal", () => {
+  let taskId: string | undefined;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  const outputAt = () =>
+    browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      const tabs = s.tabs[id] ?? [];
+      const tab = tabs.find((t: any) => t.id === s.activeTab[id]) ?? tabs[0];
+      return (tab?.lastOutputAt ?? 0) as number;
+    }, taskId);
+
+  // Emit a native-style drag event at CSS (x, y). `where` picks the point:
+  // the terminal's bottom-right (clear of centered dialogs), or the sidebar.
+  const emitDrag = (kind: "over" | "drop" | "leave", where: "terminal" | "sidebar", paths: string[] = []) =>
+    browser.execute(
+      async (k, w, ps) => {
+        const host = document.querySelector("[data-terminal-host]") as HTMLElement;
+        const r = host.getBoundingClientRect();
+        const position = w === "terminal" ? { x: r.right - 60, y: r.bottom - 60 } : { x: 20, y: 200 };
+        await window.__termic!.invoke("plugin:event|emit_to", {
+          target: { kind: "Webview", label: "main" },
+          event: `tauri://drag-${k}`,
+          payload: { paths: ps, position },
+        });
+      },
+      kind,
+      where,
+      paths,
+    );
+
+  const highlighted = () => browser.execute(() => !!document.querySelector(".termic-drop-target"));
+
+  it("outlines the terminal while a file is dragged over it", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-finder-drop");
+    await browser.waitUntil(
+      () => browser.execute(() => !!document.querySelector("[data-terminal-host]")),
+      { timeout: 15_000, timeoutMsg: "terminal never appeared" },
+    );
+    await dismissOverlays();
+    await ensureActiveTask(taskId);
+    // the default fixture task is unsandboxed, so a drop types the path
+    // straight away instead of asking how to share the file.
+    const sandbox = await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id)?.sandbox_mode ?? "off",
+      taskId,
+    );
+    expect(sandbox).toBe("off");
+
+    await emitDrag("over", "terminal");
+    await browser.waitUntil(highlighted, { timeout: 5_000, timeoutMsg: "terminal never outlined on drag-over" });
+    await emitDrag("leave", "terminal");
+    await browser.waitUntil(async () => !(await highlighted()), {
+      timeout: 5_000,
+      timeoutMsg: "outline stuck after drag-leave",
+    });
+  });
+
+  it("types the dropped path into the agent's PTY", async () => {
+    await browser.waitUntil(async () => (await outputAt()) > 0, {
+      timeout: 15_000,
+      timeoutMsg: "the agent PTY never produced output",
+    });
+    const before = await outputAt();
+    await emitDrag("drop", "terminal", ["/tmp/termic e2e shot.png"]);
+    // fakeagent echoes what was typed; fresh output proves the path arrived.
+    await browser.waitUntil(async () => (await outputAt()) > before, {
+      timeout: 10_000,
+      timeoutMsg: "the dropped path never reached the PTY",
+    });
+    expect(await highlighted()).toBe(false);
+  });
+
+  it("types nothing when dropped outside a terminal", async () => {
+    const before = await outputAt();
+    await emitDrag("drop", "sidebar", ["/tmp/termic e2e shot.png"]);
+    // give a stray write the same window the positive case needed, then check.
+    await browser.waitUntil(async () => (await outputAt()) > before, { timeout: 2_000 }).catch(() => {});
+    expect(await outputAt()).toBe(before);
+  });
+});
+
 // P1: the file finder (⌘P). Cases: opens and lists the repo's files; selecting
 // a result opens an editor tab for that file.
 describe("file finder", () => {

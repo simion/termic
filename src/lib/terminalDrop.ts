@@ -220,14 +220,15 @@ export async function initTerminalDropHandler(): Promise<void> {
   if (unlisten) return;
   unlisten = await getCurrentWebview().onDragDropEvent((event) => {
     const p = event.payload;
-    // Tauri reports the drop point in PHYSICAL pixels; document.elementFromPoint
-    // wants CSS pixels. (Testing heads-up: with devtools open the reported
-    // position can be inaccurate — a documented Tauri limitation. Detach the
-    // debugger to verify drop targeting.)
-    const dpr = window.devicePixelRatio || 1;
+    // the position is typed PhysicalPosition, but on macOS wry hands over the
+    // NSView point (logical, top-left origin) and tauri-runtime-wry passes it
+    // through unscaled (checked against wry 0.55 / tauri 2.11). So it's already
+    // CSS pixels. Dividing by devicePixelRatio halved it on Retina and the hit
+    // test landed in the sidebar, silently dropping every Finder drop.
+    // ponytail: macOS-only assumption, Windows wry reports real physical px.
 
     if (p.type === "enter" || p.type === "over") {
-      setHighlight(hostForPoint(p.position.x / dpr, p.position.y / dpr));
+      setHighlight(hostForPoint(p.position.x, p.position.y));
       return;
     }
     if (p.type === "leave") {
@@ -237,7 +238,7 @@ export async function initTerminalDropHandler(): Promise<void> {
     // p.type === "drop"
     setHighlight(null);
     if (!p.paths || p.paths.length === 0) return;
-    const host = hostForPoint(p.position.x / dpr, p.position.y / dpr);
+    const host = hostForPoint(p.position.x, p.position.y);
     if (!host) return;                       // dropped outside any terminal
     const target = targets.get(host);
     const ptyId = target?.ptyId() ?? null;
