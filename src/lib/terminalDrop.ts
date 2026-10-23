@@ -33,6 +33,7 @@ import { i18n } from "@/lib/i18n";
 import { showDragGhost, moveDragGhost, hideDragGhost } from "@/lib/dragGhost";
 import { useApp } from "@/store/app";
 import { shellEscapePath, terminalPathText } from "@/lib/osPath";
+import { IS_MAC } from "@/lib/platform";
 
 // Per-terminal drop metadata. We store getters (not bare values) so a Restart
 // that mints a fresh pty id — or a sandbox toggle that flips mid-session — is
@@ -234,15 +235,15 @@ export async function initTerminalDropHandler(): Promise<void> {
   if (unlisten) return;
   unlisten = await getCurrentWebview().onDragDropEvent((event) => {
     const p = event.payload;
-    // the position is typed PhysicalPosition, but on macOS wry hands over the
+    // The position is typed PhysicalPosition, but on macOS wry hands over the
     // NSView point (logical, top-left origin) and tauri-runtime-wry passes it
-    // through unscaled (checked against wry 0.55 / tauri 2.11). So it's already
-    // CSS pixels. Dividing by devicePixelRatio halved it on Retina and the hit
-    // test landed in the sidebar, silently dropping every Finder drop.
-    // ponytail: macOS-only assumption, Windows wry reports real physical px.
+    // through unscaled (checked against wry 0.55 / tauri 2.11) — already CSS
+    // pixels there. Windows wry reports real physical px, so the division is
+    // needed everywhere except macOS.
+    const dpr = IS_MAC ? 1 : (window.devicePixelRatio || 1);
 
     if (p.type === "enter" || p.type === "over") {
-      setHighlight(hostForPoint(p.position.x, p.position.y));
+      setHighlight(hostForPoint(p.position.x / dpr, p.position.y / dpr));
       return;
     }
     if (p.type === "leave") {
@@ -252,7 +253,7 @@ export async function initTerminalDropHandler(): Promise<void> {
     // p.type === "drop"
     setHighlight(null);
     if (!p.paths || p.paths.length === 0) return;
-    const host = hostForPoint(p.position.x, p.position.y);
+    const host = hostForPoint(p.position.x / dpr, p.position.y / dpr);
     if (!host) return;                       // dropped outside any terminal
     const target = targets.get(host);
     const ptyId = target?.ptyId() ?? null;
